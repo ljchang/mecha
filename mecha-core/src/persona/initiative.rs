@@ -230,6 +230,12 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
     let mut now = Stretch::default();
     let mut people = false;
     let mut run = Turn::default();
+    // The history so far, as its length and last message: appended
+    // messages move it, a rewrite sets it. And the same as it stood at the
+    // last outcome, which a failed turn's rollback returns it to.
+    let mut seen = (0usize, None::<String>);
+    let mut flushed = (0usize, None::<String>);
+    let key = |m: Option<&Message>| m.and_then(|m| serde_json::to_string(m).ok());
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         match serde_json::from_str(line) {
             Ok(Record::Config(c)) => {
@@ -243,6 +249,7 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                     .is_some_and(|s| s.contains(super::agent::PEOPLE_HEADING));
             }
             Ok(Record::Message(m)) => {
+                seen = (seen.0 + 1, key(Some(&m)));
                 if m.role == Role::User {
                     let said = owner_words(&m);
                     if !said.trim().is_empty() {
@@ -259,6 +266,18 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                 }
             }
             Ok(Record::Rewrite { messages }) => {
+                seen = (messages.len(), key(messages.last()));
+                // A failed turn rolled back: the history returned to exactly
+                // what it was at the last outcome, and no outcome follows.
+                // It holds the turns before, already read; reading it as this
+                // run would splice the last turn back in and drop what the
+                // owner typed in the failed one, which stays and joins the
+                // next turn, the one that answered it (review of #808). A
+                // compaction is never that: it ends on this run's newest
+                // message.
+                if seen == flushed {
+                    continue;
+                }
                 // The run's own part: everything after the last message the
                 // owner typed.
                 let from = messages
@@ -290,6 +309,7 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                 }
             }
             Ok(Record::Outcome(stats)) => {
+                flushed = seen.clone();
                 let mut done = std::mem::take(&mut run);
                 done.completed = stats.stop_cause == Some(crate::agent::StopCause::Completed);
                 done.arm.people = people;
@@ -967,7 +987,7 @@ mod tests {
             // A compaction's rewrite still yields the run's own words.
             let before = convo.messages.clone();
             convo.messages = vec![
-                Message::user("[summary]"),
+                Message::user(format!("{} earlier turns.", crate::compact::SUMMARY_HEADER)),
                 Message::user("tell me about Ines"),
                 Message::assistant(vec![Block::text("Ines bakes.")]),
             ];
@@ -1008,7 +1028,10 @@ mod tests {
             }))
             .unwrap();
             let before = convo.messages.clone();
-            convo.messages = vec![Message::user("[summary]")];
+            convo.messages = vec![Message::user(format!(
+                "{} earlier turns.",
+                crate::compact::SUMMARY_HEADER
+            ))];
             hop(&mut convo);
             s.record_run(&before, &convo).unwrap();
             s.append(&Record::Outcome(RunStats {
@@ -1040,6 +1063,26 @@ mod tests {
             let turns = flat(&s.path);
             assert_eq!(turns[5].owner, "");
             assert_eq!(turns[5].reply.as_deref(), Some("Mm."));
+            // A failed turn, recorded as the persona door records one: the
+            // owner's message appended, the turn rolled back, no outcome.
+            // The rollback re-reads nothing; the owner's words join the turn
+            // that answered them.
+            let before_fail = convo.messages.clone();
+            let asked = Message::user("is Pell ok?");
+            s.append(&Record::Message(asked.clone())).unwrap();
+            let mut with_ask = before_fail.clone();
+            with_ask.push(asked);
+            let rolled = Conversation {
+                messages: before_fail.clone(),
+                ..Conversation::default()
+            };
+            s.record_run(&with_ask, &rolled).unwrap();
+            let mut convo = rolled;
+            run(&s, &mut convo, "and you?", "Fine.", &[]);
+            let turns = flat(&s.path);
+            assert_eq!(turns.len(), 7, "the failed turn is no turn of its own");
+            assert_eq!(turns[6].owner, "is Pell ok?\nand you?");
+            assert_eq!(turns[6].reply.as_deref(), Some("Fine."));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
