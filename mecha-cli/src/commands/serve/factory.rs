@@ -211,6 +211,11 @@ async fn run(
 ) -> anyhow::Result<String> {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(program(name)?);
+    // Every serve child starts where `child_cwd` says, never in the unit's
+    // home directory — the rule lives at the spawn helpers, and this is one.
+    if let Some(dir) = super::child_cwd() {
+        cmd.current_dir(dir);
+    }
     cmd.args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
