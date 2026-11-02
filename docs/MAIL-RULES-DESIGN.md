@@ -192,10 +192,25 @@ They read **the envelope, never the body** — `prefilter`'s rule, for
 parsed it would be a second place prose gets interpreted outside the
 classifier's quarantine.
 
+**They depart from `prefilter`'s other property, on purpose.** `prefilter`
+may only ever say *ignore*, never *this needs a reply*, because the cases a
+machine rule would have to get right to say that are the ones needing
+judgement. A header rule may forward, send or reply — and §5.2 pushes those
+actions *toward* header matchers. The difference is authorship: `prefilter`
+is a heuristic the harness applies to everyone's mail, while a header rule is
+the owner naming, by hand, the senders it is for. The judgement `prefilter`
+refuses to automate is the one the owner made when writing the rule.
+
 They run **before classification**, and a rule whose actions are all
 mailbox-only can mark the thread handled so the classifier never spends a
-call on it. A GitHub notification should cost a string comparison, not a
-model call.
+call on it — **but only when no enabled description rule outranks it.** A
+skipped classification is a description rule never evaluated, so a
+`priority = 90` header rule that archives a list must not silence a
+`priority = 5` description rule that would have replied. When a
+higher-priority description rule is enabled, the header rule's mailbox
+actions still run on the timer and the thread is classified anyway. A GitHub
+notification should cost a string comparison, not a model call, whenever
+"the first rule by priority owns the thread" allows it.
 
 ### 4.2 Description matchers — the classifier, one more field
 
@@ -327,7 +342,11 @@ Grouped by what can go wrong, because that decides what may run unattended.
 The owner's words, sent as written. Slots are a **closed set filled by the
 harness**, never by a model: `{sender_first_name}` (from the `From` display
 name, length-bounded, stripped of anything but letters, spaces, hyphens and
-apostrophes), `{subject}` (as `Re:`), `{today}`.
+apostrophes), `{subject}` (the thread's subject as `Re:`, length-bounded, with
+CR, LF, NUL and other control characters removed before it reaches
+`gmail::checked_header`, which would refuse it anyway), `{today}` (the
+harness's own date). Every slot states what it strips; a slot added later
+states it too, or it is not a closed-set slot.
 
 Why this is the case R1 can safely allow: **the payload carries no private
 data.** The template is fixed; the slots come from the message being answered
@@ -420,9 +439,15 @@ and none is configurable off:
   unparseable means `propose`, never `pass`**. Graph's
   `internetMessageHeaders` is a truncated collection, so "absent" is a real
   case on Outlook, and each provider gets a test that a missing header
-  proposes. The `List-Unsubscribe` reader in `graph_mail.rs` is first-match,
-  which is right there (any instance is a bulk signal, so sloppy is safe) and
-  the wrong shape to copy here.
+  proposes. **The trap is on both readers, and worse on Gmail.**
+  `parse_gmail_message` (`gmail.rs`) collects headers in an assign-every-time
+  loop, so its `List-Unsubscribe` is *last* wins — harmless for a bulk
+  signal, and exactly wrong here: Gmail returns headers in message order, so
+  adding `Authentication-Results` to that loop selects the bottom-most
+  instance, the one a sender can write. On Gmail the reader takes the
+  **first** instance; on Graph, `graph_mail.rs`'s `.find(…)` is first-match
+  and needs the `authserv-id` check added. `Authentication-Results` gets its
+  own field on `Email` rather than riding the existing loop.
   One consequence worth saying in the UI: mail that reaches an account by
   forwarding from another address routinely fails alignment, so a rule on
   such an account may never leave `propose` for its sends. That is the guard
@@ -431,8 +456,10 @@ and none is configurable off:
   sender-chosen and is the other reflection route. An automatic reply answers
   one authenticated person.
 - **Once per sender per rule per 7 days** (RFC 3834's guidance), and a daily
-  cap per rule (default 20) and across all rules (default 50). Hitting a cap
-  pauses the rule (§6.4) rather than queueing.
+  cap per rule (default 20) and across all rules (default 50). Hitting
+  either cap stages the rest of the day's outbound actions in the outbox
+  rather than sending them — nothing is lost, and the owner releases or
+  rejects them (§6.4).
 - **Not into a conversation the owner has joined.** If the owner has sent a
   message in the thread, a human is already handling it.
 - **Sent as ordinary mail from the owner (R5).** No `Auto-Submitted` header
@@ -556,8 +583,11 @@ A rule steps itself down, with a notice, when:
 - **The owner undoes more than 20% of its automatic mailbox actions** over at
   least 10 → `propose`.
 - **Three consecutive action failures** → `shadow`.
-- **A rule's daily cap is hit** (§5.4) → that rule to `shadow` until the
-  owner looks.
+- **A rule's daily cap is hit** (§5.4) → that rule's outbound actions stage
+  in the outbox for the rest of the local day, with a notice; its mode is
+  unchanged. Twenty matching messages in a day is the likeliest brake to
+  fire, and quietly not answering them (which a step-down to `shadow` would
+  do) is a worse failure than a queue the owner can release.
 - **The cap across all rules is hit** → no rule changes mode, because the
   rule that happened to be fifty-first is not the cause. Every outbound action
   for the rest of the local day stages in the outbox instead, the ledger rows
@@ -586,15 +616,22 @@ and the rule ledger, no model:
 
 It is a reader of the stores, like `--aged`, so the CLI, a trigger and the web
 page show the same thing. **And it keeps `mecha mail list`'s split between
-looking and recording**: `mecha mail digest` only reads, and `mecha mail
-digest --surface` additionally records what it showed — the day-two threads
-as surfaced (exactly what `list --aged --surface` writes today) and the
-"handled for you" rows as reported, so the next digest starts after them. A
-digest that wrote on every read could not be used to look. **It arrives each
-morning with the briefing (R9)**: the `morning` trigger's `notify` step
-replaces `mecha mail list --aged --surface` with `mecha mail digest
---surface`, so it is published on the same page by the same path, and there
-is no second schedule or channel. The `one_line` text is fine here: the
+looking and recording, and records only what was delivered.** `mecha mail
+digest` only reads; it prints the digest and an id naming exactly what it
+covered. `mecha mail digest ack <id>` records it — the day-two threads as
+surfaced (what `list --aged --surface` writes today) and the "handled for
+you" rows as reported, so the next digest starts after them. The record is a
+separate step because a trigger's `notify` is an observer whose failure is
+logged and never fails the run: a digest that marked itself reported before
+its publish failed would drop that day's automatic actions from every later
+digest, and the digest is the notice for unattended actions (§5.2, §5.5).
+So `ack` is chained after the publish succeeds, and a failed publish leaves
+the next morning's digest covering both days. The ledger stays the complete
+record either way. A digest that wrote on every read could not be used to
+look. **It arrives each morning with the briefing (R9)**: the `morning`
+trigger's `notify` step renders the digest where it runs `mecha mail list
+--aged --surface` today, publishes it on the same page by the same path, and
+acks it — no second schedule or channel. The `one_line` text is fine here: the
 digest is a surface for a human, never input to a privileged run
 (`Record::for_privileged_run` stays as it is).
 
@@ -715,8 +752,14 @@ and
 `mecha doctor` reporting an unreadable store or a lapsed approval. **Covers
 GitHub notifications and junk with no model involved.**
 
-**P2 — the digest.** `mecha mail digest` and its `--surface` write, replacing
-`list --aged --surface` in the morning briefing.
+**P2 — the digest.** `mecha mail digest` and `digest ack`. Then the briefing
+swap, which is **an edit on the owner's machine, not in this repository**:
+the `morning` trigger lives only under `~/.mecha/`. It is the `update`
+skill's territory and carries a trap `HANDOFF.md` already records for
+`--aged`: the installed binary must have `mail digest` before the `notify`
+line names it, or the briefing pastes a usage error into itself. Install
+first, then swap, then confirm by running the `notify` line, not by reading
+it.
 
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
