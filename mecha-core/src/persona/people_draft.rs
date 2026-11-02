@@ -71,23 +71,23 @@ fn system() -> String {
         .collect();
     format!(
         "You read what an author wrote about a fictional character and list the people \
-         it names in her life: family, partners, friends, colleagues, neighbours, anyone \
+         it names in the character's life: family, partners, friends, colleagues, neighbours, anyone \
          the text gives a name or a clear role. List only people the text names or \
          clearly describes; invent no one and add nothing the text does not say. \
-         Never list her, and never the reader she talks to.\n\n\
+         Never list the character, and never the reader they talk to.\n\n\
          Answer with JSON only: {{\"people\": [...]}}, at most {MAX_PROPOSED}. Each \
          person has:\n\
          - \"name\": what the text calls them, at most {MAX_NAME} characters; a role \
-         (\"her grandmother\") when the text gives no name\n\
+         (\"their grandmother\") when the text gives no name\n\
          - \"aliases\": other names the text uses for them, or []\n\
-         - \"role\": who they are to her in a few words (\"older sister\"), or null\n\
+         - \"role\": who they are to the character in a few words (\"older sister\"), or null\n\
          - \"description\": one short sentence of what the text says about them, \
          starting with a capital letter and ending with a full stop (\"Runs a bakery \
          two towns over.\"), at most {MAX_DESCRIPTION} characters, or null\n\
          - \"tie\": one of {ties}, or null\n\
          - \"label\": the tie in the text's words (\"sister\"), at most {MAX_LABEL} \
          characters, or null\n\
-         - \"layer\": how close they are, 5 (her closest few), 15, 50 or 150, or null \
+         - \"layer\": how close they are, 5 (their closest few), 15, 50 or 150, or null \
          when the text does not say",
         ties = ties.join(", "),
     )
@@ -247,7 +247,7 @@ pub async fn propose(
     let request = request(model, p, provider.structured_output())?;
     let response = provider.complete(&request, None).await?;
     match response.stop_reason {
-        StopReason::Refusal => bail!("the reader's model refused to read her people"),
+        StopReason::Refusal => bail!("the reader's model refused to read their people"),
         StopReason::MaxTokens => bail!(
             "the reader's answer was cut off at max_tokens ({})",
             request.max_tokens
@@ -282,7 +282,7 @@ impl std::fmt::Display for StaleProposal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "`{}`'s identity.md changed since her people were read from it; propose again",
+            "`{}`'s identity.md changed since their people were read from it; propose again",
             self.name
         )
     }

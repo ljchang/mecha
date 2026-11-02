@@ -68,7 +68,7 @@ assert.equal(peopleUrl('mara', '2025-01-31', 'tok'), '/api/personas/mara/people?
 assert.throws(() => peopleUrl('mara', 'last spring'), /not a date/);
 assert.ok(ENDPOINTS.includes('/api/personas/X/people/proposal'));
 assert.ok(ENDPOINTS.includes('/api/personas/X/people/proposal/accept'));
-assert.equal(acceptedLine({ added: ['Theo'], already: ['Ines'], waiting: 1 }), 'Added Theo. Ines was already in her network. 1 more still waits below.');
+assert.equal(acceptedLine({ added: ['Theo'], already: ['Ines'], waiting: 1 }), 'Added Theo. Ines was already in their network. 1 more still waits below.');
 assert.equal(acceptedLine({ added: [], already: [], waiting: 0 }), 'Nothing to add.');
 console.log('persona-people: ok');
 
