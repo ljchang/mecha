@@ -1948,7 +1948,10 @@ impl PersonaChats {
                     monday + chrono::Days::new(6),
                     today,
                 ) {
-                    Ok(days) => {
+                    Ok(story::Story { days, why }) => {
+                        if let Some(why) = why {
+                            out["story_error"] = serde_json::json!(why);
+                        }
                         // Her people unreadable: titles read "someone", and
                         // the page says why rather than looking right.
                         let names = match story::names(&self.store.join(&p.name)) {
