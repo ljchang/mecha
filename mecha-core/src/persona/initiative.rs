@@ -160,6 +160,33 @@ pub struct Turn {
     pub arm: Arm,
 }
 
+/// What the owner typed in `m`: [`crate::agent::owner_text`], less a
+/// compaction's summary and carried blocks, which it does not exclude
+/// ([`crate::title::is_derived`] does).
+fn owner_words(m: &Message) -> String {
+    if m.harness {
+        return String::new();
+    }
+    m.content
+        .iter()
+        .filter_map(|b| match b {
+            crate::message::Block::Text { text } if !crate::title::is_derived(text) => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `m` is a compaction's rebuilt head: a user message carrying the
+/// summary or the carried block.
+fn rebuilt(m: &Message) -> bool {
+    m.content.iter().any(|b| {
+        matches!(b, crate::message::Block::Text { text }
+            if crate::title::is_derived(text) && !crate::agent::is_harness_voice(text))
+    })
+}
+
 /// Add `more` to what she said in the run.
 fn join(reply: &mut Option<String>, more: &str) {
     match reply {
@@ -217,7 +244,7 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
             }
             Ok(Record::Message(m)) => {
                 if m.role == Role::User {
-                    let said = crate::agent::owner_text(&m);
+                    let said = owner_words(&m);
                     if !said.trim().is_empty() {
                         if !run.owner.is_empty() {
                             run.owner.push('\n');
@@ -236,12 +263,21 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                 // owner typed.
                 let from = messages
                     .iter()
-                    .rposition(|m| {
-                        m.role == Role::User && !crate::agent::owner_text(m).trim().is_empty()
-                    })
+                    .rposition(|m| m.role == Role::User && !owner_words(m).trim().is_empty())
                     .map_or(0, |i| i + 1);
                 if from > 0 {
-                    run.owner = crate::agent::owner_text(&messages[from - 1]);
+                    let head = &messages[from - 1];
+                    // A compaction's rebuilt head: the owner's first words
+                    // with a model-written summary joined on. Neither is
+                    // this run's, which the summary swallowed, so the
+                    // owner's text for it is unknown, never the summary
+                    // (which names her people) read as theirs (review of
+                    // #808).
+                    run.owner = if rebuilt(head) {
+                        String::new()
+                    } else {
+                        owner_words(head)
+                    };
                 }
                 run.reply = None;
                 for reply in messages[from..].iter().filter_map(reply_text) {
@@ -969,6 +1005,25 @@ mod tests {
                 assert_eq!(t.owner, "and Milo?");
                 assert_eq!(t.reply.as_deref(), Some("Milo kept me up.\nAnyway."));
             }
+            // A cut past the owner's message: the rewrite opens on the
+            // rebuilt head, whose summary names Milo. That is not the
+            // owner speaking, and the run's own words are unknown.
+            let before = convo.messages.clone();
+            let mut head = Message::user("hello");
+            head.content.push(Block::text(format!(
+                "\n\n{} They talked about Milo.",
+                crate::compact::SUMMARY_HEADER
+            )));
+            convo.messages = vec![head, Message::assistant(vec![Block::text("Mm.")])];
+            s.record_run(&before, &convo).unwrap();
+            s.append(&Record::Outcome(RunStats {
+                stop_cause: Some(StopCause::Completed),
+                ..RunStats::default()
+            }))
+            .unwrap();
+            let turns = flat(&s.path);
+            assert_eq!(turns[5].owner, "");
+            assert_eq!(turns[5].reply.as_deref(), Some("Mm."));
             let _ = std::fs::remove_dir_all(&dir);
         }
 
