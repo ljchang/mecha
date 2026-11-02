@@ -35,9 +35,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct RunRow {
     pub session_id: String,
-    /// When the *session* started. A resumed session's later runs share it;
-    /// the transcript records no per-run stamp, and inventing one from file
-    /// mtime would be a guess dressed as a measurement.
+    /// When the *session* started. A resumed session's later runs share it.
+    /// The run's own time is `stats.ended_at`, recorded on rows written since
+    /// it existed and `None` before; an older row is never given one from
+    /// file mtime, which would be a guess dressed as a measurement.
     pub started_at: DateTime<Utc>,
     pub provider: String,
     pub model: String,
@@ -1367,6 +1368,7 @@ mod tests {
     fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
         RunStats {
             duration_secs: None,
+            ended_at: None,
             homeostat: None,
             brief: None,
             resume_cache: None,
@@ -1389,6 +1391,7 @@ mod tests {
             subcalls: None,
             subcall_tokens: None,
             peeked_bytes: None,
+            program_read_bytes: None,
             budget_stops: None,
             turns: 3,
             usage: Usage::default(),

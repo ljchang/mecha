@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13). R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R13 (2026-11-02): a program lists the workspace through `fs_list` (§11). R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13); on five held-out tasks, M5 passed 32/40 against M4's 27/40, with no `open()` refusal left. R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -182,13 +182,15 @@ parse, never its raw output, and a provider's failure by its class, never
 its body (§4).
 
 **A program that reaches for the operating system is told where its data
-is.** (R12: `open(path)` in text-read mode is answered through `fs_read`
-when the program has it; the rest of this paragraph is what is still
-refused.) An `os` call or any other `open()` is refused with a `PermissionError` that
-says a program has no files, environment, network or clock, leads with
-`fs_read` and `fs_list` when the program has them (19 of M2's 27 first
-programs failed on `open()` or `os.listdir`), and lists the functions it
-was given. An unknown import is left as monty's own `ModuleNotFoundError`.
+is.** (R12 and R13: `open(path)` in text-read mode is answered through
+`fs_read`, and a listing through `fs_list`, when the program has them; the
+rest of this paragraph is what is still refused.) An `os` call or any
+other `open()` is refused with a `PermissionError` that says a program has
+no files, environment, network or clock, leads with `fs_read` and
+`fs_list` when the program has them (in M2's first 35 runs, 19 of the 27
+first programs failed on `open()` or `os.listdir`), and lists the
+functions it was given. An unknown import is left as monty's own
+`ModuleNotFoundError`.
 
 **A function the program assigned over is named.** `size = size(h)` in a
 loop made the next call fail with monty's "'int' object is not callable"
@@ -919,7 +921,8 @@ attacker selects from their own text can be an address; that is a
   `sessions health` splits by the tag, so a program-heavy week reads as
   that and not as a jump in tool use.
 - **Counters.** New `RunStats` counters: `programs`, `program_errors`,
-  `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
+  `subcalls`, `subcall_tokens`, `peeked_bytes`, `program_read_bytes` (the
+  tool-result bytes a program was handed, added after R11), `budget_stops`. Each is an
   `Option<u32>`, as `context_overflows` is, because a row written before
   the sensor existed is unknown, not zero.
 
@@ -1252,8 +1255,33 @@ with your recs"), except R4, which waited on M1 and was ruled on
   so a relative path reaches `fs_read` relative to the workspace and an
   absolute one (a spill file, an owner grant) as written, for `fs_read`'s
   jail to decide. Rooted at `/`, the two could not be told apart, and M5
-  read a spill file's absolute path inside the workspace. A read through `open()` is two suspensions against one tool
-  read, so the suspension backstop counts tool reads twice.
+  read a spill file's absolute path inside the workspace. A read through
+  `open()` is two suspensions against one tool read, so the suspension
+  backstop counts tool reads twice.
+- **R13. A program lists the workspace through `fs_list`** (the owner,
+  2026-11-02, after M5, §13). In a program given `fs_list`, monty's
+  listing calls are answered by `fs_list`, as R12 answers a read with
+  `fs_read`: `os.listdir` and `Path.iterdir` with one call, `os.walk`,
+  `os.scandir` and `Path.glob` and `rglob` (one `Path.scan` of the
+  subtree, which monty walks or globs itself) with one call per directory
+  the scan reaches, breadth first, and `os.path.exists`, `isfile` and
+  `isdir` from the parent's listing (a parent that cannot be listed is a
+  path that is not there). Each call meets the tool's guard, limits and
+  taint. A path a walk hands back opens through R12. The description
+  offers it only where `fs_list` hands out names. Walking a tree with
+  `os`, `glob` or `subprocess` was 14 of M5's 29 raised programs. Two
+  divergences from Python, on purpose: a directory a scan cannot list
+  raises rather than being skipped (`os.walk`'s `onerror=None`), so a
+  short walk is never a silent one; and `fs_list` does not follow links,
+  so a link to a directory is listed as a file. A probe answers `False`
+  only when `fs_list` ran and failed; one the gate refuses (a hook, a
+  denial, a policy, a path outside the jail when `request_access` is in the
+  run, which makes it a question for a person) raises, as do a spent limit
+  and a stop. Without `request_access`, a path outside the jail is the
+  tool's own error, so the probe reads `False`. A
+  probe in a directory the program has already listed answers from that
+  listing, without another call, and a scan past 131,072 entries raises a
+  `LimitError`.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
@@ -1297,6 +1325,24 @@ than an architecture section kept beside the code.
   session from running a program with a sink. The sink slice is §3.12's original
   shape, with snapshots MAC'd, taint carried beside them, and a version
   mismatch failing closed.
+- **State kept between `code` calls**, a future feature to consider (the
+  owner, 2026-11-02). Pydantic AI's code mode keeps a REPL across calls
+  with a `restart` flag; this slice starts each program clean. What it
+  would buy is smaller than it looks: in M5, 11 of the 39 programs after a
+  run's first re-read a path an earlier one had read, and a local read is
+  milliseconds, while the cost of a retry is the model's turn, which state
+  does not remove (a slow tool, mail or the web, would gain more). What it
+  costs: the program record and the grounding walk assume a program is
+  self-contained, so a value read in one call and used in another needs a
+  link between their records (and the sink slice's MAC'd snapshots with
+  taint beside them, above); a worker of up to 256 MiB held per
+  conversation, across turns minutes apart and across `mecha serve`'s
+  chats; state lost to a deploy, a timeout, a crash or a compaction the
+  model may not notice, which needs a `restart` and a "state was lost"
+  note as Pydantic has; and `replay_run` re-running a chain rather than a
+  program. The cheap first form, if taken up: state that lives for one
+  model turn and is dropped at its end, which covers the fix-and-rerun
+  case without the snapshot.
 - **`Blind` tools.**
 - **Value-level labels inside the program** (CaMeL's capability tags).
   monty does not track data flow, and filtering it by hand is the approach
@@ -1589,3 +1635,111 @@ Nothing raised on a string method, `in`, `len()` or a host limit. The four
 wrong answers are reading, all on the 300 notes, and none raised: three
 counted the 124 meetings Marco attended as the 25 he presented, as in M1
 and M2, and one took a note's discussion line for its decision.
+
+**M4 (2026-11-02, build 2d1d127d9): five tasks the description was never
+fitted to.** M3 reran the tasks the fixes were designed against, so it could
+not say whether R11 generalizes. M4's fixtures are invented and generated
+from a fixed seed (a 6,000-row CSV, 412 services in nested JSON, a 64-file
+source tree, a 485 KB report, 150 patches), with each question's decoys
+built in: a dependency listed only as soft, a function quoted in a
+docstring, three budgets for similarly named projects. The grader was
+written and checked against the truth and against wrong answers before
+any run, and no rule changed after reading answers. Code on, eight seeds,
+as M3. **M5** reran it on R12's build (188ee8c0d, `open()` through
+`fs_read`), with nothing else changed.
+
+| Task | M4 | M5 (R12) |
+|---|---|---|
+| the top region by revenue in a CSV, and a threshold count | 8/8, 35 programs | 8/8, 17 programs |
+| which services list a queue as a hard dependency | 6/8 | **8/8** |
+| which files define a function, and its default | 0/8 | 0/8 |
+| one approved budget in a long report | 8/8 | 8/8 |
+| which patches touch two files, and the lines they add | 5/8 | **8/8** |
+| **all** | **27/40** | **32/40** |
+
+| Programs | M4 | M5 |
+|---|---|---|
+| raised | 43 of 108 (40%) | 29 of 79 (37%) |
+| the first one raised | 22 of 40 runs | 17 of 40 runs |
+
+**What raised in M4:** `open()` refused, 24 of 43, in four of the five
+tasks; a method passed as a value (`max(d, key=d.get)`, which monty 1.4
+does not support while `d.get(k)` works), 11, every one in the CSV task;
+`import io`, 5; and 3 others (`import subprocess`, `fs_read` imported as a
+module, a `NameError`). One run did worse than raise: its program wrapped
+the reads in a bare `try/except`, the refusal was swallowed, and it
+printed "0 matches", so the model reported that no file defined the
+function. That was the case for R12 over a better refusal.
+
+**What raised in M5:** no `open()` refusal; `key=d.get`, 9, despite the
+description now naming it (each run recovered on its next program);
+`os.walk`, `glob`, `subprocess` and the like, 14, 13 of them in the
+source-tree task; `fs_list` imported as a module or given a path outside
+the workspace, 3; and 3 reads of a spill file by its absolute path, which
+R12's first form read inside the workspace. #809 runs a program in a
+directory that is not a real path, so an absolute path now reaches
+`fs_read` as written.
+
+**What the wrong answers were.** The source-tree task failed every run in
+both: every M5 run named all five defining files with the right defaults,
+and also the file that only quotes the function in a docstring (M4: six of
+eight had all five; one found one of them, and one said "none found" after
+the swallowed refusal). That is reading, the same shape as "attended" for
+"presented" in M1 to M3. M4's two services failures were right answers
+that also named the services listing the queue only as a soft dependency,
+which the grade counts as extras; no M5 answer did. M4's three patch
+failures were wrong line totals (107 against 135, for one), and M5 had
+none.
+
+**What is left:** the docstring decoy, a reading error R11 and R12 do not
+touch; `key=d.get`, a monty gap a description line did not move; and
+programs that reach for `os`, `glob` or `subprocess` to walk a tree, which
+the refusal answers with `fs_list` at the cost of a turn.
+
+**M6, the Claude comparison, and the grade's second form (2026-11-02).**
+M6 reran M4's tasks on R13's build (5e5b3c47a: listing through `fs_list`,
+and a hint for a method taken as a value), with nothing else changed. The
+same tasks were run four times each with Claude (`claude-opus-5`) as the
+provider, which needed #813 first: the graph server's `kg_pending` has a
+top-level `anyOf` in its schema, which the Messages API refuses for the
+whole request.
+
+**The grade's second form**, fixed before M6 ran (the script's sha256
+begins `d93ee9f7`): the first counted any extra name in an answer, so an
+answer that named the docstring decoy only to say it is not a definition
+failed. Claude's answers did that in every source-tree run, and in two
+services runs named the soft dependencies only to exclude them. Now, for
+those two tasks, an answer with a table answers in it, and only names in
+its rows count; an answer without one claims a name on any line that does
+not mark it excluded. Its wording was fitted to answers already read, so
+it was checked against hand grades of every M4, M5 and Claude answer, and
+agrees with each; M6 is the first set it graded unseen.
+
+| | M4 | M5 (R12) | M6 (R13) | Claude, 4 runs each |
+|---|---|---|---|---|
+| passed, second form | 30/40 | 32/40 | 31/40 | 20/20 |
+| passed, first form | 27/40 | 32/40 | | 14/20 |
+| programs that raised | 43 of 108 | 29 of 79 | 14 of 61 | 0 of 41 |
+| first program raised | 22 of 40 | 17 of 40 | 12 of 40 | 0 of 20 |
+
+**What M6 changed.** No walk was refused (M5: 14), and programs that
+raised fell from 37% to 23%. `key=d.get` still raised 8 times, all in the
+CSV task's first programs, and the hint was on every one; each run was
+right on its next program, as in M5. The source-tree task is still 0/8:
+seven runs listed the docstring decoy as a definition, and the eighth was
+silent. Its programs walked all 64 files and opened each with `open(path,
+'r', errors='ignore')`, which monty 1.4 refuses with a `TypeError` before
+any host call; a bare `except` swallowed every one, and the model answered
+that no file contained the word. No shim answers a call that never reaches
+the host, so the description now says `open` takes no `errors=`. One patch
+run summed its lines wrong.
+
+**What the comparison says.** With the same harness, tools and tasks,
+Claude answered all 20 correctly and none of its 41 programs raised. It
+read the decoy for what it is every time ("inside a `DOC` string literal,
+not real code"), where the local model listed it as a definition in 7 of 8
+runs in M5 and in M6. So what remains on these tasks is the local model's
+reading and its first-draft habits, not the harness: the lever left is the
+model, a stronger one or a trained one, and Claude's runs in this harness
+are the shape of the trajectories `POST-TRAINING-RESEARCH.md` §7 would
+train on.
