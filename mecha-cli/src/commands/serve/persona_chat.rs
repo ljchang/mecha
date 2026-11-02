@@ -2289,7 +2289,10 @@ impl PersonaChats {
                     .character
                     .as_deref()
                     .is_some_and(|c| c.trim().is_empty());
-                let character = if clears && visible(&existing).is_err() {
+                // Unlocked, the owner was shown every link, broken ones by
+                // name, so a clear always counts (as `hidden_character`).
+                let hidden = !unlocked && visible(&existing).is_err();
+                let character = if clears && hidden {
                     None
                 } else {
                     clear(&body.character)
@@ -9604,6 +9607,40 @@ mod tests {
         .unwrap();
         let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
         assert_eq!(n.person(&theo_id).unwrap().character, None);
+        // A link whose library entry is gone, which the page warns about:
+        // unlocked, the owner can clear it (review of #803).
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some("flourhand".into());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        mecha_core::imagelib::remove(
+            &w.library.dir,
+            mecha_core::imagelib::Kind::Character,
+            "flourhand",
+        )
+        .unwrap();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some(String::new());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character,
+            None,
+            "an unlocked clear of a broken link was swallowed"
+        );
 
         // An event on the tie between two, then retracted; a person removed.
         let ines_id = ines["id"].as_str().unwrap().to_string();
