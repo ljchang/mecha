@@ -745,6 +745,20 @@ pub struct Story {
     pub why: Option<String>,
 }
 
+/// Where a walk over a window starting `from` begins: a lookback before it,
+/// so the first day shown has a morning and a history, but no earlier than
+/// the oldest day kept in that lookback. A day kept carries its evening and
+/// its events, which is all the chain needs; a day before it is outside the
+/// keep window, so walking it would re-sample her days from today's routine
+/// on every call and keep nothing (review of #820).
+pub fn walk_start(world: &super::world::World, from: NaiveDate) -> Result<NaiveDate> {
+    let start = from - Days::new(LOOKBACK);
+    Ok(match world.earliest_story_day(start, from)? {
+        Some(kept) => kept,
+        None => start,
+    })
+}
+
 /// Her story from `from` to `to`, inclusive: each day drawn on the evening
 /// of the one before. A day is stored only inside the world store's keep
 /// window (`world::KEEP_DAYS` back to today), as her sampled days are: an
@@ -784,9 +798,7 @@ pub fn story(
     let severe_open = p.settings.life.intensity == super::Intensity::Full;
     let oldest_kept = today - Days::new(super::world::KEEP_DAYS);
     let mut world = super::world::World::open(&pdir)?;
-    // Start a lookback before `from`, so the first day shown has a
-    // morning and a history.
-    let start = from - Days::new(LOOKBACK);
+    let start = walk_start(&world, from)?;
     let mut levels = Levels::default();
     let mut last_major: Option<NaiveDate> = None;
     let mut drawn: Vec<(String, NaiveDate)> = Vec::new();
@@ -1329,6 +1341,28 @@ with = ["friend"]
         std::fs::write(fresh.join("mara/routine.toml"), "").unwrap();
         let none = story(&fresh, "mara", today, today, today).unwrap();
         assert!(none.days.is_empty() && none.why.is_some());
+    }
+
+    #[test]
+    fn a_walk_starts_at_the_oldest_kept_day_in_its_lookback() {
+        let dir = store();
+        let today = d("2026-11-02");
+        let from = today - Days::new(6);
+        let w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        assert_eq!(
+            walk_start(&w, from).unwrap(),
+            from - Days::new(LOOKBACK),
+            "nothing kept"
+        );
+        drop(w);
+        let week = story(&dir, "mara", from, today, today).unwrap().days;
+        // The first walk kept the keep window; the next starts there, so it
+        // re-samples no day outside it, and the week reads the same.
+        let w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        let oldest = today - Days::new(super::super::world::KEEP_DAYS);
+        assert_eq!(walk_start(&w, from).unwrap(), oldest);
+        drop(w);
+        assert_eq!(story(&dir, "mara", from, today, today).unwrap().days, week);
     }
 
     #[test]

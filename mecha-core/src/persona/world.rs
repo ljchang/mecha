@@ -770,6 +770,16 @@ impl World {
         )))
     }
 
+    /// The earliest story day kept from `from` to `to`, inclusive.
+    pub fn earliest_story_day(&self, from: NaiveDate, to: NaiveDate) -> Result<Option<NaiveDate>> {
+        let got: Option<String> = self.conn.query_row(
+            "SELECT MIN(date) FROM story_days WHERE date >= ?1 AND date <= ?2",
+            params![from.to_string(), to.to_string()],
+            |r| r.get(0),
+        )?;
+        Ok(got.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()))
+    }
+
     /// Store a drawn story day, replacing what the date held.
     pub fn set_story_day(&mut self, day: &super::story::StoryDay, inputs: &str) -> Result<()> {
         let levels = |l: &super::story::Levels| {
