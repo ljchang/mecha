@@ -1905,7 +1905,10 @@ module.
   riding in a harness note is neither side naming it. Order is time: each
   chat splits into stretches at its recorded configs (start and resumes),
   all read by their clock, since whole chats by start date would put a
-  long-lived chat's newest turns too early. An introduction the owner has
+  long-lived chat's newest turns too early. Configs are written per
+  process attach and per rebind, not per run, so a chat held open in one
+  process is still read at its start: a stated limit, not a property. An
+  introduction the owner has
   not spoken after is unanswered, kept out of the uptake rate, and no
   people is no reading rather than zero. Counts only, never names
   or words.
