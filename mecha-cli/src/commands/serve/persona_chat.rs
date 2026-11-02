@@ -1745,11 +1745,14 @@ impl PersonaChats {
                         "memories": p.settings.memory.episodic
                             || p.settings.memory.semantic
                             || p.settings.memory.user_facts != mecha_core::persona::UserFacts::Off
+                            // A stat that errs is unknown, so the door
+                            // stays: never read as "nothing stored".
                             || self
                                 .store
                                 .join(&p.name)
                                 .join(mecha_core::persona::memory::MEMORY_DB)
-                                .exists(),
+                                .try_exists()
+                                .unwrap_or(true),
                         "week": p.settings.life.world,
                         "people": p.settings.life.world && p.settings.life.people,
                     },
