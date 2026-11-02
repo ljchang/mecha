@@ -931,14 +931,24 @@ impl Program for MontyProgram {
 /// What a program that reached for the operating system is told: it has no
 /// files, environment, network or clock, and the functions it was given are
 /// the way to its data. Their names are the program's own externals, so the
-/// backend names no tool.
+/// backend names no tool. The file functions lead, when the program has
+/// them: listed alphabetically they came after `docs__*`, `document_read` and
+/// `find`, and `open()` was how 19 of 27 first programs failed in M2.
 fn os_refusal(externals: &BTreeSet<String>) -> String {
     const SHOWN: usize = 32;
     let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
     let more = externals.len().saturating_sub(SHOWN);
+    let files = match (externals.contains("fs_read"), externals.contains("fs_list")) {
+        (true, true) => {
+            "read a file with fs_read(path=...), which returns its text as a str, and list a \
+             directory with fs_list(path=...); "
+        }
+        (true, false) => "read a file with fs_read(path=...), which returns its text as a str; ",
+        _ => "",
+    };
     format!(
-        "a program has no files, environment, network or clock; reach data through the \
-         functions it was given: {}{}",
+        "a program has no files, environment, network or clock; {files}reach data through \
+         the functions it was given: {}{}",
         if given.is_empty() {
             "none".to_string()
         } else {
@@ -953,7 +963,7 @@ fn os_refusal(externals: &BTreeSet<String>) -> String {
 }
 
 /// Nesting deeper than this does not cross the boundary either way.
-const MAX_DEPTH: usize = 64;
+const MAX_DEPTH: usize = super::VALUE_DEPTH;
 
 /// A call's positional and keyword arguments, as JSON.
 type Args = (Vec<Value>, Vec<(String, Value)>);
@@ -1008,15 +1018,6 @@ fn to_json(o: ObjectRef<'_>, depth: usize) -> std::result::Result<Value, String>
             .map(|i| to_json(i, depth + 1))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map(Value::Array),
-        // A handle (`HANDLE_MARK`): back to the host as its stub.
-        "function" => {
-            let repr = o.py_repr();
-            repr.strip_prefix("<function '")
-                .and_then(|r| r.strip_suffix("' external>"))
-                .filter(|s| s.starts_with("<handle "))
-                .map(|s| Value::String(s.to_string()))
-                .ok_or_else(unsupported)
-        }
         "dict" => {
             let mut m = serde_json::Map::new();
             for (k, v) in o.pairs().ok_or_else(unsupported)? {
@@ -1046,12 +1047,6 @@ fn from_json(v: &Value, depth: usize) -> Result<MontyObject> {
                 .map(|x| from_json(x, depth + 1))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Value::Object(m) if m.len() == 1 && m.contains_key(super::HANDLE_MARK) => {
-            let stub = m[super::HANDLE_MARK]
-                .as_str()
-                .context("a handle whose stub is not a string")?;
-            MontyObject::function(stub.to_string(), None)
-        }
         Value::Object(m) => MontyObject::dict(
             m.iter()
                 .map(|(k, x)| Ok((MontyObject::string(k.clone()), from_json(x, depth + 1)?)))

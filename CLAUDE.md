@@ -157,7 +157,7 @@ quarantine.rs a one-shot with no tools and no history: the property in the type
 mail_triage.rs the front door's shape one directory over: a typed verdict per
              thread, out of a quarantined pass the privileged run never reads
 tool/        Tool trait, Registry, Approver, builtin.rs
-tool/code.rs `code`: a model's program over read-only tool results, as opaque handles and
+tool/code.rs `code`: a model's program over read-only tool results, as text it may print and
              typed local passes; built last, its reach the run's registry ∩ read effects
 interpreter/ the monty worker a program runs in: a process per program under bwrap or
              Seatbelt, a watchdog over it on a Mac; one that cannot start stops the start
