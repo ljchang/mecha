@@ -219,7 +219,11 @@ mailbox-only rule does not take the thread's outbound slot. So the condition is
 not about rank: whenever any outbound action could apply to the thread — the
 same header rule's own (one rule holding both `forward` and `archive` is §5.2's
 expected shape), another matching header rule's, or any enabled description
-rule's —
+rule's — where **enabled means any mode but `off`, `shadow` included**. A
+shadow rule's would-be send has to see the thread too, or an archive would
+silently truncate the would-have rows the owner is reading to decide whether
+to approve it, and shadow would under-measure in exactly the direction that
+looks safe —
 **the header rule's inbox-removing
 actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
 its other actions (`read`, `unread`, `tag`, `digest`) run on the timer. The header case
@@ -500,7 +504,15 @@ output, each copy a new provider id the ledger has not seen, until the daily
 cap stopped it. So, both failing closed:
 
 - **Never act on a message whose `From` is one of the owner's own
-  addresses** — the reply column's guard, applied here too. This is the guard
+  addresses** — the reply column's guard, applied here too. **The set has a
+  stated source**, because this is the guard the loop argument rests on and it
+  fails quietly when an address is missing: each account's own address as
+  mecha-mail already resolves it for reply addressing (`account.address`,
+  which `gmail_reply_fields` uses to keep the owner off a reply), plus an
+  owner-written `aliases` list in `~/.mecha/mail-rules/` for send-as
+  addresses and aliases the providers do not report. An account whose own
+  address is unknown holds its rules' outbound actions in `propose`, said on
+  the rule page — unknown is never an empty set. This is the guard
   that stops the loop: the copy that comes back is a different message with a
   different id, so no id-based check could recognise it, but its `From` is
   always the owner's. (An "own output" check by sent id was considered and
@@ -645,8 +657,9 @@ where it does not cover a match.** For a header rule, `rules/<name>/` is the
 whole matcher. For a description rule *with an outbound action*, the send
 decision is the confirmation pass of §4.2, whose inputs are the rule's
 description and an instruction compiled into the binary — so the digest also
-carries that instruction's version, and a build that changes it lapses every
-such approval. What the digest does **not** cover is the main pass's learned
+carries the version of that instruction **and of the §5.3 extraction pass's**,
+the other compiled frame a send depends on, and a build that changes either
+lapses every approval that rests on it. What the digest does **not** cover is the main pass's learned
 triage rules, which change by design every time the owner corrects a verdict
 (§10). For send rules that is harmless, because a learned rule can only
 nominate a candidate the confirmation pass then judges without it. For a
@@ -893,7 +906,8 @@ duplicated provider instance proposes, and a single genuine provider instance
 passes — because a test of
 the negative alone passes on a reader that proposes unconditionally (§5.4); the
 immutable-id read for the rule engine, verified to survive a move and a
-restore on the owner's mailbox (§4.4); and the provider's own message id on the
+restore on the owner's mailbox (§4.4); each account's own address available to
+the rule engine, with absent reported as unknown (§5.4); and the provider's own message id on the
 thread read for the ledger key (§4.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
