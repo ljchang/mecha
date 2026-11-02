@@ -1080,10 +1080,13 @@ impl Program for MontyProgram {
         if let Some(walk) = self.walk.take() {
             self.take_pending()?;
             if let Some(names) = names_of(&value) {
-                if self.listed_names + names.len() <= SCAN_ENTRIES {
-                    self.listed_names += names.len();
+                // A directory listed again replaces its entry, and its count.
+                let key = dir_key(&walk.listed_dir());
+                let held = self.listed.get(&key).map_or(0, Vec::len);
+                if self.listed_names - held + names.len() <= SCAN_ENTRIES {
+                    self.listed_names = self.listed_names - held + names.len();
                     let names = names.into_iter().map(str::to_string).collect();
-                    self.listed.insert(dir_key(&walk.listed_dir()), names);
+                    self.listed.insert(key, names);
                 }
             }
             return match walk.answer(&value) {

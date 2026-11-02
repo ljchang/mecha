@@ -449,6 +449,22 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
         "{}",
         f.printed
     );
+    // `open(..., errors=...)` raises in monty 1.4 before any host call, so
+    // the description says so (M6: a bare `except` swallowed it, and a
+    // program that read nothing answered that no file matched)
+    let (f, calls) = run_with(
+        &interp,
+        "try:\n    open('a.csv', 'r', errors='ignore')\nexcept TypeError as e:\n    print(e)",
+        &["fs_read"],
+        |_| Ok(Value::from("t")),
+    )
+    .await;
+    assert!(
+        f.printed.contains("'errors' argument is not yet supported"),
+        "{}",
+        f.printed
+    );
+    assert!(calls.is_empty());
     for m in ["io", "statistics"] {
         let (f, _) = run_with(
             &interp,
@@ -546,9 +562,9 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
             1,
         ),
         (
-            // `/etc/x`: the fake answers as a listing that ran and failed. In
-            // a run the jail refuses `/etc` through the gate instead, and the
-            // probe raises (R13, §11); the refusal branch is tested below.
+            // `/etc/x`: the fake answers as a listing that ran and failed, as
+            // the jail does in a run without `request_access`; with it, the
+            // gate refuses and the probe raises (R13, §11), tested below.
             "print(os.path.exists('src/a.py'), os.path.isfile('src/sub'), os.path.isdir('src/sub'), os.path.exists('nope'), os.path.exists('/etc/x'))",
             "True False True False False",
             // `src` is listed once; `.` and `/etc` once each
@@ -578,6 +594,35 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
     .await;
     assert_eq!(f.printed.trim(), "3", "{:?}", f.end);
     assert_eq!(calls.len(), 2, "{calls:?}");
+    // a directory listed again replaces its names in the cache rather than
+    // adding to them, so a later directory still fits (review of #817): two
+    // listings of a 40,000-name `a` and one of a 60,000-name `b` hold 100,000,
+    // under the cap, and a probe in `b` answers without a fourth listing
+    let sized = |c: &ExternalCall| -> Result<Value, HostRaise> {
+        let n = match c.kwargs[0].1.as_str().unwrap_or("") {
+            "a" => 40_000,
+            _ => 60_000,
+        };
+        Ok(Value::from(
+            (0..n)
+                .map(|i| Value::from(format!("f{i}")))
+                .collect::<Vec<_>>(),
+        ))
+    };
+    let (f, calls) = run_with(
+        &interp,
+        "import os\nos.listdir('a')\nos.listdir('a')\nos.listdir('b')\nprint(os.path.exists('b/f1'))",
+        &["fs_list"],
+        sized,
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "True", "{:?}", f.end);
+    assert_eq!(
+        calls.len(),
+        3,
+        "{:?}",
+        calls.iter().map(|c| &c.kwargs).collect::<Vec<_>>()
+    );
     // a scan past the host helpers' piece count raises a limit, catchably
     let wide = |c: &ExternalCall| -> Result<Value, HostRaise> {
         let names: Vec<Value> = match c.kwargs[0].1.as_str().unwrap_or("") {
