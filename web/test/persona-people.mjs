@@ -71,3 +71,21 @@ assert.ok(ENDPOINTS.includes('/api/personas/X/people/proposal/accept'));
 assert.equal(acceptedLine({ added: ['Theo'], already: ['Ines'], waiting: 1 }), 'Added Theo. Ines was already in her network. 1 more still waits below.');
 assert.equal(acceptedLine({ added: [], already: [], waiting: 0 }), 'Nothing to add.');
 console.log('persona-people: ok');
+
+// The demo looks back as `Network::as_of` does: someone with no event at
+// all has been there from the beginning, and someone whose events all come
+// later is not there yet (review of #804).
+{
+  const fx = await import('../src/demo/fixtures.js');
+  const before = fx.personaPeople.people.length;
+  const extra = { ...fx.personaPeople.people[0], id: 'c'.repeat(32), name: 'Quill', events: [] };
+  fx.personaPeople.people.push(extra);
+  try {
+    const early = fx.personaPeopleAsOf('1900-01-01');
+    assert.deepEqual(early.people.map((p) => p.name), ['Quill']);
+    assert.equal(early.people[0].edge, extra.edge, 'no events: the edge as it stands');
+    assert.equal(fx.personaPeopleAsOf('2999-01-01').people.length, before + 1);
+  } finally {
+    fx.personaPeople.people.pop();
+  }
+}

@@ -1889,9 +1889,23 @@ module.
   never says which locked names exist. The page's writes, and its
   proposal doors, are refused (409) while `[life] people` is off, since
   the tab then shows nothing they could change; a stale proposal is typed
-  (`people_draft::StaleProposal`) and answered 409. `Network::as_of` is the
+  (`people_draft::StaleProposal`) and answered 409, as is proposing again
+  while a current one waits (`ProposalWaiting`, checked before the model
+  runs and again before staging, so an unread choice is never replaced;
+  only a stale one is). `Network::as_of` is the
   time slider: the same `order` the fold reads, so what "as of a day"
   shows is what the fold would have said then.
+- **`persona::initiative` reads who brings her people up, beside what the
+  owner does with them** (PERSONA-LIFE-DESIGN.md §14), offline from
+  transcripts like `persona::echo`, through `mecha persona measures`.
+  Turns are filed by what the record shows she was given (a today-block
+  in the run's notes, `agent::PEOPLE_HEADING` in the recorded prompt),
+  never by settings, since a chat keeps the version it began with. Only
+  owner text (`agent::owner_text`) and her replies are searched, so a name
+  riding in a harness note is neither side naming it. A chat's last
+  introduction with no return is unanswered, kept out of the uptake rate,
+  and no people is no reading rather than zero. Counts only, never names
+  or words.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
