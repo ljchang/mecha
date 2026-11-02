@@ -144,8 +144,9 @@ longer matches the rule's directory, the mode reads as `propose` (or lower, if
 the row says lower). Never "the current digest matches *some* `auto`
 approval": that reading would let the next run undo a brake, which changes no
 file, and would re-arm a rule whose edit was reverted to an earlier approved
-state, when the lapse was the point. Permission moves up only by a new owner
-row.
+state, when the lapse was the point. That is why a detected digest change is
+itself written as a row (§6.2), not only inferred at read time. Permission
+moves up only by a new owner row.
 
 ### A rule, written out
 
@@ -288,8 +289,10 @@ notification should cost a string comparison, not a model call, whenever
 
 **A rule is a description rule if and only if it declares `describe`.** Its
 header keys, if any, are then an *additional precondition* checked in the
-same classify pass, against the same newest inbound message — never a
-separate header rule — and **none of its actions run on the `--headers`
+same classify pass, against the same newest inbound message, **before** the
+classifier's list is built: only rules whose header preconditions pass for
+this message are offered to it, so a rule that could not apply never takes
+the single `rule` slot from one that could. Never a separate header rule — and **none of its actions run on the `--headers`
 timer**. This is the common shape, not an edge: §5.2 requires a sender key
 for any automatic forward, send or drafted reply, so §3's `receipts-to-finance`
 example (`from_domain` + `describe`) is exactly it. Read as a header rule, its
@@ -301,12 +304,23 @@ wants an automatic trash on a sender alone writes a header rule for it.
 
 `describe` is a sentence the owner writes. The classifier — already one
 isolated, tool-less call per thread — is given the enabled rules' descriptions
-as a numbered list and returns one more field:
+as numbered lists and returns two more fields:
 
 ```
-rule: <one of the listed rule names> | none
+rule: <one of the active rules' names> | none
 rule_quote: words from the message that show it
+shadow_rule: <one of the shadow rules' names> | none
+shadow_quote: words from the message that show it
 ```
+
+**Shadow rules have their own list and their own field**, so they never
+compete for `rule`. Were they in one list, a rule freshly installed in
+`shadow` could be named instead of a rule the owner approved for `auto`, and
+the approved rule would do nothing and leave no row — against §6.1's promise
+that `shadow` acts on nothing. A shadow rule's would-have row therefore says
+what it would do *beside* the active rules, not in place of one; how two
+rules interact once both are active is something the owner sees after
+promotion, in `propose`, before either goes back to `auto`.
 
 The same discipline as `request_type` and `deadline_quote`:
 
@@ -777,8 +791,12 @@ action, since §5.4's loop guard and caps rest on them — removing an alias or
 raising the global cap must lapse the approvals that counted on them). The
 caps live in the rule store, never on `Config`, so they are not layered
 config and not the two-edit `Config`/`ConfigLayer` trap. On every run the digest is recomputed; **if anything changed, the rule
-drops to `propose`** with a ledger row (`approval lapsed: files changed`) and a
-notice. Re-approving is one action that shows the diff.
+drops to `propose`** — recorded as an `all`-group **lapse row appended to
+`approvals.jsonl`**, as well as a ledger row (`approval lapsed: files
+changed`) for the page, and a notice. The approvals row is what makes it
+stick: with only a ledger row, reverting the edit would make the latest
+approval's digest match again and re-arm `auto` with no owner act, which §3
+rules out. With the lapse as the latest row, a revert is inert. Re-approving is one action that shows the diff.
 
 That includes the owner's own edits, and every action group, mailbox-only
 rules too (R7). It is the simpler rule, the
