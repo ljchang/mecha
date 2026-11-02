@@ -75,7 +75,7 @@ use super::watchdog::{self, Watchdog};
 use super::worker::VerifiedWorker;
 use super::{
     registrable, Backstop, Backstops, Builtin, End, ExternalCall, Finished, HostRaise, Interpreter,
-    Program, Raised, Step, Value,
+    Program, Raised, Step, Tag, Value,
 };
 use crate::sandbox::{Backend, Sandbox};
 
@@ -1077,7 +1077,9 @@ impl Program for MontyProgram {
         // failure: a spent limit or a stop still raises, or a program past
         // its tool reads would finish as if it had not been stopped.
         let walk = self.walk.take();
-        if matches!(walk, Some(Walk::Probe { .. })) && raise.message.starts_with("ToolError:") {
+        if matches!(walk, Some(Walk::Probe { .. }))
+            && raise.message.starts_with(Tag::ToolError.prefix())
+        {
             self.take_pending()?;
             let no = MontyObject::bool(false);
             return self.run(Req::Resume(ResumeValue::Return(no))).await;

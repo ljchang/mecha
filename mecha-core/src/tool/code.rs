@@ -748,16 +748,25 @@ const JUDGE_EXAMPLE: &str = "names = []\n\
 /// as built. Fixed at construction, so it never changes a cached prefix
 /// between turns.
 fn describe(admission: &Admission) -> String {
-    let mut d = String::from(
+    // `os` and `pathlib` are offered only where a file tool answers them
+    // (R12, R13); elsewhere every file call is refused (review of #811).
+    // A server's `fs_list` answers in one string, which a walk cannot use.
+    let walks = admission.listings().any(|l| l == "fs_list");
+    let modules = if admission.contains("fs_read") || walks {
+        "decimal, os and pathlib, but no third-party packages, io or statistics, and os and \
+         pathlib reach only the files the tools below do"
+    } else {
+        "and decimal, but no third-party packages, os, io or statistics"
+    };
+    let mut d = format!(
         "Use this when a question needs many tool results combined, or one result too long \
          to read: more than a handful of files, threads or items to count, filter, compare or \
          join, or a long file or log to search. One program reads them all in one step, and \
          only what it prints comes back to you. It runs a short Python program (monty, a \
          subset of Python 3, with re, json, csv, collections, itertools, math, datetime, \
-         decimal, os and pathlib, but no third-party packages, io or statistics, and os and \
-         pathlib reach only the files the tools below do; a method is called, not passed as \
-         a value, so write `key=lambda k: d[k]`, not `key=d.get`). It \
-         reaches data by calling the tools listed at the end, with keyword arguments, and ",
+         {modules}; a method is called, not passed as a value, so write \
+         `key=lambda k: d[k]`, not `key=d.get`). It reaches data by calling the tools listed \
+         at the end, with keyword arguments, and ",
     );
     // Said only of the tools that do it: a server's `fs_list` returns one
     // string, and telling the model otherwise is the `.startswith` error

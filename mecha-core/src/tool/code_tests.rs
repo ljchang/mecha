@@ -1719,6 +1719,11 @@ fn only_the_builtin_listing_hands_a_program_names() {
     assert!(!told.contains("returns a list of names"), "{told}");
     assert!(!told.contains(EXAMPLE), "{told}");
     assert!(
+        told.contains("no third-party packages, os, io or statistics"),
+        "{told}"
+    );
+    assert!(!told.contains("os and pathlib"), "{told}");
+    assert!(
         told.contains(
             "each returns its result as a str (there is no open(): a program has no files)."
         ),
