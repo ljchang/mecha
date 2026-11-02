@@ -402,7 +402,10 @@
 
           <div class="section">Days off and exceptions</div>
           <div class="card fields">
-            {#each draft.overrides as o, oi (o.date)}
+            <!-- Keyed by position, not date: a hand-written manifest may
+                 repeat a date (the save refuses it), and a duplicate key
+                 would throw before the owner could see and fix it. -->
+            {#each draft.overrides as o, oi (oi)}
               <div class="dayrow">
                 <span class="dayname wide">{o.date}</span>
                 <div class="spans">

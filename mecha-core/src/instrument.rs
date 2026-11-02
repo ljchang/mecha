@@ -734,8 +734,17 @@ heading = "You're booked"
             "replace_if_unchanged(",
             "replace_file(",
         ];
-        let imports =
-            text.contains("use mecha_core::instrument") || text.contains("use crate::instrument");
+        // Any `use` that names the module, however it is grouped:
+        // `use mecha_core::{instrument::rewrite, …}` spells it without
+        // `mecha_core::instrument` ever appearing whole, and a multi-line
+        // group puts it on a line of its own.
+        let imports = text.lines().any(|l| {
+            let l = l.trim_start();
+            (l.starts_with("use ") || l.starts_with("pub use ")) && l.contains("instrument")
+        }) || (text.contains("use mecha_core::{") || text.contains("use crate::{"))
+            && text
+                .lines()
+                .any(|l| l.trim_start().starts_with("instrument::"));
         let calls = WRITERS
             .iter()
             .any(|w| text.contains(&format!("instrument::{w}")));
@@ -759,6 +768,12 @@ heading = "You're booked"
             "use mecha_core::instrument as inst;\ninst::rewrite(a, b, c)"
         ));
         assert!(reaches_writer("use crate::instrument::{self, Hours};"));
+        assert!(reaches_writer(
+            "use mecha_core::{instrument::rewrite, work};"
+        ));
+        assert!(reaches_writer(
+            "use mecha_core::{\n    frontdoor,\n    instrument::write_hours,\n};"
+        ));
         assert!(!reaches_writer("pub mod instrument;\nfn unrelated() {}"));
     }
 
