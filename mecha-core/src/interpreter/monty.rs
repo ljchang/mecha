@@ -25,6 +25,9 @@
 //!   environment, network or clock and names the functions it was given
 //!   (`os_refusal`): monty's bare `Permission denied: '/notes'` read as a
 //!   sandbox fault (#791).
+//!   The one exception is a text read of a file by a program given `fs_read`
+//!   (`open(path)`, a `pathlib` `read_text`): it is answered by a host call
+//!   to `fs_read`, not by anything the worker can see (R12).
 //!   A `NameLookup` (an undefined name) is answered `Undefined`. Registered
 //!   functions are globals, so no lookup is ever needed to reach one.
 //! - **`preflight` runs a program through the real confinement**, and a
@@ -55,8 +58,8 @@ use monty_pool::{
     on_print_sync, Checkout, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, ObjectRef,
-    OsPolicy, ResourceLimits, SleepMode,
+    CallArgs, ExcType, FileMode, MontyException, MontyFileHandle, MontyObject, NameLookupResult,
+    NamedValues, ObjectRef, OsPolicy, ResourceLimits, SleepMode,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -766,6 +769,68 @@ impl MontyProgram {
                 TurnEvent::OsCall { function_name, .. } if function_name == "import" => {
                     Req::Resume(ResumeValue::NotHandled)
                 }
+                // A program given `fs_read` may open a file to read its text:
+                // `open` is answered with a handle, and every read of one
+                // (`read`, `readlines`, `readline`, a `for` loop, a
+                // `pathlib` `read_text`) arrives as a `Path.read_text` of the
+                // whole file, which goes to `fs_read` as the program's own
+                // call would, through the same guard, limits and taint. Any
+                // other mode, and a program without `fs_read`, is refused
+                // below. The path is relative to the workspace: monty roots
+                // a relative `open('a.csv')` at `/a.csv`, so one leading
+                // slash comes off (M4: `open()` was 24 of 43 raised programs).
+                TurnEvent::OsCall {
+                    function_name,
+                    args,
+                    ..
+                } if self.externals.contains("fs_read")
+                    && matches!(function_name.as_str(), "open" | "Path.read_text")
+                    && args.args().next().and_then(os_path).is_some() =>
+                {
+                    let path = args.args().next().and_then(os_path).unwrap_or_default();
+                    // The mode is the second positional or the `mode` keyword; a
+                    // keyword is not in `args()`, and an absent one is `r`.
+                    let mode = args
+                        .kwargs()
+                        .find(|(k, _)| k.as_str() == Some("mode"))
+                        .map(|(_, v)| v)
+                        .or_else(|| args.args().nth(1))
+                        .map_or(Some("r"), |m| m.as_str());
+                    let text_read = mode
+                        .and_then(|m| m.parse::<FileMode>().ok())
+                        .is_some_and(|m| m == FileMode::Read(false));
+                    if function_name == "open" {
+                        if text_read {
+                            Req::Resume(ResumeValue::Return(MontyObject::file_handle(
+                                MontyFileHandle {
+                                    path,
+                                    mode: FileMode::Read(false),
+                                    position: 0,
+                                },
+                            )))
+                        } else {
+                            Req::Resume(ResumeValue::Error(MontyException::new(
+                                ExcType::PermissionError,
+                                Some(format!(
+                                    "a program may open a file only to read its text, in mode \
+                                     'r', and cannot write files or read bytes; reach data \
+                                     through the functions it was given: {}",
+                                    given_functions(&self.externals)
+                                )),
+                            )))
+                        }
+                    } else {
+                        self.pending = true;
+                        return Ok(Step::Call(ExternalCall {
+                            name: "fs_read".to_string(),
+                            args: Vec::new(),
+                            kwargs: vec![(
+                                "path".to_string(),
+                                Value::String(path.strip_prefix('/').unwrap_or(&path).to_string()),
+                            )],
+                        }));
+                    }
+                }
                 TurnEvent::OsCall { .. } => Req::Resume(ResumeValue::Error(MontyException::new(
                     ExcType::PermissionError,
                     Some(os_refusal(&self.externals)),
@@ -928,6 +993,22 @@ impl Program for MontyProgram {
     }
 }
 
+/// The functions a program was given, by name: the first 32, then a count.
+fn given_functions(externals: &BTreeSet<String>) -> String {
+    const SHOWN: usize = 32;
+    let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
+    let more = externals.len().saturating_sub(SHOWN);
+    let mut out = if given.is_empty() {
+        "none".to_string()
+    } else {
+        given.join(", ")
+    };
+    if more > 0 {
+        out.push_str(&format!(", and {more} more"));
+    }
+    out
+}
+
 /// What a program that reached for the operating system is told: it has no
 /// files, environment, network or clock, and the functions it was given are
 /// the way to its data. Their names are the program's own externals, so the
@@ -935,9 +1016,6 @@ impl Program for MontyProgram {
 /// them: listed alphabetically they came after `docs__*`, `document_read` and
 /// `find`, and `open()` was how 19 of 27 first programs failed in M2.
 fn os_refusal(externals: &BTreeSet<String>) -> String {
-    const SHOWN: usize = 32;
-    let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
-    let more = externals.len().saturating_sub(SHOWN);
     let files = match (externals.contains("fs_read"), externals.contains("fs_list")) {
         (true, true) => {
             "read a file with fs_read(path=...), which returns its text as a str, and list a \
@@ -948,22 +1026,26 @@ fn os_refusal(externals: &BTreeSet<String>) -> String {
     };
     format!(
         "a program has no files, environment, network or clock; {files}reach data through \
-         the functions it was given: {}{}",
-        if given.is_empty() {
-            "none".to_string()
-        } else {
-            given.join(", ")
-        },
-        if more > 0 {
-            format!(", and {more} more")
-        } else {
-            String::new()
-        }
+         the functions it was given: {}",
+        given_functions(externals)
     )
 }
 
 /// Nesting deeper than this does not cross the boundary either way.
 const MAX_DEPTH: usize = super::VALUE_DEPTH;
+
+/// The path an OS call was given. Monty hands a `PosixPath`, whose repr is
+/// `PosixPath('<the path as written>')` with no escaping, which the worker
+/// test holds for 1.4.0 with a path that has a quote in it.
+fn os_path(o: ObjectRef<'_>) -> Option<String> {
+    if o.type_name() != "PosixPath" {
+        return None;
+    }
+    o.py_repr()
+        .strip_prefix("PosixPath('")?
+        .strip_suffix("')")
+        .map(str::to_string)
+}
 
 /// A call's positional and keyword arguments, as JSON.
 type Args = (Vec<Value>, Vec<(String, Value)>);
