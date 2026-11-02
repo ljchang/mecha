@@ -96,7 +96,8 @@ means none.
   rules/<name>/rule.toml       the matcher and the actions — owner-written
   rules/<name>/reply.md        a fixed reply, when the rule has one
   rules/<name>/<other>.md      a covering note, a typed-send template
-  approvals.jsonl              every mode change: who, when, from, to, digest
+  approvals.jsonl              every mode change: rule, action group, who, when,
+                               from, to, digest
   ledger.jsonl                 one row per rule × message × action (§8)
   proposals/<id>/              drafts from a conversation, never live (§9)
   .lock
@@ -112,8 +113,10 @@ read-modify-write; the ledger append-only.
 digest of the rule's directory (§6). A mode written into the file would let an
 edit — or an installed proposal — grant itself `auto`.
 
-**The effective mode is the latest row for the rule, and the digest only ever
-lowers it.** Owner approvals, owner step-downs and §6.4's automatic brakes are
+**The effective mode is the latest row for the rule and action group, and the
+digest only ever lowers it.** A row names its group (§5's table), or `all`
+for a whole-rule change such as R7's lapse or `pause-all`, which a later
+group row can then raise again only by the owner's approval. Owner approvals, owner step-downs and §6.4's automatic brakes are
 all rows in the same file, and the most recent one wins; if its digest no
 longer matches the rule's directory, the mode reads as `propose` (or lower, if
 the row says lower). Never "the current digest matches *some* `auto`
@@ -207,11 +210,15 @@ call on it — **but only when no enabled rule with an outbound action could
 own the thread.** A
 skipped classification is a description rule never evaluated, so a
 `priority = 90` header rule that archives a list must not silence a
-`priority = 5` description rule that would have replied. When a
-higher-priority description rule is enabled — or another header rule with an
-outbound action also matches the thread — **the header rule's inbox-removing
+`priority = 5` description rule that would have replied — **and neither may
+a `priority = 5` archive silence a `priority = 90` reply**, because §4.3 gives
+outbound actions to the first rule *that has any*, so a higher-priority
+mailbox-only rule does not take the thread's outbound slot. So the condition is
+not about rank: whenever any enabled description rule has an outbound action,
+or another header rule with an outbound action also matches the thread,
+**the header rule's inbox-removing
 actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
-its other mailbox actions (`read`, `tag`) run on the timer. The header case
+its other actions (`read`, `unread`, `tag`, `digest`) run on the timer. The header case
 matters as much as the description one: a `priority = 10` rule that archives
 a list and a `priority = 50` rule that forwards the same sender's mail both
 match at minute three, the forward waits for `classify` (§4.4), and an
@@ -222,8 +229,8 @@ minute three would never be classified and the reply would never be
 considered, with nothing on the ledger to say why. Deferring is the cheaper
 of the two shapes that hold — the other is an id queue that `classify` reads
 beside `mail_recent`, on `due_outside_window`'s precedent — and it needs no
-new state: which header rules are outranked by a description rule is known
-statically from the enabled set, and which other header rules match a given
+new state: whether any enabled description rule has an outbound action is
+known statically from the enabled set, and which other header rules match a given
 thread is known in the same timer pass, before anything executes. P1 builds this, though no description rule exists until P4,
 so the bug cannot land dormant. A GitHub
 notification should cost a string comparison, not a model call, whenever
@@ -369,8 +376,8 @@ Grouped by what can go wrong, because that decides what may run unattended.
 
 | Group | `do =` | Reaches | May run in `auto`? |
 |---|---|---|---|
-| Mailbox | `archive`, `read`, `unread`, `tag`, `trash`, `spam` | the owner's mailbox | yes — with the §5.5 limits on `trash`/`spam` |
-| Private record | `digest`, `task` | the owner | yes |
+| Mailbox | `archive`, `read`, `unread`, `trash`, `spam` | the owner's mailbox | yes — with the §5.5 limits on `trash`/`spam` |
+| Private record | `tag`, `digest`, `task` | the owner (the triage store and the board) | yes |
 | Fixed words | `reply` with `template` | the sender | after owner approval (R1) |
 | Verbatim forward | `forward` with `to` | an owner-fixed recipient | after owner approval (R3) |
 | Typed fields | `send` with `to`, `template`, `fields` | an owner-fixed recipient | after owner approval (R3) |
@@ -473,7 +480,7 @@ Which guard binds which action group, so no section has to infer it:
 | Once per sender per rule per 7 days | yes | **no** — every receipt from a listed vendor is forwarded |
 | Per-rule and global daily caps | yes | yes |
 | Not into a conversation the owner has joined | yes | no |
-| Never on a message `From` the owner, or one this rule sent | yes | yes |
+| Never on a message `From` one of the owner's own addresses | yes | yes |
 | `block_sends_after_private` (§6.3) | yes | yes |
 
 Loop prevention for `forward` and `send` needs two guards of its own. Their
@@ -486,10 +493,12 @@ output, each copy a new provider id the ledger has not seen, until the daily
 cap stopped it. So, both failing closed:
 
 - **Never act on a message whose `From` is one of the owner's own
-  addresses** — the reply column's guard, applied here too.
-- **Never act on a message this rule sent.** The provider returns the id of
-  what it sends; the ledger records it on the `sent` row, and a match on a
-  recorded id is `skipped: own output`.
+  addresses** — the reply column's guard, applied here too. This is the guard
+  that stops the loop: the copy that comes back is a different message with a
+  different id, so no id-based check could recognise it, but its `From` is
+  always the owner's. (An "own output" check by sent id was considered and
+  dropped: Graph's send and reply return no id, and the returning copy would
+  not carry it anyway.)
 
 The rest of this section is about replies. A reply goes to an address the
 sender controls, so the guards keep mecha from
@@ -644,9 +653,14 @@ is the owner enabling it, and nothing else** (R6): no count of past drafts, no
 acceptance rate and no waiting period gates the switch, and nothing ever flips
 it on the owner's behalf. The approval screen of §6.2 is the whole ceremony.
 
-The one precondition is structural, not historical:
+The one precondition is structural, not historical. It binds **`auto`
+only**: in `propose`, a drafting run may use whatever tools its skill
+declares, as `mecha mail reply` does today, because the owner reads every
+draft in the outbox before it goes and that review is the control. The leak
+argument below is therefore the argument for `auto`, and it is true of a rule
+from the moment it graduates, not before.
 
-- **A closed drafting context.** The drafting run's tools are only: the
+- **A closed drafting context, for `auto`.** The drafting run's tools are only: the
   triggering thread (given as input, not fetched) and the skill's bundled
   files, which the owner marks `shareable` in the skill's frontmatter. No
   `mail_search`, no graph, no workspace, no web. A rule whose skill declares
@@ -816,8 +830,11 @@ real and worth serving, and the safe shape exists already in
   read nothing untrusted — and a proposal
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
-  enter `auto` while the rule's description or any template it sends is
-  model-proposed text from an armed conversation.** The rescue is `Reflexion::provenance`'s existing move: the
+  enter `auto` while the rule's description, any template it sends, or its
+  `to` is model-proposed text from an armed conversation.** `to` is the one
+  field §3 calls owner-written and §14 says never comes from a model, and a
+  proposal writes the whole `rule.toml`, so a proposed recipient is held to
+  the same rule as proposed words — and the approval screen shows it first. The rescue is `Reflexion::provenance`'s existing move: the
   installed record keeps a digest of each proposed text, and once the owner
   has changed one, it is the owner's words. The rule store records each
   text's origin in `imagelib::Origin`'s terms, the enum `of_proposal`
@@ -865,7 +882,9 @@ rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 
 **P1 — the store, header rules, mailbox actions.** `rule.toml`, approvals,
 the ledger, `off`/`shadow`/`propose`/`auto` for the mailbox and record
-groups, the five-minute timer, `mecha mail rule add | list | show | mode |
+groups (including a `tag` action, which writes mecha's own tag onto the
+triage record and has no provider verb, since tags are never Gmail labels or
+Graph categories), the five-minute timer, `mecha mail rule add | list | show | mode |
 test | ledger | undo`, the feature registry entry (off by default) — through
 `ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
