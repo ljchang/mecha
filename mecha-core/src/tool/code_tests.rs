@@ -1673,7 +1673,8 @@ fn only_the_builtin_listing_hands_a_program_names() {
     ));
     assert!(
         builtin.contains(
-            "each returns its result as a str (fs_read(path=...) returns the file's text), \
+            "each returns its result as a str (fs_read(path=...) returns the file's text, and \
+             open(path) reads a file's text the same way, but cannot write), \
              except that fs_list returns a list of names (a directory's ends in /)."
         ),
         "{builtin}"
@@ -1725,7 +1726,8 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
     );
     // With the file tools, the refusal leads with them: `open()` was how 19
     // of 27 first programs failed in M2, and alphabetically `fs_read` came
-    // after `docs__*`, `document_read` and `find`.
+    // after `docs__*`, `document_read` and `find`. (A text `open()` is
+    // answered since R12, so the refusal is reached by `os` here.)
     let Some(interp) = monty().await else {
         return;
     };
@@ -1736,7 +1738,7 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
         ],
         interp,
     );
-    let (d, _) = run(&agent, "print(open('notes/a.md').read())").await;
+    let (d, _) = run(&agent, "import os\nprint(os.listdir('notes'))").await;
     assert!(d.is_error, "{}", d.content);
     assert!(
         d.content.contains(
@@ -1747,6 +1749,31 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
         "{}",
         d.content
     );
+}
+
+/// R12: a program given `fs_read` that opens a file to read it is answered
+/// by that same tool, so its text is the tool's, whichever way it is read,
+/// and a write is still refused.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn open_reads_through_the_tool_a_program_was_given() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let agent = with_code(
+        vec![Arc::new(Fake::read("fs_read", "one\ntwo\nthree"))],
+        interp,
+    );
+    let (d, _) = run(
+        &agent,
+        "with open('notes/a.md') as f:\n    rows = f.readlines()\nprint(len(rows), open('notes/a.md').read().upper()[:3])",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(d.content.contains("3 ONE"), "{}", d.content);
+    let (d, _) = run(&agent, "open('notes/a.md', 'w').write('x')").await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(d.content.contains("only to read its text"), "{}", d.content);
 }
 
 /// A skill restriction that leaves out `mail_search` keeps it out of the
