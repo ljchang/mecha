@@ -1844,6 +1844,19 @@ module.
   owner's and `may_stage` refuses a redraft over it. The server's draft
   route holds the router as a turn does and refuses before the model runs
   whatever needs no answer, as 409s.
+- **Her network is an event log, folded** (`persona::network`, §6). `people`
+  holds who someone is; `edge_events` is append-only and an edge's state
+  (tie, layer, warm or tense, active or ended, dates) is always the fold of
+  its events, never a row rewritten, so `forget` can drop what one chat
+  added and fold again (PL22). A value no event set stays `None`, a date
+  keeps the precision it was given, an undated `met` or `formed` folds
+  first and any other undated event on the day it was recorded, and an
+  event of a kind this binary does not know is counted, never guessed at.
+  A tie between two people is stored once under its ordered pair. Only an
+  owner event is taken back one at a time; a chat's go with `forget`.
+  `network.md` is rendered after every write and never read back.
+  `world.db` migrates additively (version 2 adds the network), and a
+  read-only open of a version-1 store is an empty network, never an error.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

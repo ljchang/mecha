@@ -419,14 +419,32 @@ pub fn may_stage(dir: &Path, name: &str) -> Result<()> {
         // owner's here, because the cost of guessing wrong is their work.
         let staged = std::fs::read_to_string(pdir.join(STAGED)).unwrap_or_default();
         if staged.trim() != super::text_digest(&waiting) {
-            bail!(
-                "`{name}`'s waiting routine draft has been edited since it was staged; \
-                 approve or discard it before another is drafted"
-            );
+            return Err(EditedDraft { name: name.into() }.into());
         }
     }
     Ok(())
 }
+
+/// A waiting draft the owner has edited, which no model drafts over.
+/// Typed, so a surface answers it as the conflict it is (a 409), even when
+/// the edit landed while the model was running (review of #800).
+#[derive(Debug)]
+pub struct EditedDraft {
+    pub name: String,
+}
+
+impl std::fmt::Display for EditedDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}`'s waiting routine draft has been edited since it was staged; \
+             approve or discard it before another is drafted",
+            self.name
+        )
+    }
+}
+
+impl std::error::Error for EditedDraft {}
 
 /// Make the waiting draft the routine, only if it still hashes to
 /// `digest`, what the owner was shown. A draft naming no kind of week keeps
@@ -447,6 +465,12 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
     // The owner may have edited the draft into something that no longer
     // loads; approving that would leave her with no week at all.
     let mut routine = parse(&text).context("the draft does not load")?;
+    // Whichever door it came through (the CLI's `approve --yes`, the
+    // page's POST, an editor's save): an empty draft would leave her with
+    // no anchors at all (review of #801).
+    if routine.anchors.is_empty() {
+        bail!("`{name}`'s routine draft holds no anchors; edit or discard it");
+    }
     let old = read_if_there(&pdir.join(FILE))?;
     let text = match kept_cell(&text, old.as_deref()) {
         Some(cell) => {
@@ -524,6 +548,11 @@ pub fn edit_draft(dir: &Path, name: &str, text: &str, base: &str) -> Result<Rout
         bail!("the draft holds a control character (U+{:04X})", c as u32);
     }
     let routine = parse(text).context("the draft does not load as saved")?;
+    // As a model's draft must: approving an empty one would leave her
+    // routine with no anchors (review of #800).
+    if routine.anchors.is_empty() {
+        bail!("the draft holds no anchors; discard it instead");
+    }
     super::write_private(&pdir.join(DRAFT), text.as_bytes())?;
     Ok(routine)
 }
@@ -762,6 +791,31 @@ chance = 0.7
     }
 
     #[test]
+    fn an_emptied_draft_is_never_approved_whatever_door() {
+        let dir = made();
+        let pdir = dir.join("mara");
+        std::fs::write(pdir.join(FILE), GYM).unwrap();
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
+        // Emptied by hand in an editor, past `edit_draft`'s check.
+        std::fs::write(pdir.join(DRAFT), "# nothing left\n").unwrap();
+        let why = format!(
+            "{:#}",
+            approve_draft_as_shown(
+                &dir,
+                "mara",
+                &crate::persona::text_digest("# nothing left\n")
+            )
+            .unwrap_err()
+        );
+        assert!(why.contains("no anchors"), "{why}");
+        assert_eq!(
+            load(&pdir).unwrap().unwrap().anchors.len(),
+            1,
+            "her routine was emptied"
+        );
+    }
+
+    #[test]
     fn approving_a_draft_keeps_the_kind_of_week_the_owner_picked() {
         let dir = made();
         let pdir = dir.join("mara");
@@ -816,7 +870,15 @@ chance = 0.7
             Some(mine.as_str())
         );
         // Edited, it is the owner's: a model may not draft over it.
-        assert!(format!("{:#}", may_stage(&dir, "mara").unwrap_err()).contains("edited"));
+        let edited = may_stage(&dir, "mara").unwrap_err();
+        assert!(edited.downcast_ref::<EditedDraft>().is_some(), "{edited:#}");
+        assert!(format!("{edited:#}").contains("edited"));
+        // Emptied, it would empty her routine on approval: refused.
+        let empty = format!(
+            "{:#}",
+            edit_draft(&dir, "mara", "# nothing\n", &mbase).unwrap_err()
+        );
+        assert!(empty.contains("no anchors"), "{empty}");
         // No draft waiting, nothing to edit.
         discard_draft(&dir, "mara").unwrap();
         assert!(edit_draft(&dir, "mara", GYM, "").is_err());

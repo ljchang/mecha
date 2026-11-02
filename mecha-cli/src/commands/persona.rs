@@ -108,6 +108,12 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: MemoryCmd,
     },
+    /// Her people: who is in her life and how she stands with each
+    /// (PERSONA-LIFE-DESIGN §6). Every change renders network.md again.
+    People {
+        #[command(subcommand)]
+        cmd: PeopleCmd,
+    },
     /// Her week: the anchors her days are built around, and a model's draft
     /// waiting on you (`PERSONA-LIFE-DESIGN.md` §4.1).
     Routine {
@@ -166,6 +172,97 @@ pub enum RoutineCmd {
     /// Have her own model draft her week from identity.md and
     /// motivation.md, as a draft waiting on you beside her routine.
     Draft { name: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum PeopleCmd {
+    /// Everyone in her network, how she stands with each, and the ties
+    /// between them.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Her whole network as JSON: people, every event, and the folds.
+    Export { name: String },
+    /// Add someone to her life, with her tie to them.
+    Add {
+        name: String,
+        /// Their name.
+        person: String,
+        /// Another name they go by (repeatable).
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
+        /// Their role in her life: "older sister", "her advisor".
+        #[arg(long)]
+        role: Option<String>,
+        /// A line about them.
+        #[arg(long)]
+        description: Option<String>,
+        /// An image-library character: their portrait.
+        #[arg(long)]
+        character: Option<String>,
+        /// kin, romantic, ex, friend, colleague, mentor, neighbour,
+        /// acquaintance or rival.
+        #[arg(long)]
+        tie: Option<String>,
+        /// The tie in her words: "sister", "lab partner".
+        #[arg(long)]
+        label: Option<String>,
+        /// How close: 5, 15, 50 or 150 (a Dunbar layer).
+        #[arg(long)]
+        layer: Option<u32>,
+        /// Since when: 2019-06-14, 2019-06, summer 2019, or 2019.
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Change who someone is. An empty value clears a field.
+    Edit {
+        name: String,
+        person: String,
+        #[arg(long = "name")]
+        rename: Option<String>,
+        /// Replaces their aliases (repeatable); `--alias ""` clears them.
+        #[arg(long = "alias")]
+        aliases: Option<Vec<String>>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        character: Option<String>,
+    },
+    /// Record something that happened: met, formed, strengthened,
+    /// conflict, reconciled, paused, ended or renewed.
+    Event {
+        name: String,
+        person: String,
+        kind: String,
+        /// On the tie between them and this person, not hers.
+        #[arg(long)]
+        with: Option<String>,
+        /// When: 2019-06-14, 2019-06, summer 2019, or 2019.
+        #[arg(long)]
+        on: Option<String>,
+        /// What it was about, in a line.
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        tie: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        layer: Option<u32>,
+    },
+    /// Take back an event you recorded by mistake, by its id.
+    Retract { name: String, event: String },
+    /// Take someone out of her network, with every event they are part of.
+    Remove {
+        name: String,
+        person: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -285,6 +382,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
             | Cmd::Routine {
                 cmd: RoutineCmd::Show { .. }
+            }
+            | Cmd::People {
+                cmd: PeopleCmd::Show { .. } | PeopleCmd::Export { .. }
             }
     ) {
         super::features::require(mecha_core::feature::Feature::Personas)?;
@@ -1035,6 +1135,7 @@ fn run_with(
         }
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
         Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
+        Cmd::People { cmd } => people_cmd(dir, &lib, cmd)?,
         Cmd::Day { name, date, json } => day_cmd(dir, &name, date.as_deref(), json)?,
         Cmd::Week { name, date, json } => week_cmd(dir, &name, date.as_deref(), json)?,
         Cmd::Relationship { cmd } => {
@@ -1451,6 +1552,212 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
         }
         // Asks a model, so `execute` routes it before this synchronous door.
         RoutineCmd::Draft { .. } => bail!("`routine draft` is run by `execute`"),
+    }
+    Ok(())
+}
+
+/// A closed-set word as the owner types it, refused with the words it takes.
+fn closed<T: serde::de::DeserializeOwned>(what: &str, word: &str, all: &[&str]) -> Result<T> {
+    let w = word.trim().to_lowercase();
+    if all.contains(&w.as_str()) {
+        if let Ok(v) = serde_json::from_value(serde_json::Value::String(w)) {
+            return Ok(v);
+        }
+    }
+    bail!("{word:?} is not a {what}; use {}", all.join(", "))
+}
+
+/// `mecha persona people …`: the owner's door to her network (§6). Every
+/// write renders `network.md` again, in the store.
+fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
+    use mecha_core::persona::network::{
+        self, EventKind, Layer, NewEvent, NewPerson, PersonEdit, Tie, When,
+    };
+    let wire = |v: serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let ties: Vec<String> = Tie::ALL
+        .iter()
+        .map(|t| wire(serde_json::json!(t)))
+        .collect();
+    let kinds: Vec<String> = EventKind::ALL
+        .iter()
+        .map(|k| wire(serde_json::json!(k)))
+        .collect();
+    let tie = |t: Option<String>| -> Result<Option<Tie>> {
+        let all: Vec<&str> = ties.iter().map(String::as_str).collect();
+        t.map(|t| closed("tie", &t, &all)).transpose()
+    };
+    let layer = |n: Option<u32>| -> Result<Option<Layer>> {
+        n.map(|n| {
+            Layer::of_size(n)
+                .ok_or_else(|| anyhow::anyhow!("{n} is not a layer; use 5, 15, 50 or 150"))
+        })
+        .transpose()
+    };
+    let when =
+        |w: Option<String>| -> Result<When> { w.map_or(Ok(When::UNKNOWN), |w| When::parse(&w)) };
+    let character = |c: &str| network::check_character(lib, c);
+    let store = load(dir);
+    let open =
+        |name: &str| -> Result<std::path::PathBuf> { Ok(dir.join(&find(&store, name)?.name)) };
+    match cmd {
+        PeopleCmd::Show { name, json } => {
+            let n = network::Network::read(&open(&name)?)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&n.to_json())?);
+            } else {
+                print!("{}", network::markdown(&n));
+            }
+        }
+        PeopleCmd::Export { name } => {
+            let n = network::Network::read(&open(&name)?)?;
+            let mut out = n.to_json();
+            out["events"] = n.events.iter().map(|e| e.to_json()).collect();
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        PeopleCmd::Add {
+            name,
+            person,
+            aliases,
+            role,
+            description,
+            character: portrait,
+            tie: t,
+            label,
+            layer: l,
+            since,
+        } => {
+            let pdir = open(&name)?;
+            if let Some(c) = &portrait {
+                character(c)?;
+            }
+            let id = network::add_person(
+                &pdir,
+                &NewPerson {
+                    name: person,
+                    aliases,
+                    role,
+                    description,
+                    character: portrait,
+                    tie: tie(t)?,
+                    label,
+                    layer: layer(l)?,
+                    since: when(since)?,
+                },
+            )?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.person(&id).context("the person just added")?;
+            println!("Added {} ({}) to her network.", p.name, &id[..8]);
+        }
+        PeopleCmd::Edit {
+            name,
+            person,
+            rename,
+            aliases,
+            role,
+            description,
+            character: portrait,
+        } => {
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.find(&person)?;
+            // An empty value clears a field.
+            let clear = |v: Option<String>| v.map(|v| Some(v).filter(|v| !v.trim().is_empty()));
+            let portrait = clear(portrait);
+            if let Some(Some(c)) = &portrait {
+                character(c)?;
+            }
+            network::edit_person(
+                &pdir,
+                &p.uid,
+                &PersonEdit {
+                    name: rename,
+                    aliases: aliases
+                        .map(|a| a.into_iter().filter(|a| !a.trim().is_empty()).collect()),
+                    role: clear(role),
+                    description: clear(description),
+                    character: portrait,
+                },
+            )?;
+            println!("Changed {}.", p.name);
+        }
+        PeopleCmd::Event {
+            name,
+            person,
+            kind,
+            with,
+            on,
+            context,
+            tie: t,
+            label,
+            layer: l,
+        } => {
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.find(&person)?;
+            let other = with.as_deref().map(|w| n.find(w)).transpose()?;
+            let all: Vec<&str> = kinds.iter().map(String::as_str).collect();
+            let id = network::record(
+                &pdir,
+                &p.uid,
+                other.map(|o| o.uid.as_str()),
+                &NewEvent {
+                    kind: closed("kind of event", &kind, &all)?,
+                    tie: tie(t)?,
+                    label,
+                    layer: layer(l)?,
+                    when: when(on)?,
+                    context,
+                },
+            )?;
+            println!(
+                "Recorded {} on {}{} ({}).",
+                kind.trim().to_lowercase(),
+                p.name,
+                other
+                    .map(|o| format!(" and {}", o.name))
+                    .unwrap_or_default(),
+                &id[..8]
+            );
+        }
+        PeopleCmd::Retract { name, event } => {
+            // At least an id's first four characters, as a person's id
+            // prefix: an empty one would match every event.
+            if event.trim().len() < 4 {
+                bail!("name the event by at least the first four characters of its id");
+            }
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let hits: Vec<_> = n
+                .events
+                .iter()
+                .filter(|e| e.uid.starts_with(event.trim()))
+                .collect();
+            let [one] = hits.as_slice() else {
+                bail!(
+                    "{} events match {:?}; name one by its id",
+                    hits.len(),
+                    event.trim()
+                );
+            };
+            network::remove_event(&pdir, &one.uid)?;
+            println!("Took back the event.");
+        }
+        PeopleCmd::Remove { name, person, yes } => {
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.find(&person)?;
+            if !yes
+                && !confirm(&format!(
+                    "Take {} out of her network, with everything recorded between them?",
+                    p.name
+                ))?
+            {
+                println!("Not removed.");
+                return Ok(());
+            }
+            network::remove_person(&pdir, &p.uid)?;
+            println!("Took {} out of her network.", p.name);
+        }
     }
     Ok(())
 }
@@ -1935,6 +2242,136 @@ mod tests {
         let edited = format!("{edited}");
         assert!(edited.contains("will NOT load"), "{edited}");
         assert!(edited.contains("edit mara --settings"), "{edited}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_owner_builds_her_network_from_the_cli() {
+        use mecha_core::persona::network::{EventKind, Layer, Network, Tie, Valence, NETWORK_MD};
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let people = |cmd: PeopleCmd| run(&store, &lib, Cmd::People { cmd });
+        let add = |person: &str, tie: Option<&str>, layer: Option<u32>| PeopleCmd::Add {
+            name: "Mara".into(),
+            person: person.into(),
+            aliases: vec![],
+            role: None,
+            description: None,
+            character: None,
+            tie: tie.map(Into::into),
+            label: None,
+            layer,
+            since: Some("2019".into()),
+        };
+        people(add("Ines", Some("kin"), Some(5))).unwrap();
+        people(add("Theo", Some("friend"), Some(50))).unwrap();
+        // Words outside a closed set are refused with the words it takes.
+        let bad_tie = format!("{:#}", people(add("Bo", Some("cousin"), None)).unwrap_err());
+        assert!(
+            bad_tie.contains("not a tie") && bad_tie.contains("acquaintance"),
+            "{bad_tie}"
+        );
+        assert!(
+            format!("{:#}", people(add("Bo", None, Some(7))).unwrap_err()).contains("not a layer")
+        );
+        // A portrait the library does not have is refused.
+        let mut portrait = add("Bo", None, None);
+        if let PeopleCmd::Add { character, .. } = &mut portrait {
+            *character = Some("nobody".into());
+        }
+        assert!(format!("{:#}", people(portrait).unwrap_err()).contains("no character"));
+
+        let event =
+            |person: &str, kind: &str, with: Option<&str>, on: Option<&str>| PeopleCmd::Event {
+                name: "mara".into(),
+                person: person.into(),
+                kind: kind.into(),
+                with: with.map(Into::into),
+                on: on.map(Into::into),
+                context: Some("over the move".into()),
+                tie: None,
+                label: None,
+                layer: None,
+            };
+        people(event("theo", "Strengthened", None, Some("2022"))).unwrap();
+        people(event("ines", "conflict", Some("theo"), Some("spring 2024"))).unwrap();
+        assert!(format!(
+            "{:#}",
+            people(event("ines", "eloped", None, None)).unwrap_err()
+        )
+        .contains("not a kind of event"));
+
+        let pdir = store.join("mara");
+        let n = Network::read(&pdir).unwrap();
+        let theo = n.find("Theo").unwrap().uid.clone();
+        assert_eq!(n.her_edge(&theo).layer, Some(Layer::Fifteen));
+        assert_eq!(n.her_edge(&theo).tie, Some(Tie::Friend));
+        assert_eq!(
+            n.ties().values().next().unwrap().valence,
+            Some(Valence::Tense)
+        );
+        assert!(std::fs::read_to_string(pdir.join(NETWORK_MD))
+            .unwrap()
+            .contains("## Between them"));
+
+        // Retracted by an id prefix; renamed; removed with everything on it.
+        let conflict = n
+            .events
+            .iter()
+            .find(|e| e.kind == EventKind::Conflict)
+            .unwrap()
+            .uid
+            .clone();
+        people(PeopleCmd::Retract {
+            name: "mara".into(),
+            event: conflict[..8].into(),
+        })
+        .unwrap();
+        assert!(Network::read(&pdir).unwrap().ties().is_empty());
+        people(PeopleCmd::Edit {
+            name: "mara".into(),
+            person: "theo".into(),
+            rename: Some("Theodore".into()),
+            aliases: Some(vec!["Teddy".into()]),
+            role: Some("lab partner".into()),
+            description: None,
+            character: None,
+        })
+        .unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert_eq!(
+            n.find("teddy").unwrap().role.as_deref(),
+            Some("lab partner")
+        );
+        people(PeopleCmd::Edit {
+            name: "mara".into(),
+            person: "teddy".into(),
+            rename: None,
+            aliases: None,
+            role: Some(String::new()),
+            description: None,
+            character: None,
+        })
+        .unwrap();
+        assert_eq!(
+            Network::read(&pdir).unwrap().find("teddy").unwrap().role,
+            None,
+            "an empty value clears"
+        );
+        people(PeopleCmd::Remove {
+            name: "mara".into(),
+            person: "theodore".into(),
+            yes: true,
+        })
+        .unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert_eq!(n.people.len(), 1);
+        assert!(n
+            .events
+            .iter()
+            .all(|e| e.person != theo && e.other.as_deref() != Some(theo.as_str())));
         std::fs::remove_dir_all(dir).ok();
     }
 

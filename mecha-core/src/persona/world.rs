@@ -1,13 +1,15 @@
 //! Her world's store: `<persona>/world.db` (`docs/PERSONA-LIFE-DESIGN.md`
 //! §5), machine-written, beside `memory.db`.
 //!
-//! Two tables so far:
+//! Its tables so far:
 //!
 //! - **`days`**: sampled days (`persona::sampler`), one row a stretch, kept
 //!   about two weeks. A day pruned past that leaves its week's minutes per
 //!   activity in `weeks`, so the long view keeps a shape without the hours.
 //! - **`state`**: slow facts about her life, superseded by a later row and
 //!   never decaying.
+//! - **`people`** and **`edge_events`**: her network, an append-only log of
+//!   edge events folded into current state (`persona::network`, §6).
 //!
 //! A day is sampled when first asked for and stored, so what a chat was told
 //! about a day stays what the day was. Today's stored day is drawn again
@@ -129,6 +131,10 @@ pub struct World {
     conn: Connection,
 }
 
+/// `PRAGMA user_version` this binary writes. Migrations are additive: 1 is
+/// the days and state, 2 her network (`people`, `edge_events`).
+const SCHEMA: i64 = 2;
+
 fn wire<T: Serialize>(v: &T) -> String {
     match serde_json::to_value(v) {
         Ok(serde_json::Value::String(s)) => s,
@@ -142,8 +148,8 @@ fn unwire<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
 
 fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version > 1 {
-        bail!("world.db is version {version}; this binary reads up to 1");
+    if version > SCHEMA {
+        bail!("world.db is version {version}; this binary reads up to {SCHEMA}");
     }
     if version == 0 {
         conn.execute_batch(
@@ -191,6 +197,52 @@ fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 2 {
+        // Her network (§6): people, and the events their edges fold from.
+        // An edge is her tie to a person (`other` null) or a tie between
+        // two people (`person` < `other`). Every event names its source and
+        // the chat stretch it came from, for `forget` (§5, PL22).
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE people (
+                 uid TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 aliases TEXT NOT NULL,
+                 role TEXT,
+                 description TEXT,
+                 character TEXT,
+                 source TEXT NOT NULL,
+                 known_to_owner INTEGER NOT NULL,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE TABLE edge_events (
+                 uid TEXT PRIMARY KEY,
+                 person TEXT NOT NULL,
+                 other TEXT,
+                 event TEXT NOT NULL,
+                 tie TEXT,
+                 label TEXT,
+                 layer INTEGER,
+                 valid_on TEXT,
+                 precision TEXT NOT NULL,
+                 context TEXT,
+                 source TEXT NOT NULL,
+                 source_chat TEXT,
+                 source_from INTEGER,
+                 source_to INTEGER,
+                 recorded_at TEXT NOT NULL,
+                 CHECK (other IS NULL OR person < other)
+             );
+             CREATE INDEX edge_events_person ON edge_events(person);
+             CREATE INDEX edge_events_other ON edge_events(other);
+             CREATE INDEX edge_events_chat ON edge_events(source_chat);
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
+    // A new step goes above, and this moves with it.
+    const _: () = assert!(SCHEMA == 2);
     Ok(())
 }
 
@@ -233,9 +285,22 @@ impl World {
             // Created and never migrated (an open that failed its checks):
             // nothing in it, and the next writable open says why.
             0 => Ok(None),
-            1 => Ok(Some(World { conn })),
-            v => bail!("world.db is version {v}; this binary reads up to 1"),
+            1..=SCHEMA => Ok(Some(World { conn })),
+            v => bail!("world.db is version {v}; this binary reads up to {SCHEMA}"),
         }
+    }
+
+    /// [`World::open_existing`], for the network's readers: never created.
+    pub(super) fn existing(pdir: &Path) -> Result<Option<World>> {
+        Self::open_existing(pdir)
+    }
+
+    pub(super) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    pub(super) fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 
     /// The day stored for `date`, if there is one this binary can read
