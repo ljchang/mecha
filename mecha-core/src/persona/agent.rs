@@ -67,6 +67,11 @@ pub const SINCERE: &str = "\
 If they sincerely step outside the conversation to ask whether they are \
 talking to a person, tell them the truth.";
 
+/// The heading her people ride under in the system prompt (PL32): also how
+/// a transcript's recorded prompt says whether a chat was shown them
+/// (`persona::initiative`).
+pub const PEOPLE_HEADING: &str = "# The people in your life";
+
 /// A persona as one chat sees it: read from a version's snapshot, never from
 /// the live folder, so editing the persona applies to new chats while an
 /// open one keeps the persona — and the cached prefix — it began with (§8.1).
@@ -225,7 +230,9 @@ pub fn system_prompt(p: &Pinned) -> Result<String> {
     // Her people (PL32), beside who she is: rendered by the harness from
     // what the owner wrote of her network, snapshotted with the version.
     if !p.people.trim().is_empty() {
-        out.push_str("\n\n# The people in your life\n\n");
+        out.push_str("\n\n");
+        out.push_str(PEOPLE_HEADING);
+        out.push_str("\n\n");
         out.push_str(p.people.trim());
     }
     let motivation = prose(&p.motivation);

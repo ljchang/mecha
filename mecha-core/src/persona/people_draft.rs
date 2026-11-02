@@ -197,10 +197,12 @@ pub fn parse(reply: &str) -> Result<Option<Vec<Proposed>>> {
     Ok(Some(r.people))
 }
 
-/// Stage `p`'s proposal from the model's answer, replacing one still
-/// waiting. `None`, with nothing staged, when it found no one.
+/// Stage `p`'s proposal from the model's answer, replacing only a stale
+/// one ([`may_propose`]). `None`, with nothing staged, when it found no
+/// one.
 pub fn stage(dir: &Path, p: &Persona, reply: &str) -> Result<Option<Draft>> {
     super::drafter::check(p)?;
+    may_propose(dir, p)?;
     let Some(people) = parse(reply)? else {
         return Ok(None);
     };
@@ -215,9 +217,25 @@ pub fn stage(dir: &Path, p: &Persona, reply: &str) -> Result<Option<Draft>> {
     Ok(Some(draft))
 }
 
-/// Ask `provider` for `p`'s people and stage them. The envelope is read
-/// before the answer: a refusal or a reply cut off at its cap stages
-/// nothing.
+/// Whether a new proposal may be staged for `p`: refused while one read
+/// from `identity.md` as it stands still waits, since a new one would
+/// replace the owner's unread choices (review of #804). A stale one may be
+/// replaced, which is what its own message asks for. One that does not
+/// load is an error naming the file, for the owner to dismiss.
+pub fn may_propose(dir: &Path, p: &Persona) -> Result<()> {
+    match read(&dir.join(&p.name))? {
+        Some(d) if d.identity == super::text_digest(&p.identity) => Err(ProposalWaiting {
+            name: p.name.clone(),
+        }
+        .into()),
+        _ => Ok(()),
+    }
+}
+
+/// Ask `provider` for `p`'s people and stage them. Refused before the
+/// model runs while a current proposal waits ([`may_propose`]). The
+/// envelope is read before the answer: a refusal or a reply cut off at its
+/// cap stages nothing.
 pub async fn propose(
     provider: &dyn crate::provider::Provider,
     model: &str,
@@ -225,6 +243,7 @@ pub async fn propose(
     p: &Persona,
 ) -> Result<Option<Draft>> {
     use crate::message::StopReason;
+    may_propose(dir, p)?;
     let request = request(model, p, provider.structured_output())?;
     let response = provider.complete(&request, None).await?;
     match response.stop_reason {
@@ -270,6 +289,25 @@ impl std::fmt::Display for StaleProposal {
 }
 
 impl std::error::Error for StaleProposal {}
+
+/// A proposal read from `identity.md` as it stands is still waiting on the
+/// owner. Typed, so a surface answers it as the conflict it is (a 409).
+#[derive(Debug)]
+pub struct ProposalWaiting {
+    pub name: String,
+}
+
+impl std::fmt::Display for ProposalWaiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` has a proposal of people waiting; accept or dismiss it first",
+            self.name
+        )
+    }
+}
+
+impl std::error::Error for ProposalWaiting {}
 
 /// What accepting did: who was added, and who was already there.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -641,5 +679,52 @@ mod tests {
         .unwrap();
         assert_eq!(d.people.len(), 2);
         assert!(read(&pdir).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_waiting_proposal_is_never_replaced_unless_it_is_stale() {
+        use crate::message::StopReason;
+        let (dir, p) = mara();
+        let pdir = dir.join("mara");
+        stage(&dir, &p, ANSWER).unwrap();
+        accept(&dir, &no_lib(), &p, Some(&[1])).unwrap();
+        // Theo still waits: proposing again is refused before the model
+        // runs (a refusing model would answer "refused"), and staging
+        // straight after one is refused too (review of #804).
+        let got = propose(
+            &Scripted(ANSWER.into(), StopReason::Refusal),
+            "scripted-1",
+            &dir,
+            &p,
+        )
+        .await
+        .unwrap_err();
+        assert!(got.downcast_ref::<ProposalWaiting>().is_some(), "{got:#}");
+        assert!(format!("{got:#}").contains("accept or dismiss it first"));
+        let again = stage(&dir, &p, ANSWER).unwrap_err();
+        assert!(again.downcast_ref::<ProposalWaiting>().is_some());
+        assert_eq!(read(&pdir).unwrap().unwrap().people.len(), 1);
+        // Once identity.md changes the waiting one is stale, and a new
+        // reading replaces it, as its message says.
+        let mut changed = p.clone();
+        changed.identity.push_str("A new line.\n");
+        let d = propose(
+            &Scripted(ANSWER.into(), StopReason::EndTurn),
+            "scripted-1",
+            &dir,
+            &changed,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(read(&pdir).unwrap().unwrap(), d);
+        assert_eq!(d.people.len(), 2);
+        // One that does not load is an error naming the file, never
+        // replaced unread; dismissing clears it.
+        std::fs::write(pdir.join(DRAFT), "{ torn").unwrap();
+        let torn = format!("{:#}", stage(&dir, &changed, ANSWER).unwrap_err());
+        assert!(torn.contains(DRAFT), "{torn}");
+        dismiss(&pdir).unwrap();
+        assert!(stage(&dir, &changed, ANSWER).unwrap().is_some());
     }
 }
