@@ -7551,7 +7551,9 @@ The design decisions, each of which is a bug if undone:
 - **The outcome row is the one per-run clock** (`RunStats::ended_at`),
   stamped by `Session::record_outcome` as the row is written and never by
   `RunStats::of_run`, so a replayed or folded row invents no time; a fold
-  keeps the last run's, `None` included. A `Config`'s clock is per process
+  keeps the last run's, `None` included. It is the machine's wall clock,
+  not the run's `Clock`: under an experiment's fixture clock `Config.clock`
+  is the designed day and `ended_at` the operator's. A `Config`'s clock is per process
   attach and per router rebind, so before this a chat held open for days
   had no time on its later turns (`persona::initiative`'s ordering).
 - **Every front-end writes the outcome record** — `run`, `chat`, the TUI, web,

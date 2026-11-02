@@ -1097,6 +1097,15 @@ pub struct RunStats {
     /// (`persona::initiative`) could only place them at the chat's start.
     /// Set by [`Session::record_outcome`], never by `of_run`, so a fold or
     /// a replay does not invent one. `None` on a row from before it.
+    ///
+    /// **The machine's wall clock, on purpose, not the run's
+    /// [`crate::clock::Clock`]**: it records when the row was written, as
+    /// `SessionMeta::created_at` does. A fixture clock replaces the world the
+    /// model is told about (`setup::run_clock`), so under an experiment arm
+    /// `Config.clock` holds the fixture's day while this holds the operator's;
+    /// a reader ordering an arm's runs in its designed world reads
+    /// `Config.clock`, and one ordering what happened on this machine reads
+    /// this (review of #812).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<DateTime<Utc>>,
 }
