@@ -450,6 +450,23 @@ every message without one would collide on a single key. The `Message-ID`
 stays on the row as a display field only; a re-classification, a
 `--force` sweep or a crashed run never sends twice.
 
+**Which outcomes close the key** is part of the key's definition, because
+several §8 outcomes are rows where nothing executed. `pending`, `done`,
+`sent`, `staged`, `offered` and `held` close it. `would have`, `skipped` and
+`expired` do not — nothing ran, and a thread readable again later may be
+evaluated again. `failed` closes it for outbound actions, which are never
+retried (a failure after a provider accepted a send cannot be told from one
+before), and leaves it open for mailbox and record actions, which are safe
+to retry after a transient error.
+
+**A rule acts only on messages that arrive after the mode it acts in was
+set.** Promotion out of `shadow` does not replay the week of would-have rows,
+and a `--force` sweep after promotion does not fire a backlog: a message is
+eligible for an action group only if it was received after that group's
+current mode row. Acting on past matches is an explicit owner action on the
+rule page — *apply to these N earlier matches* — and runs in `propose`
+whatever the rule's mode, so the backlog is reviewed, not sent.
+
 **Matching is per thread; guards and keys are per message, and outbound
 actions are once per thread.** The classifier reads a thread, but a thread
 grows. So a rule evaluates a thread against **its newest inbound message**:
@@ -929,8 +946,11 @@ and the rule ledger, no model:
 
 1. **Handled for you** — per rule, what it did since the last digest (counts,
    expandable to rows), so nothing an automatic rule removed is invisible.
-2. **For your information** — `notify`-bucket threads: sender, the
-   classifier's one-line, tags, deadline.
+2. **For your information** — `notify`-bucket threads, **plus every thread a
+   rule's `digest` action flagged**, whatever its bucket: sender, the
+   classifier's one-line, tags, deadline, and for a flagged thread the rule
+   that flagged it. This is where "archive it, but show me tomorrow" shows
+   the message itself rather than only a count under *Handled for you*.
 3. **Possible tasks** — threads whose verdict proposed `task` or carries a
    deadline, each with a *Make task* action (`mecha mail task`, deadline
    carried).
@@ -1050,8 +1070,12 @@ real and worth serving, and the safe shape exists already in
   read nothing untrusted — and a proposal
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
-  enter `auto` while the rule's description, any template it sends, or its
-  `to` is model-proposed text from an armed conversation.** And `to` is held
+  enter `auto` while the rule's description, any template it sends, its
+  sender keys (`from`, `from_domain`), or its `to` is model-proposed text
+  from an armed conversation.** The sender keys belong on this list because
+  §5.2 makes them the control on *who can make a send leave*: a proposed
+  header rule has no description to hold back, so without them an injected
+  `from_domain` would choose the trigger set of a forward to finance. And `to` is held
   to a stricter rule than words: **an outbound group may enter `auto` only
   when its `to` is `Owner` — typed or edited by the owner — never a proposed
   address left as proposed, even from a clean conversation.** `to` is the one
