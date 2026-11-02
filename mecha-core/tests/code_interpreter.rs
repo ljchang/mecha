@@ -449,6 +449,22 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
         "{}",
         f.printed
     );
+    // `open(..., errors=...)` raises in monty 1.4 before any host call, so
+    // the description says so (M6: a bare `except` swallowed it, and a
+    // program that read nothing answered that no file matched)
+    let (f, calls) = run_with(
+        &interp,
+        "try:\n    open('a.csv', 'r', errors='ignore')\nexcept TypeError as e:\n    print(e)",
+        &["fs_read"],
+        |_| Ok(Value::from("t")),
+    )
+    .await;
+    assert!(
+        f.printed.contains("'errors' argument is not yet supported"),
+        "{}",
+        f.printed
+    );
+    assert!(calls.is_empty());
     for m in ["io", "statistics"] {
         let (f, _) = run_with(
             &interp,

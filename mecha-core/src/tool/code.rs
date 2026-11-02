@@ -792,7 +792,8 @@ fn describe(admission: &Admission) -> String {
     if admission.contains("fs_read") {
         d.push_str(
             "each returns its result as a str (fs_read(path=...) returns the file's text, and \
-             open(path) reads a file's text the same way, but cannot write; a read that fails \
+             open(path) reads a file's text the same way, but cannot write and takes no errors= \
+             argument; a read that fails \
              raises a RuntimeError, not a FileNotFoundError)",
         );
     } else {
