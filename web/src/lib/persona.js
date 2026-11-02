@@ -1072,6 +1072,8 @@ export function storyDay(data, date) {
     .map((k) => `${k} ${d.evening[k]}`)
     .join(' · ');
   const events = (d.events ?? []).map((e) => ({ text: e.shown ?? e.title, major: e.size !== 'minor' }));
+  // Nothing to show is no row, never an empty one.
+  if (!weather && !levels && !events.length) return null;
   return { weather, levels, events };
 }
 

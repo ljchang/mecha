@@ -68,10 +68,10 @@ pub enum Source {
 
 impl Source {
     pub fn is_clean(self) -> bool {
-        matches!(
-            self,
-            Source::Sampler | Source::Owner | Source::Storylet | Source::Feed
-        )
+        // `Storylet` is code over the owner's deck. `Feed` names outside
+        // content however narrowly it was parsed, so the label never
+        // launders a later shelf that carries text (review of #814).
+        matches!(self, Source::Sampler | Source::Owner | Source::Storylet)
     }
 }
 
@@ -1915,5 +1915,10 @@ mod tests {
         assert_eq!(home.source, Source::Unknown);
         assert!(!home.source.is_clean());
         assert!(Source::Sampler.is_clean() && Source::Owner.is_clean());
+        assert!(Source::Storylet.is_clean());
+        assert!(
+            !Source::Feed.is_clean(),
+            "outside content is never clean by label"
+        );
     }
 }

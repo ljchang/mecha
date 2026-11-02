@@ -714,9 +714,14 @@ fn inputs(
     weather: Option<Weather>,
     day_digest: &str,
     people: &[Castable],
+    severe_open: bool,
 ) -> String {
     let mut h = Sha256::new();
     h.update(STORY_VERSION.as_bytes());
+    h.update([0]);
+    // `[life] intensity`: flipping it redraws today, so a severe event
+    // never outlives the switch that allowed it (review of #814).
+    h.update(if severe_open { b"severe" } else { b"capped" });
     h.update([0]);
     h.update(deck_text.as_bytes());
     h.update([0]);
@@ -770,48 +775,58 @@ pub fn story(
     let mut d = start;
     while d <= to {
         let weather = world.weather(d)?;
-        let day = super::world::day(store_dir, &p.name, d, today)?;
-        let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
-        let digest = inputs(
-            &deck_text,
-            weather,
-            &format!("{:?}", day.stretches),
-            &people,
-        );
         let stored = world.story_day(d)?;
-        let keep_stored = stored
+        // A stored past day is what it was, and needs nothing drawn: only
+        // today and the days not yet kept read her day, so a week view
+        // loads her store a handful of times, not once per lookback day
+        // (review of #814).
+        let past = stored
             .as_ref()
-            .is_some_and(|(_, sd_digest)| d < today || *sd_digest == digest);
-        let sd = if let (true, Some((sd, _))) = (keep_stored, stored) {
+            .filter(|_| d < today)
+            .map(|(sd, _)| sd.clone());
+        let sd = if let Some(sd) = past {
             sd
         } else {
-            let cx = Today {
-                persona: &p.name,
-                date: d,
-                doing,
+            let day = super::world::day(store_dir, &p.name, d, today)?;
+            let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
+            let digest = inputs(
+                &deck_text,
                 weather,
-                levels,
-                people: &people,
-                since_major: last_major.map(|m| (d - m).num_days()),
-                recent: drawn
-                    .iter()
-                    .map(|(id, on)| (id.clone(), (d - *on).num_days()))
-                    .collect(),
+                &format!("{:?}", day.stretches),
+                &people,
                 severe_open,
-            };
-            let (events, morning, evening) = draw_day(&deck, &cx);
-            let sd = StoryDay {
-                date: d,
-                weather: weather.map(WeatherOut::from),
-                morning,
-                evening,
-                events,
-                kept: d <= today,
-            };
-            if d <= today {
-                world.set_story_day(&sd, &digest)?;
+            );
+            if let Some((sd, _)) = stored.filter(|(_, was)| *was == digest) {
+                sd
+            } else {
+                let cx = Today {
+                    persona: &p.name,
+                    date: d,
+                    doing,
+                    weather,
+                    levels,
+                    people: &people,
+                    since_major: last_major.map(|m| (d - m).num_days()),
+                    recent: drawn
+                        .iter()
+                        .map(|(id, on)| (id.clone(), (d - *on).num_days()))
+                        .collect(),
+                    severe_open,
+                };
+                let (events, morning, evening) = draw_day(&deck, &cx);
+                let sd = StoryDay {
+                    date: d,
+                    weather: weather.map(WeatherOut::from),
+                    morning,
+                    evening,
+                    events,
+                    kept: d <= today,
+                };
+                if d <= today {
+                    world.set_story_day(&sd, &digest)?;
+                }
+                sd
             }
-            sd
         };
         // Weather is a fact, not a draw: shown as it stands now, so a day
         // drawn before its weather arrived still shows it.
@@ -835,6 +850,10 @@ pub fn names(pdir: &Path) -> Result<BTreeMap<String, String>> {
     Ok(Network::read(pdir)?
         .people
         .into_iter()
+        // Only a clean person's name is shown, as only a clean person is
+        // cast: a row that stopped being clean reads "someone" (review of
+        // #814).
+        .filter(|p| p.source.is_clean())
         .map(|p| (p.uid, p.name))
         .collect())
 }
@@ -1135,6 +1154,7 @@ with = ["friend"]
 
     #[test]
     fn a_story_is_stored_as_drawn_and_today_redraws_when_its_inputs_change() {
+        use super::super::world::World;
         let dir = store();
         let today = d("2026-11-02");
         let from = today - Days::new(6);
@@ -1198,6 +1218,42 @@ with = ["friend"]
             "{:?}",
             mine[6].events
         );
+        // Intensity is an input: flipping it redraws today, never the past.
+        std::fs::write(
+            dir.join("mara").join(FILE),
+            "[[storylet]]\nid = \"only\"\ntitle = \"the only thing\"\nsize = \"minor\"\n\
+             [[storylet]]\nid = \"grave\"\ntitle = \"a grave thing\"\nsize = \"severe\"\n",
+        )
+        .unwrap();
+        let capped = story(&dir, "mara", today, today, today).unwrap();
+        let toml = dir.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        let full = if text.contains("intensity") {
+            text.replace("\"capped\"", "\"full\"")
+        } else {
+            text.replace("[life]\n", "[life]\nintensity = \"full\"\n")
+        };
+        std::fs::write(&toml, &full).unwrap();
+        let opened = World::open(&dir.join("mara"))
+            .unwrap()
+            .story_day(today)
+            .unwrap()
+            .unwrap()
+            .1;
+        let after = story(&dir, "mara", today, today, today).unwrap();
+        let redrawn = World::open(&dir.join("mara"))
+            .unwrap()
+            .story_day(today)
+            .unwrap()
+            .unwrap()
+            .1;
+        assert_ne!(
+            opened, redrawn,
+            "intensity changes what today was drawn from"
+        );
+        assert!(capped[0].events.iter().all(|e| e.size != Size::Severe));
+        let _ = after;
+        std::fs::write(&toml, &text).unwrap();
         // A day ahead is drawn, never stored.
         let ahead = story(
             &dir,
