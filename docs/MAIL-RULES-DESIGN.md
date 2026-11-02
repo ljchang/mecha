@@ -484,7 +484,14 @@ keys mailbox actions. Every ledger row therefore carries the **thread id**
 as well as the message id — Gmail's `threadId`, Outlook's `conversationId`,
 both stable across moves — and the once-per-thread check below is a lookup
 on `(rule, account, thread id)` over the outbound rows, a key of its own
-beside the per-message one. Outbound actions are additionally limited to **one
+beside the per-message one, and it names its closing outcomes as the
+per-message key does: **`pending`, `sent`, `staged`, `held` and an outbound
+`failed` close the thread** — a send that reached the provider, one queued
+and still owed, or one whose fate cannot be told — and **`would have`,
+`skipped` and `expired` leave it open**. Otherwise a rule promoted out of
+`shadow` would find its own would-have rows and never send on the threads it
+was approved against, and a rule that lost the outbound slot to another on
+one message could never take it on the next. Outbound actions are additionally limited to **one
 occasion per rule per thread**: all of a rule's outbound actions fire together
 on the first message that triggers them — the receipts rule's `forward` *and*
 typed `send` both go (§4.3) — and a later message in a thread the rule has
@@ -1086,7 +1093,9 @@ real and worth serving, and the safe shape exists already in
   frame — the owner's words, or a model's written in a conversation that had
   read nothing untrusted — and a proposal
   drafted after reading mail installs a description whose origin is
-  `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
+  `Origin::of_proposal`'s untrusted answer. So **no outbound action group —
+  and not the Board group either, whose `task` name reaches a task run's
+  prompt (§7) — may
   enter `auto` while the rule's description, any template it sends, its
   sender keys (`from`, `from_domain`), or its `to` is model-proposed text
   from an armed conversation.** The sender keys belong on this list because
@@ -1199,12 +1208,17 @@ attention for a rule holding an outbound group in `auto` while `shell` runs
 unconfined (§6.1). In `propose` until the owner approves a rule.
 
 **P5 — typed-field sends.** `fields`, the grounded extraction, the rendered
-template.
+template, and a shared header check for the template's subject on both
+providers: `gmail::checked_header` is private to `gmail.rs` today and has no
+Graph counterpart, so P5 exports it or adds the equivalent.
 
 **P6 — drafted replies.** `draft_with`, the closed drafting context, the
 `shareable` frontmatter key, graduation through the approval screen.
 
-**P7 — `mail_rule_propose`.**
+**P7 — `mail_rule_propose`.** With the registration surfaces
+`persona_propose` already has, both test-enforced: its effect-class entry
+(`mecha-cli/tests/effect_class.rs`, `store_write`) and the incognito tool
+list (`serve/incognito.rs`).
 
 When P1 lands, `ARCHITECTURE.md` gets a *Mail rules* section for the
 invariants. `TRIFECTA.md` gets the rule-driven send as a channel when P4
