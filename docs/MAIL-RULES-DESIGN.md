@@ -244,7 +244,8 @@ a `priority = 5` archive silence a `priority = 90` reply**, because §4.3 gives
 outbound actions to the first rule *that has any*, so a higher-priority
 mailbox-only rule does not take the thread's outbound slot. So the condition is
 not about rank: whenever any description rule is enabled (for any action, not
-only outbound ones), or any matching header rule has an outbound action — the
+only outbound ones), or any matching header rule has an outbound action, a
+`digest` or a `task` — the last two because they need the verdict (§7) — the
 same header rule's own (one rule holding both `forward` and `archive` is §5.2's
 expected shape) or another's — where **enabled means any mode but `off`,
 `shadow` included**. A shadow rule's would-be actions have to see the thread too, or an archive would
@@ -253,7 +254,10 @@ to approve it, and shadow would under-measure in exactly the direction that
 looks safe —
 **the header rule's inbox-removing
 actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
-its other actions (`read`, `unread`, `tag`, `digest`, `task`) run on the timer. The header case
+its `read`, `unread` and `tag` run on the timer. **`digest` and `task` never
+run on the timer**: they read the verdict, so they run at the end of the
+classify pass with everything else that does, and a thread carrying one is
+always classified. The header case
 matters as much as the description one: a `priority = 10` rule that archives
 a list and a `priority = 50` rule that forwards the same sender's mail both
 match at minute three, the forward waits for `classify` (§4.4), and an
@@ -299,8 +303,8 @@ the single `rule` slot from one that could. Never a separate header rule — and
 timer**. This is the common shape, not an edge: §5.2 requires a sender key
 for any automatic forward, send or drafted reply, so §3's `receipts-to-finance`
 example (`from_domain` + `describe`) is exactly it. Read as a header rule, its
-`digest` would fire on the timer for every message from the vendor, whether
-or not it was a receipt. For §5.5, such a rule counts as a description rule,
+`digest` would fire for every message from the vendor, whether or not it was
+a receipt. For §5.5, such a rule counts as a description rule,
 so its `trash` and `spam` propose: a pinned sender set narrows who can
 trigger it but not what the description generalises to, and an owner who
 wants an automatic trash on a sender alone writes a header rule for it.
@@ -411,9 +415,9 @@ both declared by the same rule.
 ### 4.4 When it runs
 
 - Header rules' **mailbox and record actions**: `mecha mail rule apply
-  --headers`, on its own five-minute timer — except the inbox-removing ones
-  §4.1 defers to the classify pass when a description rule or an outbound
-  action could still need the thread. No model, so no `model-idle.sh` gate.
+  --headers`, on its own five-minute timer — `read`, `unread` and `tag`
+  always, and the inbox-removing ones only when §4.1 does not defer them.
+  `digest` and `task` run after `classify`, since they read the verdict. No model, so no `model-idle.sh` gate.
 - **Every outbound action, from any rule**, is decided in one place: the
   end of the `classify` pass, after every rule has been evaluated for the
   thread. That is the only way §4.3's "first by priority" can hold — a
@@ -837,7 +841,11 @@ action, since §5.4's loop guard and caps rest on them — removing an alias or
 raising the global cap must lapse the approvals that counted on them). The
 caps live in the rule store, never on `Config`, so they are not layered
 config and not the two-edit `Config`/`ConfigLayer` trap. On every run the digest is recomputed; **if anything changed, the rule
-drops to `propose`** — recorded as an `all`-group **lapse row appended to
+drops to `propose` or stays lower** — the row records the lower of the
+current effective mode and `propose`, so a lapse never raises anything: an
+edit to a rule in `shadow` leaves it in `shadow`, and an edit after §6.4's
+failure brake does not release the brake. It is recorded as an `all`-group
+**lapse row appended to
 `approvals.jsonl`**, as well as a ledger row (`approval lapsed: files
 changed`) for the page, and a notice. The approvals row is what makes it
 stick: with only a ledger row, reverting the edit would make the latest
@@ -955,8 +963,8 @@ A rule steps itself down, with a notice, when:
   matcher is wrong.
 - **Three consecutive action failures** → `shadow`.
 - **A rule's daily cap is hit** (§5.4) → that rule's outbound actions stage
-  in the outbox for the rest of the local day, with a notice; its mode is
-  unchanged. Twenty matching messages in a day is the likeliest brake to
+  in the outbox for the rest of the local day, with a notice and ledger rows
+  saying `held: rule cap`; its mode is unchanged. Twenty matching messages in a day is the likeliest brake to
   fire, and quietly not answering them (which a step-down to `shadow` would
   do) is a worse failure than a queue the owner can release.
 - **The cap across all rules is hit** → no rule changes mode, because the
@@ -1010,8 +1018,9 @@ digest is a surface for a human, never input to a privileged run
 (`Record::for_privileged_run` stays as it is).
 
 `digest` as a rule action means "make sure I see this in the next digest",
-and nothing else: it moves no mail, which is why it is a record action and
-safe on the timer (§4.1). "Archive it, but show me tomorrow" — the newsletter
+and nothing else: it moves no mail, which is why it is a record action. It
+runs after `classify`, never on the timer, because the digest shows the
+verdict's one-line (§4.1). "Archive it, but show me tomorrow" — the newsletter
 you want to skim but not in your inbox — is two actions, `archive` and
 `digest`, and the archive follows §4.1's deferral like any other. `task` as an action
 creates the task directly, and **what it reaches is not only the board**: a
@@ -1049,7 +1058,8 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   grounded `rule_quote`), the action, the mode it ran in, and the outcome:
   `pending` (written before an action executes, §4.4), `done`, `would have`
   (shadow), `offered` (a proposed mailbox action waiting in the mail desk),
-  `staged`, `held: global cap` (§6.4), `sent`, `released unchanged`,
+  `staged`, `held: rule cap` and `held: global cap` (§6.4), `sent`,
+  `released unchanged`,
   `edited`, `rejected`, `undone`, `expired` (§4.1), `failed: <why>`,
   `skipped: <guard>`.
   `skipped` rows are shown, not hidden — a guard visibly firing is how the
