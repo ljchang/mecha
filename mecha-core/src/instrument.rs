@@ -379,7 +379,16 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
             .and_then(Table::position)
             .or(a.position())
     };
+    // And the comment above the first header leads the rebuilt list: it
+    // lives in that table's decor prefix, which `Table::new()` lacks.
+    let lead = |name: &str, a: &Table| -> Option<toml_edit::Decor> {
+        a.get(name)
+            .and_then(Item::as_array_of_tables)
+            .and_then(|t| t.iter().next())
+            .map(|t| t.decor().clone())
+    };
     let windows_at = anchor("windows", a);
+    let windows_lead = lead("windows", a);
     let mut windows = ArrayOfTables::new();
     for w in &h.windows {
         let mut t = Table::new();
@@ -387,6 +396,11 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
         t["start"] = value(w.start.as_str());
         t["end"] = value(w.end.as_str());
         t.set_position(windows_at);
+        if windows.is_empty() {
+            if let Some(d) = &windows_lead {
+                *t.decor_mut() = d.clone();
+            }
+        }
         windows.push(t);
     }
     a["windows"] = Item::ArrayOfTables(windows);
@@ -398,6 +412,7 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
         .and_then(|t| t.iter().next())
         .and_then(Table::position)
         .or(windows_at);
+    let overrides_lead = lead("overrides", a);
     if h.overrides.is_empty() {
         a.remove("overrides");
     } else {
@@ -419,6 +434,11 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
                 t["windows"] = value(pairs);
             }
             t.set_position(overrides_at);
+            if overrides.is_empty() {
+                if let Some(d) = &overrides_lead {
+                    *t.decor_mut() = d.clone();
+                }
+            }
             overrides.push(t);
         }
         a["overrides"] = Item::ArrayOfTables(overrides);
@@ -693,6 +713,10 @@ heading = "You're booked"
             .replace(
                 "buffer_minutes = 10",
                 "buffer_minutes = 10  # tight on purpose",
+            )
+            .replace(
+                "[[availability.windows]]",
+                "# Tuesdays only, Mondays are for writing.\n[[availability.windows]]",
             );
         let mut h = read_hours(&noted).unwrap();
         h.windows[0].end = "16:00".into();
@@ -704,6 +728,11 @@ heading = "You're booked"
         );
         assert!(
             out.contains("buffer_minutes = 15  # tight on purpose"),
+            "{out}"
+        );
+        // A comment above the windows' header leads the rebuilt windows.
+        assert!(
+            out.contains("# Tuesdays only, Mondays are for writing.\n[[availability.windows]]"),
             "{out}"
         );
     }
