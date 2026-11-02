@@ -10020,6 +10020,13 @@ mod tests {
         assert_eq!(got["accepted"]["waiting"], 1);
         assert_eq!(got["proposal"]["people"][0]["name"], "Ines");
         assert_eq!(got["people"][0]["name"], "Theo");
+        // Ines still waits on the owner: proposing again is a 409 before
+        // the model runs, never a replacement (review of #804).
+        assert!(matches!(
+            ps.propose_people(&w.chat.follower, &w.library, "mara", &ProposalBody::default())
+                .await,
+            Err(Refusal::Conflict(m)) if m.contains("accept or dismiss it first")
+        ));
         // identity.md changed since: accepting the rest is a 409.
         let id = w.store().join("mara/identity.md");
         let text = std::fs::read_to_string(&id).unwrap();
@@ -10030,6 +10037,19 @@ mod tests {
             ps.act_on_proposal(&w.library, "mara", true, &ProposalBody::default()),
             Err(Refusal::Conflict(m)) if m.contains("changed since")
         ));
+        // Stale, it is the one proposal a new reading replaces: the page's
+        // "Propose again".
+        let again = ps
+            .propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again["proposal"]["stale"], false);
+        assert_eq!(again["proposal"]["people"].as_array().unwrap().len(), 2);
         // Dismissed, nothing waits.
         let gone = ps
             .act_on_proposal(&w.library, "mara", false, &ProposalBody::default())

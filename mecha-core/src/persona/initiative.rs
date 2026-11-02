@@ -44,14 +44,19 @@
 //!   all: the newest chat's last turn. Its outcome is unknown, so it is
 //!   kept out of the rate, never counted as a no.
 //!
-//! **Order is when it was said.** "Later" is read in time, not by chat. A
-//! chat is read as stretches, split wherever the transcript records a
-//! config with its clock (its start, each resume, and a model switch), and
-//! every chat's stretches are read in one order by that clock. Ordering
-//! whole chats by when they began would put a long-lived chat's newest
-//! turns before chats that came after them, and each misplaced turn errs
-//! toward uptake (review of #808). A split decides only that order: within
-//! a chat, an introduction waits for the owner's next turn wherever it
+//! **Order is as near to when it was said as the record allows.** "Later"
+//! is read in time, not by chat. A chat is read as stretches, split
+//! wherever the transcript records a config with its clock, and every
+//! chat's stretches are read in one order by that clock. Ordering whole
+//! chats by when they began would put a long-lived chat's newest turns
+//! before chats that came after them, and each misplaced turn errs toward
+//! uptake (review of #808). The limit: no record carries a clock per run,
+//! and the persona door writes a config only when a chat is first taken up
+//! by a `serve` process or the router rebinds, not on every resume. So a
+//! chat held open in one process across days is read at its start, and a
+//! cross-chat return during those days can read as the chat's own next
+//! turn, or the other way round. A split decides only that order: within a
+//! chat, an introduction waits for the owner's next turn wherever it
 //! falls, so where a chat happens to split changes no outcome.
 //!
 //! **Arms, from what she was shown, not from her settings.** Each turn is

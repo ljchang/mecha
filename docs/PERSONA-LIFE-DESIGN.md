@@ -2341,7 +2341,11 @@ ruled for repetition.
     them, is not taken up; an introduction the owner has not spoken after yet has no outcome
     and stays out of the rate. "Later" is time, not chat: a chat is read
     as stretches split at each recorded config, all ordered by its clock,
-    and a split decides only that order. Every text she says in a run
+    and a split decides only that order. That order is only as fine as the
+    configs: one is written when a `serve` process first takes the chat up
+    or the router rebinds, never per run, so a chat held open in one
+    process across days is read at its start. A per-run clock in the
+    record would close that. Every text she says in a run
     counts, the one before a tool call too. A capitalised name must be capitalised, except in an owner turn
     typed with no capital at all. Turns are filed by what the transcript shows she was given (a
     today-block among the run's notes, the people heading in the recorded
