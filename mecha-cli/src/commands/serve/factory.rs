@@ -187,7 +187,13 @@ fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>,
             )
         })
         .collect();
-    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    // By instant, not by string: the stamps are kept as the box wrote them,
+    // and an offset other than `Z` would sort wrong lexically.
+    rows.sort_by_key(|(start, _)| {
+        chrono::DateTime::parse_from_rfc3339(start)
+            .ok()
+            .map(|t| t.with_timezone(&chrono::Utc))
+    });
     (
         Ok(rows.into_iter().map(|(_, v)| v).collect()),
         Some(open),
@@ -198,9 +204,24 @@ fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>,
 /// Run a sibling program by its absolute path. A user unit has no login's
 /// `PATH`, which is why `find_program` also looks in `~/.cargo/bin`.
 fn program(name: &str) -> anyhow::Result<PathBuf> {
+    // Under test, a directory of stand-ins and nothing else: the real
+    // `factory-publish` on a developer's machine pushes to a real box, so a
+    // test that missed its stand-in must fail rather than fall through.
+    #[cfg(test)]
+    if let Some(dir) = TEST_BIN_DIR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return Ok(dir.join(name));
+    }
     mecha_core::onboarding::find_program(name)
         .ok_or_else(|| anyhow::anyhow!("`{name}` is not installed on this machine"))
 }
+
+/// Where [`program`] finds its children in a test (`serve::tests`).
+#[cfg(test)]
+pub(super) static TEST_BIN_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 /// Whether a child may be killed when its request goes away. A read
 /// (`type check`, `slots preview`) may: a client that walked off wants it

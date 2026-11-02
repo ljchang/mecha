@@ -3400,6 +3400,138 @@ mod tests {
         );
     }
 
+    /// The Factory page's hours save, end to end through the router, over a
+    /// scratch home and stand-in children — never the developer's own
+    /// `factory-publish`, which pushes to a real box. The headline claim is
+    /// the first: a save the push fails after still stands, and says so.
+    #[tokio::test]
+    async fn a_factory_hours_save_stands_past_its_push_and_refuses_what_it_should() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::testenv::HomeGuard::new("serve-factory");
+        let types = home.dir.join("factory").join("types");
+        std::fs::create_dir_all(&types).unwrap();
+        let manifest = "# the owner's note\nid = \"book\"\nversion = 1\nkind = \"booking\"\n\
+                        title = \"Book a meeting\"\n\n[availability]\n\
+                        timezone = \"America/New_York\"\ndurations = [30]\n\n\
+                        [[availability.windows]]\nday = \"tue\"\nstart = \"13:00\"\nend = \"17:00\"\n";
+        let book = types.join("book.toml");
+        std::fs::write(&book, manifest).unwrap();
+        std::fs::write(
+            types.join("letter.toml"),
+            "id = \"letter\"\ntitle = \"A letter\"\n",
+        )
+        .unwrap();
+
+        // Stand-ins: the factory checks and previews, and the push fails.
+        let bin = home.dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        script(
+            "factory-publish",
+            r#"case "$1 $2" in
+  "type check") exit 0 ;;
+  "slots preview") echo '{"instrument":"book","timezone":"America/New_York","horizon_days":60,"busy_generated_at":"2026-11-02T00:00:00Z","busy_age_seconds":1,"last_pushed_at":"2026-11-02T00:00:00Z","held_slots":0,"slots":[]}' ;;
+  "slots push") echo "Error: the box is down" >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac"#,
+        );
+        script(
+            "mecha-mail",
+            r#"echo '{"generated_at":"2026-11-02T00:00:00Z","time_min":"2026-11-02T00:00:00Z","time_max":"2027-01-02T00:00:00Z","busy":[]}'"#,
+        );
+        *super::factory::TEST_BIN_DIR.lock().unwrap() = Some(bin.clone());
+        struct Unpin;
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                *super::factory::TEST_BIN_DIR.lock().unwrap() = None;
+            }
+        }
+        let _unpin = Unpin;
+
+        let post = |body: serde_json::Value| {
+            test_router().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/factory/hours")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+        };
+        let hours = |end: &str| {
+            serde_json::json!({
+                "timezone": "America/New_York", "durations": [30], "buffer_minutes": 0,
+                "min_notice_hours": 24, "horizon_days": 60, "per_day_cap": null,
+                "windows": [{"day": "tue", "start": "13:00", "end": end}], "overrides": [],
+            })
+        };
+        let base = mecha_core::instrument::digest(manifest);
+
+        // The save stands past a failed push, and the reply says both.
+        let res = post(serde_json::json!({"id": "book", "base": base, "hours": hours("16:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let out: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["saved"], true, "{out}");
+        assert_eq!(out["pushed"], false, "{out}");
+        assert!(
+            out["push_error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("box is down"),
+            "{out}"
+        );
+        let written = std::fs::read_to_string(&book).unwrap();
+        assert!(written.contains("end = \"16:00\""), "{written}");
+        assert!(written.starts_with("# the owner's note"), "{written}");
+
+        // The page's old digest is now stale: 409, and the file is left.
+        let res = post(serde_json::json!({"id": "book", "base": base, "hours": hours("15:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&book).unwrap(), written);
+
+        // Unknown id, a form, and an oversized manifest: refused before any child.
+        let now = mecha_core::instrument::digest(&written);
+        let res = post(serde_json::json!({"id": "nope", "base": now, "hours": hours("15:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = post(serde_json::json!({"id": "letter", "base": now, "hours": hours("15:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let huge = format!(
+            "{written}\n# {}\n",
+            "x".repeat(mecha_core::instrument::MAX_MANIFEST_BYTES)
+        );
+        std::fs::write(&book, &huge).unwrap();
+        let res = post(serde_json::json!({
+            "id": "book", "base": mecha_core::instrument::digest(&huge), "hours": hours("15:00")
+        }))
+        .await
+        .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            std::fs::read_to_string(&book).unwrap(),
+            huge,
+            "a refused save writes nothing"
+        );
+    }
+
     /// The list editor's save: rows set in place in the file on disk, so a
     /// comment among the lines survives a re-rank and an edit, which the JS
     /// serialiser it replaced could not do — and a page that read a charter
