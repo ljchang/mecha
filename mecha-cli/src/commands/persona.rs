@@ -36,9 +36,9 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// How her chats went over a window, read from their transcripts: how
-    /// much her replies repeat, and how often she brings up her people
-    /// beside what you did with them, by what she was shown
+    /// How their chats went over a window, read from the transcripts: how
+    /// much their replies repeat, and how often they bring up their people
+    /// beside what you did with them, by what they were shown
     /// (PERSONA-LIFE-DESIGN.md §14). Counts only, never words.
     Measures {
         name: String,
@@ -120,26 +120,26 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: MemoryCmd,
     },
-    /// Her people: who is in her life and how she stands with each
+    /// Their people: who is in their life and how they stand with each
     /// (PERSONA-LIFE-DESIGN §6). Every change renders network.md again.
     People {
         #[command(subcommand)]
         cmd: PeopleCmd,
     },
-    /// Her week: the anchors her days are built around, and a model's draft
+    /// Their week: the anchors their days are built around, and a model's draft
     /// waiting on you (`PERSONA-LIFE-DESIGN.md` §4.1).
     Routine {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
-    /// Her story: small events drawn over her days by the director, her
-    /// energy, stress and mood, and the weather where she lives
-    /// (`PERSONA-LIFE-DESIGN.md` §4.3). Nothing of it reaches her chats yet.
+    /// Their story: small events drawn over their days by the director,
+    /// their energy, stress and mood, and the weather where they live
+    /// (`PERSONA-LIFE-DESIGN.md` §4.3). Nothing of it reaches their chats yet.
     Story {
         #[command(subcommand)]
         cmd: StoryCmd,
     },
-    /// Her day: drawn from her routine and time-use data the first time it
+    /// Their day: drawn from their routine and time-use data the first time it
     /// is asked for, then kept (`PERSONA-LIFE-DESIGN.md` §4.2). Needs
     /// `[life] world = true` and a `cell` in routine.toml.
     Day {
@@ -152,7 +152,7 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Her week: each day's hours by activity, Monday first; a day past two
+    /// Their week: each day's hours by activity, Monday first; a day past two
     /// weeks shows as its week's folded minutes. Needs what `day` needs.
     Week {
         name: String,
@@ -166,7 +166,7 @@ pub enum Cmd {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum StoryCmd {
-    /// Her days' events, levels and weather, a week to today by default.
+    /// Their days' events, levels and weather, a week to today by default.
     Show {
         name: String,
         /// The last day shown, YYYY-MM-DD; today when left out.
@@ -178,10 +178,10 @@ pub enum StoryCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Write her deck (`story.toml`) from the starter for her kind of week,
-    /// to edit. Refused when she already has one.
+    /// Write their deck (`story.toml`) from the starter for their kind of
+    /// week, to edit. Refused when they already have one.
     Init { name: String },
-    /// Fetch the weather where she lives (`story.toml`'s `[place]`): the
+    /// Fetch the weather where they live (`story.toml`'s `[place]`): the
     /// last two weeks and the next one, parsed into closed fields.
     Weather { name: String },
 }
@@ -210,23 +210,23 @@ pub enum RoutineCmd {
     },
     /// Drop the waiting draft; the routine is untouched.
     Discard { name: String },
-    /// Have her own model draft her week from identity.md and
-    /// motivation.md, as a draft waiting on you beside her routine.
+    /// Have their own model draft their week from identity.md and
+    /// motivation.md, as a draft waiting on you beside their routine.
     Draft { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum PeopleCmd {
-    /// Everyone in her network, how she stands with each, and the ties
+    /// Everyone in their network, how they stand with each, and the ties
     /// between them.
     Show {
         name: String,
         #[arg(long)]
         json: bool,
     },
-    /// Her whole network as JSON: people, every event, and the folds.
+    /// Their whole network as JSON: people, every event, and the folds.
     Export { name: String },
-    /// Add someone to her life, with her tie to them.
+    /// Add someone to their life, with their tie to them.
     Add {
         name: String,
         /// Their name.
@@ -234,7 +234,7 @@ pub enum PeopleCmd {
         /// Another name they go by (repeatable).
         #[arg(long = "alias")]
         aliases: Vec<String>,
-        /// Their role in her life: "older sister", "her advisor".
+        /// Their role in the persona's life: "older sister", "advisor".
         #[arg(long)]
         role: Option<String>,
         /// A line about them.
@@ -247,7 +247,7 @@ pub enum PeopleCmd {
         /// acquaintance or rival.
         #[arg(long)]
         tie: Option<String>,
-        /// The tie in her words: "sister", "lab partner".
+        /// The tie in the persona's words: "sister", "lab partner".
         #[arg(long)]
         label: Option<String>,
         /// How close: 5, 15, 50 or 150 (a Dunbar layer).
@@ -279,7 +279,7 @@ pub enum PeopleCmd {
         name: String,
         person: String,
         kind: String,
-        /// On the tie between them and this person, not hers.
+        /// On the tie between them and this person, not the persona's own.
         #[arg(long)]
         with: Option<String>,
         /// When: 2019-06-14, 2019-06, summer 2019, or 2019.
@@ -297,26 +297,26 @@ pub enum PeopleCmd {
     },
     /// Take back an event you recorded by mistake, by its id.
     Retract { name: String, event: String },
-    /// Take someone out of her network, with every event they are part of.
+    /// Take someone out of their network, with every event they are part of.
     Remove {
         name: String,
         person: String,
         #[arg(long)]
         yes: bool,
     },
-    /// Have her own model find the people identity.md names, as a
+    /// Have their own model find the people identity.md names, as a
     /// proposal waiting on you (PL6).
     Propose { name: String },
     /// The people proposed from identity.md, numbered, waiting on you.
     Proposal { name: String },
-    /// Add the proposed people to her network, or only some (`--only 1,3`),
+    /// Add the proposed people to their network, or only some (`--only 1,3`),
     /// then list the identity.md lines that still name them.
     Accept {
         name: String,
         #[arg(long, value_delimiter = ',')]
         only: Option<Vec<usize>>,
     },
-    /// Drop the proposal; her network is untouched.
+    /// Drop the proposal; their network is untouched.
     Dismiss { name: String },
 }
 
@@ -549,16 +549,16 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
     let Some(r) = drafter::draft(provider.as_ref(), &bound.model, dir, &p).await? else {
         println!(
             "The model found no fixed point in `{}`'s week to draft from what you wrote \
-             of her, so nothing waits on you. `mecha persona routine edit {}` writes \
-             her routine by hand.",
+             of them, so nothing waits on you. `mecha persona routine edit {}` writes \
+             their routine by hand.",
             p.name, p.name
         );
         return Ok(());
     };
     println!(
-        "Drafted {} anchor(s) for `{}`, waiting on you beside her routine. \
+        "Drafted {} anchor(s) for `{}`, waiting on you beside their routine. \
          `mecha persona routine show {}` reads it; `edit {} --draft` changes it; \
-         `approve {}` makes it her routine.",
+         `approve {}` makes it their routine.",
         r.anchors.len(),
         p.name,
         p.name,
@@ -998,7 +998,7 @@ fn initiative_lines(
     };
     if i.people == 0 {
         return vec![format!(
-            "no one in her network to look for; add her people first{unreadable}"
+            "no one in their network to look for; add their people first{unreadable}"
         )];
     }
     if i.arms.is_empty() {
@@ -1744,7 +1744,7 @@ fn render_week(
         writeln!(out, "  {}", line.join(", "))?;
     }
     if let Some(why) = &week.unavailable {
-        writeln!(out, "\nThe days not drawn wait on her routine: {why}")?;
+        writeln!(out, "\nThe days not drawn wait on their routine: {why}")?;
     }
     if let Some(f) = &week.folded {
         // Most first, as each day's line and the web app's summary are.
@@ -1793,8 +1793,8 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             }
             match (&texts.routine, &parsed) {
                 (None, _) => println!(
-                    "`{name}` has no routine, so no day is drawn for her: it names her cell, \
-                     the kind of week her days come from. \
+                    "`{name}` has no routine, so no day is drawn for them: it names their cell, \
+                     the kind of week their days come from. \
                      `mecha persona routine edit {name}` writes one."
                 ),
                 (Some(_), Err(e)) => println!("routine.toml does not load: {e:#}"),
@@ -1802,7 +1802,7 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                     println!("── routine.toml ──\n{}", text.trim());
                     if r.as_ref().is_some_and(|r| r.cell.is_none()) {
                         println!(
-                            "\nIt names no cell, so no day is drawn for her until it does \
+                            "\nIt names no cell, so no day is drawn for them until it does \
                              (`cell = \"student\"`, `full_time`, `full_time_parent`, \
                              `part_time`, `at_home` or `retired`)."
                         );
@@ -1841,7 +1841,7 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                     if draft {
                         ""
                     } else {
-                        ": no day is drawn for her until a routine names her cell"
+                        ": no day is drawn for them until a routine names their cell"
                     }
                 );
                 return Ok(());
@@ -1885,7 +1885,7 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             }
             if let Some(cell) = routine::kept_cell(&draft, texts.routine.as_deref()) {
                 println!(
-                    "It names no kind of week, so she keeps hers: {}.",
+                    "It names no kind of week, so they keep theirs: {}.",
                     cell.id()
                 );
             }
@@ -1959,7 +1959,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
         let lines = people_draft::identity_overlap(dir, p)?;
         if !lines.is_empty() {
             println!(
-                "\nidentity.md still names people who now live in her network. Edit these \
+                "\nidentity.md still names people who now live in their network. Edit these \
                  lines (`mecha persona edit {}`) so each lives in one place:",
                 p.name
             );
@@ -2022,7 +2022,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
                 println!("Added {n}.");
             }
             for n in &got.already {
-                println!("{n} is already in her network; left as it is.");
+                println!("{n} is already in their network; left as it is.");
             }
             if got.waiting > 0 {
                 println!(
@@ -2035,7 +2035,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
         PeopleCmd::Dismiss { name } => {
             let p = find(&store, &name)?;
             people_draft::dismiss(&dir.join(&p.name))?;
-            println!("Dropped the proposal; her network is untouched.");
+            println!("Dropped the proposal; their network is untouched.");
         }
         PeopleCmd::Export { name } => {
             let n = network::Network::read(&open(&name)?)?;
@@ -2073,7 +2073,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             )?;
             let n = network::Network::read(&pdir)?;
             let p = n.person(&id).context("the person just added")?;
-            println!("Added {} ({}) to her network.", p.name, &id[..8]);
+            println!("Added {} ({}) to their network.", p.name, &id[..8]);
         }
         PeopleCmd::Edit {
             name,
@@ -2173,7 +2173,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             let p = n.find(&person)?;
             if !yes
                 && !confirm(&format!(
-                    "Take {} out of her network, with everything recorded between them?",
+                    "Take {} out of their network, with everything recorded between them?",
                     p.name
                 ))?
             {
@@ -2181,7 +2181,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
                 return Ok(());
             }
             network::remove_person(&pdir, &p.uid)?;
-            println!("Took {} out of her network.", p.name);
+            println!("Took {} out of their network.", p.name);
         }
     }
     Ok(())
@@ -2990,7 +2990,7 @@ mod tests {
     fn the_initiative_lines_say_nothing_to_read_apart_from_a_zero() {
         use mecha_core::persona::initiative::{Arm, ArmReading, Initiative, Reading};
         let none = Ok(Initiative::default());
-        assert!(initiative_lines(&none, 30)[0].contains("add her people first"));
+        assert!(initiative_lines(&none, 30)[0].contains("add their people first"));
         let quiet = Ok(Initiative {
             people: 2,
             chats: 1,
