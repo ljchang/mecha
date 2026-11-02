@@ -1367,6 +1367,7 @@ mod tests {
     fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
         RunStats {
             duration_secs: None,
+            ended_at: None,
             homeostat: None,
             brief: None,
             resume_cache: None,

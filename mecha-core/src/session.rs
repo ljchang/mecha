@@ -1076,6 +1076,15 @@ pub struct RunStats {
     /// and would read as a shorter run rather than an unknown one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
+    /// When the outcome was recorded: the one per-run clock a transcript
+    /// carries. A `Config`'s clock is written per process attach and per
+    /// router rebind, so a chat held open for days had no time on its later
+    /// turns, and a reading that orders turns across chats
+    /// (`persona::initiative`) could only place them at the chat's start.
+    /// Set by [`Session::record_outcome`], never by `of_run`, so a fold or
+    /// a replay does not invent one. `None` on a row from before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 impl RunStats {
@@ -1182,6 +1191,9 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             _ => None,
         };
+        // Last wins, `None` included, as `stop_cause`: an episode ended when
+        // its last run did, and a last run with no clock leaves it unknown.
+        self.ended_at = other.ended_at;
         self.exhausted = other.exhausted;
         self.ended_on_failed_call = other.ended_on_failed_call;
         self.tool_calls += other.tool_calls;
@@ -1316,6 +1328,8 @@ impl RunStats {
             exhausted: o.exhausted,
             ended_on_failed_call: o.ended_on_failed_call,
             duration_secs: o.duration_secs,
+            // Stamped where the row is recorded, never here.
+            ended_at: None,
             tool_calls: o
                 .tool_calls
                 .iter()
@@ -2001,7 +2015,9 @@ impl Session {
     ///
     /// [`record_run`]: Session::record_run
     pub fn record_outcome(&self, outcome: &crate::agent::RunOutcome) -> Result<()> {
-        self.append(&Record::Outcome(RunStats::from(outcome)))
+        let mut row = RunStats::from(outcome);
+        row.ended_at = Some(Utc::now());
+        self.append(&Record::Outcome(row))
     }
 
     /// Every outcome recorded in a transcript, in order, with the model and
@@ -4676,6 +4692,7 @@ mod tests {
             cost_usd: Some(0.5),
             usage_complete: true,
         };
+        let before = Utc::now();
         session.record_outcome(&outcome).unwrap();
 
         let stats = Session::outcomes(&session.path).unwrap();
@@ -4684,6 +4701,26 @@ mod tests {
         assert_eq!(got.turns, 3);
         assert_eq!(got.stop_cause, Some(StopCause::Completed));
         assert!(got.ended_on_failed_call);
+        // The run's own clock, stamped as it is recorded and never by the
+        // row's constructor, so a replay's fold invents none.
+        let at = got.ended_at.expect("record_outcome stamps the time");
+        assert!(at >= before && at <= Utc::now(), "{at}");
+        assert_eq!(RunStats::from(&outcome).ended_at, None);
+        let mut early = got.clone();
+        early.ended_at = Some(before - chrono::Duration::hours(1));
+        assert_eq!(
+            RunStats::fold([early.clone(), got.clone()])
+                .unwrap()
+                .ended_at,
+            Some(at)
+        );
+        assert_eq!(
+            RunStats::fold([got.clone(), RunStats::default()])
+                .unwrap()
+                .ended_at,
+            None,
+            "a last run with no clock leaves the episode's end unknown"
+        );
         assert_eq!(got.tool_calls, 4);
         // The environment refusing: the error and the unknown tool. A denial
         // is the harness working and must never be averaged in with failure.
