@@ -754,7 +754,7 @@ fn describe(admission: &Admission) -> String {
          join, or a long file or log to search. One program reads them all in one step, and \
          only what it prints comes back to you. It runs a short Python program (monty, a \
          subset of Python 3, with re, json, csv, collections, itertools, math, datetime, \
-         decimal and pathlib, but no third-party packages, os, io or statistics; a method is called, not \
+         decimal and pathlib (its read_text only), but no third-party packages, os, io or statistics; a method is called, not \
          passed as a value, so write `key=lambda k: d[k]`, not `key=d.get`). It \
          reaches data by calling the tools listed at the end, with keyword arguments, and ",
     );

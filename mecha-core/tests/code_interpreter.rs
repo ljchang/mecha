@@ -385,6 +385,21 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
             "{path}"
         );
     }
+    // the path reaches `fs_read` as written, a quote included, with a leading
+    // `/` taken off (monty cannot tell `open('/a')` from `open('a')`: both
+    // arrive as `/a`, so an absolute path is read relative to the workspace)
+    for (src, want) in [
+        ("open(\"it's.md\").read()", "it's.md"),
+        ("open('/etc/hosts').read()", "etc/hosts"),
+    ] {
+        let mut asked = Vec::new();
+        run_with(&interp, src, &["fs_read"], |c| {
+            asked.push(c.kwargs[0].1.as_str().unwrap().to_string());
+            Ok(Value::from(text))
+        })
+        .await;
+        assert_eq!(asked, vec![want.to_string()], "{src}");
+    }
     // `mode` as a keyword is read as the positional is
     let (f, _) = run_with(
         &interp,
@@ -411,12 +426,16 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
         "import re, json, csv, collections, itertools, math, datetime, decimal, pathlib\n\
          d = {'a': 1}\nprint(d.get('a'))\n\
          try:\n    max(d, key=d.get)\n    print('METHOD-AS-VALUE-WORKS')\n\
-         except BaseException:\n    print('method as value raises')\n\
-         for m in ['io', 'statistics']:\n    try:\n        __import__\n    except BaseException:\n        pass",
+         except BaseException:\n    print('method as value raises')",
         &[],
         |_| Ok(Value::Null),
     )
     .await;
+    assert!(
+        f.printed.starts_with("1\n"),
+        "d.get(k) works: {}",
+        f.printed
+    );
     assert!(
         f.printed.contains("method as value raises"),
         "{}",
