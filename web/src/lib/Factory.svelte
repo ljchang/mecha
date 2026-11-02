@@ -64,8 +64,17 @@
       itemError = String(e?.message ?? e);
     }
   }
+  // Leaving an instrument for the list drops its edit: App keeps this
+  // component mounted across the hash change, so nothing else would, and a
+  // Save bar under the list would offer to save a page that is not shown.
   $effect(() => {
-    if (id) loadItem(id);
+    if (id) {
+      loadItem(id);
+    } else {
+      item = null;
+      draft = null;
+      confirming = false;
+    }
   });
 
   const draftKey = $derived(draft ? JSON.stringify(draft) : null);
@@ -449,7 +458,7 @@
     {/if}
   </div>
 
-  {#if dirty && draft}
+  {#if id && dirty && draft}
     <div class="actionbar">
       <button class="abtn" disabled={saving} onclick={revert}>Revert</button>
       <button class="abtn primary" disabled={saving || !current || !!draftError} onclick={() => (confirming = true)}>Save hours…</button>
@@ -459,7 +468,7 @@
   <!-- `current`, never the last answer: the number confirmed is the number
        of the hours about to be written. An edit while the sheet is open
        closes it until the new answer lands. -->
-  {#if confirming && current}
+  {#if id && confirming && current}
     <div class="sheet">
       <div class="sheet-grip"></div>
       <div class="sheet-text">Strangers will be able to book {current.slots.length} slot{current.slots.length === 1 ? '' : 's'} over the next {current.horizon_days} days (now {item.preview?.slots.length ?? 'unknown'}).</div>
