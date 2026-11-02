@@ -76,6 +76,12 @@
   // The preview follows the draft, debounced: a person dragging a time
   // should see what it offers without pressing anything.
   let previewTimer = null;
+  // The request in flight, cancelled when the draft moves on: the server
+  // kills a read child whose client walked away (`Child::Read`), and only
+  // an aborted request walks away. Without this, dragging a time for ten
+  // seconds left twenty `type check` + `slots preview` pairs running to
+  // completion for answers the page then threw away.
+  let previewAbort = null;
   $effect(() => {
     const snapshot = draftKey;
     if (!snapshot || !dirty) {
@@ -88,7 +94,11 @@
     draftError = null;
     clearTimeout(previewTimer);
     previewTimer = setTimeout(() => runPreview(snapshot), 500);
-    return () => clearTimeout(previewTimer);
+    return () => {
+      clearTimeout(previewTimer);
+      previewAbort?.abort();
+      previewAbort = null;
+    };
   });
 
   // An emptied number box binds as null; say so in the page's words rather
@@ -105,10 +115,14 @@
       return;
     }
     try {
+      previewAbort?.abort();
+      const abort = new AbortController();
+      previewAbort = abort;
       const res = await fetch('/api/factory/preview', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id, base: item.digest, hours: JSON.parse(snapshot) }),
+        signal: abort.signal,
       });
       const text = await res.text();
       // A stale answer for a draft that has moved on is dropped; the
@@ -124,6 +138,8 @@
         draftError = null;
       }
     } catch (e) {
+      // An abort is the draft moving on, not a failure to report.
+      if (e?.name === 'AbortError') return;
       if (snapshot === draftKey) draftError = String(e?.message ?? e);
     }
   }
