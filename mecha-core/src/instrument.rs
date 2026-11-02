@@ -721,18 +721,53 @@ heading = "You're booked"
         assert!(err.contains("inline"), "{err}");
     }
 
-    /// "The owner is the only author" as a property of the tree rather than
-    /// of four documents: nothing but this module and the web handler may
-    /// call the functions that write a manifest. A tool, a CLI verb or a
-    /// trigger that reached them would fail here, by name.
-    #[test]
-    fn only_the_owners_page_writes_hours() {
+    /// Whether a source file outside the two allowed ones could reach a
+    /// manifest writer: a qualified call, or any import of this module —
+    /// `use …::instrument::write_hours` or an alias (`instrument as i`) would
+    /// otherwise call a writer without ever spelling `instrument::write_hours(`.
+    /// Reading the module from somewhere new is a reason to come and add that
+    /// file to the allowed list on purpose, not to slip past.
+    fn reaches_writer(text: &str) -> bool {
         const WRITERS: [&str; 4] = [
             "write_hours(",
             "rewrite(",
             "replace_if_unchanged(",
             "replace_file(",
         ];
+        let imports =
+            text.contains("use mecha_core::instrument") || text.contains("use crate::instrument");
+        let calls = WRITERS
+            .iter()
+            .any(|w| text.contains(&format!("instrument::{w}")));
+        imports || calls
+    }
+
+    #[test]
+    fn the_writer_predicate_fires_on_every_way_in() {
+        // Positive cases, so a renamed writer or a typo cannot leave the
+        // tree walk green while checking nothing.
+        assert!(reaches_writer(
+            "mecha_core::instrument::write_hours(&t, &h)?;"
+        ));
+        assert!(reaches_writer(
+            "instrument::replace_if_unchanged(&p, &b, &t)"
+        ));
+        assert!(reaches_writer(
+            "use mecha_core::instrument::write_hours;\nwrite_hours(&t, &h)?;"
+        ));
+        assert!(reaches_writer(
+            "use mecha_core::instrument as inst;\ninst::rewrite(a, b, c)"
+        ));
+        assert!(reaches_writer("use crate::instrument::{self, Hours};"));
+        assert!(!reaches_writer("pub mod instrument;\nfn unrelated() {}"));
+    }
+
+    /// "The owner is the only author" as a property of the tree rather than
+    /// of four documents: nothing but this module and the web handler may
+    /// reach the functions that write a manifest (`reaches_writer`). A tool,
+    /// a CLI verb or a trigger that did would fail here, by name.
+    #[test]
+    fn only_the_owners_page_writes_hours() {
         const ALLOWED: [&str; 2] = [
             "mecha-core/src/instrument.rs",
             "mecha-cli/src/commands/serve/factory.rs",
@@ -773,12 +808,7 @@ heading = "You're booked"
                 if ALLOWED.contains(&rel.as_str()) {
                     continue;
                 }
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
-                if text.contains("instrument::")
-                    && WRITERS
-                        .iter()
-                        .any(|w| text.contains(&format!("instrument::{w}")))
-                {
+                if reaches_writer(&std::fs::read_to_string(&path).unwrap_or_default()) {
                     offenders.push(rel);
                 }
             }
