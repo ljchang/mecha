@@ -990,6 +990,12 @@ fn each_host_limit_raises_a_limit_error_naming_it() {
     let err = op(&mut run, "chunks", vec![h.clone(), json!(500), json!(499)]).unwrap_err();
     assert!(err.starts_with("LimitError: chunk text:"), "{err}");
     assert!(op(&mut run, "chunks", vec![h, json!(500)]).is_ok());
+    // In bytes, as the limit is: 600 two-byte characters in two chunks of
+    // 400 overlapping by 200 are 1,600 bytes, past a 1,000-byte limit that
+    // 800 characters would not pass (review of #805).
+    let (mut run, h) = run_over(&"é".repeat(600), tight);
+    let err = op(&mut run, "chunks", vec![h.clone(), json!(400), json!(200)]).unwrap_err();
+    assert!(err.contains("bytes in all"), "{err}");
 }
 
 /// A read the host-byte limit refuses is still recorded, and a program can
@@ -1181,6 +1187,10 @@ async fn a_read_reaches_a_program_as_text_and_a_listing_as_names() {
     let err = Run::names("fs_list", &many).unwrap_err().message;
     assert!(err.starts_with("LimitError: pieces: `fs_list`"), "{err}");
     assert_eq!(run.stats(None).peeked_bytes, 0);
+    // What the reads handed the program is counted beside it: the two
+    // listings' names and the note's text, not the failures.
+    let handed = "a.md\nsub/".len() + "(empty directory)".len() + "the whole note".len();
+    assert_eq!(run.stats(None).read_bytes, handed as u64);
 }
 
 /// §2 does not rest on the interpreter alone (review of #768): a call to a
@@ -3510,6 +3520,7 @@ async fn a_programs_passes_reach_the_runs_usage_and_its_counters() {
     assert_eq!(stats.subcalls, Some(1));
     assert_eq!(stats.subcall_tokens, Some(400));
     assert_eq!(stats.peeked_bytes, Some(0));
+    assert!(stats.program_read_bytes.is_some_and(|b| b > 0), "{stats:?}");
     assert_eq!(stats.budget_stops, Some(0));
     // The host call still enters the trace, tagged, beside the program's row.
     assert_eq!(host_calls(&outcome.tool_calls).len(), 1);
