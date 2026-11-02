@@ -11,9 +11,9 @@
 //! a stranger's prose would most like to change (`mecha_core::instrument`).
 //!
 //! **A save pushes.** The manifest is the file the slot timer reads, so a
-//! saved edit reaches the page within fifteen minutes regardless; the push
-//! that follows a save makes it immediate, and its failure is reported beside
-//! a save that stands — the timer retries, and the page says so.
+//! saved edit reaches the page within the timer's two minutes regardless; the
+//! push that follows a save makes it immediate, and its failure is reported
+//! beside a save that stands — the timer retries, and the page says so.
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -102,9 +102,16 @@ async fn detail(found: Loaded) -> serde_json::Value {
         out["requests_open"] = open.into();
     }
     if inst.is_booking() {
-        match instrument::read_hours(&text) {
-            Ok(hours) => out["hours"] = serde_json::to_value(hours).unwrap_or_default(),
-            Err(e) => out["hours_error"] = format!("{e:#}").into(),
+        // Refused before the work, not after it: the save would turn an
+        // oversized file away, so the editor never opens on one.
+        if text.len() > instrument::MAX_MANIFEST_BYTES {
+            out["hours_error"] =
+                "this manifest is larger than any booking page's; edit it by hand".into();
+        } else {
+            match instrument::read_hours(&text) {
+                Ok(hours) => out["hours"] = serde_json::to_value(hours).unwrap_or_default(),
+                Err(e) => out["hours_error"] = format!("{e:#}").into(),
+            }
         }
         match preview(&inst.id, &inst.path).await {
             Ok(p) => out["preview"] = p,
@@ -185,10 +192,22 @@ fn program(name: &str) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("`{name}` is not installed on this machine"))
 }
 
+/// Whether a child may be killed when its request goes away. A read
+/// (`type check`, `slots preview`) may: a client that walked off wants it
+/// gone. A publish (`slots push`) may not — `board.rs`'s `graph_verb` keeps
+/// the same rule, because a write killed mid-flight leaves the owner told it
+/// failed while it may have half-happened.
+#[derive(Clone, Copy, PartialEq)]
+enum Child {
+    Read,
+    Publish,
+}
+
 async fn run(
     name: &str,
     args: &[&std::ffi::OsStr],
     stdin: Option<Vec<u8>>,
+    kind: Child,
 ) -> anyhow::Result<String> {
     use tokio::io::AsyncWriteExt;
     let mut cmd = tokio::process::Command::new(program(name)?);
@@ -200,7 +219,7 @@ async fn run(
         } else {
             std::process::Stdio::null()
         })
-        .kill_on_drop(true);
+        .kill_on_drop(kind == Child::Read);
     let mut child = cmd.spawn()?;
     if let Some(bytes) = stdin {
         let mut pipe = child.stdin.take().expect("piped");
@@ -241,6 +260,7 @@ async fn preview(id: &str, manifest: &Path) -> anyhow::Result<serde_json::Value>
             "--json".as_ref(),
         ],
         None,
+        Child::Read,
     )
     .await?;
     Ok(serde_json::from_str(&out)?)
@@ -275,13 +295,14 @@ async fn judge(id: &str, path: &Path, candidate: &str) -> anyhow::Result<serde_j
         "factory-publish",
         &["type".as_ref(), "check".as_ref(), draft.0.as_os_str()],
         None,
+        Child::Read,
     )
     .await
     .map_err(|e| anyhow::anyhow!("the factory would refuse this manifest: {e:#}"))?;
     preview(id, &draft.0).await
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct HoursBody {
     pub id: String,
     /// The digest of the manifest as the page read it.
@@ -321,10 +342,22 @@ fn candidate(body: &HoursBody) -> Result<(instrument::Instrument, String), Respo
 /// back).
 pub const MAX_HOURS_BODY: usize = 64 * 1024;
 
+/// [`candidate`] off the executor, as `list` and `instrument` read the store:
+/// it reads the directory and the manifest.
+#[allow(clippy::result_large_err)]
+async fn candidate_blocking(
+    body: &HoursBody,
+) -> Result<(instrument::Instrument, String), Response> {
+    let body = body.clone();
+    tokio::task::spawn_blocking(move || candidate(&body))
+        .await
+        .unwrap_or_else(|e| Err(err(StatusCode::INTERNAL_SERVER_ERROR, e)))
+}
+
 /// POST /api/factory/preview — what these hours would offer, without
 /// saving them.
 pub async fn preview_hours(State(_state): St, Json(body): Json<HoursBody>) -> Response {
-    let (inst, text) = match candidate(&body) {
+    let (inst, text) = match candidate_blocking(&body).await {
         Ok(c) => c,
         Err(refused) => return refused,
     };
@@ -337,7 +370,7 @@ pub async fn preview_hours(State(_state): St, Json(body): Json<HoursBody>) -> Re
 /// POST /api/factory/hours — check, write, then push; each step's outcome
 /// reported, and a push failure never undoes a save that stands.
 pub async fn save_hours(State(_state): St, Json(body): Json<HoursBody>) -> Response {
-    let (inst, text) = match candidate(&body) {
+    let (inst, text) = match candidate_blocking(&body).await {
         Ok(c) => c,
         Err(refused) => return refused,
     };
@@ -352,14 +385,9 @@ pub async fn save_hours(State(_state): St, Json(body): Json<HoursBody>) -> Respo
     // text written is the one judged; only the file it replaces is re-read.
     let path = inst.path.clone();
     let base = body.base.clone();
-    let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let now = std::fs::read_to_string(&path)?;
-        if instrument::digest(&now) != base {
-            anyhow::bail!(instrument::Stale);
-        }
-        instrument::replace_file(&path, &text)
-    })
-    .await;
+    let wrote =
+        tokio::task::spawn_blocking(move || instrument::replace_if_unchanged(&path, &base, &text))
+            .await;
     match wrote {
         Ok(Ok(())) => {}
         Ok(Err(e)) if e.downcast_ref::<instrument::Stale>().is_some() => {
@@ -407,6 +435,7 @@ async fn push(id: &str, manifest: &Path) -> anyhow::Result<String> {
             "--json".as_ref(),
         ],
         None,
+        Child::Read,
     )
     .await
     .map_err(|e| anyhow::anyhow!("reading your calendars: {e:#}"))?;
@@ -420,6 +449,7 @@ async fn push(id: &str, manifest: &Path) -> anyhow::Result<String> {
             manifest.as_os_str(),
         ],
         Some(busy.into_bytes()),
+        Child::Publish,
     )
     .await
 }

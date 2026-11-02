@@ -168,8 +168,10 @@ pub struct Override {
 
 /// The factory's defaults for keys a manifest may leave out
 /// (`mecha_manifest::availability`: `buffer_minutes` 0, `min_notice_hours`
-/// 24, `horizon_days` 60). Read only for a file that omits them; every write
-/// states all of them, so after one save the file says what it means.
+/// 24, `horizon_days` 60), shown for a file that omits them. A copy of
+/// another repo's numbers that nothing here can check — so a write never
+/// states one the owner did not change: a key the file left to the factory
+/// stays left to it unless its value moved (`write_hours`).
 const DEFAULT_NOTICE: u32 = 24;
 const DEFAULT_HORIZON: u32 = 60;
 
@@ -297,11 +299,21 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
     let Some(a) = doc.get_mut("availability").and_then(Item::as_table_mut) else {
         bail!("not a booking manifest: no [availability] section");
     };
+    // What the file says now, defaults filled in: a key it leaves out is
+    // written only if the edit changed its value, so a save never pins a
+    // default this repo merely copied from the factory.
+    let was = read_hours(text)?;
     a["timezone"] = value(h.timezone.as_str());
     a["durations"] = value(h.durations.iter().map(|d| i64::from(*d)).collect::<Array>());
-    a["buffer_minutes"] = value(i64::from(h.buffer_minutes));
-    a["min_notice_hours"] = value(i64::from(h.min_notice_hours));
-    a["horizon_days"] = value(i64::from(h.horizon_days));
+    for (key, now, before) in [
+        ("buffer_minutes", h.buffer_minutes, was.buffer_minutes),
+        ("min_notice_hours", h.min_notice_hours, was.min_notice_hours),
+        ("horizon_days", h.horizon_days, was.horizon_days),
+    ] {
+        if a.contains_key(key) || now != before {
+            a[key] = value(i64::from(now));
+        }
+    }
     match h.per_day_cap {
         Some(cap) => a["per_day_cap"] = value(i64::from(cap)),
         None => {
@@ -414,6 +426,19 @@ impl std::fmt::Display for Stale {
 }
 
 impl std::error::Error for Stale {}
+
+/// Replace `path` with `text` only if it is still the file whose [`digest`]
+/// is `base` — the guard a save needs at the write itself, after judging the
+/// candidate took seconds and two child processes. The text written is the
+/// one judged; only the file it replaces is re-read.
+pub fn replace_if_unchanged(path: &Path, base: &str, text: &str) -> Result<()> {
+    let now =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    if digest(&now) != base {
+        bail!(Stale);
+    }
+    replace_file(path, text)
+}
 
 /// Replace `path` with `text`, atomically, keeping its permissions: a
 /// sibling temp file renamed over it, so the timer never reads half a file.
@@ -634,6 +659,47 @@ heading = "You're booked"
         let edited_elsewhere = MANIFEST.replace("Book a meeting", "Book time");
         let err = rewrite(&edited_elsewhere, &base, &hours()).unwrap_err();
         assert!(err.downcast_ref::<Stale>().is_some(), "{err:#}");
+    }
+
+    #[test]
+    fn a_key_left_to_the_factory_stays_left_unless_it_changed() {
+        // MANIFEST states no min_notice_hours or horizon_days. Dragging a
+        // window must not write the defaults this repo copied.
+        let mut h = hours();
+        h.windows[0].end = "16:00".into();
+        let out = write_hours(MANIFEST, &h).unwrap();
+        assert!(!out.contains("min_notice_hours"), "{out}");
+        assert!(!out.contains("horizon_days"), "{out}");
+        // A changed one is written; a stated one stays stated.
+        h.min_notice_hours = 12;
+        let out = write_hours(MANIFEST, &h).unwrap();
+        assert!(out.contains("min_notice_hours = 12"), "{out}");
+        assert!(out.contains("buffer_minutes = 10"), "{out}");
+    }
+
+    #[test]
+    fn the_write_refuses_a_file_that_changed_after_the_judging() {
+        let dir = std::env::temp_dir().join(format!("mecha-instrument-w-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("book.toml");
+        std::fs::write(&path, MANIFEST).unwrap();
+        let base = digest(MANIFEST);
+        let text = write_hours(MANIFEST, &hours()).unwrap();
+        // Another tab saved while this one was being judged.
+        std::fs::write(&path, MANIFEST.replace("Book a meeting", "Book time")).unwrap();
+        let err = replace_if_unchanged(&path, &base, &text).unwrap_err();
+        assert!(err.downcast_ref::<Stale>().is_some(), "{err:#}");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("Book time"),
+            "left alone"
+        );
+        // Unchanged since the read: written.
+        std::fs::write(&path, MANIFEST).unwrap();
+        replace_if_unchanged(&path, &base, &text).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

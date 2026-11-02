@@ -91,7 +91,19 @@
     return () => clearTimeout(previewTimer);
   });
 
+  // An emptied number box binds as null; say so in the page's words rather
+  // than showing the server's refusal to parse the body.
+  const NUMBERS = { buffer_minutes: 'the gap', min_notice_hours: 'the notice', horizon_days: 'how far ahead' };
+  function missingNumber(h) {
+    return Object.entries(NUMBERS).find(([k]) => !Number.isFinite(h?.[k]))?.[1] ?? null;
+  }
+
   async function runPreview(snapshot) {
+    const missing = missingNumber(JSON.parse(snapshot));
+    if (missing) {
+      draftError = `Fill in ${missing} before this can be previewed.`;
+      return;
+    }
     try {
       const res = await fetch('/api/factory/preview', {
         method: 'POST',
@@ -136,7 +148,7 @@
         say('Saved and pushed — the booking page offers the new hours now.');
       } else {
         // The save stands; only the immediate push failed.
-        say(`Saved. The push failed (${out.push_error}); the slot timer retries within 15 minutes.`, true);
+        say(`Saved. The push failed (${out.push_error}); the slot timer retries every two minutes.`, true);
       }
     } catch (e) {
       confirming = false;
@@ -191,8 +203,9 @@
     const h = Math.round(min / 60);
     return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
   };
-  // The timer runs every 15 minutes; two missed ticks is worth saying.
-  const pushIsLate = (stamp) => Date.now() - new Date(stamp).getTime() > 35 * 60000;
+  // The timer runs every two minutes (`mecha-slots.timer`); ten minutes is
+  // five missed ticks, which is a timer in trouble rather than a late one.
+  const pushIsLate = (stamp) => Date.now() - new Date(stamp).getTime() > 10 * 60000;
 
   const meeting = (b) => {
     const start = new Date(b.start);
@@ -256,7 +269,7 @@
               </div>
               <div class="meta" class:hazardtext={pushIsLate(item.preview.last_pushed_at)}>
                 <span>last pushed {ago(item.preview.last_pushed_at)}</span>
-                {#if pushIsLate(item.preview.last_pushed_at)}<span>— the 15-minute slot timer may be failing</span>{/if}
+                {#if pushIsLate(item.preview.last_pushed_at)}<span>— the slot timer (every two minutes) may be failing</span>{/if}
                 {#if item.preview.held_by_polls}<span>{item.preview.held_by_polls} held by open polls</span>{/if}
               </div>
             {:else if item.preview_error}
