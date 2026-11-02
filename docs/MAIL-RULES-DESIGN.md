@@ -101,6 +101,7 @@ means none.
   ledger.jsonl                 one row per rule × message × action (§8)
   proposals/<id>/              drafts from a conversation, never live (§9)
   aliases.toml                 the owner's other addresses (§5.4), owner-written
+  deferred.jsonl               threads whose archive waits for classify (§4.1)
   .lock
 ```
 
