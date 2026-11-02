@@ -777,6 +777,14 @@ fn describe(admission: &Admission) -> String {
             listings.join(" and ")
         ));
     }
+    // The walk is answered by `fs_list`'s names, so it is offered only where
+    // that tool hands them out.
+    if listings.contains(&"fs_list") {
+        d.push_str(
+            "; os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
+             isfile and isdir list through fs_list the same way",
+        );
+    }
     d.push_str(
         ". Work on that text with string methods, slicing, `in`, len() and re. Nothing a \
          program holds survives to the next `code` call, so do the whole job in one program, \
@@ -2079,6 +2087,16 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
             ));
         }
     }
+    // `max(d, key=d.get)`: monty 1.4 cannot take a built-in type's method as
+    // a value, though it calls one, and says only that the attribute is not
+    // there, which the description's own warning did not prevent (M5: 9).
+    if let Some(method) = is_error.then(|| method_as_value(&ending)).flatten() {
+        out.push_str(&format!(
+            "\n[monty cannot use a method as a value (`.{method}` here, without calling it), \
+             though it can call one: pass a lambda that calls it, as in `key=lambda k: d[k]` \
+             for `key=d.get`]"
+        ));
+    }
     if out.len() > cap {
         out = format!(
             "[this program's result is {} bytes, past this call's share of the output budget \
@@ -2087,6 +2105,42 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
         );
     }
     (out, is_error)
+}
+
+/// The method an `AttributeError` says a built-in value lacks, when the
+/// failing line in the traceback takes it without calling it: monty's gap,
+/// not the program's typo, since the type has that method in Python.
+fn method_as_value(ending: &str) -> Option<&str> {
+    const BUILTIN: [&str; 9] = [
+        "'dict'",
+        "'collections.defaultdict'",
+        "'collections.Counter'",
+        "'collections.OrderedDict'",
+        "'str'",
+        "'list'",
+        "'set'",
+        "'tuple'",
+        "'bytes'",
+    ];
+    let line = ending
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("AttributeError: "))?;
+    let rest = line.strip_prefix("AttributeError: ")?;
+    let (ty, attr) = rest.split_once(" object has no attribute ")?;
+    if !BUILTIN.contains(&ty) {
+        return None;
+    }
+    let method = attr.strip_prefix('\'')?.strip_suffix('\'')?;
+    let taken = format!(".{method}");
+    let uncalled = ending.lines().filter(|l| *l != line).any(|l| {
+        l.match_indices(&taken).any(|(i, _)| {
+            let after = l[i + taken.len()..].trim_start();
+            !after.starts_with('(')
+                && !l[i + taken.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    });
+    uncalled.then_some(method)
 }
 
 /// The names among `names` that `program` assigns to (`x = …`, `x += …`,

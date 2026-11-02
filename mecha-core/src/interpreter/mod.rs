@@ -278,7 +278,9 @@ pub struct Backstops {
 /// sub-calls and add nothing; an `llm_query` or `llm_map` call is one
 /// suspension and spends a handle operation, so the sum still bounds it. A
 /// tool read made by `open(path)` is two suspensions (the `open`, then the
-/// read, R12) against one tool read, so tool reads count twice.
+/// read, R12) against one tool read, so tool reads count twice. A listing
+/// through `fs_list` (R13) is one suspension and at least one tool read, so
+/// it adds nothing.
 pub const COUNTED_HOST_LIMITS: u64 = 32 + 2 * 2048 + 2048;
 
 impl Default for Backstops {
