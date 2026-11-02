@@ -112,6 +112,16 @@ read-modify-write; the ledger append-only.
 digest of the rule's directory (§6). A mode written into the file would let an
 edit — or an installed proposal — grant itself `auto`.
 
+**The effective mode is the latest row for the rule, and the digest only ever
+lowers it.** Owner approvals, owner step-downs and §6.4's automatic brakes are
+all rows in the same file, and the most recent one wins; if its digest no
+longer matches the rule's directory, the mode reads as `propose` (or lower, if
+the row says lower). Never "the current digest matches *some* `auto`
+approval": that reading would let the next run undo a brake, which changes no
+file, and would re-arm a rule whose edit was reverted to an earlier approved
+state, when the lapse was the point. Permission moves up only by a new owner
+row.
+
 ### A rule, written out
 
 ```toml
@@ -149,6 +159,7 @@ do = "archive"
 description = "Purchase receipts I need reimbursed"
 
 [match]
+from_domain = ["store.example.com", "supplies.example.org"]  # needed for auto (§5.2)
 describe = "A receipt or invoice for a purchase made for the lab."
 
 [[action]]
@@ -271,8 +282,13 @@ both declared by the same rule.
   mail waits for the morning pass. That is acceptable for this kind of mail,
   and says so in the UI rather than promising "instant".
 
-**Idempotent by key.** Every action is keyed `(rule, account, message_id,
-action index)` in the ledger before it executes; a re-classification, a
+**Idempotent by key.** Every action is keyed `(rule, account,
+provider message id, action index)` in the ledger before it executes — the
+provider's own immutable id (`Email::provider_id`, what `get_message` takes),
+**never the RFC 5322 `Message-ID`**, which is sender-written and optional
+here: a reused one would mark another message's actions as already done, and
+every message without one would collide on a single key. The `Message-ID`
+stays on the row as a display field only; a re-classification, a
 `--force` sweep or a crashed run never sends twice. The ledger row is written
 `pending` first and settled after, so a crash between the two is visible as a
 pending row, never silently retried as a send.
@@ -321,10 +337,23 @@ matches the rule, and it reaches finance carrying the owner's name. With no
 notice on the message, the control moves to what is allowed to trigger one:
 **an automatic forward or send needs the triggering message to pass DMARC
 aligned with its `From`**, the same check §5.4 puts on replies, and anything
-that fails goes to `propose`. That stops the forged-sender invoice; it does
-not stop a real vendor account sending a false one, which is the residual the
-owner accepts by enabling the rule, with the ledger and the digest showing
-every forward that went.
+that fails goes to `propose`. That stops the forged-sender invoice — and
+only that. **DMARC is authentication, not authorisation**: anyone who owns a
+domain passes it for their own mail, so on its own it admits any stranger with
+a plausible invoice, and the §4.2 confirmation pass would agree, because the
+message honestly *is* an invoice.
+
+So the second condition is structural: **a rule may run `forward` or `send`
+in `auto` only if its matcher constrains the sender** — a `from` or
+`from_domain` key (an `account` key counts only where the owner marks that
+account as reached by known correspondents alone). A rule whose matcher is
+`describe` alone may still *propose* these sends. R3's "to a specific person"
+becomes "from a known set, to a specific person". The residual the owner
+accepts by enabling such a rule is then the narrow one: a listed sender's
+real account sending something false, with the ledger and the digest showing
+every forward that went. `reply` needs no such key: its recipient is the
+sender, and its payload is the owner's fixed words or a closed-context draft
+(§5.1, §6.3).
 
 ### 5.3 `send` with typed fields — extract, ground, render
 
@@ -395,7 +424,10 @@ and none is configurable off:
 
 ### 5.5 Mailbox actions on a description match
 
-An attacker can write an email that matches a description rule. For `archive`
+A header matcher catches only mail carrying headers the owner chose, so its
+false positives are mail the owner asked about by name. A description
+generalises, so it also catches other people's mail that merely resembles the
+description — and a sender can write a message to resemble it. For `archive`
 that costs the owner nothing they cannot see — it is in the digest and the
 ledger, and it is reversible. For `trash` and `spam` it is a way to bury mail.
 So **`trash` and `spam` run in `auto` only from header matchers**; on a
@@ -475,7 +507,11 @@ The one precondition is structural, not historical:
   files, which the owner marks `shareable` in the skill's frontmatter. No
   `mail_search`, no graph, no workspace, no web. A rule whose skill declares
   anything wider cannot be set to `auto`; the CLI and page say which tool
-  blocks it.
+  blocks it. With no file tool, the run cannot follow a skill's level-2 and
+  level-3 pointers the way an ordinary run does, so the body and every
+  `shareable` file are **given whole** in the frame — `shareable` therefore
+  means "may appear in any reply this rule sends", not "may be opened if
+  relevant", and the owner marks files with that in mind.
 
 That is the security argument, and it is a different control from the
 interlock. A graduated reply is sent by the harness, not by a tool the model
@@ -526,10 +562,16 @@ and the rule ledger, no model:
    appends today; the digest takes that section over.
 
 It is a reader of the stores, like `--aged`, so the CLI, a trigger and the web
-page show the same thing. **It arrives each morning with the briefing (R9)**:
-the `morning` trigger's `notify` step appends `mecha mail digest` where it
-appends `--aged` now, so it is published on the same page by the same path,
-and there is no second schedule or channel. The `one_line` text is fine here: the
+page show the same thing. **And it keeps `mecha mail list`'s split between
+looking and recording**: `mecha mail digest` only reads, and `mecha mail
+digest --surface` additionally records what it showed — the day-two threads
+as surfaced (exactly what `list --aged --surface` writes today) and the
+"handled for you" rows as reported, so the next digest starts after them. A
+digest that wrote on every read could not be used to look. **It arrives each
+morning with the briefing (R9)**: the `morning` trigger's `notify` step
+replaces `mecha mail list --aged --surface` with `mecha mail digest
+--surface`, so it is published on the same page by the same path, and there
+is no second schedule or channel. The `one_line` text is fine here: the
 digest is a surface for a human, never input to a privileged run
 (`Record::for_privileged_run` stays as it is).
 
@@ -625,7 +667,8 @@ Each phase is useful alone and testable without the next.
 `List-Id`, `Authentication-Results`, `Reply-To` and the owner's
 participation in a thread on the thread read — `Authentication-Results` as the
 topmost instance with its `authserv-id`, absent stated rather than defaulted,
-with a test per provider (§5.4). Restore verbs for undo (back to
+with a test per provider (§5.4); and the provider's own message id on the
+thread read for the ledger key (§4.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 
@@ -636,7 +679,8 @@ test | ledger | undo`, the feature registry entry (off by default), and
 `mecha doctor` reporting an unreadable store or a lapsed approval. **Covers
 GitHub notifications and junk with no model involved.**
 
-**P2 — the digest.** `mecha mail digest`, appended to the morning briefing.
+**P2 — the digest.** `mecha mail digest` and its `--surface` write, replacing
+`list --aged --surface` in the morning briefing.
 
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
@@ -697,8 +741,15 @@ Sources: [Inbox Zero security and data](https://docs.getinboxzero.com/essentials
 
 ## 13. Open questions, for review
 
-None is the owner's to rule before building; both are answered by
-measurement or by a decision made elsewhere.
+One is the owner's:
+
+0. **Automatic forwards and sends need a sender-constrained matcher (§5.2).**
+   The design's default, found in review: without it, any stranger with a
+   domain and a plausible invoice reaches finance under the owner's name. The
+   alternative is to accept that residual knowingly and allow `describe`-only
+   matchers in `auto`. The default stands unless the owner rules otherwise.
+
+The rest are answered by measurement or by a decision made elsewhere:
 
 1. **Description rule cap.** 12 is a guess at what the classifier holds
    without precision dropping. Shadow mode measures it; the cap moves then.
