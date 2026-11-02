@@ -2025,6 +2025,33 @@ mod tests {
     }
 
     #[test]
+    fn a_budget_cut_inside_the_closest_ends_its_last_bullet_cleanly() {
+        let pdir = pdir();
+        let long = "Keeps the bakery's books and knows every regular by name. ".repeat(5);
+        for i in 0..40 {
+            let mut p = person(
+                &format!("Close friend {i:02}"),
+                Some("friend from school"),
+                Some(Layer::Five),
+            );
+            p.description = Some(long.trim().to_string());
+            add_person(&pdir, &no_lib(), &p).unwrap();
+        }
+        let text = prompt_section(&Network::read(&pdir).unwrap());
+        assert!(text.len() <= PROMPT_CHARS, "{}", text.len());
+        // The cut fell inside the bullets: no block after them, and the last
+        // bullet ends as every other does, never with a stray stop after it.
+        assert!(!text.contains("Others in your life"), "{text}");
+        let bullets: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+        assert!(bullets.len() > 1 && bullets.len() < 40, "{}", bullets.len());
+        assert!(!bullets.last().unwrap().ends_with(".."), "{text}");
+        assert!(
+            !text.contains(".\n.\n") && !text.contains("\n.\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_portrait_link_is_checked_in_core_and_a_broken_one_is_named() {
         let dir = scratch();
         let lib_dir = dir.join("imagelib");
