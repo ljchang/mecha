@@ -207,8 +207,18 @@ call on it — **but only when no enabled description rule outranks it.** A
 skipped classification is a description rule never evaluated, so a
 `priority = 90` header rule that archives a list must not silence a
 `priority = 5` description rule that would have replied. When a
-higher-priority description rule is enabled, the header rule's mailbox
-actions still run on the timer and the thread is classified anyway. A GitHub
+higher-priority description rule is enabled, **the header rule's
+inbox-removing actions (`archive`, `trash`, `spam`) wait for the classify
+pass**, and only its other mailbox actions (`read`, `tag`) run on the timer.
+They have to: `classify` enumerates threads from `mail_recent`, which is
+inbox-only (`in:inbox` on Gmail, `recent` on Outlook), so a thread archived at
+minute three would never be classified and the reply would never be
+considered, with nothing on the ledger to say why. Deferring is the cheaper
+of the two shapes that hold — the other is an id queue that `classify` reads
+beside `mail_recent`, on `due_outside_window`'s precedent — and it needs no
+new state, because which header rules are outranked is known statically from
+the enabled set. P1 builds this, though no description rule exists until P4,
+so the bug cannot land dormant. A GitHub
 notification should cost a string comparison, not a model call, whenever
 "the first rule by priority owns the thread" allows it.
 
@@ -279,8 +289,18 @@ fallback if the single field measures badly, not the start.
 ### 4.3 Order and overlap
 
 Rules evaluate in `priority` order, header rules before description rules. A
-thread may match several. Mailbox actions and `digest`/`task` from every
-match apply. **Outbound actions come from at most one rule per thread** — the
+thread may match several header rules, but **at most one description rule**:
+§4.2's `rule` field is single-valued, so when two descriptions both fit, the
+classifier's choice decides between them and `priority` does not. Priority
+orders header rules among themselves and header rules against the one
+description match. Two consequences follow and are accepted: the owner who
+wants two description rules' actions on one kind of mail writes one rule
+with both, and a description rule the classifier did not name is never
+reported — the ledger cannot show it was considered, so there is no
+`superseded` row for it. If the per-rule yes/no fallback of §4.2 is ever
+taken, multiple description matches become possible and this paragraph is
+rewritten with it. Mailbox actions and `digest`/`task` from every match
+apply. **Outbound actions come from at most one rule per thread** — the
 first by priority — because two rules answering the same email is never what
 anyone meant, and the ledger records the other rules' outbound actions as
 `skipped: superseded by <rule>`. Within that one rule every outbound action
@@ -415,9 +435,28 @@ party.
 Leakage: none beyond the triggering message, to a recipient the owner fixed.
 Integrity: as §5.2, with the same DMARC condition for `auto`.
 
-### 5.4 Guards on every automatic reply
+### 5.4 Guards on automatic sends
 
-A reply goes to an address the sender controls, so the guards keep mecha from
+Which guard binds which action group, so no section has to infer it:
+
+| Guard | `reply` (template or drafted) | `forward`, `send` |
+|---|---|---|
+| RFC 3834 (`Auto-Submitted`, `Precedence`, lists, `noreply`) | yes | **no** — a vendor receipt is routinely `Auto-Submitted: auto-generated` from a `noreply@`, and §5.3 exists to forward exactly that |
+| DMARC aligned with `From`, topmost instance | yes | yes (§5.2) |
+| Sender-constrained matcher for `auto` | drafted only (§5.2) | yes (§5.2) |
+| `From` only, never `Reply-To` or reply-all | yes | n/a — the recipient is the owner's `to` |
+| Once per sender per rule per 7 days | yes | **no** — every receipt from a listed vendor is forwarded |
+| Per-rule and global daily caps | yes | yes |
+| Not into a conversation the owner has joined | yes | no |
+| `block_sends_after_private` (§6.3) | drafted only | yes |
+
+Loop prevention needs nothing extra for `forward` and `send`: their recipient
+is fixed by the owner rather than taken from the mail, so nothing they send
+goes back to the sender, and anything the recipient's own auto-responder
+sends back must still pass a sender-constrained matcher to trigger again.
+
+The rest of this section is about replies. A reply goes to an address the
+sender controls, so the guards keep mecha from
 becoming a spam reflector or joining a mail loop. All are checked in the
 harness, all are recorded on the ledger row when they fire (`skipped: <guard>`),
 and none is configurable off:
@@ -564,8 +603,19 @@ The one precondition is structural, not historical:
   relevant", and the owner marks files with that in mind.
 
 That is the security argument, and it is a different control from the
-interlock. A graduated reply is sent by the harness, not by a tool the model
-calls, so the interlock never sees a send to refuse. What bounds the leak is
+interlock — not a way around it. Even as a tool this send would be
+`Egress::Blind` (the model names no recipient), which is the class the
+interlock deliberately does not own (`EGRESS-DESIGN.md` §6).
+
+The control that does own `Blind` is `block_sends_after_private`, which
+refuses both classes but runs in the loop's dispatch, where a harness-side
+send never passes. **So the rule engine reads it itself:** with
+`block_sends_after_private = true`, every outbound action that carries mail
+content — `forward`, `send`, and drafted `reply` — stays in `propose`, and the
+rule page says that guard is holding it. A template `reply` carries only the
+owner's words and is unaffected. The guard is off by default, and its doc
+comment is "turn this on when private data must not leave at all", which an
+automatic forward of the owner's mail would otherwise silently override. What bounds the leak is
 the **context**: the only private data the draft can contain is the thread
 itself (going back to someone already on it) and files the owner declared fit
 to share. An injection can still make the draft *say* something wrong —
@@ -704,10 +754,15 @@ real and worth serving, and the safe shape exists already in
   (§4.2) is sound only because its frame is the owner's words, and a proposal
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
-  enter `auto` while the rule's description or any template it sends is not
-  `Clean`.** The rescue is `Reflexion::provenance`'s existing move: the
+  enter `auto` while the rule's description or any template it sends is
+  model-proposed text from an armed conversation.** The rescue is `Reflexion::provenance`'s existing move: the
   installed record keeps a digest of each proposed text, and once the owner
-  has changed one, it is the owner's words and reads `Clean`. The approval
+  has changed one, it is the owner's words. The rule store records each
+  text's origin in `imagelib::Origin`'s terms, the enum `of_proposal`
+  answers in: `Owner` for anything the owner wrote or changed, `ModelClean`
+  or `ModelUntrusted` for proposed text left as proposed. The send gate
+  admits `Owner` and `ModelClean`, so in practice it holds exactly the
+  `ModelUntrusted` texts. The approval
   screen says which text is holding the rule back and opens it for editing.
   Shadow bounds when a proposed rule acts; this bounds what it may say.
 
@@ -779,8 +834,9 @@ template.
 **P7 — `mail_rule_propose`.**
 
 When P1 lands, `ARCHITECTURE.md` gets a *Mail rules* section for the
-invariants and `TRIFECTA.md` gets the rule-driven send as a channel, with
-§5 and §6.3's arguments.
+invariants. `TRIFECTA.md` gets the rule-driven send as a channel when P4
+opens it, with §5's argument, and P5 and P6 extend that entry as their
+arguments become true.
 
 ---
 
