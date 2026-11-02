@@ -1753,7 +1753,8 @@ fn only_the_builtin_listing_hands_a_program_names() {
     assert!(
         builtin.contains(
             "each returns its result as a str (fs_read(path=...) returns the file's text, and \
-             open(path) reads a file's text the same way, but cannot write; a read that fails \
+             open(path) reads a file's text the same way, but cannot write and takes no errors= \
+             argument; a read that fails \
              raises a RuntimeError, not a FileNotFoundError), \
              except that fs_list returns a list of names (a directory's ends in /); \
              os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
