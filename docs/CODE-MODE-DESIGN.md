@@ -1272,7 +1272,12 @@ with your recs"), except R4, which waited on M1 and was ruled on
   divergences from Python, on purpose: a directory a scan cannot list
   raises rather than being skipped (`os.walk`'s `onerror=None`), so a
   short walk is never a silent one; and `fs_list` does not follow links,
-  so a link to a directory is listed as a file.
+  so a link to a directory is listed as a file. A probe answers `False`
+  only when `fs_list` ran and failed; one the gate refuses (a path outside
+  the jail, a hook, a denial) raises, as do a spent limit and a stop. A
+  probe in a directory the program has already listed answers from that
+  listing, without another call, and a scan past 131,072 entries raises a
+  `LimitError`.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
