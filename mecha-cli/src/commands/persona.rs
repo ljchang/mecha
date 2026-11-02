@@ -1728,6 +1728,12 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             for n in &got.already {
                 println!("{n} is already in her network; left as it is.");
             }
+            if got.waiting > 0 {
+                println!(
+                    "{} more still wait in the proposal (`mecha persona people proposal {}`).",
+                    got.waiting, p.name
+                );
+            }
             overlap(p)?;
         }
         PeopleCmd::Dismiss { name } => {
@@ -2544,7 +2550,13 @@ mod tests {
             n.people.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
             vec!["Oskar"]
         );
-        assert_eq!(people_draft::read(&store.join("mara")).unwrap(), None);
+        // The one not chosen still waits; dismissed, nothing is left.
+        let left = people_draft::read(&store.join("mara")).unwrap().unwrap();
+        assert_eq!(left.people[0].name, "Pell");
+        people(PeopleCmd::Dismiss {
+            name: "mara".into(),
+        })
+        .unwrap();
         assert!(
             people(PeopleCmd::Dismiss {
                 name: "mara".into()
