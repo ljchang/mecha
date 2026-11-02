@@ -592,6 +592,27 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
         ),
         e => panic!("a spent limit read as a missing file: {e:?} {}", f.printed),
     }
+    // and a refusal by the gate raises too: a denied probe is not a missing file
+    let (f, _) = run_with(
+        &interp,
+        "import os\nprint(os.path.exists('src/a.py'))",
+        &["fs_list"],
+        |_| {
+            Err(HostRaise::tagged(
+                Tag::ToolError,
+                "Blocked by a hook: no listing today",
+            ))
+        },
+    )
+    .await;
+    match f.end {
+        End::Raised(r) => assert!(
+            r.message.unwrap_or_default().contains("Blocked by a hook"),
+            "{}",
+            f.printed
+        ),
+        e => panic!("a refusal read as a missing file: {e:?} {}", f.printed),
+    }
     // without `fs_list`, a walk is refused as before
     let (f, calls) = run_with(&interp, "import os\nos.listdir('src')", &["fs_read"], tree).await;
     assert!(calls.is_empty());

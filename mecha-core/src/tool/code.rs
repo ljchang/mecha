@@ -1336,7 +1336,8 @@ impl Run {
                     return Err(raise(
                         Tag::ToolError,
                         format!(
-                            "`{name}` returned an error: {}{more}",
+                            "{}{}{more}",
+                            crate::interpreter::ran_and_failed(name),
                             cut(&bytes, ERROR_TEXT)
                         ),
                     ));
@@ -2142,6 +2143,43 @@ fn method_as_value(ending: &str) -> Option<&str> {
         return None;
     }
     let method = attr.strip_prefix('\'')?.strip_suffix('\'')?;
+    // Methods those types have in Python, so a typo (`d.keyz`) is not told
+    // it found monty's gap (review of #811).
+    const METHODS: [&str; 30] = [
+        "get",
+        "keys",
+        "values",
+        "items",
+        "pop",
+        "setdefault",
+        "update",
+        "copy",
+        "count",
+        "index",
+        "append",
+        "extend",
+        "remove",
+        "add",
+        "discard",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "lower",
+        "upper",
+        "title",
+        "split",
+        "join",
+        "startswith",
+        "endswith",
+        "isdigit",
+        "isalpha",
+        "replace",
+        "find",
+        "most_common",
+    ];
+    if !METHODS.contains(&method) {
+        return None;
+    }
     let taken = format!(".{method}");
     let uncalled = ending.lines().filter(|l| *l != line).any(|l| {
         l.match_indices(&taken).any(|(i, _)| {

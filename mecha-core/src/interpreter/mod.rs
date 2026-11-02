@@ -332,6 +332,13 @@ impl Tag {
     }
 }
 
+/// How a raise says the tool ran and failed, after its tag: the one shape a
+/// listing probe reads as "not there", where a refusal by the gate, a limit
+/// or a stop must still raise (review of #811).
+pub fn ran_and_failed(name: &str) -> String {
+    format!("`{name}` returned an error: ")
+}
+
 /// What the host raises into a program in answer to a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRaise {
