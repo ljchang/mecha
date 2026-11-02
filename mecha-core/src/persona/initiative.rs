@@ -29,15 +29,18 @@
 //!   has named earlier in that chat. Harness notes are not read, only what
 //!   the owner typed and what she said, so her people riding in her prompt
 //!   do not count as either side naming them.
-//! - **Taken up** is the owner naming them in the very next turn, and
-//!   **asked** the subset where that turn holds a question mark.
+//! - **Taken up** is the owner naming them in the next turn they speak
+//!   in, and **asked** the subset where that turn holds a question mark.
 //! - **Came back** is the owner naming them in a later chat before she
 //!   does.
-//! - **Not taken up** is a next turn without them and no return, or her
-//!   bringing them up again first.
-//! - **Unanswered** is an introduction in a chat's last turn with no
-//!   return yet. Its outcome is unknown, so it is kept out of the rate,
-//!   never counted as a no.
+//! - **Not taken up** is her bringing them up again first, or the owner
+//!   speaking after the introduction without ever naming them: in the
+//!   next turn, or, for a chat's last introduction, in any later chat.
+//!   A chat usually ends on her turn, so that last case is the common one,
+//!   and leaving it out would flatter the rate (review of #808).
+//! - **Unanswered** is an introduction the owner has not spoken after at
+//!   all: the newest chat's last turn. Its outcome is unknown, so it is
+//!   kept out of the rate, never counted as a no.
 //!
 //! **Arms, from what she was shown, not from her settings.** Each turn is
 //! filed by whether the transcript shows her days (a today-block among the
@@ -250,7 +253,7 @@ struct Waiting {
     arm: Arm,
     /// The chat it was made in, which a return must come after.
     chat: usize,
-    /// The owner had a next turn and did not name them.
+    /// The owner had a next turn in its chat and did not name them.
     passed: bool,
 }
 
@@ -260,7 +263,7 @@ enum Settled {
     Back,
     /// She brought them up again first.
     Repeated,
-    /// The reading ran out: a no if the owner had a next turn, unknown if
+    /// The reading ran out: a no if the owner spoke after it, unknown if
     /// not.
     End,
 }
@@ -282,6 +285,8 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
     // Per subject, introductions not taken up in the next turn, waiting
     // for a return in a later chat.
     let mut waiting: HashMap<usize, Vec<Waiting>> = HashMap::new();
+    // The last chat the owner spoke in.
+    let mut spoke: Option<usize> = None;
     for (chat, turns) in chats.iter().enumerate() {
         // Named by either side earlier in this chat.
         let mut named: HashSet<usize> = HashSet::new();
@@ -290,6 +295,7 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
         for turn in turns {
             let owner = words(&turn.owner);
             if !owner.is_empty() {
+                spoke = Some(chat);
                 let asked = turn.owner.contains('?');
                 for (s, arm) in last.drain(..) {
                     if names(&owner, &who[s], false) {
@@ -353,7 +359,8 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
             }
         }
         // The chat's last introductions had no next turn: they wait for a
-        // later chat, and are unanswered if none comes.
+        // later chat, and are unanswered only if the owner never speaks
+        // again.
         for (s, arm) in last {
             waiting.entry(s).or_default().push(Waiting {
                 arm,
@@ -362,7 +369,8 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
             });
         }
     }
-    for w in waiting.into_values().flatten() {
+    for mut w in waiting.into_values().flatten() {
+        w.passed |= spoke.is_some_and(|c| c > w.chat);
         settle(&mut by, w, Settled::End);
     }
     let mut out: Vec<(Arm, Reading)> = by.into_iter().filter(|(_, r)| r.replies > 0).collect();
@@ -551,8 +559,13 @@ mod tests {
         let r = only(std::slice::from_ref(&last));
         assert_eq!((r.introductions, r.unanswered), (1, 1));
         assert_eq!(r.uptake(), None, "unknown is never a no");
-        let r = only(&[last, vec![turn("is Pell better?", "Yes.", ON)]]);
+        let r = only(&[last.clone(), vec![turn("is Pell better?", "Yes.", ON)]]);
         assert_eq!((r.came_back, r.unanswered), (1, 0));
+        // The owner spoke in a later chat and never named him: a no, not
+        // unknown (review of #808).
+        let r = only(&[last, vec![turn("rainy here", "Same.", ON)]]);
+        assert_eq!((r.not_taken_up, r.unanswered), (1, 0));
+        assert_eq!(r.uptake(), Some(0.0));
         // The owner naming them in the same chat later is not a return.
         let r = only(&[vec![
             turn("hi", "Pell is home.", ON),
