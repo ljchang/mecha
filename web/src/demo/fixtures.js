@@ -1943,6 +1943,25 @@ export const personaPeople = {
   characters: [],
 };
 
+// The demo's time slider: the fixture's events up to a day, and the people
+// any of them are about, folded no further than the page needs (each edge's
+// valence and status from its last event by then).
+export function personaPeopleAsOf(asOf) {
+  if (!asOf || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return personaPeople;
+  const by = (e) => (e.when?.on ?? '0000-01-01') <= asOf;
+  const mood = { conflict: 'tense', strengthened: 'warm', reconciled: 'warm', renewed: 'warm' };
+  const people = personaPeople.people
+    .map((p) => ({ ...p, events: p.events.filter(by) }))
+    .filter((p) => p.events.length)
+    .map((p) => {
+      const last = p.events[p.events.length - 1];
+      return { ...p, edge: { ...p.edge, valence: p.events.map((e) => mood[e.event]).filter(Boolean).pop() ?? null, status: last.event === 'ended' ? 'ended' : 'active' } };
+    });
+  const ids = new Set(people.map((p) => p.id));
+  const ties = personaPeople.ties.filter((t) => ids.has(t.a) && ids.has(t.b));
+  return { ...personaPeople, people, ties, as_of: asOf };
+}
+
 export const personaFiles = {
   identity: {
     file: 'identity.md',

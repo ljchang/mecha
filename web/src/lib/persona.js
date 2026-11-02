@@ -930,7 +930,7 @@ export const PEOPLE_ABSENT = {
 // ended ties are greyed (§15).
 export const RINGS = { 5: 31, 15: 47, 50: 63, 150: 78, none: 88, ended: 96 };
 // The rings innermost first.
-const RING_ORDER = [...PEOPLE_LAYERS, 'none', 'ended'];
+export const RING_ORDER = [...PEOPLE_LAYERS, 'none', 'ended'];
 
 // Her network's read, as it is or as it was on a day (§15's time slider).
 export function peopleUrl(name, asOf = null, token = null) {
