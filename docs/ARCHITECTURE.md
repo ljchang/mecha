@@ -1912,6 +1912,16 @@ module.
   not spoken after is unanswered, kept out of the uptake rate, and no
   people is no reading rather than zero. Counts only, never names
   or words.
+- **The storyteller is code over an owner deck, and nothing of it reaches a
+  prompt yet** (`persona::story`, `persona::weather`). Storylets in
+  `story.toml` are parsed whole or refused (unknown keys, a duplicate id, an
+  effect past one step, `{who}` with no `with`), and only clean, active
+  people are cast, by id. Weather is shelf A pulled ahead: one capped read of
+  one owner-written place, parsed into a closed `Sky` and whole degrees or
+  the day refused, so no string the source wrote is kept; unknown weather
+  satisfies no condition. A day's draw is seeded, stored in `world.db` v3 up
+  to today, and today's is redrawn when its inputs' digest changes; weather
+  is shown as the fact it is, even on a day drawn before it arrived.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
