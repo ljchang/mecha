@@ -86,6 +86,9 @@ async fn detail(found: Loaded) -> serde_json::Value {
         "path": inst.path,
         "digest": instrument::digest(&text),
         "pipeline_days": instrument::PIPELINE_DAYS,
+        // Whether the slot timer pushes this page; only then may the page
+        // promise its retries or blame it for a stale push.
+        "timer_pushes": inst.id == instrument::PIPELINE_INSTRUMENT,
         "days": instrument::DAYS,
     });
     let id = inst.id.clone();

@@ -36,6 +36,13 @@ use std::path::{Path, PathBuf};
 /// and the page would go stale while the editor said it saved.
 pub const PIPELINE_DAYS: u32 = 60;
 
+/// The one instrument the slot pipeline pushes (`slots push book` in every
+/// script that pushes). Any other booking page is pushed only when it is
+/// saved on the Factory page, so the page must not promise it a timer's
+/// retries; the scripts are held to this by
+/// `the_pipelines_fetch_the_days_the_editor_allows`.
+pub const PIPELINE_INSTRUMENT: &str = "book";
+
 /// `~/.mecha/factory/types`, found by the factory's own rule
 /// (`Remote::dir()` is `mecha_home()/factory`) — a reader of somebody else's
 /// store uses their rule for finding it.
@@ -1063,7 +1070,7 @@ heading = "You're booked"
                 assert_eq!(days, PIPELINE_DAYS, "{name}: {fetch}");
             }
             assert!(
-                text.contains("slots push book --manifest"),
+                text.contains(&format!("slots push {PIPELINE_INSTRUMENT} --manifest")),
                 "{name} computes slots from the manifest the editor writes"
             );
         }

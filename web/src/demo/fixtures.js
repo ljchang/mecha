@@ -670,6 +670,7 @@ export function factoryInstrument(id = 'book', now = Date.now()) {
     path: '/home/demo/.mecha/factory/types/book.toml',
     digest: 'demo',
     pipeline_days: 60,
+    timer_pushes: true,
     days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
     requests_open: 1,
     hours: demoHours,
