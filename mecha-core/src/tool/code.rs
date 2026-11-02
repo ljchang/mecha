@@ -129,11 +129,10 @@ pub mod defaults {
     pub const PROCESS_HOST_BYTES: usize = 256 * 1024 * 1024;
     /// `peek`'s `n` when the program names none.
     pub const PEEK_DEFAULT: usize = 2000;
-    /// Not a §5 row: the most `(start, end)` pairs one `find` returns, and
-    /// the most lines one `grep` does. A pattern matching every character of
-    /// a 64 MB text would otherwise build a value of billions of pairs in the
-    /// host before any limit saw it, so a sweep that wants more narrows the
-    /// pattern or slices first.
+    /// Not a §5 row: the most `(start, end)` pairs one `find` returns. A
+    /// pattern matching every character of a 64 MB text would otherwise
+    /// build a value of billions of pairs in the host before any limit saw
+    /// it, so a sweep that wants more narrows the pattern or slices first.
     pub const FIND_MATCHES: usize = 4096;
     /// Not a §5 row: the most pieces one `lines`, `split` or `chunks`
     /// returns, counted before any is built. The live-handle cap bounded
@@ -789,8 +788,7 @@ fn describe(admission: &Admission) -> String {
     }
     d.push_str(
         "Host helpers, faster than Python on a long text and free of sub-calls: grep(text, \
-         pattern) (the matching lines, a list of str; it raises past 4,096, so narrow the \
-         pattern), count(text, pattern), find(text, \
+         pattern) (the matching lines, a list of str), count(text, pattern), find(text, \
          pattern) (a list of [start, end] character offsets), lines(text), split(text, \
          pattern), chunks(text, n, overlap=0) (pieces of n characters) and json_get(text, \
          path). Patterns are Rust regular expressions. budget() says what is left of each \
@@ -1674,22 +1672,10 @@ impl Run {
     fn grep(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
         let t = self.text(a)?;
         let re = a.pattern(1)?;
-        let mut out = Vec::new();
-        for line in t.text.lines() {
-            if re.is_match(line) {
-                if out.len() == defaults::FIND_MATCHES {
-                    return Err(raise(
-                        Tag::LimitError,
-                        format!(
-                            "grep matches: more than {} lines for one `grep`; narrow the \
-                             pattern, or slice the text first",
-                            defaults::FIND_MATCHES
-                        ),
-                    ));
-                }
-                out.push(line);
-            }
-        }
+        // Bounded as `lines` is, whose subset it returns: at `find`'s 4,096
+        // the log it was built for raised on `ERROR` (review of #805).
+        let out: Vec<&str> = t.text.lines().filter(|l| re.is_match(l)).collect();
+        pieces("grep", out.len())?;
         Ok(strings(out))
     }
 
@@ -1796,6 +1782,18 @@ impl Run {
                 ))
             }
         };
+        // Bounded before it is parsed: a `str` the program built is not a
+        // read the host-byte limit charged (review of #805).
+        if t.text.len() > self.limits.host_bytes {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "host bytes: `json_get` was given {} bytes, past this program's {}",
+                    t.text.len(),
+                    self.limits.host_bytes
+                ),
+            ));
+        }
         let root: Value = serde_json::from_str(t.text).map_err(|e| {
             raise(
                 Tag::HandleError,
@@ -2057,7 +2055,7 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
     }
     // `size = size(h)` in a loop: the next call finds the int, and monty's
     // "'int' object is not callable" says nothing about why (M2, 2026-11-02).
-    if is_error && out.contains("object is not callable") {
+    if is_error && ending.contains("object is not callable") {
         // The name the failing line calls, where the traceback shows one:
         // `shadowed` is in host-function order, not the error's.
         // With none shown, no hint: a guess could name a function the
