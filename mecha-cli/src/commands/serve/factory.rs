@@ -89,9 +89,12 @@ async fn detail(found: Loaded) -> serde_json::Value {
         "days": instrument::DAYS,
     });
     let id = inst.id.clone();
-    let (bookings, open) = tokio::task::spawn_blocking(move || meetings(&id))
+    let (bookings, open, skipped) = tokio::task::spawn_blocking(move || meetings(&id))
         .await
-        .unwrap_or_else(|e| (Err(anyhow::anyhow!("{e}")), None));
+        .unwrap_or_else(|e| (Err(anyhow::anyhow!("{e}")), None, 0));
+    if skipped > 0 {
+        out["requests_skipped"] = skipped.into();
+    }
     match bookings {
         Ok(rows) => out["bookings"] = serde_json::Value::Array(rows),
         Err(e) => out["bookings_error"] = format!("{e:#}").into(),
@@ -129,11 +132,11 @@ async fn detail(found: Loaded) -> serde_json::Value {
 /// without the outbox pass first a booking whose reply went out keeps
 /// counting as open, and one cancelled while a draft was staged keeps its
 /// meeting. Both best-effort; a store that cannot be written is still read.
-fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>) {
+fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>, usize) {
     use mecha_core::frontdoor::{self, Frontdoor};
     let store = match Frontdoor::open_default() {
         Ok(s) => s,
-        Err(e) => return (Err(e), None),
+        Err(e) => return (Err(e), None, 0),
     };
     if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
         if let Err(e) = store.reconcile(&outbox) {
@@ -143,9 +146,12 @@ fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>)
     if let Err(e) = store.settle_bookings(&super::super::frontdoor::swept_bookings()) {
         tracing::warn!(error = %e, "settling bookings for the factory page");
     }
-    let records = match store.records() {
+    // Counting what it skipped: a count over a store that dropped an
+    // unreadable row is a partial denominator, and the page says so beside
+    // the number rather than presenting it as the whole.
+    let (records, skipped) = match store.records_counting() {
         Ok(r) => r,
-        Err(e) => return (Err(e), None),
+        Err(e) => return (Err(e), None, 0),
     };
     let now = chrono::Utc::now();
     // Every booking a withdrawal names, joined here rather than trusted to
@@ -182,7 +188,11 @@ fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>)
         })
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
-    (Ok(rows.into_iter().map(|(_, v)| v).collect()), Some(open))
+    (
+        Ok(rows.into_iter().map(|(_, v)| v).collect()),
+        Some(open),
+        skipped,
+    )
 }
 
 /// Run a sibling program by its absolute path. A user unit has no login's
