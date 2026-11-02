@@ -1046,6 +1046,12 @@ impl Program for MontyProgram {
         if let Some(walk) = self.walk.take() {
             self.take_pending()?;
             return match walk.answer(&value) {
+                // A scan's listings go straight back to the host, past the
+                // checks `run` makes per event, so the wall clock is read here.
+                Walked::Next(..) if Instant::now() >= self.deadline => {
+                    let b = Backstop::WallClock(self.backstops.wall_clock);
+                    Ok(self.end(End::Backstop(b), false).await)
+                }
                 Walked::Next(walk, dir) => {
                     self.walk = Some(walk);
                     self.pending = true;
@@ -1067,8 +1073,11 @@ impl Program for MontyProgram {
 
     async fn raise(&mut self, raise: HostRaise) -> Result<Step> {
         // A probe whose parent cannot be listed is a path that is not there,
-        // as `os.path.exists` says of one it cannot reach.
-        if let Some(Walk::Probe { .. }) = self.walk.take() {
+        // as `os.path.exists` says of one it cannot reach. Only the tool's own
+        // failure: a spent limit or a stop still raises, or a program past
+        // its tool reads would finish as if it had not been stopped.
+        let walk = self.walk.take();
+        if matches!(walk, Some(Walk::Probe { .. })) && raise.message.starts_with("ToolError:") {
             self.take_pending()?;
             let no = MontyObject::bool(false);
             return self.run(Req::Resume(ResumeValue::Return(no))).await;
@@ -1193,11 +1202,15 @@ impl Walk {
             return Walked::Fail("`fs_list` did not return a list of names".to_string());
         };
         match self {
-            Walk::List { dir } => Walked::Reply(MontyObject::list(
-                names
-                    .iter()
-                    .map(|n| MontyObject::path(join(&dir, n.trim_end_matches('/')))),
-            )),
+            // As `Path(dir).iterdir()` names them: relative when `dir` was,
+            // so they read as a scan's do and never show `WORKSPACE`.
+            Walk::List { dir } => Walked::Reply(MontyObject::list(names.iter().map(|n| {
+                let path = join(&dir, n.trim_end_matches('/'));
+                MontyObject::path(match workspace_path(&path) {
+                    p if p.starts_with('/') => p,
+                    p => p.trim_start_matches("./").to_string(),
+                })
+            }))),
             Walk::Probe { name, what } => {
                 let found = names.iter().find(|n| n.trim_end_matches('/') == name);
                 let is_dir = found.is_some_and(|n| n.ends_with('/'));

@@ -1412,6 +1412,30 @@ async fn a_read_is_text_that_string_methods_work_on() {
     );
 }
 
+/// The hint's trigger, without a worker: a built-in type's method taken
+/// without a call, and nothing else.
+#[test]
+fn only_a_method_taken_without_a_call_is_monty_s_gap() {
+    assert_eq!(
+        method_as_value(
+            "  x = max(d, key=d.get)\nAttributeError: 'dict' object has no attribute 'get'"
+        ),
+        Some("get")
+    );
+    assert_eq!(
+        method_as_value("  x = d.get(k)\nAttributeError: 'dict' object has no attribute 'get'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = p.getter\nAttributeError: 'Point' object has no attribute 'getter'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = d.gets\nAttributeError: 'dict' object has no attribute 'get'"),
+        None
+    );
+}
+
 /// `max(d, key=d.get)` fails in monty 1.4 with "'dict' object has no
 /// attribute 'get'", though `d.get(k)` works; the result says why and what
 /// to write instead (M5: 9 programs, past the description's warning).
@@ -1440,24 +1464,6 @@ async fn a_method_taken_as_a_value_is_named() {
     let (d, _) = run(&agent, "d = {}\nprint(d.nope())").await;
     assert!(d.is_error, "{}", d.content);
     assert!(!d.content.contains("method as a value"), "{}", d.content);
-    assert_eq!(
-        method_as_value(
-            "  x = max(d, key=d.get)\nAttributeError: 'dict' object has no attribute 'get'"
-        ),
-        Some("get")
-    );
-    assert_eq!(
-        method_as_value("  x = d.get(k)\nAttributeError: 'dict' object has no attribute 'get'"),
-        None
-    );
-    assert_eq!(
-        method_as_value("  x = p.getter\nAttributeError: 'Point' object has no attribute 'getter'"),
-        None
-    );
-    assert_eq!(
-        method_as_value("  x = d.gets\nAttributeError: 'dict' object has no attribute 'get'"),
-        None
-    );
 }
 
 /// A variable that takes a function's name, as `size = size(h)` did in M2,

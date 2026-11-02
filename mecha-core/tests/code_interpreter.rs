@@ -520,8 +520,13 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
         ("print(sorted(os.listdir('src')))", "['a.py', 'b.txt', 'sub']", 1),
         ("print(sorted(os.listdir()))", "['README.md', 'src']", 1),
         (
-            "print(sorted(p.name for p in pathlib.Path('src').iterdir()))",
-            "['a.py', 'b.txt', 'sub']",
+            "print(sorted(str(p) for p in pathlib.Path('src').iterdir()))",
+            "['src/a.py', 'src/b.txt', 'src/sub']",
+            1,
+        ),
+        (
+            "print(sorted(str(p) for p in pathlib.Path('.').iterdir()))",
+            "['README.md', 'src']",
             1,
         ),
         (
@@ -566,6 +571,27 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
     )
     .await;
     assert_eq!(calls[0].kwargs[0].1, Value::from("/tmp/mecha-spill-1"));
+    // a probe is `False` only for the tool's own failure: a spent limit raises
+    let (f, _) = run_with(
+        &interp,
+        "import os\nprint(os.path.exists('src/a.py'))",
+        &["fs_list"],
+        |_| {
+            Err(HostRaise::tagged(
+                Tag::LimitError,
+                "tool reads: this program has spent all 2048",
+            ))
+        },
+    )
+    .await;
+    match f.end {
+        End::Raised(r) => assert!(
+            r.message.unwrap_or_default().contains("LimitError"),
+            "{}",
+            f.printed
+        ),
+        e => panic!("a spent limit read as a missing file: {e:?} {}", f.printed),
+    }
     // without `fs_list`, a walk is refused as before
     let (f, calls) = run_with(&interp, "import os\nos.listdir('src')", &["fs_read"], tree).await;
     assert!(calls.is_empty());
