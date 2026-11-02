@@ -1105,7 +1105,8 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 - **The interpreter is not where a program's time goes.** A host call costs
   10–18 µs, against M0's 0.3–0.5 s for a thinking-off pass: the §5
   suspension backstop's 2,336 calls would spend about 40 ms in transport
-  (4,128 since tool reads went to 2,048: about 75 ms).
+  (4,128 since tool reads went to 2,048: about 75 ms; 6,176 since R12, where
+  a read through `open()` is two suspensions).
   Worker start is about 4 ms cold, most of it bwrap (bare start is under
   1 ms), and a warm worker is reused in under 0.1 ms.
 - **Contention cost the interpreter a third at most.** One decode in flight
@@ -1246,7 +1247,12 @@ with your recs"), except R4, which waited on M1 and was ruled on
   written. Any other mode, binary or write, and any program without
   `fs_read`, is refused as before. The refusal had cost a turn in most M2
   to M4 first programs, and in one M4 run it was swallowed by a bare
-  `except` and the program reported no match with nothing raised.
+  `except` and the program reported no match with nothing raised. The path
+  reaches `fs_read` relative to the workspace: monty cannot tell
+  `open('/a.csv')` from `open('a.csv')`, so one leading `/` comes off, and
+  an absolute path, an owner grant's included, is reached with `fs_read`
+  directly. A read through `open()` is two suspensions against one tool
+  read, so the suspension backstop counts tool reads twice.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy

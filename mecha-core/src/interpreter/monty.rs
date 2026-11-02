@@ -811,12 +811,12 @@ impl MontyProgram {
                         } else {
                             Req::Resume(ResumeValue::Error(MontyException::new(
                                 ExcType::PermissionError,
-                                Some(
+                                Some(format!(
                                     "a program may open a file only to read its text, in mode \
-                                     'r'; it cannot write files or read bytes, and reads data \
-                                     through the functions it was given"
-                                        .to_string(),
-                                ),
+                                     'r', and cannot write files or read bytes; reach data \
+                                     through the functions it was given: {}",
+                                    given_functions(&self.externals)
+                                )),
                             )))
                         }
                     } else {
@@ -993,6 +993,22 @@ impl Program for MontyProgram {
     }
 }
 
+/// The functions a program was given, by name: the first 32, then a count.
+fn given_functions(externals: &BTreeSet<String>) -> String {
+    const SHOWN: usize = 32;
+    let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
+    let more = externals.len().saturating_sub(SHOWN);
+    let mut out = if given.is_empty() {
+        "none".to_string()
+    } else {
+        given.join(", ")
+    };
+    if more > 0 {
+        out.push_str(&format!(", and {more} more"));
+    }
+    out
+}
+
 /// What a program that reached for the operating system is told: it has no
 /// files, environment, network or clock, and the functions it was given are
 /// the way to its data. Their names are the program's own externals, so the
@@ -1000,9 +1016,6 @@ impl Program for MontyProgram {
 /// them: listed alphabetically they came after `docs__*`, `document_read` and
 /// `find`, and `open()` was how 19 of 27 first programs failed in M2.
 fn os_refusal(externals: &BTreeSet<String>) -> String {
-    const SHOWN: usize = 32;
-    let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
-    let more = externals.len().saturating_sub(SHOWN);
     let files = match (externals.contains("fs_read"), externals.contains("fs_list")) {
         (true, true) => {
             "read a file with fs_read(path=...), which returns its text as a str, and list a \
@@ -1013,17 +1026,8 @@ fn os_refusal(externals: &BTreeSet<String>) -> String {
     };
     format!(
         "a program has no files, environment, network or clock; {files}reach data through \
-         the functions it was given: {}{}",
-        if given.is_empty() {
-            "none".to_string()
-        } else {
-            given.join(", ")
-        },
-        if more > 0 {
-            format!(", and {more} more")
-        } else {
-            String::new()
-        }
+         the functions it was given: {}",
+        given_functions(externals)
     )
 }
 
@@ -1031,7 +1035,8 @@ fn os_refusal(externals: &BTreeSet<String>) -> String {
 const MAX_DEPTH: usize = super::VALUE_DEPTH;
 
 /// The path an OS call was given. Monty hands a `PosixPath`, whose repr is
-/// `PosixPath('<the path as written>')` with no escaping.
+/// `PosixPath('<the path as written>')` with no escaping, which the worker
+/// test holds for 1.4.0 with a path that has a quote in it.
 fn os_path(o: ObjectRef<'_>) -> Option<String> {
     if o.type_name() != "PosixPath" {
         return None;
