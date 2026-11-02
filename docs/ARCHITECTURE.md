@@ -3917,9 +3917,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   that ran a program diverges at its first host call.
 - **A program's numbers ride its output** (`code::ProgramStats` on
   `ToolOutput::program`, copied to `ToolCallTrace::program`): counts and
-  flags only, never a byte. `RunStats` counts §7's six from the trace
+  flags only, never a byte. `RunStats` counts §7's seven from the trace
   (`programs`, `program_errors`, `subcalls`, `subcall_tokens`,
-  `peeked_bytes`, `budget_stops`), each an `Option` so a row from before
+  `peeked_bytes`, `program_read_bytes`, `budget_stops`), each an `Option` so a row from before
   them reads unknown. A budget stop is a backstop, or a host `LimitError:`
   nothing caught; a program that raises the tag's text itself failed on its
   own, and one refused at its start counts as a failed program.

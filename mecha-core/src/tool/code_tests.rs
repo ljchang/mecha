@@ -996,6 +996,11 @@ fn each_host_limit_raises_a_limit_error_naming_it() {
     let (mut run, h) = run_over(&"é".repeat(600), tight);
     let err = op(&mut run, "chunks", vec![h.clone(), json!(400), json!(200)]).unwrap_err();
     assert!(err.contains("bytes in all"), "{err}");
+    // And by the text's own bytes per character, not rounded up: one `é` in
+    // 599 ASCII characters is about 1.002 bytes each, so two chunks of 400
+    // (about 802 bytes) pass, where a rounded 2 would read 1,600 (review of #817).
+    let (mut run, h) = run_over(&format!("é{}", "x".repeat(599)), tight);
+    assert!(op(&mut run, "chunks", vec![h, json!(400), json!(200)]).is_ok());
 }
 
 /// A read the host-byte limit refuses is still recorded, and a program can
@@ -1574,7 +1579,12 @@ async fn the_descriptions_example_runs_as_written() {
     );
     let jail = agent.context().tools.workspace.clone();
     std::fs::create_dir_all(jail.join("notes/old")).unwrap();
-    std::fs::write(jail.join("notes/1.md"), "Attendees: Priya, Marco").unwrap();
+    // Two `Attendees:` lines (a list, and its correction): counted once.
+    std::fs::write(
+        jail.join("notes/1.md"),
+        "Attendees: Priya, Marco\nAttendees: Priya, Marco, Sam",
+    )
+    .unwrap();
     std::fs::write(jail.join("notes/2.md"), "Attendees: Marco").unwrap();
     std::fs::write(jail.join("notes/3.md"), "Attendees: Priya").unwrap();
     let admitted = Admission::over(
