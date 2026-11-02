@@ -333,6 +333,153 @@ async fn a_program_cannot_open_a_file_read_the_environment_or_reach_the_network(
     assert!(!std::path::Path::new("/tmp/mecha-code-mode-probe").exists());
 }
 
+/// A program given `fs_read` may open a file to read its text: every form of
+/// reading one arrives as the whole file from that same function, so the
+/// answer is the guard's, never a file's. Without `fs_read`, or to write or
+/// read bytes, `open` is refused as before (the first wall, above).
+#[tokio::test]
+async fn open_reads_text_through_fs_read_and_nothing_else() {
+    let Some(interp) = interpreter(Backstops::default()).await else {
+        return;
+    };
+    let text = "h,i\n1,2\n3,4\n";
+    for (src, want) in [
+        ("print(len(open('a.csv').read()))", "12"),
+        (
+            "with open('a.csv') as f:\n    print(len(f.readlines()))",
+            "3",
+        ),
+        (
+            "n = 0\nfor line in open('a.csv', 'r'):\n    n += 1\nprint(n)",
+            "3",
+        ),
+        ("print(repr(open('sub/b.txt').readline()))", "'h,i\\n'"),
+        (
+            "import pathlib\nprint(len(pathlib.Path('a.csv').read_text()))",
+            "12",
+        ),
+        (
+            "import csv\nprint(len(list(csv.DictReader(open('a.csv')))))",
+            "2",
+        ),
+        ("print(len(open('a.csv', encoding='utf-8').read()))", "12"),
+        (
+            "import csv\nprint(len(list(csv.reader(open('a.csv', newline='')))))",
+            "3",
+        ),
+    ] {
+        let mut asked = Vec::new();
+        let (f, calls) = run_with(&interp, src, &["fs_read"], |c| {
+            asked.push(c.kwargs.clone());
+            Ok(Value::from(text))
+        })
+        .await;
+        assert!(matches!(f.end, End::Complete { .. }), "{src}: {:?}", f.end);
+        assert_eq!(f.printed.trim(), want, "{src}");
+        assert_eq!(calls.len(), 1, "{src}");
+        assert_eq!(calls[0].name, "fs_read");
+        // monty roots a relative path at `/`; the call gets it relative again
+        let path = asked[0][0].1.as_str().unwrap().to_string();
+        assert!(
+            !path.starts_with('/') && (path == "a.csv" || path == "sub/b.txt"),
+            "{path}"
+        );
+    }
+    // the path reaches `fs_read` as written, a quote included, with a leading
+    // `/` taken off (monty cannot tell `open('/a')` from `open('a')`: both
+    // arrive as `/a`, so an absolute path is read relative to the workspace)
+    for (src, want) in [
+        ("open(\"it's.md\").read()", "it's.md"),
+        ("open('/etc/hosts').read()", "etc/hosts"),
+    ] {
+        let mut asked = Vec::new();
+        run_with(&interp, src, &["fs_read"], |c| {
+            asked.push(c.kwargs[0].1.as_str().unwrap().to_string());
+            Ok(Value::from(text))
+        })
+        .await;
+        assert_eq!(asked, vec![want.to_string()], "{src}");
+    }
+    // `mode` as a keyword is read as the positional is
+    let (f, _) = run_with(
+        &interp,
+        "print(len(open('a.csv', mode='r').read()))",
+        &["fs_read"],
+        |_| Ok(Value::from(text)),
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "12", "{}", f.printed);
+    // a handle holds its text after the first read: a `readline()` loop is one
+    // `fs_read`, not one per line (measured, R12)
+    let (f, calls) = run_with(
+        &interp,
+        "f = open('a.csv')\nn = 0\nwhile f.readline():\n    n += 1\nprint(n)",
+        &["fs_read"],
+        |_| Ok(Value::from(text)),
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "3", "{}", f.printed);
+    assert_eq!(calls.len(), 1);
+    // the description's claims, held against the worker
+    let (f, _) = run_with(
+        &interp,
+        "import re, json, csv, collections, itertools, math, datetime, decimal, pathlib\n\
+         d = {'a': 1}\nprint(d.get('a'))\n\
+         try:\n    max(d, key=d.get)\n    print('METHOD-AS-VALUE-WORKS')\n\
+         except BaseException:\n    print('method as value raises')",
+        &[],
+        |_| Ok(Value::Null),
+    )
+    .await;
+    assert!(
+        f.printed.starts_with("1\n"),
+        "d.get(k) works: {}",
+        f.printed
+    );
+    assert!(
+        f.printed.contains("method as value raises"),
+        "{}",
+        f.printed
+    );
+    for m in ["io", "statistics"] {
+        let (f, _) = run_with(
+            &interp,
+            &format!(
+                "try:\n    import {m}\n    print('HAS')\nexcept ImportError:\n    print('lacks')"
+            ),
+            &[],
+            |_| Ok(Value::Null),
+        )
+        .await;
+        assert_eq!(f.printed.trim(), "lacks", "{m}: {}", f.printed);
+    }
+    // a failure from the tool reaches the program where it reads
+    let (f, _) = run_with(
+        &interp,
+        "try:\n    open('gone.txt').read()\nexcept BaseException as e:\n    print(type(e).__name__, e)",
+        &["fs_read"],
+        |_| Err(HostRaise::tagged(Tag::ToolError, "`fs_read` returned an error: not found")),
+    )
+    .await;
+    assert!(f.printed.contains("not found"), "{}", f.printed);
+    // writing, binary and an unrelated OS call are refused, with fs_read given
+    for src in [
+        "open('x.txt', 'w').write('x')",
+        "open('x.txt', 'a')",
+        "open('x.txt', 'rb').read()",
+        "open('x.txt', mode='w').write('x')",
+        "open('x.txt', mode='rb').read()",
+        "import os\nos.getenv('HOME')",
+    ] {
+        let (f, calls) = run_with(&interp, src, &["fs_read"], |_| Ok(Value::from("t"))).await;
+        assert!(calls.is_empty(), "{src}");
+        match f.end {
+            End::Raised(r) => assert_eq!(r.exc_type, "PermissionError", "{src}"),
+            e => panic!("{src}: {e:?}"),
+        }
+    }
+}
+
 /// The second wall, measured on the live worker rather than read off an
 /// argv: the process running the program has no environment, no network
 /// namespace of ours, and a filesystem holding nothing but its binary.
