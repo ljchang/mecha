@@ -101,6 +101,8 @@ means none.
   ledger.jsonl                 one row per rule × message × action (§8)
   proposals/<id>/              drafts from a conversation, never live (§9)
   aliases.toml                 the owner's other addresses (§5.4), owner-written
+  limits.toml                  the global daily cap (§5.4); a rule's own cap is
+                               in its rule.toml
   deferred.jsonl               threads whose archive waits for classify (§4.1)
   .lock
 ```
@@ -392,11 +394,16 @@ folder move (`move_message`), as is undo. A key read after the rule's own
 archive would find no row and run the action again. So the ledger keys an
 Outlook message by its **immutable** id — what Graph returns under
 `Prefer: IdType="ImmutableId"`, fixed across moves within the mailbox — and
-the rule engine asks for it on its own reads only. Setting the preference on
-every Graph request would also change the ids the triage store already keys
-on (`(account, thread_id)`), stranding its records and corrections; scoped to
-the rule engine, nothing else moves. P0 verifies on the owner's mailbox that
-the immutable id survives archive, trash and restore. Gmail's message id is already stable
+the rule engine sends the preference on **every Graph call it makes** —
+reads, the mailbox action itself, the reader's fetch of a ledger row, and
+undo — because an immutable id handed to a call made without the preference
+is rejected as malformed. Whether the preference could go on every Graph
+request instead depends on whether it reissues `conversationId`, which the
+triage store keys on (`(account, thread_id)`); if it does not, the global
+scope is harmless and simpler. P0 answers both questions on the owner's
+mailbox: that an immutable id is **accepted** by a move and a restore (not
+only that its value is unchanged after one), and whether `conversationId`
+changes under the preference — and picks the scope from the answer. Gmail's message id is already stable
 across label changes. It is
 **never the RFC 5322 `Message-ID`**, which is sender-written and optional
 here: a reused one would mark another message's actions as already done, and
@@ -740,9 +747,11 @@ Entering `auto` for any send group shows the owner, on one screen: the
 matcher, the exact template or covering note, the recipient rule, the guards,
 and the shadow-mode rows so far. The approval written to `approvals.jsonl`
 carries **a digest of the rule's directory** (and of the named skill's, for
-§6.3, and of `aliases.toml` for any rule with an outbound action, since §5.4's
-loop guard rests on it — removing an alias must lapse the approvals that
-counted on it). On every run the digest is recomputed; **if anything changed, the rule
+§6.3, and of `aliases.toml` and `limits.toml` for any rule with an outbound
+action, since §5.4's loop guard and caps rest on them — removing an alias or
+raising the global cap must lapse the approvals that counted on them). The
+caps live in the rule store, never on `Config`, so they are not layered
+config and not the two-edit `Config`/`ConfigLayer` trap. On every run the digest is recomputed; **if anything changed, the rule
 drops to `propose`** with a ledger row (`approval lapsed: files changed`) and a
 notice. Re-approving is one action that shows the diff.
 
@@ -817,6 +826,19 @@ on when private data must not leave at all", and an owner who set it on those
 words should not find their mailbox answering strangers. A template reply
 leaks one bit at most (§5.1), which is not worth narrowing a flag's stated
 meaning for. The guard is off by default.
+
+**`[outbox] tools` is the other loop-side control a rule send skips, and here
+the rule's approval wins.** The route says a model's call to a listed send
+tool is staged, not executed. On this deployment every mail send tool is
+routed, so if the route held rule sends too, R1 and R2 would be impossible
+in practice. The rule's `auto` approval is the later and more specific
+statement — the owner's, made per rule, against shown text and recipients,
+under §6.1's raise gate — and a rule send is not a model's tool call, which
+is what the route governs. So the route does not hold a rule send, and the
+approval screen says so in a line: *this rule sends without the outbox; your
+outbox routing still applies to everything else.* `block_sends_after_private`
+is different in kind — it is the owner saying nothing private leaves at all,
+which no per-rule approval should silently outvote.
 
 What bounds the leak is
 the **context**: the only private data the draft can contain is the thread
@@ -951,7 +973,15 @@ real and worth serving, and the safe shape exists already in
 - `mail_rule_propose` is a tool a chat can call with a rule's TOML and
   template text as its *input*. It writes to `proposals/<id>/`, never to
   `rules/`, records its `Origin` from `ToolCtx::recorded_taint`, and returns
-  no data.
+  no data. **The write is checked before any byte lands**, not only by the
+  loader afterwards: the store is outside `ToolCtx::resolve`'s reach, so a
+  `template = "../../skills/…"` would otherwise create a file where §0 says
+  the harness may never write. Every model-supplied name — the rule's name
+  and every file it names — is charset-validated at the write on
+  `persona::validate_name`'s precedent (lowercase, digits, `-`, `_`, a leading
+  alphanumeric, length-capped, so no separator or `..` can appear), and
+  containment in `proposals/<id>/` is proved before the file is created. The
+  proposal id is minted by the store, never taken from the model.
 - The proposal is checked by the same loader an installed rule uses, so a
   proposal that previews clean installs clean.
 - The owner sees the rendered rule — the template as the recipient would read
@@ -991,9 +1021,16 @@ matches.
 
 ## 10. Corrections
 
-**Wrong match** on a ledger row writes a field-level correction (`field =
-"rule"`, was, now) to the triage record, in the shape `MAIL-UX-DESIGN.md` §6
-already defines, so it joins the classifier's few-shot pool. That makes rule
+**Wrong match** on a **description** rule's ledger row writes a field-level
+correction (`field = "rule"`, was, now) to the triage record, in the shape
+`MAIL-UX-DESIGN.md` §6 already defines, so it joins the classifier's few-shot
+pool. On a **header** rule's row it does not: a header match is a string
+comparison the classifier never made, teaching it otherwise is the noise
+`MAIL-UX-DESIGN.md` §6 warns about, and with several header matches allowed
+per thread `(thread_id, field = "rule")` would not identify one correction.
+A wrong header match means the matcher is wrong — an edit to `rule.toml` —
+so it records the ledger outcome, counts toward §6.4's brake, and the page
+offers the edit. That makes rule
 precision improve the way bucket precision does, with nothing new. **Missed
 match** — from the mail desk, *this should have matched rule X* — is the same
 correction in the other direction.
@@ -1013,8 +1050,9 @@ defaulted. A test per provider in **both** directions — a missing, foreign or
 duplicated provider instance proposes, and a single genuine provider instance
 passes — because a test of
 the negative alone passes on a reader that proposes unconditionally (§5.4); the
-immutable-id read for the rule engine, verified to survive a move and a
-restore on the owner's mailbox (§4.4); each account's own address available to
+immutable-id preference on the rule engine's Graph calls, verified to be
+accepted by a move and a restore on the owner's mailbox, with the
+`conversationId` question that decides its scope (§4.4); each account's own address available to
 the rule engine, with absent reported as unknown (§5.4); and the provider's own message id on the
 thread read for the ledger key (§4.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
@@ -1025,7 +1063,9 @@ the ledger, `off`/`shadow`/`propose`/`auto` for the mailbox and record
 groups (including a `tag` action, which writes mecha's own tag onto the
 triage record and has no provider verb, since tags are never Gmail labels or
 Graph categories), the five-minute timer, `mecha mail rule add | list | show | mode |
-test | ledger | undo`, the feature registry entry (off by default) — through
+test | ledger | undo | pause-all` — P1 is where rules first act in `auto`, so
+the panic button ships with them — the feature registry entry (off by
+default) — through
 `ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
 and
