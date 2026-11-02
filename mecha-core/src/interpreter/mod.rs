@@ -248,8 +248,9 @@ pub struct Backstops {
     /// §5's wall clock: 600 s, sized against the contended worst case of the
     /// sub-call token budget, not against a well-behaved program.
     pub wall_clock: Duration,
-    /// The interpreter's heap. The handles' bytes live in the host, not
-    /// here (§5), so this bounds the program's own data.
+    /// The interpreter's heap, the program's copies of the texts its reads
+    /// returned included (§5, R11): the host-byte limits bound what the
+    /// host reads and hands over, and this what the program then holds.
     pub max_memory: usize,
     /// Call-stack depth. Monty raises a *catchable* `RecursionError` here,
     /// as CPython does, so this one bounds the stack rather than ending the

@@ -926,6 +926,30 @@ fn each_host_limit_raises_a_limit_error_naming_it() {
     );
     let err = op(&mut run, "find", vec![h4, json!("x")]).unwrap_err();
     assert!(err.starts_with("LimitError: find matches:"), "{err}");
+
+    // Pieces: `lines`, `split` and `chunks` are refused past the cap before
+    // any piece is built, where the live-handle cap used to stand (review
+    // of #805); a cap's worth exactly is returned.
+    let big = "x".repeat(defaults::PIECES + 1);
+    let (mut run, _) = run_over("", HostLimits::default());
+    for (f, args) in [
+        ("chunks", vec![json!(big), json!(1)]),
+        ("lines", vec![json!("a\n".repeat(defaults::PIECES + 1))]),
+        (
+            "split",
+            vec![json!(",".repeat(defaults::PIECES)), json!(",")],
+        ),
+    ] {
+        let err = op(&mut run, f, args).unwrap_err();
+        assert!(err.starts_with("LimitError: pieces:"), "{f}: {err}");
+    }
+    let exact = op(
+        &mut run,
+        "chunks",
+        vec![json!("x".repeat(defaults::PIECES)), json!(1)],
+    )
+    .unwrap();
+    assert_eq!(exact.as_array().unwrap().len(), defaults::PIECES);
 }
 
 /// A read the host-byte limit refuses is still recorded, and a program can
@@ -1010,6 +1034,16 @@ fn peek_reads_from_a_start_offset() {
     );
     // "éfg" is 4 bytes, "ij" 2 and "hij" 3: the count is what was returned.
     assert_eq!(run.stats(None).peeked_bytes, 9);
+    // The last 500 of a shorter text is all of it, as `text[-500:]` is, and
+    // the most negative `n` there is does not overflow (review of #805).
+    assert_eq!(
+        op(&mut run, "peek", vec![json!("abc"), json!(-500)]).unwrap(),
+        json!("abc")
+    );
+    assert_eq!(
+        op(&mut run, "peek", vec![json!("abc"), json!(i64::MIN)]).unwrap(),
+        json!("abc")
+    );
 }
 
 /// Tool reads, through a host channel answered here: the read past the
@@ -1315,14 +1349,19 @@ async fn a_read_is_text_that_string_methods_work_on() {
     let agent = with_code(vec![doc], interp);
     let (d, _) = run(
         &agent,
-        "t = document_read()\nprint('Priya' in t, len(t), t.strip().split(': ')[1].split(', '))\n\
-         print(t[:9], count(t, 'Priya'), grep(t, 'Marco'))",
+        "import re\nimport json\n\
+         t = document_read()\nprint('Priya' in t, len(t), t.strip().split(': ')[1].split(', '))\n\
+         print(t[:9], count(t, 'Priya'), grep(t, 'Marco'))\n\
+         print(re.findall(r'[A-Z][a-z]+', t)[1:], json.loads(json.dumps({'n': len(t)}))['n'])",
     )
     .await;
     assert!(!d.is_error, "{}", d.content);
+    // The description says a program has re and json: asked of the worker,
+    // not assumed (review of #805).
     assert_eq!(
         unwrapped(&d.content),
-        "True 24 ['Priya', 'Marco']\nAttendees 1 ['Attendees: Priya, Marco']\n",
+        "True 24 ['Priya', 'Marco']\nAttendees 1 ['Attendees: Priya, Marco']\n\
+         ['Priya', 'Marco'] 24\n",
         "{}",
         d.content
     );
@@ -1355,6 +1394,19 @@ async fn a_function_a_program_assigned_over_is_named() {
     );
     // An error of another kind, or a name nobody assigned over, gets no hint.
     assert!(shadowed("sizes = size(t)\nfor x in t:\n    pass", &["size", "x"]) == ["x"]);
+    // Of two names assigned over, the hint names the one the failing line
+    // calls (review of #805).
+    let (d, _) = run(
+        &agent,
+        "count = 0\nt = document_read()\nsize = size(t)\nprint(size(t))",
+    )
+    .await;
+    assert!(
+        d.content
+            .contains("[`size` is a function this program was given"),
+        "{}",
+        d.content
+    );
     assert!(shadowed("if size == 3:\n    pass", &["size"]).is_empty());
 }
 

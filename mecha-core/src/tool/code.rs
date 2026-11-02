@@ -135,6 +135,13 @@ pub mod defaults {
     /// host before any limit saw it, so a sweep that wants more narrows the
     /// pattern or slices first.
     pub const FIND_MATCHES: usize = 4096;
+    /// Not a §5 row: the most pieces one `lines`, `split` or `chunks`
+    /// returns, counted before any is built. The live-handle cap bounded
+    /// these until R11; without one, `chunks(text, 1)` over a 64 MB read
+    /// would build 64 million strings in the host, which the byte pool,
+    /// counting reads, never sees (review of #805). A 1.5 MB log is about
+    /// 23,000 lines.
+    pub const PIECES: usize = 1 << 17;
 }
 
 /// The per-program host limits (§5), each raising a catchable `LimitError:`
@@ -967,6 +974,22 @@ fn strings<'s>(parts: impl IntoIterator<Item = &'s str>) -> Value {
     )
 }
 
+/// Refuse a result of `n` pieces past [`defaults::PIECES`], before any is
+/// built.
+fn pieces(f: &str, n: usize) -> Result<(), HostRaise> {
+    if n > defaults::PIECES {
+        return Err(raise(
+            Tag::LimitError,
+            format!(
+                "pieces: `{f}` would return {n}, more than the {} one call may; use grep, a \
+                 larger chunk, or slice the text first",
+                defaults::PIECES
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// How much of a tool's error text a raise carries, so a failed read says
 /// why without a large error body crowding the traceback.
 const ERROR_TEXT: usize = 2000;
@@ -1622,6 +1645,7 @@ impl Run {
 
     fn lines(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
         let t = self.text(a)?;
+        pieces("lines", t.text.lines().count())?;
         Ok(strings(t.text.lines()))
     }
 
@@ -1653,6 +1677,7 @@ impl Run {
     fn split(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
         let t = self.text(a)?;
         let re = a.pattern(1)?;
+        pieces("split", re.find_iter(t.text).count() + 1)?;
         Ok(strings(re.split(t.text)))
     }
 
@@ -1673,6 +1698,7 @@ impl Run {
             ));
         }
         let (n, step) = (n as usize, (n - overlap) as usize);
+        pieces("chunks", t.chars.saturating_sub(n).div_ceil(step) + 1)?;
         let mut spans = Vec::new();
         let mut start = 0;
         while start < t.chars {
@@ -1794,10 +1820,16 @@ impl Run {
         let t = self.text(a)?;
         let n = a.int(1, "n", Some(defaults::PEEK_DEFAULT as i64))?;
         // A negative `n` is the last `n` characters, the way `peek(h, -500)`
-        // was written in M2 and raised.
+        // was written in M2 and raised; a text shorter than that is all of
+        // it, as `text[-500:]` would be (review of #805).
         let chars = t.chars as i64;
-        let start = a.int(2, "start", Some(if n < 0 { n } else { 0 }))?;
-        let n = n.abs();
+        let tail = n < 0 && a.get(2, "start").is_none_or(Value::is_null);
+        let n = i64::try_from(n.unsigned_abs()).unwrap_or(i64::MAX);
+        let start = if tail {
+            -n.min(chars)
+        } else {
+            a.int(2, "start", Some(0))?
+        };
         let from = if start < 0 { start + chars } else { start };
         if from < 0 || from > chars {
             return Err(raise(
@@ -1972,7 +2004,13 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
     // `size = size(h)` in a loop: the next call finds the int, and monty's
     // "'int' object is not callable" says nothing about why (M2, 2026-11-02).
     if is_error && out.contains("object is not callable") {
-        if let Some(name) = shadowed.first() {
+        // The name the failing line calls, where the traceback shows one:
+        // `shadowed` is in host-function order, not the error's.
+        let called = shadowed
+            .iter()
+            .find(|n| out.contains(&format!("{n}(")))
+            .or(shadowed.first());
+        if let Some(name) = called {
             out.push_str(&format!(
                 "\n[`{name}` is a function this program was given, and the program assigned \
                  a value to that name, so a later call found the value: use another name for \
