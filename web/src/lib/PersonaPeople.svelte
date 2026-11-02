@@ -317,7 +317,7 @@
         <line class="spoke {n.valence ?? ''}" class:paused={n.status === 'paused'} class:ended={n.status === 'ended'} x1="0" y1="0" x2={n.x} y2={n.y} />
       {/each}
       <circle class="self" r="10" />
-      <text class="herini" y="3.2">{initials(display || name)}</text>
+      <text class="selfini" y="3.2">{initials(display || name)}</text>
       {#each nodes as n (n.id)}
         <g class="node" class:sel={picked === n.id} class:ended={n.status === 'ended'} transform="translate({n.x} {n.y})"
           role="button" tabindex="0" aria-label={n.name}
@@ -405,7 +405,7 @@
           <input bind:value={newEvent.on} placeholder="when: 2019, summer 2019, 2019-06" disabled={busy} aria-label="When" />
           <input bind:value={newEvent.context} placeholder="what it was about (a line)" disabled={busy} aria-label="What it was about" />
           <select bind:value={newEvent.with} disabled={busy} aria-label="Between them and">
-            <option value="">between them and {person.name}</option>
+            <option value="">between {display || name} and {person.name}</option>
             {#each people.filter((p) => p.id !== person.id) as p (p.id)}<option value={p.id}>between {person.name} and {p.name}</option>{/each}
           </select>
           <select bind:value={newEvent.tie} disabled={busy} aria-label="The tie, if it changed">
@@ -504,7 +504,7 @@
   .tie.tense { stroke: #c9894a; opacity: 0.85; }
   .tie.ended { opacity: 0.2; }
   .self { fill: var(--accent-400); }
-  .herini { font-size: 7px; text-anchor: middle; fill: var(--surface); font-weight: 600; pointer-events: none; }
+  .selfini { font-size: 7px; text-anchor: middle; fill: var(--surface); font-weight: 600; pointer-events: none; }
   .node { cursor: pointer; outline: none; }
   .node.ended { opacity: 0.45; }
   .nodebg { fill: var(--surface); stroke: var(--accent-900); stroke-width: 0.5; }

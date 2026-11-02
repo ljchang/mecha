@@ -2439,7 +2439,7 @@ ruled for repetition.
     whenever `world` is on, and writes `cell` into `routine.toml`
     (`POST /api/personas/{name}/routine/cell`), every other line kept, only
     over the routine the page was shown. The persona form's Life section
-    holds the `world` switch, "Their days" (the page's words are gender-neutral, and its tabs show only the parts that are on, Settings last: owner, 2026-11-02); the other `[life]` switches join
+    holds the `world` switch, "Their days"; the other `[life]` switches join
     it as their steps build them.
   - **Reviewing a drafted routine (step 1):** under the picker, the Week
     tab asks her model for a draft (`POST …/routine/draft`, tens of
@@ -2466,6 +2466,12 @@ ruled for repetition.
     or world event behind it; edit, backdate, end, merge, split, link a
     character, promote, forget, share. A time slider shows the network as it
     was on a date — nearly free from the event log.
+  - **The editor's tabs and words (owner, 2026-11-02):** the page is
+    gender-neutral ("Their days", "Their people", "Draft their week"), and
+    its tabs show only the parts that are on, Settings always last:
+    Memories while any kind is on or anything is stored, Week with `world`,
+    People with `people` too (`shows` on the persona list,
+    `personaTabs`).
   - **As built (step 2, her people):** a People tab beside Week, behind the
     same world gate, answering "off for this persona" while `[life] people`
     is off (the form's Life section gains the "Their people" switch). Rings
