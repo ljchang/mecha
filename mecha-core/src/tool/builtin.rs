@@ -129,9 +129,10 @@ impl Tool for FsRead {
             .unwrap_or(1)
             .max(1);
         let limit = input.get("limit").and_then(Value::as_u64);
-        // A program's read becomes a handle, which never enters the context
-        // window the turn cap protects, so it may hold the file up to the
-        // program's own host-byte limit (`CODE-MODE-DESIGN.md` §5).
+        // A program's read goes to the program, not the context window the
+        // turn cap protects (only what the program prints comes back), so it
+        // may hold the file up to the program's own host-byte limit
+        // (`CODE-MODE-DESIGN.md` §3, §5).
         //
         // The notice is prepended, so a program's cut read leaves room for
         // it: capped at the room alone, every cut read came to the room plus
