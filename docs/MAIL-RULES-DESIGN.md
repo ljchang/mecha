@@ -100,6 +100,7 @@ means none.
                                from, to, digest
   ledger.jsonl                 one row per rule × message × action (§8)
   proposals/<id>/              drafts from a conversation, never live (§9)
+  aliases.toml                 the owner's other addresses (§5.4), owner-written
   .lock
 ```
 
@@ -374,7 +375,18 @@ across label changes. It is
 here: a reused one would mark another message's actions as already done, and
 every message without one would collide on a single key. The `Message-ID`
 stays on the row as a display field only; a re-classification, a
-`--force` sweep or a crashed run never sends twice. The ledger row is written
+`--force` sweep or a crashed run never sends twice.
+
+**Matching is per thread; guards and keys are per message, and outbound
+actions are once per thread.** The classifier reads a thread, but a thread
+grows. So a rule evaluates a thread against **its newest inbound message**:
+that is the message the header matchers read, the one §5.4's guards check
+(its `From`, its `Authentication-Results`), and the one whose provider id
+keys mailbox actions. Outbound actions are additionally limited to **one per
+rule per thread**: a reply that lands in a thread this rule already forwarded
+from is `skipped: thread already handled`, never a second forward under a new
+message id. P0 gives the thread read the newest inbound message's provider id
+and headers for this. The ledger row is written
 `pending` first and settled after, so a crash between the two is visible as a
 pending row, never silently retried as a send.
 
@@ -465,11 +477,21 @@ party.
    decision gets, and §6.2's digest already carries the compiled
    instruction's version. It fills the rule's declared `fields` from the
    message. Types are a
-   closed set: `text` (one line, bounded), `money`, `date`, `email`, `number`.
+   closed set, and each says what it strips, as §5.1's slots do: `text` (one
+   line, at most 200 characters, control characters and line breaks removed),
+   `money` and `number` (parsed, then re-rendered by the harness — never the
+   extracted string), `date` (parsed to `YYYY-MM-DD` and re-rendered), and
+   `email` (a single address that parses, else the field fails). A type added
+   later states its rule too.
 2. **Every value is grounded**: its source words must appear in the message
    (the `deadline_quote` rule). An ungrounded field fails the send, which
    falls back to `propose` with the reason on the ledger row.
-3. The harness renders the owner's template with the values. The model's
+3. The harness renders the owner's template with the values. **The subject
+   is part of the template** — `receipt.md` starts with a `Subject:` line the
+   owner writes, which may use the same field slots, and reaches the provider
+   through `gmail::checked_header` like any other header. A template with no
+   subject line fails to load rather than sending one the harness made up.
+   The model's
    output is data in typed slots, never sentences — the reviewable-object and
    typed-extraction rules from `CLAUDE.md`'s recurring shapes, applied to a
    send.
@@ -633,6 +655,18 @@ This is `/review now|later|auto`'s rule: a policy that decides what leaves the
 machine must not be decidable by anything sharing a context window with
 third-party text.
 
+**"Never a tool" is not the whole boundary**, because a model with `shell`
+needs no tool to type `mecha mail rule mode <name> auto`. So **raising** a
+mode refuses any process that descends from a registered run — the shell
+registry and run markers `closure.rs` already reads to decide who may close a
+task (`ShellReading`, `POSTURE_ENV` as advisory) — and records the raise with
+`Actor::Owner` only. This deliberately does **not** inherit the outbox's
+ruling that a release from an unknown actor is stamped `unknown` but not
+refused: one release sends one reviewed draft, while a raise is a standing
+permission to send unattended, and a run with the owner present is still a
+context window with mail in it. Lowering is allowed from anywhere, a run
+included, because stepping down never needs approval (§6.4).
+
 A rule may be `auto` for some actions and not others: `mode` can be set per
 action group (§5's rows), defaulting to the rule's. "Archive these
 automatically, but propose the reply" is the common case.
@@ -643,7 +677,9 @@ Entering `auto` for any send group shows the owner, on one screen: the
 matcher, the exact template or covering note, the recipient rule, the guards,
 and the shadow-mode rows so far. The approval written to `approvals.jsonl`
 carries **a digest of the rule's directory** (and of the named skill's, for
-§6.3). On every run the digest is recomputed; **if anything changed, the rule
+§6.3, and of `aliases.toml` for any rule with an outbound action, since §5.4's
+loop guard rests on it — removing an alias must lapse the approvals that
+counted on it). On every run the digest is recomputed; **if anything changed, the rule
 drops to `propose`** with a ledger row (`approval lapsed: files changed`) and a
 notice. Re-approving is one action that shows the diff.
 
@@ -700,7 +736,8 @@ from the moment it graduates, not before.
 That is the security argument, and it is a different control from the
 interlock — not a way around it. Even as a tool this send would be
 `Egress::Blind` (the model names no recipient), which is the class the
-interlock deliberately does not own (`EGRESS-DESIGN.md` §6).
+interlock deliberately does not own (`EGRESS-DESIGN.md` §3–§4; §6 states
+the residual risk).
 
 The control that does own `Blind` is `block_sends_after_private`, which
 refuses both classes but runs in the loop's dispatch, where a harness-side
@@ -921,7 +958,11 @@ test | ledger | undo`, the feature registry entry (off by default) — through
 `ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
 and
-`mecha doctor` reporting an unreadable store or a lapsed approval. **Covers
+`mecha doctor` reporting an unreadable store or a lapsed approval. The store
+also registers with `backlog.rs`, so proposals awaiting install and lapsed
+approvals count in `mecha review` and `/queues` — what is *waiting*, beside
+the doctor's what is *wrong*; rule sends staged in the outbox already count
+there through `OutboxStore`. **Covers
 GitHub notifications and junk with no model involved.**
 
 **P2 — the digest.** `mecha mail digest` and `digest ack`. Then the briefing
