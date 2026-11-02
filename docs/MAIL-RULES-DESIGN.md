@@ -322,6 +322,14 @@ what it would do *beside* the active rules, not in place of one; how two
 rules interact once both are active is something the owner sees after
 promotion, in `propose`, before either goes back to `auto`.
 
+**A shadow rule with an outbound action is measured by both passes**, so its
+would-have rows are the match rate `auto` will actually have: a `shadow_rule`
+candidate with an outbound action gets the confirmation pass too, exactly as
+a `rule` candidate does, and a disagreement is recorded as `would have:
+propose`. Measuring shadow with the main pass alone would over-state the
+rate the owner approves against. It costs one call per shadow send
+candidate, which is a small fraction of mail and only while a rule is being
+evaluated.
 The same discipline as `request_type` and `deadline_quote`:
 
 - **Recognition, never invention.** The value is checked against the live
@@ -495,7 +503,8 @@ Grouped by what can go wrong, because that decides what may run unattended.
 | Group | `do =` | Reaches | May run in `auto`? |
 |---|---|---|---|
 | Mailbox | `archive`, `read`, `unread`, `trash`, `spam` | the owner's mailbox | yes — with the §5.5 limits on `trash`/`spam` |
-| Private record | `tag`, `digest`, `task` | the owner (the triage store and the board) | yes |
+| Private record | `tag`, `digest` | the owner (the triage store) | yes |
+| Board | `task` | the owner's board — **and from there a task run's prompt** | yes, with a harness-written name (§7) |
 | Fixed words | `reply` with `template` | the sender | after owner approval (R1) |
 | Verbatim forward | `forward` with `to` | an owner-fixed recipient | after owner approval (R3) |
 | Typed fields | `send` with `to`, `template`, `fields` | an owner-fixed recipient | after owner approval (R3) |
@@ -983,11 +992,19 @@ and nothing else: it moves no mail, which is why it is a record action and
 safe on the timer (§4.1). "Archive it, but show me tomorrow" — the newsletter
 you want to skim but not in your inbox — is two actions, `archive` and
 `digest`, and the archive follows §4.1's deferral like any other. `task` as an action
-creates the task directly. It is in the record group, so it may run in
-`auto` like `digest` (§5's table), but the approval screen recommends
-leaving it at `propose`, where the digest offers it with one tap, because a
-task board filled by whoever can send you mail is a board you stop
-trusting.
+creates the task directly, and **what it reaches is not only the board**: a
+task's name goes verbatim into `tasks::work_prompt`, the frame of a run that
+has tools and may be unattended. `mecha mail task` names a task from the
+classifier's `one_line` or the subject — prose a sender influences — which is
+fine when the owner presses `t` on a thread they read, and is not fine
+unattended. So **an automatic `task`'s name is written by the harness, never
+taken from the message**: the rule's own `description` (the owner's words),
+the deadline if the verdict carried one, and the thread pointer in
+`context`, so what reaches a task run is typed rather than quoted — the
+reviewable-object rule applied one surface further. A proposed `task` offered
+in the digest keeps today's naming, because the owner's tap is the review.
+The approval screen still recommends `propose`, since a board filled by
+whoever can send you mail is a board you stop trusting.
 
 ---
 
