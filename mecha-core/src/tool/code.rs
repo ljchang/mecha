@@ -753,7 +753,9 @@ fn describe(admission: &Admission) -> String {
          to read: more than a handful of files, threads or items to count, filter, compare or \
          join, or a long file or log to search. One program reads them all in one step, and \
          only what it prints comes back to you. It runs a short Python program (monty, a \
-         subset of Python 3, with re and json but no third-party packages, os or open). It \
+         subset of Python 3, with re, json, csv, collections, itertools, math, datetime and \
+         decimal, but no third-party packages, os, io or statistics; a method is called, not \
+         passed as a value, so write `key=lambda k: d[k]`, not `key=d.get`). It \
          reaches data by calling the tools listed at the end, with keyword arguments, and ",
     );
     // Said only of the tools that do it: a server's `fs_list` returns one
@@ -761,7 +763,10 @@ fn describe(admission: &Admission) -> String {
     // again, from the description's side (review of #793).
     let listings: Vec<&str> = admission.listings().collect();
     if admission.contains("fs_read") {
-        d.push_str("each returns its result as a str (fs_read(path=...) returns the file's text)");
+        d.push_str(
+            "each returns its result as a str (fs_read(path=...) returns the file's text, and \
+             open(path) reads a file's text the same way, but cannot write)",
+        );
     } else {
         d.push_str("each returns its result as a str");
     }
