@@ -1885,6 +1885,19 @@ export function personaWeek(date) {
       undraftable: null,
     },
     week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
+    // Her story over the week (`story::to_json`): invented events.
+    story: days.map((d, i) => ({
+      date: d.date,
+      weather: i % 3 === 0 ? { sky: 'rain', high_c: 9, low_c: 4 } : { sky: 'cloudy', high_c: 12, low_c: 6 },
+      morning: { energy: 'normal', stress: 'normal', mood: 'normal' },
+      evening: { energy: i === 2 ? 'low' : 'normal', stress: i === 2 ? 'high' : 'normal', mood: 'normal' },
+      events: i === 2
+        ? [{ storylet: 'deadline_crunch', title: 'a deadline crunch', size: 'minor', people: [], effect: { energy: 0, stress: 1, mood: 0 }, importance: 1.33, shown: 'a deadline crunch' }]
+        : i === 4
+          ? [{ storylet: 'good_news_friend', title: '{who} shared big good news', size: 'major', people: [DEMO_P(1)], effect: { energy: 0, stress: 0, mood: 1 }, importance: 5.6, shown: 'Ines shared big good news' }]
+          : [],
+      kept: d.when !== 'ahead',
+    })),
   };
 }
 
