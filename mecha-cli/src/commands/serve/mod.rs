@@ -3435,7 +3435,12 @@ mod tests {
             r#"case "$1 $2" in
   "type check") exit 0 ;;
   "slots preview") echo '{"instrument":"book","timezone":"America/New_York","horizon_days":60,"busy_generated_at":"2026-11-02T00:00:00Z","busy_age_seconds":1,"last_pushed_at":"2026-11-02T00:00:00Z","held_slots":0,"slots":[]}' ;;
-  "slots push") echo "Error: the box is down" >&2; exit 1 ;;
+  "slots push")
+    # `book` refuses before reading, as the real one does on an id mismatch;
+    # `talk` reads its stdin to the end first, which only finishes if the
+    # server closes the pipe — the normal save's path.
+    if [ "$3" = "talk" ]; then n=$(wc -c); echo "Error: the box is down after $n bytes" >&2; exit 1; fi
+    echo "Error: the box is down" >&2; exit 1 ;;
   *) echo "unexpected: $*" >&2; exit 9 ;;
 esac"#,
         );
@@ -3502,6 +3507,38 @@ printf '","busy":[]}\n'"#,
         let written = std::fs::read_to_string(&book).unwrap();
         assert!(written.contains("end = \"16:00\""), "{written}");
         assert!(written.starts_with("# the owner's note"), "{written}");
+
+        // A push that reads its whole stdin first — the real path — sees EOF
+        // once the write is done and answers at once, past a payload larger
+        // than the pipe; a pipe left open would hold it to the 120 s timeout.
+        let talk = manifest.replace("id = \"book\"", "id = \"talk\"");
+        std::fs::write(types.join("talk.toml"), &talk).unwrap();
+        let began = std::time::Instant::now();
+        let res = post(serde_json::json!({
+            "id": "talk", "base": mecha_core::instrument::digest(&talk), "hours": hours("16:00")
+        }))
+        .await
+        .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let out: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let said = out["push_error"].as_str().unwrap_or("");
+        assert!(
+            said.contains("after") && !said.contains("after 0 "),
+            "{out}"
+        );
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(20),
+            "the child waited for an EOF"
+        );
+        assert_eq!(
+            out["instrument"]["timer_pushes"], false,
+            "only book is the timer's: {out}"
+        );
 
         // The page's old digest is now stale: 409, and the file is left.
         let res = post(serde_json::json!({"id": "book", "base": base, "hours": hours("15:00")}))

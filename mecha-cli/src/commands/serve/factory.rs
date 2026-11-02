@@ -276,11 +276,16 @@ async fn run(
         // and report its exit and its own refusal, which is what the owner
         // needs to read. Reported as "Broken pipe" it said nothing (CI on
         // #816's merge, where the stand-in exited before the write finished).
-        match pipe.write_all(&bytes).await {
+        let written = match pipe.write_all(&bytes).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
             Err(e) => Err(e),
-        }
+        };
+        // Closed here, the moment the write is done: a child reading to EOF
+        // must see it now, not whenever `join!` drops a finished branch —
+        // `wait_with_output` cannot close a stdin that was taken out of it.
+        drop(pipe);
+        written
     };
     let (fed, output) = tokio::time::timeout(std::time::Duration::from_secs(120), async {
         tokio::join!(feed, child.wait_with_output())

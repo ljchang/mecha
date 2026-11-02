@@ -1069,6 +1069,20 @@ heading = "You're booked"
                     .unwrap_or_else(|| panic!("{name}: the fetch names --days: {fetch}"));
                 assert_eq!(days, PIPELINE_DAYS, "{name}: {fetch}");
             }
+            // Every `slots push` in the script pushes exactly the pipeline's
+            // instrument: a second one would make the page tell its owner the
+            // timer does not push a page it does.
+            let pushed: std::collections::BTreeSet<&str> = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .filter_map(|l| l.split("slots push ").nth(1))
+                .filter_map(|rest| rest.split_whitespace().next())
+                .collect();
+            assert_eq!(
+                pushed,
+                std::collections::BTreeSet::from([PIPELINE_INSTRUMENT]),
+                "{name} pushes exactly the pipeline's instrument"
+            );
             assert!(
                 text.contains(&format!("slots push {PIPELINE_INSTRUMENT} --manifest")),
                 "{name} computes slots from the manifest the editor writes"
