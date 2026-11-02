@@ -546,9 +546,9 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
             1,
         ),
         (
-            // `/etc/x`: the fake answers as a listing that ran and failed. In
-            // a run the jail refuses `/etc` through the gate instead, and the
-            // probe raises (R13, §11); the refusal branch is tested below.
+            // `/etc/x`: the fake answers as a listing that ran and failed, as
+            // the jail does in a run without `request_access`; with it, the
+            // gate refuses and the probe raises (R13, §11), tested below.
             "print(os.path.exists('src/a.py'), os.path.isfile('src/sub'), os.path.isdir('src/sub'), os.path.exists('nope'), os.path.exists('/etc/x'))",
             "True False True False False",
             // `src` is listed once; `.` and `/etc` once each

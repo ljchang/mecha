@@ -1273,8 +1273,11 @@ with your recs"), except R4, which waited on M1 and was ruled on
   raises rather than being skipped (`os.walk`'s `onerror=None`), so a
   short walk is never a silent one; and `fs_list` does not follow links,
   so a link to a directory is listed as a file. A probe answers `False`
-  only when `fs_list` ran and failed; one the gate refuses (a path outside
-  the jail, a hook, a denial) raises, as do a spent limit and a stop. A
+  only when `fs_list` ran and failed; one the gate refuses (a hook, a
+  denial, a policy, a path outside the jail when `request_access` is in the
+  run, which makes it a question for a person) raises, as do a spent limit
+  and a stop. Without `request_access`, a path outside the jail is the
+  tool's own error, so the probe reads `False`. A
   probe in a directory the program has already listed answers from that
   listing, without another call, and a scan past 131,072 entries raises a
   `LimitError`.

@@ -3627,8 +3627,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   with.** They are globals. Every `NameLookup` is answered `Undefined`. An
   unknown import (an `OsCall` named `import`) is answered `NotHandled`, so
   it stays monty's own `ModuleNotFoundError` and `except ImportError:`
-  catches it. Every other `OsCall` (files, environment, clock) is a
-  `PermissionError` naming the functions the program was given
+  catches it. A program's own file calls are answered by the tools it was
+  given, never by anything the worker can see: a text read through
+  `fs_read` (R12) and a listing through `fs_list` (R13), each an ordinary
+  host call through the gate, and only for a tool that answers in the
+  shape the shim needs (`FileTools`; `CODE-MODE-DESIGN.md` §11). Every
+  other `OsCall` (environment, clock, a write, a file call without that
+  tool) is a `PermissionError` naming the functions the program was given
   (`os_refusal`). A `FunctionCall` under any other name is refused in the
   program. Monty 1.4
   has `eval` and `exec`, so a registered name is reachable from a built
