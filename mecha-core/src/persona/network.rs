@@ -536,12 +536,25 @@ fn event_of(r: &rusqlite::Row) -> rusqlite::Result<EdgeEvent> {
     let layer: Option<u32> = r.get(6)?;
     let on: Option<String> = r.get(7)?;
     let on = on.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
-    let precision = unwire(&r.get::<_, String>(8)?).unwrap_or(Precision::Unknown);
+    let raw_precision: String = r.get(8)?;
+    let precision = unwire(&raw_precision).unwrap_or(Precision::Unknown);
+    let raw_tie: Option<String> = r.get(4)?;
     let kind = unwire(&r.get::<_, String>(3)?).unwrap_or(EventKind::Unknown);
-    // A ring this binary does not know makes the event one it cannot read,
-    // counted as such, never "not placed" (review of #801).
+    // A ring, a tie or a date's precision this binary does not know makes
+    // the event one it cannot read, counted as such: never "not placed",
+    // never a stale tie shown as current, never an event re-dated to the
+    // day it was recorded (reviews of #801). `unknown` is how a precision
+    // says "no date", so only a word outside the set is unreadable.
+    let readable_precision = matches!(
+        raw_precision.as_str(),
+        "day" | "month" | "season" | "year" | "unknown"
+    );
+    let unknown_tie = raw_tie
+        .as_deref()
+        .is_some_and(|t| unwire::<Tie>(t) == Some(Tie::Unknown));
     let kind = match layer {
         Some(n) if Layer::of_size(n).is_none() => EventKind::Unknown,
+        _ if unknown_tie || !readable_precision => EventKind::Unknown,
         _ => kind,
     };
     Ok(EdgeEvent {
@@ -549,9 +562,7 @@ fn event_of(r: &rusqlite::Row) -> rusqlite::Result<EdgeEvent> {
         person: r.get(1)?,
         other: r.get(2)?,
         kind,
-        tie: r
-            .get::<_, Option<String>>(4)?
-            .map(|t| unwire(&t).unwrap_or(Tie::Unknown)),
+        tie: raw_tie.map(|t| unwire(&t).unwrap_or(Tie::Unknown)),
         label: r.get(5)?,
         layer: layer.and_then(Layer::of_size),
         // A date without its precision, or a precision without a date, is
@@ -648,7 +659,7 @@ impl Network {
             let by_id: Vec<&Person> = self
                 .people
                 .iter()
-                .filter(|p| p.uid.starts_with(w))
+                .filter(|p| p.uid.starts_with(&w.to_lowercase()))
                 .collect();
             if by_id.len() == 1 {
                 return Ok(by_id[0]);
@@ -1003,10 +1014,13 @@ impl Network {
                         .map_or("someone", |p| p.name.as_str())
                         .to_string()
                 };
+                // Alphabetical, as network.md names a tie, so the line reads
+                // the same on every install.
+                let mut pair = [name(&a), name(&b)];
+                pair.sort_by_key(|n| n.to_lowercase());
                 out.push(format!(
                     "has a tie between {} and {} in her network that holds {w}",
-                    name(&a),
-                    name(&b)
+                    pair[0], pair[1]
                 ));
             }
         }
@@ -1658,6 +1672,18 @@ mod tests {
         }
     }
 
+    /// A person written straight into the store, as another binary would.
+    fn add_person_conn(c: &rusqlite::Connection, name: &str) -> String {
+        let id = uid();
+        c.execute(
+            "INSERT INTO people (uid, name, aliases, source, known_to_owner, created_at, updated_at)
+             VALUES (?1, ?2, '[]', 'owner', 1, '2026-01-01', '2026-01-01')",
+            params![id, name],
+        )
+        .unwrap();
+        id
+    }
+
     #[test]
     fn what_a_fold_cannot_read_is_said_where_the_owner_reads() {
         let pdir = pdir();
@@ -1693,6 +1719,28 @@ mod tests {
             [],
         )
         .unwrap();
+        // A tie and a date precision it does not know either.
+        let cal = add_person_conn(c, "Cal");
+        let dee = add_person_conn(c, "Dee");
+        c.execute(
+            "INSERT INTO edge_events (uid, person, other, event, tie, precision, source, recorded_at)
+             VALUES ('t1', ?1, NULL, 'formed', 'friend', 'year', 'owner', '2026-01-01T00:00:00Z'),
+                    ('t2', ?1, NULL, 'formed', 'spouse', 'unknown', 'owner', '2026-01-02T00:00:00Z'),
+                    ('d1', ?2, NULL, 'renewed', NULL, 'year', 'owner', '2026-01-01T00:00:00Z'),
+                    ('d2', ?2, NULL, 'ended', NULL, 'decade', 'owner', '2027-01-01T00:00:00Z')",
+            [&cal, &dee],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE edge_events SET valid_on = '2024-01-01' WHERE uid IN ('t1', 'd1')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE edge_events SET valid_on = '2010-01-01' WHERE uid = 'd2'",
+            [],
+        )
+        .unwrap();
         drop(w);
         render(&pdir).unwrap();
         let n = Network::read(&pdir).unwrap();
@@ -1704,8 +1752,23 @@ mod tests {
         );
         let md = std::fs::read_to_string(pdir.join(NETWORK_MD)).unwrap();
         assert!(md.contains("1 event this version cannot read"), "{md}");
+        // The unknown tie is skipped and counted, never the stale one shown
+        // as current-and-whole; the unknown precision is skipped, never
+        // re-dated to when it was recorded and folded as ending the tie.
+        let cal = n.find("Cal").unwrap().uid.clone();
+        let dee = n.find("Dee").unwrap().uid.clone();
+        assert_eq!(
+            (n.her_edge(&cal).tie, n.her_edge(&cal).unreadable),
+            (Some(Tie::Friend), 1)
+        );
+        assert_eq!(
+            (n.her_edge(&dee).status, n.her_edge(&dee).unreadable),
+            (Status::Active, 1)
+        );
+        // An id pasted in capitals is still that id.
+        assert_eq!(n.find(&cal[..8].to_uppercase()).unwrap().uid, cal);
         let problems = n.unreadable_edges();
-        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert_eq!(problems.len(), 5, "{problems:?}");
         assert!(problems
             .iter()
             .any(|p| p.starts_with("has Ines in her network, whose tie holds 1 event")));
