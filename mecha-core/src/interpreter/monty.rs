@@ -674,7 +674,10 @@ impl MontyProgram {
         });
         let fut = async {
             match req {
-                Req::Feed(src, inputs) => co.feed(src, inputs, vec![], true, &mut on_print).await,
+                Req::Feed(src, inputs) => {
+                    co.feed_with_cwd(src, inputs, vec![], Some(WORKSPACE), true, &mut on_print)
+                        .await
+                }
                 Req::Resume(v) => co.resume(v, &mut on_print).await,
                 Req::Undefined => {
                     co.resume_name_lookup(NameLookupResult::Undefined, &mut on_print)
@@ -776,9 +779,12 @@ impl MontyProgram {
                 // whole file, which goes to `fs_read` as the program's own
                 // call would, through the same guard, limits and taint. Any
                 // other mode, and a program without `fs_read`, is refused
-                // below. The path is relative to the workspace: monty roots
-                // a relative `open('a.csv')` at `/a.csv`, so one leading
-                // slash comes off (M4: `open()` was 24 of 43 raised programs).
+                // below. A program runs in `WORKSPACE`, so a relative path
+                // arrives under it and goes to `fs_read` relative again, and
+                // an absolute one (a spill file, a grant) goes as written:
+                // rooted at `/`, the two could not be told apart, and M5's
+                // `open()` of a spill file was read inside the workspace
+                // (M4: `open()` was 24 of 43 raised programs).
                 TurnEvent::OsCall {
                     function_name,
                     args,
@@ -826,7 +832,7 @@ impl MontyProgram {
                             args: Vec::new(),
                             kwargs: vec![(
                                 "path".to_string(),
-                                Value::String(path.strip_prefix('/').unwrap_or(&path).to_string()),
+                                Value::String(workspace_path(&path)),
                             )],
                         }));
                     }
@@ -1033,6 +1039,21 @@ fn os_refusal(externals: &BTreeSet<String>) -> String {
 
 /// Nesting deeper than this does not cross the boundary either way.
 const MAX_DEPTH: usize = super::VALUE_DEPTH;
+
+/// The directory a program runs in, as monty sees it: not a real path, so
+/// that a relative path arrives under it and an absolute one does not. Its
+/// name is what `os.getcwd()` would say, were `os` not refused.
+const WORKSPACE: &str = "/.mecha-workspace";
+
+/// A path monty resolved, as `fs_read` takes it: under [`WORKSPACE`],
+/// relative to the run's workspace; anything else, as written.
+fn workspace_path(path: &str) -> String {
+    match path.strip_prefix(WORKSPACE) {
+        Some("") => ".".to_string(),
+        Some(rest) if rest.starts_with('/') => rest[1..].to_string(),
+        _ => path.to_string(),
+    }
+}
 
 /// The path an OS call was given. Monty hands a `PosixPath`, whose repr is
 /// `PosixPath('<the path as written>')` with no escaping, which the worker
