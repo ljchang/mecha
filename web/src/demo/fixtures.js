@@ -688,6 +688,30 @@ export function factoryInstrument(id = 'book', now = Date.now()) {
   };
 }
 
+export const factoryForm = {
+  id: 'speaking',
+  kind: 'request',
+  draft: false,
+  published: true,
+  digest: 'demo',
+  kinds: ['text', 'long_text', 'email', 'url', 'date', 'integer', 'select', 'multi_select', 'bool'],
+  text: 'id = "speaking"\nversion = 1\ntitle = "Invite me to speak"\n',
+  form: {
+    title: 'Invite me to speak',
+    description: 'Tell me about the event; I read every invitation.',
+    confirmation_heading: 'Thank you',
+    confirmation_body: 'I will reply within two weeks.',
+    fields: [
+      { name: 'requester_email', label: 'Your email', help: null, kind: 'email', required: true, options: null, max_length: null },
+      { name: 'event', label: 'The event', help: 'Name, place and dates', kind: 'text', required: true, options: null, max_length: 200 },
+      { name: 'format', label: 'Format', help: null, kind: 'select', required: true, options: [{ value: 'keynote', label: 'Keynote' }, { value: 'panel', label: 'Panel' }], max_length: null },
+    ],
+  },
+};
+
+export const factoryFormPreview =
+  '<html><head><style>body{font-family:sans-serif;padding:24px}label{display:block;margin:12px 0 4px}</style></head><body><h1>Invite me to speak</h1><p>Tell me about the event; I read every invitation.</p><form><label>Your email</label><input><label>The event</label><input><label>Format</label><select><option>Keynote</option><option>Panel</option></select></form></body></html>';
+
 // --- the graph review queue ---------------------------------------------
 
 export const queue = [

@@ -1295,6 +1295,43 @@ fn api() -> gate::Owned {
                 factory::MAX_HOURS_BODY,
             )),
         )
+        // Forms: a draft beside what is served, a preview, and Publish.
+        .at(
+            "/api/factory/starters",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::starters),
+        )
+        .at(
+            "/api/factory/form",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::form),
+        )
+        .at(
+            "/api/factory/form/save",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_save)
+                .layer(axum::extract::DefaultBodyLimit::max(factory::MAX_FORM_BODY)),
+        )
+        .at(
+            "/api/factory/form/render",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_render),
+        )
+        .at(
+            "/api/factory/form/new",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_new),
+        )
+        .at(
+            "/api/factory/form/publish",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_publish),
+        )
+        .at(
+            "/api/factory/form/discard",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_discard),
+        )
         .at("/api/find", Owner::Of(Feature::Graph), get(board::find))
         .at(
             "/api/related",
@@ -3536,6 +3573,195 @@ printf '","busy":[]}\n'"#,
             huge,
             "a refused save writes nothing"
         );
+    }
+
+    /// A form is drafted beside what is served, previewed without scripts,
+    /// and published by push — never written in place. Over a scratch home
+    /// with stand-in children (the test bin dir), never the real factory.
+    #[tokio::test]
+    async fn a_form_is_drafted_previewed_and_published_never_written_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::testenv::HomeGuard::new("serve-forms");
+        let types = home.dir.join("factory").join("types");
+        std::fs::create_dir_all(&types).unwrap();
+        let letter = "# a note\nid = \"letter\"\nversion = 1\ntitle = \"Request a letter\"\n\n\
+                      [[fields]]\nname = \"email\"\nlabel = \"Your email\"\nkind = \"email\"\nrequired = true\n";
+        let served = types.join("letter.toml");
+        std::fs::write(&served, letter).unwrap();
+        let bin = home.dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fp = bin.join("factory-publish");
+        std::fs::write(
+            &fp,
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "type check") exit 0 ;;
+  "type starters") printf 'meeting\tRequest a meeting\n' ;;
+  "type new") printf '# from the starter\nid = "%s"\nversion = 1\ntitle = "Request a meeting"\n\n[[fields]]\nname = "email"\nlabel = "Email"\nkind = "email"\n' "$5" ;;
+  "type render") echo '{{"id":"letter","kind":"request","html":"<html><head><link rel=\"stylesheet\" href=\"form.css\"></head><body><form>Q</form><script src=\"form.js\"></script></body></html>","style":"body{{color:red}}"}}' ;;
+  "type push") cp "$3" "{types}/" ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac
+"#,
+                types = types.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *super::factory::TEST_BIN_DIR.lock().unwrap() = Some(bin.clone());
+        struct Unpin;
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                *super::factory::TEST_BIN_DIR.lock().unwrap() = None;
+            }
+        }
+        let _unpin = Unpin;
+        let req = |method: &str, uri: &str, body: Option<serde_json::Value>| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri(uri.to_string())
+                .header("Tailscale-User-Login", "owner@example.com")
+                .header("x-mecha-request", "1");
+            if body.is_some() {
+                b = b.header("content-type", "application/json");
+            }
+            test_router().oneshot(
+                b.body(body.map_or(Body::empty(), |v| Body::from(v.to_string())))
+                    .unwrap(),
+            )
+        };
+        let json = |res: axum::response::Response| async move {
+            let status = res.status();
+            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_else(|_| {
+                    serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+                }),
+            )
+        };
+
+        // Read: the served copy, no draft yet.
+        let (st, form) = json(
+            req("GET", "/api/factory/form?id=letter", None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{form}");
+        assert_eq!(form["draft"], false);
+        // Save: the draft takes the edit; the served copy does not move.
+        let mut edit = form["form"].clone();
+        edit["title"] = "A letter, please".into();
+        let (st, saved) = json(
+            req(
+                "POST",
+                "/api/factory/form/save",
+                Some(serde_json::json!({"id": "letter", "base": form["digest"], "form": edit})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{saved}");
+        assert_eq!(saved["draft"], true);
+        assert_eq!(
+            std::fs::read_to_string(&served).unwrap(),
+            letter,
+            "the served copy is never the edit target"
+        );
+        let draft = home.dir.join("factory").join("drafts").join("letter.toml");
+        let drafted = std::fs::read_to_string(&draft).unwrap();
+        assert!(
+            drafted.contains("A letter, please") && drafted.starts_with("# a note"),
+            "{drafted}"
+        );
+        // A raw edit may not move the id: it names the URL.
+        let (st, _) = json(
+            req("POST", "/api/factory/form/save", Some(serde_json::json!({
+                "id": "letter", "base": saved["digest"], "raw": drafted.replace("id = \"letter\"", "id = \"other\"")
+            })))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        // Preview: the page, with its style inlined and no script or link.
+        let (st, pv) = json(
+            req(
+                "POST",
+                "/api/factory/form/render",
+                Some(serde_json::json!({"id": "letter"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{pv}");
+        let html = pv["html"].as_str().unwrap();
+        assert!(
+            html.contains("<style>body{color:red}</style>") && html.contains("<form>Q</form>"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<script") && !html.contains("<link"),
+            "{html}"
+        );
+        // Publish: pushed, now served, and the draft has done its job.
+        let (st, out) = json(
+            req(
+                "POST",
+                "/api/factory/form/publish",
+                Some(serde_json::json!({"id": "letter", "base": saved["digest"]})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{out}");
+        assert!(std::fs::read_to_string(&served)
+            .unwrap()
+            .contains("A letter, please"));
+        assert!(!draft.exists(), "a published draft is removed");
+        // New: from a starter, listed as unpublished; an id in use is refused.
+        let (st, made) = json(
+            req(
+                "POST",
+                "/api/factory/form/new",
+                Some(serde_json::json!({"starter": "meeting", "id": "office-hours"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{made}");
+        assert_eq!(made["published"], false);
+        let (_, listed) = json(req("GET", "/api/factory", None).await.unwrap()).await;
+        let row = listed["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "office-hours")
+            .cloned();
+        assert_eq!(
+            row.map(|r| r["draft_only"].clone()),
+            Some(serde_json::Value::Bool(true)),
+            "{listed}"
+        );
+        let (st, _) = json(
+            req(
+                "POST",
+                "/api/factory/form/new",
+                Some(serde_json::json!({"starter": "meeting", "id": "letter"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
     }
 
     /// The list editor's save: rows set in place in the file on disk, so a
