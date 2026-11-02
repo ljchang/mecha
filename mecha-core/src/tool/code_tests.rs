@@ -990,6 +990,17 @@ fn each_host_limit_raises_a_limit_error_naming_it() {
     let err = op(&mut run, "chunks", vec![h.clone(), json!(500), json!(499)]).unwrap_err();
     assert!(err.starts_with("LimitError: chunk text:"), "{err}");
     assert!(op(&mut run, "chunks", vec![h, json!(500)]).is_ok());
+    // In bytes, as the limit is: 600 two-byte characters in two chunks of
+    // 400 overlapping by 200 are 1,600 bytes, past a 1,000-byte limit that
+    // 800 characters would not pass (review of #805).
+    let (mut run, h) = run_over(&"é".repeat(600), tight);
+    let err = op(&mut run, "chunks", vec![h.clone(), json!(400), json!(200)]).unwrap_err();
+    assert!(err.contains("bytes in all"), "{err}");
+    // And by the text's own bytes per character, not rounded up: one `é` in
+    // 599 ASCII characters is about 1.002 bytes each, so two chunks of 400
+    // (about 802 bytes) pass, where a rounded 2 would read 1,600 (review of #817).
+    let (mut run, h) = run_over(&format!("é{}", "x".repeat(599)), tight);
+    assert!(op(&mut run, "chunks", vec![h, json!(400), json!(200)]).is_ok());
 }
 
 /// A read the host-byte limit refuses is still recorded, and a program can
@@ -1181,6 +1192,10 @@ async fn a_read_reaches_a_program_as_text_and_a_listing_as_names() {
     let err = Run::names("fs_list", &many).unwrap_err().message;
     assert!(err.starts_with("LimitError: pieces: `fs_list`"), "{err}");
     assert_eq!(run.stats(None).peeked_bytes, 0);
+    // What the reads handed the program is counted beside it: the two
+    // listings' names and the note's text, not the failures.
+    let handed = "a.md\nsub/".len() + "(empty directory)".len() + "the whole note".len();
+    assert_eq!(run.stats(None).read_bytes, handed as u64);
 }
 
 /// §2 does not rest on the interpreter alone (review of #768): a call to a
@@ -1564,7 +1579,12 @@ async fn the_descriptions_example_runs_as_written() {
     );
     let jail = agent.context().tools.workspace.clone();
     std::fs::create_dir_all(jail.join("notes/old")).unwrap();
-    std::fs::write(jail.join("notes/1.md"), "Attendees: Priya, Marco").unwrap();
+    // Two `Attendees:` lines (a list, and its correction): counted once.
+    std::fs::write(
+        jail.join("notes/1.md"),
+        "Attendees: Priya, Marco\nAttendees: Priya, Marco, Sam",
+    )
+    .unwrap();
     std::fs::write(jail.join("notes/2.md"), "Attendees: Marco").unwrap();
     std::fs::write(jail.join("notes/3.md"), "Attendees: Priya").unwrap();
     let admitted = Admission::over(
@@ -1743,7 +1763,8 @@ fn only_the_builtin_listing_hands_a_program_names() {
     assert!(
         builtin.contains(
             "each returns its result as a str (fs_read(path=...) returns the file's text, and \
-             open(path) reads a file's text the same way, but cannot write; a read that fails \
+             open(path) reads a file's text the same way, but cannot write and takes no errors= \
+             argument; a read that fails \
              raises a RuntimeError, not a FileNotFoundError), \
              except that fs_list returns a list of names (a directory's ends in /); \
              os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
@@ -3532,6 +3553,7 @@ async fn a_programs_passes_reach_the_runs_usage_and_its_counters() {
     assert_eq!(stats.subcalls, Some(1));
     assert_eq!(stats.subcall_tokens, Some(400));
     assert_eq!(stats.peeked_bytes, Some(0));
+    assert!(stats.program_read_bytes.is_some_and(|b| b > 0), "{stats:?}");
     assert_eq!(stats.budget_stops, Some(0));
     // The host call still enters the trace, tagged, beside the program's row.
     assert_eq!(host_calls(&outcome.tool_calls).len(), 1);
