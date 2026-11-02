@@ -1268,7 +1268,7 @@ impl Store {
                 out.extend(n.broken_links(lib));
                 out.extend(n.unreadable_edges());
             }
-            Err(e) => out.push(format!("her network does not load: {e:#}")),
+            Err(e) => out.push(format!("their network does not load: {e:#}")),
         }
         out
     }
@@ -2601,14 +2601,16 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
             // something yet. Her kind of week (the cell) lives in
             // routine.toml, so it is picked on the Week tab, not here.
             Section::new("Life")
-                .help("A life of her own between your chats, every part off until you turn it on.")
-                .field(Field::toggle("life.world", "Her days").help(
-                    "Days drawn from her routine and time-use diaries; what she is doing now \
-                     comes into each chat. Pick her kind of week on the Week tab.",
+                .help(
+                    "A life of their own between your chats, every part off until you turn it on.",
+                )
+                .field(Field::toggle("life.world", "Their days").help(
+                    "Days drawn from their routine and time-use diaries; what they are doing now \
+                     comes into each chat. Pick their kind of week on the Week tab.",
                 ))
-                .field(Field::toggle("life.people", "Her people").help(
-                    "The people in her life, written on the People tab, come into each chat \
-                     beside who she is. Needs Her days.",
+                .field(Field::toggle("life.people", "Their people").help(
+                    "The people in their life, written on the People tab, come into each chat \
+                     beside who they are. Needs Their days.",
                 )),
         ],
     }
