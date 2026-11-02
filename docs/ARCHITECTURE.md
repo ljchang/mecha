@@ -1886,7 +1886,12 @@ module.
   unlock; on a locked page both are null, and an edit that leaves the
   field out keeps the link. A write naming a character the viewer may not
   see answers exactly as an absent one and writes nothing, so the answer
-  never says which locked names exist.
+  never says which locked names exist. The page's writes, and its
+  proposal doors, are refused (409) while `[life] people` is off, since
+  the tab then shows nothing they could change; a stale proposal is typed
+  (`people_draft::StaleProposal`) and answered 409. `Network::as_of` is the
+  time slider: the same `order` the fold reads, so what "as of a day"
+  shows is what the fold would have said then.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
