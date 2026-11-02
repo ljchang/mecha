@@ -2329,6 +2329,21 @@ ruled for repetition.
   - **The claim the comparison tests** is that world-on raises initiative
     *without* lowering the uptake rate of persona-introduced topics. Rising
     initiative with falling uptake is the ComPeer failure, measured.
+  - **As built (before step 3, `persona::initiative`, `mecha persona
+    measures`):** people only, by the names and aliases in her network,
+    the one list read over every chat so before and after share an
+    instrument; events wait for step 3, when they have names. An
+    introduction is a completed reply naming someone neither side named
+    earlier in the chat (harness notes are not read). Uptake is the owner
+    naming them in the next turn (with a question mark: asked) or first
+    in a later chat; her bringing them up again first, or a next turn
+    without them and no return, is not taken up; a chat's last
+    introduction with no return yet has no outcome and stays out of the
+    rate. Turns are filed by what the transcript shows she was given (a
+    today-block among the run's notes, the people heading in the recorded
+    prompt), not by settings. Counts only, never words. Memory is not read
+    as "before that turn": a name recalled into a note is a harness note,
+    and only what the two sides said counts.
 - **The comparison:** world on vs off, read **offline from the owner's own
   transcripts**, like echo, and **not through the experiment instrument**.
   `Personas` is operator-only (`FEATURES-DESIGN.md` §5.1): it is not
@@ -2488,7 +2503,9 @@ ruled for repetition.
     router hold, "Reading identity.md…" while it runs), lists them ticked
     for the owner to add all or some (`POST …/people/proposal/accept` with
     `only`; the rest keep waiting), or dismiss (`DELETE …/people/proposal`);
-    one read from an `identity.md` changed since is a 409. "As it was on" a
+    one read from an `identity.md` changed since is a 409, and so is
+    proposing again while a current one waits (`ProposalWaiting`); a stale
+    one shows "Propose again", which replaces it. "As it was on" a
     day folds the event log up to it (`Network::as_of`, `GET …/people?as_of=`),
     read only, with the forms hidden; problems and the proposal stay about
     now. The page's writes are refused while `[life] people` is off, so a

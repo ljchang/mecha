@@ -36,6 +36,18 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// How her chats went over a window, read from their transcripts: how
+    /// much her replies repeat, and how often she brings up her people
+    /// beside what you did with them, by what she was shown
+    /// (PERSONA-LIFE-DESIGN.md §14). Counts only, never words.
+    Measures {
+        name: String,
+        /// Chats active in the last this many days.
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+        #[arg(long)]
+        json: bool,
+    },
     /// Make a persona — yours, so approved at once. Fill in who they are with
     /// `mecha persona edit`.
     New {
@@ -487,6 +499,8 @@ async fn propose_people(global: &GlobalOpts, dir: &Path, name: &str) -> Result<(
     let store = load(dir);
     let p = find(&store, name)?.clone();
     drafter::check(&p)?;
+    // Before waiting on the model, as the model run itself re-checks.
+    people_draft::may_propose(dir, &p)?;
     let opts = GlobalOpts {
         no_mcp: true,
         ..global.clone()
@@ -859,16 +873,94 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
 /// How much `p`'s replies repeated earlier ones, read from its chats active
 /// over the window `mecha persona show` reads (`persona::echo`).
 fn recent_echoes(store: &Store, p: &Persona) -> anyhow::Result<persona::echo::Echoes> {
-    let window = std::time::Duration::from_secs(persona::echo::SHOWN_DAYS as u64 * 86_400);
-    let since = std::time::SystemTime::now()
-        .checked_sub(window)
-        .unwrap_or(std::time::UNIX_EPOCH);
-    persona::echo::echoes(&store.sessions_dir(&p.name), since)
+    persona::echo::echoes(
+        &store.sessions_dir(&p.name),
+        days_ago(persona::echo::SHOWN_DAYS as u64),
+    )
+}
+
+/// The start of a window of `days` ending now.
+fn days_ago(days: u64) -> std::time::SystemTime {
+    std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(days * 86_400))
+        .unwrap_or(std::time::UNIX_EPOCH)
+}
+
+/// `p`'s initiative and uptake over chats active since `since`
+/// (`persona::initiative`).
+fn read_initiative(
+    dir: &Path,
+    store: &Store,
+    p: &Persona,
+    since: std::time::SystemTime,
+) -> anyhow::Result<persona::initiative::Initiative> {
+    persona::initiative::initiative(&dir.join(&p.name), &store.sessions_dir(&p.name), since)
+}
+
+fn share(n: usize, of: usize) -> String {
+    match of {
+        0 => format!("{n} of 0"),
+        _ => format!("{n} of {of} ({:.0}%)", 100.0 * n as f64 / of as f64),
+    }
+}
+
+/// The initiative reading in words, one line per arm, over `days`.
+fn initiative_lines(
+    read: &anyhow::Result<persona::initiative::Initiative>,
+    days: u64,
+) -> Vec<String> {
+    let i = match read {
+        Err(e) => return vec![format!("unreadable — {e:#}")],
+        Ok(i) => i,
+    };
+    let unreadable = match i.unreadable {
+        0 => String::new(),
+        n => format!(" ({n} chat(s) could not be read)"),
+    };
+    if i.people == 0 {
+        return vec![format!(
+            "no one in her network to look for; add her people first{unreadable}"
+        )];
+    }
+    if i.arms.is_empty() {
+        return vec![format!(
+            "no replies in chats from the last {days} days{unreadable}"
+        )];
+    }
+    let on = |b: bool| if b { "on" } else { "off" };
+    let mut out = vec![format!(
+        "{} people looked for in {} chat(s) from the last {days} days{unreadable}",
+        i.people, i.chats
+    )];
+    for a in &i.arms {
+        let r = &a.reading;
+        let decided = r.taken_up + r.came_back + r.not_taken_up;
+        out.push(format!(
+            "days {}, people {}: {} replies, {} brought someone up ({} introductions); \
+             you took up {}: {} in your next turn ({} asking), {} in a later chat; \
+             {} not answered yet",
+            on(a.arm.days),
+            on(a.arm.people),
+            r.replies,
+            share(r.introducing, r.replies),
+            r.introductions,
+            share(r.taken_up + r.came_back, decided),
+            r.taken_up,
+            r.asked,
+            r.came_back,
+            r.unanswered,
+        ));
+    }
+    out
 }
 
 /// One line for `mecha persona show`: the echo reading in words.
 fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
-    let days = persona::echo::SHOWN_DAYS;
+    echo_line_over(echoes, persona::echo::SHOWN_DAYS as u64)
+}
+
+/// The echo reading in words, over `days`.
+fn echo_line_over(echoes: &anyhow::Result<persona::echo::Echoes>, days: u64) -> String {
     let e = match echoes {
         Err(e) => return format!("unreadable — {e:#}"),
         Ok(e) => e,
@@ -1058,6 +1150,31 @@ fn run_with(
             } else {
                 describe(&store, &lib, p);
                 println!("  echo:         {}", echo_line(&echoes));
+            }
+        }
+        Cmd::Measures { name, days, json } => {
+            let store = load(dir);
+            let p = find(&store, &name)?;
+            let since = days_ago(days as u64);
+            let echoes = persona::echo::echoes(&store.sessions_dir(&p.name), since);
+            let initiative = read_initiative(dir, &store, p, since);
+            if json {
+                // `null` when unreadable — never an empty reading.
+                let out = serde_json::json!({
+                    "name": p.name,
+                    "days": days,
+                    "echo": echoes.ok(),
+                    "initiative": initiative.ok(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("{} — `{}`", p.display(), p.name);
+                println!("  echo:        {}", echo_line_over(&echoes, days as u64));
+                let mut lines = initiative_lines(&initiative, days as u64).into_iter();
+                println!("  initiative:  {}", lines.next().unwrap_or_default());
+                for l in lines {
+                    println!("    {l}");
+                }
             }
         }
         Cmd::New {
@@ -2688,5 +2805,50 @@ mod tests {
         .unwrap();
         run(&store, &lib, Cmd::List { json: false }).unwrap();
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_initiative_lines_say_nothing_to_read_apart_from_a_zero() {
+        use mecha_core::persona::initiative::{Arm, ArmReading, Initiative, Reading};
+        let none = Ok(Initiative::default());
+        assert!(initiative_lines(&none, 30)[0].contains("add her people first"));
+        let quiet = Ok(Initiative {
+            people: 2,
+            chats: 1,
+            ..Initiative::default()
+        });
+        assert!(initiative_lines(&quiet, 30)[0].contains("no replies"));
+        let reading = Reading {
+            replies: 10,
+            introducing: 2,
+            introductions: 3,
+            taken_up: 1,
+            asked: 1,
+            came_back: 1,
+            not_taken_up: 0,
+            unanswered: 1,
+        };
+        let read = Ok(Initiative {
+            people: 2,
+            chats: 3,
+            unreadable: 1,
+            arms: vec![ArmReading {
+                arm: Arm {
+                    days: true,
+                    people: false,
+                },
+                reading,
+                initiative: reading.initiative(),
+                uptake: reading.uptake(),
+            }],
+        });
+        let lines = initiative_lines(&read, 30);
+        assert!(
+            lines[0].contains("1 chat(s) could not be read"),
+            "{lines:?}"
+        );
+        assert!(lines[1].starts_with("days on, people off: 10 replies, 2 of 10 (20%)"));
+        assert!(lines[1].contains("you took up 2 of 2 (100%)"), "{lines:?}");
+        assert!(lines[1].contains("1 not answered yet"));
     }
 }
