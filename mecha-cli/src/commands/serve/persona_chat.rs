@@ -1957,9 +1957,15 @@ impl PersonaChats {
                         let names = match story::names(&self.store.join(&p.name)) {
                             Ok(n) => n,
                             Err(e) => {
-                                out["story_error"] = serde_json::json!(format!(
+                                // Beside a reason already there, never over it.
+                                let people = format!(
                                     "her people could not be read, so who was there is not shown: {e:#}"
-                                ));
+                                );
+                                out["story_error"] =
+                                    serde_json::json!(match out["story_error"].as_str() {
+                                        Some(was) => format!("{was}; {people}"),
+                                        None => people,
+                                    });
                                 Default::default()
                             }
                         };

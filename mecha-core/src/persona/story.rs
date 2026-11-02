@@ -175,7 +175,7 @@ impl Size {
     }
 
     /// The default rest between two of the same storylet: a minor not
-    /// within the week, a major not within the lookback. A severe one is
+    /// within five days, a major not within the lookback. A severe one is
     /// rested for the whole lookback too, the longest a draw can see.
     pub fn cooldown(self) -> u32 {
         match self {
@@ -797,8 +797,10 @@ pub fn story(
         let weather = world.weather(d)?;
         let stored = world.story_day(d)?;
         // A stored past day is what it was, and needs nothing drawn: only
-        // today and the days not yet kept read her day, so a week view
-        // loads her store a handful of times, not once per lookback day.
+        // today and the days not yet kept read her day. Once a window has
+        // been walked, a week view loads her store a handful of times; the
+        // first walk, or a week before the keep window, still reads her day
+        // once per day of the lookback.
         let past = stored
             .as_ref()
             .filter(|_| d < today)
