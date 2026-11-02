@@ -266,7 +266,12 @@ pub struct Accepted {
 /// left alone. Refused when `identity.md` changed since it was read, since
 /// the owner would be accepting a reading of a file that is gone. The
 /// proposal is removed once accepted.
-pub fn accept(dir: &Path, p: &Persona, only: Option<&[usize]>) -> Result<Accepted> {
+pub fn accept(
+    dir: &Path,
+    lib: &crate::imagelib::Library,
+    p: &Persona,
+    only: Option<&[usize]>,
+) -> Result<Accepted> {
     let pdir = dir.join(&p.name);
     let Some(draft) = read(&pdir)? else {
         bail!("`{}` has no proposal of people waiting", p.name);
@@ -307,7 +312,7 @@ pub fn accept(dir: &Path, p: &Persona, only: Option<&[usize]>) -> Result<Accepte
             done.already.push(person.name.clone());
             continue;
         }
-        let id = network::add_person(&pdir, &person.as_new()?)?;
+        let id = network::add_person(&pdir, lib, &person.as_new()?)?;
         done.added.push((id, person.name.trim().to_string()));
     }
     std::fs::remove_file(pdir.join(DRAFT))
@@ -420,7 +425,7 @@ mod tests {
         assert_eq!(d.people.len(), 2);
         assert_eq!(read(&pdir).unwrap().unwrap(), d);
         // Accept only the first: an owner row, and the proposal is gone.
-        let got = accept(&dir, &p, Some(&[1])).unwrap();
+        let got = accept(&dir, &no_lib(), &p, Some(&[1])).unwrap();
         assert_eq!(got.added.len(), 1);
         assert_eq!(got.added[0].1, "Ines");
         let net = network::Network::read(&pdir).unwrap();
@@ -430,7 +435,7 @@ mod tests {
         assert_eq!(read(&pdir).unwrap(), None);
         // Proposed again, someone already there is left alone and said so.
         stage(&dir, &p, ANSWER).unwrap();
-        let got = accept(&dir, &p, None).unwrap();
+        let got = accept(&dir, &no_lib(), &p, None).unwrap();
         assert_eq!(got.already, vec!["Ines"]);
         assert_eq!(
             got.added
@@ -461,10 +466,10 @@ mod tests {
         stage(&dir, &p, ANSWER).unwrap();
         let mut changed = p.clone();
         changed.identity.push_str("A new line.\n");
-        let why = format!("{:#}", accept(&dir, &changed, None).unwrap_err());
+        let why = format!("{:#}", accept(&dir, &no_lib(), &changed, None).unwrap_err());
         assert!(why.contains("changed since"), "{why}");
-        assert!(accept(&dir, &p, Some(&[3])).is_err());
-        assert!(accept(&dir, &p, Some(&[0])).is_err());
+        assert!(accept(&dir, &no_lib(), &p, Some(&[3])).is_err());
+        assert!(accept(&dir, &no_lib(), &p, Some(&[0])).is_err());
         assert!(network::Network::read(&dir.join("mara"))
             .unwrap()
             .people

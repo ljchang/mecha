@@ -1654,7 +1654,6 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
     };
     let when =
         |w: Option<String>| -> Result<When> { w.map_or(Ok(When::UNKNOWN), |w| When::parse(&w)) };
-    let character = |c: &str| network::check_character(lib, c);
     let store = load(dir);
     let open =
         |name: &str| -> Result<std::path::PathBuf> { Ok(dir.join(&find(&store, name)?.name)) };
@@ -1722,7 +1721,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
         }
         PeopleCmd::Accept { name, only } => {
             let p = find(&store, &name)?;
-            let got = people_draft::accept(dir, p, only.as_deref())?;
+            let got = people_draft::accept(dir, lib, p, only.as_deref())?;
             for (_, n) in &got.added {
                 println!("Added {n}.");
             }
@@ -1755,11 +1754,9 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             since,
         } => {
             let pdir = open(&name)?;
-            if let Some(c) = &portrait {
-                character(c)?;
-            }
             let id = network::add_person(
                 &pdir,
+                lib,
                 &NewPerson {
                     name: person,
                     aliases,
@@ -1791,11 +1788,9 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             // An empty value clears a field.
             let clear = |v: Option<String>| v.map(|v| Some(v).filter(|v| !v.trim().is_empty()));
             let portrait = clear(portrait);
-            if let Some(Some(c)) = &portrait {
-                character(c)?;
-            }
             network::edit_person(
                 &pdir,
+                lib,
                 &p.uid,
                 &PersonEdit {
                     name: rename,
@@ -1858,7 +1853,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             let hits: Vec<_> = n
                 .events
                 .iter()
-                .filter(|e| e.uid.starts_with(event.trim()))
+                .filter(|e| e.uid.starts_with(&event.trim().to_lowercase()))
                 .collect();
             let [one] = hits.as_slice() else {
                 bail!(
