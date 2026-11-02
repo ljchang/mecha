@@ -43,7 +43,7 @@ pub enum Cmd {
     Measures {
         name: String,
         /// Chats active in the last this many days.
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
         days: u32,
         #[arg(long)]
         json: bool,

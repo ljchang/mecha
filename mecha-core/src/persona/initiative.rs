@@ -32,8 +32,9 @@
 //!   do not count as either side naming them.
 //! - **Taken up** is the owner naming them in the next turn they speak
 //!   in, and **asked** the subset where that turn holds a question mark.
-//! - **Came back** is the owner naming them in a later stretch of talk
-//!   before she does: another chat, or the same one resumed.
+//! - **Came back** is the owner naming them in another chat, later,
+//!   before she does. Later in the same chat is not a return, however long
+//!   the gap: a chat resumed after days reads on as the one chat it is.
 //! - **Not taken up** is her bringing them up again first, or the owner
 //!   speaking after the introduction without ever naming them: in the
 //!   next turn, or, for a chat's last introduction, in any later chat.
@@ -44,12 +45,14 @@
 //!   kept out of the rate, never counted as a no.
 //!
 //! **Order is when it was said.** "Later" is read in time, not by chat. A
-//! chat resumed days after it began is read as stretches, each from its
-//! start or a resume (where the transcript records a config, with its
-//! clock) to the next, and every chat's stretches are read in one order by
-//! that clock. Ordering whole chats by when they began would put a
-//! long-lived chat's newest turns before chats that came after them, and
-//! each misplaced turn errs toward uptake (review of #808).
+//! chat is read as stretches, split wherever the transcript records a
+//! config with its clock (its start, each resume, and a model switch), and
+//! every chat's stretches are read in one order by that clock. Ordering
+//! whole chats by when they began would put a long-lived chat's newest
+//! turns before chats that came after them, and each misplaced turn errs
+//! toward uptake (review of #808). A split decides only that order: within
+//! a chat, an introduction waits for the owner's next turn wherever it
+//! falls, so where a chat happens to split changes no outcome.
 //!
 //! **Arms, from what she was shown, not from her settings.** Each turn is
 //! filed by whether the transcript shows her days (a today-block among the
@@ -168,8 +171,9 @@ pub struct Stretch {
 /// where a config is recorded (the chat's start, and each resume).
 ///
 /// Walks the records as [`super::echo::session_echoes`] does: a run's
-/// messages (appended, or a `Rewrite` holding the whole history when it
-/// compacted), its notes, then its `Outcome`. The owner's text is every
+/// notes and messages (appended, or a `Rewrite` holding the whole history
+/// when it compacted), in whatever order the door wrote them, then its
+/// `Outcome`, where the run is closed. The owner's text is every
 /// owner message appended in the run. After a rewrite it is the last
 /// message the owner typed in the history, which is the run's own,
 /// since what came before it was summarised away. The arm's people half
@@ -279,17 +283,21 @@ impl Reading {
 /// An introduction waiting on its outcome.
 struct Waiting {
     arm: Arm,
-    /// The stretch it was made in, which a return must come after.
+    /// The chat it was made in: a return or a repeat is another chat's.
+    chat: usize,
+    /// The stretch it was made in, for whether the owner spoke after it.
     stretch: usize,
-    /// The owner had a next turn in its stretch and did not name them.
+    /// Still waiting on the owner's next turn in its chat.
+    next: bool,
+    /// The owner had that next turn and did not name them.
     passed: bool,
 }
 
 /// How a waiting introduction ended.
 enum Settled {
-    /// The owner brought them up first in a later stretch.
+    /// The owner brought them up first in another chat.
     Back,
-    /// She brought them up again first.
+    /// She brought them up again first, in another chat.
     Repeated,
     /// The reading ran out: a no if the owner spoke after it, unknown if
     /// not.
@@ -306,62 +314,68 @@ fn settle(by: &mut HashMap<Arm, Reading>, w: Waiting, how: Settled) {
     }
 }
 
+/// Settle what another chat left waiting on `s`.
+fn settle_elsewhere(
+    by: &mut HashMap<Arm, Reading>,
+    waiting: &mut HashMap<usize, Vec<Waiting>>,
+    s: usize,
+    chat: usize,
+    how: fn() -> Settled,
+) {
+    let Some(ws) = waiting.get_mut(&s) else {
+        return;
+    };
+    let (done, keep): (Vec<_>, Vec<_>) = ws.drain(..).partition(|w| w.chat != chat);
+    *ws = keep;
+    for w in done {
+        settle(by, w, how());
+    }
+}
+
 /// Every arm's reading over `stretches`, each `(chat, turns)`, in the
 /// order they were said, searching for `who`. Arms with no reply are left
 /// out.
 pub fn score(stretches: &[(usize, Vec<Turn>)], who: &[Subject]) -> Vec<(Arm, Reading)> {
     let mut by: HashMap<Arm, Reading> = HashMap::new();
-    // Per subject, introductions not taken up in the next turn, waiting
-    // for a return in a later stretch.
+    // Per subject, introductions not yet settled.
     let mut waiting: HashMap<usize, Vec<Waiting>> = HashMap::new();
     // Named by either side earlier in each chat, across its stretches.
     let mut named: HashMap<usize, HashSet<usize>> = HashMap::new();
     // The last stretch the owner spoke in.
     let mut spoke: Option<usize> = None;
-    // A return or a repeat settles what an earlier stretch left waiting.
-    let settle_earlier = |by: &mut HashMap<Arm, Reading>,
-                          ws: &mut Vec<Waiting>,
-                          now: usize,
-                          how: fn() -> Settled| {
-        let (done, keep): (Vec<_>, Vec<_>) = ws.drain(..).partition(|w| w.stretch < now);
-        *ws = keep;
-        for w in done {
-            settle(by, w, how());
-        }
-    };
     for (stretch, (chat, turns)) in stretches.iter().enumerate() {
-        let named = named.entry(*chat).or_default();
-        // Introduced in the turn before, waiting on the owner's next turn.
-        let mut last: Vec<(usize, Arm)> = Vec::new();
+        let chat = *chat;
+        let named = named.entry(chat).or_default();
         for turn in turns {
             let owner = words(&turn.owner);
             if !owner.is_empty() {
                 spoke = Some(stretch);
                 let asked = turn.owner.contains('?');
                 let cased = turn.owner.chars().any(char::is_uppercase);
-                for (s, arm) in last.drain(..) {
-                    if names(&owner, &who[s], cased) {
-                        let r = by.entry(arm).or_default();
-                        r.taken_up += 1;
-                        if asked {
-                            r.asked += 1;
+                let said: Vec<bool> = who.iter().map(|w| names(&owner, w, cased)).collect();
+                // This chat's introductions waiting on this, its next turn.
+                for (s, ws) in waiting.iter_mut() {
+                    ws.retain_mut(|w| {
+                        if w.chat != chat || !w.next {
+                            return true;
                         }
-                    } else {
-                        waiting.entry(s).or_default().push(Waiting {
-                            arm,
-                            stretch,
-                            passed: true,
-                        });
-                    }
+                        if said[*s] {
+                            let r = by.entry(w.arm).or_default();
+                            r.taken_up += 1;
+                            if asked {
+                                r.asked += 1;
+                            }
+                            return false;
+                        }
+                        w.next = false;
+                        w.passed = true;
+                        true
+                    });
                 }
-                for (s, subject) in who.iter().enumerate() {
-                    if !names(&owner, subject, cased) {
-                        continue;
-                    }
+                for s in (0..who.len()).filter(|s| said[*s]) {
                     named.insert(s);
-                    if let Some(ws) = waiting.get_mut(&s) {
-                        settle_earlier(&mut by, ws, stretch, || Settled::Back);
-                    }
+                    // The return another chat's introduction waited for.
+                    settle_elsewhere(&mut by, &mut waiting, s, chat, || Settled::Back);
                 }
             }
             let Some(reply) = &turn.reply else {
@@ -377,35 +391,29 @@ pub fn score(stretches: &[(usize, Vec<Turn>)], who: &[Subject]) -> Vec<(Arm, Rea
                 if !names(&said, subject, true) {
                     continue;
                 }
-                // Her bringing them up again first settles what an
-                // earlier stretch left waiting, a resumed chat's included.
-                if let Some(ws) = waiting.get_mut(&s) {
-                    settle_earlier(&mut by, ws, stretch, || Settled::Repeated);
-                }
-                if !named.insert(s) {
+                // Her bringing them up again first, in another chat,
+                // settles what that chat left waiting.
+                settle_elsewhere(&mut by, &mut waiting, s, chat, || Settled::Repeated);
+                if !named.insert(s) || !turn.completed {
                     continue;
                 }
-                if turn.completed {
-                    introduced = true;
-                    by.entry(turn.arm).or_default().introductions += 1;
-                    last.push((s, turn.arm));
-                }
+                introduced = true;
+                by.entry(turn.arm).or_default().introductions += 1;
+                waiting.entry(s).or_default().push(Waiting {
+                    arm: turn.arm,
+                    chat,
+                    stretch,
+                    next: true,
+                    passed: false,
+                });
             }
             if introduced {
                 by.entry(turn.arm).or_default().introducing += 1;
             }
         }
-        // The stretch's last introductions had no next turn: they wait for
-        // a later stretch, and are unanswered only if the owner never
-        // speaks again.
-        for (s, arm) in last {
-            waiting.entry(s).or_default().push(Waiting {
-                arm,
-                stretch,
-                passed: false,
-            });
-        }
     }
+    // What is still waiting: a no if the owner spoke after it anywhere,
+    // unknown if never.
     for mut w in waiting.into_values().flatten() {
         w.passed |= spoke.is_some_and(|c| c > w.stretch);
         settle(&mut by, w, Settled::End);
@@ -707,8 +715,8 @@ mod tests {
     #[test]
     fn a_resumed_chat_is_read_where_it_happened() {
         // Chat 0 introduces Milo and stops; chat 1 comes after; then chat 0
-        // is resumed and the owner asks about him. Read in time, the
-        // owner's question is a return in a later stretch.
+        // is resumed and the owner asks about him: that is the owner's next
+        // turn in chat 0, so taken up, not a return.
         let got = score(
             &[
                 (0, vec![turn("hi", "Milo is home.", ON)]),
@@ -717,16 +725,20 @@ mod tests {
             ],
             &milo(),
         );
-        assert_eq!(
-            (
-                got[0].1.came_back,
-                got[0].1.taken_up,
-                got[0].1.introductions
-            ),
-            (1, 0, 1)
+        let r = got[0].1;
+        assert_eq!((r.came_back, r.taken_up, r.introductions), (0, 1, 1));
+        // Asked about in chat 1 instead, while chat 0 waits: a return.
+        let got = score(
+            &[
+                (0, vec![turn("hi", "Milo is home.", ON)]),
+                (1, vec![turn("is Milo ok?", "Yes.", ON)]),
+            ],
+            &milo(),
         );
-        // Her raising him first on resuming is a repeat, not an
-        // introduction, and settles the wait as a no.
+        assert_eq!((got[0].1.came_back, got[0].1.unanswered), (1, 0));
+        // On resuming, the owner's first turn passes him by; her raising
+        // him again in the same chat is no introduction, and the owner
+        // naming him after that is not a return.
         let got = score(
             &[
                 (0, vec![turn("hi", "Milo is home.", ON)]),
@@ -740,14 +752,33 @@ mod tests {
             ],
             &milo(),
         );
-        assert_eq!(
-            (
-                got[0].1.introductions,
-                got[0].1.not_taken_up,
-                got[0].1.came_back
-            ),
-            (1, 1, 0)
-        );
+        let r = got[0].1;
+        assert_eq!((r.introductions, r.not_taken_up, r.came_back), (1, 1, 0));
+    }
+
+    #[test]
+    fn where_a_chat_splits_changes_no_outcome() {
+        // A config recorded mid-chat (a model switch) splits it into
+        // stretches; every reading must match the unsplit chat's (review
+        // of #808).
+        let script = [
+            turn("hi", "Milo is home.", ON),
+            turn("ok", "Mm.", ON),
+            turn("wait, Milo?", "Yes.", ON),
+            turn("tell me", "Nessa visited.", ON),
+            turn("Nessa! how is she?", "Well.", ON),
+            turn("and then", "Milo slept.", ON),
+        ];
+        let whole = score(&[(0, script.to_vec())], &milo());
+        for cut in 1..script.len() {
+            let split = score(
+                &[(0, script[..cut].to_vec()), (0, script[cut..].to_vec())],
+                &milo(),
+            );
+            assert_eq!(split, whole, "split at {cut}");
+        }
+        let r = whole[0].1;
+        assert_eq!((r.introductions, r.taken_up, r.not_taken_up), (2, 1, 1));
     }
 
     mod transcripts {
