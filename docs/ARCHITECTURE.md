@@ -4088,6 +4088,42 @@ to the bytes), or the bytes, which no model has read. It returns `None` for
 any record that is invalid or not yet extracted — a run is never handed a
 request whose prose nothing has looked at.
 
+### The Factory view
+
+`instrument.rs` and the web **Factory** view (`serve/factory.rs`,
+`Factory.svelte`) are the owner's side of the instruments themselves, as
+opposed to the requests arriving through them. A booking page's hours are
+edited there. Four decisions, each a bug if undone:
+
+- **The manifest is the one file.** The slot pipeline reads the manifest's
+  `[availability]` (`slots push --manifest`), and the box ignores that section,
+  so an hours edit needs no `type push`. Until 2026-11-02 the pipeline read a
+  hand-kept copy (`instruments/book-policy.toml`) under a "KEEP THE TWO IN
+  AGREEMENT" comment that nothing enforced. An editor writing two files that
+  must agree is that drift with a nicer face.
+- **The write lives in the handler, never in a verb.** Availability is what a
+  stranger may book of the owner's week. A `mecha factory set` would be a verb
+  a model's shell could run when asked by the prose a stranger typed into the
+  booking form. The charter's rule, applied to a second owner-authored file.
+- **The factory judges its own vocabulary.** A save is `type check`ed and
+  previewed (`slots preview`, over the pipeline's cached busy time) on a hidden
+  draft beside the manifest *before* the manifest is replaced. This side
+  re-decides nothing beyond what would make a write unreadable or a push
+  certain to fail (`instrument::validate`). `PIPELINE_DAYS` is the second of
+  those: it is the unit's `--days`, and
+  `the_pipeline_unit_fetches_the_days_the_editor_allows` holds the two
+  together.
+- **A save is not undone by a failed push.** The file stands, the page names
+  the push's own refusal, and the timer retries. A `base` digest refuses a save
+  over a file that changed since the page read it (409), as the charter's list
+  save does.
+
+It rides the `frontdoor` feature (`VIEW_FEATURE.factory`): a factory is what
+the front door is the door of, and a second switch could disagree with the
+first. Not built: host cancellation (the box has no `cancelled_by_host` path
+yet), form and page-text editing (that one is a `type push`, a publish), and
+polls.
+
 ## Web search
 
 `search.rs` registers `web_search` when at least one `[[search]]` backend is
