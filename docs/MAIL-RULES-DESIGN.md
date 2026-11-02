@@ -209,25 +209,28 @@ refuses to automate is the one the owner made when writing the rule.
 
 They run **before classification**, and a rule whose actions are all
 mailbox-only can mark the thread handled so the classifier never spends a
-call on it — **but only when no enabled rule with an outbound action could
-own the thread.** A
+call on it — **but only when no description rule is enabled at all, and no
+matching header rule has an outbound action.** Any enabled description rule
+needs the classifier to see the thread, whatever its actions — a
+`digest`- or `task`-only description rule is silenced by a skip exactly as a
+reply rule is, since §4.3 applies record actions from every match. A
 skipped classification is a description rule never evaluated, so a
 `priority = 90` header rule that archives a list must not silence a
 `priority = 5` description rule that would have replied — **and neither may
 a `priority = 5` archive silence a `priority = 90` reply**, because §4.3 gives
 outbound actions to the first rule *that has any*, so a higher-priority
 mailbox-only rule does not take the thread's outbound slot. So the condition is
-not about rank: whenever any outbound action could apply to the thread — the
+not about rank: whenever any description rule is enabled (for any action, not
+only outbound ones), or any matching header rule has an outbound action — the
 same header rule's own (one rule holding both `forward` and `archive` is §5.2's
-expected shape), another matching header rule's, or any enabled description
-rule's — where **enabled means any mode but `off`, `shadow` included**. A
-shadow rule's would-be send has to see the thread too, or an archive would
+expected shape) or another's — where **enabled means any mode but `off`,
+`shadow` included**. A shadow rule's would-be actions have to see the thread too, or an archive would
 silently truncate the would-have rows the owner is reading to decide whether
 to approve it, and shadow would under-measure in exactly the direction that
 looks safe —
 **the header rule's inbox-removing
 actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
-its other actions (`read`, `unread`, `tag`, `digest`) run on the timer. The header case
+its other actions (`read`, `unread`, `tag`, `digest`, `task`) run on the timer. The header case
 matters as much as the description one: a `priority = 10` rule that archives
 a list and a `priority = 50` rule that forwards the same sender's mail both
 match at minute three, the forward waits for `classify` (§4.4), and an
@@ -238,8 +241,8 @@ minute three would never be classified and the reply would never be
 considered, with nothing on the ledger to say why. Deferring is the cheaper
 of the two shapes that hold — the other is an id queue that `classify` reads
 beside `mail_recent`, on `due_outside_window`'s precedent — and it needs no
-new state: whether any enabled description rule has an outbound action is
-known statically from the enabled set, and which other header rules match a given
+new state: whether any description rule is enabled is known statically from
+the enabled set, and which other header rules match a given
 thread is known in the same timer pass, before anything executes. P1 builds this, though no description rule exists until P4,
 so the bug cannot land dormant. A GitHub
 notification should cost a string comparison, not a model call, whenever
@@ -382,10 +385,12 @@ actions are once per thread.** The classifier reads a thread, but a thread
 grows. So a rule evaluates a thread against **its newest inbound message**:
 that is the message the header matchers read, the one §5.4's guards check
 (its `From`, its `Authentication-Results`), and the one whose provider id
-keys mailbox actions. Outbound actions are additionally limited to **one per
-rule per thread**: a reply that lands in a thread this rule already forwarded
-from is `skipped: thread already handled`, never a second forward under a new
-message id. P0 gives the thread read the newest inbound message's provider id
+keys mailbox actions. Outbound actions are additionally limited to **one
+occasion per rule per thread**: all of a rule's outbound actions fire together
+on the first message that triggers them — the receipts rule's `forward` *and*
+typed `send` both go (§4.3) — and a later message in a thread the rule has
+already sent from is `skipped: thread already handled`, never a second forward
+under a new message id. P0 gives the thread read the newest inbound message's provider id
 and headers for this. The ledger row is written
 `pending` first and settled after, so a crash between the two is visible as a
 pending row, never silently retried as a send.
@@ -666,6 +671,18 @@ refused: one release sends one reviewed draft, while a raise is a standing
 permission to send unattended, and a run with the owner present is still a
 context window with mail in it. Lowering is allowed from anywhere, a run
 included, because stepping down never needs approval (§6.4).
+
+**That gate is advisory, and the structural answer is the sandbox**, exactly
+as in `closure.rs`. `closure::decide`'s own documentation names the way past
+it — a command detached from the run with its environment cleared — and an
+unconfined `shell` does not need the CLI at all: it can append a row to
+`approvals.jsonl` directly. That matters more here than for task closure,
+because §3 moved the mode out of `rule.toml` precisely so nothing could
+self-grant `auto`. With `shell` confined (§Security model, the sandbox), the
+store is outside anything a run can write and the gate is real. Without it,
+the residual is stated rather than hidden: `mecha doctor` reports any rule
+holding an outbound group in `auto` while `shell` runs unconfined, as
+attention, with the sandbox as the remedy.
 
 A rule may be `auto` for some actions and not others: `mode` can be set per
 action group (§5's rows), defaulting to the rule's. "Archive these
