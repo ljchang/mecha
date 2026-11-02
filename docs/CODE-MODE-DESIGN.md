@@ -1266,7 +1266,11 @@ with your recs"), except R4, which waited on M1 and was ruled on
   path that is not there). Each call meets the tool's guard, limits and
   taint. A path a walk hands back opens through R12. The description
   offers it only where `fs_list` hands out names. Walking a tree with
-  `os`, `glob` or `subprocess` was 14 of M5's 29 raised programs.
+  `os`, `glob` or `subprocess` was 14 of M5's 29 raised programs. Two
+  divergences from Python, on purpose: a directory a scan cannot list
+  raises rather than being skipped (`os.walk`'s `onerror=None`), so a
+  short walk is never a silent one; and `fs_list` does not follow links,
+  so a link to a directory is listed as a file.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
