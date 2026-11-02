@@ -172,6 +172,10 @@
       if (!res.ok) throw new Error(text.trim());
       const out = JSON.parse(text);
       confirming = false;
+      // Read off the page that was saved, before `item` is replaced: a
+      // failed re-read leaves it null, and the toast must still say the
+      // save stood rather than raise.
+      const timerPushes = item?.timer_pushes ?? false;
       // The save stands either way; a failed re-read only means the page
       // asks again rather than showing what came back.
       if (out.instrument) adopt(out.instrument);
@@ -183,7 +187,7 @@
         // Only the instrument the slot timer pushes is retried by it; any
         // other booking page is pushed when it is saved here, and only then.
         say(
-          item.timer_pushes
+          timerPushes
             ? `Saved. The push failed (${out.push_error}); the slot timer retries every two minutes.`
             : `Saved. The push failed (${out.push_error}); save again to retry — the slot timer does not push this page.`,
           true,
