@@ -1949,7 +1949,17 @@ impl PersonaChats {
                     today,
                 ) {
                     Ok(days) => {
-                        let names = story::names(&self.store.join(&p.name)).unwrap_or_default();
+                        // Her people unreadable: titles read "someone", and
+                        // the page says why rather than looking right.
+                        let names = match story::names(&self.store.join(&p.name)) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                out["story_error"] = serde_json::json!(format!(
+                                    "her people could not be read, so who was there is not shown: {e:#}"
+                                ));
+                                Default::default()
+                            }
+                        };
                         out["story"] = story::to_json(&days, &names);
                     }
                     Err(e) => out["story_error"] = serde_json::json!(format!("{e:#}")),

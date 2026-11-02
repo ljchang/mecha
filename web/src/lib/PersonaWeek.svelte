@@ -237,6 +237,7 @@
     </div>
     <div class="wrows">
       {#each days as d (d.date)}
+        {@const st = storyDay(data, d.date)}
         <div class="wrow" class:today={d.when === 'today'}>
           <div class="wday">
             <span>{d.weekday} {d.dayOfMonth}</span>
@@ -270,8 +271,7 @@
               <div class="wline">{b.line}{#if b.unclean} · from a source this version does not know{/if}</div>
             {/if}
           {/each}
-          {#if storyDay(data, d.date)}
-            {@const st = storyDay(data, d.date)}
+          {#if st}
             <div class="wstory">
               {#if st.weather}<span class="wsky">{st.weather}</span>{/if}
               {#each st.events as e}<span class="wev" class:major={e.major}>{e.text}</span>{/each}

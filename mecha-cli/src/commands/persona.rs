@@ -426,9 +426,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             | Cmd::Routine {
                 cmd: RoutineCmd::Show { .. }
             }
-            | Cmd::Story {
-                cmd: StoryCmd::Show { .. }
-            }
             | Cmd::People {
                 cmd: PeopleCmd::Show { .. } | PeopleCmd::Export { .. }
             }
