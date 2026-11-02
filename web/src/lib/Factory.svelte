@@ -230,7 +230,10 @@
   };
   // The timer runs every two minutes (`mecha-slots.timer`); ten minutes is
   // five missed ticks, which is a timer in trouble rather than a late one.
-  const pushIsLate = (stamp) => Date.now() - new Date(stamp).getTime() > 10 * 60000;
+  // A missing stamp is "not pushed yet", never the epoch: `new Date(null)`
+  // is 1970, which would read as decades late and blame a healthy timer.
+  const pushed = (stamp) => stamp != null && !isNaN(new Date(stamp).getTime());
+  const pushIsLate = (stamp) => pushed(stamp) && Date.now() - new Date(stamp).getTime() > 10 * 60000;
 
   const meeting = (b) => {
     const start = new Date(b.start);
@@ -293,7 +296,7 @@
                 <span>open slots over the next {item.preview.horizon_days} days</span>
               </div>
               <div class="meta" class:hazardtext={pushIsLate(item.preview.last_pushed_at)}>
-                <span>last pushed {ago(item.preview.last_pushed_at)}</span>
+                <span>{pushed(item.preview.last_pushed_at) ? `last pushed ${ago(item.preview.last_pushed_at)}` : 'not pushed yet'}</span>
                 {#if pushIsLate(item.preview.last_pushed_at)}<span>— the slot timer (every two minutes) may be failing</span>{/if}
                 {#if item.preview.held_slots}<span>{item.preview.held_slots} slot{item.preview.held_slots === 1 ? '' : 's'} held by open polls</span>{/if}
               </div>
