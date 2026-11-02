@@ -7293,8 +7293,10 @@ was ever deployed.
   a model regression. The system prompt is stored as text, not a hash — a hash
   says only *that* something differed. The sampler is recorded only as far as
   it was pinned: `temperature`/`seed` of `None` means the server chose, and
-  replay against such a run is pass@k-shaped, not exact-match. `clock` is per
-  run, because one `mecha serve` session held runs on both sides of midnight.
+  replay against such a run is pass@k-shaped, not exact-match. `clock` is
+  per `Config` record, which is per attach and per rebind, and so per run
+  only when the process is: one `mecha serve` session held runs on both
+  sides of midnight. The per-run time is `RunStats::ended_at`.
 - **A `spoken_direction` record is for the corpus, not the conversation**
   (`voice_direction::SpokenDirection`): written by the voice facade while
   its sentence plays, so it is joined by `turn` and `sentence`, never by
@@ -7546,6 +7548,14 @@ The design decisions, each of which is a bug if undone:
   file would be faster and would be a second source of truth that can disagree
   with the first — the same reasoning that has the TUI read a trigger's last
   answer back from the session record instead of caching it.
+- **The outcome row is the one per-run clock** (`RunStats::ended_at`),
+  stamped by `Session::record_outcome` as the row is written and never by
+  `RunStats::of_run`, so a replayed or folded row invents no time; a fold
+  keeps the last run's, `None` included. It is the machine's wall clock,
+  not the run's `Clock`: under an experiment's fixture clock `Config.clock`
+  is the designed day and `ended_at` the operator's. A `Config`'s clock is per process
+  attach and per router rebind, so before this a chat held open for days
+  had no time on its later turns (`persona::initiative`'s ordering).
 - **Every front-end writes the outcome record** — `run`, `chat`, the TUI, web,
   Slack, triggers. Before `Record::Outcome` existed the transcript kept two of
   `RunOutcome`'s fields while a trigger's ledger kept the rest, so a run a
