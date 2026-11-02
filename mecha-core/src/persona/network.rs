@@ -661,6 +661,34 @@ impl Network {
         self.people.iter().find(|p| p.uid == uid)
     }
 
+    /// Her network as it stood at the end of `day` (§15's time slider):
+    /// only the events that fell on or before it, by the same order the fold
+    /// reads ([`order`]), so an undated start counts from the beginning and
+    /// any other undated event from the day it was recorded. Someone is in it
+    /// once any event about them is, and someone with no event at all (the
+    /// first taken back) from the beginning, as an undated start would be, so
+    /// "as of today" is never less than now (review of #804). Read only, from
+    /// the log alone.
+    pub fn as_of(&self, day: NaiveDate) -> Network {
+        let events: Vec<EdgeEvent> = self
+            .events
+            .iter()
+            .filter(|e| order(e).0 <= day)
+            .cloned()
+            .collect();
+        let people = self
+            .people
+            .iter()
+            .filter(|p| {
+                let about =
+                    |e: &EdgeEvent| e.person == p.uid || e.other.as_deref() == Some(p.uid.as_str());
+                events.iter().any(about) || !self.events.iter().any(about)
+            })
+            .cloned()
+            .collect();
+        Network { people, events }
+    }
+
     /// Her own edge to `uid`, folded.
     pub fn her_edge(&self, uid: &str) -> Edge {
         let events: Vec<EdgeEvent> = self
@@ -2248,6 +2276,49 @@ mod tests {
                 .any(|p| p.contains("this version cannot read")),
             "{listed:?}"
         );
+    }
+
+    #[test]
+    fn the_network_as_it_was_on_a_day_is_the_fold_of_the_events_by_then() {
+        let pdir = pdir();
+        let mut p = sister();
+        p.since = When::parse("2015").unwrap();
+        let ines = add_person(&pdir, &no_lib(), &p).unwrap();
+        let mut theo = person("Theo", None, Some(Layer::Fifty));
+        theo.since = When::parse("2022-06").unwrap();
+        let theo = add_person(&pdir, &no_lib(), &theo).unwrap();
+        record(&pdir, &ines, None, &at(EventKind::Conflict, "2020")).unwrap();
+        record(&pdir, &ines, None, &at(EventKind::Reconciled, "2021-03")).unwrap();
+        let n = Network::read(&pdir).unwrap();
+        let day = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap();
+        // In 2020 Theo had not come into her life, and Ines and she had
+        // fallen out.
+        let then = n.as_of(day("2020-12-31"));
+        assert_eq!(then.people.len(), 1);
+        assert_eq!(then.her_edge(&ines).valence, Some(Valence::Tense));
+        assert!(then.person(&theo).is_none());
+        // By 2023 they had made up, and Theo was there.
+        let later = n.as_of(day("2023-01-01"));
+        assert_eq!(later.her_edge(&ines).valence, Some(Valence::Warm));
+        assert!(later.person(&theo).is_some());
+        // Before anything, no one.
+        assert!(n.as_of(day("2000-01-01")).people.is_empty());
+        // Someone whose only event was taken back has no date at all: there
+        // from the beginning, as an undated start, so today is never less
+        // than now.
+        let bo = add_person(&pdir, &no_lib(), &person("Bo", None, None)).unwrap();
+        let first = Network::read(&pdir)
+            .unwrap()
+            .events
+            .iter()
+            .find(|e| e.person == bo)
+            .unwrap()
+            .uid
+            .clone();
+        remove_event(&pdir, &first).unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert!(n.as_of(day("2030-01-01")).person(&bo).is_some());
+        assert!(n.as_of(day("2000-01-01")).person(&bo).is_some());
     }
 
     #[test]
