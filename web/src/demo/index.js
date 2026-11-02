@@ -139,6 +139,13 @@ export const ROUTES = [
   // silent `[object Object]` in the pane.
   ['GET', /^\/api\/frontdoor\/read$/, () => text(fx.frontdoorShow)],
 
+  // The Factory view: one booking page and one form. A preview answers with
+  // the page's own slots — the demo computes nothing — and a save declines.
+  ['GET', /^\/api\/factory$/, () => fx.factory],
+  ['GET', /^\/api\/factory\/instrument$/, (url) => fx.factoryInstrument(url.searchParams.get('id'))],
+  ['POST', /^\/api\/factory\/preview$/, () => ({ preview: fx.factoryInstrument('book').preview })],
+  ['POST', /^\/api\/factory\/hours$/, () => new Response('the demo does not keep hours', { status: 501 })],
+
   // The Proposals pane: the store chips, one store's listing, one item's
   // `show`. Every store answers with the same demo listing — the pane is
   // what is being demonstrated, not the stores' distinct contents.

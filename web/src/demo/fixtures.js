@@ -599,6 +599,95 @@ export const frontdoor = {
   ],
 };
 
+// --- the factory ----------------------------------------------------------
+
+export const factory = {
+  dir: '/home/demo/.mecha/factory/types',
+  instruments: [
+    { id: 'book', kind: 'booking', title: 'Book a meeting', path: '/home/demo/.mecha/factory/types/book.toml', problem: null },
+    { id: 'speaking', kind: 'request', title: 'Invite me to speak', path: '/home/demo/.mecha/factory/types/speaking.toml', problem: null },
+  ],
+};
+
+const demoHours = {
+  timezone: 'America/New_York',
+  durations: [30, 60],
+  buffer_minutes: 10,
+  min_notice_hours: 24,
+  horizon_days: 60,
+  per_day_cap: 3,
+  windows: [
+    { day: 'tue', start: '13:00', end: '17:00' },
+    { day: 'thu', start: '09:30', end: '12:00' },
+  ],
+  overrides: [],
+};
+
+// Slots generated from today, so the preview always has a fortnight to show
+// — fixed dates would leave the demo's preview empty after the first week.
+// Tuesday afternoons and Thursday mornings, New York, half-hour starts.
+function demoSlots(now) {
+  const out = [];
+  const day = new Date(now);
+  day.setUTCHours(0, 0, 0, 0);
+  for (let i = 2; i < 60; i++) {
+    const d = new Date(day.getTime() + i * 86400000);
+    const dow = d.getUTCDay();
+    // 18:00Z is 13:00 or 14:00 in New York depending on DST; the demo shows
+    // a plausible week, not a DST-correct one.
+    const starts = dow === 2 ? [18, 18.5, 19, 20.5] : dow === 4 ? [14.5, 15] : [];
+    for (const h of starts) {
+      const start = new Date(d.getTime() + h * 3600000);
+      for (const m of h === 20.5 ? [30] : [30, 60]) {
+        out.push({ start: start.toISOString(), end: new Date(start.getTime() + m * 60000).toISOString(), duration_minutes: m });
+      }
+    }
+  }
+  return out;
+}
+
+export function factoryInstrument(id = 'book', now = Date.now()) {
+  if (id === 'speaking') {
+    // A form: no hours, only the requests it has brought in.
+    return {
+      id: 'speaking',
+      kind: 'request',
+      title: 'Invite me to speak',
+      path: '/home/demo/.mecha/factory/types/speaking.toml',
+      digest: 'demo',
+      pipeline_days: 60,
+      days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      requests_open: 1,
+      bookings: [],
+    };
+  }
+  const slots = demoSlots(now);
+  const nextTue = slots.find((s) => new Date(s.start).getUTCDay() === 2);
+  return {
+    id: 'book',
+    kind: 'booking',
+    title: 'Book a meeting',
+    path: '/home/demo/.mecha/factory/types/book.toml',
+    digest: 'demo',
+    pipeline_days: 60,
+    days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+    requests_open: 1,
+    hours: demoHours,
+    preview: {
+      instrument: 'book',
+      timezone: 'America/New_York',
+      horizon_days: 60,
+      busy_generated_at: new Date(now - 6 * 60000).toISOString(),
+      last_pushed_at: new Date(now - 6 * 60000).toISOString(),
+      held_by_polls: 0,
+      slots: slots.slice(1),
+    },
+    bookings: nextTue
+      ? [{ seq: 44, start: nextTue.start, end: nextTue.end, duration_minutes: 30, reply_to: 'ines@fairhaven.example.edu', on_calendar: true, state: 'booked' }]
+      : [],
+  };
+}
+
 // --- the graph review queue ---------------------------------------------
 
 export const queue = [
