@@ -184,11 +184,13 @@ its body (§4).
 **A program that reaches for the operating system is told where its data
 is.** (R12 and R13: `open(path)` in text-read mode is answered through
 `fs_read`, and a listing through `fs_list`, when the program has them; the
-rest of this paragraph is what is still refused.) An `os` call or any other `open()` is refused with a `PermissionError` that
-says a program has no files, environment, network or clock, leads with
-`fs_read` and `fs_list` when the program has them (19 of M2's 27 first
-programs failed on `open()` or `os.listdir`), and lists the functions it
-was given. An unknown import is left as monty's own `ModuleNotFoundError`.
+rest of this paragraph is what is still refused.) An `os` call or any
+other `open()` is refused with a `PermissionError` that says a program has
+no files, environment, network or clock, leads with `fs_read` and
+`fs_list` when the program has them (in M2's first 35 runs, 19 of the 27
+first programs failed on `open()` or `os.listdir`), and lists the
+functions it was given. An unknown import is left as monty's own
+`ModuleNotFoundError`.
 
 **A function the program assigned over is named.** `size = size(h)` in a
 loop made the next call fail with monty's "'int' object is not callable"
@@ -919,7 +921,8 @@ attacker selects from their own text can be an address; that is a
   `sessions health` splits by the tag, so a program-heavy week reads as
   that and not as a jump in tool use.
 - **Counters.** New `RunStats` counters: `programs`, `program_errors`,
-  `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
+  `subcalls`, `subcall_tokens`, `peeked_bytes`, `program_read_bytes` (the
+  tool-result bytes a program was handed, added after R11), `budget_stops`. Each is an
   `Option<u32>`, as `context_overflows` is, because a row written before
   the sensor existed is unknown, not zero.
 
@@ -1271,8 +1274,11 @@ with your recs"), except R4, which waited on M1 and was ruled on
   raises rather than being skipped (`os.walk`'s `onerror=None`), so a
   short walk is never a silent one; and `fs_list` does not follow links,
   so a link to a directory is listed as a file. A probe answers `False`
-  only when `fs_list` ran and failed; one the gate refuses (a path outside
-  the jail, a hook, a denial) raises, as do a spent limit and a stop. A
+  only when `fs_list` ran and failed; one the gate refuses (a hook, a
+  denial, a policy, a path outside the jail when `request_access` is in the
+  run, which makes it a question for a person) raises, as do a spent limit
+  and a stop. Without `request_access`, a path outside the jail is the
+  tool's own error, so the probe reads `False`. A
   probe in a directory the program has already listed answers from that
   listing, without another call, and a scan past 131,072 entries raises a
   `LimitError`.
@@ -1319,6 +1325,24 @@ than an architecture section kept beside the code.
   session from running a program with a sink. The sink slice is §3.12's original
   shape, with snapshots MAC'd, taint carried beside them, and a version
   mismatch failing closed.
+- **State kept between `code` calls**, a future feature to consider (the
+  owner, 2026-11-02). Pydantic AI's code mode keeps a REPL across calls
+  with a `restart` flag; this slice starts each program clean. What it
+  would buy is smaller than it looks: in M5, 11 of the 39 programs after a
+  run's first re-read a path an earlier one had read, and a local read is
+  milliseconds, while the cost of a retry is the model's turn, which state
+  does not remove (a slow tool, mail or the web, would gain more). What it
+  costs: the program record and the grounding walk assume a program is
+  self-contained, so a value read in one call and used in another needs a
+  link between their records (and the sink slice's MAC'd snapshots with
+  taint beside them, above); a worker of up to 256 MiB held per
+  conversation, across turns minutes apart and across `mecha serve`'s
+  chats; state lost to a deploy, a timeout, a crash or a compaction the
+  model may not notice, which needs a `restart` and a "state was lost"
+  note as Pydantic has; and `replay_run` re-running a chain rather than a
+  program. The cheap first form, if taken up: state that lives for one
+  model turn and is dropped at its end, which covers the fix-and-rerun
+  case without the snapshot.
 - **`Blind` tools.**
 - **Value-level labels inside the program** (CaMeL's capability tags).
   monty does not track data flow, and filtering it by hand is the approach
@@ -1641,30 +1665,81 @@ as M3. **M5** reran it on R12's build (188ee8c0d, `open()` through
 **What raised in M4:** `open()` refused, 24 of 43, in four of the five
 tasks; a method passed as a value (`max(d, key=d.get)`, which monty 1.4
 does not support while `d.get(k)` works), 11, every one in the CSV task;
-`import io`, 5. One run did worse than raise: its program wrapped the
-reads in a bare `try/except`, the refusal was swallowed, and it printed "0
-matches", so the model reported that no file defined the function. That
-was the case for R12 over a better refusal.
+`import io`, 5; and 3 others (`import subprocess`, `fs_read` imported as a
+module, a `NameError`). One run did worse than raise: its program wrapped
+the reads in a bare `try/except`, the refusal was swallowed, and it
+printed "0 matches", so the model reported that no file defined the
+function. That was the case for R12 over a better refusal.
 
 **What raised in M5:** no `open()` refusal; `key=d.get`, 9, despite the
 description now naming it (each run recovered on its next program);
 `os.walk`, `glob`, `subprocess` and the like, 14, 13 of them in the
 source-tree task; `fs_list` imported as a module or given a path outside
-the workspace, 3; and 3 reads of a spill file by its absolute path, which R12's first
-form read inside the workspace. #809 runs a program in a directory that is
-not a real path, so an absolute path now reaches `fs_read` as written.
+the workspace, 3; and 3 reads of a spill file by its absolute path, which
+R12's first form read inside the workspace. #809 runs a program in a
+directory that is not a real path, so an absolute path now reaches
+`fs_read` as written.
 
 **What the wrong answers were.** The source-tree task failed every run in
 both: every M5 run named all five defining files with the right defaults,
 and also the file that only quotes the function in a docstring (M4: six of
-eight had all five, and one more said "none found" after the swallowed
-refusal). That is reading, the same shape as "attended" for "presented"
-in M1 to M3. M4's two services failures were right answers that also named
-the services listing the queue only as a soft dependency, which the grade
-counts as extras; no M5 answer did. M4's three patch failures were wrong
-line totals (107 against 135, for one), and M5 had none.
+eight had all five; one found one of them, and one said "none found" after
+the swallowed refusal). That is reading, the same shape as "attended" for
+"presented" in M1 to M3. M4's two services failures were right answers
+that also named the services listing the queue only as a soft dependency,
+which the grade counts as extras; no M5 answer did. M4's three patch
+failures were wrong line totals (107 against 135, for one), and M5 had
+none.
 
 **What is left:** the docstring decoy, a reading error R11 and R12 do not
 touch; `key=d.get`, a monty gap a description line did not move; and
 programs that reach for `os`, `glob` or `subprocess` to walk a tree, which
 the refusal answers with `fs_list` at the cost of a turn.
+
+**M6, the Claude comparison, and the grade's second form (2026-11-02).**
+M6 reran M4's tasks on R13's build (5e5b3c47a: listing through `fs_list`,
+and a hint for a method taken as a value), with nothing else changed. The
+same tasks were run four times each with Claude (`claude-opus-5`) as the
+provider, which needed #813 first: the graph server's `kg_pending` has a
+top-level `anyOf` in its schema, which the Messages API refuses for the
+whole request.
+
+**The grade's second form**, fixed before M6 ran (the script's sha256
+begins `d93ee9f7`): the first counted any extra name in an answer, so an
+answer that named the docstring decoy only to say it is not a definition
+failed. Claude's answers did that in every source-tree run, and in two
+services runs named the soft dependencies only to exclude them. Now, for
+those two tasks, an answer with a table answers in it, and only names in
+its rows count; an answer without one claims a name on any line that does
+not mark it excluded. Its wording was fitted to answers already read, so
+it was checked against hand grades of every M4, M5 and Claude answer, and
+agrees with each; M6 is the first set it graded unseen.
+
+| | M4 | M5 (R12) | M6 (R13) | Claude, 4 runs each |
+|---|---|---|---|---|
+| passed, second form | 30/40 | 32/40 | 31/40 | 20/20 |
+| passed, first form | 27/40 | 32/40 | | 14/20 |
+| programs that raised | 43 of 108 | 29 of 79 | 14 of 61 | 0 of 41 |
+| first program raised | 22 of 40 | 17 of 40 | 12 of 40 | 0 of 20 |
+
+**What M6 changed.** No walk was refused (M5: 14), and programs that
+raised fell from 37% to 23%. `key=d.get` still raised 8 times, all in the
+CSV task's first programs, and the hint was on every one; each run was
+right on its next program, as in M5. The source-tree task is still 0/8:
+seven runs listed the docstring decoy as a definition, and the eighth was
+silent. Its programs walked all 64 files and opened each with `open(path,
+'r', errors='ignore')`, which monty 1.4 refuses with a `TypeError` before
+any host call; a bare `except` swallowed every one, and the model answered
+that no file contained the word. No shim answers a call that never reaches
+the host, so the description now says `open` takes no `errors=`. One patch
+run summed its lines wrong.
+
+**What the comparison says.** With the same harness, tools and tasks,
+Claude answered all 20 correctly and none of its 41 programs raised. It
+read the decoy for what it is every time ("inside a `DOC` string literal,
+not real code"), where the local model listed it as a definition in 7 of 8
+runs in M5 and in M6. So what remains on these tasks is the local model's
+reading and its first-draft habits, not the harness: the lever left is the
+model, a stronger one or a trained one, and Claude's runs in this harness
+are the shape of the trajectories `POST-TRAINING-RESEARCH.md` §7 would
+train on.
