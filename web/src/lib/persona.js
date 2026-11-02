@@ -1058,6 +1058,12 @@ export function stretchLine(s) {
 // weather, the levels that ended the day away from normal, and the events,
 // as the server shows them. `null` when the week carries no story.
 export const STORY_SKY = { clear: 'clear', cloudy: 'cloudy', fog: 'fog', drizzle: 'drizzle', rain: 'rain', snow: 'snow', storm: 'storm' };
+// What the week says about her story as a whole: whether any day was drawn,
+// and why the rest was not. Both can hold, so neither hides the other.
+export function storyNotes(data) {
+  return { drawn: (data?.story ?? []).length > 0, why: data?.story_error ?? null };
+}
+
 export function storyDay(data, date) {
   const d = (data?.story ?? []).find((s) => s.date === date);
   // A past day the store does not keep was drawn for this view alone: not

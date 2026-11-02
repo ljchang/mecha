@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, weekUrl, weekDays, storyDay, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -302,10 +302,12 @@
     <div class="barnote">
       Drawn from her routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
     </div>
-    {#if data.story}
+    {#if storyNotes(data).drawn}
       <div class="barnote">Events are drawn from her deck (<code>story.toml</code>) by a director that keeps a rhythm; the weather is where she lives. Only you see these: nothing here reaches her chats yet.</div>
-    {:else if data.story_error}
-      <div class="barnote">No story: {data.story_error}</div>
+    {/if}
+    {#if storyNotes(data).why}
+      <!-- Beside what was kept, never instead of it (review of #814). -->
+      <div class="warnline">No story for the rest of the week: {storyNotes(data).why}</div>
     {/if}
   {/if}
   <button class="abtn" onclick={() => onclose?.()}>Close</button>
