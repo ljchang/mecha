@@ -2335,11 +2335,14 @@ ruled for repetition.
     instrument; events wait for step 3, when they have names. An
     introduction is a completed reply naming someone neither side named
     earlier in the chat (harness notes are not read). Uptake is the owner
-    naming them in the next turn (with a question mark: asked) or first
-    in a later chat; her bringing them up again first, or a next turn
-    without them and no return, is not taken up; a chat's last
-    introduction with no return yet has no outcome and stays out of the
-    rate. Turns are filed by what the transcript shows she was given (a
+    naming them in the next turn they speak in (with a question mark:
+    asked) or first in a later stretch of talk; her bringing them up again
+    first, or the owner speaking on without ever naming them, is not taken
+    up; an introduction the owner has not spoken after yet has no outcome
+    and stays out of the rate. "Later" is time, not chat: a resumed chat is
+    read as stretches split at each recorded config, all ordered by its
+    clock. A capitalised name must be capitalised, except in an owner turn
+    typed with no capital at all. Turns are filed by what the transcript shows she was given (a
     today-block among the run's notes, the people heading in the recorded
     prompt), not by settings. Counts only, never words. Memory is not read
     as "before that turn": a name recalled into a note is a harness note,

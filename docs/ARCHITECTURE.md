@@ -1902,9 +1902,12 @@ module.
   in the run's notes, `agent::PEOPLE_HEADING` in the recorded prompt),
   never by settings, since a chat keeps the version it began with. Only
   owner text (`agent::owner_text`) and her replies are searched, so a name
-  riding in a harness note is neither side naming it. A chat's last
-  introduction with no return is unanswered, kept out of the uptake rate,
-  and no people is no reading rather than zero. Counts only, never names
+  riding in a harness note is neither side naming it. Order is time: each
+  chat splits into stretches at its recorded configs (start and resumes),
+  all read by their clock, since whole chats by start date would put a
+  long-lived chat's newest turns too early. An introduction the owner has
+  not spoken after is unanswered, kept out of the uptake rate, and no
+  people is no reading rather than zero. Counts only, never names
   or words.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
@@ -2690,7 +2693,8 @@ module.
       is not counted.
     - `mecha persona show` reads chats active in the last `SHOWN_DAYS` days
       (by file modification time) and counts unreadable session files,
-      never reading them as empty. Only `show` reads it. `list --json` and
+      never reading them as empty. Only `show` and `measures` (over a
+      window the owner picks, beside initiative) read it. `list --json` and
       the approve and remove confirmations stay plain store reads, because
       reading a week of transcripts is no longer free.
     - Deleted chats drop out of the history; archived ones stay.

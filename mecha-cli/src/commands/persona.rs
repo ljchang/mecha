@@ -400,6 +400,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         args.cmd,
         Cmd::List { .. }
             | Cmd::Show { .. }
+            | Cmd::Measures { .. }
             | Cmd::Group {
                 cmd: GroupCmd::List
             }
