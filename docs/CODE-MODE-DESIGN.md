@@ -1247,11 +1247,12 @@ with your recs"), except R4, which waited on M1 and was ruled on
   written. Any other mode, binary or write, and any program without
   `fs_read`, is refused as before. The refusal had cost a turn in most M2
   to M4 first programs, and in one M4 run it was swallowed by a bare
-  `except` and the program reported no match with nothing raised. The path
-  reaches `fs_read` relative to the workspace: monty cannot tell
-  `open('/a.csv')` from `open('a.csv')`, so one leading `/` comes off, and
-  an absolute path, an owner grant's included, is reached with `fs_read`
-  directly. A read through `open()` is two suspensions against one tool
+  `except` and the program reported no match with nothing raised. A
+  program runs in a directory that is not a real path (`/.mecha-workspace`),
+  so a relative path reaches `fs_read` relative to the workspace and an
+  absolute one (a spill file, an owner grant) as written, for `fs_read`'s
+  jail to decide. Rooted at `/`, the two could not be told apart, and M5
+  read a spill file's absolute path inside the workspace. A read through `open()` is two suspensions against one tool
   read, so the suspension backstop counts tool reads twice.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
