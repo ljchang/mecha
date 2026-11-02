@@ -203,21 +203,28 @@ refuses to automate is the one the owner made when writing the rule.
 
 They run **before classification**, and a rule whose actions are all
 mailbox-only can mark the thread handled so the classifier never spends a
-call on it — **but only when no enabled description rule outranks it.** A
+call on it — **but only when no enabled rule with an outbound action could
+own the thread.** A
 skipped classification is a description rule never evaluated, so a
 `priority = 90` header rule that archives a list must not silence a
 `priority = 5` description rule that would have replied. When a
-higher-priority description rule is enabled, **the header rule's
-inbox-removing actions (`archive`, `trash`, `spam`) wait for the classify
-pass**, and only its other mailbox actions (`read`, `tag`) run on the timer.
+higher-priority description rule is enabled — or another header rule with an
+outbound action also matches the thread — **the header rule's inbox-removing
+actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
+its other mailbox actions (`read`, `tag`) run on the timer. The header case
+matters as much as the description one: a `priority = 10` rule that archives
+a list and a `priority = 50` rule that forwards the same sender's mail both
+match at minute three, the forward waits for `classify` (§4.4), and an
+immediate archive would remove the thread before the forward is decided.
 They have to: `classify` enumerates threads from `mail_recent`, which is
 inbox-only (`in:inbox` on Gmail, `recent` on Outlook), so a thread archived at
 minute three would never be classified and the reply would never be
 considered, with nothing on the ledger to say why. Deferring is the cheaper
 of the two shapes that hold — the other is an id queue that `classify` reads
 beside `mail_recent`, on `due_outside_window`'s precedent — and it needs no
-new state, because which header rules are outranked is known statically from
-the enabled set. P1 builds this, though no description rule exists until P4,
+new state: which header rules are outranked by a description rule is known
+statically from the enabled set, and which other header rules match a given
+thread is known in the same timer pass, before anything executes. P1 builds this, though no description rule exists until P4,
 so the bug cannot land dormant. A GitHub
 notification should cost a string comparison, not a model call, whenever
 "the first rule by priority owns the thread" allows it.
@@ -333,7 +340,15 @@ or reordered, so an action that already ran would find no row under its new
 index and run again — a receipt sent to finance twice. Keyed by identity, an
 untouched action keeps its row across any reordering, and an edited one is
 honestly a new action that has not run. The message half is the
-provider's own immutable id (`Email::provider_id`, what `get_message` takes),
+provider's own id (`Email::provider_id`, what `get_message` takes), **made
+immutable on Outlook by asking for it**: Graph's default `id` changes when a
+message moves folders, and every Outlook `archive`, `trash` and `spam` is a
+folder move (`move_message`), as is undo. A key read after the rule's own
+archive would find no row and run the action again. So P0 has the Graph
+client send `Prefer: IdType="ImmutableId"` on every request, which keeps a
+message's id fixed across moves within the mailbox, and the ledger key
+depends on that header being sent. Gmail's message id is already stable
+across label changes. It is
 **never the RFC 5322 `Message-ID`**, which is sender-written and optional
 here: a reused one would mark another message's actions as already done, and
 every message without one would collide on a single key. The `Message-ID`
@@ -448,7 +463,7 @@ Which guard binds which action group, so no section has to infer it:
 | Once per sender per rule per 7 days | yes | **no** — every receipt from a listed vendor is forwarded |
 | Per-rule and global daily caps | yes | yes |
 | Not into a conversation the owner has joined | yes | no |
-| `block_sends_after_private` (§6.3) | drafted only | yes |
+| `block_sends_after_private` (§6.3) | yes | yes |
 
 Loop prevention needs nothing extra for `forward` and `send`: their recipient
 is fixed by the owner rather than taken from the mail, so nothing they send
@@ -475,7 +490,18 @@ and none is configurable off:
   into what they submit. The guard reads **the topmost instance, and only if
   its `authserv-id` is the account's own provider** (pinned per provider, not
   matched loosely); any other instance is ignored, and **absent or
-  unparseable means `propose`, never `pass`**. Graph's
+  unparseable means `propose`, never `pass`**. **Outlook needs its own shape,
+  decided before P4 rather than discovered there**: Microsoft 365 commonly
+  writes its instance with no `authserv-id` at all, starting at `spf=`. Read
+  literally, the rule above would hold every Outlook send in `propose`
+  forever, which is not the guard working but the feature not existing on
+  that account. So on Outlook the topmost instance is accepted without an
+  `authserv-id` when it carries Exchange Online Protection's own `compauth=`
+  verdict, which EOP writes and a submitted header has no reason to; and P0
+  **verifies that against real headers from the owner's mailbox before
+  anything relies on it**. If the topmost instance turns out not to be
+  reliably EOP's, the design's answer is that Outlook sends stay in `propose`,
+  stated on the rule page, until there is something better to key on. Graph's
   `internetMessageHeaders` is a truncated collection, so "absent" is a real
   case on Outlook, and each provider gets a test that a missing header
   proposes. **The trap is on both readers, and worse on Gmail.**
@@ -485,7 +511,7 @@ and none is configurable off:
   adding `Authentication-Results` to that loop selects the bottom-most
   instance, the one a sender can write. On Gmail the reader takes the
   **first** instance; on Graph, `graph_mail.rs`'s `.find(…)` is first-match
-  and needs the `authserv-id` check added. `Authentication-Results` gets its
+  (`find_map`) and needs the provider check added. `Authentication-Results` gets its
   own field on `Email` rather than riding the existing loop.
   One consequence worth saying in the UI: mail that reaches an account by
   forwarding from another address routinely fails alignment, so a rule on
@@ -610,12 +636,15 @@ interlock deliberately does not own (`EGRESS-DESIGN.md` §6).
 The control that does own `Blind` is `block_sends_after_private`, which
 refuses both classes but runs in the loop's dispatch, where a harness-side
 send never passes. **So the rule engine reads it itself:** with
-`block_sends_after_private = true`, every outbound action that carries mail
-content — `forward`, `send`, and drafted `reply` — stays in `propose`, and the
-rule page says that guard is holding it. A template `reply` carries only the
-owner's words and is unaffected. The guard is off by default, and its doc
-comment is "turn this on when private data must not leave at all", which an
-automatic forward of the owner's mail would otherwise silently override. What bounds the leak is
+`block_sends_after_private = true`, **every** outbound action group stays in
+`propose` — template replies included — and the rule page says that guard is
+holding it. Its doc comment says "block *every* outbound call" and "turn this
+on when private data must not leave at all", and an owner who set it on those
+words should not find their mailbox answering strangers. A template reply
+leaks one bit at most (§5.1), which is not worth narrowing a flag's stated
+meaning for. The guard is off by default.
+
+What bounds the leak is
 the **context**: the only private data the draft can contain is the thread
 itself (going back to someone already on it) and files the owner declared fit
 to share. An injection can still make the draft *say* something wrong —
@@ -751,7 +780,9 @@ real and worth serving, and the safe shape exists already in
   proposal says, and an armed proposal is labelled as one. The accept names
   the digest the owner was shown.
 - **The recorded `Origin` gates what can send.** The confirmation pass
-  (§4.2) is sound only because its frame is the owner's words, and a proposal
+  (§4.2) is sound only because nothing a stranger wrote can have shaped its
+  frame — the owner's words, or a model's written in a conversation that had
+  read nothing untrusted — and a proposal
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
   enter `auto` while the rule's description or any template it sends is
@@ -792,7 +823,10 @@ Each phase is useful alone and testable without the next.
 `List-Id`, `Authentication-Results`, `Reply-To` and the owner's
 participation in a thread on the thread read — `Authentication-Results` as the
 topmost instance with its `authserv-id`, absent stated rather than defaulted,
-with a test per provider (§5.4); and the provider's own message id on the
+with a test per provider in **both** directions — a missing or foreign
+instance proposes, and a genuine provider instance passes — because a test of
+the negative alone passes on a reader that proposes unconditionally (§5.4); the
+`ImmutableId` preference on every Graph request (§4.4); and the provider's own message id on the
 thread read for the ledger key (§4.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
