@@ -475,7 +475,7 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
     let text = match kept_cell(&text, old.as_deref()) {
         Some(cell) => {
             let kept = with_cell(&text, DRAFT, cell)?;
-            routine = parse(&kept).context("the draft does not load with her kind of week")?;
+            routine = parse(&kept).context("the draft does not load with their kind of week")?;
             kept
         }
         None => text,

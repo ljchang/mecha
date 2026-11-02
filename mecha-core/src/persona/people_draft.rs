@@ -78,9 +78,9 @@ fn system() -> String {
          Answer with JSON only: {{\"people\": [...]}}, at most {MAX_PROPOSED}. Each \
          person has:\n\
          - \"name\": what the text calls them, at most {MAX_NAME} characters; a role \
-         (\"her grandmother\") when the text gives no name\n\
+         (\"their grandmother\") when the text gives no name\n\
          - \"aliases\": other names the text uses for them, or []\n\
-         - \"role\": who they are to her in a few words (\"older sister\"), or null\n\
+         - \"role\": who they are to the character in a few words (\"older sister\"), or null\n\
          - \"description\": one short sentence of what the text says about them, \
          starting with a capital letter and ending with a full stop (\"Runs a bakery \
          two towns over.\"), at most {MAX_DESCRIPTION} characters, or null\n\
@@ -228,7 +228,7 @@ pub async fn propose(
     let request = request(model, p, provider.structured_output())?;
     let response = provider.complete(&request, None).await?;
     match response.stop_reason {
-        StopReason::Refusal => bail!("the reader's model refused to read her people"),
+        StopReason::Refusal => bail!("the reader's model refused to read their people"),
         StopReason::MaxTokens => bail!(
             "the reader's answer was cut off at max_tokens ({})",
             request.max_tokens
@@ -263,7 +263,7 @@ impl std::fmt::Display for StaleProposal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "`{}`'s identity.md changed since her people were read from it; propose again",
+            "`{}`'s identity.md changed since their people were read from it; propose again",
             self.name
         )
     }
