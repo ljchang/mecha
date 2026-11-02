@@ -46,6 +46,11 @@ mod watchdog;
 mod test_process;
 pub mod worker;
 
+/// How deeply a value may nest to cross between host and program, either
+/// way. A host answering with a deeper one must refuse it itself, as a
+/// catchable error: past this the backend fails the program whole.
+pub const VALUE_DEPTH: usize = 64;
+
 /// Whether this binary has an interpreter at all: the cargo feature `monty`,
 /// on by default. A build without it (`--no-default-features`) still knows
 /// code mode, and says by name that it cannot run it (`feature::unbuilt`).

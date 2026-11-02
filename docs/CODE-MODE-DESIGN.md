@@ -169,9 +169,9 @@ backtracking `re`):
 | `grep(text, pattern)` | list of str | the lines `pattern` matches anywhere in, in order, at most 4,096 |
 | `count(text, pattern)` | int | |
 | `find(text, pattern)` | list of [start, end] | character offsets, as Python's indexing counts them; at most 4,096 pairs |
-| `lines(text)`, `split(text, pattern)`, `chunks(text, n, overlap=0)` | list of str | `n` is each chunk's size in characters, at least 1 |
-| `json_get(text, path)` | the decoded leaf | a string as `str`, an object as a dict |
-| `size(text)`, `slice(text, start, end)`, `peek(text, n=2000, start=0)` | int, str, str | kept because programs written before R11 call them; negative `start` counts from the end, and a negative `n` is the last `n` characters |
+| `lines(text)`, `split(text, pattern)`, `chunks(text, n, overlap=0)` | list of str | `n` is each chunk's size in characters, at least 1; at most 131,072 pieces, and a `chunks` whose overlap repeats more text than the host-byte limit raises, both before anything is built |
+| `json_get(text, path)` | the decoded leaf | a string as `str`, an object as a dict; a leaf nesting past 64 levels, the most a value can cross into a program at, raises `HandleError:` |
+| `size(text)`, `slice(text, start, end)`, `peek(text, n=2000, start=0)` | int, str, str | kept because programs written before R11 call them; negative `start` counts from the end, and a negative `n` with no `start` is the last `n` characters (with a `start`, `n`'s sign is dropped) |
 | `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit. The process-wide byte pool is left out: it moves with other programs |
 
 **A tool's error reaches the program in the tool's own words**, as
@@ -281,7 +281,7 @@ llm_map(instruction: str, sources: list[str], shape) -> list[value]
   `ToolError:` for a tool that returned `is_error` or a host call refused
   (§7, followed by the loop's own refusal prefix, so a policy block still
   never reads as a person's denial), `HandleError:` for a §3 host
-  function that cannot apply (an argument that is not a `str`, (`json_get` on bytes that are not JSON, a
+  function that cannot apply (an argument that is not a `str`, `json_get` on bytes that are not JSON, a
   path that does not exist, a slice out of range), and `LimitError:` for
   a §5 limit. The text after the tag follows §3's rule: no bytes.
 - **`llm_map` raises at the first failed item, and the passes before it

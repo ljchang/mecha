@@ -963,7 +963,7 @@ fn os_refusal(externals: &BTreeSet<String>) -> String {
 }
 
 /// Nesting deeper than this does not cross the boundary either way.
-const MAX_DEPTH: usize = 64;
+const MAX_DEPTH: usize = super::VALUE_DEPTH;
 
 /// A call's positional and keyword arguments, as JSON.
 type Args = (Vec<Value>, Vec<(String, Value)>);

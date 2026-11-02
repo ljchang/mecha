@@ -789,7 +789,8 @@ fn describe(admission: &Admission) -> String {
     }
     d.push_str(
         "Host helpers, faster than Python on a long text and free of sub-calls: grep(text, \
-         pattern) (the matching lines, a list of str), count(text, pattern), find(text, \
+         pattern) (the matching lines, a list of str, at most 4,096: narrow the pattern past \
+         that), count(text, pattern), find(text, \
          pattern) (a list of [start, end] character offsets), lines(text), split(text, \
          pattern), chunks(text, n, overlap=0) (pieces of n characters) and json_get(text, \
          path). Patterns are Rust regular expressions. budget() says what is left of each \
@@ -972,6 +973,15 @@ fn strings<'s>(parts: impl IntoIterator<Item = &'s str>) -> Value {
             .map(|p| Value::String(p.to_string()))
             .collect(),
     )
+}
+
+/// How deeply `v` nests: 0 for a scalar, 1 for a flat list or object.
+fn depth(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => 1 + a.iter().map(depth).max().unwrap_or(0),
+        Value::Object(m) => 1 + m.values().map(depth).max().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// Refuse a result of `n` pieces past [`defaults::PIECES`], before any is
@@ -1698,7 +1708,23 @@ impl Run {
             ));
         }
         let (n, step) = (n as usize, (n - overlap) as usize);
-        pieces("chunks", t.chars.saturating_sub(n).div_ceil(step) + 1)?;
+        let count = t.chars.saturating_sub(n).div_ceil(step) + 1;
+        pieces("chunks", count)?;
+        // An overlap repeats text, so the pieces' total can pass the read's
+        // own size many times over: `chunks(t, 1_400_000, overlap=1_399_999)`
+        // on a 1.5 MB log is 140 GB built here, uncharged (review of #805).
+        let total = count.saturating_mul(n.min(t.chars));
+        if total > self.limits.host_bytes {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "chunk text: `chunks` would return about {total} characters in all, past \
+                     this program's {} (an overlap repeats text); use a smaller overlap or a \
+                     larger step",
+                    self.limits.host_bytes
+                ),
+            ));
+        }
         let mut spans = Vec::new();
         let mut start = 0;
         while start < t.chars {
@@ -1799,6 +1825,19 @@ impl Run {
                 }
                 _ => return Err(missing()),
             };
+        }
+        // Past the depth a value may cross into the program at, the backend
+        // would fail the program uncatchably: about 130 bytes of a stranger's
+        // JSON could end it, losing what it printed (review of #805).
+        if depth(at) > crate::interpreter::VALUE_DEPTH {
+            return Err(raise(
+                Tag::HandleError,
+                format!(
+                    "`json_get`: the value at that path nests deeper than {} levels, the most \
+                     a program can hold; take a path further in",
+                    crate::interpreter::VALUE_DEPTH
+                ),
+            ));
         }
         Ok(at.clone())
     }
@@ -2006,10 +2045,9 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
     if is_error && out.contains("object is not callable") {
         // The name the failing line calls, where the traceback shows one:
         // `shadowed` is in host-function order, not the error's.
-        let called = shadowed
-            .iter()
-            .find(|n| out.contains(&format!("{n}(")))
-            .or(shadowed.first());
+        // With none shown, no hint: a guess could name a function the
+        // failing line never called (review of #805).
+        let called = shadowed.iter().find(|n| out.contains(&format!("{n}(")));
         if let Some(name) = called {
             out.push_str(&format!(
                 "\n[`{name}` is a function this program was given, and the program assigned \
