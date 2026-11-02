@@ -269,6 +269,12 @@ pub struct ProgramStats {
     /// though a read now reaches the program as text too.
     #[serde(default)]
     pub peeked_bytes: u64,
+    /// Bytes of tool results the program was handed, as text since R11:
+    /// what the host-byte limit charges. The quantity R11 made the one to
+    /// watch, which `peeked_bytes` deliberately does not count (review of
+    /// #805).
+    #[serde(default)]
+    pub read_bytes: u64,
     /// The program ran to its end.
     #[serde(default)]
     pub completed: bool,
@@ -476,7 +482,7 @@ impl Pass {
 
 /// A provider's failure of a pass, by its class: never the error's text,
 /// which can carry a server's body, and a server's body can echo the prompt
-/// it was sent, which holds a handle's bytes (§3).
+/// it was sent, which holds a program's text (§3).
 pub(crate) fn pass_failure(e: &anyhow::Error) -> String {
     use crate::provider::retry::ProviderError;
     if let Some(r) = e.downcast_ref::<crate::provider::LocalOnlyRefused>() {
@@ -725,7 +731,8 @@ const EXAMPLE: &str = "hits = []\n\
     for name in fs_list(path=\"notes\"):\n    if name.endswith(\"/\"):\n        continue\n    \
     text = fs_read(path=\"notes/\" + name)\n    for line in text.splitlines():\n        \
     if line.startswith(\"Attendees:\") and \"Priya\" in line:\n            \
-    hits.append(name)\n\
+    hits.append(name)\n            \
+    break\n\
     print(len(hits), hits)\n";
 
 /// The description's second example: a question about meaning, asked of each
@@ -1197,6 +1204,7 @@ impl Run {
             subcall_tokens: self.subcall_tokens,
             usage: self.usage.clone(),
             peeked_bytes: self.peeked as u64,
+            read_bytes: self.bytes as u64,
             completed: matches!(end, Some(End::Complete { .. })),
             budget_stop,
             cancelled: matches!(end, Some(End::Cancelled)),
@@ -1735,12 +1743,17 @@ impl Run {
         // An overlap repeats text, so the pieces' total can pass the read's
         // own size many times over: `chunks(t, 1_400_000, overlap=1_399_999)`
         // on a 1.5 MB log is 140 GB built here, uncharged (review of #805).
-        let total = count.saturating_mul(n.min(t.chars));
+        // Bytes, as the limit is: a character of a multibyte text is up to
+        // four, so a count of characters under-refused it (review of #805).
+        let per_char = t.text.len().div_ceil(t.chars.max(1));
+        let total = count
+            .saturating_mul(n.min(t.chars))
+            .saturating_mul(per_char);
         if total > self.limits.host_bytes {
             return Err(raise(
                 Tag::LimitError,
                 format!(
-                    "chunk text: `chunks` would return about {total} characters in all, past \
+                    "chunk text: `chunks` would return about {total} bytes in all, past \
                      this program's {} (an overlap repeats text); use a smaller overlap or a \
                      larger step",
                     self.limits.host_bytes
@@ -2206,7 +2219,6 @@ fn shadowed<'n>(program: &str, names: &[&'n str]) -> Vec<&'n str> {
                     let rest = rest.trim_start();
                     !longer
                         && ((rest.starts_with('=') && !rest.starts_with("=="))
-                            || rest.starts_with(" in ")
                             || rest.starts_with("in ")
                             || rest.starts_with(',')
                             || ["+=", "-=", "*=", "/="]
