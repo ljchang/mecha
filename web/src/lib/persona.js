@@ -127,7 +127,8 @@ export function personaName(typed) {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) && !reserved.includes(name) ? name : null;
 }
 
-// The three files the page edits, in the order it shows them.
+// The three files the page edits, in the order it shows them; Settings is
+// always the last tab (`personaTabs`), after the parts that are on.
 export const OWNER_FILES = [
   ['identity', 'Who they are'],
   ['motivation', 'What they want'],
@@ -140,9 +141,11 @@ export const OWNER_FILES = [
 // (owner, 2026-11-02). A row from a server that says nothing shows them all.
 export function personaTabs(shows, world) {
   const on = (k) => shows?.[k] ?? true;
+  // The owner files in their own order, Settings held back to close the row,
+  // so a file added to OWNER_FILES gets a tab without this changing.
+  const files = OWNER_FILES.map(([f]) => f).filter((f) => f !== 'settings');
   return [
-    'identity',
-    'motivation',
+    ...files,
     ...(on('memories') ? ['memories'] : []),
     ...(world && on('week') ? ['week'] : []),
     ...(world && on('people') ? ['people'] : []),

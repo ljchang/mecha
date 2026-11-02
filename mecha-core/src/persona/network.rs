@@ -1171,7 +1171,7 @@ pub fn markdown(n: &Network) -> String {
     }
     if !ended.is_empty() {
         out.push_str(&format!(
-            "\n## No longer in her life\n\n{}\n",
+            "\n## No longer in their life\n\n{}\n",
             ended.join("\n")
         ));
     }

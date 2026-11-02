@@ -340,7 +340,7 @@ pub fn stage_draft(dir: &Path, name: &str, text: &str, origin: Origin) -> Result
         Origin::Owner => bail!("a draft is a model's; the owner edits {FILE} directly"),
         Origin::ModelUntrusted => bail!(
             "a routine draft from a run that read untrusted content is refused; \
-             once approved its labels would reach her days as clean"
+             once approved its labels would reach their days as clean"
         ),
         Origin::ModelClean => {}
     }

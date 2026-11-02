@@ -39,20 +39,20 @@ const DAY_WORDS: [&str; 10] = [
 /// kind of week to the picker: approval writes the routine's `cell` above
 /// this comment, so "add one here" would make two (review of #799).
 pub const HEADER: &str = "\
-# Drafted by a model from what you wrote of her. None of it reached her days
-# until you approved it, and any line can be changed before or after. Her
-# kind of week is set with the Week tab's picker, never here.
+# Drafted by a model from what you wrote of them. None of it reached their
+# days until you approved it, and any line can be changed before or after.
+# Their kind of week is set with the Week tab's picker, never here.
 ";
 
 fn system() -> String {
     let activities: Vec<&str> = Activity::ALL.iter().map(|a| a.id()).collect();
     format!(
-        "You draft the weekly routine of a fictional character from what her author \
-         wrote about her. A routine holds only her week's fixed points: things that \
+        "You draft the weekly routine of a fictional character from what their author \
+         wrote about them. A routine holds only the character's fixed points in a week: things that \
          happen at a set time on given weekdays, such as classes, shifts, practice, a \
          lesson, a standing dinner, a service. Leave out sleep, meals, chores and free \
          time; those are filled in from time-use data. Draft only what the text says \
-         or clearly implies for someone like her, and nothing for a week the text does \
+         or clearly implies for someone like them, and nothing for a week the text does \
          not support; an empty list is a fine answer.\n\n\
          Answer with JSON only: {{\"anchors\": [...]}}, at most {MAX_DRAFTED}. Each \
          anchor has:\n\
@@ -62,7 +62,7 @@ fn system() -> String {
          - \"at\": the start, on a 24-hour clock, as HH:MM\n\
          - \"minutes\": how long it lasts, 5 to 1440\n\
          - \"chance\": how often it really happens, above 0 and at most 1: 1 for a \
-         fixed commitment, lower for a habit she sometimes skips\n\
+         fixed commitment, lower for a habit they sometimes skip\n\
          Two anchors with chance 1 must not overlap.",
         activities = activities.join(", "),
     )
@@ -113,7 +113,7 @@ pub fn check(p: &Persona) -> Result<()> {
     if p.state.origin == Origin::ModelUntrusted {
         bail!(
             "`{}` was written by a run that read untrusted content, so a routine \
-             drafted from her would carry it into her days; write her routine by hand \
+             drafted from them would carry it into their days; write their routine by hand \
              (`mecha persona routine edit {}`)",
             p.name,
             p.name

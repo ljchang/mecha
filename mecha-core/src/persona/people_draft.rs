@@ -71,10 +71,10 @@ fn system() -> String {
         .collect();
     format!(
         "You read what an author wrote about a fictional character and list the people \
-         it names in her life: family, partners, friends, colleagues, neighbours, anyone \
+         it names in the character's life: family, partners, friends, colleagues, neighbours, anyone \
          the text gives a name or a clear role. List only people the text names or \
          clearly describes; invent no one and add nothing the text does not say. \
-         Never list her, and never the reader she talks to.\n\n\
+         Never list the character, and never the reader they talk to.\n\n\
          Answer with JSON only: {{\"people\": [...]}}, at most {MAX_PROPOSED}. Each \
          person has:\n\
          - \"name\": what the text calls them, at most {MAX_NAME} characters; a role \
@@ -87,7 +87,7 @@ fn system() -> String {
          - \"tie\": one of {ties}, or null\n\
          - \"label\": the tie in the text's words (\"sister\"), at most {MAX_LABEL} \
          characters, or null\n\
-         - \"layer\": how close they are, 5 (her closest few), 15, 50 or 150, or null \
+         - \"layer\": how close they are, 5 (their closest few), 15, 50 or 150, or null \
          when the text does not say",
         ties = ties.join(", "),
     )
