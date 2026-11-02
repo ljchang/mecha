@@ -1141,7 +1141,7 @@ impl Network {
 pub fn markdown(n: &Network) -> String {
     let mut out = String::from(
         "<!-- Rendered from world.db after every change; edits here are not read back.\n     \
-         `mecha persona people` and the People tab change her network. -->\n\n# Her people\n",
+         `mecha persona people` and the People tab change their network. -->\n\n# Their people\n",
     );
     let mut by_layer: BTreeMap<Option<Layer>, Vec<String>> = BTreeMap::new();
     let mut ended: Vec<String> = Vec::new();

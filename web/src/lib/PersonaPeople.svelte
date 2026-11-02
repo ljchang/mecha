@@ -45,7 +45,7 @@
       .map((ring) => [ring, nodes.filter((n) => n.ring === ring)])
       .filter(([, ns]) => ns.length),
   );
-  const ringName = (ring) => (ring === 'none' ? 'Not placed' : ring === 'ended' ? 'No longer in her life' : `Closest ${ring}`);
+  const ringName = (ring) => (ring === 'none' ? 'Not placed' : ring === 'ended' ? 'No longer in their life' : `Closest ${ring}`);
   const tieWord = (edge) => edge?.label ?? PEOPLE_TIES.find(([k]) => k === edge?.tie)?.[1] ?? null;
   // A timeline in the order things happened: dated first by date, undated
   // by when they were recorded.
@@ -124,7 +124,7 @@
     proposing = false;
     if (ok) {
       tickAll();
-      if (data.proposed === 0) proposalNote = 'Her model found no one named in identity.md.';
+      if (data.proposed === 0) proposalNote = 'Their model found no one named in identity.md.';
     }
   }
 
@@ -256,7 +256,7 @@
       {#if past}<button class="linkbtn" disabled={busy} onclick={backToNow}>Back to now</button>{/if}
     </div>
     {#if past}
-      <p class="pnote pastnote">Her people as they were at the end of {data.as_of}, from what is recorded as having happened by then. Read only.</p>
+      <p class="pnote pastnote">Their people as they were at the end of {data.as_of}, from what is recorded as having happened by then. Read only.</p>
     {/if}
 
     {#if !past}
@@ -290,7 +290,7 @@
       {:else}
         <div class="pacts">
           <button class="linkbtn" disabled={busy || proposing} onclick={propose}>
-            {proposing ? 'Reading identity.md…' : 'Propose her people from identity.md'}
+            {proposing ? 'Reading identity.md…' : 'Propose their people from identity.md'}
           </button>
         </div>
       {/if}
@@ -298,12 +298,12 @@
     {/if}
     {#if !past && data.overlap?.length}
       <div class="pnote">
-        identity.md still names people who now live in her network. Edit these lines on her Identity tab so each lives in one place:
+        identity.md still names people who now live in their network. Edit these lines on the Who they are tab so each lives in one place:
         <ul class="overlap">{#each data.overlap as o}<li><span class="lno">{o.line}</span> {o.text}</li>{/each}</ul>
       </div>
     {/if}
 
-    <svg class="rings" viewBox="-100 -100 200 200" role="img" aria-label="Her people in rings by closeness, her at the centre">
+    <svg class="rings" viewBox="-100 -100 200 200" role="img" aria-label="Their people in rings by closeness, the persona at the centre">
       {#each PEOPLE_LAYERS as l}<circle class="ring" r={RINGS[l]} />{/each}
       <circle class="ring dashed" r={RINGS.none} />
       <circle class="band" r={RINGS.ended} />
@@ -316,7 +316,7 @@
       {#each nodes as n (n.id)}
         <line class="spoke {n.valence ?? ''}" class:paused={n.status === 'paused'} class:ended={n.status === 'ended'} x1="0" y1="0" x2={n.x} y2={n.y} />
       {/each}
-      <circle class="her" r="10" />
+      <circle class="self" r="10" />
       <text class="herini" y="3.2">{initials(display || name)}</text>
       {#each nodes as n (n.id)}
         <g class="node" class:sel={picked === n.id} class:ended={n.status === 'ended'} transform="translate({n.x} {n.y})"
@@ -341,7 +341,7 @@
     </div>
 
     {#if !people.length}
-      <p class="pnote">No one yet. Add the people in her life below, or propose them from identity.md: <code>mecha persona people propose {name}</code>.</p>
+      <p class="pnote">No one yet. Add the people in their life below, or propose them from identity.md: <code>mecha persona people propose {name}</code>.</p>
     {/if}
 
     <!-- The same people as a list: a tap target on any screen, and the way in
@@ -377,7 +377,7 @@
           <div class="warnline">
             {#if person.edge.unreadable}{person.edge.unreadable} event{person.edge.unreadable === 1 ? '' : 's'} this version cannot read.{/if}
             {#if person.edge.unclean}Some of it came from a source that is not clean.{/if}
-            This tie is kept out of her chats until it reads whole.
+            This tie is kept out of their chats until it reads whole.
           </div>
         {/if}
 
@@ -405,7 +405,7 @@
           <input bind:value={newEvent.on} placeholder="when: 2019, summer 2019, 2019-06" disabled={busy} aria-label="When" />
           <input bind:value={newEvent.context} placeholder="what it was about (a line)" disabled={busy} aria-label="What it was about" />
           <select bind:value={newEvent.with} disabled={busy} aria-label="Between them and">
-            <option value="">between her and {person.name}</option>
+            <option value="">between them and {person.name}</option>
             {#each people.filter((p) => p.id !== person.id) as p (p.id)}<option value={p.id}>between {person.name} and {p.name}</option>{/each}
           </select>
           <select bind:value={newEvent.tie} disabled={busy} aria-label="The tie, if it changed">
@@ -422,7 +422,7 @@
         <div class="pacts">
           {#if !editing}<button class="linkbtn" disabled={busy} onclick={startEdit}>Edit who they are</button>{/if}
           {#if !removing}
-            <button class="linkbtn" disabled={busy} onclick={() => (removing = true)}>Remove from her network…</button>
+            <button class="linkbtn" disabled={busy} onclick={() => (removing = true)}>Remove from their network…</button>
           {:else}
             <span class="pnote">Everything recorded with {person.name} goes too.</span>
             <button class="abtn danger" disabled={busy} onclick={remove}>Remove {person.name}</button>
@@ -433,7 +433,7 @@
           <div class="pform">
             <input bind:value={edit.name} placeholder="name" disabled={busy} aria-label="Name" />
             <input bind:value={edit.aliases} placeholder="also called (comma separated)" disabled={busy} aria-label="Also called" />
-            <input bind:value={edit.role} placeholder="role in her life: older sister" disabled={busy} aria-label="Role" />
+            <input bind:value={edit.role} placeholder="role in their life: older sister" disabled={busy} aria-label="Role" />
             <input bind:value={edit.description} placeholder="a line about them" disabled={busy} aria-label="A line about them" />
             <select bind:value={edit.character} disabled={busy} aria-label="Portrait">
               <option value="">no portrait</option>
@@ -451,20 +451,20 @@
     {#if past}
       <!-- Nothing is added while looking back. -->
     {:else if !adding}
-      <button class="linkbtn" onclick={() => (adding = true)}>+ Add someone to her life</button>
+      <button class="linkbtn" onclick={() => (adding = true)}>+ Add someone to their life</button>
     {:else}
       <div class="pcard">
-        <div class="psec">Someone in her life</div>
+        <div class="psec">Someone in their life</div>
         <div class="pform">
           <input bind:value={newPerson.name} placeholder="name" disabled={busy} aria-label="Name" />
-          <input bind:value={newPerson.role} placeholder="role in her life: older sister" disabled={busy} aria-label="Role" />
+          <input bind:value={newPerson.role} placeholder="role in their life: older sister" disabled={busy} aria-label="Role" />
           <input bind:value={newPerson.description} placeholder="a line about them" disabled={busy} aria-label="A line about them" />
           <input bind:value={newPerson.aliases} placeholder="also called (comma separated)" disabled={busy} aria-label="Also called" />
           <select bind:value={newPerson.tie} disabled={busy} aria-label="Tie">
             <option value="">tie</option>
             {#each PEOPLE_TIES as [id, label]}<option value={id}>{label}</option>{/each}
           </select>
-          <input bind:value={newPerson.label} placeholder="the tie in her words: sister" disabled={busy} aria-label="The tie in her words" />
+          <input bind:value={newPerson.label} placeholder="the tie in their words: sister" disabled={busy} aria-label="The tie in their words" />
           <select bind:value={newPerson.layer} disabled={busy} aria-label="How close">
             <option value="">how close</option>
             {#each PEOPLE_LAYERS as l}<option value={l}>closest {l}</option>{/each}
@@ -503,7 +503,7 @@
   .tie { stroke: var(--text-muted); stroke-width: 0.45; opacity: 0.5; }
   .tie.tense { stroke: #c9894a; opacity: 0.85; }
   .tie.ended { opacity: 0.2; }
-  .her { fill: var(--accent-400); }
+  .self { fill: var(--accent-400); }
   .herini { font-size: 7px; text-anchor: middle; fill: var(--surface); font-weight: 600; pointer-events: none; }
   .node { cursor: pointer; outline: none; }
   .node.ended { opacity: 0.45; }

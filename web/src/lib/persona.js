@@ -134,6 +134,22 @@ export const OWNER_FILES = [
   ['settings', 'Settings'],
 ];
 
+// The persona editor's tabs, in order: its two prose files, then each part
+// that is on (`shows`, from the list: memories, the week and the people,
+// those two behind the world feature too), then Settings, always last
+// (owner, 2026-11-02). A row from a server that says nothing shows them all.
+export function personaTabs(shows, world) {
+  const on = (k) => shows?.[k] ?? true;
+  return [
+    'identity',
+    'motivation',
+    ...(on('memories') ? ['memories'] : []),
+    ...(world && on('week') ? ['week'] : []),
+    ...(world && on('people') ? ['people'] : []),
+    'settings',
+  ];
+}
+
 // One of a persona's files, by its listed name: to download (`file`) or to
 // read as text (`text`). The server finds it in the persona's own listing.
 export function sourceFileUrl(name, file, what, token = null) {
@@ -828,9 +844,9 @@ const MIDNIGHT = 24 * 60;
 
 // Why she has no days, said with its fix; the server's `why` is the CLI's.
 export const WEEK_ABSENT = {
-  off: 'Her days are off for this persona. Turn on Her days in the Life section of her Settings.',
-  no_routine: 'She has no routine yet. Pick her kind of week below and her days are drawn from it.',
-  no_cell: 'Her routine names no kind of week yet. Pick one below and her days are drawn from it.',
+  off: 'Their days are off for this persona. Turn on Their days in the Life section of their Settings.',
+  no_routine: 'They have no routine yet. Pick their kind of week below and their days are drawn from it.',
+  no_cell: 'Their routine names no kind of week yet. Pick one below and their days are drawn from it.',
 };
 
 // Activities in a few groups the week view colours by.
@@ -922,7 +938,7 @@ export const PEOPLE_EVENTS = [
 export const PEOPLE_LAYERS = [5, 15, 50, 150];
 
 export const PEOPLE_ABSENT = {
-  off: 'Her people are off for this persona. Turn on Her people in the Life section of her Settings.',
+  off: 'Their people are off for this persona. Turn on Their people in the Life section of their Settings.',
 };
 
 // Each ring's radius on a 200-unit board, her at the centre: the four
@@ -947,7 +963,7 @@ export function acceptedLine(a) {
   if (!a) return '';
   const parts = [];
   if (a.added?.length) parts.push(`Added ${a.added.join(', ')}.`);
-  if (a.already?.length) parts.push(`${a.already.join(', ')} ${a.already.length === 1 ? 'was' : 'were'} already in her network.`);
+  if (a.already?.length) parts.push(`${a.already.join(', ')} ${a.already.length === 1 ? 'was' : 'were'} already in their network.`);
   if (a.waiting) parts.push(`${a.waiting} more still ${a.waiting === 1 ? 'waits' : 'wait'} below.`);
   return parts.join(' ') || 'Nothing to add.';
 }

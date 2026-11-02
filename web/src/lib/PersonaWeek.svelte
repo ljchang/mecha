@@ -111,7 +111,7 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
       picked = null;
-      if (data.drafted === 0) draftNote = 'Her model found no fixed point in her week to draft from what you wrote of her.';
+      if (data.drafted === 0) draftNote = 'Their model found no fixed point in their week to draft from what you wrote of them.';
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -208,12 +208,12 @@
           {#if draft.anchors?.length}
             <ul class="wdlist">{#each draft.anchors as a}<li>{anchorLine(a)}</li>{/each}</ul>
           {:else if draft.anchors}
-            <div class="warnline">It holds no anchors, so approving it would empty her week. Edit it or discard it.</div>
+            <div class="warnline">It holds no anchors, so approving it would empty their week. Edit it or discard it.</div>
           {:else}
             <div class="warnline">It does not load, so it cannot be approved yet: {draft.error}</div>
           {/if}
-          {#if draft.kept_cell}<p class="wnote">Approving keeps her kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
-          {#if data.routine.digest}<p class="wnote">Approving replaces the anchors her routine has now; the old routine is kept beside it.</p>{/if}
+          {#if draft.kept_cell}<p class="wnote">Approving keeps their kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
+          {#if data.routine.digest}<p class="wnote">Approving replaces the anchors their routine has now; the old routine is kept beside it.</p>{/if}
           <div class="wdacts">
             <button class="abtn" disabled={acting || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
             <button class="linkbtn" disabled={acting} onclick={() => (draftText = draft.text)}>Edit</button>
@@ -222,7 +222,7 @@
         {/if}
       {:else}
         <button class="abtn" disabled={drafting || saving || !!data.routine.undraftable} onclick={draftWeek}>
-          {drafting ? 'Drafting her week…' : 'Draft her week from what you wrote'}
+          {drafting ? 'Drafting their week…' : 'Draft their week from what you wrote'}
         </button>
         {#if data.routine.undraftable}<p class="wnote">{data.routine.undraftable}</p>{/if}
         {#if draftNote}<p class="wnote">{draftNote}</p>{/if}
@@ -281,7 +281,7 @@
       </div>
     </div>
     {#if unavailable}
-      <div class="warnline">The days not drawn wait on her routine: {unavailable}</div>
+      <div class="warnline">The days not drawn wait on their routine: {unavailable}</div>
     {/if}
     <div class="wlegend">
       {#each WEEK_GROUPS as [group, label]}<span class="lchip"><span class="swatch {group}"></span>{label}</span>{/each}
@@ -292,7 +292,7 @@
       </div>
     {/if}
     <div class="barnote">
-      Drawn from her routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
+      Drawn from their routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
     </div>
   {/if}
   <button class="abtn" onclick={() => onclose?.()}>Close</button>
