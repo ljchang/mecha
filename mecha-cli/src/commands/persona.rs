@@ -1159,10 +1159,14 @@ fn run_with(
             let echoes = persona::echo::echoes(&store.sessions_dir(&p.name), since);
             let initiative = read_initiative(dir, &store, p, since);
             if json {
-                // `null` when unreadable — never an empty reading.
+                // `null` when unreadable — never an empty reading — with
+                // why beside it, as the text names it (review of #808).
+                let why = |e: Option<&anyhow::Error>| e.map(|e| format!("{e:#}"));
                 let out = serde_json::json!({
                     "name": p.name,
                     "days": days,
+                    "echo_error": why(echoes.as_ref().err()),
+                    "initiative_error": why(initiative.as_ref().err()),
                     "echo": echoes.ok(),
                     "initiative": initiative.ok(),
                 });
