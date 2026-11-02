@@ -274,8 +274,16 @@ both declared by the same rule.
 
 ### 4.4 When it runs
 
-- Header rules: `mecha mail rule apply --headers`, on its own five-minute
-  timer. No model, so no `model-idle.sh` gate.
+- Header rules' **mailbox and record actions**: `mecha mail rule apply
+  --headers`, on its own five-minute timer. No model, so no `model-idle.sh`
+  gate.
+- **Every outbound action, from any rule**, is decided in one place: the
+  end of the `classify` pass, after every rule has been evaluated for the
+  thread. That is the only way §4.3's "first by priority" can hold — a
+  header rule's forward on the five-minute timer would otherwise have sent
+  before a higher-priority description rule was even read. It matters on the
+  common path, since §5.2 pushes outbound rules toward header matchers. The
+  lag below therefore covers forwards and sends as well as replies.
 - Description rules: at the end of each `mecha mail classify` pass (05:30 UTC
   nightly, every 20 minutes through the working day). An automatic reply can
   therefore lag its email by up to a classification interval, and overnight
@@ -283,7 +291,13 @@ both declared by the same rule.
   and says so in the UI rather than promising "instant".
 
 **Idempotent by key.** Every action is keyed `(rule, account,
-provider message id, action index)` in the ledger before it executes — the
+provider message id, action identity)` in the ledger before it executes. The
+action's identity is its `do` verb plus a digest of its own `[[action]]`
+table, **never its position**: an offset re-maps when an action is inserted
+or reordered, so an action that already ran would find no row under its new
+index and run again — a receipt sent to finance twice. Keyed by identity, an
+untouched action keeps its row across any reordering, and an edited one is
+honestly a new action that has not run. The message half is the
 provider's own immutable id (`Email::provider_id`, what `get_message` takes),
 **never the RFC 5322 `Message-ID`**, which is sender-written and optional
 here: a reused one would mark another message's actions as already done, and
@@ -351,9 +365,16 @@ account as reached by known correspondents alone). A rule whose matcher is
 becomes "from a known set, to a specific person". The residual the owner
 accepts by enabling such a rule is then the narrow one: a listed sender's
 real account sending something false, with the ledger and the digest showing
-every forward that went. `reply` needs no such key: its recipient is the
-sender, and its payload is the owner's fixed words or a closed-context draft
-(§5.1, §6.3).
+every forward that went.
+
+**A drafted reply (`draft_with`, §6.3) needs the same key to run in `auto`.**
+Only a *template* `reply` is exempt, and on §5.1's argument alone: its payload
+is the owner's fixed words, so an attacker-chosen recipient costs one bit. A
+drafted reply is model prose over the thread and every `shareable` file, and
+injected text in the triggering message steers which parts of those files it
+quotes back. §6.3's closed context bounds *what could* leave; the sender
+condition bounds *who can make it leave*, and the action with the widest
+steerable payload should not be the one without it.
 
 ### 5.3 `send` with typed fields — extract, ground, render
 
@@ -382,10 +403,12 @@ becoming a spam reflector or joining a mail loop. All are checked in the
 harness, all are recorded on the ledger row when they fire (`skipped: <guard>`),
 and none is configurable off:
 
-- **RFC 3834.** No reply to a message carrying `Auto-Submitted` other than
-  `no`, `Precedence: bulk | list | junk`, `List-Id` or `List-Unsubscribe`, a
-  `prefilter` hit, a `noreply`/`mailer-daemon`/`postmaster` sender, or any of
-  the owner's own addresses.
+- **RFC 3834.** No reply to a message whose `Auto-Submitted` has any value
+  but `no`. And no reply, whatever `Auto-Submitted` says, to a message
+  carrying `Precedence: bulk | list | junk`, a `List-Id` or a
+  `List-Unsubscribe`, to a `prefilter` hit, to a
+  `noreply`/`mailer-daemon`/`postmaster` sender, or to any of the owner's own
+  addresses.
 - **Authenticated sender.** `Authentication-Results` must show DMARC `pass`
   aligned with the `From` domain. A forged `From` is how an auto-responder
   sends unsolicited mail to a victim; a message that fails goes to `propose`.
@@ -640,6 +663,16 @@ real and worth serving, and the safe shape exists already in
   it — and installs it. **Installation is always into `shadow`**, whatever the
   proposal says, and an armed proposal is labelled as one. The accept names
   the digest the owner was shown.
+- **The recorded `Origin` gates what can send.** The confirmation pass
+  (§4.2) is sound only because its frame is the owner's words, and a proposal
+  drafted after reading mail installs a description whose origin is
+  `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
+  enter `auto` while the rule's description or any template it sends is not
+  `Clean`.** The rescue is `Reflexion::provenance`'s existing move: the
+  installed record keeps a digest of each proposed text, and once the owner
+  has changed one, it is the owner's words and reads `Clean`. The approval
+  screen says which text is holding the rule back and opens it for editing.
+  Shadow bounds when a proposed rule acts; this bounds what it may say.
 
 So "write me a rule that answers prerequisite questions with the usual
 reply" works from a chat, ends as a rule in shadow mode, and the first
@@ -675,7 +708,10 @@ rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 **P1 — the store, header rules, mailbox actions.** `rule.toml`, approvals,
 the ledger, `off`/`shadow`/`propose`/`auto` for the mailbox and record
 groups, the five-minute timer, `mecha mail rule add | list | show | mode |
-test | ledger | undo`, the feature registry entry (off by default), and
+test | ledger | undo`, the feature registry entry (off by default) — through
+`ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
+the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
+and
 `mecha doctor` reporting an unreadable store or a lapsed approval. **Covers
 GitHub notifications and junk with no model involved.**
 
@@ -743,11 +779,13 @@ Sources: [Inbox Zero security and data](https://docs.getinboxzero.com/essentials
 
 One is the owner's:
 
-0. **Automatic forwards and sends need a sender-constrained matcher (§5.2).**
-   The design's default, found in review: without it, any stranger with a
-   domain and a plausible invoice reaches finance under the owner's name. The
-   alternative is to accept that residual knowingly and allow `describe`-only
-   matchers in `auto`. The default stands unless the owner rules otherwise.
+0. **Automatic forwards, sends and drafted replies need a sender-constrained
+   matcher (§5.2).** The design's default, found in review: without it, any
+   stranger with a domain and a plausible invoice reaches finance under the
+   owner's name, or steers a drafted reply's quotes from the `shareable`
+   files. Template replies are exempt. The alternative is to accept that
+   residual knowingly and allow `describe`-only matchers in `auto`. The
+   default stands unless the owner rules otherwise.
 
 The rest are answered by measurement or by a decision made elsewhere:
 
