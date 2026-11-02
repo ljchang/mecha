@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13); on five held-out tasks, M5 passed 32/40 against M4's 27/40, with no `open()` refusal left. R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R13 (2026-11-02): a program lists the workspace through `fs_list` (§11). R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13); on five held-out tasks, M5 passed 32/40 against M4's 27/40, with no `open()` refusal left. R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -182,9 +182,9 @@ parse, never its raw output, and a provider's failure by its class, never
 its body (§4).
 
 **A program that reaches for the operating system is told where its data
-is.** (R12: `open(path)` in text-read mode is answered through `fs_read`
-when the program has it; the rest of this paragraph is what is still
-refused.) An `os` call or any other `open()` is refused with a `PermissionError` that
+is.** (R12 and R13: `open(path)` in text-read mode is answered through
+`fs_read`, and a listing through `fs_list`, when the program has them; the
+rest of this paragraph is what is still refused.) An `os` call or any other `open()` is refused with a `PermissionError` that
 says a program has no files, environment, network or clock, leads with
 `fs_read` and `fs_list` when the program has them (19 of M2's 27 first
 programs failed on `open()` or `os.listdir`), and lists the functions it
@@ -1255,6 +1255,27 @@ with your recs"), except R4, which waited on M1 and was ruled on
   read a spill file's absolute path inside the workspace. A read through
   `open()` is two suspensions against one tool read, so the suspension
   backstop counts tool reads twice.
+- **R13. A program lists the workspace through `fs_list`** (the owner,
+  2026-11-02, after M5, §13). In a program given `fs_list`, monty's
+  listing calls are answered by `fs_list`, as R12 answers a read with
+  `fs_read`: `os.listdir` and `Path.iterdir` with one call, `os.walk`,
+  `os.scandir` and `Path.glob` and `rglob` (one `Path.scan` of the
+  subtree, which monty walks or globs itself) with one call per directory
+  the scan reaches, breadth first, and `os.path.exists`, `isfile` and
+  `isdir` from the parent's listing (a parent that cannot be listed is a
+  path that is not there). Each call meets the tool's guard, limits and
+  taint. A path a walk hands back opens through R12. The description
+  offers it only where `fs_list` hands out names. Walking a tree with
+  `os`, `glob` or `subprocess` was 14 of M5's 29 raised programs. Two
+  divergences from Python, on purpose: a directory a scan cannot list
+  raises rather than being skipped (`os.walk`'s `onerror=None`), so a
+  short walk is never a silent one; and `fs_list` does not follow links,
+  so a link to a directory is listed as a file. A probe answers `False`
+  only when `fs_list` ran and failed; one the gate refuses (a path outside
+  the jail, a hook, a denial) raises, as do a spent limit and a stop. A
+  probe in a directory the program has already listed answers from that
+  listing, without another call, and a scan past 131,072 entries raises a
+  `LimitError`.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
