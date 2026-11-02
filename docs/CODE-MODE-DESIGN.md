@@ -1694,3 +1694,51 @@ none.
 touch; `key=d.get`, a monty gap a description line did not move; and
 programs that reach for `os`, `glob` or `subprocess` to walk a tree, which
 the refusal answers with `fs_list` at the cost of a turn.
+
+**M6, the Claude comparison, and the grade's second form (2026-11-02).**
+M6 reran M4's tasks on R13's build (5e5b3c47a: listing through `fs_list`,
+and a hint for a method taken as a value), with nothing else changed. The
+same tasks were run four times each with Claude (`claude-opus-5`) as the
+provider, which needed #813 first: the graph server's `kg_pending` has a
+top-level `anyOf` in its schema, which the Messages API refuses for the
+whole request.
+
+**The grade's second form**, fixed before M6 ran (the script's sha256
+begins `d93ee9f7`): the first counted any extra name in an answer, so an
+answer that named the docstring decoy only to say it is not a definition
+failed. Claude's answers did that in every source-tree run, and in two
+services runs named the soft dependencies only to exclude them. Now, for
+those two tasks, an answer with a table answers in it, and only names in
+its rows count; an answer without one claims a name on any line that does
+not mark it excluded. Its wording was fitted to answers already read, so
+it was checked against hand grades of every M4, M5 and Claude answer, and
+agrees with each; M6 is the first set it graded unseen.
+
+| | M4 | M5 (R12) | M6 (R13) | Claude, 4 runs each |
+|---|---|---|---|---|
+| passed, second form | 30/40 | 32/40 | 31/40 | 20/20 |
+| passed, first form | 27/40 | 32/40 | | 14/20 |
+| programs that raised | 43 of 108 | 29 of 79 | 14 of 61 | 0 of 41 |
+| first program raised | 22 of 40 | 17 of 40 | 12 of 40 | 0 of 20 |
+
+**What M6 changed.** No walk was refused (M5: 14), and programs that
+raised fell from 37% to 23%. `key=d.get` still raised 8 times, all in the
+CSV task's first programs, and the hint was on every one; each run was
+right on its next program, as in M5. The source-tree task is still 0/8:
+seven runs listed the docstring decoy as a definition, and the eighth was
+silent. Its programs walked all 64 files and opened each with `open(path,
+'r', errors='ignore')`, which monty 1.4 refuses with a `TypeError` before
+any host call; a bare `except` swallowed every one, and the model answered
+that no file contained the word. No shim answers a call that never reaches
+the host, so the description now says `open` takes no `errors=`. One patch
+run summed its lines wrong.
+
+**What the comparison says.** With the same harness, tools and tasks,
+Claude answered all 20 correctly and none of its 41 programs raised. It
+read the decoy for what it is every time ("inside a `DOC` string literal,
+not real code"), where the local model listed it as a definition in 7 of 8
+runs in M5 and in M6. So what remains on these tasks is the local model's
+reading and its first-draft habits, not the harness: the lever left is the
+model, a stronger one or a trained one, and Claude's runs in this harness
+are the shape of the trajectories `POST-TRAINING-RESEARCH.md` §7 would
+train on.
