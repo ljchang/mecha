@@ -1,6 +1,6 @@
 // The People tab's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { ENDPOINTS, personaUrl, personUrl, ringLayout, RINGS, initials, eventLine, personBody, PEOPLE_TIES, PEOPLE_EVENTS, PEOPLE_LAYERS } from '../src/lib/persona.js';
+import { ENDPOINTS, personaUrl, personUrl, peopleUrl, acceptedLine, ringLayout, RINGS, initials, eventLine, personBody, PEOPLE_TIES, PEOPLE_EVENTS, PEOPLE_LAYERS } from '../src/lib/persona.js';
 
 const ID = 'a'.repeat(32);
 const EV = 'b'.repeat(32);
@@ -62,4 +62,12 @@ assert.deepEqual(personBody({ role: '' }), { role: '' }, 'an empty value clears,
 assert.equal(PEOPLE_TIES.length, 9);
 assert.equal(PEOPLE_EVENTS.length, 8);
 assert.deepEqual(PEOPLE_LAYERS, [5, 15, 50, 150]);
+// The time slider's read, and the proposal doors.
+assert.equal(peopleUrl('mara'), '/api/personas/mara/people');
+assert.equal(peopleUrl('mara', '2025-01-31', 'tok'), '/api/personas/mara/people?unlock=tok&as_of=2025-01-31');
+assert.throws(() => peopleUrl('mara', 'last spring'), /not a date/);
+assert.ok(ENDPOINTS.includes('/api/personas/X/people/proposal'));
+assert.ok(ENDPOINTS.includes('/api/personas/X/people/proposal/accept'));
+assert.equal(acceptedLine({ added: ['Theo'], already: ['Ines'], waiting: 1 }), 'Added Theo. Ines was already in her network. 1 more still waits below.');
+assert.equal(acceptedLine({ added: [], already: [], waiting: 0 }), 'Nothing to add.');
 console.log('persona-people: ok');
