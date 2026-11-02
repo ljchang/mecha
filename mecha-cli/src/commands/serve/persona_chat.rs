@@ -2218,6 +2218,23 @@ impl PersonaChats {
         let pdir = self.store.join(&p.name);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let bad = |e: anyhow::Error| network_refusal(e);
+        // Writes honour the lock as reads do (`library.rs`): a portrait this
+        // viewer may not see answers exactly as one that does not exist, and
+        // nothing is written, so the answer never says which locked names
+        // there are (review of #803).
+        let unlocked = library.unlocked(body.unlock.as_deref());
+        let visible = |c: &Option<String>| -> Result<(), Refusal> {
+            let Some(c) = c.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+                return Ok(());
+            };
+            match lib.get(mecha_core::imagelib::Kind::Character, c) {
+                Some(e) if !e.locked || unlocked => Ok(()),
+                _ => Err(Refusal::Bad(format!(
+                    "there is no character `{c}` in the image library"
+                ))),
+            }
+        };
+        visible(&body.character)?;
         let tie = |t: &Option<String>| -> Result<Option<Tie>, Refusal> {
             match t.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                 None => Ok(None),
@@ -9457,6 +9474,41 @@ mod tests {
         add("Ines", Some("flourhand"), None).unwrap();
         let got = add("Theo", Some("veiledone"), Some(&token)).unwrap();
         assert_eq!(got["people"].as_array().unwrap().len(), 2);
+        // From a locked page, a locked portrait answers exactly as a name
+        // that does not exist, and nothing is written: the answer never
+        // says which locked names there are (review of #803).
+        let refused = |r: Result<serde_json::Value, Refusal>| match r {
+            Err(Refusal::Bad(m)) => m,
+            other => panic!("not refused as bad input: {:?}", other.map(|_| ())),
+        };
+        let locked_one = refused(add("Zed", Some("veiledone"), None));
+        let absent_one = refused(add("Zed", Some("nosuchone"), None));
+        assert_eq!(
+            locked_one.replace("veiledone", "X"),
+            absent_one.replace("nosuchone", "X")
+        );
+        let ines_id = ps.people(&w.library, "mara", None).unwrap()["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Ines")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let edited = refused(ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(ines_id.clone()),
+            &body(&|b| b.character = Some("veiledone".into())),
+        ));
+        assert!(edited.contains("no character"), "{edited}");
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(n.people.len(), 2, "a refused add wrote someone");
+        assert_eq!(
+            n.person(&ines_id).unwrap().character.as_deref(),
+            Some("flourhand")
+        );
         // A word outside a closed set, or a portrait the library will not
         // give, is refused as bad input.
         assert!(matches!(

@@ -1881,10 +1881,12 @@ module.
   `remove_event` / `remove_person`, so the portrait check and the
   text checks cannot be skipped from the page. A store failure is the
   server's (`network::is_store_error`), anything else is bad input. Locks
-  carry over: a person's character is named, and its portrait shown, only
-  for an entry that loads and is not locked or with a live unlock; on a
-  locked page both are null, and an edit that leaves the field out keeps
-  the link.
+  carry over both ways: a person's character is named, and its portrait
+  shown, only for an entry that loads and is not locked or with a live
+  unlock; on a locked page both are null, and an edit that leaves the
+  field out keeps the link. A write naming a character the viewer may not
+  see answers exactly as an absent one and writes nothing, so the answer
+  never says which locked names exist.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
