@@ -166,7 +166,7 @@ backtracking `re`):
 
 | Host function | Returns | Note |
 |---|---|---|
-| `grep(text, pattern)` | list of str | the lines `pattern` matches anywhere in, in order, at most 4,096 |
+| `grep(text, pattern)` | list of str | the lines `pattern` matches anywhere in, in order; bounded as `lines` is (131,072) |
 | `count(text, pattern)` | int | |
 | `find(text, pattern)` | list of [start, end] | character offsets, as Python's indexing counts them; at most 4,096 pairs |
 | `lines(text)`, `split(text, pattern)`, `chunks(text, n, overlap=0)` | list of str | `n` is each chunk's size in characters, at least 1; at most 131,072 pieces, and a `chunks` whose overlap repeats more text than the host-byte limit raises, both before anything is built |

@@ -769,9 +769,13 @@ fn grep_returns_the_matching_lines() {
         op(&mut run, "grep", vec![h.clone(), json!("no such thing")]).unwrap(),
         json!([])
     );
-    let many = "x\n".repeat(defaults::FIND_MATCHES + 1);
+    // Bounded as `lines` is: a 23,000-line log's `ERROR` lines are fine.
+    let log = "x\n".repeat(23_000);
+    let hits = op(&mut run, "grep", vec![json!(log), json!("x")]).unwrap();
+    assert_eq!(hits.as_array().unwrap().len(), 23_000);
+    let many = "x\n".repeat(defaults::PIECES + 1);
     let err = op(&mut run, "grep", vec![json!(many), json!("x")]).unwrap_err();
-    assert!(err.starts_with("LimitError: grep matches:"), "{err}");
+    assert!(err.starts_with("LimitError: pieces: `grep`"), "{err}");
 }
 
 #[test]
