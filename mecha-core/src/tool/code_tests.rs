@@ -1412,6 +1412,54 @@ async fn a_read_is_text_that_string_methods_work_on() {
     );
 }
 
+/// `max(d, key=d.get)` fails in monty 1.4 with "'dict' object has no
+/// attribute 'get'", though `d.get(k)` works; the result says why and what
+/// to write instead (M5: 9 programs, past the description's warning).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_method_taken_as_a_value_is_named() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "abc"));
+    let agent = with_code(vec![doc], interp);
+    let (d, _) = run(
+        &agent,
+        "import collections\nd = collections.defaultdict(int)\nd['a'] += 2\nprint(max(d, key=d.get))",
+    )
+    .await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(
+        d.content
+            .contains("[monty cannot use a method as a value (`.get` here"),
+        "{}",
+        d.content
+    );
+    // A method that is called, or an attribute a user's value lacks, is not
+    // monty's gap, and gets no hint.
+    let (d, _) = run(&agent, "d = {}\nprint(d.nope())").await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(!d.content.contains("method as a value"), "{}", d.content);
+    assert_eq!(
+        method_as_value(
+            "  x = max(d, key=d.get)\nAttributeError: 'dict' object has no attribute 'get'"
+        ),
+        Some("get")
+    );
+    assert_eq!(
+        method_as_value("  x = d.get(k)\nAttributeError: 'dict' object has no attribute 'get'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = p.getter\nAttributeError: 'Point' object has no attribute 'getter'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = d.gets\nAttributeError: 'dict' object has no attribute 'get'"),
+        None
+    );
+}
+
 /// A variable that takes a function's name, as `size = size(h)` did in M2,
 /// makes the next call fail with monty's "'int' object is not callable",
 /// which says nothing about why: the result names the function and the
@@ -1682,7 +1730,9 @@ fn only_the_builtin_listing_hands_a_program_names() {
             "each returns its result as a str (fs_read(path=...) returns the file's text, and \
              open(path) reads a file's text the same way, but cannot write; a read that fails \
              raises a RuntimeError, not a FileNotFoundError), \
-             except that fs_list returns a list of names (a directory's ends in /)."
+             except that fs_list returns a list of names (a directory's ends in /); \
+             os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
+             isfile and isdir list through fs_list the same way."
         ),
         "{builtin}"
     );
@@ -1734,7 +1784,8 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
     // With the file tools, the refusal leads with them: `open()` was how 19
     // of 27 first programs failed in M2, and alphabetically `fs_read` came
     // after `docs__*`, `document_read` and `find`. (A text `open()` is
-    // answered since R12, so the refusal is reached by `os` here.)
+    // answered since R12, and a listing since the walk, so the refusal is
+    // reached by `os.getenv` here.)
     let Some(interp) = monty().await else {
         return;
     };
@@ -1745,7 +1796,7 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
         ],
         interp,
     );
-    let (d, _) = run(&agent, "import os\nprint(os.listdir('notes'))").await;
+    let (d, _) = run(&agent, "import os\nprint(os.getenv('HOME'))").await;
     assert!(d.is_error, "{}", d.content);
     assert!(
         d.content.contains(

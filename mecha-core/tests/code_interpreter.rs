@@ -487,6 +487,94 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
     }
 }
 
+/// A program given `fs_list` walks the workspace the way Python does, and
+/// every listing is that tool's: `os.listdir`, `Path.iterdir`, `os.walk`,
+/// `glob` and `rglob`, and `os.path.exists`, `isfile` and `isdir`. A path
+/// a walk hands back opens again. Without `fs_list` they are refused.
+#[tokio::test]
+async fn a_walk_lists_through_fs_list_and_nothing_else() {
+    let Some(interp) = interpreter(Backstops::default()).await else {
+        return;
+    };
+    let tree = |c: &ExternalCall| -> Result<Value, HostRaise> {
+        let path = c.kwargs[0].1.as_str().unwrap_or("");
+        if c.name == "fs_read" {
+            return Ok(Value::from(format!("text of {path}")));
+        }
+        let names: &[&str] = match path {
+            "." => &["src/", "README.md"],
+            "src" => &["a.py", "b.txt", "sub/"],
+            "src/sub" => &["c.py"],
+            _ => {
+                return Err(HostRaise::tagged(
+                    Tag::ToolError,
+                    "`fs_list` returned an error: not found",
+                ))
+            }
+        };
+        Ok(Value::from(
+            names.iter().map(|n| Value::from(*n)).collect::<Vec<_>>(),
+        ))
+    };
+    for (src, want, lists) in [
+        ("print(sorted(os.listdir('src')))", "['a.py', 'b.txt', 'sub']", 1),
+        ("print(sorted(os.listdir()))", "['README.md', 'src']", 1),
+        (
+            "print(sorted(p.name for p in pathlib.Path('src').iterdir()))",
+            "['a.py', 'b.txt', 'sub']",
+            1,
+        ),
+        (
+            "n = 0\nfor root, dirs, files in os.walk('.'):\n    n += len(files)\nprint(n)",
+            "4",
+            3,
+        ),
+        (
+            "print(sorted(str(p) for p in pathlib.Path('.').rglob('*.py')))",
+            "['src/a.py', 'src/sub/c.py']",
+            3,
+        ),
+        (
+            "print(sorted(p.name for p in pathlib.Path('src').glob('*.py')))",
+            "['a.py']",
+            1,
+        ),
+        (
+            "print(os.path.exists('src/a.py'), os.path.isfile('src/sub'), os.path.isdir('src/sub'), os.path.exists('nope'), os.path.exists('/etc/x'))",
+            "True False True False False",
+            5,
+        ),
+        (
+            "for root, dirs, files in os.walk('src'):\n    for f in files:\n        if f == 'c.py':\n            print(open(os.path.join(root, f)).read())",
+            "text of src/sub/c.py",
+            2,
+        ),
+    ] {
+        let src = format!("import os, pathlib\n{src}");
+        let (f, calls) = run_with(&interp, &src, &["fs_list", "fs_read"], tree).await;
+        assert!(matches!(f.end, End::Complete { .. }), "{src}: {:?} {}", f.end, f.printed);
+        assert_eq!(f.printed.trim(), want, "{src}");
+        let listed = calls.iter().filter(|c| c.name == "fs_list").count();
+        assert_eq!(listed, lists, "{src}: {calls:?}");
+    }
+    // the path a walk was asked for reaches `fs_list` as `open` paths do
+    let (_, calls) = run_with(
+        &interp,
+        "import os\ntry:\n    os.listdir('/tmp/mecha-spill-1')\nexcept BaseException:\n    pass",
+        &["fs_list"],
+        tree,
+    )
+    .await;
+    assert_eq!(calls[0].kwargs[0].1, Value::from("/tmp/mecha-spill-1"));
+    // without `fs_list`, a walk is refused as before
+    let (f, calls) = run_with(&interp, "import os\nos.listdir('src')", &["fs_read"], tree).await;
+    assert!(calls.is_empty());
+    match f.end {
+        End::Raised(r) => assert_eq!(r.exc_type, "PermissionError"),
+        e => panic!("{e:?}"),
+    }
+}
+
 /// The second wall, measured on the live worker rather than read off an
 /// argv: the process running the program has no environment, no network
 /// namespace of ours, and a filesystem holding nothing but its binary.

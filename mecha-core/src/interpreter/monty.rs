@@ -27,7 +27,9 @@
 //!   sandbox fault (#791).
 //!   The one exception is a text read of a file by a program given `fs_read`
 //!   (`open(path)`, a `pathlib` `read_text`): it is answered by a host call
-//!   to `fs_read`, not by anything the worker can see (R12).
+//!   to `fs_read`, not by anything the worker can see (R12), and a listing
+//!   by a program given `fs_list` (`os.listdir`, `os.walk`, `glob`,
+//!   `os.path.exists`) is answered by `fs_list` calls the same way (R13).
 //!   A `NameLookup` (an undefined name) is answered `Undefined`. Registered
 //!   functions are globals, so no lookup is ever needed to reach one.
 //! - **`preflight` runs a program through the real confinement**, and a
@@ -57,11 +59,12 @@ use async_trait::async_trait;
 use monty_pool::{
     on_print_sync, Checkout, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent,
 };
+use monty_types::scan::{scan_reply, EntryInfo, ScanEntry};
 use monty_types::{
     CallArgs, ExcType, FileMode, MontyException, MontyFileHandle, MontyObject, NameLookupResult,
     NamedValues, ObjectRef, OsPolicy, ResourceLimits, SleepMode,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -613,6 +616,8 @@ struct MontyProgram {
     suspensions: u64,
     /// A call is waiting on the host.
     pending: bool,
+    /// A listing being answered through `fs_list`, between its calls.
+    walk: Option<Walk>,
     /// What ends the worker if mecha dies first, under Seatbelt. Dropped
     /// with the program, it runs until the worker has gone.
     watchdog: Option<Watchdog>,
@@ -636,6 +641,7 @@ impl MontyProgram {
             cancel,
             suspensions: 0,
             pending: false,
+            walk: None,
             watchdog: None,
         }
     }
@@ -837,6 +843,72 @@ impl MontyProgram {
                         }));
                     }
                 }
+                // A program given `fs_list` may list the workspace the way
+                // Python does: `os.listdir` and `Path.iterdir` arrive as
+                // `Path.iterdir`; `os.walk`, `os.scandir` and `Path.glob` and
+                // `rglob` as one `Path.scan` of the subtree, which monty walks
+                // or globs itself; `os.path.exists`, `isfile` and `isdir` as
+                // `Path.exists`, `is_file` and `is_dir`. Each is answered by
+                // `fs_list` calls (one per directory a scan reaches), so the
+                // guard, the tool-read limit and the taint are the tool's, as
+                // `open` is the read's (M5: 14 programs raised walking a tree).
+                TurnEvent::OsCall {
+                    function_name,
+                    args,
+                    ..
+                } if self.externals.contains("fs_list")
+                    && matches!(
+                        function_name.as_str(),
+                        "Path.iterdir"
+                            | "Path.scan"
+                            | "Path.exists"
+                            | "Path.is_file"
+                            | "Path.is_dir"
+                    )
+                    && args.args().next().and_then(os_path).is_some() =>
+                {
+                    let path = args.args().next().and_then(os_path).unwrap_or_default();
+                    let (walk, dir) = match function_name.as_str() {
+                        "Path.iterdir" => (Walk::List { dir: path.clone() }, path),
+                        "Path.scan" => {
+                            let max_depth = args
+                                .kwargs()
+                                .find(|(k, _)| k.as_str() == Some("max_depth"))
+                                .and_then(|(_, v)| v.as_int())
+                                .and_then(|d| u32::try_from(d).ok());
+                            let walk = Walk::Scan {
+                                root: path.clone(),
+                                max_depth,
+                                at: (String::new(), 0),
+                                queue: VecDeque::new(),
+                                entries: vec![ScanEntry {
+                                    path: String::new(),
+                                    info: DIRECTORY,
+                                }],
+                            };
+                            (walk, path)
+                        }
+                        probe => match path.rsplit_once('/') {
+                            Some((parent, name)) if !name.is_empty() && path != WORKSPACE => {
+                                let parent = if parent.is_empty() { "/" } else { parent };
+                                let walk = Walk::Probe {
+                                    name: name.to_string(),
+                                    what: probe.to_string(),
+                                };
+                                (walk, parent.to_string())
+                            }
+                            // `/` and the workspace itself are directories
+                            _ => {
+                                let yes = probe != "Path.is_file";
+                                req = Req::Resume(ResumeValue::Return(MontyObject::bool(yes)));
+                                continue;
+                            }
+                        },
+                    };
+                    self.walk = Some(walk);
+                    self.pending = true;
+                    return Ok(Step::Call(list_call(&dir)));
+                }
                 TurnEvent::OsCall { .. } => Req::Resume(ResumeValue::Error(MontyException::new(
                     ExcType::PermissionError,
                     Some(os_refusal(&self.externals)),
@@ -971,6 +1043,21 @@ impl MontyProgram {
 #[async_trait]
 impl Program for MontyProgram {
     async fn resume(&mut self, value: Value) -> Result<Step> {
+        if let Some(walk) = self.walk.take() {
+            self.take_pending()?;
+            return match walk.answer(&value) {
+                Walked::Next(walk, dir) => {
+                    self.walk = Some(walk);
+                    self.pending = true;
+                    Ok(Step::Call(list_call(&dir)))
+                }
+                Walked::Reply(obj) => self.run(Req::Resume(ResumeValue::Return(obj))).await,
+                Walked::Fail(why) => {
+                    let exc = MontyException::new(ExcType::RuntimeError, Some(why));
+                    self.run(Req::Resume(ResumeValue::Error(exc))).await
+                }
+            };
+        }
         // Converted before the pending call is taken, so a host value that
         // cannot cross leaves the call still answerable.
         let obj = from_json(&value, 0)?;
@@ -979,6 +1066,13 @@ impl Program for MontyProgram {
     }
 
     async fn raise(&mut self, raise: HostRaise) -> Result<Step> {
+        // A probe whose parent cannot be listed is a path that is not there,
+        // as `os.path.exists` says of one it cannot reach.
+        if let Some(Walk::Probe { .. }) = self.walk.take() {
+            self.take_pending()?;
+            let no = MontyObject::bool(false);
+            return self.run(Req::Resume(ResumeValue::Return(no))).await;
+        }
         self.take_pending()?;
         let exc = match raise.exc {
             Builtin::RuntimeError => ExcType::RuntimeError,
@@ -1052,6 +1146,127 @@ fn workspace_path(path: &str) -> String {
         Some("") => ".".to_string(),
         Some(rest) if rest.starts_with('/') => rest[1..].to_string(),
         _ => path.to_string(),
+    }
+}
+
+/// What a directory is, to a scan.
+const DIRECTORY: EntryInfo = EntryInfo {
+    is_dir: true,
+    is_file: false,
+    is_symlink: false,
+};
+
+/// A listing answered through `fs_list`: one call, or for a scan, one per
+/// directory it reaches, before the program resumes.
+enum Walk {
+    /// `Path.iterdir`: the entries' paths, under `dir` as monty gave it.
+    List { dir: String },
+    /// `Path.exists`, `is_file` or `is_dir`, from the parent's listing.
+    Probe { name: String, what: String },
+    /// `Path.scan`: the tree under `root` to `max_depth`, breadth first;
+    /// `at` is the directory (relative to `root`, and its depth) just listed.
+    Scan {
+        root: String,
+        max_depth: Option<u32>,
+        at: (String, u32),
+        queue: VecDeque<(String, u32)>,
+        entries: Vec<ScanEntry>,
+    },
+}
+
+/// What one `fs_list` answer does to a walk.
+enum Walked {
+    /// List this directory next.
+    Next(Walk, String),
+    /// The OS call's answer.
+    Reply(MontyObject),
+    /// The answer was not a listing.
+    Fail(String),
+}
+
+impl Walk {
+    fn answer(self, value: &Value) -> Walked {
+        let Some(names) = value
+            .as_array()
+            .and_then(|a| a.iter().map(|n| n.as_str()).collect::<Option<Vec<&str>>>())
+        else {
+            return Walked::Fail("`fs_list` did not return a list of names".to_string());
+        };
+        match self {
+            Walk::List { dir } => Walked::Reply(MontyObject::list(
+                names
+                    .iter()
+                    .map(|n| MontyObject::path(join(&dir, n.trim_end_matches('/')))),
+            )),
+            Walk::Probe { name, what } => {
+                let found = names.iter().find(|n| n.trim_end_matches('/') == name);
+                let is_dir = found.is_some_and(|n| n.ends_with('/'));
+                Walked::Reply(MontyObject::bool(match what.as_str() {
+                    "Path.is_dir" => is_dir,
+                    "Path.is_file" => found.is_some() && !is_dir,
+                    _ => found.is_some(),
+                }))
+            }
+            Walk::Scan {
+                root,
+                max_depth,
+                at: (rel, depth),
+                mut queue,
+                mut entries,
+            } => {
+                let within = |d: u32| max_depth.is_none_or(|m| d <= m);
+                for n in &names {
+                    let is_dir = n.ends_with('/');
+                    let child = join(&rel, n.trim_end_matches('/'));
+                    let child = child.trim_start_matches('/').to_string();
+                    if within(depth + 1) {
+                        entries.push(ScanEntry {
+                            path: child.clone(),
+                            info: EntryInfo {
+                                is_dir,
+                                is_file: !is_dir,
+                                is_symlink: false,
+                            },
+                        });
+                    }
+                    if is_dir && max_depth.is_none_or(|m| depth + 1 < m) {
+                        queue.push_back((child, depth + 1));
+                    }
+                }
+                match queue.pop_front() {
+                    Some(next) => {
+                        let dir = join(&root, &next.0);
+                        let walk = Walk::Scan {
+                            root,
+                            max_depth,
+                            at: next,
+                            queue,
+                            entries,
+                        };
+                        Walked::Next(walk, dir)
+                    }
+                    None => Walked::Reply(scan_reply(entries)),
+                }
+            }
+        }
+    }
+}
+
+/// `dir/name`, without doubling a slash.
+fn join(dir: &str, name: &str) -> String {
+    if dir.is_empty() || dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// The `fs_list` call that lists `dir`, a path as monty resolved it.
+fn list_call(dir: &str) -> ExternalCall {
+    ExternalCall {
+        name: "fs_list".to_string(),
+        args: Vec::new(),
+        kwargs: vec![("path".to_string(), Value::String(workspace_path(dir)))],
     }
 }
 
