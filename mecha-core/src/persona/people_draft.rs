@@ -258,6 +258,8 @@ pub struct Accepted {
     pub added: Vec<(String, String)>,
     /// Names already in her network, by name or alias, left alone.
     pub already: Vec<String>,
+    /// How many the owner did not choose, still waiting in the proposal.
+    pub waiting: usize,
 }
 
 /// Accept the waiting proposal, or only the people at `only` (1-based, as
@@ -265,7 +267,9 @@ pub struct Accepted {
 /// because the owner chose them. Someone already in it by name or alias is
 /// left alone. Refused when `identity.md` changed since it was read, since
 /// the owner would be accepting a reading of a file that is gone. The
-/// proposal is removed once accepted.
+/// people not chosen keep waiting, renumbered from 1, so `--only` can be
+/// taken a few at a time (review of #802); the proposal is removed once
+/// none waits.
 pub fn accept(
     dir: &Path,
     lib: &crate::imagelib::Library,
@@ -282,22 +286,25 @@ pub fn accept(
             p.name
         );
     }
-    let chosen: Vec<&Proposed> = match only {
-        None => draft.people.iter().collect(),
+    let picked: Vec<usize> = match only {
+        None => (0..draft.people.len()).collect(),
         Some(nums) => {
             let mut out = Vec::new();
             for n in nums {
-                let Some(person) = n.checked_sub(1).and_then(|i| draft.people.get(i)) else {
+                let Some(i) = n.checked_sub(1).filter(|i| *i < draft.people.len()) else {
                     bail!(
                         "the proposal has no person {n}; it lists {}",
                         draft.people.len()
                     );
                 };
-                out.push(person);
+                if !out.contains(&i) {
+                    out.push(i);
+                }
             }
             out
         }
     };
+    let chosen: Vec<&Proposed> = picked.iter().map(|i| &draft.people[*i]).collect();
     let mut done = Accepted::default();
     for person in chosen {
         let net = network::Network::read(&pdir)?;
@@ -315,8 +322,28 @@ pub fn accept(
         let id = network::add_person(&pdir, lib, &person.as_new()?)?;
         done.added.push((id, person.name.trim().to_string()));
     }
-    std::fs::remove_file(pdir.join(DRAFT))
-        .with_context(|| format!("the people are added, but {DRAFT} could not be removed"))?;
+    let rest: Vec<Proposed> = draft
+        .people
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !picked.contains(i))
+        .map(|(_, q)| q.clone())
+        .collect();
+    done.waiting = rest.len();
+    if rest.is_empty() {
+        std::fs::remove_file(pdir.join(DRAFT))
+            .with_context(|| format!("the people are added, but {DRAFT} could not be removed"))?;
+    } else {
+        let left = Draft {
+            identity: draft.identity,
+            people: rest,
+        };
+        super::write_private(
+            &pdir.join(DRAFT),
+            serde_json::to_string_pretty(&left)?.as_bytes(),
+        )
+        .with_context(|| format!("the people are added, but {DRAFT} could not be rewritten"))?;
+    }
     Ok(done)
 }
 
@@ -432,7 +459,17 @@ mod tests {
         let ines = net.find("Nessa").unwrap();
         assert_eq!(ines.source, crate::persona::world::Source::Owner);
         assert_eq!(net.her_edge(&ines.uid).layer, Some(Layer::Five));
-        assert_eq!(read(&pdir).unwrap(), None);
+        // The one not chosen still waits, renumbered.
+        assert_eq!(got.waiting, 1);
+        let left = read(&pdir).unwrap().unwrap();
+        assert_eq!(
+            left.people
+                .iter()
+                .map(|q| q.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Theo"]
+        );
+        dismiss(&pdir).unwrap();
         // Proposed again, someone already there is left alone and said so.
         stage(&dir, &p, ANSWER).unwrap();
         let got = accept(&dir, &no_lib(), &p, None).unwrap();
@@ -522,5 +559,66 @@ mod tests {
             lines.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
             vec![1, 3, 5]
         );
+    }
+    /// A model that answers what it is told to, with a chosen stop reason.
+    struct Scripted(String, crate::message::StopReason);
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Scripted {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            _req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> Result<crate::message::CompletionResponse> {
+            Ok(crate::message::CompletionResponse {
+                message: crate::message::Message::assistant(vec![crate::message::Block::Text {
+                    text: self.0.clone(),
+                }]),
+                stop_reason: self.1,
+                usage: crate::message::Usage::default(),
+                refusal: None,
+                model: "scripted-1".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_envelope_is_read_before_the_answer() {
+        use crate::message::StopReason;
+        let (dir, p) = mara();
+        let pdir = dir.join("mara");
+        // Cut off mid-answer, or refused around a whole one: nothing staged
+        // (review of #802).
+        let cut = &ANSWER[..ANSWER.len() / 2];
+        for (reply, stop, want) in [
+            (cut, StopReason::MaxTokens, "cut off at max_tokens"),
+            (ANSWER, StopReason::MaxTokens, "cut off at max_tokens"),
+            (ANSWER, StopReason::Refusal, "refused"),
+        ] {
+            let got = propose(&Scripted(reply.into(), stop), "scripted-1", &dir, &p).await;
+            let got = format!("{:#}", got.unwrap_err());
+            assert!(got.contains(want), "{got}");
+            assert_eq!(read(&pdir).unwrap(), None);
+        }
+        let d = propose(
+            &Scripted(ANSWER.into(), StopReason::EndTurn),
+            "scripted-1",
+            &dir,
+            &p,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(d.people.len(), 2);
+        assert!(read(&pdir).unwrap().is_some());
     }
 }

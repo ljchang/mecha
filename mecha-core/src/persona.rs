@@ -2605,6 +2605,10 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 .field(Field::toggle("life.world", "Her days").help(
                     "Days drawn from her routine and time-use diaries; what she is doing now \
                      comes into each chat. Pick her kind of week on the Week tab.",
+                ))
+                .field(Field::toggle("life.people", "Her people").help(
+                    "The people in her life, written on the People tab, come into each chat \
+                     beside who she is. Needs Her days.",
                 )),
         ],
     }

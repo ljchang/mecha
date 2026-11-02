@@ -739,6 +739,26 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::approve_draft),
         )
         .at(
+            "/api/personas/{name}/people",
+            Owner::Of(Feature::World),
+            get(persona_chat::people).post(persona_chat::add_person),
+        )
+        .at(
+            "/api/personas/{name}/people/{id}",
+            Owner::Of(Feature::World),
+            axum::routing::put(persona_chat::edit_person).delete(persona_chat::remove_person),
+        )
+        .at(
+            "/api/personas/{name}/people/{id}/events",
+            Owner::Of(Feature::World),
+            axum::routing::post(persona_chat::record_event),
+        )
+        .at(
+            "/api/personas/{name}/people/{id}/events/{event}",
+            Owner::Of(Feature::World),
+            axum::routing::delete(persona_chat::retract_event),
+        )
+        .at(
             "/api/personas/{name}/chats",
             Owner::Of(Feature::Personas),
             get(persona_chat::history).post(persona_chat::open),
