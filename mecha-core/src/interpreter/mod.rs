@@ -276,8 +276,10 @@ pub struct Backstops {
 /// reads (2026-11-01): 32 sub-calls, 2,048 tool reads and 2,048 handle
 /// operations. Thinking passes are a subset of
 /// sub-calls and add nothing; an `llm_query` or `llm_map` call is one
-/// suspension and spends a handle operation, so the sum still bounds it.
-pub const COUNTED_HOST_LIMITS: u64 = 32 + 2048 + 2048;
+/// suspension and spends a handle operation, so the sum still bounds it. A
+/// tool read made by `open(path)` is two suspensions (the `open`, then the
+/// read, R12) against one tool read, so tool reads count twice.
+pub const COUNTED_HOST_LIMITS: u64 = 32 + 2 * 2048 + 2048;
 
 impl Default for Backstops {
     fn default() -> Self {
@@ -467,6 +469,6 @@ mod tests {
     fn the_default_backstops_are_the_designs() {
         let b = Backstops::default();
         assert_eq!(b.wall_clock, Duration::from_secs(600));
-        assert_eq!(b.max_suspensions, 4128);
+        assert_eq!(b.max_suspensions, 6176);
     }
 }
