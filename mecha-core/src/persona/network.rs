@@ -161,6 +161,18 @@ pub enum Precision {
     Unknown,
 }
 
+impl Precision {
+    /// Every precision this binary writes, `Unknown` ("no date") among
+    /// them: the set a stored word is read against.
+    pub const ALL: [Precision; 5] = [
+        Precision::Day,
+        Precision::Month,
+        Precision::Season,
+        Precision::Year,
+        Precision::Unknown,
+    ];
+}
+
 /// When something happened, as precisely as it was said: the first day of
 /// the period it names, and how much of that day is meant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +417,11 @@ pub fn fold(events: &[EdgeEvent]) -> Edge {
             continue;
         }
         if let Some(t) = e.tie.filter(|t| *t != Tie::Unknown) {
+            // A new kind of tie drops the words for the old one: a friend's
+            // "flatmate" is not what her ex is called (review of #801).
+            if edge.tie != Some(t) {
+                edge.label = None;
+            }
             edge.tie = Some(t);
         }
         if e.label.is_some() {
@@ -427,7 +444,10 @@ pub fn fold(events: &[EdgeEvent]) -> Edge {
                 edge.status = Status::Ended;
                 edge.ended = Some(e.when);
             }
-            EventKind::Paused => edge.status = Status::Paused,
+            EventKind::Paused => {
+                edge.status = Status::Paused;
+                edge.ended = None;
+            }
             EventKind::Met
             | EventKind::Formed
             | EventKind::Strengthened
@@ -464,6 +484,11 @@ fn words(what: &str, text: &str, max: usize) -> Result<String> {
     }
     if t.chars().any(char::is_control) {
         bail!("{what} holds a control character");
+    }
+    // Rendered into network.md and her prompt, where a comment opener
+    // would hide everything after it.
+    if t.contains("<!--") {
+        bail!("{what} holds `<!--`, which would hide what follows it once rendered");
     }
     Ok(t.to_string())
 }
@@ -545,10 +570,7 @@ fn event_of(r: &rusqlite::Row) -> rusqlite::Result<EdgeEvent> {
     // never a stale tie shown as current, never an event re-dated to the
     // day it was recorded (reviews of #801). `unknown` is how a precision
     // says "no date", so only a word outside the set is unreadable.
-    let readable_precision = matches!(
-        raw_precision.as_str(),
-        "day" | "month" | "season" | "year" | "unknown"
-    );
+    let readable_precision = Precision::ALL.iter().any(|p| wire(p) == raw_precision);
     let unknown_tie = raw_tie
         .as_deref()
         .is_some_and(|t| unwire::<Tie>(t) == Some(Tie::Unknown));
@@ -806,8 +828,10 @@ pub fn check_new(p: &NewPerson) -> Result<()> {
 }
 
 /// The owner adds someone to her network, with her tie to them as its
-/// first event. Returns their id. `network.md` is rendered again.
-pub fn add_person(pdir: &Path, p: &NewPerson) -> Result<String> {
+/// first event. A portrait must be an approved library character
+/// ([`check_character`]), checked here so no door can forget it. Returns
+/// their id. `network.md` is rendered again.
+pub fn add_person(pdir: &Path, lib: &crate::imagelib::Library, p: &NewPerson) -> Result<String> {
     let Checked {
         name,
         aliases,
@@ -816,6 +840,9 @@ pub fn add_person(pdir: &Path, p: &NewPerson) -> Result<String> {
         character,
         first,
     } = checked(p)?;
+    if let Some(c) = &character {
+        check_character(lib, c)?;
+    }
     let mut w = World::open(pdir)?;
     let tx = w.conn_mut().transaction()?;
     let count: i64 = tx.query_row("SELECT count(*) FROM people", [], |r| r.get(0))?;
@@ -846,8 +873,17 @@ pub fn add_person(pdir: &Path, p: &NewPerson) -> Result<String> {
 }
 
 /// The owner changes who someone is. Only the owner writes these fields
-/// (§6.2), so an edit replaces them; their edges are untouched.
-pub fn edit_person(pdir: &Path, uid: &str, edit: &PersonEdit) -> Result<()> {
+/// (§6.2), so an edit replaces them; their edges are untouched. A new
+/// portrait is checked as [`add_person`] checks one.
+pub fn edit_person(
+    pdir: &Path,
+    lib: &crate::imagelib::Library,
+    uid: &str,
+    edit: &PersonEdit,
+) -> Result<()> {
+    if let Some(Some(c)) = &edit.character {
+        check_character(lib, c.trim())?;
+    }
     let mut w = World::open(pdir)?;
     let tx = w.conn_mut().transaction()?;
     if !exists(&tx, uid)? {
@@ -1543,6 +1579,25 @@ mod tests {
         let e = fold(&[ev(EventKind::Formed, "", "2026-01-01T00:00:00Z"), dated]);
         assert_eq!(e.started.unwrap().render().as_deref(), Some("2015"));
 
+        // A new kind of tie drops the old label; pausing an ended tie
+        // clears its end.
+        let mut flat = ev(EventKind::Formed, "2019", "1");
+        flat.tie = Some(Tie::Friend);
+        flat.label = Some("flatmate".into());
+        let mut ex = ev(EventKind::Ended, "2024", "2");
+        ex.tie = Some(Tie::Ex);
+        let e = fold(&[flat.clone(), ex.clone()]);
+        assert_eq!((e.tie, e.label.as_deref()), (Some(Tie::Ex), None));
+        let mut same = ev(EventKind::Strengthened, "2020", "3");
+        same.tie = Some(Tie::Friend);
+        assert_eq!(
+            fold(&[flat, same]).label.as_deref(),
+            Some("flatmate"),
+            "the same tie keeps its words"
+        );
+        let e = fold(&[ex, ev(EventKind::Paused, "2025", "4")]);
+        assert_eq!((e.status, e.ended), (Status::Paused, None));
+
         // Nothing set is nothing claimed.
         let bare = fold(&[ev(EventKind::Met, "", "1")]);
         assert_eq!(
@@ -1569,9 +1624,10 @@ mod tests {
             "a read created the store"
         );
 
-        let ines = add_person(&pdir, &sister()).unwrap();
+        let ines = add_person(&pdir, &no_lib(), &sister()).unwrap();
         let theo = add_person(
             &pdir,
+            &no_lib(),
             &NewPerson {
                 name: "Theo".into(),
                 aliases: vec![],
@@ -1640,6 +1696,7 @@ mod tests {
         // An edit replaces who someone is; a cleared role is gone.
         edit_person(
             &pdir,
+            &no_lib(),
             &theo,
             &PersonEdit {
                 role: Some(None),
@@ -1696,16 +1753,20 @@ mod tests {
                 Box::new(|p: &mut NewPerson| p.tie = Some(Tie::Unknown)),
                 "a tie needs",
             ),
+            (
+                Box::new(|p: &mut NewPerson| p.description = Some("kind <!-- secret".into())),
+                "<!--",
+            ),
         ] {
             let mut q = p.clone();
             tweak(&mut q);
-            let got = format!("{:#}", add_person(&pdir, &q).unwrap_err());
+            let got = format!("{:#}", add_person(&pdir, &no_lib(), &q).unwrap_err());
             assert!(got.contains(want), "{got}");
         }
         assert!(Network::read(&pdir).unwrap().people.is_empty());
         // Aliases that differ only in case are one.
         p.aliases = vec!["Nessa".into(), "nessa".into()];
-        let id = add_person(&pdir, &p).unwrap();
+        let id = add_person(&pdir, &no_lib(), &p).unwrap();
         assert_eq!(
             Network::read(&pdir).unwrap().person(&id).unwrap().aliases,
             vec!["Nessa"]
@@ -1719,11 +1780,11 @@ mod tests {
     #[test]
     fn two_people_of_one_name_are_named_by_id() {
         let pdir = pdir();
-        let a = add_person(&pdir, &sister()).unwrap();
+        let a = add_person(&pdir, &no_lib(), &sister()).unwrap();
         let mut b = sister();
         b.role = Some("old schoolfriend".into());
         b.aliases = vec![];
-        let b = add_person(&pdir, &b).unwrap();
+        let b = add_person(&pdir, &no_lib(), &b).unwrap();
         let n = Network::read(&pdir).unwrap();
         let why = format!("{:#}", n.find("ines").unwrap_err());
         assert!(
@@ -1737,7 +1798,7 @@ mod tests {
     #[test]
     fn only_an_owner_event_is_taken_back_one_at_a_time() {
         let pdir = pdir();
-        let id = add_person(&pdir, &sister()).unwrap();
+        let id = add_person(&pdir, &no_lib(), &sister()).unwrap();
         let ev = record(&pdir, &id, None, &at(EventKind::Conflict, "2025")).unwrap();
         assert_eq!(
             Network::read(&pdir).unwrap().her_edge(&id).valence,
@@ -1771,7 +1832,7 @@ mod tests {
         drop(conn);
         assert_eq!(Network::read(&pdir).unwrap(), Network::default());
         // The first write migrates it, and the old table stays.
-        add_person(&pdir, &sister()).unwrap();
+        add_person(&pdir, &no_lib(), &sister()).unwrap();
         assert_eq!(Network::read(&pdir).unwrap().people.len(), 1);
     }
 
@@ -1793,15 +1854,21 @@ mod tests {
     fn her_prompt_names_the_closest_in_full_and_the_rest_by_name() {
         let pdir = pdir();
         assert_eq!(prompt_section(&Network::read(&pdir).unwrap()), "");
-        let ines = add_person(&pdir, &sister()).unwrap();
+        let ines = add_person(&pdir, &no_lib(), &sister()).unwrap();
         let bo = add_person(
             &pdir,
+            &no_lib(),
             &person("Bo", Some("climbing partner"), Some(Layer::Fifteen)),
         )
         .unwrap();
-        add_person(&pdir, &person("Cal", None, Some(Layer::OneFifty))).unwrap();
-        add_person(&pdir, &person("Dee", Some("old flatmate"), None)).unwrap();
-        let sam = add_person(&pdir, &person("Sam", None, Some(Layer::Fifty))).unwrap();
+        add_person(
+            &pdir,
+            &no_lib(),
+            &person("Cal", None, Some(Layer::OneFifty)),
+        )
+        .unwrap();
+        add_person(&pdir, &no_lib(), &person("Dee", Some("old flatmate"), None)).unwrap();
+        let sam = add_person(&pdir, &no_lib(), &person("Sam", None, Some(Layer::Fifty))).unwrap();
         record(&pdir, &sam, None, &at(EventKind::Ended, "2022")).unwrap();
         record(&pdir, &bo, None, &at(EventKind::Conflict, "2025")).unwrap();
         record(
@@ -1849,10 +1916,11 @@ mod tests {
     #[test]
     fn a_large_network_is_cut_from_the_outside_in_and_says_so() {
         let pdir = pdir();
-        add_person(&pdir, &sister()).unwrap();
+        add_person(&pdir, &no_lib(), &sister()).unwrap();
         for i in 0..120 {
             add_person(
                 &pdir,
+                &no_lib(),
                 &person(
                     &format!("Acquaintance number {i:03}"),
                     Some("someone from the market"),
@@ -1910,7 +1978,9 @@ mod tests {
         let pdir = dir.join("mara");
         let mut p = sister();
         p.character = Some("flourhand".into());
-        add_person(&pdir, &p).unwrap();
+        // The store's own door refuses what the library does not approve.
+        assert!(add_person(&pdir, &no_lib(), &p).is_err());
+        add_person(&pdir, &lib(), &p).unwrap();
         // Approved (an owner entry is): nothing broken, on the network or
         // the persona.
         check_character(&lib(), "flourhand").unwrap();
@@ -1918,14 +1988,24 @@ mod tests {
             .unwrap()
             .broken_links(&lib())
             .is_empty());
-        // Linked to the locked candidate (written past the CLI's check, as
-        // a later un-approval would leave it): broken, and named only by
-        // the person.
+        // The locked candidate is refused at the door; linked afterwards
+        // anyway, as a later un-approval would leave it, it is broken and
+        // named only by the person.
         let mut theo = sister();
         theo.name = "Theo".into();
         theo.aliases = vec![];
         theo.character = Some("veiledone".into());
-        add_person(&pdir, &theo).unwrap();
+        assert!(add_person(&pdir, &lib(), &theo).is_err());
+        theo.character = None;
+        let id = add_person(&pdir, &lib(), &theo).unwrap();
+        World::open(&pdir)
+            .unwrap()
+            .conn_mut()
+            .execute(
+                "UPDATE people SET character = 'veiledone' WHERE uid = ?1",
+                [&id],
+            )
+            .unwrap();
         let broken = Network::read(&pdir).unwrap().broken_links(&lib());
         assert_eq!(broken.len(), 1, "{broken:?}");
         assert!(
@@ -1962,9 +2042,10 @@ mod tests {
     #[test]
     fn what_a_fold_cannot_read_is_said_where_the_owner_reads() {
         let pdir = pdir();
-        let ines = add_person(&pdir, &sister()).unwrap();
+        let ines = add_person(&pdir, &no_lib(), &sister()).unwrap();
         let theo = add_person(
             &pdir,
+            &no_lib(),
             &NewPerson {
                 name: "Theo".into(),
                 aliases: vec![],
@@ -2070,6 +2151,11 @@ mod tests {
         }
         for l in Layer::ALL {
             assert_eq!(Layer::of_size(l.size()), Some(l));
+        }
+        // Precision is read against its own set, so a variant added here
+        // is one this binary reads back, never its own row unreadable.
+        for p in Precision::ALL {
+            assert_eq!(unwire::<Precision>(&wire(&p)), Some(p));
         }
         assert_eq!(unwire::<Tie>("cousin"), Some(Tie::Unknown));
         assert_eq!(unwire::<EventKind>("eloped"), Some(EventKind::Unknown));

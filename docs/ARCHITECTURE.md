@@ -1865,8 +1865,9 @@ module.
   version has one and re-digests it, so one added to an old version or
   taken from a new one is refused. A network that cannot be read is no
   version, never a prompt without her people. `Store::problems` names a
-  person's broken portrait link (`network::check_character`, the one rule
-  both doors ask).
+  person's broken portrait link; `network::add_person` and `edit_person`
+  take the library and refuse an unapproved portrait themselves
+  (`check_character`), so no door can forget it.
 - **People proposed from `identity.md` are an owner's draft** (PL31,
   `persona::people_draft`): one quarantined pass, every proposed person
   checked by the network's own door before it stages, accepted only

@@ -1155,6 +1155,7 @@ mod tests {
         let pdir = dir.join("mara");
         network::add_person(
             &pdir,
+            &no_lib(),
             &NewPerson {
                 name: "Ines".into(),
                 aliases: vec![],
@@ -1205,6 +1206,7 @@ mod tests {
         // as it was taken.
         network::add_person(
             &pdir,
+            &no_lib(),
             &NewPerson {
                 name: "Theo".into(),
                 aliases: vec![],
