@@ -4096,8 +4096,10 @@ opposed to the requests arriving through them. A booking page's hours are
 edited there. Four decisions, each a bug if undone:
 
 - **The manifest is the one file.** The slot pipeline reads the manifest's
-  `[availability]` (`slots push --manifest`), and the box ignores that section,
-  so an hours edit needs no `type push`. Until 2026-11-02 the pipeline read a
+  `[availability]` (`slots push --manifest`). The box never computes from it
+  but reads one field, `timezone`, to label the week grid and the
+  confirmation's times. So an hours edit needs no `type push`, and a timezone
+  edit is refused here (`instrument::rewrite`): it is a publish, by hand. Until 2026-11-02 the pipeline read a
   hand-kept copy (`instruments/book-policy.toml`) under a "KEEP THE TWO IN
   AGREEMENT" comment that nothing enforced. An editor writing two files that
   must agree is that drift with a nicer face.
@@ -4110,11 +4112,14 @@ edited there. Four decisions, each a bug if undone:
   draft beside the manifest *before* the manifest is replaced. This side
   re-decides nothing beyond what would make a write unreadable or a push
   certain to fail (`instrument::validate`). `PIPELINE_DAYS` is the second of
-  those: it is the unit's `--days`, and
-  `the_pipeline_unit_fetches_the_days_the_editor_allows` holds the two
-  together.
-- **A save is not undone by a failed push.** The file stands, the page names
-  the push's own refusal, and the timer retries. A `base` digest refuses a save
+  those: it is the `--days` of every script that pushes (the timer and the
+  drain follower), and `the_pipelines_fetch_the_days_the_editor_allows`
+  holds them together.
+- **A save is not undone by what follows it.** The file stands; a failed
+  push or a failed re-read is named beside it, and the timer retries. The
+  page reads bookings as the front-door page does (reconcile, then settle)
+  and drops any booking a withdrawal names, whatever its state says. The
+  confirm sheet quotes only the preview of the draft being saved. A `base` digest refuses a save
   over a file that changed since the page read it (409), as the charter's list
   save does.
 

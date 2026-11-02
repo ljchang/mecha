@@ -15,7 +15,11 @@
   let item = $state(null); // the GET /api/factory/instrument body
   let itemError = $state(null);
   let draft = $state(null); // the hours being edited
+  // The answer and the draft it answers, kept together: a preview of the
+  // previous draft is not a preview of this one, and the confirm sheet
+  // quotes it. `current` below is the only reader.
   let draftPreview = $state(null);
+  let draftPreviewFor = $state(null);
   let draftError = $state(null);
   let previewing = $state(false);
   let saving = $state(false);
@@ -44,6 +48,7 @@
     item = body;
     draft = body.hours ? structuredClone($state.snapshot(body.hours)) : null;
     draftPreview = null;
+    draftPreviewFor = null;
     draftError = null;
   }
 
@@ -64,20 +69,24 @@
     if (id) loadItem(id);
   });
 
-  const dirty = $derived(
-    item?.hours && draft ? JSON.stringify(draft) !== JSON.stringify(item.hours) : false,
-  );
+  const draftKey = $derived(draft ? JSON.stringify(draft) : null);
+  const dirty = $derived(item?.hours && draft ? draftKey !== JSON.stringify(item.hours) : false);
+  // The preview of *this* draft, or nothing yet.
+  const current = $derived(draftPreviewFor !== null && draftPreviewFor === draftKey ? draftPreview : null);
 
   // The preview follows the draft, debounced: a person dragging a time
   // should see what it offers without pressing anything.
   let previewTimer = null;
   $effect(() => {
-    const snapshot = draft ? JSON.stringify(draft) : null;
+    const snapshot = draftKey;
     if (!snapshot || !dirty) {
       draftPreview = null;
+      draftPreviewFor = null;
       draftError = null;
       return;
     }
+    // A moved draft has no answer until its own arrives.
+    draftError = null;
     clearTimeout(previewTimer);
     previewTimer = setTimeout(() => runPreview(snapshot), 500);
     return () => clearTimeout(previewTimer);
@@ -92,19 +101,24 @@
         body: JSON.stringify({ id, base: item.digest, hours: JSON.parse(snapshot) }),
       });
       const text = await res.text();
-      // A stale answer for a draft that has moved on is dropped.
-      if (snapshot !== JSON.stringify(draft)) return;
+      // A stale answer for a draft that has moved on is dropped, and the
+      // newer request's own `finally` is what clears `previewing`.
+      if (snapshot !== draftKey) return;
       if (!res.ok) {
         draftPreview = null;
+        draftPreviewFor = null;
         draftError = text.trim();
       } else {
         draftPreview = JSON.parse(text).preview;
+        draftPreviewFor = snapshot;
         draftError = null;
       }
-    } catch (e) {
-      draftError = String(e?.message ?? e);
-    } finally {
       previewing = false;
+    } catch (e) {
+      if (snapshot === draftKey) {
+        draftError = String(e?.message ?? e);
+        previewing = false;
+      }
     }
   }
 
@@ -119,8 +133,11 @@
       const text = await res.text();
       if (!res.ok) throw new Error(text.trim());
       const out = JSON.parse(text);
-      adopt(out.instrument);
       confirming = false;
+      // The save stands either way; a failed re-read only means the page
+      // asks again rather than showing what came back.
+      if (out.instrument) adopt(out.instrument);
+      else await loadItem(id);
       if (out.pushed) {
         say('Saved and pushed — the booking page offers the new hours now.');
       } else {
@@ -167,7 +184,6 @@
   }
   const today = new Date().toISOString().slice(0, 10);
 
-  const zones = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
 
   // ── reading the answers ──────────────────────────────────────────────
   const ago = (stamp) => {
@@ -188,7 +204,7 @@
     return start.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
   };
 
-  const shown = $derived(draftPreview ?? item?.preview ?? null);
+  const shown = $derived(dirty ? current : (item?.preview ?? null));
   const shownDays = $derived(byDay(shown?.slots, shown?.timezone));
   // A start that offers every length needs no label; one that offers only
   // some (the hour before a window closes fits 30 but not 60) says which.
@@ -340,11 +356,14 @@
                 />
               </span>
             </label>
-            <label class="field">
+            <div class="field">
               <span class="flabel">Time zone</span>
-              <input class="tz" list="factory-zones" bind:value={draft.timezone} />
-              <datalist id="factory-zones">{#each zones as z}<option value={z}></option>{/each}</datalist>
-            </label>
+              <!-- Read-only: the booking page itself reads this field to
+                   label its week, so changing it is a type push — a
+                   publish — and the server refuses it as an hours save. -->
+              <span class="num"><code>{draft.timezone}</code></span>
+            </div>
+            <div class="note">The page labels its times in this zone. Changing it is a <code>factory-publish type push</code> of the manifest, not an hours save.</div>
           </div>
 
           <div class="section">Days off and exceptions</div>
@@ -383,11 +402,11 @@
           </div>
           {#if dirty && draftError}
             <div class="warnline">{@render hazardGlyph()}<span>{draftError}</span></div>
-          {:else if dirty && !draftPreview}
-            <div class="empty">{previewing ? 'computing…' : ' '}</div>
+          {:else if dirty && !current}
+            <div class="empty">computing…</div>
           {:else if shown}
             {#if dirty}
-              <div class="meta"><span>{draftPreview.slots.length} slots over {draftPreview.horizon_days} days (now {item.preview?.slots.length ?? '?'})</span></div>
+              <div class="meta"><span>{current.slots.length} slots over {current.horizon_days} days (now {item.preview?.slots.length ?? '?'})</span></div>
             {/if}
             <div class="card preview">
               {#each shownDays as d (d.label)}
@@ -408,14 +427,17 @@
   {#if dirty && draft}
     <div class="actionbar">
       <button class="abtn" disabled={saving} onclick={revert}>Revert</button>
-      <button class="abtn primary" disabled={saving || previewing || !draftPreview || !!draftError} onclick={() => (confirming = true)}>Save hours…</button>
+      <button class="abtn primary" disabled={saving || !current || !!draftError} onclick={() => (confirming = true)}>Save hours…</button>
     </div>
   {/if}
 
-  {#if confirming && draftPreview}
+  <!-- `current`, never the last answer: the number confirmed is the number
+       of the hours about to be written. An edit while the sheet is open
+       closes it until the new answer lands. -->
+  {#if confirming && current}
     <div class="sheet">
       <div class="sheet-grip"></div>
-      <div class="sheet-text">Strangers will be able to book {draftPreview.slots.length} slot{draftPreview.slots.length === 1 ? '' : 's'} over the next {draftPreview.horizon_days} days (now {item.preview?.slots.length ?? 'unknown'}).</div>
+      <div class="sheet-text">Strangers will be able to book {current.slots.length} slot{current.slots.length === 1 ? '' : 's'} over the next {current.horizon_days} days (now {item.preview?.slots.length ?? 'unknown'}).</div>
       <div class="note">Saving writes <code>{item.path}</code> and pushes the slots to the booking page now. Meetings already booked are not touched.</div>
       <div class="btnrow">
         <button class="abtn" disabled={saving} onclick={() => (confirming = false)}>Back</button>
@@ -473,9 +495,8 @@
   .field:last-child { border-bottom: none; }
   .flabel { font-size: 13px; }
   .num { font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; }
-  .num input, .tz, .addrow input { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 8px 10px; color-scheme: dark; }
+  .num input, .addrow input { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 8px 10px; color-scheme: dark; }
   .num input { width: 5em; }
-  .tz { min-width: 0; flex: 1; max-width: 240px; }
   .pills { display: flex; flex-wrap: wrap; gap: 6px; }
   .pill { min-height: 36px; padding: 0 12px; border-radius: var(--radius-chip); border: 1px solid var(--accent-900); background: none; color: var(--text-muted); font-family: var(--mono); font-size: 12px; cursor: pointer; }
   .pill.on { background: var(--accent-900); color: var(--text); border-color: var(--accent-500); }

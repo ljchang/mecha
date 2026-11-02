@@ -3,10 +3,13 @@
 //! and written back into it in place.
 //!
 //! **The manifest is the one file.** The slot pipeline reads its
-//! `[availability]` section (`factory-publish slots push --manifest`), and the
-//! box ignores that section entirely — so an edit here changes what the next
-//! push offers without a `type push`, and the hours the page offers and the
-//! hours the pipeline computes cannot disagree.
+//! `[availability]` section (`factory-publish slots push --manifest`), and
+//! the box never computes from it — but it does read one field, `timezone`,
+//! to label the week grid and the confirmation's times. So an hours edit
+//! reaches the page with the next slot push alone, and a timezone edit would
+//! need a `type push` too. That is a publish, and not this editor's to make,
+//! so [`rewrite`] refuses a changed `timezone`: the zone changes in the file
+//! and goes out with `factory-publish type push`, both by hand.
 //!
 //! **The owner is the only author.** Nothing here is a tool: availability is
 //! what strangers may book of the owner's week, and widening it is the one
@@ -367,6 +370,16 @@ pub fn rewrite(disk: &str, base: &str, h: &Hours) -> Result<String> {
     if digest(disk) != base {
         bail!(Stale);
     }
+    let current = read_hours(disk)?;
+    if h.timezone != current.timezone {
+        bail!(
+            "the time zone is read by the booking page itself, so changing it is a \
+             `factory-publish type push`, not an hours save: edit `timezone` in the \
+             manifest and push it (the page would otherwise label {} slots in {})",
+            h.timezone,
+            current.timezone
+        );
+    }
     write_hours(disk, h)
 }
 
@@ -580,6 +593,16 @@ heading = "You're booked"
     }
 
     #[test]
+    fn the_time_zone_is_not_an_hours_edit() {
+        // The box labels the page in this zone; a save that changed it
+        // without a type push would sell new-zone slots under old-zone labels.
+        let mut h = hours();
+        h.timezone = "Europe/Helsinki".into();
+        let err = rewrite(MANIFEST, &digest(MANIFEST), &h).unwrap_err();
+        assert!(err.to_string().contains("type push"), "{err:#}");
+    }
+
+    #[test]
     fn a_save_over_a_file_that_changed_since_the_read_is_refused() {
         let base = digest(MANIFEST);
         assert!(rewrite(MANIFEST, &base, &hours()).is_ok());
@@ -633,26 +656,41 @@ heading = "You're booked"
     }
 
     #[test]
-    fn the_pipeline_unit_fetches_the_days_the_editor_allows() {
-        // The timer's `--days` and PIPELINE_DAYS are one number in two
-        // files. If the unit fetches fewer days than the editor lets a
-        // horizon reach, a saved horizon fails every push; if it fetches
-        // more, the editor refuses horizons the pipeline could serve.
-        let unit = include_str!("../../scripts/mecha-slots.service");
-        let fetch = unit
-            .lines()
-            .find(|l| l.starts_with("ExecStart=") && l.contains("freebusy"))
-            .expect("the unit runs a freebusy fetch");
-        let days: u32 = fetch
-            .split("--days ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .and_then(|n| n.parse().ok())
-            .expect("the fetch names --days");
-        assert_eq!(days, PIPELINE_DAYS, "{fetch}");
-        assert!(
-            fetch.contains("--manifest"),
-            "the unit computes slots from the manifest the editor writes: {fetch}"
-        );
+    fn the_pipelines_fetch_the_days_the_editor_allows() {
+        // PIPELINE_DAYS is one number in every script that runs the push:
+        // the timer, and the drain follower's push after a booking lands.
+        // If one fetches fewer days than the editor lets a horizon reach, a
+        // saved horizon fails that push; the follower's failure is
+        // swallowed by its `|| echo`, so nothing else would say so.
+        let scripts = [
+            (
+                "mecha-slots.service",
+                include_str!("../../scripts/mecha-slots.service"),
+            ),
+            (
+                "drain-follow.sh",
+                include_str!("../../scripts/drain-follow.sh"),
+            ),
+        ];
+        for (name, text) in scripts {
+            let fetches: Vec<&str> = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#') && l.contains("freebusy --days"))
+                .collect();
+            assert!(!fetches.is_empty(), "{name} runs a freebusy fetch");
+            for fetch in fetches {
+                let days: u32 = fetch
+                    .split("--days ")
+                    .nth(1)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or_else(|| panic!("{name}: the fetch names --days: {fetch}"));
+                assert_eq!(days, PIPELINE_DAYS, "{name}: {fetch}");
+            }
+            assert!(
+                text.contains("slots push book --manifest"),
+                "{name} computes slots from the manifest the editor writes"
+            );
+        }
     }
 }

@@ -188,11 +188,14 @@ saw, so it is the page's own arithmetic. Saving writes the manifest's
 `[availability]` section in place and keeps your comments. It then pushes, so
 the page changes at once instead of at the next fifteen-minute tick.
 
-Three rules hold it together:
+Four rules hold it together:
 
 - **One file.** The slot timer reads the manifest itself
   (`factory-publish slots push book --manifest …/book.toml`), so the hours the
   page promises and the hours it computes cannot disagree.
+- **The time zone is not an hours edit.** The booking page reads it to label
+  its times, so the editor shows it but will not change it. Edit `timezone` in
+  the manifest and run `factory-publish type push` on it.
 - **Only you write it.** The save is a handler in `mecha serve`. There is no
   CLI verb and no tool for it, so no model can change what strangers may book
   of your week, even if a stranger's message asks it to.

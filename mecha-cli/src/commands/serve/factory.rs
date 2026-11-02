@@ -115,15 +115,24 @@ async fn detail(found: Loaded) -> serde_json::Value {
 }
 
 /// Upcoming meetings this instrument booked, from the front-door store, and
-/// how many of its requests are open. Settled first, as every reader of the
-/// store does (`ARCHITECTURE.md` §The front door: every surface settles),
-/// so a confirmed booking does not show as pending because nobody reconciled.
+/// how many of its requests are open.
+///
+/// **Reconcile, then settle** — `serve/frontdoor.rs`'s order, and it is
+/// load-bearing there for the same reason: settling skips `awaiting_me`, so
+/// without the outbox pass first a booking whose reply went out keeps
+/// counting as open, and one cancelled while a draft was staged keeps its
+/// meeting. Both best-effort; a store that cannot be written is still read.
 fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>) {
     use mecha_core::frontdoor::{self, Frontdoor};
     let store = match Frontdoor::open_default() {
         Ok(s) => s,
         Err(e) => return (Err(e), None),
     };
+    if let Some(outbox) = mecha_core::outbox::OutboxStore::open_existing_default() {
+        if let Err(e) = store.reconcile(&outbox) {
+            tracing::warn!(error = %e, "reconciling front-door drafts for the factory page");
+        }
+    }
     if let Err(e) = store.settle_bookings(&super::super::frontdoor::swept_bookings()) {
         tracing::warn!(error = %e, "settling bookings for the factory page");
     }
@@ -132,6 +141,11 @@ fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>)
         Err(e) => return (Err(e), None),
     };
     let now = chrono::Utc::now();
+    // Every booking a withdrawal names, joined here rather than trusted to
+    // `state`: "Coming up" is a claim about the calendar, and a cancelled
+    // meeting must leave it whatever last wrote the record's state.
+    let withdrawn: std::collections::BTreeSet<String> =
+        records.iter().filter_map(|r| r.cancellation()).collect();
     let mine: Vec<_> = records.iter().filter(|r| r.type_id == id).collect();
     let open = mine
         .iter()
@@ -141,6 +155,7 @@ fn meetings(id: &str) -> (anyhow::Result<Vec<serde_json::Value>>, Option<usize>)
         .iter()
         .filter(|r| r.state != frontdoor::CLOSED)
         .filter_map(|r| r.booking().map(|b| (r, b)))
+        .filter(|(_, b)| !withdrawn.contains(&b.booking_id))
         .filter(|(_, b)| chrono::DateTime::parse_from_rfc3339(&b.end).map_or(true, |end| end > now))
         .map(|(r, b)| {
             (
@@ -333,12 +348,16 @@ pub async fn save_hours(State(_state): St, Json(body): Json<HoursBody>) -> Respo
     }
     tracing::info!(instrument = %inst.id, "hours saved from the factory page");
     let push = push(&inst.id, &inst.path).await;
-    let found = match tokio::task::spawn_blocking(move || load(&body.id)).await {
-        Ok(Ok(found)) => found,
-        Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
-    };
-    let mut out = serde_json::json!({ "saved": true, "instrument": detail(found).await });
+    // From here the save stands, whatever else fails: a re-read that cannot
+    // be made is reported beside it, as a failed push is, never as a failed
+    // save — which would send the page back with the pre-write `base` and a
+    // 409 for a file that is exactly what the owner asked for.
+    let mut out = serde_json::json!({ "saved": true });
+    match tokio::task::spawn_blocking(move || load(&body.id)).await {
+        Ok(Ok(found)) => out["instrument"] = detail(found).await,
+        Ok(Err(e)) => out["reread_error"] = format!("{e:#}").into(),
+        Err(e) => out["reread_error"] = format!("{e:#}").into(),
+    }
     match push {
         Ok(line) => {
             out["pushed"] = true.into();
