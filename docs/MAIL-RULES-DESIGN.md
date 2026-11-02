@@ -230,7 +230,10 @@ refuses to automate is the one the owner made when writing the rule.
 They run **before classification**, and a rule whose actions are all
 mailbox-only can mark the thread handled so the classifier never spends a
 call on it — **but only when no description rule is enabled at all, and no
-matching header rule has an outbound action.** Any enabled description rule
+matching header rule has an outbound action, a `digest` or a `task`.** The
+last two need a verdict too: §7 renders a flagged thread with the
+classifier's one-line and an automatic task with the verdict's deadline, and
+a skipped thread has neither. Any enabled description rule
 needs the classifier to see the thread, whatever its actions — a
 `digest`- or `task`-only description rule is silenced by a skip exactly as a
 reply rule is, since §4.3 applies record actions from every match. A
@@ -466,6 +469,16 @@ evaluated again. `failed` closes it for outbound actions, which are never
 retried (a failure after a provider accepted a send cannot be told from one
 before), and leaves it open for mailbox and record actions, which are safe
 to retry after a transient error.
+
+**A key is closed by the presence of a closing row, not by the latest row** —
+deliberately unlike §3's mode resolution. The ledger is append-only, and four
+outcomes land *after* a closing row: `released unchanged`, `edited`,
+`rejected`, `undone`. None of them reopens the key. Under "latest row wins",
+an owner's `rejected` would let the next classify pass re-stage the send just
+refused, and an owner's `undone` would let the rule re-archive the thread the
+owner restored to the inbox — the engine fighting its owner, with the
+undo-rate brake measuring the fight. The per-thread key follows the same
+rule.
 
 **A rule acts only on messages that arrive after the mode it acts in was
 set.** Promotion out of `shadow` does not replay the week of would-have rows,
@@ -936,8 +949,10 @@ A rule steps itself down, with a notice, when:
 
 - **Any automatic send is marked wrong** by the owner → `propose`. Zero
   tolerance for sends.
-- **The owner undoes more than 20% of its automatic mailbox actions** over at
-  least 10 → `propose`.
+- **The owner undoes, or marks as a wrong match, more than 20% of its
+  automatic mailbox actions** over at least 10 → `propose`. A wrong match the
+  owner does not undo still counts: the archive may be harmless while the
+  matcher is wrong.
 - **Three consecutive action failures** → `shadow`.
 - **A rule's daily cap is hit** (§5.4) → that rule's outbound actions stage
   in the outbox for the rest of the local day, with a notice; its mode is
@@ -1215,10 +1230,16 @@ Graph counterpart, so P5 exports it or adds the equivalent.
 **P6 — drafted replies.** `draft_with`, the closed drafting context, the
 `shareable` frontmatter key, graduation through the approval screen.
 
-**P7 — `mail_rule_propose`.** With the registration surfaces
-`persona_propose` already has, both test-enforced: its effect-class entry
-(`mecha-cli/tests/effect_class.rs`, `store_write`) and the incognito tool
-list (`serve/incognito.rs`).
+**P7 — `mail_rule_propose`.** Registered where `persona_propose` is
+registered, with one difference. Its effect-class entry
+(`mecha-cli/tests/effect_class.rs`, `store_write`) is test-enforced: an
+unlisted builtin panics there. The incognito allowlist (`serve/incognito.rs`)
+is not — `withheld()` is fail-closed, so nothing fails if a tool is never
+listed — and `mail_rule_propose` is **deliberately left off it**: unlike
+`persona_propose`, which stages *locked* (`ToolCtx::stage_locked`) so an
+incognito room's text stays hidden until unlocked, a rule proposal lands in
+`proposals/`, which `backlog.rs` surfaces in `/queues`, outside the room. A
+rule is not something to draft in a room that leaves no trace.
 
 When P1 lands, `ARCHITECTURE.md` gets a *Mail rules* section for the
 invariants. `TRIFECTA.md` gets the rule-driven send as a channel when P4
