@@ -54,9 +54,11 @@ pub mod routine;
 pub mod safety;
 pub mod sampler;
 pub mod search;
+pub mod story;
 pub mod today;
 pub mod turn;
 pub mod variety;
+pub mod weather;
 pub mod world;
 pub mod writer;
 

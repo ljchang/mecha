@@ -1,0 +1,44 @@
+# Working, with a young child at home.
+
+[[storylet]]
+id = "kid_up_at_night"
+title = "the kid was up half the night"
+size = "minor"
+effect = { energy = -1 }
+
+[[storylet]]
+id = "kid_milestone"
+title = "a small milestone from the kid that made her day"
+size = "minor"
+doing = ["caring"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "school_pickup_scramble"
+title = "a scramble to make school pickup"
+size = "minor"
+days = ["weekdays"]
+doing = ["work", "caring"]
+effect = { stress = 1 }
+
+[[storylet]]
+id = "deadline_crunch"
+title = "a deadline crunch"
+size = "minor"
+doing = ["work"]
+days = ["weekdays"]
+effect = { stress = 1 }
+
+[[storylet]]
+id = "family_outing"
+title = "a good family outing"
+size = "minor"
+days = ["weekends"]
+doing = ["outing", "caring"]
+effect = { mood = 1, stress = -1 }
+
+[[storylet]]
+id = "kid_sick"
+title = "the kid got sick and she stayed home"
+size = "major"
+effect = { stress = 1, energy = -1 }
