@@ -26,7 +26,8 @@ mod support;
 use mecha_core::interpreter::monty::{Confinement, Monty};
 use mecha_core::interpreter::worker::{self, VerifiedWorker};
 use mecha_core::interpreter::{
-    Backstop, Backstops, End, ExternalCall, Finished, HostRaise, Interpreter, Step, Tag, Value,
+    Backstop, Backstops, End, ExternalCall, FileTools, Finished, HostRaise, Interpreter, Step, Tag,
+    Value,
 };
 use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
 use std::path::PathBuf;
@@ -612,6 +613,27 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
             f.printed
         ),
         e => panic!("a refusal read as a missing file: {e:?} {}", f.printed),
+    }
+    // an `fs_list` that does not hand out names (a server's) is not walked:
+    // the caller says so, and the walk is refused without a call
+    let (_program, step) = interp
+        .start_with(
+            "import os\nos.listdir('src')",
+            &["fs_list".to_string()],
+            FileTools {
+                read: false,
+                list: false,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    match step {
+        Step::Done(f) => match f.end {
+            End::Raised(r) => assert_eq!(r.exc_type, "PermissionError"),
+            e => panic!("{e:?}"),
+        },
+        Step::Call(c) => panic!("a server's fs_list was walked: {c:?}"),
     }
     // without `fs_list`, a walk is refused as before
     let (f, calls) = run_with(&interp, "import os\nos.listdir('src')", &["fs_read"], tree).await;
