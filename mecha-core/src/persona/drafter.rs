@@ -106,7 +106,7 @@ pub fn schema() -> serde_json::Value {
 pub fn check(p: &Persona) -> Result<()> {
     if p.state.status != Status::Approved {
         bail!(
-            "`{}` is still a candidate; approve her before drafting her week",
+            "`{}` is still a candidate; approve them before drafting their week",
             p.name
         );
     }
@@ -232,7 +232,7 @@ pub async fn draft(
     let request = request(model, p, provider.structured_output())?;
     let response = provider.complete(&request, None).await?;
     match response.stop_reason {
-        StopReason::Refusal => bail!("the drafter's model refused to draft her week"),
+        StopReason::Refusal => bail!("the drafter's model refused to draft their week"),
         StopReason::MaxTokens => bail!(
             "the drafter's answer was cut off at max_tokens ({})",
             request.max_tokens
