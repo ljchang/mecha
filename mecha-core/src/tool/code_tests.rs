@@ -845,6 +845,27 @@ fn json_get_decodes_the_leaf() {
     );
     let missing = op(&mut run, "json_get", vec![h, json!("messages.4")]).unwrap_err();
     assert!(missing.starts_with("HandleError:"), "{missing}");
+
+    // A leaf nesting past what a value can cross into a program at raises
+    // here, catchably, where the backend would have ended the program
+    // (review of #805); one level less is returned.
+    let nest = |d: usize| "[".repeat(d) + &"]".repeat(d);
+    let deep = op(
+        &mut run,
+        "json_get",
+        vec![json!(nest(crate::interpreter::VALUE_DEPTH + 1))],
+    )
+    .unwrap_err();
+    assert!(
+        deep.starts_with("HandleError: `json_get`: the value"),
+        "{deep}"
+    );
+    assert!(op(
+        &mut run,
+        "json_get",
+        vec![json!(nest(crate::interpreter::VALUE_DEPTH))]
+    )
+    .is_ok());
 }
 
 /// A host function given something that is not a `str` says so, by its
@@ -950,6 +971,17 @@ fn each_host_limit_raises_a_limit_error_naming_it() {
     )
     .unwrap();
     assert_eq!(exact.as_array().unwrap().len(), defaults::PIECES);
+
+    // A count within the cap can still repeat the text past the host-byte
+    // limit through its overlap: refused before anything is built.
+    let tight = HostLimits {
+        host_bytes: 1_000,
+        ..HostLimits::default()
+    };
+    let (mut run, h) = run_over(&"x".repeat(600), tight);
+    let err = op(&mut run, "chunks", vec![h.clone(), json!(500), json!(499)]).unwrap_err();
+    assert!(err.starts_with("LimitError: chunk text:"), "{err}");
+    assert!(op(&mut run, "chunks", vec![h, json!(500)]).is_ok());
 }
 
 /// A read the host-byte limit refuses is still recorded, and a program can
@@ -1408,6 +1440,22 @@ async fn a_function_a_program_assigned_over_is_named() {
         d.content
     );
     assert!(shadowed("if size == 3:\n    pass", &["size"]).is_empty());
+    // A traceback that shows no call to any of them gets no hint: a guess
+    // could name a function the failing line never called.
+    let f = Finished {
+        printed: String::new(),
+        printed_dropped: 0,
+        end: End::Raised(crate::interpreter::Raised {
+            exc_type: "TypeError".into(),
+            message: Some("'int' object is not callable".into()),
+            traceback: "TypeError: 'int' object is not callable".into(),
+        }),
+    };
+    let (out, _) = render(f, 4_000, &["count"]);
+    assert!(
+        !out.contains("is a function this program was given"),
+        "{out}"
+    );
 }
 
 /// The description's worked example, run as the model reads it ([`EXAMPLE`]):
