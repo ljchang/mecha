@@ -1431,6 +1431,10 @@ fn only_a_method_taken_without_a_call_is_monty_s_gap() {
         None
     );
     assert_eq!(
+        method_as_value("  x = d.keyz\nAttributeError: 'dict' object has no attribute 'keyz'"),
+        None
+    );
+    assert_eq!(
         method_as_value("  x = d.gets\nAttributeError: 'dict' object has no attribute 'get'"),
         None
     );

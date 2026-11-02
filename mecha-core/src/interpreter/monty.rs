@@ -74,8 +74,8 @@ use tokio_util::sync::CancellationToken;
 use super::watchdog::{self, Watchdog};
 use super::worker::VerifiedWorker;
 use super::{
-    registrable, Backstop, Backstops, Builtin, End, ExternalCall, Finished, HostRaise, Interpreter,
-    Program, Raised, Step, Tag, Value,
+    ran_and_failed, registrable, Backstop, Backstops, Builtin, End, ExternalCall, Finished,
+    HostRaise, Interpreter, Program, Raised, Step, Tag, Value,
 };
 use crate::sandbox::{Backend, Sandbox};
 
@@ -1073,13 +1073,13 @@ impl Program for MontyProgram {
 
     async fn raise(&mut self, raise: HostRaise) -> Result<Step> {
         // A probe whose parent cannot be listed is a path that is not there,
-        // as `os.path.exists` says of one it cannot reach. Only the tool's own
-        // failure: a spent limit or a stop still raises, or a program past
-        // its tool reads would finish as if it had not been stopped.
+        // as `os.path.exists` says of one it cannot reach. Only `fs_list`
+        // running and failing: a refusal by the gate (a hook, a denial, a
+        // policy), a spent limit or a stop still raises, or a denied or
+        // stopped probe would read as a missing file.
         let walk = self.walk.take();
-        if matches!(walk, Some(Walk::Probe { .. }))
-            && raise.message.starts_with(Tag::ToolError.prefix())
-        {
+        let failed = format!("{} {}", Tag::ToolError.prefix(), ran_and_failed("fs_list"));
+        if matches!(walk, Some(Walk::Probe { .. })) && raise.message.starts_with(&failed) {
             self.take_pending()?;
             let no = MontyObject::bool(false);
             return self.run(Req::Resume(ResumeValue::Return(no))).await;
