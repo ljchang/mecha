@@ -1534,29 +1534,37 @@ misuse.
 
 **M3 (2026-11-02, #805's build, deployed c8514549a): M2's code-on arm
 rerun on R11.** The same five tasks, eight seeds, run directories and
-scorer, one change to the scorer stated here: the log grade accepts each
-failure's date in the owner's zone (America/New_York) as well as UTC,
-because a 02:00Z backup is the previous evening there, and six of M3's log
-runs gave the dates that way. Applied to M2 the change moves
-nothing (3/8 and 0/8 stand: those runs missed failures).
+scorer, with one change to the scorer, made **after reading M3's answers**:
+the log grade accepts each backup failure's date in the owner's zone
+(America/New_York, the run's configured zone; the question names none) as
+well as UTC, because a 02:00Z failure falls on the previous evening there.
+Six of M3's eight log runs dated every failure that way, all seven dates
+right, with the count and the last code. Under the grade as fixed before
+M2, M3's log row is **2/8** and its total **30/40**; both figures are
+given below. Applied to M2 the change moves nothing (3/8 and 0/8 stand),
+but that is no control for M3: M2's failed log runs missed failures
+outright, so neither grade had dates of theirs to judge.
 
 | Task | M2, `code` on | M3, `code` on (R11) |
 |---|---|---|
 | 300 notes: Priya's meetings, Marco's decisions | 3/8, ~1 min | 4/8, 50 s |
 | a roster joined to the notes | 8/8, 28 s | 8/8, 14 s |
 | which of 32 meetings ended without agreement | 5/8 | **8/8** |
-| failures in a 1.5 MB log | 3/8, 26 turns | **8/8**, 4 turns |
+| failures in a 1.5 MB log | 3/8, 26 turns | **8/8**, 4 turns (2/8 dated in UTC) |
 | five short notes | 8/8 | 8/8 |
-| **all** | **27/40 (68%)** | **36/40 (90%)** |
-| programs failed | 129 of 257 (50%) | 19 of 93 (20%) |
-| first program failed | 28 of 31 runs | 14 of 32 runs |
+| **all** | **27/40 (68%)** | **36/40 (90%)**; 30/40 under the UTC-only grade |
 
-The 40 runs took 16 minutes of run time, against 52 for M2's code-on arm. **Of the 14
-failed first programs, 13 called `open()`**, and in 12 of those runs the
-next program read through `fs_read` as the refusal says; 14 of M3's 19
-failures are that one habit, which `open()` on `fs_read` would remove (the
-owner's call, not taken under R11 above). Nothing raised on a string
-method, `in`, `len()` or a host limit. The four failures are reading, all on the 300 notes, and none
-raised: three counted the 124 meetings Marco attended as the 25 he
-presented, as in M1 and M2, and one took a note's discussion line for its
-decision.
+| Programs | M2, `code` on | M3, `code` on (R11) |
+|---|---|---|
+| raised | 129 of 257 (50%) | 19 of 93 (20%) |
+| the first one raised | 28 of 31 runs | 14 of 32 runs |
+
+The 40 runs took 16 minutes of run time, against 52 for M2's code-on arm.
+**Of the 14 first programs that raised, 13 called `open()`**, and in 12 of
+those runs the next program read through `fs_read` as the refusal says; 14
+of the 19 programs that raised did so on that one habit, which `open()` on
+`fs_read` would remove (the owner's call, not taken under R11 above).
+Nothing raised on a string method, `in`, `len()` or a host limit. The four
+wrong answers are reading, all on the 300 notes, and none raised: three
+counted the 124 meetings Marco attended as the 25 he presented, as in M1
+and M2, and one took a note's discussion line for its decision.
