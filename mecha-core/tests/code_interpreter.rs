@@ -378,7 +378,8 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
         assert_eq!(f.printed.trim(), want, "{src}");
         assert_eq!(calls.len(), 1, "{src}");
         assert_eq!(calls[0].name, "fs_read");
-        // monty roots a relative path at `/`; the call gets it relative again
+        // a relative path arrives under the program's directory; the call gets
+        // it relative again
         let path = asked[0][0].1.as_str().unwrap().to_string();
         assert!(
             !path.starts_with('/') && (path == "a.csv" || path == "sub/b.txt"),
