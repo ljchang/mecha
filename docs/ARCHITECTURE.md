@@ -4114,6 +4114,54 @@ to the bytes), or the bytes, which no model has read. It returns `None` for
 any record that is invalid or not yet extracted — a run is never handed a
 request whose prose nothing has looked at.
 
+### The Factory view
+
+`instrument.rs` and the web **Factory** view (`serve/factory.rs`,
+`Factory.svelte`) are the owner's side of the instruments themselves, as
+opposed to the requests arriving through them. A booking page's hours are
+edited there. Four decisions, each a bug if undone:
+
+- **The manifest is the one file.** The slot pipeline reads the manifest's
+  `[availability]` (`slots push --manifest`). The box never computes from it
+  but reads one field, `timezone`, to label the week grid and the
+  confirmation's times. So an hours edit needs no `type push`, and a timezone
+  edit is refused here (`instrument::rewrite`): it is a publish, by hand.
+  The file is the factory's record of what is **served** (`type push`
+  writes it after the box accepts, and the drain validates submissions
+  against it), so the editor writes only keys neither the box nor the drain
+  reads. A later `type push` replaces the file whole and prints a note when
+  the hours it replaced differ (`requests::hours_displaced`, factory side). Until 2026-11-02 the pipeline read a
+  hand-kept copy (`instruments/book-policy.toml`) under a "KEEP THE TWO IN
+  AGREEMENT" comment that nothing enforced. An editor writing two files that
+  must agree is that drift with a nicer face.
+- **The write lives in the handler, never in a verb.** Availability is what a
+  stranger may book of the owner's week. A `mecha factory set` would be a verb
+  a model's shell could run when asked by the prose a stranger typed into the
+  booking form. The charter's rule, applied to a second owner-authored file.
+- **The factory judges its own vocabulary.** A save is `type check`ed and
+  previewed (`slots preview`, over the pipeline's cached busy time) on a hidden
+  draft beside the manifest *before* the manifest is replaced. This side
+  re-decides nothing beyond what would make a write unreadable or a push
+  certain to fail (`instrument::validate`). `PIPELINE_DAYS` is the second of
+  those: it is the `--days` of every script that pushes (the timer and the
+  drain follower), and `the_pipelines_fetch_the_days_the_editor_allows`
+  holds them together.
+- **A save is not undone by what follows it.** The file stands; a failed
+  push or a failed re-read is named beside it, and the timer retries. The
+  page reads bookings as the front-door page does (reconcile, then settle)
+  and drops any booking a withdrawal names, whatever its state says. The
+  confirm sheet quotes only the preview of the draft being saved. A `base` digest refuses a save
+  over a file that changed since the page read it (409), as the charter's list
+  save does, and checks it again at the write, since judging took seconds
+  and spawned two children. Save and preview bodies are capped
+  (`MAX_HOURS_BODY`, and `MAX_WINDOWS`/`MAX_OVERRIDES` in `validate`).
+
+It rides the `frontdoor` feature (`VIEW_FEATURE.factory`): a factory is what
+the front door is the door of, and a second switch could disagree with the
+first. Not built: host cancellation (the box has no `cancelled_by_host` path
+yet), form and page-text editing (that one is a `type push`, a publish), and
+polls.
+
 ## Web search
 
 `search.rs` registers `web_search` when at least one `[[search]]` backend is
