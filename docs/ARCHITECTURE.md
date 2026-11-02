@@ -7288,8 +7288,10 @@ was ever deployed.
   a model regression. The system prompt is stored as text, not a hash — a hash
   says only *that* something differed. The sampler is recorded only as far as
   it was pinned: `temperature`/`seed` of `None` means the server chose, and
-  replay against such a run is pass@k-shaped, not exact-match. `clock` is per
-  run, because one `mecha serve` session held runs on both sides of midnight.
+  replay against such a run is pass@k-shaped, not exact-match. `clock` is
+  per `Config` record, which is per attach and per rebind, and so per run
+  only when the process is: one `mecha serve` session held runs on both
+  sides of midnight. The per-run time is `RunStats::ended_at`.
 - **A `spoken_direction` record is for the corpus, not the conversation**
   (`voice_direction::SpokenDirection`): written by the voice facade while
   its sentence plays, so it is joined by `turn` and `sentence`, never by

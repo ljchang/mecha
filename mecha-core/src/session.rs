@@ -466,9 +466,11 @@ pub struct RunConfig {
     /// a prompt built once per process gives a daily value a daemon's
     /// lifetime; the loop now folds a calendar reference per turn from
     /// [`crate::clock`], so the prompt no longer names a day and a replay has
-    /// to be told which one to stand in. Per *run* rather than per session on
-    /// purpose: one `mecha serve` session held runs on either side of
-    /// midnight, which is the whole shape of the bug.
+    /// to be told which one to stand in. Written with each `Config` record
+    /// rather than once per session on purpose: one `mecha serve` session
+    /// held runs on either side of midnight, which is the whole shape of the
+    /// bug. A `Config` is per attach and per rebind, so this is per run only
+    /// when the process is; the per-run time is [`RunStats::ended_at`].
     ///
     /// `None` on anything recorded before this field, and those replay at
     /// today's date rather than their own — a bounded fidelity limit on old
