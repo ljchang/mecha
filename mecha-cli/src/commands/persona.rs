@@ -914,9 +914,11 @@ fn initiative_lines(
         Err(e) => return vec![format!("unreadable — {e:#}")],
         Ok(i) => i,
     };
-    let unreadable = match i.unreadable {
-        0 => String::new(),
-        n => format!(" ({n} chat(s) could not be read)"),
+    let unreadable = match (i.unreadable, i.left_out) {
+        (0, 0) => String::new(),
+        (n, 0) => format!(" ({n} chat(s) could not be read)"),
+        (0, m) => format!(" ({m} test or withdrawn chat(s) left out)"),
+        (n, m) => format!(" ({n} chat(s) could not be read; {m} test or withdrawn left out)"),
     };
     if i.people == 0 {
         return vec![format!(
@@ -2837,6 +2839,7 @@ mod tests {
             people: 2,
             chats: 3,
             unreadable: 1,
+            left_out: 2,
             arms: vec![ArmReading {
                 arm: Arm {
                     days: true,
@@ -2849,7 +2852,7 @@ mod tests {
         });
         let lines = initiative_lines(&read, 30);
         assert!(
-            lines[0].contains("1 chat(s) could not be read"),
+            lines[0].contains("1 chat(s) could not be read; 2 test or withdrawn left out"),
             "{lines:?}"
         );
         assert!(lines[1].starts_with("days on, people off: 10 replies, 2 of 10 (20%)"));

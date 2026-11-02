@@ -497,6 +497,9 @@ pub struct Said {
     pub chats: usize,
     /// Session files that could not be read.
     pub unreadable: usize,
+    /// Test or withdrawn sessions left out, counted
+    /// ([`super::echo::is_owner_chat`]).
+    pub left_out: usize,
 }
 
 /// Every stretch of every chat in `sessions` last written at or after
@@ -506,7 +509,12 @@ pub fn stretches(sessions: &Path, since: std::time::SystemTime) -> Result<Said> 
     let (listed, mut unreadable) = Session::list_counting(sessions)?;
     let mut all: Vec<(DateTime<Utc>, usize, Vec<Turn>)> = Vec::new();
     let mut chats = 0;
+    let mut left_out = 0;
     for (meta, path) in listed {
+        if !super::echo::is_owner_chat(&meta) {
+            left_out += 1;
+            continue;
+        }
         // A file whose time cannot be read is unknown, never outside the
         // window: counted with the unreadable.
         match std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -536,6 +544,7 @@ pub fn stretches(sessions: &Path, since: std::time::SystemTime) -> Result<Said> 
             .collect(),
         chats,
         unreadable,
+        left_out,
     })
 }
 
@@ -552,6 +561,8 @@ pub struct Initiative {
     /// Session files that could not be read: counted, never silently an
     /// empty chat.
     pub unreadable: usize,
+    /// Test or withdrawn sessions left out, counted.
+    pub left_out: usize,
 }
 
 /// One arm's row.
@@ -586,6 +597,7 @@ pub fn initiative(
         chats: said.chats,
         people: who.len(),
         unreadable: said.unreadable,
+        left_out: said.left_out,
         ..Initiative::default()
     };
     out.arms = score(&said.stretches, &who)
@@ -857,6 +869,10 @@ mod tests {
         use crate::session::{RunConfig, RunStats, SessionMeta};
 
         fn scratch(dir: &Path) -> Session {
+            scratch_kind(dir, None)
+        }
+
+        fn scratch_kind(dir: &Path, kind: Option<crate::session::SessionKind>) -> Session {
             let meta = SessionMeta {
                 id: format!("20260101T000000-{}", uuid::Uuid::new_v4().simple()),
                 created_at: chrono::Utc::now(),
@@ -864,7 +880,7 @@ mod tests {
                 model: "test-model".into(),
                 workspace: dir.to_path_buf(),
                 title: None,
-                kind: None,
+                kind,
             };
             Session::create(dir, meta).unwrap()
         }
@@ -1040,8 +1056,24 @@ mod tests {
             run(&b, &mut Conversation::default(), "rain", "Ugh.", &[]);
             config(&a, "p", "2026-01-03T09:00:00Z");
             run(&a, &mut ca, "how is Pell?", "Better.", &[]);
+            // A test run and a chat the owner withdrew are not her chats:
+            // left out and counted (review of #808).
+            for kind in [
+                crate::session::SessionKind::Test,
+                crate::session::SessionKind::Experiment,
+            ] {
+                let t = scratch_kind(&dir, Some(kind));
+                config(&t, "p", "2026-01-02T12:00:00Z");
+                run(
+                    &t,
+                    &mut Conversation::default(),
+                    "is Pell ok?",
+                    "Pell is fine.",
+                    &[],
+                );
+            }
             let read = stretches(&dir, std::time::UNIX_EPOCH).unwrap();
-            assert_eq!((read.chats, read.unreadable), (2, 0));
+            assert_eq!((read.chats, read.unreadable, read.left_out), (2, 0, 2));
             let said = read.stretches;
             let owners: Vec<&str> = said.iter().map(|(_, t)| t[0].owner.as_str()).collect();
             assert_eq!(owners, vec!["hi", "rain", "how is Pell?"]);
