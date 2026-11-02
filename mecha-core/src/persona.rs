@@ -42,6 +42,7 @@ pub mod drafter;
 pub mod echo;
 pub mod edit;
 pub mod files;
+pub mod initiative;
 pub mod judge;
 pub mod memory;
 pub mod memory_tools;

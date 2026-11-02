@@ -1950,10 +1950,13 @@ export function personaPeopleAsOf(asOf) {
   if (!asOf || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return personaPeople;
   const by = (e) => (e.when?.on ?? '0000-01-01') <= asOf;
   const mood = { conflict: 'tense', strengthened: 'warm', reconciled: 'warm', renewed: 'warm' };
+  // As `Network::as_of` keeps them: someone with an event by then, or with
+  // no event at all, who has been there from the beginning (review of #804).
   const people = personaPeople.people
+    .filter((p) => !p.events.length || p.events.some(by))
     .map((p) => ({ ...p, events: p.events.filter(by) }))
-    .filter((p) => p.events.length)
     .map((p) => {
+      if (!p.events.length) return p;
       const last = p.events[p.events.length - 1];
       return { ...p, edge: { ...p.edge, valence: p.events.map((e) => mood[e.event]).filter(Boolean).pop() ?? null, status: last.event === 'ended' ? 'ended' : 'active' } };
     });

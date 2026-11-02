@@ -2115,15 +2115,17 @@ impl PersonaChats {
     ) -> Result<serde_json::Value, Refusal> {
         use mecha_core::imagelib::Kind;
         use mecha_core::persona::{network, people_draft};
+        // Who first, then the date: a persona the page cannot see is a 404
+        // whatever was asked of it, as on every other door (review of #804).
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
         let as_of = as_of
             .map(|d| {
                 chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
                     .map_err(|_| Refusal::Bad(format!("`{d}` is not a date (YYYY-MM-DD)")))
             })
             .transpose()?;
-        let p = self
-            .visible(library, name, token)
-            .ok_or(Refusal::NotFound)?;
         if !p.settings.life.people {
             return Ok(serde_json::json!({
                 "absent": "off",
@@ -2423,6 +2425,7 @@ impl PersonaChats {
                 )));
             }
             drafter::check(&p).map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+            people_draft::may_propose(&me.store, &p).map_err(proposal_refusal)?;
             Ok(p)
         })
         .await
@@ -2434,7 +2437,7 @@ impl PersonaChats {
         let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
         let proposed = people_draft::propose(provider.as_ref(), &bound.model, &self.store, &p)
             .await
-            .map_err(failed)?;
+            .map_err(proposal_refusal)?;
         let (me, lib, unlock) = (Arc::clone(self), Arc::clone(library), body.unlock.clone());
         let mut out =
             tokio::task::spawn_blocking(move || me.people(&lib, &p.name, unlock.as_deref()))
@@ -2473,7 +2476,7 @@ impl PersonaChats {
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let done =
             people_draft::accept(&self.store, &lib, &p, body.only.as_deref()).map_err(|e| {
-                if e.downcast_ref::<people_draft::StaleProposal>().is_some() {
+                if is_proposal_conflict(&e) {
                     Refusal::Conflict(format!("{e:#}"))
                 } else {
                     network_refusal(e)
@@ -6455,6 +6458,23 @@ pub struct DraftBody {
     unlock: Option<String>,
 }
 
+/// A proposal the owner has to act on first: one still waiting, or one
+/// read from an `identity.md` that has changed since.
+fn is_proposal_conflict(e: &anyhow::Error) -> bool {
+    use mecha_core::persona::people_draft::{ProposalWaiting, StaleProposal};
+    e.downcast_ref::<ProposalWaiting>().is_some() || e.downcast_ref::<StaleProposal>().is_some()
+}
+
+/// A proposal's refusal: a conflict the owner resolves on the page is a
+/// 409, anything else a failure (review of #804).
+fn proposal_refusal(e: anyhow::Error) -> Refusal {
+    if is_proposal_conflict(&e) {
+        Refusal::Conflict(format!("{e:#}"))
+    } else {
+        failed(e)
+    }
+}
+
 /// A refusal from her network's owner doors: a disk that would not take
 /// the write is the server's failure; the rest is what was sent refused.
 fn network_refusal(e: anyhow::Error) -> Refusal {
@@ -10000,6 +10020,13 @@ mod tests {
         assert_eq!(got["accepted"]["waiting"], 1);
         assert_eq!(got["proposal"]["people"][0]["name"], "Ines");
         assert_eq!(got["people"][0]["name"], "Theo");
+        // Ines still waits on the owner: proposing again is a 409 before
+        // the model runs, never a replacement (review of #804).
+        assert!(matches!(
+            ps.propose_people(&w.chat.follower, &w.library, "mara", &ProposalBody::default())
+                .await,
+            Err(Refusal::Conflict(m)) if m.contains("accept or dismiss it first")
+        ));
         // identity.md changed since: accepting the rest is a 409.
         let id = w.store().join("mara/identity.md");
         let text = std::fs::read_to_string(&id).unwrap();
@@ -10010,6 +10037,19 @@ mod tests {
             ps.act_on_proposal(&w.library, "mara", true, &ProposalBody::default()),
             Err(Refusal::Conflict(m)) if m.contains("changed since")
         ));
+        // Stale, it is the one proposal a new reading replaces: the page's
+        // "Propose again".
+        let again = ps
+            .propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again["proposal"]["stale"], false);
+        assert_eq!(again["proposal"]["people"].as_array().unwrap().len(), 2);
         // Dismissed, nothing waits.
         let gone = ps
             .act_on_proposal(&w.library, "mara", false, &ProposalBody::default())
@@ -10048,6 +10088,18 @@ mod tests {
             ps.people_on(&w.library, "mara", None, Some("someday")),
             Err(Refusal::Bad(_))
         ));
+        // Hidden, she is missing whatever date was asked: who is read
+        // before the date (review of #804).
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        for day in [Some("someday"), Some("2025-01-01"), None] {
+            assert!(
+                matches!(
+                    ps.people_on(&w.library, "mara", None, day),
+                    Err(Refusal::NotFound)
+                ),
+                "{day:?}"
+            );
+        }
     }
 
     #[test]

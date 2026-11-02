@@ -285,6 +285,13 @@
               Add {ticked.length === data.proposal.people.length ? 'them all' : `${ticked.length} ticked`}
             </button>
             <button class="linkbtn" disabled={busy} onclick={dismissProposal}>Dismiss</button>
+            {#if data.proposal.stale}
+              <!-- The one door to a new reading while a stale one waits: the
+                   server replaces only a stale proposal (review of #804). -->
+              <button class="linkbtn" disabled={busy || proposing} onclick={propose}>
+                {proposing ? 'Reading identity.md…' : 'Propose again'}
+              </button>
+            {/if}
           </div>
         </div>
       {:else}

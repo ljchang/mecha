@@ -667,8 +667,9 @@ impl Network {
     /// any other undated event from the day it was recorded. Someone is in it
     /// once any event about them is, and someone with no event at all (the
     /// first taken back) from the beginning, as an undated start would be, so
-    /// "as of today" is never less than now (review of #804). Read only, from
-    /// the log alone.
+    /// "as of today" differs from now only by events dated after today: the
+    /// owner can date one ahead, and someone whose every event is still to
+    /// come is not in it yet (reviews of #804). Read only, from the log alone.
     pub fn as_of(&self, day: NaiveDate) -> Network {
         let events: Vec<EdgeEvent> = self
             .events
