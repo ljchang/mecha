@@ -7,6 +7,11 @@ its §8 said "auto-send of anything" and "an autonomy tier" were deliberately
 not being built, and R1–R3 below are the owner reversing that, inside the
 bounds this document sets.*
 
+**One word, two meanings, kept apart here:** *the digest* (§7) is the
+morning summary of what rules did; a rule's *digest* in §3 and §6.2 is a hash
+of its files, which an approval is bound to. `do = "digest"` is the action
+that puts a message in the former.
+
 **The one-paragraph version.** A mail rule is *when* (a matcher over incoming
 mail), *what* (a list of actions) and a *mode* (`off`, `shadow`, `propose`,
 `auto`). It is the event-driven twin of a trigger: a trigger is a cron slot
@@ -103,7 +108,9 @@ means none.
   aliases.toml                 the owner's other addresses (§5.4), owner-written
   limits.toml                  the global daily cap (§5.4); a rule's own cap is
                                in its rule.toml
-  deferred.jsonl               threads whose archive waits for classify (§4.1)
+  deferred.jsonl               threads whose archive waits for classify (§4.1);
+                               the one file here that is rewritten, not
+                               appended — ids leave once their actions settle
   .lock
 ```
 
@@ -558,7 +565,7 @@ Which guard binds which action group, so no section has to infer it:
 | DMARC aligned with `From`, topmost instance | yes | yes (§5.2) |
 | Sender-constrained matcher for `auto` | drafted only (§5.2) | yes (§5.2) |
 | `From` only, never `Reply-To` or reply-all | yes | n/a — the recipient is the owner's `to` |
-| Once per sender per rule per 7 days | yes | **no** — every receipt from a listed vendor is forwarded |
+| Once per sender per rule per 7 days | yes | **no** — every new receipt thread from a listed vendor is forwarded; §4.4's once-per-thread limit still applies, so a vendor reply into an existing order thread is `skipped: thread already handled`, visibly |
 | Per-rule and global daily caps | yes | yes |
 | Not into a conversation the owner has joined | yes | no |
 | Never on a message `From` one of the owner's own addresses | yes | yes |
@@ -831,10 +838,15 @@ meaning for. The guard is off by default.
 the rule's approval wins.** The route says a model's call to a listed send
 tool is staged, not executed. On this deployment every mail send tool is
 routed, so if the route held rule sends too, R1 and R2 would be impossible
-in practice. The rule's `auto` approval is the later and more specific
-statement — the owner's, made per rule, against shown text and recipients,
-under §6.1's raise gate — and a rule send is not a model's tool call, which
-is what the route governs. So the route does not hold a rule send, and the
+in practice. This overrides a stated principle and says so: the queue is
+"the one place outbound mail waits regardless of who wrote it" (`mecha mail
+compose`'s own words), which is why an owner's hand-typed `compose` or
+`forward` stages today. The argument is R1 and R2 alone: the owner reversed
+"no auto-send of anything" for this feature, per rule, and a rule's `auto`
+approval is the later and more specific statement — made per rule, against
+shown text and recipients, under §6.1's raise gate. So the route does not
+hold a rule send in `auto`, the outbox's own section in `ARCHITECTURE.md`
+gains a sentence naming this exception when P4 lands, and the
 approval screen says so in a line: *this rule sends without the outbox; your
 outbox routing still applies to everything else.* `block_sends_after_private`
 is different in kind — it is the owner saying nothing private leaves at all,
@@ -976,11 +988,16 @@ real and worth serving, and the safe shape exists already in
   no data. **The write is checked before any byte lands**, not only by the
   loader afterwards: the store is outside `ToolCtx::resolve`'s reach, so a
   `template = "../../skills/…"` would otherwise create a file where §0 says
-  the harness may never write. Every model-supplied name — the rule's name
-  and every file it names — is charset-validated at the write on
-  `persona::validate_name`'s precedent (lowercase, digits, `-`, `_`, a leading
-  alphanumeric, length-capped, so no separator or `..` can appear), and
-  containment in `proposals/<id>/` is proved before the file is created. The
+  the harness may never write. Every model-supplied name is validated at the
+  write: the rule's name by `persona::validate_name` (lowercase, digits, `-`,
+  `_`, a leading alphanumeric, length-capped), and every file it names as a
+  **stem** passing the same check plus an **extension matched exactly against
+  a closed list** (`md`). Since the stem can hold no `.` and the extension is
+  compared whole, a name has exactly one dot and no separator, so neither
+  `..` nor a path can be spelled — `reply.md` passes, `../reply.md` and
+  `reply.md/x` cannot. Containment in `proposals/<id>/` is still proved
+  before the file is created, as the second of two checks rather than the
+  only one. The
   proposal id is minted by the store, never taken from the model.
 - The proposal is checked by the same loader an installed rule uses, so a
   proposal that previews clean installs clean.
@@ -1064,7 +1081,9 @@ groups (including a `tag` action, which writes mecha's own tag onto the
 triage record and has no provider verb, since tags are never Gmail labels or
 Graph categories), the five-minute timer, `mecha mail rule add | list | show | mode |
 test | ledger | undo | pause-all` — P1 is where rules first act in `auto`, so
-the panic button ships with them — the feature registry entry (off by
+the panic button ships with them, and so do §6.4's brakes over P1's actions
+(the undo-rate brake and the consecutive-failure brake) — the feature
+registry entry (off by
 default) — through
 `ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
@@ -1094,8 +1113,10 @@ wrong-match, header-rule testing, *make a rule from this thread*.
 **P4 — description rules and fixed sends.** The classifier's `rule` field
 with grounding, the confirmation pass for send candidates and the sentence it
 adds to `learnable()`'s comment (§4.2), template `reply`, verbatim `forward`,
-§5.4's guards, the approval screen. In `propose` until the owner approves a
-rule.
+§5.4's guards and the cap brakes of §6.4, the approval screen, the outbox
+exception's sentence in `ARCHITECTURE.md` (§6.3), and `mecha doctor`'s
+attention for a rule holding an outbound group in `auto` while `shell` runs
+unconfined (§6.1). In `propose` until the owner approves a rule.
 
 **P5 — typed-field sends.** `fields`, the grounded extraction, the rendered
 template.
