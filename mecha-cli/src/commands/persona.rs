@@ -132,6 +132,13 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
+    /// Her story: small events drawn over her days by the director, her
+    /// energy, stress and mood, and the weather where she lives
+    /// (`PERSONA-LIFE-DESIGN.md` §4.3). Nothing of it reaches her chats yet.
+    Story {
+        #[command(subcommand)]
+        cmd: StoryCmd,
+    },
     /// Her day: drawn from her routine and time-use data the first time it
     /// is asked for, then kept (`PERSONA-LIFE-DESIGN.md` §4.2). Needs
     /// `[life] world = true` and a `cell` in routine.toml.
@@ -155,6 +162,28 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum StoryCmd {
+    /// Her days' events, levels and weather, a week to today by default.
+    Show {
+        name: String,
+        /// The last day shown, YYYY-MM-DD; today when left out.
+        #[arg(long)]
+        date: Option<String>,
+        /// How many days, ending on `--date`.
+        #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u32).range(1..=31))]
+        days: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write her deck (`story.toml`) from the starter for her kind of week,
+    /// to edit. Refused when she already has one.
+    Init { name: String },
+    /// Fetch the weather where she lives (`story.toml`'s `[place]`): the
+    /// last two weeks and the next one, parsed into closed fields.
+    Weather { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -440,8 +469,55 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     {
         return propose_people(global, &dir, &name).await;
     }
+    if let Cmd::Story {
+        cmd: StoryCmd::Weather { name },
+    } = args.cmd
+    {
+        return fetch_weather(&dir, &name).await;
+    }
     let lib_dir = Library::default_dir()?;
     run(&dir, &lib_dir, args.cmd)
+}
+
+/// `mecha persona story weather`: one read of the weather service for her
+/// place, parsed into closed fields and stored. No model is involved.
+async fn fetch_weather(dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::{story, weather, world::World};
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    if !p.settings.life.world {
+        bail!(
+            "[life] world is off for `{}`; their days are not drawn",
+            p.name
+        );
+    }
+    let pdir = dir.join(&p.name);
+    let text = std::fs::read_to_string(pdir.join(story::FILE)).with_context(|| {
+        format!(
+            "`{}` has no {}; `mecha persona story init {}` writes one, then add their [place]",
+            p.name,
+            story::FILE,
+            p.name
+        )
+    })?;
+    let Some(place) = story::parse(&text)?.place else {
+        bail!("{} names no [place] for `{}`", story::FILE, p.name);
+    };
+    let (_, today) = owner_dates(None)?;
+    eprintln!(
+        "asking for the weather at {} ({:.2}, {:.2})",
+        place.name, place.lat, place.lon
+    );
+    let days = weather::fetch(&place, today).await?;
+    if days.is_empty() {
+        bail!("the weather service answered, but every day was refused; nothing stored");
+    }
+    let n = World::open(&pdir)?.set_weather(&days)?;
+    println!(
+        "Stored {n} days of weather for `{}` at {}.",
+        p.name, place.name
+    );
+    Ok(())
 }
 
 /// `mecha persona routine draft`: her week drafted by her own model, the
@@ -1317,6 +1393,7 @@ fn run_with(
         }
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
         Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
+        Cmd::Story { cmd } => story_cmd(dir, cmd)?,
         Cmd::People { cmd } => people_cmd(dir, &lib, cmd)?,
         Cmd::Day { name, date, json } => day_cmd(dir, &name, date.as_deref(), json)?,
         Cmd::Week { name, date, json } => week_cmd(dir, &name, date.as_deref(), json)?,
@@ -1439,6 +1516,101 @@ fn owner_dates(date: Option<&str>) -> Result<(chrono::NaiveDate, chrono::NaiveDa
             .with_context(|| format!("`{d}` is not a date (YYYY-MM-DD)"))?,
     };
     Ok((date, today))
+}
+
+/// `mecha persona story`: her events, levels and weather, through
+/// `story::story`'s own door, drawn and stored on the first asking.
+fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
+    use mecha_core::persona::{routine, story};
+    match cmd {
+        StoryCmd::Show {
+            name,
+            date,
+            days,
+            json,
+        } => {
+            let (to, today) = owner_dates(date.as_deref())?;
+            let name = name.trim().to_lowercase();
+            let from = to - chrono::Days::new(u64::from(days - 1));
+            let got = story::story(dir, &name, from, to, today)?;
+            let names = story::names(&dir.join(&name))?;
+            print!("{}", render_story(&got.days, &names, json, today)?);
+            if let Some(why) = &got.why {
+                eprintln!("the rest is not drawn: {why}");
+            }
+        }
+        StoryCmd::Init { name } => {
+            let store = load(dir);
+            let p = find(&store, &name)?;
+            let pdir = dir.join(&p.name);
+            let Some(cell) = routine::load(&pdir)?.and_then(|r| r.cell) else {
+                bail!(
+                    "`{}` has no routine naming their kind of week; set it first \
+                     (`mecha persona routine edit {}`)",
+                    p.name,
+                    p.name
+                );
+            };
+            let path = story::init(&pdir, cell).with_context(|| format!("`{}`", p.name))?;
+            println!("Wrote {} from the {} starter.", path.display(), cell.id());
+        }
+        StoryCmd::Weather { .. } => bail!("`story weather` is run by `execute`"),
+    }
+    Ok(())
+}
+
+/// Her story as `mecha persona story show` prints it: counts and closed
+/// fields, and titles with `{who}` filled from her network.
+fn render_story(
+    days: &[mecha_core::persona::story::StoryDay],
+    names: &std::collections::BTreeMap<String, String>,
+    json: bool,
+    today: chrono::NaiveDate,
+) -> Result<String> {
+    use mecha_core::persona::story;
+    use std::fmt::Write;
+    let mut out = String::new();
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&story::to_json(days, names))?
+        )?;
+        return Ok(out);
+    }
+    let lv = |l: &story::Levels| {
+        format!(
+            "energy {}, stress {}, mood {}",
+            l.energy.id(),
+            l.stress.id(),
+            l.mood.id()
+        )
+    };
+    for d in days {
+        let weather = d.weather.map_or("no weather stored".to_string(), |w| {
+            format!("{}, {}°/{}°C", w.sky.id(), w.high_c, w.low_c)
+        });
+        writeln!(
+            out,
+            "{} {}{} · {weather}",
+            d.date.format("%a"),
+            d.date,
+            match (d.kept, d.date > today) {
+                (true, _) => "",
+                (false, true) => " (ahead, not kept)",
+                (false, false) => " (past the keep window, drawn now and not kept)",
+            }
+        )?;
+        writeln!(out, "  morning: {}", lv(&d.morning))?;
+        if d.events.is_empty() {
+            writeln!(out, "  (a quiet day)")?;
+        }
+        for e in &d.events {
+            writeln!(out, "  - [{}] {}", e.size.id(), story::title(e, names))?;
+        }
+        writeln!(out, "  evening: {}", lv(&d.evening))?;
+    }
+    Ok(out)
 }
 
 /// `mecha persona day`: the sampled day, through `world::day`'s own door,

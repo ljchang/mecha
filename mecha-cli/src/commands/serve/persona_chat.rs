@@ -1932,7 +1932,48 @@ impl PersonaChats {
         match mecha_core::persona::world::week_view(&self.store, &p.name, date, today)
             .map_err(failed)?
         {
-            Ok(week) => out["week"] = week.to_json(),
+            Ok(week) => {
+                out["week"] = week.to_json();
+                // Her story over the same week (§4.3): events, levels and
+                // weather, for the owner only; nothing of it reaches her
+                // chats. Why it is missing rides beside, never a route error.
+                use chrono::Datelike;
+                use mecha_core::persona::story;
+                let monday =
+                    date - chrono::Days::new(u64::from(date.weekday().num_days_from_monday()));
+                match story::story(
+                    &self.store,
+                    &p.name,
+                    monday,
+                    monday + chrono::Days::new(6),
+                    today,
+                ) {
+                    Ok(story::Story { days, why }) => {
+                        if let Some(why) = why {
+                            out["story_error"] = serde_json::json!(why);
+                        }
+                        // Her people unreadable: titles read "someone", and
+                        // the page says why rather than looking right.
+                        let names = match story::names(&self.store.join(&p.name)) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                // Beside a reason already there, never over it.
+                                let people = format!(
+                                    "her people could not be read, so who was there is not shown: {e:#}"
+                                );
+                                out["story_error"] =
+                                    serde_json::json!(match out["story_error"].as_str() {
+                                        Some(was) => format!("{was}; {people}"),
+                                        None => people,
+                                    });
+                                Default::default()
+                            }
+                        };
+                        out["story"] = story::to_json(&days, &names);
+                    }
+                    Err(e) => out["story_error"] = serde_json::json!(format!("{e:#}")),
+                }
+            }
             Err(why) => {
                 out["absent"] = serde_json::json!(why);
                 out["why"] = serde_json::json!(why.why(&p.name));

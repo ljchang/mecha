@@ -57,13 +57,21 @@ pub enum Source {
     Sampler,
     /// Written by the owner.
     Owner,
+    /// Drawn by the director from her deck (`persona::story`).
+    Storylet,
+    /// Parsed by the harness into closed types from a source the owner
+    /// pointed at (`persona::weather`, shelf A).
+    Feed,
     #[serde(other)]
     Unknown,
 }
 
 impl Source {
     pub fn is_clean(self) -> bool {
-        matches!(self, Source::Sampler | Source::Owner)
+        // `Storylet` is code over the owner's deck. `Feed` names outside
+        // content however narrowly it was parsed, so the label never
+        // launders a later shelf that carries text (review of #814).
+        matches!(self, Source::Sampler | Source::Owner | Source::Storylet)
     }
 }
 
@@ -132,8 +140,9 @@ pub struct World {
 }
 
 /// `PRAGMA user_version` this binary writes. Migrations are additive: 1 is
-/// the days and state, 2 her network (`people`, `edge_events`).
-const SCHEMA: i64 = 2;
+/// the days and state, 2 her network (`people`, `edge_events`), 3 her story
+/// (`weather`, `story_days`, `events`).
+const SCHEMA: i64 = 3;
 
 fn wire<T: Serialize>(v: &T) -> String {
     match serde_json::to_value(v) {
@@ -241,8 +250,51 @@ fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 3 {
+        // Her story (§4.3, §5): the weather where she lives, each drawn
+        // day's levels and what it was drawn from, and the events drawn.
+        // An event names its storylet and its people by id; its source is
+        // the director's, for `forget` and the teller to read.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE weather (
+                 date TEXT PRIMARY KEY,
+                 sky TEXT NOT NULL,
+                 high_c INTEGER NOT NULL,
+                 low_c INTEGER NOT NULL CHECK (low_c <= high_c),
+                 source TEXT NOT NULL,
+                 fetched_at TEXT NOT NULL
+             );
+             CREATE TABLE story_days (
+                 date TEXT PRIMARY KEY,
+                 morning TEXT NOT NULL,
+                 evening TEXT NOT NULL,
+                 weather TEXT,
+                 inputs TEXT NOT NULL,
+                 drawn_at TEXT NOT NULL
+             );
+             CREATE TABLE events (
+                 uid TEXT PRIMARY KEY,
+                 date TEXT NOT NULL,
+                 seq INTEGER NOT NULL,
+                 storylet TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 size TEXT NOT NULL,
+                 people TEXT NOT NULL,
+                 effect TEXT NOT NULL,
+                 importance REAL NOT NULL,
+                 arc TEXT,
+                 told INTEGER NOT NULL DEFAULT 0,
+                 source TEXT NOT NULL,
+                 recorded_at TEXT NOT NULL
+             );
+             CREATE INDEX events_date ON events(date);
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )?;
+    }
     // A new step goes above, and this moves with it.
-    const _: () = assert!(SCHEMA == 2);
+    const _: () = assert!(SCHEMA == 3);
     Ok(())
 }
 
@@ -579,6 +631,201 @@ impl World {
             minutes: out,
             unreadable,
         }))
+    }
+
+    /// The weather stored for `date`, if any; a row this binary cannot read
+    /// is none, never a guess.
+    pub fn weather(&self, date: NaiveDate) -> Result<Option<super::weather::Weather>> {
+        use super::weather::{Sky, Weather};
+        let row: Option<(String, i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT sky, high_c, low_c FROM weather WHERE date = ?1",
+                params![date.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(sky, high, low)| {
+            Some(Weather {
+                date,
+                sky: Sky::from_id(&sky)?,
+                high_c: i16::try_from(high).ok()?,
+                low_c: i16::try_from(low).ok()?,
+            })
+        }))
+    }
+
+    /// Store fetched weather, replacing what a day had: a later fetch knows
+    /// the day better (a forecast becomes an observation).
+    pub fn set_weather(&mut self, days: &[super::weather::Weather]) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let at = stamp();
+        for w in days {
+            tx.execute(
+                "INSERT INTO weather (date, sky, high_c, low_c, source, fetched_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(date) DO UPDATE SET sky = ?2, high_c = ?3, low_c = ?4,
+                     source = ?5, fetched_at = ?6",
+                params![
+                    w.date.to_string(),
+                    w.sky.id(),
+                    w.high_c,
+                    w.low_c,
+                    wire(&Source::Feed),
+                    at
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(days.len())
+    }
+
+    /// A stored story day and the digest it was drawn from. One whose
+    /// levels or events this binary cannot read is none, so it is drawn
+    /// again rather than shown wrong.
+    pub fn story_day(&self, date: NaiveDate) -> Result<Option<(super::story::StoryDay, String)>> {
+        use super::story::{Effect, Event, Levels, StoryDay};
+        let row: Option<(String, String, Option<String>, String)> = self
+            .conn
+            .query_row(
+                "SELECT morning, evening, weather, inputs FROM story_days WHERE date = ?1",
+                params![date.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((morning, evening, weather, inputs)) = row else {
+            return Ok(None);
+        };
+        let levels = |s: &str| -> Option<Levels> {
+            let v: Vec<&str> = s.split(',').collect();
+            let [e, st, m] = v.as_slice() else {
+                return None;
+            };
+            Some(Levels {
+                energy: super::story::level_of(e)?,
+                stress: super::story::level_of(st)?,
+                mood: super::story::level_of(m)?,
+            })
+        };
+        let (Some(morning), Some(evening)) = (levels(&morning), levels(&evening)) else {
+            return Ok(None);
+        };
+        let weather = match weather {
+            Some(w) => match serde_json::from_str::<serde_json::Value>(&w) {
+                Ok(v) => (|| {
+                    Some(super::story::WeatherOut {
+                        sky: super::weather::Sky::from_id(v["sky"].as_str()?)?,
+                        high_c: i16::try_from(v["high_c"].as_i64()?).ok()?,
+                        low_c: i16::try_from(v["low_c"].as_i64()?).ok()?,
+                    })
+                })(),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT storylet, title, size, people, effect, importance
+             FROM events WHERE date = ?1 ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map(params![date.to_string()], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, f64>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut events = Vec::new();
+        for (storylet, title, size, people, effect, importance) in rows {
+            let (Some(size), Ok(people), Ok(effect)) = (
+                super::story::size_of(&size),
+                serde_json::from_str::<Vec<String>>(&people),
+                serde_json::from_str::<Effect>(&effect),
+            ) else {
+                return Ok(None);
+            };
+            events.push(Event {
+                storylet,
+                title,
+                size,
+                people,
+                effect,
+                importance,
+            });
+        }
+        Ok(Some((
+            StoryDay {
+                date,
+                weather,
+                morning,
+                evening,
+                events,
+                kept: true,
+            },
+            inputs,
+        )))
+    }
+
+    /// The earliest story day kept from `from` to `to`, inclusive.
+    pub fn earliest_story_day(&self, from: NaiveDate, to: NaiveDate) -> Result<Option<NaiveDate>> {
+        let got: Option<String> = self.conn.query_row(
+            "SELECT MIN(date) FROM story_days WHERE date >= ?1 AND date <= ?2",
+            params![from.to_string(), to.to_string()],
+            |r| r.get(0),
+        )?;
+        Ok(got.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok()))
+    }
+
+    /// Store a drawn story day, replacing what the date held.
+    pub fn set_story_day(&mut self, day: &super::story::StoryDay, inputs: &str) -> Result<()> {
+        let levels = |l: &super::story::Levels| {
+            format!("{},{},{}", l.energy.id(), l.stress.id(), l.mood.id())
+        };
+        let date = day.date.to_string();
+        let at = stamp();
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM events WHERE date = ?1", params![date])?;
+        tx.execute(
+            "INSERT INTO story_days (date, morning, evening, weather, inputs, drawn_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(date) DO UPDATE SET morning = ?2, evening = ?3, weather = ?4,
+                 inputs = ?5, drawn_at = ?6",
+            params![
+                date,
+                levels(&day.morning),
+                levels(&day.evening),
+                day.weather
+                    .map(|w| serde_json::to_string(&w).expect("closed fields")),
+                inputs,
+                at
+            ],
+        )?;
+        for (seq, e) in day.events.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO events (uid, date, seq, storylet, title, size, people, effect,
+                     importance, source, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    uid(),
+                    date,
+                    seq as i64,
+                    e.storylet,
+                    e.title,
+                    e.size.id(),
+                    serde_json::to_string(&e.people)?,
+                    serde_json::to_string(&e.effect)?,
+                    e.importance,
+                    wire(&Source::Storylet),
+                    at
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Write a state row, superseding the current one for its key.
@@ -1678,5 +1925,10 @@ mod tests {
         assert_eq!(home.source, Source::Unknown);
         assert!(!home.source.is_clean());
         assert!(Source::Sampler.is_clean() && Source::Owner.is_clean());
+        assert!(Source::Storylet.is_clean());
+        assert!(
+            !Source::Feed.is_clean(),
+            "outside content is never clean by label"
+        );
     }
 }
