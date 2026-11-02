@@ -295,7 +295,7 @@
               <div class="meta" class:hazardtext={pushIsLate(item.preview.last_pushed_at)}>
                 <span>last pushed {ago(item.preview.last_pushed_at)}</span>
                 {#if pushIsLate(item.preview.last_pushed_at)}<span>— the slot timer (every two minutes) may be failing</span>{/if}
-                {#if item.preview.held_by_polls}<span>{item.preview.held_by_polls} held by open polls</span>{/if}
+                {#if item.preview.held_slots}<span>{item.preview.held_slots} slot{item.preview.held_slots === 1 ? '' : 's'} held by open polls</span>{/if}
               </div>
             {:else if item.preview_error}
               <div class="warnline">{@render hazardGlyph()}<span>{item.preview_error}</span></div>
@@ -437,7 +437,7 @@
 
           <!-- What the page would offer: the saved hours, or the draft's. -->
           <div class="section">
-            {dirty ? 'With these changes' : 'What the page offers'}
+            {dirty ? 'With these changes' : 'What the push offers'}
             <span class="sub">next two weeks, {shown?.timezone ?? draft.timezone}</span>
           </div>
           {#if dirty && draftError}
@@ -445,6 +445,7 @@
           {:else if dirty && !current}
             <div class="empty">computing…</div>
           {:else if shown}
+            <div class="note">Times already booked are removed by the page itself, so a confirmed meeting's slot can show here and not there.</div>
             {#if dirty}
               <div class="meta"><span>{current.slots.length} slots over {current.horizon_days} days (now {item.preview?.slots.length ?? '?'})</span></div>
             {/if}
