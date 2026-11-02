@@ -203,6 +203,8 @@ permit.rs    how many background runs may hold the model at once — seats on
 hold.rs      which runs hold a router's model, and a switch waiting on them —
              files, a write-then-check handshake, and the run always yields
 frontdoor.rs inbound requests from strangers, and the quarantine over them
+instrument.rs a factory manifest's home half: a booking's hours read and set in place,
+             by the owner's page only — no verb, no tool
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
 charter.rs   the owner's standing priorities, ranked by file order — the owner
              edits from anywhere, no model ever authors a line

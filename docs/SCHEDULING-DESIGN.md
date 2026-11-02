@@ -105,7 +105,9 @@ page's existence.
 mecha-mail freebusy --days 60 --json | mecha-sched slots | factory-publish slots push book
 ```
 
-on a systemd timer, every 15 minutes. Deliberately **not** a mecha trigger:
+on a systemd timer, every 15 minutes. (As built since 2026-11-02 the policy
+is the manifest's own `[availability]`: `factory-publish slots push book
+--manifest book.toml`, the file the web Factory view edits.) Deliberately **not** a mecha trigger:
 triggers run prompts, and a model transcribing intervals is a model that can
 mistranscribe them — this is `scripts/ruminate.sh`'s rule ("scheduled
 commands are what cron is for") applied to data flow. Zero tokens, works

@@ -41,6 +41,7 @@ use mecha_core::config::Config;
 mod archive;
 mod board;
 mod chat;
+mod factory;
 mod features;
 mod files;
 mod frontdoor;
@@ -1265,6 +1266,30 @@ fn api() -> gate::Owned {
             "/api/frontdoor/act",
             Owner::Of(Feature::Frontdoor),
             axum::routing::post(frontdoor::act),
+        )
+        // The Factory view: the instruments the front door's requests arrive
+        // through. Same feature — a factory is what the front door is the
+        // door of — so one switch hides both, and no second registry entry
+        // can disagree with the first about whether the factory is here.
+        .at(
+            "/api/factory",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::list),
+        )
+        .at(
+            "/api/factory/instrument",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::instrument),
+        )
+        .at(
+            "/api/factory/preview",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::preview_hours),
+        )
+        .at(
+            "/api/factory/hours",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::save_hours),
         )
         .at("/api/find", Owner::Of(Feature::Graph), get(board::find))
         .at(

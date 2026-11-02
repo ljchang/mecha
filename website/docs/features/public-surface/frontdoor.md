@@ -174,6 +174,34 @@ itself and the booking it withdraws.
 A record that did not validate against the manifest at drain time is never
 extracted and never reaches a run.
 
+## Your booking hours, from the web
+
+The **Factory** view in the web app lists the manifests in
+`~/.mecha/factory/types/`. Open a booking page there to see what it offers
+now, when the slot timer last pushed, and the meetings coming up. You can also
+edit its hours: the weekly windows, dates off, meeting lengths, the gap around
+other meetings, minimum notice, how far ahead, and the most per day.
+
+The editor shows what the page would offer before you save. That preview is
+`factory-publish slots preview`, computed over the busy time the last push
+saw, so it is the page's own arithmetic. Saving writes the manifest's
+`[availability]` section in place and keeps your comments. It then pushes, so
+the page changes at once instead of at the next fifteen-minute tick.
+
+Three rules hold it together:
+
+- **One file.** The slot timer reads the manifest itself
+  (`factory-publish slots push book --manifest …/book.toml`), so the hours the
+  page promises and the hours it computes cannot disagree.
+- **Only you write it.** The save is a handler in `mecha serve`. There is no
+  CLI verb and no tool for it, so no model can change what strangers may book
+  of your week, even if a stranger's message asks it to.
+- **"How far ahead" stops at 60 days**, because the timer fetches 60 days of
+  your calendar. A longer horizon would make every push refuse.
+
+Cancelling a booking from this page, and editing a form's fields, are not
+built yet.
+
 ## Where to go next
 
 - [Security model](/docs/features/security) — the interlock, and why a second layer was still worth building.
