@@ -6093,7 +6093,7 @@ impl Agent {
         if !self.provider.local() {
             return PassAnswer::Refused(
                 "this run's provider is not local (a `local` provider on a loopback address), \
-                 and a sub-call sends a handle's bytes to the model, so no pass was sent"
+                 and a sub-call sends a program's text to the model, so no pass was sent"
                     .into(),
             );
         }

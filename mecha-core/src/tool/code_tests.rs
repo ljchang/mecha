@@ -866,6 +866,10 @@ fn json_get_decodes_the_leaf() {
         vec![json!(nest(crate::interpreter::VALUE_DEPTH))]
     )
     .is_ok());
+    // And past PIECES values in all, as `lines` is.
+    let wide = serde_json::to_string(&vec![0; defaults::PIECES]).unwrap();
+    let err = op(&mut run, "json_get", vec![json!(wide)]).unwrap_err();
+    assert!(err.starts_with("LimitError: pieces: `json_get`"), "{err}");
 }
 
 /// A host function given something that is not a `str` says so, by its
@@ -1168,6 +1172,10 @@ async fn a_read_reaches_a_program_as_text_and_a_listing_as_names() {
         "{}",
         &err[err.len() - 40..]
     );
+    // A listing past PIECES names raises, catchably (review of #805).
+    let many = "n\n".repeat(defaults::PIECES + 1);
+    let err = Run::names("fs_list", &many).unwrap_err().message;
+    assert!(err.starts_with("LimitError: pieces: `fs_list`"), "{err}");
     assert_eq!(run.stats(None).peeked_bytes, 0);
 }
 
@@ -1444,6 +1452,21 @@ async fn a_function_a_program_assigned_over_is_named() {
     // could name a function the failing line never called.
     let f = Finished {
         printed: String::new(),
+        printed_dropped: 0,
+        end: End::Raised(crate::interpreter::Raised {
+            exc_type: "TypeError".into(),
+            message: Some("'int' object is not callable".into()),
+            traceback: "TypeError: 'int' object is not callable".into(),
+        }),
+    };
+    let (out, _) = render(f, 4_000, &["count"]);
+    assert!(
+        !out.contains("is a function this program was given"),
+        "{out}"
+    );
+    // Nor does printed output that happens to mention the call.
+    let f = Finished {
+        printed: "count(t) gave 3\n".into(),
         printed_dropped: 0,
         end: End::Raised(crate::interpreter::Raised {
             exc_type: "TypeError".into(),
