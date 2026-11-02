@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -209,9 +209,10 @@ would reach the model's planning only when it chose `peek`. In practice:
   credited it);
 - R5 had already found the cap guarded less than its number suggested,
   because the read-only slice has no sink;
-- and it cost the most of any failure in M2: about 46 of 220 programs
-  failed on a handle used as text (`.strip()`, `.split()`, `in`, `len()`),
-  a quarter of all failures, where every other harness surveyed hands a
+- and it cost the most of any failure in M2: of the 220 programs written
+  in its first 35 runs, 108 raised, about 46 of them on a handle used as
+  text (`.strip()`, `.split()`, `in`, `len()`), the largest single cause,
+  where every other harness surveyed hands a
   program real strings and guards what goes back to the model (§13).
 
 The handle came from RLM's *prompt as a variable*, whose gain (Qwen3-Coder
@@ -1469,26 +1470,27 @@ What is left is reading, not machinery: a window where a line-scoped pattern
 as "attended". Programs still fail first on habits about half the time.
 
 **M2 (2026-11-01 to 11-02, #798's build): the battery, measured.** Five
-fictional tasks, seeds 11 to 101 so far (seed 131's last runs were pending
-at the time of writing), each run twice: with `code` offered and with
-`--no-code-tool`, one run at a time on the router's uncensored Qwen3.6
-preset, as test sessions, from a run directory whose `mecha.toml` sets the
-seed. Graded by a scorer fixed before reading any answer and checked
-against twelve hand-graded runs. Two scorer artefacts were found by reading
-failures (counts such as "25 presentations" read as meeting numbers, and a
-table that bolded every row) and fixed against the same hand grades.
+fictional tasks, eight seeds (11 to 131), each run twice: with `code`
+offered and with `--no-code-tool`, one run at a time on the router's
+uncensored Qwen3.6 preset, as test sessions, from a run directory whose
+`mecha.toml` sets the seed. Graded by a scorer fixed before reading any
+answer and checked against twelve hand-graded runs. Two scorer artefacts
+were found by reading failures (counts such as "25 presentations" read as
+meeting numbers, and a table that bolded every row) and fixed against the
+same hand grades.
 
 | Task | `code` on | `code` off |
 |---|---|---|
-| 300 notes: Priya's meetings, Marco's decisions | 3/7, ~1 min | 0/8, ~11 min, 36 turns |
-| a roster joined to the notes | **7/7**, 28 s | **0/7**, ~11 min, mostly at the turn limit |
-| which of 32 meetings ended without agreement | 4/7 | 5/8 |
-| failures in a 1.5 MB log | 3/7 | 0/8 |
-| five short notes | 7/7 | 7/7 |
-| **all** | **24/35 (69%)** | **12/38 (32%)** |
+| 300 notes: Priya's meetings, Marco's decisions | 3/8, ~1 min | 0/8, ~11 min, 36 turns |
+| a roster joined to the notes | **8/8**, 28 s | **0/8**, ~11 min, mostly at the turn limit |
+| which of 32 meetings ended without agreement | 5/8 | 5/8 |
+| failures in a 1.5 MB log | 3/8 | 0/8 |
+| five short notes | 8/8 | 8/8 |
+| **all** | **27/40 (68%)** | **13/40 (33%)** |
 
-The 35 code-on runs wrote 220 programs, and **108 failed**; the first
-program failed in 25 of the 27 runs that wrote one. By what raised:
+The 40 code-on runs wrote 257 programs, and **129 failed**; the first
+program failed in 28 of the 31 runs that wrote one. The breakdown below was
+taken at 35 runs (220 programs, 108 failed); by what raised:
 - **a handle used as text, about 46**: `.strip()`, `.split()`, `.lower()`
   and the like (31), `in` (6), `len()` (4), a join of handles (3);
 - **the operating system, 25**: `open()` (23), `os.path`, `os.listdir`, in
@@ -1530,5 +1532,41 @@ description rewritten around strings, with a field-matching example and
 sub-call sizing. **Not taken:** state between `code` calls (§12, still
 deliberately out), `open()` mapped onto `fs_read` (the owner's call), and
 monty's built-in type check against stubs, whose main target was handle
-misuse. The next measurement reruns the code-on arm of M2 against this
-table.
+misuse.
+
+**M3 (2026-11-02, #805's build, deployed c8514549a): M2's code-on arm
+rerun on R11.** The same five tasks, eight seeds, run directories and
+scorer, with one change to the scorer, made **after reading M3's answers**:
+the log grade accepts each backup failure's date in the owner's zone
+(America/New_York, the run's configured zone; the question names none) as
+well as UTC, because a 02:00Z failure falls on the previous evening there.
+Six of M3's eight log runs dated every failure that way, all seven dates
+right, with the count and the last code. Under the grade as fixed before
+M2, M3's log row is **2/8** and its total **30/40**; both figures are
+given below. Applied to M2 the change moves nothing (3/8 and 0/8 stand),
+but that is no control for M3: M2's failed log runs missed failures
+outright, so neither grade had dates of theirs to judge.
+
+| Task | M2, `code` on | M3, `code` on (R11) |
+|---|---|---|
+| 300 notes: Priya's meetings, Marco's decisions | 3/8, ~1 min | 4/8, 50 s |
+| a roster joined to the notes | 8/8, 28 s | 8/8, 14 s |
+| which of 32 meetings ended without agreement | 5/8 | **8/8** |
+| failures in a 1.5 MB log | 3/8, 26 turns | **8/8**, 4 turns (2/8 dated in UTC) |
+| five short notes | 8/8 | 8/8 |
+| **all** | **27/40 (68%)** | **36/40 (90%)**; 30/40 under the UTC-only grade |
+
+| Programs | M2, `code` on | M3, `code` on (R11) |
+|---|---|---|
+| raised | 129 of 257 (50%) | 19 of 93 (20%) |
+| the first one raised | 28 of 31 runs | 14 of 32 runs |
+
+The 40 runs took 16 minutes of run time, against 52 for M2's code-on arm.
+**Of the 14 first programs that raised, 13 called `open()`**, and in 12 of
+those runs the next program read through `fs_read` as the refusal says; 14
+of the 19 programs that raised did so on that one habit, which `open()` on
+`fs_read` would remove (the owner's call, not taken under R11 above).
+Nothing raised on a string method, `in`, `len()` or a host limit. The four
+wrong answers are reading, all on the 300 notes, and none raised: three
+counted the 124 meetings Marco attended as the 25 he presented, as in M1
+and M2, and one took a note's discussion line for its decision.

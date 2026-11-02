@@ -1673,10 +1673,12 @@ impl Run {
         let t = self.text(a)?;
         let re = a.pattern(1)?;
         // Bounded as `lines` is, whose subset it returns: at `find`'s 4,096
-        // the log it was built for raised on `ERROR` (review of #805).
-        let out: Vec<&str> = t.text.lines().filter(|l| re.is_match(l)).collect();
-        pieces("grep", out.len())?;
-        Ok(strings(out))
+        // the log it was built for raised on `ERROR` (review of #805). Counted
+        // before it is built, as `split` is: `grep(text, "")` over a large
+        // read would otherwise collect every line to learn it may not.
+        let hits = || t.text.lines().filter(|l| re.is_match(l));
+        pieces("grep", hits().count())?;
+        Ok(strings(hits()))
     }
 
     fn split(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
