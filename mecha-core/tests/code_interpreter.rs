@@ -546,9 +546,13 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
             1,
         ),
         (
+            // `/etc/x`: the fake answers as a listing that ran and failed. In
+            // a run the jail refuses `/etc` through the gate instead, and the
+            // probe raises (R13, §11); the refusal branch is tested below.
             "print(os.path.exists('src/a.py'), os.path.isfile('src/sub'), os.path.isdir('src/sub'), os.path.exists('nope'), os.path.exists('/etc/x'))",
             "True False True False False",
-            5,
+            // `src` is listed once; `.` and `/etc` once each
+            3,
         ),
         (
             "for root, dirs, files in os.walk('src'):\n    for f in files:\n        if f == 'c.py':\n            print(open(os.path.join(root, f)).read())",
@@ -563,6 +567,37 @@ async fn a_walk_lists_through_fs_list_and_nothing_else() {
         let listed = calls.iter().filter(|c| c.name == "fs_list").count();
         assert_eq!(listed, lists, "{src}: {calls:?}");
     }
+    // a probe in a directory already listed answers from that listing:
+    // `isfile` per file in an `os.walk` costs the walk's own listings
+    let (f, calls) = run_with(
+        &interp,
+        "import os\nn = 0\nfor root, dirs, files in os.walk('src'):\n    for f in files:\n        n += os.path.isfile(os.path.join(root, f))\nprint(n)",
+        &["fs_list"],
+        tree,
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "3", "{:?}", f.end);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    // a scan past the host helpers' piece count raises a limit, catchably
+    let wide = |c: &ExternalCall| -> Result<Value, HostRaise> {
+        let names: Vec<Value> = match c.kwargs[0].1.as_str().unwrap_or("") {
+            "." => vec![Value::from("a/"), Value::from("b/")],
+            _ => (0..70_000).map(|i| Value::from(format!("f{i}"))).collect(),
+        };
+        Ok(Value::from(names))
+    };
+    let (f, _) = run_with(
+        &interp,
+        "import os\ntry:\n    list(os.walk('.'))\nexcept BaseException as e:\n    print(e)",
+        &["fs_list"],
+        wide,
+    )
+    .await;
+    assert!(
+        f.printed.contains("LimitError: pieces: a scan of `.`"),
+        "{}",
+        f.printed
+    );
     // the path a walk was asked for reaches `fs_list` as `open` paths do
     let (_, calls) = run_with(
         &interp,
