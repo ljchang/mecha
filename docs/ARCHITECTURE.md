@@ -1935,11 +1935,14 @@ module.
   one owner-written place, parsed into a closed `Sky` and whole degrees or
   the day refused, so no string the source wrote is kept; unknown weather
   satisfies no condition. `[life] place` is geocoded and cached from the
-  owner's town and region, with `story.toml`'s coordinates as fallback; only
-  the harness starts either request, and the geocoder's label is owner-facing
-  only. A day's draw is seeded, stored in `world.db` v3 up
-  to today, and today's is redrawn when its inputs' digest changes; weather
-  is shown as the fact it is, even on a day drawn before it arrived. With
+  owner's town and region, with `story.toml`'s coordinates as fallback. It
+  is read live for both Week and chat refreshes, unlike the pinned `events`
+  switch; only the harness starts either request, and the geocoder's label is
+  owner-facing only. Failed resolution or fetching is recorded per place and
+  backs off for an hour. A day's draw is seeded and stored in `world.db` v3 up to
+  today; a stored day keeps its events when only weather changes, while the
+  new weather is shown as the fact it is. Other draw inputs still redraw
+  today. With
   `[life] events` on, the today-block adds event titles, non-normal levels
   and the closed weather after its doing-now sentence; before noon it uses
   yesterday's events and today's morning levels. A story error drops that
