@@ -373,8 +373,9 @@ would-have rows are the match rate `auto` will actually have: a `shadow_rules`
 candidate with an outbound action gets the confirmation pass too, exactly as
 a `rule` candidate does, and a disagreement is recorded as `would have:
 propose`. Measuring shadow with the main pass alone would over-state the
-rate the owner approves against. It costs one call per shadow send
-candidate, which is a small fraction of mail and only while a rule is being
+rate the owner approves against. It costs one call per thread for the
+gate-passing shadow candidates together (gate-failing ones are not
+confirmed, below), which is a small fraction of mail and only while a rule is being
 evaluated.
 The same discipline as `request_type` and `deadline_quote`:
 
@@ -427,13 +428,15 @@ conversation may sit in `propose`, but its description never enters the
 frame that confirms another rule's automatic send, since the pass is sound
 only because nothing a stranger shaped is in that frame. Shadow candidates
 that pass the gate are confirmed among themselves, separately from active
-rules. A shadow candidate whose own text fails the gate gets its own isolated
-confirmation call, with its description as the only rule in the frame — no
-other rule's text, no learned rules, no few-shot. Shadow is where
-`ModelUntrusted` proposals live by construction, and measuring them by the
-main pass alone over-states the rate the owner approves against; isolation
-measures them without their untrusted descriptions entering any frame that
-judges another rule. Each description in the set is
+rules. A shadow candidate whose own text fails the gate is **not confirmed at
+all**: it is measured by the main pass alone, and the page labels its
+would-have rate a **ceiling**. A confirmation rate for it would be a number
+nothing can act on — §9 forbids such a rule's outbound and Board groups from
+ever entering `auto`, and the confirmation pass only decides auto against
+propose — and the owner's edit that would unblock it makes the text `Owner`,
+lapses the digest (§6.2), and restarts the measurement, confirmed from then
+on, against the words that will actually run. Nothing a gate-failing rule
+says enters any frame that judges another rule. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
 other would have taken, and the winner then sends only within its own
@@ -1288,12 +1291,17 @@ wire format — and **each store states its default's direction**, as
 opposite ones. In `approvals.jsonl` an unknown mode reads as **`shadow`**: it
 never acts, so a newer build's rung cannot raise anything in an older one.
 In `ledger.jsonl` every row also carries a **`closes` boolean**, written by
-the build that writes the row according to §4.4; a reader honours it when
-present, even for an unknown outcome. A newer non-closing outcome must not
-silently close the key in an older reader, as doing so would leave the rule
-inert. Only a row that lacks `closes` defaults to **closing the key**: without
-that field, an outcome nobody can read is never taken as permission to run
-the action again. Unknown modes and outcomes are shown as `unknown` on the
+the build that writes the row according to §4.4, and **it may only tighten**:
+a reader honours `closes: true` from any build, and closes the key whenever
+`closes` is absent *or* the outcome is one it cannot read. A newer build's
+`closes: false` on an outcome an older reader does not know is therefore not
+permission to run the action again — for an outbound row that would be a
+duplicate send, which is irreversible, while the opposite error (an older
+reader treating a thread as handled) is visible as `unknown` on the page and
+in `mecha doctor`. That inert-in-an-older-build cost is accepted, as Outlook
+sends staying in `propose` is elsewhere. One boolean serves both of §4.4's
+keys, because their closing sets coincide over the outbound and Board rows
+the per-thread lookup reads. Unknown modes and outcomes are shown as `unknown` on the
 page.
 
 ---
