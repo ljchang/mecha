@@ -41,6 +41,15 @@ assert.deepEqual(nextWindow([{ start: '21:00', end: '22:15' }]), { start: '22:15
 
 console.log('factory: ok');
 
+import { nameFrom } from '../src/lib/factory.js';
+assert.equal(nameFrom('Your email'), 'your_email');
+assert.equal(nameFrom("Where you're from?"), 'where_you_re_from');
+assert.equal(nameFrom('2nd choice'), 'f_2nd_choice');
+assert.equal(nameFrom(''), 'field');
+assert.equal(nameFrom('Topic', ['topic']), 'topic_2');
+assert.equal(nameFrom('Topic', ['topic', 'topic_2']), 'topic_3');
+assert.equal(nameFrom('Café notes'), 'cafe_notes');
+console.log('factory names: ok');
 // The page's own words for a window that runs backwards.
 import { backwards, clock12, todayIn } from '../src/lib/factory.js';
 assert.equal(clock12('21:30'), '9:30 PM');
