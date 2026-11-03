@@ -133,8 +133,12 @@ elsewhere in the home.
 digest of the inputs §6.2 covers. A mode written into the file would let an
 edit — or an installed proposal — grant itself `auto`.
 
-**The effective mode is the latest row for the rule and action group, and the
-digest only ever lowers it.** **Every row names one action group** (§5's
+**The effective mode is the latest row for the rule and action group, and
+the digest and §5.4's mode-level holds only ever lower it.** The holds —
+`block_sends_after_private`, an unknown own address, a matcher with no
+sender constraint, and a provider whose authentication headers cannot be
+read reliably — are computed, not rows, so a group can read `auto` off its
+latest row and still be held in `propose` by one of them. **Every row names one action group** (§5's
 table), and resolution reads only that group's rows, latest wins. A
 whole-rule change — R7's lapse, `pause-all` — is written as **one row per
 group**, each carrying its own value, never as a single row for the rule:
@@ -368,10 +372,10 @@ what it would do *beside* the active rules, not in place of one; how two
 rules interact once both are active is something the owner sees after
 promotion, in `propose`, before either goes back to `auto`.
 
-**A shadow rule with an outbound action whose text passes §9's gate is
-measured by both passes**, so its
+**A shadow rule with an outbound action or a `task` whose text passes §9's
+gate is measured by both passes**, so its
 would-have rows are the match rate `auto` will actually have: a `shadow_rules`
-candidate with an outbound action gets the confirmation pass too, exactly as
+candidate with an outbound action or a `task` gets the confirmation pass too, exactly as
 a `rule` candidate does, and a disagreement is recorded as `would have:
 propose`. Measuring shadow with the main pass alone would over-state the
 rate the owner approves against. For shadow the confirmation pass answers
@@ -442,12 +446,19 @@ propose — and the owner's edit that would unblock it makes the text `Owner`,
 lapses the digest (§6.2), and restarts the measurement, confirmed from then
 on, against the words that will actually run: **a group's would-have rate is
 computed only over rows written under its current *match digest*** — the
-part of §6.2's digest that a match depends on, the rule's own directory and
-the compiled §4.2 and §5.3 instruction versions — and rows from an earlier
-match digest are shown apart on the rule page (§8), never mixed into the
-number the owner approves against. An `aliases.toml` or `limits.toml` edit
-lapses approvals (§6.2) but resets no measurement: neither changes a word the
-classifier or the confirmation pass reads, so neither can move a match rate. Nothing a gate-failing rule
+part of §6.2's digest that can change what the rate *means*: the rule's own
+directory and the compiled §4.2 and §5.3 instruction versions — and rows from
+an earlier match digest are shown apart on the rule page (§8), never mixed
+into the number the owner approves against. The whole directory is in it,
+not only the matcher keys, because §9's gate is over every key and every
+file the rule names: an edit anywhere in it can turn a gate-failing rule
+into a gate-passing one, which is what turns a labelled ceiling into a
+confirmed rate. An `aliases.toml` or `limits.toml` edit lapses approvals
+(§6.2) but resets no measurement: neither can change a match or the gate.
+The digest's components are always **written, empty when absent** — P1's
+rows carry no compiled instruction versions, because those arrive in P4 and
+P5, and an omitted component that later read as a default would silently
+merge P1 rows into a P4 rate. Nothing a gate-failing rule
 says enters any frame that judges another rule. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
