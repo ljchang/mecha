@@ -1764,6 +1764,9 @@ module.
   anchors that always happen may not overlap (the week is a circle, so
   Sunday night runs into Monday), and a routine that does not parse is a
   `Store::problems` entry, never an empty week.
+- **`persona::life` is the owner's opt-in boundary on sampled filler:**
+  `life.toml` names household relations, usual sleep and impossible
+  activities; without it the sampler's old draw stream is unchanged.
 - **The ATUS table ships counts, and the code that reads it decides**
   (`persona::atus`, §4.2). `scripts/atus-table.py` writes
   `mecha-core/data/atus/table.tsv.gz` from sha256-pinned public files, and

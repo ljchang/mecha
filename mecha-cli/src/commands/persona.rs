@@ -132,6 +132,12 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
+    /// The constraints their sampled days obey: household, usual sleep and
+    /// activities that never occur (`PERSONA-LIFE-DESIGN.md` §4.2).
+    Life {
+        #[command(subcommand)]
+        cmd: LifeCmd,
+    },
     /// Their story: small events drawn over their days by the director,
     /// their energy, stress and mood, and the weather where they live
     /// (`PERSONA-LIFE-DESIGN.md` §4.3). Nothing of it reaches their chats yet.
@@ -218,6 +224,18 @@ pub enum RoutineCmd {
     /// week's fixed points in your own words, such as a class's days and
     /// hours or a sport's season. Only the drafter reads them.
     Notes { name: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum LifeCmd {
+    /// Their life profile, or that they have not written one yet.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit life.toml in $EDITOR, starting from a commented template.
+    Edit { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -443,6 +461,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
             | Cmd::Routine {
                 cmd: RoutineCmd::Show { .. }
+            }
+            | Cmd::Life {
+                cmd: LifeCmd::Show { .. }
             }
             | Cmd::People {
                 cmd: PeopleCmd::Show { .. } | PeopleCmd::Export { .. }
@@ -1401,6 +1422,7 @@ fn run_with(
         }
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
         Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
+        Cmd::Life { cmd } => life_cmd(dir, cmd, edit_file)?,
         Cmd::Story { cmd } => story_cmd(dir, cmd)?,
         Cmd::People { cmd } => people_cmd(dir, &lib, cmd)?,
         Cmd::Day { name, date, json } => day_cmd(dir, &name, date.as_deref(), json)?,
@@ -1942,6 +1964,60 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
         }
         // Asks a model, so `execute` routes it before this synchronous door.
         RoutineCmd::Draft { .. } => bail!("`routine draft` is run by `execute`"),
+    }
+    Ok(())
+}
+
+/// `mecha persona life`: the owner's door to the constraints the sampler
+/// applies to time-use filler. The file is optional, so `show` distinguishes
+/// no profile from an empty one.
+fn life_cmd(dir: &Path, cmd: LifeCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
+    use mecha_core::persona::life;
+    let named = |name: &str| -> String { name.trim().to_lowercase() };
+    match cmd {
+        LifeCmd::Show { name, json } => {
+            let name = named(&name);
+            let text = life::read(dir, &name)?;
+            let parsed = text.as_deref().map(life::parse).transpose();
+            if json {
+                let out = serde_json::json!({
+                    "life": parsed.as_ref().ok().and_then(|l| l.as_ref()).map(|l| l.to_json()),
+                    "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                match (text, parsed) {
+                    (None, _) => println!(
+                        "`{name}` has no life profile yet; `mecha persona life edit {name}` writes one."
+                    ),
+                    (Some(_), Err(e)) => println!("life.toml does not load: {e:#}"),
+                    (Some(text), Ok(_)) => println!("── life.toml ──\n{}", text.trim()),
+                }
+            }
+        }
+        LifeCmd::Edit { name } => {
+            let name = named(&name);
+            let path = life::ensure(dir, &name)?;
+            edit_file(&path)?;
+            let Some(text) = life::read(dir, &name)? else {
+                println!(
+                    "life.toml was removed: `{name}`'s days use the time-use table without a profile."
+                );
+                return Ok(());
+            };
+            let profile = life::parse(&text).with_context(|| {
+                format!(
+                    "life.toml was saved but does not load, so no day is built with it; \
+                     `mecha persona life edit {name}` to fix it"
+                )
+            })?;
+            println!(
+                "Saved: {} household member(s), {} usual sleep, {} never activity(s).",
+                profile.household.len(),
+                if profile.sleep.is_some() { "a" } else { "no" },
+                profile.never.len()
+            );
+        }
     }
     Ok(())
 }
@@ -2974,6 +3050,49 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(pdir.join(routine::PREVIOUS)).unwrap(),
             text
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_life_profile_starts_from_the_template_and_reads_back_through_parse() {
+        use mecha_core::persona::life;
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let edit = |write: &'static str| {
+            run_with(
+                &store,
+                &lib,
+                Cmd::Life {
+                    cmd: LifeCmd::Edit {
+                        name: "Mara".into(),
+                    },
+                },
+                &move |path: &Path| {
+                    let before = std::fs::read_to_string(path).unwrap();
+                    std::fs::write(path, format!("{before}{write}")).unwrap();
+                    Ok(())
+                },
+            )
+        };
+        edit("[[household]]\nperson = \"Theo\"\nrelation = \"housemate\"\n").unwrap();
+        let pdir = store.join("mara");
+        let text = std::fs::read_to_string(pdir.join(life::FILE)).unwrap();
+        assert!(text.starts_with(life::TEMPLATE), "{text}");
+        assert_eq!(life::load(&pdir).unwrap().unwrap().household.len(), 1);
+
+        let refused =
+            edit("[[household]]\nperson = \"Cal\"\nrelation = \"neighbour\"\n").unwrap_err();
+        assert!(format!("{refused:#}").contains("neighbour"), "{refused:#}");
+        let loaded = Store::load(&store);
+        let problems = loaded.problems(loaded.get("mara").unwrap(), &Library::load(&lib).0);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("life.toml does not load")),
+            "{problems:?}"
         );
         std::fs::remove_dir_all(dir).ok();
     }

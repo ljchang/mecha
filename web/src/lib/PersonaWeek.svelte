@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, lifeLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -204,6 +204,11 @@
         {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
       </select>
     </label>
+    {#if data.life == null}
+      <p class="wnote">No life profile yet: <code>mecha persona life edit {name}</code> writes one.</p>
+    {:else}
+      <p class:warnline={!!data.life.error} class:wnote={!data.life.error}>Their life: {lifeLine(data.life)}</p>
+    {/if}
     <!-- Her routine's anchors, drafted by her model and shown as they would
          land before anything reaches her days (§4.1). -->
     <div class="wdraft">
