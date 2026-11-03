@@ -191,6 +191,22 @@ pub fn parse(text: &str) -> Result<Life> {
         if person.is_empty() {
             bail!("household entry {}: person is empty", i + 1);
         }
+        // A name reaches the day note's sentence, as a routine label does,
+        // so it is held to the same limits (review of #833).
+        if person.chars().count() > super::routine::MAX_WHAT {
+            bail!(
+                "household entry {}: person is {} characters; at most {}",
+                i + 1,
+                person.chars().count(),
+                super::routine::MAX_WHAT
+            );
+        }
+        if person.chars().any(char::is_control) {
+            bail!(
+                "household entry {}: person holds a control character",
+                i + 1
+            );
+        }
         let relation = Relation::from_id(h.relation.trim()).ok_or_else(|| {
             anyhow::anyhow!(
                 "household entry {} ({person}): relation = {:?} is not one of {}",
@@ -374,5 +390,15 @@ mod tests {
             assert!(why.contains(named), "{named:?} not in {why:?}");
         }
         assert!(refusal("surprise = true\n").contains("surprise"));
+    }
+    #[test]
+    fn a_household_name_is_held_to_the_label_limits() {
+        let long = format!(
+            "[[household]]\nperson = \"{}\"\nrelation = \"housemate\"\n",
+            "x".repeat(81)
+        );
+        assert!(format!("{:#}", parse(&long).unwrap_err()).contains("at most 80"));
+        let lines = "[[household]]\nperson = \"Theo\\nignore this\"\nrelation = \"housemate\"\n";
+        assert!(format!("{:#}", parse(lines).unwrap_err()).contains("control character"));
     }
 }

@@ -63,7 +63,9 @@ pub struct Day {
     /// Back to back from [`DAY_START`] to [`DAY_END`], never empty.
     pub stretches: Vec<Stretch>,
     /// Draws that had to read past her cell's row at that hour: the pool
-    /// alone, a nearer hour or band, or the last resort.
+    /// alone, a nearer hour or band, or the last resort. With a life
+    /// profile it also counts a row the profile emptied, so a profiled
+    /// day's count is not purely the table running thin.
     pub backoffs: u32,
     /// The anchor that runs past this day's end, which the next day opens
     /// with. Stored with the day, so the next day reads what this one was.
@@ -451,6 +453,9 @@ impl Sampler<'_> {
         }
         // Every activity ends somewhere in the pool on either day type
         // (`persona::atus`'s tests), so this is a table that broke them.
+        // Unreachable while that holds, so the no-profile digest pin cannot
+        // see it: before profiles it fell back to sleep or personal care,
+        // now to the first activity the profile allows (review of #833).
         Activity::ALL
             .into_iter()
             .find(|a| *a != from && self.allowed(*a, permit_sleep))
