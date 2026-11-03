@@ -557,13 +557,16 @@
       <label class="field">
         <span class="flabel">Start from</span>
         <select class="tzsel" bind:value={newing.starter} onchange={() => { if (!newing.id) newing.id = suggestId(newing.starter); }}>
-          {#each newing.starters as st}<option value={st.name}>{st.title || st.name}</option>{/each}
+          {#each newing.starters as st}<option value={st.name}>{st.title || st.name}{st.ready && st.ready !== 'ready' ? ' — needs work before publishing' : ''}</option>{/each}
         </select>
       </label>
       <label class="field">
         <span class="flabel">Link name</span>
         <input class="tzsel" placeholder="office-hours" bind:value={newing.id} />
       </label>
+      {#if newing.starters.find((x) => x.name === newing.starter)?.ready?.startsWith('needs')}
+        <div class="warnline"><span>{newing.starters.find((x) => x.name === newing.starter).ready}</span></div>
+      {/if}
       <div class="note">The link name is part of the form's public address and cannot change after it is published. Lowercase letters, digits and hyphens. Nothing is published until you press Publish.</div>
       <div class="btnrow">
         <button class="abtn" disabled={newing.busy} onclick={() => (newing = null)}>Back</button>
