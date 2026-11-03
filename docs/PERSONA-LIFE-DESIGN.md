@@ -2539,10 +2539,11 @@ ruled for repetition.
     gender-neutral ("Their days", "Their people", "Draft their week"), and
     its tabs show only the parts that are on, Settings always last:
     Memories while any kind is on or anything is stored, Week with `world`,
-    People with `people` too (`shows` on the persona list,
+    People with `people` alone, since 2026-11-03 (`shows` on the persona list,
     `personaTabs`).
   - **As built (step 2, her people):** a People tab beside Week, behind the
-    same world gate, answering "off for this persona" while `[life] people`
+    same world gate (the feature's, on whenever personas are; the persona's
+    own switch is `[life] people`), answering "off for this persona" while `[life] people`
     is off (the form's Life section gains the "Their people" switch). Rings
     for the four layers, a dashed ring for those not placed and a greyed
     outer band for ended ties; spokes green when warm, orange and dashed
