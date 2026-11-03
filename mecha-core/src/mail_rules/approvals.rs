@@ -188,12 +188,18 @@ pub(super) fn approval_state<'a>(
     state
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeDecision {
     pub requested: Mode,
+    /// The resulting effective mode when refused; otherwise the requested or
+    /// clamped target to record.
     pub target: Mode,
     pub clamped: bool,
     pub write: bool,
+    /// A permanent built-in ceiling refused this request; no raise was written.
+    pub refused: bool,
+    /// Current ceilings and their reasons, including the reason for a refusal.
+    pub holds: Vec<ModeHold>,
 }
 
 /// Uses an already-read closure actor. None is an unreadable reading, never
@@ -209,6 +215,8 @@ pub fn gate_mode(current: Mode, requested: Mode, actor: Option<Actor>) -> Result
             target: Mode::Off,
             clamped,
             write: false,
+            refused: false,
+            holds: Vec::new(),
         });
     }
     ensure!(
@@ -220,6 +228,8 @@ pub fn gate_mode(current: Mode, requested: Mode, actor: Option<Actor>) -> Result
         target,
         clamped,
         write: target != current,
+        refused: false,
+        holds: Vec::new(),
     })
 }
 
@@ -285,7 +295,7 @@ impl HoldProvider for P1Holds {
     }
 }
 
-fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeHold> {
+pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeHold> {
     let mut holds = Vec::new();
     if !group.supported() || rule.definition.is_description() {
         holds.push(ModeHold {

@@ -415,7 +415,7 @@ impl RuleStore {
             Self::approval_groups(name, &rows, loaded.as_ref().ok()).contains(&group),
             "rule has no such group"
         );
-        let (recorded, current, digests) =
+        let (recorded, current, digests, mode_holds) =
             Self::mode_inputs(name, group, &rows, loaded.as_ref().ok(), holds);
         ensure!(requested != Mode::Unknown, "cannot request an unknown mode");
         // A requested decrease stays a decrease even if the failed load has
@@ -426,6 +426,7 @@ impl RuleStore {
             requested
         };
         let mut decision = gate_mode(current, target, actor)?;
+        decision.holds = mode_holds;
         decision.requested = requested;
         decision.clamped |= target != requested;
         // Revocation never depends on loadable files or a fresh review. Only
@@ -440,10 +441,18 @@ impl RuleStore {
                 &rule.approval_digest == shown,
                 "rule inputs changed since review"
             );
-            ensure!(
-                group.supported() || decision.target.rank() <= Mode::Shadow.rank(),
-                "outbound groups are not yet supported in P1"
-            );
+            // Use the same permanent ceilings as resolution. Standing holds
+            // remain computed, but an unsupported permission must never be
+            // recorded as if it had been granted.
+            if approvals::built_in_holds(&rule, group)
+                .iter()
+                .any(|hold| decision.target.rank() > hold.ceiling.rank())
+            {
+                decision.refused = true;
+                decision.write = false;
+                decision.target = current;
+                return Ok(decision);
+            }
         }
         decision.write = decision.write || gate_mode(recorded, decision.target, actor)?.write;
         if decision.write {
@@ -485,13 +494,14 @@ impl RuleStore {
         rows: &[ApprovalRow],
         rule: Option<&LoadedRule>,
         holds: &dyn HoldProvider,
-    ) -> (Mode, Mode, ApprovalDigest) {
+    ) -> (Mode, Mode, ApprovalDigest, Vec<ModeHold>) {
         if let Some(rule) = rule {
             let resolved = resolve_mode(rule, group, rows, holds);
             (
                 resolved.recorded,
                 resolved.effective,
                 rule.approval_digest.clone(),
+                resolved.holds,
             )
         } else {
             let state = approvals::approval_state(name, group, rows);
@@ -499,6 +509,7 @@ impl RuleStore {
                 state.mode,
                 state.mode,
                 state.digest.cloned().unwrap_or_default(),
+                Vec::new(),
             )
         }
     }
@@ -651,12 +662,13 @@ impl RuleStore {
                 continue;
             };
             ensure!(*target != Mode::Unknown, "unknown lowering target");
-            let (recorded, current, digests) =
+            let (recorded, current, digests, mode_holds) =
                 Self::mode_inputs(name, group, &rows, loaded.as_ref().ok(), holds);
             if current == Mode::Off {
                 continue;
             }
             let mut decision = gate_mode(current, current.lower(*target), actor)?;
+            decision.holds = mode_holds;
             decision.write = decision.write || gate_mode(recorded, decision.target, actor)?.write;
             if decision.write {
                 self.append_approval_locked(&ApprovalRow {
@@ -765,7 +777,8 @@ impl RuleStore {
         self.append("ledger.jsonl", row)
     }
 
-    pub fn enqueue(&self, entry: &DeferredEntry) -> Result<()> {
+    /// Returns the retained entry id, including when this thread was already queued.
+    pub fn enqueue(&self, entry: &DeferredEntry) -> Result<String> {
         for row in &entry.actions {
             row.validate_key()?;
         }
@@ -785,7 +798,7 @@ impl RuleStore {
         );
         let _lock = self.lock()?;
         let mut queue = self.deferred()?;
-        if let Some(existing) = queue
+        let effective_id = if let Some(existing) = queue
             .iter_mut()
             .find(|q| q.account == entry.account && q.thread_id == entry.thread_id)
         {
@@ -799,14 +812,17 @@ impl RuleStore {
                 }
             }
             // Repeated timer sightings must not postpone expiry.
+            existing.id.clone()
         } else {
             ensure!(
                 !queue.iter().any(|q| q.id == entry.id),
                 "duplicate deferred id"
             );
             queue.push(entry.clone());
-        }
-        self.rewrite("deferred.jsonl", &queue)
+            entry.id.clone()
+        };
+        self.rewrite("deferred.jsonl", &queue)?;
+        Ok(effective_id)
     }
 
     /// Outcomes land before removal. Retrying after a crash recognizes the row
