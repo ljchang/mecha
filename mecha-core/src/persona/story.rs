@@ -63,8 +63,8 @@ pub const MAJOR_CHANCE: f64 = 0.12;
 pub const DROUGHT: i64 = 13;
 pub const QUIET: i64 = 2;
 pub const CAST_WEIGHT: f64 = 2.0;
-/// Days of history a draw reads back: as long as the longest default
-/// cooldown, so a storylet resting is seen resting.
+/// Days of history a draw reads back: as long as the longest cooldown a
+/// deck may set, so a storylet resting is seen resting.
 pub const LOOKBACK: u64 = 28;
 /// The most storylets a deck holds.
 pub const MAX_STORYLETS: usize = 200;
@@ -333,6 +333,13 @@ pub fn parse(text: &str) -> Result<Deck> {
         if !(s.weight.is_finite() && s.weight > 0.0) {
             bail!("{}: a weight is above 0", at());
         }
+        // A rest longer than a draw reads back would end early, unseen.
+        if s.cooldown.is_some_and(|c| u64::from(c) > LOOKBACK) {
+            bail!(
+                "{}: a cooldown is at most {LOOKBACK} days, as far back as a draw reads",
+                at()
+            );
+        }
         day_bits(&s.days).with_context(at)?;
         for v in [s.effect.energy, s.effect.stress, s.effect.mood] {
             if !(-1..=1).contains(&v) {
@@ -379,8 +386,8 @@ const HEAD: &str = "\
 # romantic, ex, friend, colleague, mentor, neighbour, acquaintance, rival).
 # effect moves energy / stress / mood one step (-1 or 1). size is minor,
 # major or severe (severe only with [life] intensity = \"full\"). cooldown
-# is the days before it may happen again (5 for a minor, 28 otherwise), and
-# at most one storylet of a group happens a day.
+# is the days before it may happen again (5 for a minor, 28 otherwise, and
+# at most 28), and at most one storylet of a group happens a day.
 #
 # Where they live, for their weather (fetched by `mecha persona story weather`):
 # [place]
@@ -824,9 +831,10 @@ pub fn story(
             match super::world::day(store_dir, &p.name, d, today) {
                 Err(e) => {
                     // The chain is broken from here: later days are not
-                    // drawn on a guess, and the stored ones still show.
+                    // drawn on a guess, and the stored ones still show,
+                    // this one too when it was kept.
                     why = Some(format!("{e:#}"));
-                    None
+                    stored.map(|(sd, _)| sd)
                 }
                 Ok(day) => {
                     let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
@@ -871,7 +879,10 @@ pub fn story(
                 }
             }
         } else {
-            None
+            // Nothing can be drawn (no deck, no routine, or the chain broke
+            // earlier): today as kept still shows, with the reason beside,
+            // as a past day does.
+            stored.map(|(sd, _)| sd)
         };
         if let Some(mut sd) = sd {
             // Weather is a fact, not a draw: shown as it stands now, so a
@@ -891,8 +902,14 @@ pub fn story(
     Ok(Story { days: out, why })
 }
 
-/// The names of her people by id, for showing a `{who}`.
-pub fn names(pdir: &Path) -> Result<BTreeMap<String, String>> {
+/// The names of their people by id, for showing a `{who}`; none, and the
+/// network unread, while `people` (their `[life] people`) is off, as
+/// nothing reads it then and only a cast person needs a name. A title cast
+/// while it was on reads "someone".
+pub fn names(pdir: &Path, people: bool) -> Result<BTreeMap<String, String>> {
+    if !people {
+        return Ok(BTreeMap::new());
+    }
     Ok(Network::read(pdir)?
         .people
         .into_iter()
@@ -954,8 +971,13 @@ mod tests {
         for cell in Cell::ALL {
             let deck = parse(&starter(cell)).unwrap_or_else(|e| panic!("{cell:?}: {e:#}"));
             assert!(deck.storylets.len() >= 10, "{cell:?}");
+            // A major that casts nobody, so a persona with no one in their
+            // network still has one to draw: today the shared deck's, a
+            // guard on the composed deck rather than on any one cell's.
             assert!(
-                deck.storylets.iter().any(|s| s.size == Size::Major),
+                deck.storylets
+                    .iter()
+                    .any(|s| s.size == Size::Major && s.with.is_empty()),
                 "{cell:?}"
             );
             assert!(deck.place.is_none());
@@ -975,6 +997,7 @@ mod tests {
             ("[[storylet]]\nid = \"a\"\ntitle = \"met {who}\"\nsize = \"minor\"\n", "needs a `with`"),
             ("[[storylet]]\nid = \"a\"\ntitle = \"t\"\nsize = \"minor\"\nsparkle = true\n", "does not load"),
             ("[place]\nname = \"x\"\nlat = 99.0\nlon = 0.0\n", "lat is"),
+            ("[[storylet]]\nid = \"a\"\ntitle = \"t\"\nsize = \"minor\"\ncooldown = 29\n", "at most 28 days"),
         ] {
             let got = format!("{:#}", parse(bad).unwrap_err());
             assert!(got.contains(want), "{bad}: {got}");
@@ -1336,6 +1359,11 @@ with = ["friend"]
             "{:?}",
             got.why
         );
+        // Asked the same day: today as kept shows too, not only the days
+        // before it.
+        let same = story(&dir, "mara", from, today, today).unwrap();
+        assert_eq!(same.days, week.days);
+        assert!(same.why.is_some());
         // With nothing kept, the reason alone.
         let fresh = store();
         std::fs::write(fresh.join("mara/routine.toml"), "").unwrap();
@@ -1390,7 +1418,17 @@ with = ["friend"]
         };
         let mut names = BTreeMap::new();
         assert_eq!(title(&e, &names), "coffee with someone");
-        names.insert("u1".to_string(), "Dan".to_string());
-        assert_eq!(title(&e, &names), "coffee with Dan");
+        names.insert("u1".to_string(), "Theo".to_string());
+        assert_eq!(title(&e, &names), "coffee with Theo");
+    }
+
+    #[test]
+    fn names_are_not_read_while_their_people_are_off() {
+        // A network that cannot be read: refused with people on, never
+        // read with them off.
+        let dir = crate::persona::tests_support::scratch();
+        std::fs::write(dir.join("world.db"), b"not a database").unwrap();
+        assert!(names(&dir, false).unwrap().is_empty());
+        assert!(names(&dir, true).is_err());
     }
 }

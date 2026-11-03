@@ -995,12 +995,7 @@ fn initiative_lines(
         Err(e) => return vec![format!("unreadable — {e:#}")],
         Ok(i) => i,
     };
-    let unreadable = match (i.unreadable, i.left_out) {
-        (0, 0) => String::new(),
-        (n, 0) => format!(" ({n} chat(s) could not be read)"),
-        (0, m) => format!(" ({m} test or withdrawn chat(s) left out)"),
-        (n, m) => format!(" ({n} chat(s) could not be read; {m} test or withdrawn left out)"),
-    };
+    let unreadable = not_read(i.unreadable, i.left_out);
     if i.people == 0 {
         return vec![format!(
             "no one in their network to look for; add their people first{unreadable}"
@@ -1038,6 +1033,17 @@ fn initiative_lines(
     out
 }
 
+/// What a reading did not read, as a line's tail: chats that could not be
+/// read, and test or withdrawn chats left out; empty when neither.
+fn not_read(unreadable: usize, left_out: usize) -> String {
+    match (unreadable, left_out) {
+        (0, 0) => String::new(),
+        (n, 0) => format!(" ({n} chat(s) could not be read)"),
+        (0, m) => format!(" ({m} test or withdrawn chat(s) left out)"),
+        (n, m) => format!(" ({n} chat(s) could not be read; {m} test or withdrawn left out)"),
+    }
+}
+
 /// One line for `mecha persona show`: the echo reading in words.
 fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
     echo_line_over(echoes, persona::echo::SHOWN_DAYS as u64)
@@ -1049,10 +1055,7 @@ fn echo_line_over(echoes: &anyhow::Result<persona::echo::Echoes>, days: u64) -> 
         Err(e) => return format!("unreadable — {e:#}"),
         Ok(e) => e,
     };
-    let unreadable = match e.unreadable {
-        0 => String::new(),
-        n => format!(" ({n} chat(s) could not be read)"),
-    };
+    let unreadable = not_read(e.unreadable, e.left_out);
     match e.max {
         None => format!("no replies to compare in chats from the last {days} days{unreadable}"),
         Some(max) => format!(
@@ -1538,7 +1541,8 @@ fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
             let name = name.trim().to_lowercase();
             let from = to - chrono::Days::new(u64::from(days - 1));
             let got = story::story(dir, &name, from, to, today)?;
-            let names = story::names(&dir.join(&name))?;
+            let people = load(dir).get(&name).is_some_and(|p| p.settings.life.people);
+            let names = story::names(&dir.join(&name), people)?;
             print!("{}", render_story(&got.days, &names, json, today)?);
             if let Some(why) = &got.why {
                 eprintln!("the rest is not drawn: {why}");
@@ -3062,5 +3066,22 @@ mod tests {
         assert!(lines[1].starts_with("days on, people off: 10 replies, 2 of 10 (20%)"));
         assert!(lines[1].contains("you took up 2 of 2 (100%)"), "{lines:?}");
         assert!(lines[1].contains("1 not answered yet"));
+    }
+
+    #[test]
+    fn the_echo_line_says_what_it_left_out() {
+        let echoes = Ok(mecha_core::persona::echo::Echoes {
+            chats: 2,
+            replies: 9,
+            repeated: 1,
+            max: Some(0.8),
+            unreadable: 0,
+            left_out: 3,
+        });
+        let line = echo_line_over(&echoes, 30);
+        assert!(
+            line.ends_with("(3 test or withdrawn chat(s) left out)"),
+            "{line}"
+        );
     }
 }

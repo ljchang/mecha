@@ -11921,9 +11921,11 @@ been the same bug with a smaller window.
 
 Two consequences visible from outside the subsystem. `RunConfig::clock`
 records the reading, because it is no longer recoverable from `system_prompt`,
-and `clock::for_replay` pins a replay and both probes to it — per *run* rather
-than per session, since one `mecha serve` session held runs on either side of
-midnight. And the fold edits a message the session already wrote, so the first run of a
+and `clock::for_replay` pins a replay and both probes to it — per `Config`
+record rather than once per session, since one `mecha serve` session held runs
+on either side of midnight. A `Config` is written per attach and per rebind, so
+the reading is per run only where the process is; each run's own end is
+`RunStats::ended_at`, the machine's wall clock. And the fold edits a message the session already wrote, so the first run of a
 conversation — and the first run of every new local day in a long-lived one —
 used to record a `Record::Rewrite` instead of an append; `record_transition`
 compares before to after rather than trusting a flag from the loop, so this
