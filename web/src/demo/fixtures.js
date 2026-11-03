@@ -689,6 +689,30 @@ export function factoryInstrument(id = 'book', now = Date.now()) {
   };
 }
 
+export const factoryForm = {
+  id: 'speaking',
+  kind: 'request',
+  draft: false,
+  published: true,
+  digest: 'demo',
+  kinds: ['text', 'long_text', 'email', 'url', 'date', 'integer', 'select', 'multi_select', 'bool'],
+  text: 'id = "speaking"\nversion = 1\ntitle = "Invite me to speak"\n',
+  form: {
+    title: 'Invite me to speak',
+    description: 'Tell me about the event; I read every invitation.',
+    confirmation_heading: 'Thank you',
+    confirmation_body: 'I will reply within two weeks.',
+    fields: [
+      { name: 'requester_email', label: 'Your email', help: null, kind: 'email', required: true, options: null, max_length: null },
+      { name: 'event', label: 'The event', help: 'Name, place and dates', kind: 'text', required: true, options: null, max_length: 200 },
+      { name: 'format', label: 'Format', help: null, kind: 'select', required: true, options: [{ value: 'keynote', label: 'Keynote' }, { value: 'panel', label: 'Panel' }], max_length: null },
+    ],
+  },
+};
+
+export const factoryFormPreview =
+  '<html><head><style>body{font-family:sans-serif;padding:24px}label{display:block;margin:12px 0 4px}</style></head><body><h1>Invite me to speak</h1><p>Tell me about the event; I read every invitation.</p><form><label>Your email</label><input><label>The event</label><input><label>Format</label><select><option>Keynote</option><option>Panel</option></select></form></body></html>';
+
 // --- the graph review queue ---------------------------------------------
 
 export const queue = [
@@ -1962,17 +1986,18 @@ export function personaWeek(date) {
       cell: 'full_time',
       // A drafted week waiting on the owner, so the demo shows the review.
       draft: {
-        text: '# Drafted by a model from what you wrote of her.\n\n[[anchor]]\nwhat = "field survey"\nactivity = "work"\ndays = ["tue", "thu"]\nat = "08:00"\nminutes = 360\nchance = 1.0\n\n[[anchor]]\nwhat = "harbour swim"\nactivity = "exercise"\ndays = ["sat"]\nat = "07:00"\nminutes = 60\nchance = 0.7\n',
+        text: '# Drafted by a model from what you wrote of them.\n\n[[anchor]]\nwhat = "field survey"\nactivity = "work"\ndays = ["tue", "thu"]\nat = "08:00"\nminutes = 360\nchance = 1.0\n\n[[anchor]]\nwhat = "harbour swim"\nactivity = "exercise"\ndays = ["sat"]\nat = "07:00"\nminutes = 60\nchance = 0.7\nmonths = ["may", "jun", "jul", "aug", "sep"]\n',
         digest: '1'.repeat(64),
         anchors: [
           { what: 'field survey', activity: 'work', days: [1, 3], start_minute: 480, minutes: 360, chance: 1 },
-          { what: 'harbour swim', activity: 'exercise', days: [5], start_minute: 420, minutes: 60, chance: 0.7 },
+          { what: 'harbour swim', activity: 'exercise', days: [5], start_minute: 420, minutes: 60, chance: 0.7, months: [5, 6, 7, 8, 9] },
         ],
         error: null,
         kept_cell: 'full_time',
         edited: false,
       },
       undraftable: null,
+      notes: '- survey days are Tuesdays and Thursdays\n- swims in the harbour through the warm months\n',
     },
     week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
     // Her story over the week (`story::to_json`): invented events.

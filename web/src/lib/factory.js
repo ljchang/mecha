@@ -46,6 +46,24 @@ export function nextWindow(existing) {
   return { start: last.end, end };
 }
 
+/**
+ * A field or option name from its label: lowercase, digits and `_`,
+ * starting with a letter — the factory's rule for a field name — and not
+ * one of `taken`. A label with nothing usable becomes `field`.
+ */
+export function nameFrom(label, taken = []) {
+  let base = String(label ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+  if (!/^[a-z]/.test(base)) base = base ? `f_${base}` : 'field';
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let i = 2; ; i++) if (!used.has(`${base}_${i}`)) return `${base}_${i}`;
+}
+
 const DAY_WORDS = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
 
 /** "21:30" → "9:30 PM": the clock the time inputs show, not the file's. */

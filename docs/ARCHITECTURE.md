@@ -4166,11 +4166,37 @@ edited there. Four decisions, each a bug if undone:
   and spawned two children. Save and preview bodies are capped
   (`MAX_HOURS_BODY`, and `MAX_WINDOWS`/`MAX_OVERRIDES` in `validate`).
 
+**Forms are edited as drafts, never in place** (`form_draft.rs`, owner's
+ruling 2026-11-02). The served copy is the drain's oracle for what a
+submission may contain, so the page writes `~/.mecha/factory/drafts/<id>.toml`
+and **Publish** is `factory-publish type push` of the draft, which rewrites the
+served copy only once the box accepts it, then removes the draft. Three rules:
+
+- **Hours stay the hours editor's.** Publishing a booking draft takes the
+  served copy's `[availability]` (all but `timezone`) over the draft's
+  (`form_draft::carry_hours`), so a draft begun before an hours save cannot
+  revert it.
+- **A field is matched by name.** `write_form` keeps every key and comment the
+  editor does not show (`show_when`, `pattern`), and a kind change drops the
+  keys the old kind took, since the factory refuses a stray `max_length` on a
+  select. A saved field's name is frozen in the UI: it keys every request
+  already received.
+- **The id is the URL.** A raw TOML save that moves `id` is refused; a new
+  form's id is chosen once, from `type new <starter> --id`.
+
+The preview is `type render`'s page with its stylesheet inlined and every
+script and link removed, in a `sandbox=""` `srcdoc` frame: no scripts and no
+submit. It is the markup without behaviour, so a `show_when` field shows
+unconditionally, and the page says so. Not a network guarantee (a `url()` in
+the owner's own stylesheet would fetch), which is fine while the manifest and
+style are the owner's. The writers are reached from the web handler only
+(`only_the_owners_page_writes_forms`). Pause and retire need a box-side state
+the factory does not have yet.
+
 It rides the `frontdoor` feature (`VIEW_FEATURE.factory`): a factory is what
 the front door is the door of, and a second switch could disagree with the
 first. Not built: host cancellation (the box has no `cancelled_by_host` path
-yet), form and page-text editing (that one is a `type push`, a publish), and
-polls.
+yet), pausing or retiring a form, and polls.
 
 ## Web search
 
