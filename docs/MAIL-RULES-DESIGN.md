@@ -102,7 +102,7 @@ means none.
   rules/<name>/reply.md        a fixed reply, when the rule has one
   rules/<name>/<other>.md      a covering note, a typed-send template
   approvals.jsonl              every mode change: rule, action group, who, when,
-                               from, to, digest
+                               from_mode, to_mode, digest
   ledger.jsonl                 one row per rule × message × action (§8)
   proposals/<id>/              drafts from a conversation, never live (§9)
   aliases.toml                 the owner's other addresses (§5.4), owner-written
@@ -234,7 +234,8 @@ refuses to automate is the one the owner made when writing the rule.
 
 They run **before classification**, and a rule whose actions are all
 mailbox-only can mark the thread handled so the classifier never spends a
-call on it — **but only when that rule's Mailbox group is in `auto`** (a
+call on it — **but only when that rule's Mailbox group is in `auto`** (so a
+`spam`-only rule never skips, its Report group never reaching `auto`; a
 `shadow` or `propose` rule has not decided the thread's fate, so it must not
 decide whether the thread is classified), **no description rule is enabled
 at all, and no
@@ -303,7 +304,9 @@ never a silent drop. An entry older than seven days settles as `expired`
 with a notice, so the queue cannot grow without bound behind a broken
 classifier — and `expired` is not a failure: it does not count toward
 §6.4's consecutive-failure brake, which owner inattention must never be able
-to trip. Whether any
+to trip. An expired thread's keys stay open, which is harmless: it has left
+both the queue and the window, so nothing will evaluate it again
+unprompted, and the notice offers *apply to it now*, in `propose`. Whether any
 description rule is enabled is known statically from the enabled set, and
 which other header rules match a given thread is known in the same timer
 pass, before anything executes. P1 builds this, though no description rule exists until P4,
@@ -701,7 +704,9 @@ party.
    message. Types are a
    closed set, and each says what it strips, as §5.1's slots do: `text` (one
    line, at most 200 characters, control characters and line breaks removed),
-   `money` and `number` (parsed, then re-rendered by the harness — never the
+   `money` (amount and its currency code, both parsed, re-rendered together —
+   a bare number is never sent to finance) and `number` (parsed, then
+   re-rendered by the harness — never the
    extracted string), `date` (parsed to `YYYY-MM-DD` and re-rendered), and
    `email` (a single address that parses, else the field fails). A type added
    later states its rule too.
@@ -779,8 +784,20 @@ cap stopped it. So, both failing closed:
 The rest of this section is about replies. A reply goes to an address the
 sender controls, so the guards keep mecha from
 becoming a spam reflector or joining a mail loop. All are checked in the
-harness, all are recorded on the ledger row when they fire (`skipped: <guard>`),
-and none is configurable off:
+harness, every one that fires is recorded on the ledger row, and none is
+configurable off. They come in three shapes, and the row says which:
+
+- **A refusal** — the send is not made at all, and the row is `skipped:
+  <guard>` (RFC 3834, the loop guards, the per-sender limit, a conversation
+  the owner has joined).
+- **A demotion** — the send is not made *unattended*, but staged in the
+  outbox for the owner, and the row is `staged` with the guard as its
+  reason (a DMARC or authentication failure, an unknown own address, a
+  matcher with no sender constraint).
+- **A mode-level hold** — `block_sends_after_private`, which keeps the group
+  in `propose` and writes no per-message row (§6.3).
+
+The guards:
 
 - **RFC 3834.** No reply to a message whose `Auto-Submitted` has any value
   but `no`. And no reply, whatever `Auto-Submitted` says, to a message
@@ -914,7 +931,12 @@ ruling that a release from an unknown actor is stamped `unknown` but not
 refused: one release sends one reviewed draft, while a raise is a standing
 permission to send unattended, and a run with the owner present is still a
 context window with mail in it. Lowering is allowed from anywhere, a run
-included, because stepping down never needs approval (§6.4).
+included, because stepping down never needs approval (§6.4). **A lowering
+still records who made it** — the same `Actor` reading the raise gate uses,
+recorded though not enforced — so an owner's pause and a run's pause are
+told apart on the page: a `shell` run that turned every rule `off` would
+otherwise read exactly like the owner doing it, and the receipts that
+stopped reaching finance would have no explanation.
 
 **That gate is advisory, and the structural answer is the sandbox**, exactly
 as in `closure.rs`. `closure::decide`'s own documentation names the way past
@@ -1207,7 +1229,10 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   `staged`, `held: rule cap` and `held: global cap` (§6.4), `sent`,
   `released unchanged`,
   `edited`, `rejected`, `undone`, `expired` (§4.1), `failed: <why>`,
-  `skipped: <guard>`.
+  `skipped: <guard>`. One more row is not an action outcome and touches no
+  action's key: `approval lapsed: files changed` (§6.2), a rule-level row
+  for the page. It is listed here so the unknown-outcome rule cannot mistake
+  it for one.
   `skipped` rows are shown, not hidden — a guard visibly firing is how the
   owner learns to trust the guards.
 - **Undo** on mailbox rows (archive → back to inbox, trash → restore), and
@@ -1495,7 +1520,9 @@ The rest are answered by measurement or by a decision made elsewhere:
 - **Provider-side filters.** A rule is mecha's, like tags: no Gmail filter or
   Outlook rule is created, so the two providers behave the same and a rule's
   ledger is complete.
-- **Reply-all, `Reply-To`, or replies to unauthenticated senders**, at any
-  mode.
+- **Reply-all or `Reply-To`, at any mode, and *automatic* replies to
+  unauthenticated senders.** A reply to a sender who fails §5.4's
+  authentication check is never sent unattended; it is staged in the outbox,
+  where the owner may still send it.
 - **A second approval surface.** Staged sends from rules go to the outbox,
   labelled with the rule that staged them.
