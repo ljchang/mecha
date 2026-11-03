@@ -2221,8 +2221,10 @@ module.
   - `Status::initial` is the one rule for a new record: `ModelUntrusted` is a
     candidate, never recalled until the owner approves; anything else is
     active (inferred facts included, D18). Ordinary approval keeps the origin,
-    so recall can re-arm the taint. `Memory::approve_clean` and
-    `Memory::approve_clean_chat` are the owner's vouch: they accept live
+    so recall can re-arm the taint. `Memory::approve_clean` (and its bulk
+    form `Memory::approve_clean_chat`, which no surface calls: the CLI's
+    `--chat --clean` lists a chat's records and vouches the ones it showed,
+    one by one) are the owner's vouch: they accept live
     model-untrusted records, stamp `vouched_at`, and change origin to owner.
     Repeating either operation on an existing vouch idempotently repairs any
     shared copy left with its old origin after a cross-database failure. Only

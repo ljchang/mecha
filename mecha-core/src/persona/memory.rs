@@ -80,7 +80,7 @@ pub enum Table {
 }
 
 impl Table {
-    const ALL: [Table; 3] = [Table::Persona, Table::User, Table::Inferred];
+    pub const ALL: [Table; 3] = [Table::Persona, Table::User, Table::Inferred];
 
     fn sql(self) -> &'static str {
         match self {
