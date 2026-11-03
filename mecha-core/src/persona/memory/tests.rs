@@ -73,6 +73,7 @@ fn an_untrusted_record_waits_on_the_owner_and_keeps_its_origin_once_approved() {
     assert_eq!(approved.status, Status::Active);
     // Recalling it must still re-arm what it was written under.
     assert_eq!(approved.origin, Origin::ModelUntrusted);
+    assert!(approved.vouched_at.is_none());
 
     let ep = m
         .add_episode(NewEpisode {
@@ -85,6 +86,208 @@ fn an_untrusted_record_waits_on_the_owner_and_keeps_its_origin_once_approved() {
         .unwrap();
     assert_eq!(ep.status, Status::Candidate);
     assert!(m.episodes(Filter::Recallable).unwrap().is_empty());
+}
+
+#[test]
+fn the_owner_can_approve_a_candidate_as_clean_and_recall_uses_the_clean_stem() {
+    let dir = store(&["mara"]);
+    crate::persona::tests_support::fill_core(&dir, "mara");
+    let m = Memory::open(&dir, "mara").unwrap();
+    let candidate = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "A field guide called the inlet silver.",
+                Kind::Observed,
+                "c1",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+
+    m.approve_clean(&candidate.uid).unwrap();
+    let approved = m.fact(&candidate.uid).unwrap().unwrap();
+    assert_eq!(approved.status, Status::Active);
+    assert_eq!(approved.origin, Origin::Owner);
+    assert!(approved.vouched_at.is_some());
+
+    let personas = crate::persona::Store::load(&dir);
+    let persona = personas.get("mara").unwrap();
+    let recalled = crate::persona::recall::chat_start(&personas, persona, None).unwrap();
+    let block = recalled.block.unwrap();
+    assert!(block.text.contains("field guide"), "{}", block.text);
+    assert_eq!(
+        crate::persona::recall::stem_of(&block.text),
+        Some((true, false))
+    );
+}
+
+#[test]
+fn an_active_untrusted_record_and_its_shared_copy_can_be_vouched_clean() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let candidate = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Keeps a blue notebook.",
+                Kind::Stated,
+                "c1",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.approve(&candidate.uid).unwrap();
+    let shared = Shared::open(&dir).unwrap();
+    shared
+        .share(
+            &m.fact(&candidate.uid).unwrap().unwrap(),
+            Audience::Everyone,
+            &[],
+        )
+        .unwrap();
+
+    m.approve_clean(&candidate.uid).unwrap();
+    let approved = m.fact(&candidate.uid).unwrap().unwrap();
+    assert_eq!(approved.origin, Origin::Owner);
+    assert!(approved.vouched_at.is_some());
+    let copy = shared.all().unwrap().facts.pop().unwrap();
+    assert_eq!(copy.origin, Origin::Owner);
+}
+
+#[test]
+fn clean_approval_refuses_withdrawn_and_already_clean_records() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let withdrawn = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "The tide chart used green ink.",
+                Kind::Observed,
+                "c1",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.invalidate(&withdrawn.uid).unwrap();
+    let err = m.approve_clean(&withdrawn.uid).unwrap_err();
+    assert!(err.to_string().contains("withdrawn, not waiting"), "{err}");
+
+    let clean = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "The pier is quiet.",
+                Kind::Observed,
+                "c1",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    let err = m.approve_clean(&clean.uid).unwrap_err();
+    assert!(err.to_string().contains("already clean"), "{err}");
+}
+
+#[test]
+fn clean_approval_by_chat_vouches_only_its_untrusted_live_records() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let episode = m
+        .add_episode(NewEpisode {
+            source: Some(src("chosen-chat")),
+            summary: "Read a made-up guide to the inlet.".into(),
+            origin: Origin::ModelUntrusted,
+            model: "local".into(),
+            ..NewEpisode::default()
+        })
+        .unwrap();
+    let fact_one = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "The guide called one rock Bell.",
+                Kind::Observed,
+                "chosen-chat",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    let fact_two = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Keeps tide notes.",
+                Kind::Stated,
+                "chosen-chat",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.approve(&fact_two.uid).unwrap();
+    let clean = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "The inlet faces west.",
+                Kind::Observed,
+                "chosen-chat",
+                Origin::ModelClean,
+            ),
+        )
+        .unwrap();
+    let other = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "Another guide used a red cover.",
+                Kind::Observed,
+                "other-chat",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    let withdrawn = m
+        .add_fact(
+            Table::Persona,
+            fact(
+                "A withdrawn note.",
+                Kind::Observed,
+                "chosen-chat",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.invalidate(&withdrawn.uid).unwrap();
+
+    assert_eq!(m.approve_clean_chat("chosen-chat").unwrap(), 3);
+    let episode = m
+        .episodes(Filter::All)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.uid == episode.uid)
+        .unwrap();
+    assert_eq!(episode.origin, Origin::Owner);
+    assert!(episode.vouched_at.is_some());
+    for uid in [&fact_one.uid, &fact_two.uid] {
+        let row = m.fact(uid).unwrap().unwrap();
+        assert_eq!(row.status, Status::Active);
+        assert_eq!(row.origin, Origin::Owner);
+        assert!(row.vouched_at.is_some());
+    }
+    assert_eq!(
+        m.fact(&clean.uid).unwrap().unwrap().origin,
+        Origin::ModelClean
+    );
+    assert!(m.fact(&clean.uid).unwrap().unwrap().vouched_at.is_none());
+    assert_eq!(
+        m.fact(&other.uid).unwrap().unwrap().origin,
+        Origin::ModelUntrusted
+    );
+    assert_eq!(
+        m.fact(&withdrawn.uid).unwrap().unwrap().status,
+        Status::Invalidated
+    );
 }
 
 #[test]
@@ -812,6 +1015,59 @@ fn a_store_from_before_the_ledger_upgrades_and_reads_as_never_written() {
     assert_eq!(m.written_upto("c1").unwrap(), 3);
 }
 
+#[test]
+fn a_schema_three_store_adds_the_vouch_column_and_keeps_its_rows() {
+    let dir = store(&["mara"]);
+    let kept = {
+        let m = Memory::open(&dir, "mara").unwrap();
+        let kept = m
+            .add_fact(
+                Table::User,
+                fact(
+                    "Keeps a notebook by the door.",
+                    Kind::Stated,
+                    "c1",
+                    Origin::ModelClean,
+                ),
+            )
+            .unwrap();
+        for table in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+            m.conn
+                .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN vouched_at;"))
+                .unwrap();
+        }
+        m.conn.pragma_update(None, "user_version", 3).unwrap();
+        kept
+    };
+
+    let old = Memory::open_existing(&dir, "mara").unwrap().unwrap();
+    assert_eq!(old.fact(&kept.uid).unwrap().unwrap().text, kept.text);
+    assert!(old.fact(&kept.uid).unwrap().unwrap().vouched_at.is_none());
+    drop(old);
+    let m = Memory::open(&dir, "mara").unwrap();
+    assert_eq!(
+        m.conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    let row = m.fact(&kept.uid).unwrap().unwrap();
+    assert_eq!(row.text, kept.text);
+    assert!(row.vouched_at.is_none());
+    for table in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+        let mut stmt = m
+            .conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns.iter().any(|c| c == "vouched_at"), "{table}");
+    }
+}
+
 fn recall_words(m: &Memory, q: &str) -> Vec<String> {
     let kinds = [
         Recallable::Episodes,
@@ -1170,5 +1426,38 @@ fn equal_by_words_and_recency_the_newer_wins() {
     assert_eq!(
         found[0], "Holdfast, among many other words here.",
         "{found:?}"
+    );
+}
+
+#[test]
+fn no_model_facing_core_path_can_approve_memory_as_clean() {
+    fn scan(dir: &Path, offenders: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                // The implementation's own tests exercise the owner API.
+                if path.ends_with("persona/memory") {
+                    continue;
+                }
+                scan(&path, offenders);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && !path.ends_with("persona/memory.rs")
+            {
+                let source = std::fs::read_to_string(&path).unwrap();
+                if source.contains("approve_clean(") || source.contains("approve_clean_chat(") {
+                    offenders.push(path);
+                }
+            }
+        }
+    }
+
+    let mut offenders = Vec::new();
+    scan(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut offenders,
+    );
+    assert!(
+        offenders.is_empty(),
+        "only the owner's CLI and web route may call clean approval; core callers: {offenders:?}"
     );
 }

@@ -930,6 +930,17 @@ record re-arms the taint it was written under, so memory is never a
 laundering path. Material from a file is third-party text and classifies
 the same way (§10.6).
 
+**Owner ruling 2026-11-03:** ordinary approval makes a candidate recallable
+but keeps its origin. The owner may instead approve a model-untrusted
+candidate — or one already approved the old way — **as clean**: that vouches
+for the record, records when, and changes its origin to the owner, so recalling
+it no longer marks the chat untrusted. Without that door, one approved
+outside-origin memory makes the next chat untrusted, all that chat learns
+becomes candidates, and the cycle ratchets. In October, local-tool results
+mislabelled as outside content left personas with dozens of candidates and
+made that ratchet concrete. No model, writer, tool, or automated path may
+approve as clean; only the owner's CLI and owner-authenticated web route can.
+
 ### 9.7 Recall
 
 All of it rides in the message stream; nothing touches the system prompt
@@ -981,8 +992,11 @@ All of it rides in the message stream; nothing touches the system prompt
 `mecha persona memory <name>` and a web page — *what Mara remembers* — show
 the episodes, the persona facts, and the user facts she learned. From there
 the owner pins, corrects, forgets, shares a user fact with everyone or a
-group, and approves candidates. A correction invalidates the old row and adds
-an owner-origin one; only forgetting deletes.
+group, and approves candidates. Ordinary approval keeps origin; the owner may
+approve an untrusted candidate or active record as clean, vouching for it so
+later recall does not mark the chat untrusted. No model can make that vouch. A
+correction invalidates the old row and adds an owner-origin one; only
+forgetting deletes.
 
 *As built (2026-10-02):* the web page is the editor's **Memories** tab
 (`PersonaMemory.svelte`), over `GET`/`POST /api/personas/{name}/memory`
