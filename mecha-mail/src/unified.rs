@@ -351,7 +351,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "mail_triage",
-            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Undo archive with unarchive; undo trash with untrash. Outlook restores only messages in the corresponding Archive or Deleted Items folder: drafts to Drafts, own messages to Sent Items, others to Inbox; unknown destinations stay put and are counted. Gmail unarchive adds Inbox and untrash restores labels. Acts on the WHOLE thread. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
+            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Undo archive with unarchive; undo trash with untrash. Outlook restores only messages in the corresponding Archive or Deleted Items folder: drafts to Drafts, own messages to Sent Items, others to Inbox; unknown destinations stay put and are counted. Gmail unarchive adds Inbox and untrash restores labels; use untrash for trashed mail. Acts on the WHOLE thread. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -795,6 +795,18 @@ fn render_triage_result(
         TriageResult::Uncounted => status,
         TriageResult::Count(n) => {
             format!("{status} ({n} message{})", if n == 1 { "" } else { "s" })
+        }
+        TriageResult::Restore(RestoreOutcome {
+            moved: 0,
+            left_in_place: 0,
+            failed: 0,
+        }) => {
+            let source = match action {
+                TriageAction::Unarchive => "archive",
+                TriageAction::Untrash => "Deleted Items",
+                _ => unreachable!("only restore actions return RestoreOutcome"),
+            };
+            format!("{account}: thread {thread_id}: nothing in {source} to restore")
         }
         TriageResult::Restore(outcome) => format!(
             "{status} ({} moved; {} left in place; {} failed)",
@@ -3225,6 +3237,25 @@ mod tests {
             .find(|tool| tool["name"] == "mail_get_thread")
             .unwrap();
         assert_eq!(tool["description"], "Read a whole conversation by thread_id, oldest first, with clean text bodies. thread_ids are account-scoped: pass the `account` from the search row the id came from.");
+    }
+
+    #[test]
+    fn empty_restores_report_nothing_in_the_source_folder() {
+        for (action, source) in [
+            (TriageAction::Unarchive, "archive"),
+            (TriageAction::Untrash, "Deleted Items"),
+        ] {
+            let text = render_triage_result(
+                "fixture",
+                "thread-1",
+                action,
+                TriageResult::Restore(RestoreOutcome::default()),
+            );
+            assert_eq!(
+                text,
+                format!("fixture: thread thread-1: nothing in {source} to restore")
+            );
+        }
     }
 
     #[test]

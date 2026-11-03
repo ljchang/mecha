@@ -193,7 +193,7 @@ pub struct ThreadMetadata {
     pub owner_participated: Option<bool>,
     /// Provider id, never the sender-written RFC Message-ID. None when no
     /// inbound message is known, direction cannot be determined, or any
-    /// inbound message has an unknown date.
+    /// inbound message has an unknown date or an empty provider id.
     pub newest_inbound_provider_id: Option<String>,
 }
 
@@ -226,7 +226,11 @@ impl ThreadMetadata {
         let inbound = emails
             .iter()
             .filter(|e| e.is_draft == Some(false) && !e.from_address.eq_ignore_ascii_case(address));
-        if !unknown && inbound.clone().all(|e| e.date_known == Some(true)) {
+        if !unknown
+            && inbound
+                .clone()
+                .all(|e| e.date_known == Some(true) && !e.provider_id.is_empty())
+        {
             result.newest_inbound_provider_id = inbound
                 .max_by(|a, b| a.date_received.cmp(&b.date_received))
                 .map(|e| e.provider_id.clone());
@@ -333,8 +337,65 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_inbound_provider_id_makes_newest_unknown_for_both_providers() {
+        use crate::google::gmail::{parse_gmail_message, HeaderRead};
+        use crate::microsoft::graph_mail::parse_outlook_message;
+        use serde_json::json;
+
+        let fixture = json!({
+            "id":"known", "internalDate":"1704067200000", "labelIds":["INBOX"],
+            "payload":{"headers":[{"name":"From", "value":"sender@example.edu"}]},
+            "isDraft":false, "receivedDateTime":"2024-01-01T00:00:00Z",
+            "from":{"emailAddress":{"address":"sender@example.edu"}}
+        });
+        for id in [None, Some(json!(""))] {
+            let mut missing = fixture.clone();
+            missing.as_object_mut().unwrap().remove("id");
+            if let Some(id) = id {
+                missing["id"] = id;
+            }
+            for (known, missing) in [
+                (
+                    parse_gmail_message(HeaderRead::Full, &fixture),
+                    parse_gmail_message(HeaderRead::Full, &missing),
+                ),
+                (
+                    parse_outlook_message(&fixture),
+                    parse_outlook_message(&missing),
+                ),
+            ] {
+                assert!(missing.provider_id.is_empty());
+                assert_eq!(missing.date_known, Some(true));
+                // Even an apparently older unidentified inbound blocks selection.
+                for date in ["2023-12-01T00:00:00Z", "2024-02-01T00:00:00Z"] {
+                    let mut missing = missing.clone();
+                    missing.date_received = date.into();
+                    let metadata = ThreadMetadata::from_emails(
+                        &[known.clone(), missing.clone()],
+                        Some("owner@example.com"),
+                    );
+                    assert_eq!(metadata.newest_inbound_provider_id, None);
+                    assert_eq!(metadata.owner_participated, Some(false));
+                    missing.from_address = "owner@example.com".into();
+                    let metadata = ThreadMetadata::from_emails(
+                        &[known.clone(), missing],
+                        Some("owner@example.com"),
+                    );
+                    assert_eq!(
+                        metadata.newest_inbound_provider_id.as_deref(),
+                        Some("known")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn older_email_records_leave_new_facts_unknown() {
-        let email = crate::google::gmail::parse_gmail_message(&serde_json::json!({"id":"m1"}));
+        let email = crate::google::gmail::parse_gmail_message(
+            crate::google::gmail::HeaderRead::Partial,
+            &serde_json::json!({"id":"m1"}),
+        );
         let mut value = serde_json::to_value(email).unwrap();
         for name in [
             "date_known",
