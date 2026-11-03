@@ -16,8 +16,8 @@ use super::network::{Network, Tie};
 use super::{Origin, Persona, Status};
 
 pub const HEADER: &str = "\
-# Drafted by a model from what you wrote of them. None of it reached their
-# days until you approved it, and any line can be changed before or after.
+# Drafted by a model from what you wrote of them. None of it reaches their
+# days until you approve it, and any line can be changed before or after.
 ";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +43,11 @@ fn tie_id(tie: Tie) -> Option<&'static str> {
 
 /// Only names whose row and whole folded edge are clean can enter a request
 /// that may become clean profile text after approval.
+/// The most people offered: a household holds at most
+/// [`life::MAX_HOUSEHOLD`], and every one offered is a name in the question
+/// and an alternative in the schema (review of #834).
+const MAX_OFFERED: usize = 60;
+
 fn people(pdir: &Path) -> Result<Vec<ListedPerson>> {
     let network = Network::read(pdir)?;
     Ok(network
@@ -56,6 +61,7 @@ fn people(pdir: &Path) -> Result<Vec<ListedPerson>> {
                 tie: edge.tie.and_then(tie_id),
             })
         })
+        .take(MAX_OFFERED)
         .collect())
 }
 
@@ -223,12 +229,27 @@ struct DraftedSleep {
 
 /// Render a typed answer into TOML and check it through the sampler's parser.
 /// A name outside `names` is refused even when a provider ignored the schema.
-pub fn render(reply: &str, names: &[String]) -> Result<String> {
+/// The draft's text from the model's answer, or `None` when it found
+/// nothing to say: an answer naming no household, no usual night and no
+/// never-activity, and not alone, is not neutral once approved (it drops
+/// every household kind and caring), so it is a finding with nothing
+/// staged, as the routine drafter treats a week with no fixed point
+/// (review of #834).
+pub fn render(reply: &str, names: &[String]) -> Result<Option<String>> {
     let Some(body) = crate::eval::extract_json(reply) else {
         bail!("the drafter answered no JSON");
     };
-    let r: Reply =
+    let mut r: Reply =
         serde_json::from_str(&body).context("the drafter's answer is not a life profile")?;
+    if !r.alone && r.household.is_empty() && r.sleep.is_none() && r.never.is_empty() {
+        return Ok(None);
+    }
+    // Alone beside named household members contradicts itself; the names
+    // are the evidence, so they win rather than losing the run to a
+    // refusal written for a hand edit.
+    if r.alone && !r.household.is_empty() {
+        r.alone = false;
+    }
     for h in &r.household {
         if !names.iter().any(|name| name == &h.person) {
             bail!(
@@ -277,18 +298,22 @@ pub fn render(reply: &str, names: &[String]) -> Result<String> {
     }
     let text = format!("{HEADER}\n{doc}");
     life::parse(&text).context("the drafted life profile does not load")?;
-    Ok(text)
+    Ok(Some(text))
 }
 
-pub fn stage(dir: &Path, p: &Persona, reply: &str) -> Result<Life> {
+/// Stage the model's answer as the waiting draft; `None`, with nothing
+/// staged, when it found nothing to draft.
+pub fn stage(dir: &Path, p: &Persona, reply: &str) -> Result<Option<Life>> {
     check(p)?;
     let names = people(&dir.join(&p.name))?
         .into_iter()
         .map(|person| person.name)
         .collect::<Vec<_>>();
-    let text = render(reply, &names)?;
+    let Some(text) = render(reply, &names)? else {
+        return Ok(None);
+    };
     life::stage_draft(dir, &p.name, &text, Origin::ModelClean)?;
-    life::parse(&text)
+    life::parse(&text).map(Some)
 }
 
 pub async fn draft(
@@ -296,7 +321,7 @@ pub async fn draft(
     model: &str,
     dir: &Path,
     p: &Persona,
-) -> Result<Life> {
+) -> Result<Option<Life>> {
     use crate::message::StopReason;
     check(p)?;
     life::may_stage(dir, &p.name)?;
@@ -391,9 +416,24 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_with_nothing_in_it_stages_nothing_and_alone_yields_to_names() {
+        let names = vec!["Theo".to_string()];
+        let empty = r#"{"alone":false,"household":[],"sleep":null,"never":[]}"#;
+        assert_eq!(render(empty, &names).unwrap(), None);
+        // Alone with a named housemate: the name is the evidence.
+        let both = r#"{"alone":true,"household":[{"person":"Theo","relation":"housemate"}],"sleep":null,"never":[]}"#;
+        let profile = life::parse(&render(both, &names).unwrap().unwrap()).unwrap();
+        assert!(!profile.alone);
+        assert_eq!(profile.household.len(), 1);
+        // Alone on its own is something to say.
+        let alone = r#"{"alone":true,"household":[],"sleep":null,"never":[]}"#;
+        assert!(render(alone, &names).unwrap().is_some());
+    }
+
+    #[test]
     fn a_valid_answer_is_rendered_by_the_harness_and_loads() {
         let answer = r#"{"alone":false,"household":[{"person":"Theo","relation":"housemate"}],"sleep":{"bed":"23:00","wake":"07:00"},"never":["work","caring"]}"#;
-        let text = render(answer, &["Theo".into()]).unwrap();
+        let text = render(answer, &["Theo".into()]).unwrap().unwrap();
         assert!(text.starts_with(HEADER));
         let profile = life::parse(&text).unwrap();
         assert_eq!(profile.household[0].person, "Theo");

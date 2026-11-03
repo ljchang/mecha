@@ -636,7 +636,14 @@ async fn draft_life(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
         .await?;
     let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
     eprintln!("drafting `{}`'s life with {}", p.name, bound.model);
-    let profile = life_drafter::draft(provider.as_ref(), &bound.model, dir, &p).await?;
+    let Some(profile) = life_drafter::draft(provider.as_ref(), &bound.model, dir, &p).await? else {
+        println!(
+            "The model found nothing in what you wrote of `{}` to draft a life profile from, \
+             so nothing waits on you. `mecha persona life edit {}` writes one by hand.",
+            p.name, p.name
+        );
+        return Ok(());
+    };
     println!(
         "Drafted `{}`'s life: {} household member(s), {} usual sleep, {} never activity(s). \
          It waits beside life.toml; `mecha persona life show {}` reads it and `approve {}` makes it their profile.",

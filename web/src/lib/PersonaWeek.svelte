@@ -23,6 +23,8 @@
   // The owner's text while editing a draft, null when not editing.
   let draftText = $state(null);
   let lifeDrafting = $state(false);
+  // What the last life draft found, when it found nothing to stage.
+  let lifeNote = $state('');
   let lifeActing = $state(false);
   let lifeDraftText = $state(null);
   // What the last draft found, when it found nothing to stage.
@@ -167,6 +169,7 @@
   async function draftLife() {
     lifeDrafting = true;
     error = '';
+    lifeNote = '';
     try {
       const res = await fetch(personaUrl(name, '/life/draft', null), {
         method: 'POST',
@@ -176,6 +179,7 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
       picked = null;
+      if (data.life_drafted === false) lifeNote = 'Their model found nothing in what you wrote of them to draft a life profile from; nothing waits on you.';
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -290,6 +294,7 @@
           {lifeDrafting ? 'Drafting their life…' : 'Draft their life from what you wrote'}
         </button>
         {#if data.life.undraftable}<p class="wnote">{data.life.undraftable}</p>{/if}
+        {#if lifeNote}<p class="wnote">{lifeNote}</p>{/if}
         <p class="wnote">Someone must be on their People tab before the drafter can put them in the household.</p>
       {/if}
     </div>
