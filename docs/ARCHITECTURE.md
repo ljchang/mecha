@@ -4451,12 +4451,16 @@ only filed mail is a no-op. Probe results never become move targets.
 counts; a CLI parity test uses the mail dev-dependency to keep them aligned.
 The CLI checks the server's claimed status without linking the mail library
 at runtime: mailbox access stays over MCP.
-`commands::mail::finish_triage` marks `ACTED` only for confirmed completion:
-empty Inbox results say `skipped: nothing in Inbox`; partial failures return
-an error with counts. Both leave the record unchanged, so a classified
-thread remains in the needs-attention queue. Missing or inconsistent outcome
-data must not settle the queue either. Gmail acknowledges thread operations
-without a message count (`moved: null`).
+`commands::mail::finish_triage` marks `ACTED` for confirmed completion,
+including archive's `nothing_to_do`: the existence probe has proved that the
+conversation is already out of Inbox, so its record settles even when the
+owner archived it directly in Outlook. Spam's empty Inbox result still says
+`skipped: nothing in Inbox` and stays unsettled, since no junk training was
+confirmed. Partial failures return an error with counts and leave the record
+unchanged for both verbs. Missing or inconsistent outcome data must not settle
+the queue either. CLI reports keep the action and short handle before the
+server message; restore messages name their action too. Gmail acknowledges
+thread operations without a message count (`moved: null`).
 `restore_conversation` still reads only Archive or Deleted Items, and
 `restore_destination` routes drafts to Drafts, known owner mail to Sent
 Items and inbound mail to Inbox; unknown destinations stay in place.

@@ -843,7 +843,7 @@ fn render_triage_result(
             format!("{account}: thread {thread_id}: nothing in {source} to restore")
         }
         TriageResult::Restore(outcome) => format!(
-            "{account}: thread {thread_id}: {}{} moved; {} left in place; {} failed",
+            "{status} ({}{} moved; {} left in place; {} failed)",
             if outcome.failed > 0 || outcome.left_in_place > 0 {
                 "incomplete restore: "
             } else {
@@ -3502,6 +3502,38 @@ mod tests {
                 ),
                 format!("fixture: thread thread-1 {}", action.done())
             );
+        }
+    }
+
+    #[test]
+    fn nonempty_restore_results_name_the_action() {
+        for action in [TriageAction::Unarchive, TriageAction::Untrash] {
+            for moved in 0..=1 {
+                for failed in 0..=1 {
+                    for left_in_place in 0..=1 {
+                        if moved == 0 && failed == 0 && left_in_place == 0 {
+                            continue;
+                        }
+                        let text = render_triage_result(
+                            "fixture",
+                            "thread-1",
+                            action,
+                            TriageResult::Restore(RestoreOutcome {
+                                moved,
+                                failed,
+                                left_in_place,
+                            }),
+                        );
+                        assert!(text.contains(action.done()), "{text}");
+                        assert!(
+                            text.contains(&format!(
+                                "{moved} moved; {left_in_place} left in place; {failed} failed"
+                            )),
+                            "{text}"
+                        );
+                    }
+                }
+            }
         }
     }
 
