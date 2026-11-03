@@ -469,8 +469,8 @@ Nor does an edit to the `draft_with` skill's directory: the skill is
 owner-authored, cannot change a match, and §9's gate is over the origin of
 the rule's own text, not the skill's.
 The digest's components are always **written, empty when absent** — P1's
-rows carry no compiled instruction versions, because those arrive in P4 and
-P5, and an omitted component that later read as a default would silently
+rows carry no compiled confirmation version, because it arrives in P4, and
+an omitted component that later read as a default would silently
 merge P1 rows into a P4 rate. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
@@ -1310,8 +1310,9 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
 - **The ledger**: one row per action — when, which message (sender and
   subject, opening in the reader), matched because (header key, or the
   grounded `rule_quote`), the action, the mode it ran in, **the match digest
-  in force when the row was written** (§4.2: the rule's directory and the
-  compiled instruction versions), and the outcome. It is what lets the page
+  in force when the row was written** (§4.2: the rule's directory and, for
+  rules with an outbound action or a `task`, the compiled confirmation
+  version), and the outcome. It is what lets the page
   compute a group's would-have rate over the current match digest only and
   show rows from an earlier match digest apart, under a dated
   heading, never counted into the rate; a gate-failing shadow rule's rate is
