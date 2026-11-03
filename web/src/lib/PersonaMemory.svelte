@@ -82,7 +82,7 @@
       {#if r.section === 'episodes' && r.open_threads?.length}
         <div class="mnote">Left open: {r.open_threads.join('; ')}</div>
       {/if}
-      {#if r.origin === 'model_untrusted'}
+      {#if canApproveMemoryClean(r)}
         <div class="mnote">Marked as from outside. Keeping it as clean says you vouch for it, so recalling it no longer marks the chat.</div>
       {/if}
       {#if memoryVouchLabel(r)}

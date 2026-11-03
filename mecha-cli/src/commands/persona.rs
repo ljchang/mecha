@@ -2534,9 +2534,15 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
             let m = Memory::open_to_edit(dir, &named(&name)?)?;
             if let Some(chat) = chat {
                 let count = m.approve_clean_chat(&chat)?;
-                println!(
-                    "Approved {count} record(s) as clean — recalling them no longer marks the chat untrusted."
-                );
+                if count == 0 {
+                    println!(
+                        "Nothing from {chat} needed a new clean approval; any existing vouches were re-synced."
+                    );
+                } else {
+                    println!(
+                        "Approved {count} record(s) as clean — recalling them no longer marks the chat untrusted."
+                    );
+                }
             } else {
                 let id = id.expect("clap requires an id or --chat");
                 let uid = m.resolve(&id)?;
@@ -2822,6 +2828,17 @@ mod tests {
             },
         )
         .unwrap();
+        let err = memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: None,
+                chat: Some("missing-chat".into()),
+                clean: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing-chat"), "{err}");
 
         let memory = Memory::open_existing(&store, "mara").unwrap().unwrap();
         let one = memory.fact(&one.uid).unwrap().unwrap();

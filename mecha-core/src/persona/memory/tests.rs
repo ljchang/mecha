@@ -156,6 +156,80 @@ fn an_active_untrusted_record_and_its_shared_copy_can_be_vouched_clean() {
 }
 
 #[test]
+fn repeating_clean_approval_repairs_a_shared_copy_after_the_local_vouch() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let candidate = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Keeps a folded map.",
+                Kind::Stated,
+                "map-chat",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.approve(&candidate.uid).unwrap();
+    let shared = Shared::open(&dir).unwrap();
+    shared
+        .share(
+            &m.fact(&candidate.uid).unwrap().unwrap(),
+            Audience::Everyone,
+            &[],
+        )
+        .unwrap();
+    m.conn
+        .execute(
+            "UPDATE user_facts SET origin = ?2, vouched_at = ?3 WHERE uid = ?1",
+            params![&candidate.uid, wire(&Origin::Owner), "2026-11-03T01:02:03Z"],
+        )
+        .unwrap();
+    assert_eq!(
+        shared.all().unwrap().facts[0].origin,
+        Origin::ModelUntrusted
+    );
+
+    m.approve_clean(&candidate.uid).unwrap();
+    assert_eq!(shared.all().unwrap().facts[0].origin, Origin::Owner);
+}
+
+#[test]
+fn repeating_clean_approval_by_chat_repairs_copies_without_counting_old_vouches() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let candidate = m
+        .add_fact(
+            Table::User,
+            fact(
+                "Uses a paper tide table.",
+                Kind::Stated,
+                "tide-chat",
+                Origin::ModelUntrusted,
+            ),
+        )
+        .unwrap();
+    m.approve(&candidate.uid).unwrap();
+    let shared = Shared::open(&dir).unwrap();
+    shared
+        .share(
+            &m.fact(&candidate.uid).unwrap().unwrap(),
+            Audience::Everyone,
+            &[],
+        )
+        .unwrap();
+    m.conn
+        .execute(
+            "UPDATE user_facts SET origin = ?2, vouched_at = ?3 WHERE uid = ?1",
+            params![&candidate.uid, wire(&Origin::Owner), "2026-11-03T01:02:03Z"],
+        )
+        .unwrap();
+
+    assert_eq!(m.approve_clean_chat("tide-chat").unwrap(), 0);
+    assert_eq!(shared.all().unwrap().facts[0].origin, Origin::Owner);
+}
+
+#[test]
 fn clean_approval_refuses_withdrawn_and_already_clean_records() {
     let dir = store(&["mara"]);
     let m = Memory::open(&dir, "mara").unwrap();
@@ -288,6 +362,27 @@ fn clean_approval_by_chat_vouches_only_its_untrusted_live_records() {
         m.fact(&withdrawn.uid).unwrap().unwrap().status,
         Status::Invalidated
     );
+}
+
+#[test]
+fn clean_approval_by_chat_distinguishes_no_records_from_nothing_to_vouch() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    m.add_fact(
+        Table::Persona,
+        fact(
+            "The workbench faces north.",
+            Kind::Observed,
+            "clean-chat",
+            Origin::ModelClean,
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(m.approve_clean_chat("clean-chat").unwrap(), 0);
+    let err = m.approve_clean_chat("missing-chat").unwrap_err();
+    assert!(err.to_string().contains("missing-chat"), "{err}");
+    assert!(err.to_string().contains("no memory records"), "{err}");
 }
 
 #[test]

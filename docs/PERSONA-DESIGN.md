@@ -940,6 +940,11 @@ becomes candidates, and the cycle ratchets. In October, local-tool results
 mislabelled as outside content left personas with dozens of candidates and
 made that ratchet concrete. No model, writer, tool, or automated path may
 approve as clean; only the owner's CLI and owner-authenticated web route can.
+The `vouched_at` stamp also preserves that this was model-written: the nightly
+writer may update or invalidate it, while an owner-written row with no vouch
+remains immutable. A replacement takes the current chat stretch's provenance,
+never owner provenance inherited from the vouched row. Repeating clean
+approval retries the shared-copy sync after a partial cross-database failure.
 
 ### 9.7 Recall
 
@@ -994,8 +999,9 @@ the episodes, the persona facts, and the user facts she learned. From there
 the owner pins, corrects, forgets, shares a user fact with everyone or a
 group, and approves candidates. Ordinary approval keeps origin; the owner may
 approve an untrusted candidate or active record as clean, vouching for it so
-later recall does not mark the chat untrusted. No model can make that vouch. A
-correction invalidates the old row and adds an owner-origin one; only
+later recall does not mark the chat untrusted. Repeating that clean approval
+is safe and retries shared-copy synchronization. No model can make that vouch.
+A correction invalidates the old row and adds an owner-origin one; only
 forgetting deletes.
 
 *As built (2026-10-02):* the web page is the editor's **Memories** tab
