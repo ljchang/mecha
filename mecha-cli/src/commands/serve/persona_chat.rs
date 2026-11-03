@@ -1918,7 +1918,7 @@ impl PersonaChats {
         // digest a change sends back so an editor's edit is never
         // overwritten. A routine that does not load names no cell here;
         // the week below says why.
-        use mecha_core::persona::{drafter, life, routine};
+        use mecha_core::persona::{drafter, life, life_drafter, routine};
         let texts = routine::read(&self.store, &p.name).map_err(failed)?;
         let text = texts.routine;
         let cell = text
@@ -1941,26 +1941,49 @@ impl PersonaChats {
                 "edited": routine::may_stage(&self.store, &p.name).is_err(),
             })
         });
-        let life = life::read(&self.store, &p.name)
+        // `life` is always an object, even before life.toml exists: a waiting
+        // draft and a refusal reason must still reach the Week tab then.
+        let life_text = life::read(&self.store, &p.name).map_err(failed)?;
+        let mut life_value = match life_text.as_deref().map(life::parse) {
+            None => serde_json::json!({
+                "household": null,
+                "alone": null,
+                "sleep": null,
+                "never": null,
+                "error": null,
+            }),
+            Some(Ok(profile)) => {
+                let mut value = profile.to_json();
+                value["error"] = serde_json::Value::Null;
+                value
+            }
+            Some(Err(e)) => serde_json::json!({
+                "household": [],
+                "alone": null,
+                "sleep": null,
+                "never": [],
+                "error": format!("{e:#}"),
+            }),
+        };
+        let life_draft = life::read_draft(&self.store, &p.name)
             .map_err(failed)?
-            .as_deref()
-            .map(|text| match life::parse(text) {
-                Ok(profile) => {
-                    let mut value = profile.to_json();
-                    value["error"] = serde_json::Value::Null;
-                    value
-                }
-                Err(e) => serde_json::json!({
-                    "household": [],
-                    "alone": null,
-                    "sleep": null,
-                    "never": [],
-                    "error": format!("{e:#}"),
-                }),
+            .map(|text| {
+                let parsed = life::parse(&text);
+                let digest = mecha_core::persona::text_digest(&text);
+                serde_json::json!({
+                    "text": text,
+                    "digest": digest,
+                    "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                    "edited": life::may_stage(&self.store, &p.name).is_err(),
+                    "parsed": parsed.as_ref().ok().map(|profile| profile.to_json()),
+                })
             });
+        life_value["draft"] = serde_json::json!(life_draft);
+        life_value["undraftable"] =
+            serde_json::json!(life_drafter::check(&p).err().map(|e| format!("{e:#}")));
         let mut out = serde_json::json!({
             "today": today.to_string(),
-            "life": life,
+            "life": life_value,
             "routine": {
                 "digest": routine::digest_of(text.as_deref()),
                 "cell": cell,
@@ -2127,6 +2150,62 @@ impl PersonaChats {
         Ok(out)
     }
 
+    /// Her own model drafts a typed life profile and stages it beside
+    /// life.toml. Every refusal independent of the answer happens before the
+    /// router is held and before a model request is made.
+    pub async fn draft_life(
+        self: &Arc<Self>,
+        follower: &crate::follow::Follower,
+        library: &Arc<LibraryState>,
+        name: &str,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{life, life_drafter};
+        let conflict = |e: anyhow::Error| Refusal::Conflict(format!("{e:#}"));
+        let (me, lib, who, unlock) = (
+            Arc::clone(self),
+            Arc::clone(library),
+            name.to_string(),
+            body.unlock.clone(),
+        );
+        let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
+            let p = me
+                .visible(&lib, &who, unlock.as_deref())
+                .ok_or(Refusal::NotFound)?;
+            life_drafter::check(&p).map_err(conflict)?;
+            life::may_stage(&me.store, &p.name).map_err(conflict)?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their life profile: {e}")))??;
+        let (_held, bound) = follower.enter("life draft", |_| {}).await.map_err(failed)?;
+        let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        life_drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
+            .await
+            .map_err(|e| {
+                if e.chain().any(|c| c.is::<life::EditedDraft>()) {
+                    conflict(e)
+                } else {
+                    failed(e)
+                }
+            })?;
+        let (me, lib, body) = (Arc::clone(self), Arc::clone(library), body.clone());
+        let mut out = tokio::task::spawn_blocking(move || {
+            me.week(
+                &lib,
+                &p.name,
+                body.unlock.as_deref(),
+                body.date.as_deref(),
+                tz,
+            )
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their week: {e}")))??;
+        out["life_drafted"] = serde_json::json!(true);
+        Ok(out)
+    }
+
     /// The owner approves the waiting draft as shown (`digest`), keeping her
     /// kind of week when the draft names none (`routine::kept_cell`), or
     /// edits it (`text`, over the draft as shown), or discards it. Each
@@ -2157,6 +2236,45 @@ impl PersonaChats {
             }
             DraftAct::Discard => {
                 routine::discard_draft(&self.store, &p.name).map_err(routine_refusal)?;
+            }
+        }
+        self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )
+    }
+
+    /// Approve, edit or discard the waiting life draft as shown, then answer
+    /// with the same week payload the page normally reads.
+    pub fn act_on_life_draft(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: DraftAct,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::life;
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        match act {
+            DraftAct::Approve => {
+                life::approve_draft_as_shown(&self.store, &p.name, &body.digest)
+                    .map_err(life_refusal)?;
+            }
+            DraftAct::Edit => {
+                let Some(text) = body.text.as_deref() else {
+                    return Err(Refusal::Bad("an edit carries the draft's `text`".into()));
+                };
+                life::edit_draft_as_shown(&self.store, &p.name, text, &body.digest)
+                    .map_err(life_refusal)?;
+            }
+            DraftAct::Discard => {
+                life::discard_draft(&self.store, &p.name).map_err(life_refusal)?;
             }
         }
         self.week(
@@ -6529,6 +6647,18 @@ fn routine_refusal(e: anyhow::Error) -> Refusal {
     }
 }
 
+fn life_refusal(e: anyhow::Error) -> Refusal {
+    if e.downcast_ref::<mecha_core::persona::life::StaleLife>()
+        .is_some()
+    {
+        Refusal::Conflict(format!("{e:#}"))
+    } else if e.chain().any(|c| c.is::<std::io::Error>()) {
+        Refusal::Failed(format!("{e:#}"))
+    } else {
+        Refusal::Bad(format!("{e:#}"))
+    }
+}
+
 #[derive(serde::Deserialize, Default, Clone)]
 pub struct DraftBody {
     /// The draft's digest as the page was shown it (approve, edit).
@@ -6685,6 +6815,24 @@ pub async fn draft_routine(
     )
 }
 
+/// POST /api/personas/{name}/life/draft
+pub async fn draft_life(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let tz = chat.follower.current().config.agent.timezone();
+    respond(
+        chat.personas
+            .draft_life(&chat.follower, &state.library, &name, &body, tz)
+            .await,
+    )
+}
+
 /// The owner's doors to a waiting draft: PUT edits it, DELETE discards it,
 /// POST `/approve` makes it her routine.
 async fn act_on_draft(
@@ -6712,6 +6860,29 @@ async fn act_on_draft(
     }
 }
 
+async fn act_on_life_draft(
+    state: super::WebState,
+    name: String,
+    act: DraftAct,
+    body: DraftBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.act_on_life_draft(&library, &name, act, &body, tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's life draft: {e}")).into_response(),
+    }
+}
+
 /// PUT /api/personas/{name}/routine/draft
 pub async fn edit_draft(
     State(state): Web,
@@ -6728,6 +6899,24 @@ pub async fn discard_draft(
     Json(body): Json<DraftBody>,
 ) -> axum::response::Response {
     act_on_draft(state, name, DraftAct::Discard, body).await
+}
+
+/// PUT /api/personas/{name}/life/draft
+pub async fn edit_life_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_life_draft(state, name, DraftAct::Edit, body).await
+}
+
+/// DELETE /api/personas/{name}/life/draft
+pub async fn discard_life_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_life_draft(state, name, DraftAct::Discard, body).await
 }
 
 /// GET /api/personas/{name}/people
@@ -6881,6 +7070,15 @@ pub async fn approve_draft(
     Json(body): Json<DraftBody>,
 ) -> axum::response::Response {
     act_on_draft(state, name, DraftAct::Approve, body).await
+}
+
+/// POST /api/personas/{name}/life/draft/approve
+pub async fn approve_life_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_life_draft(state, name, DraftAct::Approve, body).await
 }
 
 #[derive(serde::Deserialize)]
@@ -9511,7 +9709,9 @@ mod tests {
         let week = |date: Option<&str>| w.personas().week(&w.library, "mara", None, date, None);
         let off = week(None).unwrap();
         assert_eq!(off["absent"], "off");
-        assert_eq!(off["life"], serde_json::Value::Null);
+        assert_eq!(off["life"]["alone"], serde_json::Value::Null);
+        assert_eq!(off["life"]["draft"], serde_json::Value::Null);
+        assert_eq!(off["life"]["undraftable"], serde_json::Value::Null);
         assert!(off["why"].as_str().unwrap().contains("[life] world is off"));
         assert!(off.get("week").is_none());
         let dir = w.store().join("mara");
@@ -9599,6 +9799,56 @@ mod tests {
         {"what": "early swim", "activity": "exercise", "days": ["weekdays"],
          "at": "06:30", "minutes": 45, "chance": 0.6}
     ]}"#;
+
+    const LIFE_DRAFTED: &str = r#"{"alone":true,"household":[],"sleep":{"bed":"23:00","wake":"07:00"},"never":["work","caring"]}"#;
+
+    #[tokio::test]
+    async fn the_owner_reviews_and_approves_a_drafted_life_profile() {
+        let w = world_drafting(LIFE_DRAFTED);
+        let ps = w.personas();
+        let before = ps.week(&w.library, "mara", None, None, None).unwrap();
+        assert_eq!(before["life"]["alone"], serde_json::Value::Null);
+        assert_eq!(before["life"]["draft"], serde_json::Value::Null);
+        let drafted = ps
+            .draft_life(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &DraftBody::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(drafted["life_drafted"], true);
+        let shown_week = ps.week(&w.library, "mara", None, None, None).unwrap();
+        let waiting = &shown_week["life"]["draft"];
+        assert_eq!(waiting["parsed"]["alone"], true);
+        assert_eq!(waiting["parsed"]["sleep"]["bed"], "23:00");
+        assert_eq!(waiting["edited"], false);
+        let shown = waiting["digest"].as_str().unwrap().to_string();
+        let stale = DraftBody {
+            digest: "0".into(),
+            ..DraftBody::default()
+        };
+        assert!(matches!(
+            ps.act_on_life_draft(&w.library, "mara", DraftAct::Approve, &stale, None),
+            Err(Refusal::Conflict(_))
+        ));
+        let approve = DraftBody {
+            digest: shown,
+            ..DraftBody::default()
+        };
+        let approved = ps
+            .act_on_life_draft(&w.library, "mara", DraftAct::Approve, &approve, None)
+            .unwrap();
+        assert_eq!(approved["life"]["alone"], true);
+        assert_eq!(approved["life"]["draft"], serde_json::Value::Null);
+        assert!(w
+            .store()
+            .join("mara")
+            .join(mecha_core::persona::life::FILE)
+            .is_file());
+    }
 
     #[tokio::test]
     async fn the_owner_reviews_a_drafted_week_and_her_pick_survives_approval() {
