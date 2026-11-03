@@ -143,7 +143,8 @@ does have `~/.ssh` and can reach the network.
   `core.hooksPath` is local config and does not survive a clone, so this is
   opt-in per checkout. The pre-commit hook refuses a commit that CI's rustfmt
   job would reject; `--no-verify` skips it for a WIP commit on a branch. The
-  same hooks refuse persona chat or voice call text (`scripts/check-private.py`,
+  same hooks refuse persona chat or voice call text, and persona data such as
+  the names of the people in a persona's life (`scripts/check-private.py`,
   on a machine that holds the conversations): pre-commit over the staged diff,
   commit-msg over the message, and pre-push over everything being pushed, so a
   `--no-verify` commit is still checked before it leaves. Text merged in from
