@@ -4434,7 +4434,8 @@ annotations ride on the unified tools (there is a shared
 list now covers every account it could send from.
 
 **And there is one more quadrant, which is neither.** `mail_triage` — archive,
-read/unread, spam, trash — mutates the user's own mailbox and reaches nobody:
+read/unread, spam, trash, unarchive (undo archive), untrash (recover trashed
+mail) — mutates the user's own mailbox and reaches nobody:
 no third party learns anything, so it is not `external_send` and **must never
 appear in `[outbox] tools`**. Staging it would make triage circular, reviewing
 a queue in order to fill another queue. It is not `readOnlyHint` either, or a
@@ -4444,6 +4445,41 @@ interlock, and `assert_tool_surface` takes a third slice that asserts exactly
 that pair of negatives. The action set is a **closed enum** (`TriageAction`),
 on the `SLACK-ACTIONS-DESIGN.md` §1 reasoning: a free-form label argument
 would put `spam` inside a verb that reads as harmless.
+
+**Outlook triage must choose its source folder before moving messages.**
+`OutlookProvider::archive_thread` lists the conversation through
+`/me/mailFolders/inbox/messages`, paginated, to match Gmail's removal of
+`INBOX`. Listing `/me/messages` instead swept the owner's Sent Items and
+Drafts into Archive. `spam_thread` also uses Inbox as its inbound scope:
+Gmail adds `SPAM` thread-wide, but translating that into moves of every
+Graph message sweeps sent copies and drafts into Junk Email. Already-filed
+mail stays put. `trash_thread` deliberately retains whole-conversation
+scope, including drafts, like Gmail's `threads.trash`; read/unread also
+remain whole-conversation operations. Triage results carry successful and
+failed mutation counts and a completed/partial/nothing-to-do status through
+MCP, in `structuredContent` and matching JSON text for text-only clients.
+An empty Inbox listing triggers one unscoped existence probe (`$select=id`,
+`$top=1`): a missing conversation remains a 404, while a conversation with
+only filed mail is a no-op. Probe results never become move targets.
+`unified::status_of` and the CLI's `triage_status_of` independently classify
+counts; a CLI parity test uses the mail dev-dependency to keep them aligned.
+The CLI checks the server's claimed status without linking the mail library
+at runtime: mailbox access stays over MCP.
+`commands::mail::finish_triage` marks `ACTED` for confirmed completion,
+including archive's `nothing_to_do`: the existence probe has proved that the
+conversation is already out of Inbox, so its record settles even when the
+owner archived it directly in Outlook. Spam's empty Inbox result still says
+`skipped: nothing in Inbox` and stays unsettled, since no junk training was
+confirmed. Partial failures return an error with counts and leave the record
+unchanged for both verbs. Missing or inconsistent outcome data must not settle
+the queue either. CLI reports keep the action and short handle before the
+server message; restore messages name their action too. Gmail acknowledges
+thread operations without a message count (`moved: null`).
+`restore_conversation` still reads only Archive or Deleted Items, and
+`restore_destination` routes drafts to Drafts, known owner mail to Sent
+Items and inbound mail to Inbox; unknown destinations stay in place.
+Unarchive is not an exact inverse: it has no receipt of which messages a
+particular archive moved. That receipt belongs to P1's ledger, not this fix.
 
 **Bulk reading is an operator verb, never a tool.** `mecha-mail corpus`
 downloads a span of mail for analysis, and it is absent from the MCP surface on
