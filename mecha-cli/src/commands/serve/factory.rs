@@ -22,6 +22,7 @@ use axum::Json;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use mecha_core::form_draft::{self, FormEdit};
 use mecha_core::instrument::{self, Hours};
 
 type St = State<super::WebState>;
@@ -35,15 +36,34 @@ fn err(status: StatusCode, e: impl std::fmt::Display) -> Response {
 pub async fn list(State(_state): St) -> Response {
     let listed = tokio::task::spawn_blocking(|| -> anyhow::Result<_> {
         let dir = instrument::types_dir()?;
-        Ok((dir.clone(), instrument::list_in(&dir)?))
+        let served = instrument::list_in(&dir)?;
+        let drafts = instrument::list_in(&form_draft::drafts_dir()?)?;
+        Ok((dir, served, drafts))
     })
     .await;
     match listed {
-        Ok(Ok((dir, all))) => Json(serde_json::json!({
-            "dir": dir,
-            "instruments": all,
-        }))
-        .into_response(),
+        Ok(Ok((dir, served, drafts))) => {
+            // Each served form says whether a draft of it waits; a draft of a
+            // form never published is listed on its own, as unpublished.
+            let mut rows: Vec<serde_json::Value> = served
+                .iter()
+                .map(|i| {
+                    let mut v = serde_json::to_value(i).unwrap_or_default();
+                    v["has_draft"] = drafts.iter().any(|d| d.id == i.id).into();
+                    v
+                })
+                .collect();
+            for d in drafts
+                .iter()
+                .filter(|d| !served.iter().any(|i| i.id == d.id))
+            {
+                let mut v = serde_json::to_value(d).unwrap_or_default();
+                v["draft_only"] = true.into();
+                v["has_draft"] = true.into();
+                rows.push(v);
+            }
+            Json(serde_json::json!({ "dir": dir, "instruments": rows })).into_response()
+        }
         Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
@@ -518,8 +538,564 @@ async fn push(id: &str, manifest: &Path) -> anyhow::Result<String> {
     .await
 }
 
+// ── Forms: drafts, preview, publish ─────────────────────────────────────
+//
+// The served copy is the factory's record of what strangers see, so the
+// owner edits a draft beside it and Publish is `type push` of the draft
+// (`mecha_core::form_draft`). Every write here is the owner's, from this
+// page only, as the hours are.
+
+/// The most a form save body may be: a manifest is a few kilobytes.
+pub const MAX_FORM_BODY: usize = 256 * 1024;
+
+/// A form's working text: its draft if one waits, else the served copy.
+struct Working {
+    id: String,
+    kind: String,
+    text: String,
+    draft: bool,
+    served: Option<String>,
+}
+
+fn working(id: &str) -> anyhow::Result<Working> {
+    form_draft::valid_id(id)?;
+    let draft_path = form_draft::draft_path(&form_draft::drafts_dir()?, id)?;
+    let served = instrument::list_in(&instrument::types_dir()?)?
+        .into_iter()
+        .find(|i| i.id == id)
+        .map(|i| std::fs::read_to_string(&i.path))
+        .transpose()?;
+    let (text, draft) = match std::fs::read_to_string(&draft_path) {
+        Ok(t) => (t, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match &served {
+            Some(t) => (t.clone(), false),
+            None => anyhow::bail!("no form `{id}`, served or drafted"),
+        },
+        Err(e) => return Err(e.into()),
+    };
+    let kind = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .and_then(|t| t.get("kind").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "request".into());
+    Ok(Working {
+        id: id.to_string(),
+        kind,
+        text,
+        draft,
+        served,
+    })
+}
+
+fn form_state(w: &Working) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "id": w.id,
+        "kind": w.kind,
+        "draft": w.draft,
+        "published": w.served.is_some(),
+        "digest": instrument::digest(&w.text),
+        "text": w.text,
+        "kinds": form_draft::KINDS,
+    });
+    match form_draft::read_form(&w.text) {
+        Ok(f) => out["form"] = serde_json::to_value(f).unwrap_or_default(),
+        Err(e) => out["form_error"] = format!("{e:#}").into(),
+    }
+    out
+}
+
+/// GET /api/factory/starters — what a new form can begin as.
+pub async fn starters(State(_state): St) -> Response {
+    match run(
+        "factory-publish",
+        &["type".as_ref(), "starters".as_ref()],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        Ok(out) => {
+            let rows: Vec<serde_json::Value> = out
+                .lines()
+                .filter_map(|l| {
+                    // `name<TAB>title<TAB>ready-or-what-it-needs`; a factory
+                    // predating the third column says nothing either way.
+                    let mut cols = l.splitn(3, '\t');
+                    let name = cols.next()?;
+                    let title = cols.next()?;
+                    let ready = cols.next().map(str::to_string);
+                    Some(serde_json::json!({ "name": name, "title": title, "ready": ready }))
+                })
+                .collect();
+            Json(serde_json::json!({ "starters": rows })).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// GET /api/factory/form?id= — the form as the editor shows it.
+pub async fn form(State(_state): St, Query(q): Query<IdQuery>) -> Response {
+    match tokio::task::spawn_blocking(move || working(&q.id)).await {
+        Ok(Ok(w)) => Json(form_state(&w)).into_response(),
+        Ok(Err(e)) => err(StatusCode::NOT_FOUND, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize, Clone)]
+pub struct FormSave {
+    pub id: String,
+    /// The digest of the text the page read (the draft, or the served copy).
+    pub base: String,
+    #[serde(default)]
+    pub form: Option<FormEdit>,
+    /// The whole manifest — the "Edit as TOML" save.
+    #[serde(default)]
+    pub raw: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+/// POST /api/factory/form/save — write the draft, never the served copy.
+/// Checked by the factory before it lands, so a draft that will not parse
+/// never sits waiting to be published.
+pub async fn form_save(State(_state): St, Json(body): Json<FormSave>) -> Response {
+    let b = body.clone();
+    let prepared = tokio::task::spawn_blocking(move || -> Result<(Working, String), Response> {
+        let w = working(&b.id).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+        if instrument::digest(&w.text) != b.base {
+            return Err(err(StatusCode::CONFLICT, instrument::Stale));
+        }
+        let next = match (b.form, b.raw) {
+            (Some(f), None) => form_draft::write_form(&w.text, &f)
+                .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?,
+            (None, Some(raw)) => raw,
+            _ => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "a form save carries `form` or `raw`, one of them",
+                ))
+            }
+        };
+        if next.len() > MAX_FORM_BODY {
+            return Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "a manifest this large is not a form",
+            ));
+        }
+        Ok((w, next))
+    })
+    .await;
+    let (w, next) = match prepared {
+        Ok(Ok(p)) => p,
+        Ok(Err(refused)) => return refused,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    // The id is the file's name and the form's URL: a raw edit may not move
+    // it. Checked before the factory is asked anything.
+    // Read from the document, not matched as a line: `id='x'` and `id="x"`
+    // are the same id, and a matching line inside a string is not one.
+    // A document that does not parse says so first: reported as a moved id
+    // it would send the owner to the one line they did not touch.
+    let parsed = match toml::from_str::<toml::Table>(&next) {
+        Ok(t) => t,
+        Err(e) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("this is not valid TOML: {}", e.message()),
+            )
+        }
+    };
+    let doc_id = parsed
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if doc_id.as_deref() != Some(w.id.as_str()) {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("the id must stay `{}`: it names the form's URL", w.id),
+        );
+    }
+    let dir = match form_draft::drafts_dir() {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    let draft = match Draft::write(&dir.join("x"), &next) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    match run(
+        "factory-publish",
+        &["type".as_ref(), "check".as_ref(), draft.0.as_os_str()],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(e) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("the factory would refuse this form: {e:#}"),
+            )
+        }
+    }
+    let path = match form_draft::draft_path(&dir, &w.id) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    let base_text = w.text.clone();
+    let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // Guard at the write, as the hours save does: the page read either
+        // the draft or the served copy, and neither may have moved since.
+        let now = working(&w.id)?;
+        if now.text != base_text {
+            anyhow::bail!(instrument::Stale);
+        }
+        instrument::replace_file(&path, &next)
+    })
+    .await;
+    match wrote {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if e.downcast_ref::<instrument::Stale>().is_some() => {
+            return err(StatusCode::CONFLICT, e)
+        }
+        Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+    // The draft is written: from here the save stands, and a re-read that
+    // fails is said beside it (as `save_hours` does), never as a failed save
+    // that would send the page back with the pre-write base and a 409.
+    let id = body.id.clone();
+    match tokio::task::spawn_blocking(move || working(&id)).await {
+        Ok(Ok(w)) => Json(form_state(&w)).into_response(),
+        Ok(Err(e)) => Json(serde_json::json!({ "saved": true, "reread_error": format!("{e:#}") }))
+            .into_response(),
+        Err(e) => Json(serde_json::json!({ "saved": true, "reread_error": format!("{e:#}") }))
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct IdBody {
+    pub id: String,
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+/// The page a form serves, made safe to show inside the owner's page: its
+/// stylesheet inlined and every script and link removed, for a `sandbox`
+/// frame that runs no script and submits nothing. Not a network guarantee —
+/// a `url()` in the owner's own stylesheet would still fetch — and fine for
+/// that, since the manifest and the style are the owner's.
+fn preview_html(html: &str, style: &str) -> String {
+    let mut out = String::with_capacity(html.len() + style.len());
+    let mut rest = html;
+    loop {
+        // Case-insensitive: `<SCRIPT` is a script. The shadow is ASCII-lowered
+        // byte for byte, so its offsets are the original's.
+        let lower = rest.to_ascii_lowercase();
+        let script = lower.find("<script");
+        let link = lower.find("<link");
+        let next = match (script, link) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => break,
+        };
+        out.push_str(&rest[..next]);
+        let tail = &rest[next..];
+        let tail_lower = &lower[next..];
+        if tail_lower.starts_with("<script") {
+            match tail_lower.find("</script>") {
+                Some(end) => rest = &tail[end + "</script>".len()..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        } else {
+            match tail.find('>') {
+                Some(end) => rest = &tail[end + 1..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        }
+    }
+    out.push_str(rest);
+    let styled = format!("<style>{style}</style>");
+    match out.find("</head>") {
+        Some(at) => format!("{}{styled}{}", &out[..at], &out[at..]),
+        None => format!("{styled}{out}"),
+    }
+}
+
+/// POST /api/factory/form/render — what the working text would serve.
+pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Response {
+    let w = match tokio::task::spawn_blocking(move || working(&body.id)).await {
+        Ok(Ok(w)) => w,
+        Ok(Err(e)) => return err(StatusCode::NOT_FOUND, e),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let dir = match form_draft::drafts_dir().and_then(|d| {
+        std::fs::create_dir_all(&d)?;
+        Ok(d)
+    }) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    // What would be published: a booking draft with the live hours carried,
+    // as Publish will carry them, so the preview is of the same page.
+    let text = match &w.served {
+        // Refused as Publish refuses it: falling back to the draft's own
+        // hours would preview a page Publish would not make.
+        Some(served) if w.draft => match form_draft::carry_hours(&w.text, served) {
+            Ok(t) => t,
+            Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+        },
+        _ => w.text.clone(),
+    };
+    let draft = match Draft::write(&dir.join("x"), &text) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    match run("factory-publish", &["type".as_ref(), "render".as_ref(), draft.0.as_os_str()], None, Child::Read).await {
+        Ok(out) => match serde_json::from_str::<serde_json::Value>(&out) {
+            Ok(page) => Json(serde_json::json!({
+                "kind": page["kind"],
+                "html": preview_html(page["html"].as_str().unwrap_or(""), page["style"].as_str().unwrap_or("")),
+                // `true`, or why the box would refuse to serve it (and
+                // Publish fail): the page says so beside the preview.
+                // A boolean beside its reason (mecha-factory#27). Absent — a
+                // factory-publish predating it — is unknown, never
+                // "publishable": the page says the factory did not answer.
+                "servable": page.get("servable").and_then(|v| v.as_bool()),
+                "refusal": page.get("refusal").and_then(|v| v.as_str()),
+            }))
+            .into_response(),
+            Err(e) => err(StatusCode::BAD_GATEWAY, e),
+        },
+        Err(e) => err(StatusCode::UNPROCESSABLE_ENTITY, e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct NewForm {
+    pub starter: String,
+    pub id: String,
+}
+
+/// POST /api/factory/form/new — a draft from a starter, under a new id.
+pub async fn form_new(State(_state): St, Json(body): Json<NewForm>) -> Response {
+    if let Err(e) = form_draft::valid_id(&body.id) {
+        return err(StatusCode::BAD_REQUEST, e);
+    }
+    // A starter name rides into an argv; it is a name, nothing else.
+    if form_draft::valid_id(&body.starter).is_err() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("`{}` is not a starter", body.starter),
+        );
+    }
+    let id = body.id.clone();
+    let taken = tokio::task::spawn_blocking(move || working(&id).is_ok())
+        .await
+        .unwrap_or(true);
+    if taken {
+        return err(
+            StatusCode::CONFLICT,
+            format!("a form called `{}` already exists", body.id),
+        );
+    }
+    let text = match run(
+        "factory-publish",
+        &[
+            "type".as_ref(),
+            "new".as_ref(),
+            body.starter.as_ref(),
+            "--id".as_ref(),
+            body.id.as_ref(),
+        ],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+    };
+    // Checked as a save is, not taken on trust: the id the starter came
+    // back with is the one asked for, and the factory would take it.
+    let came_back = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .and_then(|t| t.get("id").and_then(|v| v.as_str()).map(str::to_string));
+    if came_back.as_deref() != Some(body.id.as_str()) {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "the starter came back as `{}`, not `{}`",
+                came_back.unwrap_or_default(),
+                body.id
+            ),
+        );
+    }
+    let checked = match form_draft::drafts_dir().and_then(|d| {
+        std::fs::create_dir_all(&d)?;
+        Draft::write(&d.join("x"), &text)
+    }) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if let Err(e) = run(
+        "factory-publish",
+        &["type".as_ref(), "check".as_ref(), checked.0.as_os_str()],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("the factory refuses its own starter: {e:#}"),
+        );
+    }
+    drop(checked);
+    let id = body.id.clone();
+    let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<Working> {
+        let dir = form_draft::drafts_dir()?;
+        std::fs::create_dir_all(&dir)?;
+        instrument::replace_file(&form_draft::draft_path(&dir, &id)?, &text)?;
+        working(&id)
+    })
+    .await;
+    match wrote {
+        Ok(Ok(w)) => Json(form_state(&w)).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// POST /api/factory/form/publish — `type push` of the draft, which makes
+/// it what strangers see. A booking draft takes the served hours first.
+pub async fn form_publish(State(_state): St, Json(body): Json<IdBody>) -> Response {
+    let id = body.id.clone();
+    let w = match tokio::task::spawn_blocking(move || working(&id)).await {
+        Ok(Ok(w)) => w,
+        Ok(Err(e)) => return err(StatusCode::NOT_FOUND, e),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if !w.draft {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "there is no draft to publish; this form is as served",
+        );
+    }
+    if body.base.as_deref() != Some(instrument::digest(&w.text).as_str()) {
+        return err(StatusCode::CONFLICT, instrument::Stale);
+    }
+    let text = match &w.served {
+        Some(served) => match form_draft::carry_hours(&w.text, served) {
+            Ok(t) => t,
+            Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+        },
+        None => w.text.clone(),
+    };
+    let dir = match form_draft::drafts_dir() {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let path = match form_draft::draft_path(&dir, &w.id) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    // Pushed from a copy, so a push that fails leaves the draft exactly as
+    // the page read it: its `base` still holds and the retry goes through,
+    // rather than 409ing on a change only this handler made.
+    //
+    // A plain file, not a `Draft` guard: the push is `Child::Publish`, which
+    // outlives a dropped request on purpose, and a guard's drop would delete
+    // the file from under it. Removed after the push answers; a request
+    // dropped mid-push leaves one hidden temp file, which is the cheap side.
+    let pushing = match path.parent() {
+        Some(dir) => dir.join(format!(".publish.{}.tmp", uuid::Uuid::new_v4())),
+        None => return err(StatusCode::INTERNAL_SERVER_ERROR, "a draft has a directory"),
+    };
+    if let Err(e) = std::fs::write(&pushing, &text) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    let pushed = run(
+        "factory-publish",
+        &["type".as_ref(), "push".as_ref(), pushing.as_os_str()],
+        None,
+        Child::Publish,
+    )
+    .await;
+    let _ = std::fs::remove_file(&pushing);
+    match pushed {
+        Ok(out) => {
+            // Live, and recorded as served by the push itself; the draft has
+            // done its job.
+            let _ = std::fs::remove_file(&path);
+            tracing::info!(form = %w.id, "form published from the factory page");
+            Json(serde_json::json!({ "published": true, "output": out.trim() })).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("not published: {e:#}")),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+/// POST /api/factory/form/discard — drop the draft; what is served stays.
+/// For a form never published the draft is the form, so the page confirms
+/// that as a delete before it calls this.
+pub async fn form_discard(State(_state): St, Json(body): Json<IdBody>) -> Response {
+    let done = tokio::task::spawn_blocking(move || -> Result<bool, Response> {
+        let w = working(&body.id).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+        if !w.draft {
+            return Err(err(StatusCode::BAD_REQUEST, "there is no draft to discard"));
+        }
+        if body.base.as_deref() != Some(instrument::digest(&w.text).as_str()) {
+            return Err(err(StatusCode::CONFLICT, instrument::Stale));
+        }
+        let path = form_draft::drafts_dir()
+            .and_then(|d| form_draft::draft_path(&d, &w.id))
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        std::fs::remove_file(path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        // Whether anything is left: a form never published is gone.
+        Ok(w.served.is_some())
+    })
+    .await;
+    match done {
+        Ok(Ok(published)) => {
+            Json(serde_json::json!({ "discarded": true, "form_remains": published }))
+                .into_response()
+        }
+        Ok(Err(refused)) => refused,
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_preview_has_no_script_or_link_in_any_case_and_keeps_the_page() {
+        let html = "<html><head><LINK rel=stylesheet href=form.css></head><body>\
+                    <form>Q</form><SCRIPT>alert(1)</SCRIPT><script src=x></script>after</body></html>";
+        let out = super::preview_html(html, "p{}");
+        let lower = out.to_ascii_lowercase();
+        assert!(
+            !lower.contains("<script") && !lower.contains("<link"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<form>Q</form>") && out.contains("after"),
+            "{out}"
+        );
+        assert!(out.contains("<style>p{}</style></head>"), "{out}");
+    }
+
     use std::os::unix::process::ExitStatusExt;
 
     #[test]

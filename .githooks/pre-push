@@ -38,6 +38,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         status=1
         continue
     fi
-    python3 scripts/check-private.py --range "$base..$local_sha" || status=1
+    # The remote's default branch, as this clone last fetched it: a commit
+    # already there is the repository's own, so a branch that merged main
+    # is not refused for main's text (owner's ruling, 2026-10-06). Stale or
+    # missing, it only exempts less.
+    public=$(git rev-parse --verify --quiet "refs/remotes/$remote/HEAD^{commit}") ||
+        public=$(git rev-parse --verify --quiet "refs/remotes/$remote/main^{commit}") || public=""
+    python3 scripts/check-private.py --range "$base..$local_sha" ${public:+--public "$public"} || status=1
 done
 exit $status

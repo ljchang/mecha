@@ -42,7 +42,12 @@ commit message (`--message FILE`, the commit-msg hook) — for:
 
 Text already in the repository before the change is never flagged: the harness's own
 sentences (the call note, the outbox read-back) are spoken in conversations
-too, and they come from the code. On a machine with no `~/.mecha` (CI, a
+too, and they come from the code. Text merged in from main is the repository's too
+(the owner's ruling, 2026-10-06): a merge's lines are read only where they
+are new against every parent, a push skips the commits already on the public
+branch (`--public REF`, which the pre-push hook passes as the remote's
+default branch), and both count that branch's text, or the commit being
+merged, as already said. On a machine with no `~/.mecha` (CI, a
 fresh clone) there is nothing to compare against, and it passes, saying so.
 Nothing it finds is printed beyond the file, the line number and which check
 fired: the words stay where they are. It reads text only: a recording or other
@@ -692,51 +697,112 @@ def added_lines(args):
                     yield "commit message", num, line.rstrip("\n")
         return
     if args and args[0] == "--range":
-        commits = run_git(["git", "rev-list", "--reverse", args[1]]).split()
+        # A commit already on the public branch is the repository's own, not
+        # this push's: a branch that merged main carries main's commits in
+        # its range, and they went public when main took them.
+        public = ["--not", *PUBLIC] if PUBLIC else []
+        commits = run_git(["git", "rev-list", "--reverse", args[1]] + public).split()
         for c in commits:
             short = c[:8]
             parents = run_git(["git", "rev-list", "--parents", "-n", "1", c]).split()[1:]
-            base = parents[0] if parents else "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            bases = parents or ["4b825dc642cb6eb9a060e54bf8d69288fbee4904"]
             # Each commit's lines are their own passages: a run that exists
             # only by joining two commits' lines is not what the push adds.
-            for path, num, text in diff_lines(run_git(DIFF + [base, c]), f" in {short}"):
+            diffs = [run_git(DIFF + [b, c]) for b in bases]
+            for path, num, text in new_against_all(diffs, f" in {short}"):
                 yield f"{path} (in {short})", num, text
             message = run_git(["git", "log", "-n", "1", "--format=%B", c])
             for num, line in enumerate(message.splitlines(), 1):
                 yield f"commit message of {short}", num, line
         return
-    yield from diff_lines(run_git(DIFF + ["--cached"]))
+    # A merge being committed: only what the resolution adds against every
+    # side, so the text merged in from main is not read as this change's.
+    # Outside one, the bare form, which also reads a first commit's index
+    # against an unborn HEAD.
+    heads = merging()
+    if heads:
+        yield from new_against_all([run_git(DIFF + ["--cached", h]) for h in ["HEAD"] + heads])
+    else:
+        yield from diff_lines(run_git(DIFF + ["--cached"]))
+
+
+def new_against_all(diffs, where=""):
+    """The lines every one of `diffs` adds — each a diff from one parent into
+    the same tree, so a line's number names the same line in all of them. One
+    diff is a plain commit's; more is a merge's, and a line any parent already
+    had came in with that parent: the text a branch merges in from main is
+    main's, not the branch's (the owner's ruling, 2026-10-06). What a
+    resolution writes that no side had is read."""
+    first = list(diff_lines(diffs[0], where))
+    for other in diffs[1:]:
+        keep = {(p, n) for p, n, _ in diff_lines(other, where)}
+        first = [(p, n, t) for p, n, t in first if (p, n) in keep]
+    yield from first
+
+
+def merging():
+    """The commits being merged in while a merge is in progress
+    (`MERGE_HEAD`, one per line for an octopus), or none."""
+    path = run_git(["git", "rev-parse", "--git-path", "MERGE_HEAD"]).strip()
+    try:
+        with open(path) as fh:
+            return [h for h in fh.read().split() if h]
+    except FileNotFoundError:
+        return []
 
 
 BASE = ["HEAD"]
+# The public branch a push goes beside (`--public REF`, the pre-push hook's
+# `<remote>/HEAD`), or none.
+PUBLIC = []
 
 
-def in_head(normalised, head_cache=[]):
+def in_head(normalised, head_cache={}):
     """Whether the repository already says this before the change — the
-    harness's own words. `HEAD` for a commit; the range's base for a push,
-    whose `HEAD` is the change itself. Each file is read as one run of words
-    — prose here is wrapped at ~80 columns, and a wrapped harness sentence is
-    still the repository's — but files are kept apart by a separator no word
-    can match: a run that only exists by straddling two files is not
-    something the repository says (review of #557)."""
-    if not head_cache:
-        # Per file: `git grep -h` gives no file boundaries, so ask with them.
-        listing = subprocess.run(["git", "grep", "-I", "-z", "-e", "", BASE[0], "--"],
-                                 capture_output=True, text=True, errors="replace").stdout
-        files = {}
-        for rec in listing.split("\n"):
-            # `<rev>:<path>\0<line>` with -z: path and text split on the NUL.
-            if "\0" not in rec:
-                continue
-            path, text = rec.split("\0", 1)
-            files.setdefault(path, []).append(text)
-        head_cache.append(" | ".join(" ".join(words(" ".join(lines))) for lines in files.values()))
-    return f" {normalised} " in f" {head_cache[0]} "
+    harness's own words. `HEAD` for a commit, and while a merge is in
+    progress each commit being merged in; the range's base for a push, whose
+    `HEAD` is the change itself, and the public branch it goes beside — text
+    on main is the repository's own, though this branch's base predates it
+    (the owner's ruling, 2026-10-06). Each tree's files are read as one run
+    of words — prose here is wrapped at ~80 columns, and a wrapped harness
+    sentence is still the repository's — but files are kept apart by a
+    separator no word can match: a run that only exists by straddling two
+    files is not something the repository says (review of #557)."""
+    for rev in BASE + PUBLIC:
+        if rev not in head_cache:
+            head_cache[rev] = tree_words(rev)
+        if f" {normalised} " in f" {head_cache[rev]} ":
+            return True
+    return False
+
+
+def tree_words(rev):
+    """Every file of `rev` as one run of words, files apart."""
+    # Per file: `git grep -h` gives no file boundaries, so ask with them.
+    listing = subprocess.run(["git", "grep", "-I", "-z", "-e", "", rev, "--"],
+                             capture_output=True, text=True, errors="replace").stdout
+    files = {}
+    for rec in listing.split("\n"):
+        # `<rev>:<path>\0<line>` with -z: path and text split on the NUL.
+        if "\0" not in rec:
+            continue
+        path, text = rec.split("\0", 1)
+        files.setdefault(path, []).append(text)
+    return " | ".join(" ".join(words(" ".join(lines))) for lines in files.values())
 
 
 def main(args):
+    while "--public" in args:
+        i = args.index("--public")
+        if i + 1 >= len(args):
+            print("check-private: --public needs a ref; refusing.")
+            return 2
+        PUBLIC.append(run_git(["git", "rev-parse", "--verify", f"{args[i + 1]}^{{commit}}"]).strip())
+        args = args[:i] + args[i + 2:]
     if args and args[0] == "--range":
         BASE[0] = args[1].split("..")[0]
+    elif not args or args[0] == "--staged":
+        BASE.extend(merging())
     shingles, phrases, ids, names, found = corpus()
     lora_refuse, lora_warn = lora_registry()
     if not found:
