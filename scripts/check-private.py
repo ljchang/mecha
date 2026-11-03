@@ -594,27 +594,48 @@ def people_names():
                         if isinstance(name, str) and name.strip():
                             out.add(name.strip())
                         try:
-                            for a in json.loads(aliases or "[]"):
-                                if isinstance(a, str) and a.strip():
-                                    out.add(a.strip())
+                            listed = json.loads(aliases or "[]")
                         except (ValueError, TypeError):
-                            pass
+                            listed = []
+                        # Only a list: a bare string would iterate as letters.
+                        for a in listed if isinstance(listed, list) else []:
+                            if isinstance(a, str) and a.strip():
+                                out.add(a.strip())
             finally:
                 conn.close()
         except sqlite3.Error as e:
             print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
-    for f in glob.glob(f"{MECHA}/personas/*/life.toml"):
+    # The profile, a waiting draft of it and the one it replaced: a name is
+    # in a persona's life before approval and after removal too (review of
+    # #841).
+    for pattern in ("life.toml", "life.draft.toml", "life.previous.toml"):
+        for f in glob.glob(f"{MECHA}/personas/*/{pattern}"):
+            try:
+                with open(f, "rb") as fh:
+                    life = tomllib.load(fh)
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                print(f"check-private: the life profile {f} could not be read ({e}); refusing rather than passing unread.")
+                sys.exit(2)
+            for h in life.get("household", []) or []:
+                if isinstance(h, dict) and isinstance(h.get("person"), str) and h["person"].strip():
+                    out.add(h["person"].strip())
+    # People a model proposed from identity.md, waiting on the owner.
+    for f in glob.glob(f"{MECHA}/personas/*/people.draft.json"):
         try:
-            with open(f, "rb") as fh:
-                life = tomllib.load(fh)
-        except (OSError, tomllib.TOMLDecodeError) as e:
-            print(f"check-private: the life profile {f} could not be read ({e}); refusing rather than passing unread.")
+            with open(f, errors="replace") as fh:
+                draft = json.load(fh)
+        except (OSError, ValueError) as e:
+            print(f"check-private: the people draft {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
-        for h in life.get("household", []) or []:
-            if isinstance(h, dict) and isinstance(h.get("person"), str) and h["person"].strip():
-                out.add(h["person"].strip())
-    return out
+        for p in (draft.get("people") if isinstance(draft, dict) else None) or []:
+            if not isinstance(p, dict):
+                continue
+            for n in [p.get("name")] + (p.get("aliases") if isinstance(p.get("aliases"), list) else []):
+                if isinstance(n, str) and n.strip():
+                    out.add(n.strip())
+    # A one-letter name would refuse every line holding that letter alone.
+    return {n for n in out if len(n) >= 2}
 
 
 def lora_registry():
@@ -865,6 +886,8 @@ def main(args):
         BASE.extend(merging())
     shingles, phrases, ids, names, found = corpus()
     people = people_names()
+    # A store with people and no persona.toml still has names to refuse.
+    found = found or bool(people)
     lora_refuse, lora_warn = lora_registry()
     if not found:
         # On the machine that holds the conversations, set

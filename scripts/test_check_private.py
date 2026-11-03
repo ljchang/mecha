@@ -848,6 +848,18 @@ class Guard(unittest.TestCase):
         self.stage("again.py", "Y = 'Will again.'\n")
         self.assertEqual(self.run_guard("--staged").returncode, 0)
 
+    def test_a_name_waiting_in_a_draft_is_refused_too(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        with open(os.path.join(pdir, "people.draft.json"), "w") as f:
+            json.dump({"people": [{"name": "Tamsin", "aliases": ["Tam"]}]}, f)
+        with open(os.path.join(pdir, "life.previous.toml"), "w") as f:
+            f.write('[[household]]\nperson = "Ferrand"\nrelation = "partner"\n')
+        for name, text in [("a.py", "X = 'Tamsin waved.'\n"), ("b.py", "X = 'Ferrand left.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
