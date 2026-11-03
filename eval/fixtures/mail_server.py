@@ -663,7 +663,7 @@ TOOLS = [
     },
     {
         "name": "mail_triage",
-        "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Acts on the WHOLE thread. Nothing here leaves the mailbox or reaches anyone else. Use archive for anything dealt with; use spam only for genuine junk.",
+        "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Gmail acts on the whole thread. Outlook archive and spam move only the conversation's Inbox messages, leaving filed mail untouched; trash and read/unread act on the whole conversation. This fixture has no folders: archive, spam and trash set thread flags; read/unread update every message in the thread. Nothing here leaves the mailbox or reaches anyone else. Use archive for anything dealt with; use spam only for genuine junk.",
         "inputSchema": {
             "type": "object",
             "properties": {"thread_id": {"type": "string"}, "action": {"type": "string", "enum": TRIAGE_ACTIONS}, "account": ACCOUNT},
