@@ -709,6 +709,45 @@ owner's deck is the owner's.
 - **Most events involve other people** (§2.1): the director weights storylets
   with a cast member above solo ones.
 
+**As built (step 3, a first build to iterate on; owner's rulings
+2026-11-02):** `persona::story`, with no model and nothing reaching her
+chats.
+- **Her state** is three short-term levels, energy, stress and mood, each
+  low, normal or high. Each morning a level away from normal steps back
+  with even odds, and the day's events move it one step at a time.
+- **Her deck** is `story.toml` in her folder: storylets with a title
+  (`{who}` names the person cast), a size (minor, major, severe), a
+  weight, conditions (activities in her day, weekdays, sky and
+  temperature, her levels, a tie to cast) and an effect of one step per
+  level. A `cooldown` (5 days for a minor, the 28-day lookback otherwise)
+  and a `group` (at most one a day) keep it from repeating itself.
+- **Starter decks come from her cell**: one shared everyday deck plus her
+  cell's, written for editing by `mecha persona story init`.
+- **The director:**
+  - a minor floor at 0.75 a day, with a second at 0.2 of that;
+  - majors no sooner than 6 days apart, at 0.12 a day after that, and
+    forced after a 13-day drought;
+  - two quiet days after a major, with the minor floor halved;
+  - severe only under `intensity = "full"`;
+  - cast storylets weighted ×2, and who is cast weighted by closeness.
+- **Storage:** seeded per persona per day; stored in `world.db` version 3
+  (`story_days`, `events`) up to today; today redrawn when the deck,
+  weather, her day or her castable people change, and the past kept.
+- **Weather** is pulled ahead from §8.2's shelf A, at the owner's word:
+  - `[place]` in `story.toml` is a label plus latitude and longitude;
+  - `mecha persona story weather` makes one capped read of Open-Meteo for
+    the last two weeks and the next one, parsed into a closed sky and
+    whole degrees, or refused;
+  - it is stored in `weather` and shown as a fact on a day drawn before
+    it arrived.
+- **Where it shows:** the Week tab and `mecha persona story show`.
+- **Not yet:**
+  - arcs;
+  - tie effects (recorded, held back);
+  - the teller and its `[life] events` switch;
+  - a nightly weather fetch;
+  - pruning `story_days` past the keep window.
+
 ### 4.4 The narrator
 
 A sifter picks the day's one to three notable events — by importance to her
@@ -2462,7 +2501,7 @@ ruled for repetition.
     whenever `world` is on, and writes `cell` into `routine.toml`
     (`POST /api/personas/{name}/routine/cell`), every other line kept, only
     over the routine the page was shown. The persona form's Life section
-    holds the `world` switch, "Her days"; the other `[life]` switches join
+    holds the `world` switch, "Their days"; the other `[life]` switches join
     it as their steps build them.
   - **Reviewing a drafted routine (step 1):** under the picker, the Week
     tab asks her model for a draft (`POST …/routine/draft`, tens of
@@ -2489,9 +2528,15 @@ ruled for repetition.
     or world event behind it; edit, backdate, end, merge, split, link a
     character, promote, forget, share. A time slider shows the network as it
     was on a date — nearly free from the event log.
+  - **The editor's tabs and words (owner, 2026-11-02):** the page is
+    gender-neutral ("Their days", "Their people", "Draft their week"), and
+    its tabs show only the parts that are on, Settings always last:
+    Memories while any kind is on or anything is stored, Week with `world`,
+    People with `people` too (`shows` on the persona list,
+    `personaTabs`).
   - **As built (step 2, her people):** a People tab beside Week, behind the
     same world gate, answering "off for this persona" while `[life] people`
-    is off (the form's Life section gains the "Her people" switch). Rings
+    is off (the form's Life section gains the "Their people" switch). Rings
     for the four layers, a dashed ring for those not placed and a greyed
     outer band for ended ties; spokes green when warm, orange and dashed
     when tense, dotted when out of touch; ties between people as thin lines;

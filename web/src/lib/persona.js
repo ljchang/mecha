@@ -127,12 +127,31 @@ export function personaName(typed) {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) && !reserved.includes(name) ? name : null;
 }
 
-// The three files the page edits, in the order it shows them.
+// The three files the page edits, in the order it shows them; Settings is
+// always the last tab (`personaTabs`), after the parts that are on.
 export const OWNER_FILES = [
   ['identity', 'Who they are'],
   ['motivation', 'What they want'],
   ['settings', 'Settings'],
 ];
+
+// The persona editor's tabs, in order: its two prose files, then each part
+// that is on (`shows`, from the list: memories, the week and the people,
+// those two behind the world feature too), then Settings, always last
+// (owner, 2026-11-02). A row from a server that says nothing shows them all.
+export function personaTabs(shows, world) {
+  const on = (k) => shows?.[k] ?? true;
+  // The owner files in their own order, Settings held back to close the row,
+  // so a file added to OWNER_FILES gets a tab without this changing.
+  const files = OWNER_FILES.map(([f]) => f).filter((f) => f !== 'settings');
+  return [
+    ...files,
+    ...(on('memories') ? ['memories'] : []),
+    ...(world && on('week') ? ['week'] : []),
+    ...(world && on('people') ? ['people'] : []),
+    'settings',
+  ];
+}
 
 // One of a persona's files, by its listed name: to download (`file`) or to
 // read as text (`text`). The server finds it in the persona's own listing.
@@ -828,9 +847,9 @@ const MIDNIGHT = 24 * 60;
 
 // Why she has no days, said with its fix; the server's `why` is the CLI's.
 export const WEEK_ABSENT = {
-  off: 'Her days are off for this persona. Turn on Her days in the Life section of her Settings.',
-  no_routine: 'She has no routine yet. Pick her kind of week below and her days are drawn from it.',
-  no_cell: 'Her routine names no kind of week yet. Pick one below and her days are drawn from it.',
+  off: 'Their days are off for this persona. Turn on Their days in the Life section of their Settings.',
+  no_routine: 'They have no routine yet. Pick their kind of week below and their days are drawn from it.',
+  no_cell: 'Their routine names no kind of week yet. Pick one below and their days are drawn from it.',
 };
 
 // Activities in a few groups the week view colours by.
@@ -922,7 +941,7 @@ export const PEOPLE_EVENTS = [
 export const PEOPLE_LAYERS = [5, 15, 50, 150];
 
 export const PEOPLE_ABSENT = {
-  off: 'Her people are off for this persona. Turn on Her people in the Life section of her Settings.',
+  off: 'Their people are off for this persona. Turn on Their people in the Life section of their Settings.',
 };
 
 // Each ring's radius on a 200-unit board, her at the centre: the four
@@ -947,7 +966,7 @@ export function acceptedLine(a) {
   if (!a) return '';
   const parts = [];
   if (a.added?.length) parts.push(`Added ${a.added.join(', ')}.`);
-  if (a.already?.length) parts.push(`${a.already.join(', ')} ${a.already.length === 1 ? 'was' : 'were'} already in her network.`);
+  if (a.already?.length) parts.push(`${a.already.join(', ')} ${a.already.length === 1 ? 'was' : 'were'} already in their network.`);
   if (a.waiting) parts.push(`${a.waiting} more still ${a.waiting === 1 ? 'waits' : 'wait'} below.`);
   return parts.join(' ') || 'Nothing to add.';
 }
@@ -1052,6 +1071,33 @@ export function stretchLine(s) {
   if (who.length === 1 && who[0] === 'alone') line += ', alone';
   else if (who.length) line += `, with ${who.join(', ')}`;
   return line;
+}
+
+// Her story on one day of the week view (PERSONA-LIFE-DESIGN.md §4.3): the
+// weather, the levels that ended the day away from normal, and the events,
+// as the server shows them. `null` when the week carries no story.
+export const STORY_SKY = { clear: 'clear', cloudy: 'cloudy', fog: 'fog', drizzle: 'drizzle', rain: 'rain', snow: 'snow', storm: 'storm' };
+// What the week says about her story as a whole: whether any day was drawn,
+// and why the rest was not. Both can hold, so neither hides the other.
+export function storyNotes(data) {
+  return { drawn: (data?.story ?? []).length > 0, why: data?.story_error ?? null };
+}
+
+export function storyDay(data, date) {
+  const d = (data?.story ?? []).find((s) => s.date === date);
+  // A past day the store does not keep was drawn for this view alone: not
+  // her history, so not shown as it (the day row says "not kept").
+  if (!d || (d.kept === false && data?.today && date <= data.today)) return null;
+  const w = d.weather;
+  const weather = w ? `${STORY_SKY[w.sky] ?? 'unknown sky'} ${w.high_c}°/${w.low_c}°C` : null;
+  const levels = ['energy', 'stress', 'mood']
+    .filter((k) => d.evening?.[k] && d.evening[k] !== 'normal')
+    .map((k) => `${k} ${d.evening[k]}`)
+    .join(' · ');
+  const events = (d.events ?? []).map((e) => ({ text: e.shown ?? e.title, major: e.size !== 'minor' }));
+  // Nothing to show is no row, never an empty one.
+  if (!weather && !levels && !events.length) return null;
+  return { weather, levels, events };
 }
 
 // The week's rows: one a day, Monday first, each stretch placed on a 4am to

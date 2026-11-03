@@ -599,6 +599,120 @@ export const frontdoor = {
   ],
 };
 
+// --- the factory ----------------------------------------------------------
+
+export const factory = {
+  dir: '/home/demo/.mecha/factory/types',
+  instruments: [
+    { id: 'book', kind: 'booking', title: 'Book a meeting', path: '/home/demo/.mecha/factory/types/book.toml', problem: null },
+    { id: 'speaking', kind: 'request', title: 'Invite me to speak', path: '/home/demo/.mecha/factory/types/speaking.toml', problem: null },
+  ],
+};
+
+const demoHours = {
+  timezone: 'America/New_York',
+  durations: [30, 60],
+  buffer_minutes: 10,
+  min_notice_hours: 24,
+  horizon_days: 60,
+  per_day_cap: 3,
+  windows: [
+    { day: 'tue', start: '13:00', end: '17:00' },
+    { day: 'thu', start: '09:30', end: '12:00' },
+  ],
+  overrides: [],
+};
+
+// Slots generated from today, so the preview always has a fortnight to show
+// — fixed dates would leave the demo's preview empty after the first week.
+// Tuesday afternoons and Thursday mornings, New York, half-hour starts.
+function demoSlots(now) {
+  const out = [];
+  const day = new Date(now);
+  day.setUTCHours(0, 0, 0, 0);
+  for (let i = 2; i < 60; i++) {
+    const d = new Date(day.getTime() + i * 86400000);
+    const dow = d.getUTCDay();
+    // 18:00Z is 13:00 or 14:00 in New York depending on DST; the demo shows
+    // a plausible week, not a DST-correct one.
+    const starts = dow === 2 ? [18, 18.5, 19, 20.5] : dow === 4 ? [14.5, 15] : [];
+    for (const h of starts) {
+      const start = new Date(d.getTime() + h * 3600000);
+      for (const m of h === 20.5 ? [30] : [30, 60]) {
+        out.push({ start: start.toISOString(), end: new Date(start.getTime() + m * 60000).toISOString(), duration_minutes: m });
+      }
+    }
+  }
+  return out;
+}
+
+export function factoryInstrument(id = 'book', now = Date.now()) {
+  if (id === 'speaking') {
+    // A form: no hours, only the requests it has brought in.
+    return {
+      id: 'speaking',
+      kind: 'request',
+      title: 'Invite me to speak',
+      path: '/home/demo/.mecha/factory/types/speaking.toml',
+      digest: 'demo',
+      pipeline_days: 60,
+      days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      requests_open: 1,
+      bookings: [],
+    };
+  }
+  const slots = demoSlots(now);
+  const nextTue = slots.find((s) => new Date(s.start).getUTCDay() === 2);
+  return {
+    id: 'book',
+    kind: 'booking',
+    title: 'Book a meeting',
+    path: '/home/demo/.mecha/factory/types/book.toml',
+    digest: 'demo',
+    pipeline_days: 60,
+    timer_pushes: true,
+    days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+    requests_open: 1,
+    hours: demoHours,
+    preview: {
+      instrument: 'book',
+      timezone: 'America/New_York',
+      horizon_days: 60,
+      busy_generated_at: new Date(now - 6 * 60000).toISOString(),
+      last_pushed_at: new Date(now - 6 * 60000).toISOString(),
+      held_slots: 0,
+      slots: slots.slice(1),
+    },
+    bookings: nextTue
+      ? [{ seq: 44, start: nextTue.start, end: nextTue.end, duration_minutes: 30, reply_to: 'ines@fairhaven.example.edu', on_calendar: true, state: 'booked' }]
+      : [],
+  };
+}
+
+export const factoryForm = {
+  id: 'speaking',
+  kind: 'request',
+  draft: false,
+  published: true,
+  digest: 'demo',
+  kinds: ['text', 'long_text', 'email', 'url', 'date', 'integer', 'select', 'multi_select', 'bool'],
+  text: 'id = "speaking"\nversion = 1\ntitle = "Invite me to speak"\n',
+  form: {
+    title: 'Invite me to speak',
+    description: 'Tell me about the event; I read every invitation.',
+    confirmation_heading: 'Thank you',
+    confirmation_body: 'I will reply within two weeks.',
+    fields: [
+      { name: 'requester_email', label: 'Your email', help: null, kind: 'email', required: true, options: null, max_length: null },
+      { name: 'event', label: 'The event', help: 'Name, place and dates', kind: 'text', required: true, options: null, max_length: 200 },
+      { name: 'format', label: 'Format', help: null, kind: 'select', required: true, options: [{ value: 'keynote', label: 'Keynote' }, { value: 'panel', label: 'Panel' }], max_length: null },
+    ],
+  },
+};
+
+export const factoryFormPreview =
+  '<html><head><style>body{font-family:sans-serif;padding:24px}label{display:block;margin:12px 0 4px}</style></head><body><h1>Invite me to speak</h1><p>Tell me about the event; I read every invitation.</p><form><label>Your email</label><input><label>The event</label><input><label>Format</label><select><option>Keynote</option><option>Panel</option></select></form></body></html>';
+
 // --- the graph review queue ---------------------------------------------
 
 export const queue = [
@@ -1701,12 +1815,12 @@ export const chatImages = {
 
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, shows: { memories: true, week: true, people: true }, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', shows: { memories: true, week: false, people: false }, relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     // Proposed from the main chat and waiting on the owner (the Waiting
     // section): the review below is what its page reads.
-    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, shows: { memories: true, week: false, people: false }, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
+    { name: 'rook', display: 'Rook', shows: { memories: false, week: false, people: false }, relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
   image_options: imageOptions,
   unlocked: false,
@@ -1885,6 +1999,19 @@ export function personaWeek(date) {
       undraftable: null,
     },
     week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
+    // Her story over the week (`story::to_json`): invented events.
+    story: days.map((d, i) => ({
+      date: d.date,
+      weather: i % 3 === 0 ? { sky: 'rain', high_c: 9, low_c: 4 } : { sky: 'cloudy', high_c: 12, low_c: 6 },
+      morning: { energy: 'normal', stress: 'normal', mood: 'normal' },
+      evening: { energy: i === 2 ? 'low' : 'normal', stress: i === 2 ? 'high' : 'normal', mood: 'normal' },
+      events: i === 2
+        ? [{ storylet: 'deadline_crunch', title: 'a deadline crunch', size: 'minor', people: [], effect: { energy: 0, stress: 1, mood: 0 }, importance: 1.33, shown: 'a deadline crunch' }]
+        : i === 4
+          ? [{ storylet: 'good_news_friend', title: '{who} shared big good news', size: 'major', people: [DEMO_P(1)], effect: { energy: 0, stress: 0, mood: 1 }, importance: 5.6, shown: 'Ines shared big good news' }]
+          : [],
+      kept: d.when !== 'ahead',
+    })),
   };
 }
 
