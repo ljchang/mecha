@@ -461,6 +461,9 @@ them teaches the classifier noise.
   rule — set by explicit command, never inferred.
   *(Designed as per-rule modes on 2026-11-02: see `MAIL-RULES-DESIGN.md` §6.)*
 - **A second approval surface.** The outbox is it.
+  *(Still true for mail rules, which add no second surface — but a rule the
+  owner approved for `auto` sends without staging: `MAIL-RULES-DESIGN.md`
+  §6.3, 2026-11-02.)*
 - **`mail_snooze`.** Neither provider has one; it would be a label plus a
   trigger, and a snooze that silently means "labelled and forgotten" is the
   silently-degrading-sandbox shape.

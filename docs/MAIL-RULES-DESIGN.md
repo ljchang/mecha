@@ -149,7 +149,9 @@ approval": that reading would let the next run undo a brake, which changes no
 file, and would re-arm a rule whose edit was reverted to an earlier approved
 state, when the lapse was the point. That is why a detected digest change is
 itself written as a row (§6.2), not only inferred at read time. Permission
-moves up only by a new owner row.
+moves up only by a new owner row. **A group with no rows at all reads as
+`shadow`** — a hand-created rule directory, a renamed one, or one whose rows
+were lost — the same direction as an unknown mode (§8).
 
 ### A rule, written out
 
@@ -276,7 +278,11 @@ considered, with nothing on the ledger to say why. **Deferring alone is not
 enough, though**: `classify` reads `mail_recent`'s newest-N window, threads
 leave that window on a busy day, and a deferred thread that left it would
 lose its archive and every rule's evaluation in silence. So a deferral is
-**recorded**: the header pass writes the thread's id to a deferred queue in
+**recorded** — and not only an archive's: **any thread with any action owed
+to `classify`** (a deferred inbox-removing action, an outbound action, a
+`digest`, a `task`) gets an entry, because a header rule's forward that waits
+for `classify` is lost just as silently if the thread ages out of the window
+overnight. The header pass writes the thread's id to a deferred queue in
 the rule store, and `classify` reads that queue beside `mail_recent` — the
 same need `due_outside_window` answers for the triage store's retries (work
 owed on threads the window no longer returns), here met with a queue because
@@ -790,8 +796,15 @@ and none is configurable off:
   Gmail, an instance whose `authserv-id` is the pinned provider value; **on
   Outlook, any instance carrying a `compauth=` token**, whatever its
   `authserv-id` — since EOP's own instance is recognised by `compauth=`, a
-  submitted one with it is a second claim and proposes, including when
-  Graph's truncation has dropped EOP's instance and the sender's is topmost. P0's real-header check covers Gmail's ordering as
+  submitted one with it is a second claim and proposes. **Counting cannot
+  cover truncation, though**: if Graph's truncated collection has dropped
+  EOP's instance, a forged `compauth=` instance is the only claim, and one
+  claim reads as genuine. So on Outlook the guard also requires that the
+  header collection was read **whole** — P0 establishes how a truncated
+  `internetMessageHeaders` can be told from a complete one (or reads the
+  headers through the MIME source, which is not truncated), and a read that
+  cannot be shown whole proposes. If neither is possible, Outlook sends stay
+  in `propose`, as stated below. P0's real-header check covers Gmail's ordering as
   well as EOP's shape, with the same fallback: if it is not reliable, that
   provider's sends stay in `propose`. `Authentication-Results` gets its
   own field on `Email` rather than riding the existing loop.
