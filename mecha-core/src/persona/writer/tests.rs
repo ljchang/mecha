@@ -382,6 +382,139 @@ fn a_clean_stretch_updates_a_models_fact_but_never_the_owners_or_a_pinned_one() 
 }
 
 #[test]
+fn a_clean_stretch_can_update_and_invalidate_vouched_model_facts() {
+    let w = world();
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    let update = m
+        .add_fact(
+            Table::User,
+            NewFact {
+                text: "Keeps notes in a blue book.".into(),
+                kind: Kind::Stated,
+                source: Source {
+                    chat: "earlier-chat".into(),
+                    from: 0,
+                    to: 1,
+                },
+                origin: Origin::ModelUntrusted,
+                model: "local-model".into(),
+                valid_from: None,
+                valid_to: None,
+            },
+        )
+        .unwrap();
+    let invalidate = m
+        .add_fact(
+            Table::Persona,
+            NewFact {
+                text: "The workshop meets by the inlet.".into(),
+                kind: Kind::Observed,
+                source: Source {
+                    chat: "earlier-chat".into(),
+                    from: 0,
+                    to: 1,
+                },
+                origin: Origin::ModelUntrusted,
+                model: "local-model".into(),
+                valid_from: None,
+                valid_to: None,
+            },
+        )
+        .unwrap();
+    drop(m);
+    let conn = rusqlite::Connection::open(w.dir.join("mara").join("memory.db")).unwrap();
+    for (table, uid) in [("user_facts", &update.uid), ("facts", &invalidate.uid)] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET status = 'active', origin = 'owner',
+                 vouched_at = '2026-11-03T01:02:03Z' WHERE uid = ?1"
+            ),
+            [uid],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let out = run(
+        &w,
+        stretch(Origin::ModelClean),
+        vec![
+            Op::Update {
+                id: update.uid[..8].into(),
+                text: "Keeps notes in a green book.".into(),
+            },
+            Op::Invalidate {
+                id: invalidate.uid[..8].into(),
+            },
+        ],
+    );
+    assert_eq!((out.updated, out.invalidated, out.refused), (1, 1, 0));
+
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    let replacement = m
+        .facts(Table::User, Filter::Recallable)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.text == "Keeps notes in a green book.")
+        .unwrap();
+    assert_eq!(replacement.origin, Origin::ModelClean);
+    assert!(replacement.vouched_at.is_none());
+    assert_eq!(replacement.replaces.as_deref(), Some(update.uid.as_str()));
+    assert_eq!(
+        m.fact(&invalidate.uid).unwrap().unwrap().status,
+        Status::Invalidated
+    );
+}
+
+#[test]
+fn a_clean_stretch_still_cannot_change_owner_written_facts() {
+    let w = world();
+    let m = Memory::open(&w.dir, "mara").unwrap();
+    let owner_fact = |text: &str| {
+        m.add_fact(
+            Table::User,
+            NewFact {
+                text: text.into(),
+                kind: Kind::Stated,
+                source: Source {
+                    chat: "owner-chat".into(),
+                    from: 0,
+                    to: 1,
+                },
+                origin: Origin::Owner,
+                model: "owner".into(),
+                valid_from: None,
+                valid_to: None,
+            },
+        )
+        .unwrap()
+    };
+    let update = owner_fact("Uses a brass bookmark.");
+    let invalidate = owner_fact("Walks beside the inlet.");
+
+    let out = run(
+        &w,
+        stretch(Origin::ModelClean),
+        vec![
+            Op::Update {
+                id: update.uid[..8].into(),
+                text: "Uses a silver bookmark.".into(),
+            },
+            Op::Invalidate {
+                id: invalidate.uid[..8].into(),
+            },
+        ],
+    );
+    assert_eq!((out.updated, out.invalidated, out.refused), (0, 0, 2));
+    for uid in [&update.uid, &invalidate.uid] {
+        let fact = m.fact(uid).unwrap().unwrap();
+        assert_eq!(fact.status, Status::Active);
+        assert_eq!(fact.origin, Origin::Owner);
+        assert!(fact.vouched_at.is_none());
+    }
+}
+
+#[test]
 fn switched_off_memory_writes_nothing_of_that_kind() {
     let mut w = world();
     w.persona.settings.memory.semantic = false;
