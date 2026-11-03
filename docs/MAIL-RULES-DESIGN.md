@@ -140,12 +140,13 @@ identity. `field` identifies the exact key, including its owning action, or
 the named file, and `digest` identifies the shown bytes. Identical text in
 another rule, another field or a later proposal must not inherit an earlier
 acknowledgement. An owner acknowledgement records `Owner` without rewriting
-the rule only for text whose origin is `ModelClean` (§9), including an
-action's `to`. Every `ModelUntrusted` field requires an actual owner edit;
-recognising a proposed address does not rule out a stranger-shaped lookalike
-domain. Approval binds to the full inputs in §6.2, while measurement uses
-only §4.2's match digest, so adopting action text does not discard matching
-history unless the origin gate changes.
+the rule only for text whose origin is `ModelClean`, excluding `to` (§9).
+Every `ModelUntrusted` field and every proposed `to` requires an actual
+owner edit; recognising an address does not rule out a lookalike domain,
+even from a clean conversation. Approval binds to the full inputs in §6.2,
+while measurement uses only §4.2's match digest, so adopting action text
+does not discard matching history unless an edit changes the origin gate.
+Acknowledgement changes neither that gate nor the match digest.
 
 **The effective mode is the latest row for the rule and action group, and
 the digest and §5.4's mode-level holds only ever lower it.** The holds —
@@ -232,13 +233,12 @@ do = "digest"
 
 An action's `to` is the only place an outbound address appears in a rule. It
 must be `Owner` before that group enters `auto`: written or edited by the
-owner, or explicitly acknowledged only if `ModelClean` (§9), because it
-bounds where every automatic forward and send lands. A `ModelUntrusted` `to`
-requires an actual edit; installation alone never adopts an address. A
-proposed address may be installed and used in `propose`; acknowledgement
-records its origin in the store without rewriting `rule.toml`. No action
-takes a recipient from the mail except `reply`, whose recipient is the
-thread's sender under the guards of §5.4.
+owner (§9), because it bounds where every automatic forward and send lands.
+A proposed `to` requires an actual edit even when `ModelClean`; installation
+and acknowledgement never adopt an address. A proposed address may be
+installed and used in `propose`. No action takes a recipient from the mail
+except `reply`, whose recipient is the thread's sender under the guards of
+§5.4.
 
 ---
 
@@ -402,20 +402,20 @@ rule_quote: words from the message that show it
 shadow_rules: [ { name: <a shadow rule's name>, quote: <words that show it> } ]
 ```
 
-**Reconcile the final grounded results by rule name before evaluating
-groups.** A rule named in either `rule` or `shadow_rules` counts as a match
-for all its non-off groups' evaluation, with one match per rule and thread.
-Its shadow groups write would-have rows even if only `rule` named it; use
-the grounded shadow quote when present, otherwise `rule_quote`. If both name
-it, each shadow action still gets only one would-have row. A name only in
-`shadow_rules` is evidence for evaluation, never an active selection: active
-actions still require that rule to be the grounded `rule` result, then pass
-their own confirmation and guards. Thus Mailbox=`auto` and Fixed
-words=`shadow` records the latter's would-have match when either result
-names the rule, but only `rule` can cause the mailbox action. Without this
-union, the classifier could recognise the thread in the active result and
-leave the shadow rate falsely low by omitting the same name from its other
-answer.
+**Only the grounded `rule` result authorises active actions; reconcile it
+with `shadow_rules` for measurement only.** Otherwise a shadow-only match
+could trigger active actions the active result never selected. A rule named
+in either grounded result counts as matching evidence for all its non-off
+groups, with one match per rule and thread. Its shadow groups write
+would-have rows even if only `rule` named it; use the grounded shadow quote
+when present, otherwise `rule_quote`. If both name it, each shadow action
+still gets only one would-have row. Active actions require the grounded
+`rule` selection, then their own confirmation and guards. Thus
+Mailbox=`auto` and Fixed words=`shadow` records the latter's would-have
+match when either result names the rule, but only `rule` can cause the
+mailbox action. Without this union, the classifier could recognise the
+thread in the active result and leave the shadow rate falsely low by
+omitting the same name from its other answer.
 
 **Shadow groups have their own list and field plus that reconciliation**, so
 they never compete for `rule` — and **that field is a list**, so they do not
@@ -556,10 +556,10 @@ gate is not confirmed at all**: it is measured by the main pass alone, and
 the page labels its would-have rate a **ceiling**, as well as an **upper
 bound**. A confirmation rate for it would be a number nothing can act on,
 because §9 forbids that group from entering `auto`. A sibling's confirmation
-does not change its ceiling. An owner edit or an acknowledgement permitted
-by §9 starts confirmed measurement only when it changes the relevant group's
-gate status from failing to passing; changing a file by itself says nothing
-about that transition.
+does not change its ceiling. An owner edit starts confirmed measurement only
+when it changes the relevant group's gate status from failing to passing;
+changing a file by itself says nothing about that transition.
+Acknowledgement permitted by §9 cannot change the gate status.
 
 **A group's would-have rates are computed only over rows written under its
 current *match digest*, separately for each `verdict_input`**: the digest
@@ -595,19 +595,20 @@ others; the resulting rows stay apart by `verdict_input` rather than
 resetting a per-rule full-body boolean. Text edits still lapse approval
 (§6.2), but preserve matching history unless they change the applicable §9
 gate status; an acknowledgement permitted by §9 changes only the provenance
-record, and resets measurement only if that status changes. The gate is
-still evaluated over every key and named file, so editing the last untrusted
-text changes the status even when that text is outside the matcher;
-acknowledgement never releases `ModelUntrusted` text, including `to`. The
-§5.3 extraction version is **not** in the match digest either: shadow runs
-no extraction, so the version cannot have touched a would-have row. A
-typed-send rule's would-have rate therefore does not subtract the sends that
-ungrounded fields would push to `propose` (§5.3 step 2), and the page labels
-it an upper bound on what `auto` will send unattended. An `aliases.toml` or
-`limits.toml` edit lapses approvals (§6.2) but resets no measurement:
-neither can change a match or the gate. Nor does an edit to the `draft_with`
-skill's directory: the skill is owner-authored, cannot change a match, and
-§9's gate is over the origin of the rule's own text, not the skill's.
+record, never the gate status or match digest, so it preserves measurement.
+The gate is still evaluated over every key and named file, so editing the
+last untrusted text changes the status even when that text is outside the
+matcher; acknowledgement never releases `ModelUntrusted` text or adopts `to`
+at any origin. The §5.3 extraction version is **not** in the match digest
+either: shadow runs no extraction, so the version cannot have touched a
+would-have row. A typed-send rule's would-have rate therefore does not
+subtract the sends that ungrounded fields would push to `propose` (§5.3 step
+2), and the page labels it an upper bound on what `auto` will send
+unattended. An `aliases.toml` or `limits.toml` edit lapses approvals (§6.2)
+but resets no measurement: neither can change a match or the gate. Nor does
+an edit to the `draft_with` skill's directory: the skill is owner-authored,
+cannot change a match, and §9's gate is over the origin of the rule's own
+text, not the skill's.
 
 The match digest's components are always **written, empty when absent** —
 P1's rows carry no compiled confirmation version, because it arrives in P4,
@@ -652,19 +653,24 @@ choose an `off` target (§6.1). A safety lowering must still stop actions: if
 a brake creates another list entry, the permission lowers and admission uses
 the over-cap hold below, never retaining `auto` to make the count fit.
 
-**If the store is over cap anyway, offer entries in `priority` then name
-order up to the cap and visibly hold the rest.** Hand edits can bypass the
-write check, and the loader must have a deterministic answer. Keep a mixed
-rule's two entries together: if the next rule does not fit, omit it and all
-later rules from both lists rather than offering only its active half. Every
-omitted rule shows **`held: list cap`** on its page and as `mecha doctor`
-attention, with the cap, entry count and remedy. None of its groups is
-evaluated or acts while held; the frame and constrained enums contain only
-admitted entries. This is an evaluation hold, not an action outcome or a
-mode row, so it closes no ledger key and changes no stored permission. The
-page marks measurement unavailable while held rather than reporting no
-matches. No shadow entry is ever dropped silently: the owner must see when
-the measurement they are evaluating has stopped.
+**If the store is over cap anyway, hold rules by cost to lose: shadow-only
+first, then `propose`, then `auto`, each in `priority` then name order.**
+Hand edits or a safety lowering can exceed the cap, but stopping measurement
+costs less than stopping owner-approved actions. Classify a rule by its
+highest effective group mode: any `auto` group puts it in the last class,
+otherwise any `propose` group puts it in the middle, and shadow-only rules
+come first. Keep a mixed rule's two entries together; holding it removes
+both, so its shadow measurement cannot silently disappear while its active
+half runs. Hold rules in that order until the remaining entries fit the cap,
+then offer the retained entries in each list's usual `priority` then name
+order. Every omitted rule shows **`held: list cap`** on its page and as
+`mecha doctor` attention, with the cap, entry count and remedy. None of its
+groups is evaluated or acts while held; the frame and constrained enums
+contain only admitted entries. This is an evaluation hold, not an action
+outcome or a mode row, so it closes no ledger key and changes no stored
+permission. The page marks measurement unavailable while held rather than
+reporting no matches. No shadow entry is ever dropped silently: the owner
+must see when the measurement they are evaluating has stopped.
 
 A per-rule yes/no pass would be more accurate and costs one call per rule
 per thread; it is the fallback if the single field measures badly, not the
@@ -1248,17 +1254,22 @@ with separate rates for each `verdict_input`** (§4.2). Earlier digests and
 snippet versus full-body measurements stay apart, as on the rule page (§8),
 because a rule's own files cannot say which evidence another rule made the
 classifier read. The recipient `to` is shown first, with its origin and
-editing; **acknowledge this text** is offered only when `ModelClean` (§9),
-for `to` as for every other field. Every `ModelUntrusted` field requires an
-actual edit: one click neither changes a stranger-shaped description nor
-rules out a lookalike recipient domain. Acknowledgement is an `Actor::Owner`
-act under §6.1's raise gate, bound to the shown `(rule, field, digest)`
-(§3), and records `Owner` in the store's provenance record without rewriting
-`rule.toml`; a run cannot adopt proposed text to unblock its own automatic
-sends. The screen then recomputes the gate and match digest before approval:
-a gate transition shows the earlier ceiling apart, while an acknowledgement
-or recipient, note or template edit that leaves the gate unchanged keeps the
-measured rate.
+editing, never acknowledgement. **Acknowledge this text** is offered for
+other text only when `ModelClean` (§9), including `match.describe`, `note`
+and templates. Every proposed `to` and every `ModelUntrusted` field requires
+an actual edit: one click neither changes a stranger-shaped description nor
+rules out a lookalike recipient domain, whatever the conversation's taint.
+Acknowledgement is an `Actor::Owner` act under §6.1's raise gate, bound to
+the shown `(rule, field, digest)` (§3), and records `Owner` in the store's
+provenance record without rewriting `rule.toml`; a run cannot attribute its
+own proposed text to the owner. Acknowledgement changes neither gate status
+nor match digest. After an edit, the screen recomputes both before approval:
+a gate transition shows the earlier ceiling apart, while a recipient, note
+or template edit that leaves the gate unchanged keeps the measured rate.
+Narrowing the match digest preserves the history of sibling groups whose
+gate status stays unchanged when adopting `to` changes the outbound group's
+gate. Even if acknowledgement of the address were permitted, that gate
+transition would still reset the outbound group's measurement.
 
 The approval written to `approvals.jsonl` carries **a digest of the rule's
 directory** (and of the named skill's, for §6.3, and of `aliases.toml` and
@@ -1273,20 +1284,21 @@ rule store, never on `Config`, so they are not layered config and not the
 two-edit `Config`/`ConfigLayer` trap. On every run, **already-off groups are
 excluded from lapse detection and notification entirely**: no comparison
 against their old digest, no replacement mode row, no lapse ledger row and
-no notice for them. An off group has no permission to revoke, and comparing
-its untouched row would report the same lapse on every run. A later owner
-raise binds to the current inputs. For the other groups the digest is
-recomputed; **if anything changed, each drops to `propose` or stays lower**
-— one lapse row per non-off action group. Each lapse row records the lower
-of *that group's* current effective mode and `propose`, so a lapse never
-raises anything: a group in `shadow` stays in `shadow`, a group under §6.4's
-failure brake stays braked, and a group in `auto` drops to `propose`. They
-are recorded as **lapse rows appended to `approvals.jsonl`**, as well as a
-ledger row (`approval lapsed: files changed`) for the page, and a notice.
-The approvals row is what makes it stick: with only a ledger row, reverting
-the edit would make the latest approval's digest match again and re-arm
-`auto` with no owner act, which §3 rules out. With the lapse as the latest
-row, a revert is inert. Re-approving is one action that shows the diff.
+no notice for them. `off` is an owner-only state that records nothing, so a
+lapse notice has nothing to protect; comparing its untouched row would
+report the same lapse on every run. A later owner raise binds to the current
+inputs. For the other groups the digest is recomputed; **if anything
+changed, each drops to `propose` or stays lower** — one lapse row per
+non-off action group. Each lapse row records the lower of *that group's*
+current effective mode and `propose`, so a lapse never raises anything: a
+group in `shadow` stays in `shadow`, a group under §6.4's failure brake
+stays braked, and a group in `auto` drops to `propose`. They are recorded as
+**lapse rows appended to `approvals.jsonl`**, as well as a ledger row
+(`approval lapsed: files changed`) for the page, and a notice. The approvals
+row is what makes it stick: with only a ledger row, reverting the edit would
+make the latest approval's digest match again and re-arm `auto` with no
+owner act, which §3 rules out. With the lapse as the latest row, a revert is
+inert. Re-approving is one action that shows the diff.
 
 That includes the owner's own edits and every non-off action group,
 mailbox-only rules too (R7). It is the simpler rule, the `hud_propose`
@@ -1425,7 +1437,11 @@ each lowers a group to the lower of its current mode and the brake's target,
 like a lapse, leaving an already-off group's row untouched (§6.1). Only the
 owner may write `off`; the two cap bullets change no mode and only stage.
 §4.2's list-entry cap never blocks a safety lowering: excess entries are
-held visibly rather than leaving a failed group in `auto`.
+held visibly rather than leaving a failed group in `auto`. A brake on one
+rule can therefore hold another rule out of evaluation under §4.2's cost to
+lose order. That rule shows `held: list cap` on its page and as `mecha
+doctor` attention, never a change to its mode: the hold is capacity, not a
+brake against that rule.
 
 - **Any automatic send is marked wrong** by the owner → **that send's group**
   to `propose`. Zero tolerance for sends.
@@ -1585,27 +1601,28 @@ zero match rate.
   gate-failing shadow rate is additionally labelled a **ceiling** (§4.2);
   both labels mean potential overstatement, with the ceiling naming the
   closed gate. Typed sends also face §5.3's grounding check. Recipient text,
-  notes and templates remain outside the match digest, so their edit or an
-  acknowledgement permitted by §9 preserves matching history unless the
-  applicable gate status changes. Adding, removing or changing the mode of a
-  send in a non-off group may change escalation across rules; each new row
-  records the evidence its verdict actually read. Shadow rows use the
-  reconciled union of grounded matches, with one would-have row per action
-  even if both results name the rule; active actions still require the
-  active `rule` selection (§4.2). Earlier ceiling rows stay visible after an
-  origin-gate transition (§4.2). Outcomes: `pending` (written before an
-  action executes, §4.4), `done`, `would have` (shadow), `offered` (a
-  proposed mailbox, record or Board action waiting in the mail desk or the
-  digest), `staged`, `held: rule cap` and `held: global cap` (§6.4), `held:
-  fate unknown` (a send interrupted mid-flight, §4.4), `sent`, `released
-  unchanged`, `edited`, `rejected`, `undone`, `expired` (§4.1), `failed:
-  <why>`, `skipped: <guard>`. One more row is not an action outcome and
-  touches no action's key: `approval lapsed: files changed` (§6.2), a
-  rule-level row for the page, reporting only non-off groups; an off group's
-  old digest triggers no lapse row or notice. It is listed here so the
-  unknown-outcome rule cannot mistake it for one. `skipped` rows are shown,
-  not hidden — a guard visibly firing is how the owner learns to trust the
-  guards.
+  notes and templates remain outside the match digest, so their edits
+  preserve matching history unless the applicable gate status changes.
+  Acknowledgement permitted by §9 excludes `to` and changes neither gate
+  status nor match digest, so it always preserves matching history. Adding,
+  removing or changing the mode of a send in a non-off group may change
+  escalation across rules; each new row records the evidence its verdict
+  actually read. Shadow rows use the reconciled union of grounded matches,
+  with one would-have row per action even if both results name the rule;
+  active actions still require the active `rule` selection (§4.2). Earlier
+  ceiling rows stay visible after an origin-gate transition (§4.2).
+  Outcomes: `pending` (written before an action executes, §4.4), `done`,
+  `would have` (shadow), `offered` (a proposed mailbox, record or Board
+  action waiting in the mail desk or the digest), `staged`, `held: rule cap`
+  and `held: global cap` (§6.4), `held: fate unknown` (a send interrupted
+  mid-flight, §4.4), `sent`, `released unchanged`, `edited`, `rejected`,
+  `undone`, `expired` (§4.1), `failed: <why>`, `skipped: <guard>`. One more
+  row is not an action outcome and touches no action's key: `approval
+  lapsed: files changed` (§6.2), a rule-level row for the page, reporting
+  only non-off groups; an off group's old digest triggers no lapse row or
+  notice. It is listed here so the unknown-outcome rule cannot mistake it
+  for one. `skipped` rows are shown, not hidden — a guard visibly firing is
+  how the owner learns to trust the guards.
 - **`held: list cap`** when §4.2 omits the rule, with the cap, entry count
   and demotions that would make room. It is an evaluation hold shown by
   `mecha doctor` too, not the ledger's closing `held` action outcome,
@@ -1718,23 +1735,21 @@ real and worth serving, and the safe shape exists already in
 
   And `to` is held to a stricter rule than words: **an outbound group may
   enter `auto` only when its `to` is `Owner` — written or edited by the
-  owner, or acknowledged only when `ModelClean` — never an address left as
-  proposed, even from a clean conversation.** `to` bounds where every
-  automatic forward and send lands, and a proposal writes the whole
-  `rule.toml`, so installation alone cannot count as adopting its
-  destination. The approval screen shows `to` first with its origin and
-  offers editing, with acknowledgement only for `ModelClean` text. A
-  `ModelUntrusted` destination requires an actual edit: recognising the
-  address does not defeat a lookalike domain, and a forward sends the whole
-  thread there.
+  owner, never an address left as proposed, even from a clean
+  conversation.** `to` bounds where every automatic forward and send lands.
+  Neither installation nor acknowledgement adopts it: recognising an address
+  does not defeat a lookalike domain whatever the conversation's taint, and
+  a forward sends the whole thread there. The approval screen shows `to`
+  first with its origin and offers editing, never acknowledgement.
 
-  **Acknowledgement adopts text only when its origin is `ModelClean`,
-  including an action's `to`.** Every `ModelUntrusted` field requires an
-  actual owner edit to become `Owner`, following `Reflexion::provenance`: an
-  edit makes the bytes partly the owner's, while acknowledgement makes none
-  of them so. The store records `Owner` for text the owner wrote, edited or
-  acknowledged within that scope, and otherwise keeps `ModelClean` or
-  `ModelUntrusted`, in `imagelib::Origin`'s terms.
+  **Acknowledgement adopts text only when its origin is `ModelClean`, and
+  never adopts `to`.** It remains available for `match.describe`, `note`,
+  templates and other non-recipient text. Every `ModelUntrusted` field
+  requires an actual owner edit to become `Owner`, following
+  `Reflexion::provenance`: an edit makes the bytes partly the owner's, while
+  acknowledgement makes none of them so. The store records `Owner` for text
+  the owner wrote, edited or acknowledged within that scope, and otherwise
+  keeps `ModelClean` or `ModelUntrusted`, in `imagelib::Origin`'s terms.
 
   **The provenance record and acknowledgement bind to `(rule, field,
   digest)`**, as defined in §3: this installed proposal's identity, the
@@ -1744,19 +1759,24 @@ real and worth serving, and the safe shape exists already in
   even under the same rule name. Acknowledgement records `Owner` without
   rewriting `rule.toml`; changed bytes cannot inherit it either. Only
   `Actor::Owner` may acknowledge, with the same registered-run refusal as
-  §6.1's raise gate, advisory without the sandbox, because adopting text can
-  unblock a standing permission to send. It does not itself raise a mode.
+  §6.1's raise gate, advisory without the sandbox, because a run must not
+  attribute its own proposed words to the owner. It does not itself raise a
+  mode or change the gate status.
 
   The gate admits `Owner` and `ModelClean` text **except for `to`, which
-  requires `Owner`**. In practice it holds the `ModelUntrusted` texts;
-  acknowledgement releases none of them. The approval screen names each text
-  holding the group back and offers editing, with acknowledgement only for
-  `ModelClean` text. The applicable gate status enters §4.2's match digest
-  directly: an edit or permitted acknowledgement that changes it from
-  failing to passing starts confirmed measurement for the groups the
-  confirmation pass decides, keeping the earlier ceiling visible apart.
-  Editing a recipient, note or template without changing the gate keeps
-  matching history, even though a file edit still lapses approval (§6.2).
+  requires `Owner`**. In practice it holds the `ModelUntrusted` texts and
+  every address left as proposed; acknowledgement releases none of them. The
+  approval screen names each text holding the group back and offers editing.
+  Other `ModelClean` text may be acknowledged, but that changes neither gate
+  status nor match digest. The applicable gate status enters §4.2's match
+  digest directly: an edit that changes it from failing to passing starts
+  confirmed measurement for the groups the confirmation pass decides,
+  keeping the earlier ceiling visible apart. Editing a recipient, note or
+  template without changing the gate keeps matching history, even though a
+  file edit still lapses approval (§6.2). The narrowed digest is what
+  preserves sibling groups' history when their gate status stays unchanged
+  after adopting `to`. Even if acknowledging an address were permitted, the
+  outbound gate transition would still reset that group's measurement.
   Shadow bounds when a proposed rule acts; this bounds what it may say.
 
 So "write me a rule that answers prerequisite questions with the usual
@@ -1841,6 +1861,20 @@ in `auto` (§5). The exception is `task`, which reaches a task run's prompt,
 so **P1 ships the caps over the Board group with it** (§5.4, §6.4): a header
 rule's automatic tasks are capped per rule and globally from the first day
 they can run, and named by the harness (§7).
+
+**P1 fixes the append-only wire format from its first row.** Every ledger
+row writes `verdict_input: not_applicable` (§4.2); every match-digest
+component is written, empty when absent, including P1's absent confirmation
+version. Every ledger row also writes `closes`, and each settlement row
+names the id of the `pending` row it settles (§8). Later readers must be
+able to separate old measurements and settle the right attempt without
+rewriting history, so these fields cannot wait for the classifier or sends.
+**P1 also ships both actor gates (§6.1):** raises require a positive
+`Actor::Owner` and otherwise are refused; writing `off` requires the same
+positive reading and otherwise clamps the target to `shadow`, with the CLI
+saying so and already-off groups left untouched. Rules already act in P1, so
+a run must neither raise its own permission nor erase the would-have record
+by switching it off.
 
 **P2 — the digest.** `mecha mail digest` and `digest ack`. Then the briefing
 swap, which is **an edit on the owner's machine, not in this repository**:
@@ -1959,9 +1993,9 @@ The rest are answered by measurement or by a decision made elsewhere:
 - **A rule that takes a recipient from the mail or from a model**, other
   than `reply`'s authenticated sender. A proposed `to` may be installed and
   used in `propose`, but reaches `auto` only once the owner has written or
-  edited it, or explicitly acknowledged it while `ModelClean` (§9). A
-  `ModelUntrusted` `to` needs an actual edit, because recognition alone does
-  not defeat a lookalike domain; installation never adopts the address.
+  edited it (§9). Even a `ModelClean` `to` needs an actual edit, because
+  recognition alone does not defeat a lookalike domain; installation and
+  acknowledgement never adopt the address.
 - **Auto-promotion, or a history-based promotion gate.** No rule moves up
   the ladder without the owner, no statistic moves it, and no history
   threshold stands between the owner and the switch either (R6). §4.2's
