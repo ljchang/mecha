@@ -265,14 +265,25 @@ struct Placed {
 
 /// The anchors that happen on `date`, each drawn against its chance, in
 /// start order: its weekday's from 4am on, and the next weekday's before
-/// 4am, which the day reaches into. Overlaps are settled by [`keep_first`].
+/// 4am, which the day reaches into, each in the month of the calendar day
+/// it starts on. Overlaps are settled by [`keep_first`].
 fn place_anchors(routine: &Routine, date: NaiveDate, draw: &mut Draw) -> Vec<Placed> {
     let today = date.weekday().num_days_from_monday();
+    let month = date.month();
+    let next_month = date.succ_opt().map_or(month, |d| d.month());
     let mut placed: Vec<Placed> = Vec::new();
     for a in &routine.anchors {
-        for (weekday, offset) in [(today, 0), ((today + 1) % 7, MINUTES_PER_DAY)] {
+        for (weekday, offset, month) in [
+            (today, 0, month),
+            ((today + 1) % 7, MINUTES_PER_DAY, next_month),
+        ] {
             let start = a.start + offset;
             if !a.on(weekday) || !(DAY_START..DAY_END).contains(&start) {
+                continue;
+            }
+            // Out of its months it is not on that day at all, as on a
+            // weekday it does not name: no draw is spent on it.
+            if !a.in_month(month) {
                 continue;
             }
             // Drawn even at a chance of 1, so one anchor's chance never
@@ -605,6 +616,45 @@ mod tests {
         }
         let rate = f64::from(runs as u32) / f64::from(days);
         assert!((0.38..=0.62).contains(&rate), "the run happened {rate}");
+    }
+
+    #[test]
+    fn a_seasonal_anchor_is_placed_only_in_its_months() {
+        let r = routine::parse(
+            "cell = \"student\"\n\
+             [[anchor]]\nwhat = \"rowing\"\nactivity = \"exercise\"\ndays = [\"daily\"]\nat = \"16:00\"\nminutes = 90\nmonths = [\"sep\", \"oct\"]\n",
+        )
+        .unwrap();
+        let mut d = date("2026-08-25");
+        for _ in 0..80 {
+            let day = sample(table(), Cell::Student, &r, "mara", d);
+            let rowed = day
+                .stretches
+                .iter()
+                .any(|s| s.anchor.as_deref() == Some("rowing"));
+            assert_eq!(rowed, matches!(d.month(), 9 | 10), "{d}");
+            d = d.succ_opt().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_seasonal_anchor_after_midnight_keeps_the_month_of_the_day_it_starts_on() {
+        // 01:00 belongs to the evening before's day, but holds to the month
+        // of the calendar day it starts on.
+        let r = routine::parse(
+            "cell = \"student\"\n\
+             [[anchor]]\nwhat = \"night shift\"\nactivity = \"work\"\ndays = [\"daily\"]\nat = \"01:00\"\nminutes = 60\nmonths = [\"oct\"]\n",
+        )
+        .unwrap();
+        let shifted = |day: &str| {
+            sample(table(), Cell::Student, &r, "mara", date(day))
+                .stretches
+                .iter()
+                .any(|s| s.anchor.as_deref() == Some("night shift"))
+        };
+        assert!(shifted("2026-09-30"), "starts on Oct 1");
+        assert!(shifted("2026-10-30"), "starts on Oct 31");
+        assert!(!shifted("2026-10-31"), "would start on Nov 1");
     }
 
     #[test]

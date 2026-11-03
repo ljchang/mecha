@@ -883,13 +883,32 @@ export function cellBody(cell, data, date, token = null) {
 // The body of the owner's doors to a waiting draft: the draft's digest as
 // the page was shown it (approve, edit), the owner's text (edit), and the
 // week on screen.
-export function draftBody(data, date, token = null, text = undefined) {
+export function draftBody(data, date, token = null, text = undefined, notes = undefined) {
   return {
     digest: data?.routine?.draft?.digest ?? '',
     text,
+    notes,
     date: date ?? undefined,
     unlock: token ?? undefined,
   };
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// The months a seasonal anchor runs in (1 = January), said shortly: '' for
+// all year or none given, a span for a run of months (one that wraps the new
+// year too, Nov–Feb), and a list otherwise.
+export function monthsLine(months) {
+  const set = new Set((months ?? []).filter((m) => m >= 1 && m <= 12));
+  if (set.size === 0 || set.size === 12) return '';
+  // Start the run just after a month it leaves out, so a span across the
+  // new year reads in order.
+  let first = 1;
+  while (!(set.has(first) && !set.has(first === 1 ? 12 : first - 1))) first += 1;
+  const order = Array.from({ length: 12 }, (_, i) => ((first - 1 + i) % 12) + 1).filter((m) => set.has(m));
+  const span = order.every((m, i) => i === 0 || m === (order[i - 1] % 12) + 1);
+  if (span && order.length > 2) return `${MONTH_NAMES[order[0] - 1]}–${MONTH_NAMES[order.at(-1) - 1]}`;
+  return order.map((m) => MONTH_NAMES[m - 1]).join(', ');
 }
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -909,7 +928,8 @@ export function anchorLine(a) {
   const activity = String(a.activity ?? '').replace(/_/g, ' ');
   const name = a.what && a.what !== a.activity ? `${a.what} (${activity})` : activity;
   const often = a.chance >= 1 ? 'always' : `${Math.round(a.chance * 100)}% of weeks`;
-  return `${when} ${dayClock(a.start_minute)}–${dayClock(end)}${nextDay} · ${name} · ${often}`;
+  const season = monthsLine(a.months);
+  return `${when} ${dayClock(a.start_minute)}–${dayClock(end)}${nextDay} · ${name} · ${often}${season ? ` · ${season}` : ''}`;
 }
 
 // Her people (PERSONA-LIFE-DESIGN §6, §15). The closed sets the page offers,

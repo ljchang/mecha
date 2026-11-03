@@ -210,9 +210,14 @@ pub enum RoutineCmd {
     },
     /// Drop the waiting draft; the routine is untouched.
     Discard { name: String },
-    /// Have their own model draft their week from identity.md and
-    /// motivation.md, as a draft waiting on you beside their routine.
+    /// Have their own model draft their week from identity.md,
+    /// motivation.md and your notes, as a draft waiting on you beside their
+    /// routine.
     Draft { name: String },
+    /// Edit your notes for the drafter (routine.notes.md) in $EDITOR: the
+    /// week's fixed points in your own words, such as a class's days and
+    /// hours or a sport's season. Only the drafter reads them.
+    Notes { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1786,6 +1791,7 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                     "cell": parsed.as_ref().ok().and_then(|r| r.as_ref()).and_then(|r| r.cell).map(|c| c.id()),
                     "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
                     "draft": texts.draft,
+                    "notes": texts.notes,
                     "activities": Activity::ALL.iter().map(|a| a.id()).collect::<Vec<_>>(),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
@@ -1815,6 +1821,12 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                      `mecha persona routine approve {name}` makes it the routine; \
                      `discard` drops it.",
                     draft.trim()
+                );
+            }
+            if let Some(notes) = texts.notes.as_deref().filter(|n| !n.trim().is_empty()) {
+                println!(
+                    "\n── routine.notes.md (what the drafter is told) ──\n{}",
+                    notes.trim()
                 );
             }
             let ids: Vec<&str> = Activity::ALL.iter().map(|a| a.id()).collect();
@@ -1871,6 +1883,26 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                     },
                     if draft { " --draft" } else { "" },
                 ),
+            }
+        }
+        RoutineCmd::Notes { name } => {
+            let name = named(&name)?;
+            let path = routine::ensure_notes(dir, &name)?;
+            edit_file(&path)?;
+            // Read back through the store's door: trimmed, checked, and a
+            // blank file removed. A save that cannot be read is an error,
+            // never blank: blank would delete the notes.
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {} back", path.display()))?;
+            routine::write_notes(dir, &name, &text).with_context(|| {
+                format!("the notes were saved but are refused; `mecha persona routine notes {name}` to fix them")
+            })?;
+            if text.trim().is_empty() {
+                println!("No notes: the drafter works from identity.md and motivation.md alone.");
+            } else {
+                println!(
+                    "Saved. `mecha persona routine draft {name}` drafts their week with them."
+                );
             }
         }
         RoutineCmd::Approve { name, yes } => {
