@@ -140,6 +140,21 @@ fn s(item: Option<&Item>) -> Option<String> {
 pub fn read_form(text: &str) -> Result<FormEdit> {
     let doc: DocumentMut = text.parse().context("parsing the manifest")?;
     let title = s(doc.get("title")).context("the manifest has no title")?;
+    // Shapes the editor cannot set in place are refused at the read, with
+    // the reason, as `instrument::read_hours` refuses an inline hours table:
+    // read as absent, a save would delete them.
+    if doc
+        .get("confirmation")
+        .is_some_and(|i| i.as_table().is_none())
+    {
+        bail!("[confirmation] is written inline here; edit this form as TOML");
+    }
+    if doc
+        .get("fields")
+        .is_some_and(|i| i.as_array_of_tables().is_none())
+    {
+        bail!("the fields are written inline here, not as [[fields]]; edit this form as TOML");
+    }
     let confirmation = doc.get("confirmation").and_then(Item::as_table);
     let mut fields = Vec::new();
     if let Some(list) = doc.get("fields").and_then(Item::as_array_of_tables) {
@@ -541,6 +556,24 @@ expect_reply_within = "a week"
         assert_ne!(tables, FORM);
         let err = read_form(&tables).unwrap_err().to_string();
         assert!(err.contains("as TOML"), "{err}");
+    }
+
+    #[test]
+    fn inline_confirmation_or_fields_are_refused_at_the_read_not_deleted_at_the_save() {
+        let inline_conf = FORM.replace(
+            "[confirmation]\nheading = \"Thanks\"\nbody = \"I'll write back.\"\nexpect_reply_within = \"a week\"\n",
+            "confirmation = { heading = \"Thanks\", body = \"I'll write back.\" }\n",
+        );
+        assert_ne!(inline_conf, FORM);
+        // An inline table at the end of a document is a top-level key only
+        // before the first [table]; put it there so it parses as written.
+        let inline_conf = inline_conf.replacen(
+            "title = \"Request a meeting\"\n",
+            "title = \"Request a meeting\"\nconfirmation = { heading = \"Thanks\", body = \"I'll write back.\" }\n",
+            1,
+        ).replace("[verification]\nfield = \"requester_email\"\n\nconfirmation = { heading = \"Thanks\", body = \"I'll write back.\" }\n", "[verification]\nfield = \"requester_email\"\n");
+        let err = read_form(&inline_conf).unwrap_err().to_string();
+        assert!(err.contains("inline"), "{err}");
     }
 
     #[test]

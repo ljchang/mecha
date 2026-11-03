@@ -843,9 +843,11 @@ pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Respons
                 "html": preview_html(page["html"].as_str().unwrap_or(""), page["style"].as_str().unwrap_or("")),
                 // `true`, or why the box would refuse to serve it (and
                 // Publish fail): the page says so beside the preview.
-                // Absent (a factory-publish predating the field) is unknown,
-                // never "publishable": the page says the box did not answer.
-                "servable": page.get("servable").cloned().unwrap_or(serde_json::Value::Null),
+                // A boolean beside its reason (mecha-factory#27). Absent — a
+                // factory-publish predating it — is unknown, never
+                // "publishable": the page says the factory did not answer.
+                "servable": page.get("servable").and_then(|v| v.as_bool()),
+                "refusal": page.get("refusal").and_then(|v| v.as_str()),
             }))
             .into_response(),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
