@@ -975,21 +975,36 @@ fn claim_serializes_the_key_check_and_allows_sibling_actions_in_one_occasion() {
         Utc::now(),
     )
     .unwrap();
-    assert!(store.claim_actions(&[first.clone(), task.clone()]).unwrap());
-    assert!(!store
-        .claim_actions(&[row(&rule, Outcome::Pending)])
-        .unwrap());
+    let claims = store.claim_actions(&[first.clone(), task.clone()]).unwrap();
+    assert_eq!(claims.len(), 2);
+    assert!(claims
+        .iter()
+        .all(|claim| claim.status == ClaimStatus::Claimed));
+    assert_eq!(
+        store
+            .claim_actions(&[row(&rule, Outcome::Pending)])
+            .unwrap()[0]
+            .status,
+        ClaimStatus::MessageClosed
+    );
     let settled = first
         .settled(Outcome::Failed, "interrupted", Utc::now())
         .unwrap();
     store.append_ledger(&settled).unwrap();
-    assert!(store
-        .claim_actions(&[row(&rule, Outcome::Pending)])
-        .unwrap());
+    assert_eq!(
+        store
+            .claim_actions(&[row(&rule, Outcome::Pending)])
+            .unwrap()[0]
+            .status,
+        ClaimStatus::Claimed
+    );
     let mut later_task = task;
     later_task.id = "another-attempt".into();
     later_task.message.provider_message_id = "new-message".into();
-    assert!(!store.claim_actions(&[later_task]).unwrap());
+    assert_eq!(
+        store.claim_actions(&[later_task]).unwrap()[0].status,
+        ClaimStatus::ThreadClosed
+    );
 }
 
 #[test]
@@ -1034,7 +1049,7 @@ fn concurrent_queue_rewrites_keep_both_entries_and_concurrent_claims_have_one_wi
     let winners = handles
         .into_iter()
         .map(|handle| handle.join().unwrap())
-        .filter(|won| *won)
+        .filter(|claims| claims[0].status == ClaimStatus::Claimed)
         .count();
     assert_eq!(winners, 1);
 }
@@ -1617,9 +1632,13 @@ fn unreadable_action_verb_closes_the_original_message_key() {
             .unwrap();
             let rows = store.ledger().unwrap();
             assert!(message_closed(&rows, &key(&original)));
-            assert!(!store
-                .claim_actions(&[row(&rule, Outcome::Pending)])
-                .unwrap());
+            assert_eq!(
+                store
+                    .claim_actions(&[row(&rule, Outcome::Pending)])
+                    .unwrap()[0]
+                    .status,
+                ClaimStatus::MessageClosed
+            );
             let mut other = key(&original);
             other.provider_message_id = "provider-beta".into();
             assert!(!message_closed(&rows, &other));
@@ -1806,9 +1825,13 @@ fn deferred_settlement_preserves_concurrently_enqueued_snapshots() {
     worker.enqueue(&entry).unwrap();
     let observed = worker.deferred().unwrap().remove(0);
     let pending = row(&rule, Outcome::Pending);
-    assert!(worker
-        .claim_actions(std::slice::from_ref(&pending))
-        .unwrap());
+    assert_eq!(
+        worker
+            .claim_actions(std::slice::from_ref(&pending))
+            .unwrap()[0]
+            .status,
+        ClaimStatus::Claimed
+    );
     let completed = pending
         .settled(Outcome::Done, "fictional task created", Utc::now())
         .unwrap();
@@ -1935,7 +1958,10 @@ fn deferred_settlement_retries_exact_rows_and_removes_only_matching_snapshots() 
         actions: vec![snapshot, concurrent.clone()],
     };
     store.enqueue(&entry).unwrap();
-    assert!(store.claim_actions(std::slice::from_ref(&pending)).unwrap());
+    assert_eq!(
+        store.claim_actions(std::slice::from_ref(&pending)).unwrap()[0].status,
+        ClaimStatus::Claimed
+    );
     let done = pending
         .settled(Outcome::Done, "fictional completion", Utc::now())
         .unwrap();
@@ -2159,4 +2185,154 @@ fn enqueue_returns_the_effective_entry_id_for_settlement() {
     assert_eq!(remaining[0].id, entry.id);
     assert_eq!(remaining[0].actions.len(), 1);
     assert_eq!(remaining[0].actions[0].id, snapshot.id);
+}
+
+#[test]
+fn closed_sibling_does_not_block_an_interrupted_action_retry() {
+    for retry_verb in [ActionVerb::Archive, ActionVerb::Tag] {
+        for reverse in [false, true] {
+            let home = Home::new();
+            let store = home.store();
+            let rule = install(
+                &store,
+                &text("[[action]]\ndo='archive'\n[[action]]\ndo='tag'\ntag='fictional'\n"),
+            );
+            let now = Utc::now();
+            let mut pending: Vec<_> = (0..rule.actions.len())
+                .map(|index| {
+                    LedgerRow::header(
+                        &rule,
+                        index,
+                        message(),
+                        Mode::Auto,
+                        GateStatus::Passing,
+                        Outcome::Pending,
+                        now,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            if reverse {
+                pending.reverse();
+            }
+            store.claim_actions(&pending).unwrap();
+            for action in &pending {
+                let settlement = if action.action.verb == retry_verb {
+                    action
+                        .interrupted(now + Duration::minutes(2), Duration::minutes(1))
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    action
+                        .settled(Outcome::Done, "fictional action completed", now)
+                        .unwrap()
+                };
+                store.append_ledger(&settlement).unwrap();
+            }
+            let retry: Vec<_> = pending
+                .iter()
+                .map(|action| {
+                    let mut next = action.clone();
+                    next.id = uuid::Uuid::new_v4().to_string();
+                    next
+                })
+                .collect();
+            let claims = store.claim_actions(&retry).unwrap();
+            assert_eq!(claims.len(), retry.len());
+            for (action, claim) in retry.iter().zip(&claims) {
+                assert_eq!(claim.pending_id, action.id);
+                assert_eq!(claim.action, action.action);
+                assert_eq!(
+                    claim.status,
+                    if action.action.verb == retry_verb {
+                        ClaimStatus::Claimed
+                    } else {
+                        ClaimStatus::MessageClosed
+                    }
+                );
+            }
+            let rows = store.ledger().unwrap();
+            for action in &retry {
+                assert_eq!(
+                    rows.iter().any(|row| row.id == action.id),
+                    action.action.verb == retry_verb,
+                    "only the interrupted action's open key should be claimed"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn closed_thread_skips_outbound_and_board_but_not_open_mailbox_actions() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &text("[[action]]\ndo='archive'\n[[action]]\ndo='tag'\ntag='fictional'\n[[action]]\ndo='task'\n[[action]]\ndo='forward'\nto=['records@example.edu']\n"));
+    let now = Utc::now();
+    let pending: Vec<_> = (0..rule.actions.len())
+        .map(|index| {
+            LedgerRow::header(
+                &rule,
+                index,
+                message(),
+                Mode::Auto,
+                GateStatus::Passing,
+                Outcome::Pending,
+                now,
+            )
+            .unwrap()
+        })
+        .collect();
+    let claims = store.claim_actions(&pending).unwrap();
+    assert_eq!(claims.len(), pending.len());
+    assert!(claims
+        .iter()
+        .all(|claim| claim.status == ClaimStatus::Claimed));
+    for action in &pending {
+        let settlement = if action.action.verb == ActionVerb::Archive {
+            action
+                .interrupted(now + Duration::minutes(2), Duration::minutes(1))
+                .unwrap()
+                .unwrap()
+        } else {
+            action
+                .settled(Outcome::Done, "fictional action completed", now)
+                .unwrap()
+        };
+        store.append_ledger(&settlement).unwrap();
+    }
+    for provider_message_id in ["provider-alpha", "provider-beta"] {
+        let next: Vec<_> = pending
+            .iter()
+            .map(|action| {
+                let mut next = action.clone();
+                next.id = uuid::Uuid::new_v4().to_string();
+                next.message.provider_message_id = provider_message_id.into();
+                next
+            })
+            .collect();
+        let claims = store.claim_actions(&next).unwrap();
+        assert_eq!(claims.len(), next.len());
+        for (action, claim) in next.iter().zip(&claims) {
+            assert_eq!(claim.pending_id, action.id);
+            assert_eq!(claim.action, action.action);
+            let expected = if action.group.once_per_thread() {
+                ClaimStatus::ThreadClosed
+            } else if action.action.verb == ActionVerb::Tag
+                && provider_message_id == "provider-alpha"
+            {
+                ClaimStatus::MessageClosed
+            } else {
+                ClaimStatus::Claimed
+            };
+            assert_eq!(claim.status, expected);
+        }
+        let rows = store.ledger().unwrap();
+        for action in &next {
+            let open = action.action.verb == ActionVerb::Archive
+                || (action.action.verb == ActionVerb::Tag
+                    && provider_message_id == "provider-beta");
+            assert_eq!(rows.iter().any(|row| row.id == action.id), open);
+        }
+    }
 }

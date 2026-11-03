@@ -12,6 +12,21 @@ pub struct RuleStore {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimStatus {
+    Claimed,
+    MessageClosed,
+    ThreadClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionClaim {
+    /// Correlates this result with the supplied pending row, even when skipped.
+    pub pending_id: String,
+    pub action: ActionIdentity,
+    pub status: ClaimStatus,
+}
+
 struct StoreLock {
     _file: File,
 }
@@ -695,9 +710,11 @@ impl RuleStore {
     }
 
     /// Claim one occasion's actions under the same lock as the key lookup.
-    /// Sibling actions share the pre-claim thread check, so one task does not
-    /// suppress another action in the same occasion. False means already handled.
-    pub fn claim_actions(&self, pending: &[LedgerRow]) -> Result<bool> {
+    /// Returns one result per supplied row, in input order. Closed message keys
+    /// skip only that action; a closed thread skips all outbound/Board actions.
+    /// All decisions use the same pre-claim snapshot, so newly claimed siblings
+    /// cannot suppress each other. Only claimed pending rows are appended.
+    pub fn claim_actions(&self, pending: &[LedgerRow]) -> Result<Vec<ActionClaim>> {
         let first = pending.first().context("no actions to claim")?;
         let mut ids = BTreeSet::new();
         let mut identities = BTreeSet::new();
@@ -726,31 +743,46 @@ impl RuleStore {
                 !rows.iter().any(|old| old.id == row.id),
                 "duplicate ledger row id"
             );
-            if message_closed(
-                &rows,
-                &MessageKey {
-                    rule: row.rule.clone(),
-                    account: row.message.account.clone(),
-                    provider_message_id: row.message.provider_message_id.clone(),
-                    action: row.action.clone(),
-                },
-            ) || (row.group.once_per_thread()
-                && thread_closed(
+        }
+        let occasion_closed = thread_closed(
+            &rows,
+            &ThreadKey {
+                rule: first.rule.clone(),
+                account: first.message.account.clone(),
+                thread_id: first.message.thread_id.clone(),
+            },
+        );
+        let claims: Vec<_> = pending
+            .iter()
+            .map(|row| {
+                let status = if row.group.once_per_thread() && occasion_closed {
+                    ClaimStatus::ThreadClosed
+                } else if message_closed(
                     &rows,
-                    &ThreadKey {
+                    &MessageKey {
                         rule: row.rule.clone(),
                         account: row.message.account.clone(),
-                        thread_id: row.message.thread_id.clone(),
+                        provider_message_id: row.message.provider_message_id.clone(),
+                        action: row.action.clone(),
                     },
-                ))
-            {
-                return Ok(false);
+                ) {
+                    ClaimStatus::MessageClosed
+                } else {
+                    ClaimStatus::Claimed
+                };
+                ActionClaim {
+                    pending_id: row.id.clone(),
+                    action: row.action.clone(),
+                    status,
+                }
+            })
+            .collect();
+        for (row, claim) in pending.iter().zip(&claims) {
+            if claim.status == ClaimStatus::Claimed {
+                self.append("ledger.jsonl", row)?;
             }
         }
-        for row in pending {
-            self.append("ledger.jsonl", row)?;
-        }
-        Ok(true)
+        Ok(claims)
     }
 
     fn append_ledger_locked(&self, row: &LedgerRow) -> Result<()> {
