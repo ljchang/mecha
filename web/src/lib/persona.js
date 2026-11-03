@@ -872,6 +872,22 @@ export const WEEK_CELLS = [
   ['retired', 'Retired'],
 ];
 
+// The owner-written constraints on the sampled filler, in one read-only
+// line under the kind-of-week picker. A missing file gets its command in
+// the component, where the persona's name is available.
+export function lifeLine(life) {
+  if (!life) return '';
+  if (life.error) return `life.toml does not load: ${life.error}`;
+  const parts = [];
+  if (life.alone) parts.push('Lives alone');
+  else if (life.household?.length) {
+    parts.push(`Lives with ${life.household.map((h) => `${h.person} (${h.relation})`).join(', ')}`);
+  } else parts.push('Household not named');
+  if (life.sleep) parts.push(`usually sleeps ${life.sleep.bed}–${life.sleep.wake}`);
+  if (life.never?.length) parts.push(`never ${life.never.map((a) => a.replace(/_/g, ' ')).join(', ')}`);
+  return parts.join(' · ');
+}
+
 // The body of the owner's cell pick: the cell, the routine's digest as the
 // page was shown it, and the week on screen. A cell the server does not
 // draw is refused here, so the page can never send one.

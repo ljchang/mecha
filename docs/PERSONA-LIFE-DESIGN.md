@@ -704,6 +704,18 @@ replay can recompute it. **Traits move the numbers**, never just the prose
 (§2.4): an adventurous persona's novelty weight, an athlete's workout slots,
 a night owl's shifted sleep.
 
+**As built (life profile):** `life.toml` is an optional owner-written file
+beside the routine. It names who is in the household by a People-tab name
+and a closed relation, an optional usual bedtime and wake time, and
+activities filler may never draw. With no file the existing ATUS draw is
+byte-for-byte unchanged. With one, household kinds not named there are
+dropped, caring needs a child, parent or partner, forbidden activities are
+removed before transition weights are normalised, and the usual night keeps
+sleep within its stated windows while routine anchors still win. The file's
+text is one of today's sampled inputs, so an edit redraws today and later but
+never rewrites a stored past day; a today-block names a kept household member
+rather than announcing a relation borrowed from a stranger's diary.
+
 ### 4.3 The storyteller and the director
 
 **Storylets** are small authored events with preconditions over state and
