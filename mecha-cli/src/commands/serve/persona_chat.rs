@@ -91,12 +91,14 @@ fn teller_lines(
 }
 
 /// The owner-written weather place as it stands now. Unlike the `events`
-/// switch, this is not part of a chat's pinned tool/block shape; a load
-/// failure returns no place rather than reviving the pinned value.
-fn live_weather_place(store: &Path, name: &str) -> Option<String> {
+/// switch, this is not part of a chat's pinned tool/block shape. `None`
+/// when the persona could not be read now: unknown, never "no place", or a
+/// mid-save `persona.toml` would read as a removed place and clear the
+/// weather (review of #836).
+fn live_weather_place(store: &Path, name: &str) -> Option<Option<String>> {
     Store::load(store)
         .get(name)
-        .and_then(|p| p.settings.life.place.clone())
+        .map(|p| p.settings.life.place.clone())
 }
 
 /// Run one refresh from a blocking-pool thread. The runtime handle still
@@ -5004,8 +5006,20 @@ impl PersonaChats {
                     .await
                     .ok()
                     .flatten();
-                refresh_weather_in_background(&self.store, &name, place.as_deref(), at.date())
-                    .await;
+                match place {
+                    Some(place) => {
+                        refresh_weather_in_background(
+                            &self.store,
+                            &name,
+                            place.as_deref(),
+                            at.date(),
+                        )
+                        .await
+                    }
+                    None => tracing::warn!(
+                        "persona {name}: their settings did not read now; weather left as it is"
+                    ),
+                }
             }
             // The day and the teller read the store and draw days (up to a
             // month of sampler draws and SQLite writes on a first walk), so
@@ -10020,9 +10034,12 @@ mod tests {
             "the snapshot stays old"
         );
         assert_eq!(
-            live_weather_place(&store, "mara").as_deref(),
-            Some("Springfield, Illinois")
+            live_weather_place(&store, "mara"),
+            Some(Some("Springfield, Illinois".to_string()))
         );
+        // A persona.toml that does not read now is unknown, never no place.
+        std::fs::write(store.join("mara").join("persona.toml"), "not = [toml").unwrap();
+        assert_eq!(live_weather_place(&store, "mara"), None);
     }
 
     /// The CLI teller wrapper asks story::story for today and, before noon,

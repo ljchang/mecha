@@ -717,9 +717,20 @@ impl From<Weather> for WeatherOut {
 }
 
 /// What a day's events were drawn from, as one digest.
-fn inputs(deck_text: &str, day_digest: &str, people: &[Castable], severe_open: bool) -> String {
+fn inputs(
+    deck_text: &str,
+    day_digest: &str,
+    people: &[Castable],
+    severe_open: bool,
+    has_weather: bool,
+) -> String {
     let mut h = Sha256::new();
     h.update(STORY_VERSION.as_bytes());
+    h.update([0]);
+    // Whether the day had weather, never what it was: the first forecast
+    // redraws a day drawn weather-blind once, so a weather-gated storylet
+    // can fire, and a later refresh changes nothing told (review of #836).
+    h.update(if has_weather { b"weather" } else { b"noweath" });
     h.update([0]);
     // `[life] intensity`: flipping it redraws today, so a severe event
     // never outlives the switch that allowed it (review of #814).
@@ -836,6 +847,7 @@ pub fn story(
                         &format!("{:?}", day.stretches),
                         &people,
                         severe_open,
+                        weather.is_some(),
                     );
                     if let Some((sd, _)) = stored.filter(|(_, was)| *was == digest) {
                         Some(sd)
@@ -1385,11 +1397,35 @@ cooldown = 0
                 "the past is what it was"
             );
         }
+        // Today was drawn weather-blind, so its first forecast may redraw it
+        // once (a weather-gated storylet can fire); a later change of the
+        // forecast changes nothing told (review of #836).
+        let mut w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        w.set_weather(&[Weather {
+            date: today,
+            sky: Sky::Clear,
+            high_c: 12,
+            low_c: 3,
+        }])
+        .unwrap();
+        drop(w);
+        let later = story(&dir, "mara", from, today, today).unwrap().days;
         assert_eq!(
+            (&later[6].events, later[6].morning, later[6].evening),
             (&again[6].events, again[6].morning, again[6].evening),
-            (&week[6].events, week[6].morning, week[6].evening),
-            "weather alone never redraws today's story"
+            "a changed forecast never redraws today's story"
         );
+        assert_eq!(later[6].weather.map(|w| w.sky), Some(Sky::Clear));
+        // Put the snow back, so the checks below read the day as before.
+        let mut w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        w.set_weather(&[Weather {
+            date: today,
+            sky: Sky::Snow,
+            high_c: -2,
+            low_c: -9,
+        }])
+        .unwrap();
+        drop(w);
         assert_eq!(
             again[0].weather,
             Some(WeatherOut {

@@ -781,8 +781,10 @@ chats.
 - **Storage:** seeded per persona per day; stored in `world.db` version 3
   (`story_days`, `events`) up to today; today redrawn when the deck, her day,
   intensity, director version or castable people change, and the past kept.
-  Weather gates the first draw, but a later forecast changes only the weather
-  shown; it does not redraw the day's events or levels.
+  Whether a day had weather is an input, never what it was: a day drawn
+  before its first forecast is redrawn once when one arrives, so a
+  weather-gated storylet can fire, and a later forecast changes only the
+  weather shown, never the day's events or levels.
 - **Weather** is pulled ahead from §8.2's shelf A, at the owner's word:
   - `[life] place` is a town and its state or country. The harness resolves
     it through Open-Meteo's geocoder, caches the coordinates and the label
