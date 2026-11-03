@@ -447,10 +447,12 @@ lapses the digest (§6.2), and restarts the measurement, confirmed from then
 on, against the words that will actually run: **a group's would-have rate is
 computed only over rows written under its current *match digest*** — the
 part of §6.2's digest that can change what the rate *means*: the rule's own
-directory, plus the §4.2 confirmation version **for the rules it can
-affect** (those with an outbound action or a `task`), so a release that
-changes it resets only those rules and a mailbox-only rule keeps its week of
-measurement. Rows from an earlier match digest are shown apart on the rule
+directory, plus — for a **description** rule's groups that the confirmation
+pass actually decides (an outbound action or a `task`, and only while the
+rule's text passes §9's gate) — the §4.2 confirmation version. So a release
+that changes it resets only those groups; a header rule, a gate-failing
+rule's ceiling and a mixed rule's mailbox-only groups each keep their week
+of measurement. The match digest is computed per group, as the rate is. Rows from an earlier match digest are shown apart on the rule
 page (§8), never mixed into the number the owner approves against, under a
 heading that says why: *measured under an earlier build*, or *before your
 edit*. The §5.3 extraction version is **not** in it: shadow runs no
@@ -719,8 +721,9 @@ integrity rather than leakage: someone mails the owner a fake invoice that
 matches the rule, and it reaches finance carrying the owner's name. With no
 notice on the message, the control moves to what is allowed to trigger one:
 **an automatic forward or send needs the triggering message to pass DMARC
-aligned with its `From`**, the same check §5.4 puts on replies, and anything
-that fails goes to `propose`. That stops the forged-sender invoice — and
+aligned with its `From`**, the same check §5.4 puts on replies, and a message
+that fails stages in the outbox with the DMARC guard as its row's reason (a
+per-message demotion, §5.4). That stops the forged-sender invoice — and
 only that. **DMARC is authentication, not authorisation**: anyone who owns a
 domain passes it for their own mail, so on its own it admits any stranger with
 a plausible invoice, and the §4.2 confirmation pass would agree, because the
@@ -777,8 +780,9 @@ party.
    `email` (a single address that parses, else the field fails). A type added
    later states its rule too.
 2. **Every value is grounded**: its source words must appear in the message
-   (the `deadline_quote` rule). An ungrounded field fails the send, which
-   falls back to `propose` with the reason on the ledger row.
+   (the `deadline_quote` rule). An ungrounded field fails the unattended
+   send: it stages in the outbox, with the ungrounded field as the row's
+   reason — a per-message demotion (§5.4), not a hold on the rule.
 3. The harness renders the owner's template with the values. **The subject
    is part of the template** — `receipt.md` starts with a `Subject:` line the
    owner writes, which may use the same field slots, and reaches the provider
@@ -1310,9 +1314,9 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
 - **The ledger**: one row per action — when, which message (sender and
   subject, opening in the reader), matched because (header key, or the
   grounded `rule_quote`), the action, the mode it ran in, **the match digest
-  in force when the row was written** (§4.2: the rule's directory and, for
-  rules with an outbound action or a `task`, the compiled confirmation
-  version), and the outcome. It is what lets the page
+  in force for the row's group when it was written** (§4.2: the rule's
+  directory and, for a description rule's confirmed groups, the compiled
+  confirmation version), and the outcome. It is what lets the page
   compute a group's would-have rate over the current match digest only and
   show rows from an earlier match digest apart, under a dated
   heading, never counted into the rate; a gate-failing shadow rule's rate is
@@ -1367,7 +1371,9 @@ duplicate send, which is irreversible, while the opposite error (an older
 reader treating a thread as handled) is visible as `unknown` on the page and
 in `mecha doctor`. That inert-in-an-older-build cost is accepted, as Outlook
 sends staying in `propose` is elsewhere. **A `pending` row's `closes: true`
-holds only until its settlement row exists**: then the settlement row's own
+holds only until its settlement row exists** — a settlement row names the
+id of the `pending` row it settles, so a second `pending` under the same
+key after a reopen is never mistaken for the first one's settled state: then the settlement row's own
 `closes` decides, as §4.4 has it, so a Mailbox `failed: interrupted` reopens
 the key while an outbound `held: fate unknown` keeps it closed — and a
 settlement row an older reader cannot read closes the key. One boolean serves both of §4.4's
