@@ -292,7 +292,10 @@ owed on threads the window no longer returns), here met with a queue because
 there is no earlier record to walk. A queued thread is evaluated and its
 deferred actions run whether or not it is still in the window. **The queue
 exists so `classify` re-evaluates the thread, and an entry leaves once it
-has**: each deferred action is then executed (`done`), offered to the owner
+has**: each deferred action is then settled with the outcome its own group
+uses — `done` for a mailbox or record action, `sent` / `staged` / `held` for
+an outbound one, so §4.4's per-thread key sees an outbound settlement and a
+second message in the thread never forwards again — or offered to the owner
 (`offered` — a `propose`-mode action now waiting in the mail desk, which
 carries it from there and counts in `backlog.rs`), staged, skipped, or
 failed. A thread that cannot be read is a `failed: thread unreadable` row,
@@ -408,10 +411,12 @@ this is built, `learnable()`'s comment gains one sentence naming the
 confirmation pass as the reason the premise still holds, so the next reader
 inherits a true argument. The cost is one extra call per *send or task
 candidate*, not per thread — a small fraction of mail. Rules whose actions
-are only in the **Mailbox and Private record groups** (§5's table: `archive`,
-`read`, `unread`, `trash`, `spam`, `tag`, `digest` — not `task`) keep
-matching in the main pass alone, learned rules and all: their worst case is a
-reversible archive shown in the digest (§5.5, §7).
+are only in the **Mailbox, Private record and Report groups** (§5's table:
+`archive`, `read`, `unread`, `trash`, `tag`, `digest`, and `spam` — not
+`task`) keep matching in the main pass alone, learned rules and all: their
+worst case is a reversible archive shown in the digest (§5.5, §7), since
+`spam`, the one irreversible verb among them, never runs in `auto` and is
+always the owner's confirmation.
 
 **Cost.** Each description adds its tokens to every classification. The
 working assumption is a cap of 12 enabled description rules, revisited once
@@ -711,7 +716,7 @@ Which guard binds which action group, so no section has to infer it:
 | Not into a conversation the owner has joined | yes | no |
 | Never on a message `From` one of the owner's own addresses | yes | yes |
 | Never on one `From` a `to` address; RFC 3834 on for senders at a `to` domain | n/a | yes |
-| `block_sends_after_private` (§6.3) | yes | yes |
+| `block_sends_after_private` (§6.3) — a mode-level hold, not a per-message guard: it keeps every outbound group in `propose` and writes no `skipped` row | yes | yes |
 
 Loop prevention for `forward` and `send` needs two guards of its own,
 because the copy can come back two ways. Their
@@ -956,7 +961,13 @@ default**, so on a new install nothing in this document runs at all.
 
 ### 6.3 Graduating a drafted reply (R2)
 
-`draft_with = "<skill>"` runs a drafting agent with the skill loaded, and its
+`draft_with = "<skill>"` names a skill **by name, never by path**: the value
+must pass the skill store's own name check, it resolves only through
+`SkillStore::get` over the global `~/.mecha/skills/` (the store a run loads
+from, with its own containment), and a name that resolves to nothing fails
+the rule's load rather than drafting without a procedure. §6.2's digest
+covers the directory that lookup returns. It runs a drafting agent with the
+skill loaded, and its
 draft stages in the outbox — `propose`, always, until graduated. **Graduation
 is the owner enabling it, and nothing else** (R6): no count of past drafts, no
 acceptance rate and no waiting period gates the switch, and nothing ever flips
@@ -1390,7 +1401,7 @@ Sources: [Inbox Zero security and data](https://docs.getinboxzero.com/essentials
 [Superhuman AI review 2026](https://fast.io/resources/superhuman-ai-review-2026/),
 [Shortwave vs Superhuman](https://www.jotform.com/ai/agents/shortwave-vs-superhuman/),
 [RFC 3834](https://www.rfc-editor.org/rfc/rfc3834),
-[IANA Auto-Submitted keywords](https://iana.org/assignments/auto-submitted-keywords),
+[IANA Auto-Submitted keywords](https://www.iana.org/assignments/auto-submitted-keywords/),
 [Graph message resource (custom headers)](https://learn.microsoft.com/graph/api/resources/message).
 
 ---
@@ -1399,7 +1410,7 @@ Sources: [Inbox Zero security and data](https://docs.getinboxzero.com/essentials
 
 One is the owner's:
 
-0. **Automatic forwards, sends and drafted replies need a sender-constrained
+- **Q0. Automatic forwards, sends and drafted replies need a sender-constrained
    matcher (§5.2)** — a `from` list, or a `from_domain` that is not a public
    mailbox provider or the owner's own institution. The design's default,
    found in review: without it, any
