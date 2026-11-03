@@ -962,7 +962,7 @@ matcher, the exact template or covering note, the recipient rule, the guards,
 and the shadow-mode rows so far. The approval written to `approvals.jsonl`
 carries **a digest of the rule's directory** (and of the named skill's, for
 §6.3, and of `aliases.toml` and `limits.toml` for any rule with an outbound
-action, since §5.4's loop guard and caps rest on them — removing an alias or
+action or a `task` (§6.4 caps tasks too), since §5.4's loop guard and caps rest on them — removing an alias or
 raising the global cap must lapse the approvals that counted on them). That
 includes tightening edits, and one global-cap edit lapses every outbound
 rule at once; the screen that edits `limits.toml` and `aliases.toml` says so
@@ -1030,9 +1030,11 @@ owner chose — a rule's run starts on arriving mail, unattended, steerable by
 whatever the thread says. So **every drafting run, in any mode, runs
 read-only**: `permission_mode = "read-only"`, as a trigger does by default,
 with the skill's `tools:` as its allowlist intersected with tools that write
-and destroy nothing; its one effect is the staged draft. The interlock still
-owns `Egress::Chosen` within it, and a `Blind` tool is absent because the
-run has no send to make — its draft is the send, and the outbox holds it. The leak
+and destroy nothing **and reach nothing outside**: no egress of any class,
+`Blind` included, so `web_search` and `web_open` are removed even though
+read-only would keep them — a run started by a stranger's mail and steerable
+by it must not be able to put that mail's contents into a query. Its one
+effect is the staged draft: its draft is the send, and the outbox holds it. The leak
 argument below is therefore the argument for `auto`, and it is true of a rule
 from the moment it graduates, not before.
 
@@ -1115,7 +1117,8 @@ lower of its current mode and the brake's target, like a lapse.
   `shadow`. *Action* failures only —
   the rule's own action refused or erroring. A failure of the environment
   (`failed: thread unreadable`, a provider unreachable, a token needing
-  re-auth) does not count, on `expired`'s reasoning: an outage would
+  re-auth) does not count, nor does `failed: interrupted` (§4.4), since a
+  crash is the harness's failure and not the rule's, on `expired`'s reasoning: an outage would
   otherwise demote every matching rule to `shadow` and end its activation
   stretch (§4.4), so recovering from someone else's downtime would cost an
   owner raise per group. Environment failures are `mecha doctor`'s to
@@ -1401,7 +1404,10 @@ digest, the trace §5.5 promises is the ledger and `undo` — pulled rather than
 pushed — which is acceptable for P1's actions because all of them are
 recoverable and none reaches anyone — which is true because `spam`, the one
 verb that would reach the provider's filter and has no restore, never runs
-in `auto` (§5).
+in `auto` (§5). The exception is `task`, which reaches a task run's prompt,
+so **P1 ships the caps over the Board group with it** (§5.4, §6.4): a header
+rule's automatic tasks are capped per rule and globally from the first day
+they can run, and named by the harness (§7).
 
 **P2 — the digest.** `mecha mail digest` and `digest ack`. Then the briefing
 swap, which is **an edit on the owner's machine, not in this repository**:
