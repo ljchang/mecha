@@ -431,8 +431,9 @@ send gate** — a rule whose text is still model-proposed from an armed
 conversation may sit in `propose`, but its description never enters the
 frame that confirms another rule's automatic send, since the pass is sound
 only because nothing a stranger shaped is in that frame. Shadow candidates
-that pass the gate are confirmed among themselves, separately from active
-rules. A shadow candidate whose own text fails the gate is **not confirmed at
+that pass the gate are confirmed in their own call, whose frame holds only
+those shadow descriptions and no active rule's — with a verdict per
+candidate (above), never one choice among them. A shadow candidate whose own text fails the gate is **not confirmed at
 all**: it is measured by the main pass alone, and the page labels its
 would-have rate a **ceiling**. A confirmation rate for it would be a number
 nothing can act on — §9 forbids such a rule's outbound and Board groups from
@@ -440,9 +441,13 @@ ever entering `auto`, and the confirmation pass only decides auto against
 propose — and the owner's edit that would unblock it makes the text `Owner`,
 lapses the digest (§6.2), and restarts the measurement, confirmed from then
 on, against the words that will actually run: **a group's would-have rate is
-computed only over rows written under its current digest**, and rows from an
-earlier digest are shown apart on the rule page (§8), never mixed into the
-number the owner approves against. Nothing a gate-failing rule
+computed only over rows written under its current *match digest*** — the
+part of §6.2's digest that a match depends on, the rule's own directory and
+the compiled §4.2 and §5.3 instruction versions — and rows from an earlier
+match digest are shown apart on the rule page (§8), never mixed into the
+number the owner approves against. An `aliases.toml` or `limits.toml` edit
+lapses approvals (§6.2) but resets no measurement: neither changes a word the
+classifier or the confirmation pass reads, so neither can move a match rate. Nothing a gate-failing rule
 says enters any frame that judges another rule. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
@@ -830,13 +835,17 @@ and none is configurable off. They come in three shapes:
   the owner has joined).
 - **A demotion** — the send is not made *unattended*, but staged in the
   outbox for the owner, and the row is `staged` with the guard as its
-  reason (a DMARC or authentication failure).
+  reason (a DMARC or authentication failure, or a header read that cannot be
+  shown whole for this message).
 - **A mode-level hold** — `block_sends_after_private` (§6.3), an unknown own
-  address, or a matcher with no sender constraint (§5.2), which keeps the
-  affected outbound groups in `propose` and writes no per-message row; the
-  rule page names which condition holds them. These are standing conditions
-  of the rule or the account, so repeating them for every message adds no
-  evidence.
+  address, a matcher with no sender constraint (§5.2), or a provider whose
+  authentication headers cannot be read reliably at all (the Outlook
+  fallback below), which keeps the affected outbound groups in `propose` and
+  writes no per-message row; the rule page names which condition holds them.
+  These are standing conditions of the rule, the account or the provider, so
+  repeating them for every message adds no evidence. A single message whose
+  headers cannot be shown whole is not one of these: it is the demotion
+  above.
 
 The guards:
 
@@ -1003,7 +1012,7 @@ automatically, but propose the reply" is the common case.
 
 Entering `auto` for any send group shows the owner, on one screen: the
 matcher, the exact template or covering note, the recipient rule, the guards,
-and the shadow-mode rows so far **under the current digest** — earlier
+and the shadow-mode rows so far **under the current match digest** (§4.2) — earlier
 rows are shown apart, as on the rule page (§8). The approval written to `approvals.jsonl`
 carries **a digest of the rule's directory** (and of the named skill's, for
 §6.3, and of `aliases.toml` and `limits.toml` for any rule with an outbound
@@ -1273,10 +1282,11 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   the template files shown as rendered text — what the recipient will read.
 - **The ledger**: one row per action — when, which message (sender and
   subject, opening in the reader), matched because (header key, or the
-  grounded `rule_quote`), the action, the mode it ran in, **the rule digest
-  in force when the row was written** (§6.2), and the outcome. The digest is
-  what lets the page compute a group's would-have rate over the current
-  digest only and show rows from an earlier digest apart, under a dated
+  grounded `rule_quote`), the action, the mode it ran in, **the match digest
+  in force when the row was written** (§4.2: the rule's directory and the
+  compiled instruction versions), and the outcome. It is what lets the page
+  compute a group's would-have rate over the current match digest only and
+  show rows from an earlier match digest apart, under a dated
   heading, never counted into the rate; a gate-failing shadow rule's rate is
   labelled a **ceiling** (§4.2). Outcomes:
   `pending` (written before an action executes, §4.4), `done`, `would have`
