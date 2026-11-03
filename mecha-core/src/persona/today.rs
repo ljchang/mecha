@@ -68,14 +68,11 @@ fn doing(a: Activity) -> &'static str {
     }
 }
 
-/// How the note names a kind of company, or `None` for one it never says.
-///
-/// **A household relation is never said.** The kinds come from the diary
-/// a stretch was drawn from, a stranger's: their partner, child, parent,
-/// family or housemate, not the persona's. Who a persona lives with is the
-/// owner's to write in who they are; a note saying "with your child" made a
-/// persona written with none invent a toddler (2026-11-03). The kinds left
-/// carry no relation to anyone.
+/// How the note names a non-household kind of company. Household kinds are
+/// said only through the names `world::now` resolved from the owner's life
+/// profile (`persona::life`), never as a relation: the kinds come from the
+/// diary a stretch was drawn from, a stranger's, and a note naming the
+/// diary's child made a persona written with none invent one (2026-11-03).
 fn who(c: Company) -> Option<&'static str> {
     match c {
         Company::Alone => Some("alone"),
@@ -115,11 +112,14 @@ pub fn note(now: &Now) -> String {
         None | Some([]) => {}
         Some([Company::Alone]) => said.push_str(", alone"),
         Some(kinds) => {
-            let names: Vec<&str> = kinds
-                .iter()
-                .filter(|k| **k != Company::Alone)
-                .filter_map(|k| who(*k))
-                .collect();
+            let mut names = now.with_names.clone();
+            names.extend(
+                kinds
+                    .iter()
+                    .filter(|k| **k != Company::Alone)
+                    .filter_map(|k| who(*k))
+                    .map(str::to_string),
+            );
             // With only household kinds, nothing is said of company at all:
             // "alone" would be as wrong as "with your child".
             if let Some(listed) = match names.split_last() {
@@ -138,7 +138,8 @@ pub fn note(now: &Now) -> String {
     };
     format!(
         "{stem} — your own day, drawn from your routine. {said}. Let it colour what you say \
-         when it fits; it is never news to announce.)"
+         when it fits; it is never news to announce, and where it disagrees with who you are, \
+         who you are wins.)"
     )
 }
 
@@ -155,6 +156,7 @@ mod tests {
             minute: stretch.start,
             stretch,
             source,
+            with_names: Vec::new(),
         }
     }
 
@@ -180,6 +182,10 @@ mod tests {
                 "You are exercising (swim at the lido), since 07:00, until about 08:30, \
                  with friends and colleagues."
             ),
+            "{text}"
+        );
+        assert!(
+            text.contains("where it disagrees with who you are, who you are wins"),
             "{text}"
         );
     }
@@ -250,6 +256,17 @@ mod tests {
                 assert!(!text.contains(word), "{kinds:?} said {word}: {text}");
             }
         }
+    }
+
+    #[test]
+    fn a_household_kind_kept_by_the_profile_names_the_person() {
+        let mut s = stretch(Activity::Eating, 19 * 60, 20 * 60);
+        s.company = Some(vec![Company::Housemate]);
+        let mut at = now(s, Source::Sampler);
+        at.with_names = vec!["Theo".into()];
+        let text = note(&at);
+        assert!(text.contains("with Theo."), "{text}");
+        assert!(!text.contains("your housemate"), "{text}");
     }
 
     /// The fold is taught to all three predicates (§4.5): re-armed from the

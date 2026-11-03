@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona's life profile, and a draft of it from what you wrote.**
+  `life.toml` says who a persona lives with (people on their People tab),
+  their usual night and what their days never hold, and their sampled days
+  obey it: no household member the profile lacks, sleep near their usual
+  times, no forbidden activity. Their own model can draft it from identity,
+  motivation, routine notes and People-tab names into a waiting
+  `life.draft.toml`, which the Week tab and `mecha persona life` let you
+  review, edit, approve or discard; nobody absent from the People tab is
+  invented into the household.
+
 - **More chat models, one approval away.** `mecha model catalog` lists the
   chat models mecha knows how to serve — Qwen3.6-35B-A3B uncensored, Qwen3.8-27B
   and its uncensored and abliterated builds, and Gemma 4 26B-A4B — with what
