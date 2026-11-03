@@ -228,14 +228,30 @@ pub enum RoutineCmd {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum LifeCmd {
-    /// Their life profile, or that they have not written one yet.
+    /// Their life profile and a waiting draft, if any.
     Show {
         name: String,
         #[arg(long)]
         json: bool,
     },
     /// Edit life.toml in $EDITOR, starting from a commented template.
-    Edit { name: String },
+    Edit {
+        name: String,
+        /// Edit the waiting draft instead, before approving it.
+        #[arg(long)]
+        draft: bool,
+    },
+    /// Have their own model draft their life from what you wrote, the
+    /// routine notes, and clean names on their People tab.
+    Draft { name: String },
+    /// Make the waiting draft their life profile after reading it.
+    Approve {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Drop the waiting draft; life.toml is untouched.
+    Discard { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -489,6 +505,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     {
         return draft_routine(global, &dir, &name).await;
     }
+    if let Cmd::Life {
+        cmd: LifeCmd::Draft { name },
+    } = args.cmd
+    {
+        return draft_life(global, &dir, &name).await;
+    }
     if let Cmd::People {
         cmd: PeopleCmd::Propose { name },
     } = args.cmd
@@ -590,6 +612,40 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
         p.name,
         p.name,
         p.name
+    );
+    Ok(())
+}
+
+/// `mecha persona life draft`: a typed profile drafted by her own model,
+/// held through the router and staged beside life.toml for owner review.
+async fn draft_life(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::{life, life_drafter};
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    life_drafter::check(&p)?;
+    life::may_stage(dir, &p.name)?;
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
+    let (_held, bound) = follower
+        .enter("life draft", |s| {
+            eprintln!("waiting: the model is switching to {}", s.to)
+        })
+        .await?;
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
+    eprintln!("drafting `{}`'s life with {}", p.name, bound.model);
+    let profile = life_drafter::draft(provider.as_ref(), &bound.model, dir, &p).await?;
+    println!(
+        "Drafted `{}`'s life: {} household member(s), {} usual sleep, {} never activity(s). \
+         It waits beside life.toml; `mecha persona life show {}` reads it and `approve {}` makes it their profile.",
+        p.name,
+        profile.household.len(),
+        if profile.sleep.is_some() { "a" } else { "no" },
+        profile.never.len(),
+        p.name,
+        p.name,
     );
     Ok(())
 }
@@ -1978,11 +2034,13 @@ fn life_cmd(dir: &Path, cmd: LifeCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -
         LifeCmd::Show { name, json } => {
             let name = named(&name);
             let text = life::read(dir, &name)?;
+            let draft = life::read_draft(dir, &name)?;
             let parsed = text.as_deref().map(life::parse).transpose();
             if json {
                 let out = serde_json::json!({
                     "life": parsed.as_ref().ok().and_then(|l| l.as_ref()).map(|l| l.to_json()),
                     "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                    "draft": draft,
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
@@ -1993,31 +2051,89 @@ fn life_cmd(dir: &Path, cmd: LifeCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -
                     (Some(_), Err(e)) => println!("life.toml does not load: {e:#}"),
                     (Some(text), Ok(_)) => println!("── life.toml ──\n{}", text.trim()),
                 }
+                if let Some(draft) = draft {
+                    println!(
+                        "\n── life.draft.toml (waiting on you) ──\n{}\n\n\
+                         `mecha persona life approve {name}` makes it their profile; `discard` drops it.",
+                        draft.trim()
+                    );
+                }
             }
         }
-        LifeCmd::Edit { name } => {
+        LifeCmd::Edit { name, draft } => {
             let name = named(&name);
-            let path = life::ensure(dir, &name)?;
+            let path = if draft {
+                if life::read_draft(dir, &name)?.is_none() {
+                    bail!("`{name}` has no life draft waiting");
+                }
+                dir.join(&name).join(life::DRAFT)
+            } else {
+                life::ensure(dir, &name)?
+            };
             edit_file(&path)?;
-            let Some(text) = life::read(dir, &name)? else {
+            let text = if draft {
+                life::read_draft(dir, &name)?
+            } else {
+                life::read(dir, &name)?
+            };
+            let Some(text) = text else {
                 println!(
-                    "life.toml was removed: `{name}`'s days use the time-use table without a profile."
+                    "{} was removed{}.",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        ""
+                    } else {
+                        ": their days use the time-use table without a profile"
+                    }
                 );
                 return Ok(());
             };
             let profile = life::parse(&text).with_context(|| {
                 format!(
-                    "life.toml was saved but does not load, so no day is built with it; \
-                     `mecha persona life edit {name}` to fix it"
+                    "{} was saved but does not load, so {}; `mecha persona life edit {name}{}` to fix it",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft { "it cannot be approved yet" } else { "no day is built with it" },
+                    if draft { " --draft" } else { "" },
                 )
             })?;
             println!(
-                "Saved: {} household member(s), {} usual sleep, {} never activity(s).",
+                "Saved: {} household member(s), {} usual sleep, {} never activity(s){}.",
                 profile.household.len(),
                 if profile.sleep.is_some() { "a" } else { "no" },
+                profile.never.len(),
+                if draft {
+                    format!(" — `mecha persona life approve {name}` when it reads right")
+                } else {
+                    String::new()
+                },
+            );
+        }
+        LifeCmd::Approve { name, yes } => {
+            let name = named(&name);
+            let Some(draft) = life::read_draft(dir, &name)? else {
+                bail!("`{name}` has no life draft waiting");
+            };
+            println!("── life.draft.toml ──\n{}", draft.trim());
+            if life::read(dir, &name)?.is_some() {
+                println!("\nIt replaces life.toml, which is kept as life.previous.toml.");
+            }
+            if !yes && !confirm(&format!("Make this `{name}`'s life profile?"))? {
+                println!("Not approved.");
+                return Ok(());
+            }
+            let profile = life::approve_draft_as_shown(dir, &name, &persona::text_digest(&draft))?;
+            println!(
+                "Approved: `{name}`'s life has {} household member(s) and {} never activity(s).",
+                profile.household.len(),
                 profile.never.len()
             );
         }
+        LifeCmd::Discard { name } => {
+            let name = named(&name);
+            life::discard_draft(dir, &name)?;
+            println!("Dropped `{name}`'s life draft.");
+        }
+        LifeCmd::Draft { .. } => bail!("`life draft` is run by `execute`"),
     }
     Ok(())
 }
@@ -3068,6 +3184,7 @@ mod tests {
                 Cmd::Life {
                     cmd: LifeCmd::Edit {
                         name: "Mara".into(),
+                        draft: false,
                     },
                 },
                 &move |path: &Path| {
@@ -3093,6 +3210,39 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("life.toml does not load")),
             "{problems:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_life_draft_is_approved_from_the_cli_and_keeps_the_previous_profile() {
+        use mecha_core::persona::life;
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let pdir = store.join("mara");
+        let previous = "never = [\"caring\"]\n";
+        std::fs::write(pdir.join(life::FILE), previous).unwrap();
+        let drafted = "alone = true\nnever = [\"work\"]\n";
+        life::stage_draft(&store, "mara", drafted, Origin::ModelClean).unwrap();
+
+        run(
+            &store,
+            &lib,
+            Cmd::Life {
+                cmd: LifeCmd::Approve {
+                    name: "mara".into(),
+                    yes: true,
+                },
+            },
+        )
+        .unwrap();
+
+        assert!(life::load(&pdir).unwrap().unwrap().alone);
+        assert_eq!(
+            std::fs::read_to_string(pdir.join(life::PREVIOUS)).unwrap(),
+            previous
         );
         std::fs::remove_dir_all(dir).ok();
     }

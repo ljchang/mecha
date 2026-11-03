@@ -1987,6 +1987,8 @@ export function personaWeek(date) {
       sleep: { bed: '23:00', wake: '07:00' },
       never: ['caring'],
       error: null,
+      draft: null,
+      undraftable: null,
     },
     routine: {
       digest: '0'.repeat(64),
