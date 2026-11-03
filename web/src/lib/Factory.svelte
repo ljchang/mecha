@@ -48,7 +48,8 @@
       // value posted cannot disagree about a starter it no longer ships.
       newing.starter = newing.starters[0]?.name ?? '';
     } catch (e) {
-      newing.error = String(e?.message ?? e);
+      // The sheet may have been closed while the list loaded.
+      if (newing) newing.error = String(e?.message ?? e);
     }
   }
   async function createForm() {
@@ -72,7 +73,12 @@
   }
   // The id names the form's public link; it is suggested from the starter
   // and editable, in the factory's alphabet.
-  const suggestId = (text) => nameFrom(text, (list ?? []).map((i) => i.id)).replaceAll('_', '-');
+  // Deduplicated in the alphabet it proposes: ids use `-`, so the taken
+  // ones are compared in that spelling, not nameFrom's `_`.
+  const suggestId = (text) => {
+    const taken = (list ?? []).map((i) => i.id.replaceAll('-', '_'));
+    return nameFrom(text, taken).replaceAll('_', '-');
+  };
 
   async function loadList() {
     try {

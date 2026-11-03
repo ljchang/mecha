@@ -286,6 +286,9 @@
     {#if preview}
       <div class="section">Preview <span class="sub">as strangers will see it{st.draft ? ', with your draft' : ''}</span></div>
       <!-- No scripts, no network, no forms: the page itself, looked at. -->
+      {#if preview.servable !== true}
+        <div class="warnline">This form cannot be published as it stands: {preview.servable}</div>
+      {/if}
       <div class="note">The page as it looks, not as it behaves: questions that appear only after an earlier answer are all shown here.</div>
       <iframe class="preview" title="form preview" sandbox="" srcdoc={preview.html}></iframe>
     {/if}

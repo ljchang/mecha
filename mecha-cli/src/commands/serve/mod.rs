@@ -3596,7 +3596,7 @@ printf '","busy":[]}\n'"#,
             format!(
                 r#"#!/bin/sh
 case "$1 $2" in
-  "type check") exit 0 ;;
+  "type check") if grep -q REFUSE_ME "$3"; then echo "Error: the factory refuses this" >&2; exit 1; fi; exit 0 ;;
   "type starters") printf 'meeting\tRequest a meeting\n' ;;
   "type new") printf '# from the starter\nid = "%s"\nversion = 1\ntitle = "Request a meeting"\n\n[[fields]]\nname = "email"\nlabel = "Email"\nkind = "email"\n' "$5" ;;
   "type render") echo '{{"id":"letter","kind":"request","html":"<html><head><link rel=\"stylesheet\" href=\"form.css\"></head><body><form>Q</form><script src=\"form.js\"></script></body></html>","style":"body{{color:red}}"}}' ;;
@@ -3689,6 +3689,49 @@ esac
         )
         .await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        // A draft the factory refuses never lands; nor does one that is not
+        // TOML, and that one is said as such rather than as a moved id.
+        let before = std::fs::read_to_string(&draft).unwrap();
+        let (st, refused) = json(
+            req(
+                "POST",
+                "/api/factory/form/save",
+                Some(serde_json::json!({"id": "letter", "base": saved["digest"], "raw": format!("{drafted}\n# REFUSE_ME\n")})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert!(
+            refused
+                .as_str()
+                .unwrap_or("")
+                .contains("factory would refuse"),
+            "{refused}"
+        );
+        let (st, broken) = json(
+            req(
+                "POST",
+                "/api/factory/form/save",
+                Some(
+                    serde_json::json!({"id": "letter", "base": saved["digest"], "raw": "id = [\n"}),
+                ),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            broken.as_str().unwrap_or("").contains("not valid TOML"),
+            "{broken}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&draft).unwrap(),
+            before,
+            "a refused save writes nothing"
+        );
         // Preview: the page, with its style inlined and no script or link.
         let (st, pv) = json(
             req(
