@@ -413,7 +413,14 @@ own grounded quote. A send proceeds only when both passes name the same
 rule; disagreement goes to `propose` with both answers on the ledger row.
 Judging only the winner would leave the choice *between* two automatic send
 rules whose descriptions both honestly fit — which owner-fixed recipient an
-attacker's message reaches — to the pass that carries the learned rules.
+attacker's message reaches — to the pass that carries the learned rules. The
+set is the eligible **active** rules (`propose` or `auto`); shadow candidates
+are confirmed among the shadow rules, separately, so a rule being measured
+never changes what an approved one does. Each description in the set is
+covered by its own rule's digest (§6.2), so an edit to one rule lapses that
+rule; its effect on another approved rule can only be to win a thread the
+other would have taken, and the winner then sends only within its own
+approval — a lapsed rule proposes.
 
 That keeps the exemption's premise true rather than re-arguing it: untrusted
 triage rules still reach only a pass whose output cannot send on its own. When
