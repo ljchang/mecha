@@ -228,7 +228,7 @@ fn split_frontmatter(raw: &str) -> Result<(String, String)> {
     Ok((fm, body))
 }
 
-fn validate_name(name: &str) -> Result<()> {
+pub(crate) fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("`name` is empty");
     }
