@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, lifeLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, weatherPlace, weatherError, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, lifeLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -196,6 +196,10 @@
   {:else if data?.absent}
     <p class="wnote">{WEEK_ABSENT[data.absent] ?? data.why}</p>
   {/if}
+  {#if data}
+    <p class="wnote">{weatherPlace(data)}</p>
+    {#if weatherError(data)}<p class="warnline">{weatherError(data)}</p>{/if}
+  {/if}
   {#if data && data.absent !== 'off' && data.routine}
     <label class="wcell">
       <span>Kind of week</span>
@@ -323,7 +327,7 @@
       Drawn from their routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
     </div>
     {#if storyNotes(data).drawn}
-      <div class="barnote">Events are drawn from their deck (<code>story.toml</code>) by a director that keeps a rhythm; the weather is where they live. Only you see these: nothing here reaches their chats yet.</div>
+      <div class="barnote">Events are drawn from their deck (<code>story.toml</code>) by a director that keeps a rhythm; the weather is where they live. The Week tab shows these either way; with Their events on, the teller brings them into chats.</div>
     {/if}
     {#if storyNotes(data).why}
       <!-- Beside what was kept, never instead of it (review of #814). -->

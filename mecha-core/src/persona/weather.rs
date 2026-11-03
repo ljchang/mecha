@@ -10,11 +10,20 @@
 //! outside the window refuses that day, never guesses at it, so what reaches
 //! her days carries no string the source wrote.
 //!
-//! **Fetched by the harness, never a model**, from one owner-written place
-//! (`story.toml`'s `[place]`): one read of Open-Meteo's daily endpoint, the
-//! last [`PAST_DAYS`] and the next [`AHEAD_DAYS`], capped at the door. What
-//! leaves the machine is the place's latitude and longitude, nothing about
-//! her or the owner.
+//! **Fetched by the harness, never a model**, from one owner-written place:
+//! `[life] place` in `persona.toml` ("Springfield, Illinois"), resolved once
+//! by Open-Meteo's geocoder and cached beside the persona ([`PLACE_FILE`]),
+//! or `story.toml`'s `[place]` with its own coordinates. One read of the
+//! daily endpoint takes the last [`PAST_DAYS`] and the next [`AHEAD_DAYS`],
+//! capped at the door. What leaves the machine is the town, to the
+//! geocoder, and its latitude and longitude, to the weather service: nothing
+//! about the persona or the owner. [`refresh`] runs it when the stored
+//! weather is older than [`STALE_HOURS`], from the Week tab and a chat turn.
+//!
+//! **What the geocoder answers is shown to the owner, never told.** Its
+//! label (town, region, country code) is how the Week tab says which place
+//! it found; no prompt reads it. What the teller folds is a [`Sky`] and two
+//! whole degrees, the closed fields above.
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
@@ -26,6 +35,10 @@ pub const PAST_DAYS: u32 = 14;
 pub const AHEAD_DAYS: u32 = 7;
 /// The most bytes a fetch reads; the answer for three weeks is a few KB.
 pub const MAX_BYTES: usize = 64 * 1024;
+/// Stored weather older than this is fetched again.
+pub const STALE_HOURS: i64 = 6;
+/// The resolved place, cached beside `persona.toml`.
+pub const PLACE_FILE: &str = "weather.place.json";
 /// The range a temperature must fall in, in °C.
 pub const COLDEST: i16 = -60;
 pub const HOTTEST: i16 = 60;
@@ -201,29 +214,301 @@ pub fn url(place: &Place) -> String {
     )
 }
 
-/// Fetch and parse `place`'s days around `today`. The answer is read up to
-/// [`MAX_BYTES`] and refused past it, never cut.
-pub async fn fetch(place: &Place, today: NaiveDate) -> Result<Vec<Weather>> {
-    place.check()?;
+/// A place the geocoder found for a name the owner wrote.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Resolved {
+    /// What the owner wrote, as it was looked up.
+    pub query: String,
+    /// Town, region and country code, as the geocoder named them: shown to
+    /// the owner, never in a prompt.
+    pub label: String,
+    pub lat: f64,
+    pub lon: f64,
+    /// The query whose weather was stored successfully. A newly resolved
+    /// place has none, so a failed forecast stays due on the next ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather_for: Option<String>,
+}
+
+impl Resolved {
+    pub fn place(&self) -> Place {
+        Place {
+            name: self.label.clone(),
+            lat: self.lat,
+            lon: self.lon,
+        }
+    }
+}
+
+/// US state codes, so "Springfield, IL" finds Illinois: the geocoder names
+/// the region in full.
+const US_STATES: [(&str, &str); 51] = [
+    ("AL", "Alabama"),
+    ("AK", "Alaska"),
+    ("AZ", "Arizona"),
+    ("AR", "Arkansas"),
+    ("CA", "California"),
+    ("CO", "Colorado"),
+    ("CT", "Connecticut"),
+    ("DE", "Delaware"),
+    ("DC", "District of Columbia"),
+    ("FL", "Florida"),
+    ("GA", "Georgia"),
+    ("HI", "Hawaii"),
+    ("ID", "Idaho"),
+    ("IL", "Illinois"),
+    ("IN", "Indiana"),
+    ("IA", "Iowa"),
+    ("KS", "Kansas"),
+    ("KY", "Kentucky"),
+    ("LA", "Louisiana"),
+    ("ME", "Maine"),
+    ("MD", "Maryland"),
+    ("MA", "Massachusetts"),
+    ("MI", "Michigan"),
+    ("MN", "Minnesota"),
+    ("MS", "Mississippi"),
+    ("MO", "Missouri"),
+    ("MT", "Montana"),
+    ("NE", "Nebraska"),
+    ("NV", "Nevada"),
+    ("NH", "New Hampshire"),
+    ("NJ", "New Jersey"),
+    ("NM", "New Mexico"),
+    ("NY", "New York"),
+    ("NC", "North Carolina"),
+    ("ND", "North Dakota"),
+    ("OH", "Ohio"),
+    ("OK", "Oklahoma"),
+    ("OR", "Oregon"),
+    ("PA", "Pennsylvania"),
+    ("RI", "Rhode Island"),
+    ("SC", "South Carolina"),
+    ("SD", "South Dakota"),
+    ("TN", "Tennessee"),
+    ("TX", "Texas"),
+    ("UT", "Utah"),
+    ("VT", "Vermont"),
+    ("VA", "Virginia"),
+    ("WA", "Washington"),
+    ("WV", "West Virginia"),
+    ("WI", "Wisconsin"),
+    ("WY", "Wyoming"),
+];
+
+/// The name the geocoder is asked for, and what narrows its answers: the
+/// text before the first comma, and the rest.
+fn split_query(query: &str) -> (String, Option<String>) {
+    match query.split_once(',') {
+        Some((town, rest)) if !rest.trim().is_empty() => {
+            (town.trim().to_string(), Some(rest.trim().to_string()))
+        }
+        _ => (query.trim().trim_end_matches(',').trim().to_string(), None),
+    }
+}
+
+/// The geocoder's answer to `query`, the first result whose region,
+/// country or country code matches what follows the comma (a US state's
+/// code standing for its name), or the first result when nothing follows.
+/// Refused when nothing matches or the answer is not that shape; a name,
+/// region or country outside a short line is left out of the label.
+pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
+    #[derive(Deserialize)]
+    struct Hit {
+        name: Option<String>,
+        latitude: f64,
+        longitude: f64,
+        admin1: Option<String>,
+        country: Option<String>,
+        country_code: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Answer {
+        #[serde(default)]
+        results: Vec<Hit>,
+    }
+    let a: Answer =
+        serde_json::from_str(body).context("the geocoder's answer is not a list of places")?;
+    let (_, narrow) = split_query(query);
+    let wanted: Vec<String> = narrow
+        .iter()
+        .flat_map(|n| {
+            let n = n.trim().to_lowercase();
+            let full = US_STATES
+                .iter()
+                .find(|(code, _)| code.eq_ignore_ascii_case(&n))
+                .map(|(_, name)| name.to_lowercase());
+            std::iter::once(n).chain(full)
+        })
+        .collect();
+    let short = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|t| {
+                !t.is_empty() && t.chars().count() <= 60 && !t.chars().any(char::is_control)
+            })
+            .map(str::to_string)
+    };
+    let hit = a
+        .results
+        .into_iter()
+        .find(|h| {
+            wanted.is_empty()
+                || [&h.admin1, &h.country, &h.country_code].iter().any(|f| {
+                    f.as_deref()
+                        .is_some_and(|v| wanted.iter().any(|w| v.trim().to_lowercase() == *w))
+                })
+        })
+        .with_context(|| {
+            format!(
+                "no place named {query:?} was found; try the town and its state or country spelled out"
+            )
+        })?;
+    let label: Vec<String> = [
+        short(&hit.name),
+        short(&hit.admin1),
+        short(&hit.country_code),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let r = Resolved {
+        query: query.trim().to_string(),
+        label: if label.is_empty() {
+            query.trim().to_string()
+        } else {
+            label.join(", ")
+        },
+        lat: hit.latitude,
+        lon: hit.longitude,
+        weather_for: None,
+    };
+    r.place().check()?;
+    Ok(r)
+}
+
+/// Ask the geocoder for `query`.
+pub async fn geocode(query: &str) -> Result<Resolved> {
+    let (town, _) = split_query(query);
+    if town.is_empty() {
+        bail!("a place needs a town's name");
+    }
+    let mut url = reqwest::Url::parse("https://geocoding-api.open-meteo.com/v1/search")?;
+    url.query_pairs_mut()
+        .append_pair("name", &town)
+        .append_pair("count", "10")
+        .append_pair("language", "en")
+        .append_pair("format", "json");
+    let body = read_capped(url.as_str(), "the geocoder").await?;
+    parse_geocode(&body, query)
+}
+
+/// One GET, its body read up to [`MAX_BYTES`] and refused past it, never cut.
+async fn read_capped(url: &str, what: &str) -> Result<String> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
     let mut resp = http
-        .get(url(place))
+        .get(url)
         .send()
         .await
-        .context("asking for the weather")?;
+        .with_context(|| format!("asking {what}"))?;
     if !resp.status().is_success() {
-        bail!("the weather service answered {}", resp.status());
+        bail!("{what} answered {}", resp.status());
     }
     let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.context("reading the weather")? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .with_context(|| format!("reading {what}"))?
+    {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_BYTES {
-            bail!("the weather answer is over {MAX_BYTES} bytes; refused");
+            bail!("{what}'s answer is over {MAX_BYTES} bytes; refused");
         }
     }
-    let body = String::from_utf8(body).context("the weather answer is not text")?;
+    String::from_utf8(body).with_context(|| format!("{what}'s answer is not text"))
+}
+
+/// The place cached for `pdir`, if it was resolved from `query`.
+pub fn cached(pdir: &std::path::Path, query: &str) -> Option<Resolved> {
+    let text = std::fs::read_to_string(pdir.join(PLACE_FILE)).ok()?;
+    let r: Resolved = serde_json::from_str(&text).ok()?;
+    (r.query == query.trim() && r.place().check().is_ok()).then_some(r)
+}
+
+/// Where `pdir`'s weather is for: `[life] place`, resolved through the
+/// cache or the geocoder, or `story.toml`'s `[place]` when that is unset.
+/// `None` when neither names one.
+pub async fn place_of(pdir: &std::path::Path, life_place: Option<&str>) -> Result<Option<Place>> {
+    if let Some(q) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        if let Some(r) = cached(pdir, q) {
+            return Ok(Some(r.place()));
+        }
+        let r = geocode(q).await?;
+        super::write_private(
+            &pdir.join(PLACE_FILE),
+            serde_json::to_string(&r)?.as_bytes(),
+        )?;
+        return Ok(Some(r.place()));
+    }
+    let Ok(text) = std::fs::read_to_string(pdir.join(super::story::FILE)) else {
+        return Ok(None);
+    };
+    Ok(super::story::parse(&text)?.place)
+}
+
+/// Whether `pdir`'s weather is due: none stored, the last fetch older than
+/// [`STALE_HOURS`] at `now`, or `[life] place` changed since it was
+/// resolved.
+pub fn due(
+    pdir: &std::path::Path,
+    life_place: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool> {
+    if let Some(q) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        let Some(place) = cached(pdir, q) else {
+            return Ok(true);
+        };
+        if place.weather_for.as_deref() != Some(q) {
+            return Ok(true);
+        }
+    }
+    let last = super::world::World::open(pdir)?.weather_fetched_at()?;
+    Ok(last.is_none_or(|at| now - at > chrono::Duration::hours(STALE_HOURS)))
+}
+
+/// Fetch `pdir`'s weather around `today` and store it, and the place it is
+/// for; `None` when no place is named. Refused when every day was refused.
+pub async fn refresh(
+    pdir: &std::path::Path,
+    life_place: Option<&str>,
+    today: NaiveDate,
+) -> Result<Option<(Place, usize)>> {
+    let Some(place) = place_of(pdir, life_place).await? else {
+        return Ok(None);
+    };
+    let days = fetch(&place, today).await?;
+    if days.is_empty() {
+        bail!("the weather service answered, but every day was refused");
+    }
+    let n = super::world::World::open(pdir)?.set_weather(&days)?;
+    if let Some(q) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        let mut resolved = cached(pdir, q).context("the resolved place cache was not kept")?;
+        resolved.weather_for = Some(q.to_string());
+        super::write_private(
+            &pdir.join(PLACE_FILE),
+            serde_json::to_string(&resolved)?.as_bytes(),
+        )?;
+    }
+    Ok(Some((place, n)))
+}
+
+/// Fetch and parse `place`'s days around `today`. The answer is read up to
+/// [`MAX_BYTES`] and refused past it, never cut.
+pub async fn fetch(place: &Place, today: NaiveDate) -> Result<Vec<Weather>> {
+    place.check()?;
+    let body = read_capped(&url(place), "the weather service").await?;
     let from = today - chrono::Days::new(u64::from(PAST_DAYS));
     let to = today + chrono::Days::new(u64::from(AHEAD_DAYS));
     parse(&body, from, to)
@@ -305,5 +590,65 @@ mod tests {
         .check()
         .is_err());
         assert!(url(&ok).contains("latitude=43.7000&longitude=-72.2900"));
+    }
+
+    #[test]
+    fn geocoding_picks_the_named_region_and_expands_a_us_code() {
+        let body = r#"{"results":[
+            {"name":"Springfield","latitude":37.2,"longitude":-93.3,"admin1":"Missouri","country":"United States","country_code":"US"},
+            {"name":"Springfield","latitude":39.8,"longitude":-89.6,"admin1":"Illinois","country":"United States","country_code":"US"},
+            {"name":"Springfield","latitude":45.0,"longitude":-64.0,"admin1":"Nova Scotia","country":"Canada","country_code":"CA"}
+        ]}"#;
+        let state = parse_geocode(body, "Springfield, IL").unwrap();
+        assert_eq!(state.label, "Springfield, Illinois, US");
+        assert_eq!((state.lat, state.lon), (39.8, -89.6));
+        let country = parse_geocode(body, "Springfield, Canada").unwrap();
+        assert_eq!(country.label, "Springfield, Nova Scotia, CA");
+    }
+
+    #[test]
+    fn weather_is_due_when_empty_old_or_for_a_changed_place() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-weather-due-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = chrono::Utc::now();
+        assert!(due(&dir, Some("Springfield, Illinois"), now).unwrap());
+
+        let mut resolved = Resolved {
+            query: "Springfield, Illinois".into(),
+            label: "Springfield, Illinois, US".into(),
+            lat: 39.8,
+            lon: -89.6,
+            weather_for: None,
+        };
+        std::fs::write(dir.join(PLACE_FILE), serde_json::to_vec(&resolved).unwrap()).unwrap();
+        assert!(
+            due(&dir, Some("Springfield, Illinois"), now).unwrap(),
+            "a matching place with no weather is due"
+        );
+        let mut world = super::super::world::World::open(&dir).unwrap();
+        world
+            .set_weather(&[Weather {
+                date: now.date_naive(),
+                sky: Sky::Clear,
+                high_c: 12,
+                low_c: 4,
+            }])
+            .unwrap();
+        resolved.weather_for = Some(resolved.query.clone());
+        std::fs::write(dir.join(PLACE_FILE), serde_json::to_vec(&resolved).unwrap()).unwrap();
+        assert!(!due(&dir, Some("Springfield, Illinois"), now).unwrap());
+        assert!(due(&dir, Some("Springfield, Missouri"), now).unwrap());
+
+        let conn = rusqlite::Connection::open(dir.join(super::super::world::WORLD_DB)).unwrap();
+        conn.execute(
+            "UPDATE weather SET fetched_at = ?1",
+            [(now - chrono::Duration::hours(STALE_HOURS + 1)).to_rfc3339()],
+        )
+        .unwrap();
+        assert!(due(&dir, Some("Springfield, Illinois"), now).unwrap());
+        std::fs::remove_dir_all(dir).ok();
     }
 }

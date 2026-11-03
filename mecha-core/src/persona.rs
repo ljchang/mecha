@@ -379,6 +379,14 @@ pub struct Life {
     /// 2026-11-03): a list the owner wrote needs no simulated day.
     #[serde(default)]
     pub people: bool,
+    /// The teller (§4.5): the day's events, how they feel and the weather
+    /// ride in the today-block; needs `world`.
+    #[serde(default)]
+    pub events: bool,
+    /// Where they live, as the owner writes it ("Springfield, Illinois"):
+    /// the harness resolves it and fetches its weather (§4.3).
+    #[serde(default)]
+    pub place: Option<String>,
     /// Her model of the owner's network (§7); needs `[memory] user_facts`
     /// not `"off"`.
     #[serde(default)]
@@ -414,6 +422,7 @@ impl Life {
     /// is built over.
     pub fn check(&self, memory: &MemorySettings) -> Result<()> {
         let needs = [
+            ("events", self.events, "world", self.world),
             ("news", self.news, "world", self.world),
             ("camera", self.camera, "world", self.world),
             ("feed", self.feed, "camera", self.camera),
@@ -442,9 +451,20 @@ impl Life {
         if self.my_people && memory.user_facts == UserFacts::Off {
             bail!("[life] my_people needs [memory] user_facts to be \"own\" or \"shared\", not \"off\"");
         }
+        if let Some(place) = &self.place {
+            if place.trim().is_empty()
+                || place.chars().count() > MAX_PLACE
+                || place.chars().any(char::is_control)
+            {
+                bail!("[life] place is a town and its state or country on one line, at most {MAX_PLACE} characters");
+            }
+        }
         self.decay.check()
     }
 }
+
+/// The longest `[life] place`.
+pub const MAX_PLACE: usize = 80;
 
 /// `[life.decay]` (§9, PL7): the world's decay and pruning knobs, read live.
 /// Every value is a guess until the pruning counts say otherwise.
@@ -1662,6 +1682,8 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
          [life]   # a life of its own, every part off; docs/PERSONA-LIFE-DESIGN.md §3.1\n\
          world     = false        # its simulated day and what happens in it\n\
          people    = false        # the people in its life, from the People tab\n\
+         events    = false        # its day's events, mood and weather in each chat; needs world\n\
+         # place   = \"Springfield, Illinois\"   # where it lives, for its weather\n\
          my_people = false        # what it learns of your people; needs user_facts\n\
          news      = false        # feeds you register; needs world\n\
          camera    = false        # a camera roll; needs world\n\
@@ -2462,7 +2484,7 @@ const UNBUILT: &str = "Not built yet: saved now, used once it is.";
 
 /// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
 /// except `voice_speed`, a number the form has no field kind for (it is
-/// edited as text), and the `[life]` switches past `world`, each of which
+/// edited as text), and the unbuilt `[life]` switches, each of which
 /// joins when its step builds it, so its help text is true when it ships
 /// (the `[life.decay]` knobs are numbers too). Edited in place — the
 /// owner's comments stay — and saved through [`edit_settings`].
@@ -2627,9 +2649,9 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                     .help(UNBUILT)
                     .unbuilt(),
                 ),
-            // PERSONA-LIFE-DESIGN.md §3.1, step 1: only `world` does
-            // something yet. Her kind of week (the cell) lives in
-            // routine.toml, so it is picked on the Week tab, not here.
+            // PERSONA-LIFE-DESIGN.md §3.1: her kind of week (the cell)
+            // lives in routine.toml, so it is picked on the Week tab, not
+            // here.
             Section::new("Life")
                 .help(
                     "A life of their own between your chats, every part off until you turn it on.",
@@ -2641,7 +2663,27 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 .field(Field::toggle("life.people", "Their people").help(
                     "The people in their life, written on the People tab, come into each chat \
                      beside who they are.",
-                )),
+                ))
+                .field(Field::toggle("life.events", "Their events").help(
+                    "What happened in their day, how they feel and the weather come into \
+                     each chat; the Week tab shows them either way. Needs Their days.",
+                ))
+                .field(
+                    Field::new(
+                        "life.place",
+                        "Where they live",
+                        Kind::Text {
+                            max: MAX_PLACE,
+                            optional: true,
+                            placeholder: Some("Springfield, Illinois".into()),
+                            multiline: false,
+                        },
+                    )
+                    .help(
+                        "A town and its state or country for their weather. The name is \
+                         looked up with Open-Meteo; the Week tab shows the place it found.",
+                    ),
+                ),
         ],
     }
 }
@@ -3238,9 +3280,15 @@ mod tests {
         let written: toml::Table = toml::from_str(&text).unwrap();
         let written = written["life"].as_table().unwrap();
         let typed = serde_json::to_value(Life::default()).unwrap();
-        for key in typed.as_object().unwrap().keys().filter(|k| *k != "decay") {
+        for key in typed
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|k| !["decay", "place"].contains(&k.as_str()))
+        {
             assert!(written.contains_key(key), "the starter leaves out `{key}`");
         }
+        assert!(text.contains("# place   = \"Springfield, Illinois\""));
         std::fs::remove_dir_all(dir).ok();
         // A file written before `[life]` existed has every part off.
         assert_eq!(
@@ -3267,6 +3315,7 @@ mod tests {
     #[test]
     fn a_life_part_without_what_it_needs_fails_the_load_naming_both() {
         for (part, need) in [
+            ("events", "world"),
             ("news", "world"),
             ("camera", "world"),
             ("feed", "camera"),
@@ -3285,7 +3334,21 @@ mod tests {
         let p = load_life("[life]\nworld = true\ncamera = true\nfeed = true\n", &|t| t).unwrap();
         let life = &p.settings.life;
         assert!(life.world && life.camera && life.feed);
-        assert!(!life.people && !life.news && !life.proactive);
+        assert!(!life.people && !life.events && !life.news && !life.proactive);
+    }
+
+    #[test]
+    fn a_life_place_is_one_short_line() {
+        let p = load_life("[life]\nplace = \"Springfield, Illinois\"\n", &|t| t).unwrap();
+        assert_eq!(
+            p.settings.life.place.as_deref(),
+            Some("Springfield, Illinois")
+        );
+        let too_long = "x".repeat(MAX_PLACE + 1);
+        for place in ["", "Springfield\nIllinois", too_long.as_str()] {
+            let why = load_life(&format!("[life]\nplace = {:?}\n", place), &|t| t).unwrap_err();
+            assert!(why.contains("[life] place"), "{why}");
+        }
     }
 
     #[test]
