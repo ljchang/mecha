@@ -2554,7 +2554,23 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                         println!("Kept as they were.");
                         return Ok(());
                     }
+                    // Exactly the records shown: one the writer adds to this
+                    // chat while the question waits was never read, so it is
+                    // not vouched for (review of #837). Each vouch re-checks
+                    // its record inside its own write.
+                    let mut count = 0;
+                    for (uid, _) in &waiting {
+                        m.approve_clean(uid)?;
+                        count += 1;
+                    }
+                    println!(
+                        "Approved {count} record(s) as clean — recalling them no longer marks the chat untrusted."
+                    );
+                    return Ok(());
                 }
+                // Nothing waiting: a chat with no records is refused, and
+                // records already vouched for have their shared copies
+                // re-synced.
                 let count = m.approve_clean_chat(&chat)?;
                 if count == 0 {
                     println!(
