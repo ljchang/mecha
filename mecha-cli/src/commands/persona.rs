@@ -1890,8 +1890,10 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             let path = routine::ensure_notes(dir, &name)?;
             edit_file(&path)?;
             // Read back through the store's door: trimmed, checked, and a
-            // blank file removed.
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            // blank file removed. A save that cannot be read is an error,
+            // never blank: blank would delete the notes.
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {} back", path.display()))?;
             routine::write_notes(dir, &name, &text).with_context(|| {
                 format!("the notes were saved but are refused; `mecha persona routine notes {name}` to fix them")
             })?;

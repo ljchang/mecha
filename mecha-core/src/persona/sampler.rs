@@ -638,6 +638,26 @@ mod tests {
     }
 
     #[test]
+    fn a_seasonal_anchor_after_midnight_keeps_the_month_of_the_day_it_starts_on() {
+        // 01:00 belongs to the evening before's day, but holds to the month
+        // of the calendar day it starts on.
+        let r = routine::parse(
+            "cell = \"student\"\n\
+             [[anchor]]\nwhat = \"night shift\"\nactivity = \"work\"\ndays = [\"daily\"]\nat = \"01:00\"\nminutes = 60\nmonths = [\"oct\"]\n",
+        )
+        .unwrap();
+        let shifted = |day: &str| {
+            sample(table(), Cell::Student, &r, "mara", date(day))
+                .stretches
+                .iter()
+                .any(|s| s.anchor.as_deref() == Some("night shift"))
+        };
+        assert!(shifted("2026-09-30"), "starts on Oct 1");
+        assert!(shifted("2026-10-30"), "starts on Oct 31");
+        assert!(!shifted("2026-10-31"), "would start on Nov 1");
+    }
+
+    #[test]
     fn an_anchor_before_4am_belongs_to_the_day_before() {
         // Friday 01:00 is the end of Thursday's day.
         let r = routine::parse(
