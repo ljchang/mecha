@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine, monthsLine, storyDay, storyNotes } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, lifeDraftBody, anchorLine, monthsLine, storyDay, storyNotes, lifeLine } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -25,6 +25,23 @@ assert.equal(Object.keys(ACTIVITY_GROUP).length, 26);
 
 // Each reason she has no days has its own words.
 for (const why of ['off', 'no_routine', 'no_cell']) assert.ok(WEEK_ABSENT[why]);
+
+// A life profile is a short owner-facing line; no profile is formatted by
+// the component with the persona-specific edit command.
+assert.equal(lifeLine(null), '');
+assert.equal(lifeLine({ household: null, alone: null, sleep: null, never: null, error: null }), '');
+assert.equal(
+  lifeLine({
+    household: [{ person: 'Theo', relation: 'housemate' }, { person: 'Ines', relation: 'family' }],
+    alone: false,
+    sleep: { bed: '23:30', wake: '07:30' },
+    never: ['work', 'personal_care'],
+    error: null,
+  }),
+  'Lives with Theo (housemate), Ines (family) · usually sleeps 23:30–07:30 · never work, personal care',
+);
+assert.equal(lifeLine({ household: [], alone: true, sleep: null, never: [], error: null }), 'Lives alone');
+assert.match(lifeLine({ error: 'bad relation' }), /life\.toml does not load: bad relation/);
 
 // A day's stretches sit on a 4am-to-4am bar; past midnight is the next morning.
 assert.equal(dayClock(25 * 60 + 5), '01:05');
@@ -99,6 +116,14 @@ assert.deepEqual(draftBody(shown, '2026-11-02', null, 'x'), { digest: 'd', text:
 assert.equal(draftBody(shown, null, null, undefined, '- choir Wednesdays').notes, '- choir Wednesdays');
 assert.equal(draftBody(shown, null, null, undefined, '').notes, '');
 assert.equal(draftBody({ routine: { digest: 'r' } }, null).digest, '');
+// A life action carries the life draft's digest, never the routine draft's.
+assert.ok(ENDPOINTS.includes('/api/personas/X/life/draft'));
+assert.ok(ENDPOINTS.includes('/api/personas/X/life/draft/approve'));
+assert.deepEqual(
+  lifeDraftBody({ routine: { draft: { digest: 'wrong' } }, life: { draft: { digest: 'life-d' } } }, '2026-11-02', 'tok', 'edited'),
+  { digest: 'life-d', text: 'edited', date: '2026-11-02', unlock: 'tok' },
+);
+assert.equal(lifeDraftBody({ life: {} }, null).digest, '');
 // Each anchor said in a line: named days or their group, hours, name,
 // activity, and how often.
 assert.equal(
