@@ -971,7 +971,7 @@ mod tests {
             config(
                 &s,
                 &format!(
-                    "# Who you are\n\nMara.\n\n{}\n\nMilo.",
+                    "# Who you are\n\nMara.\n\n{}\n\nPell.",
                     super::super::super::agent::PEOPLE_HEADING
                 ),
                 "2026-01-03T09:00:00Z",

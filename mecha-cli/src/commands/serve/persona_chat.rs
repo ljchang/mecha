@@ -11362,16 +11362,16 @@ mod tests {
             &w.store(),
             &lib,
             NewPersona {
-                name: "wren".into(),
-                display: "Wren".into(),
+                name: "jun".into(),
+                display: "Jun".into(),
                 relationships: vec!["colleague".into()],
                 origin: Origin::Owner,
                 ..NewPersona::default()
             },
         )
         .unwrap();
-        let theirs = remember(&w, "wren", Table::User, "Swims at dawn.", Origin::ModelClean);
-        let fact = Memory::open(&w.store(), "wren")
+        let theirs = remember(&w, "jun", Table::User, "Swims at dawn.", Origin::ModelClean);
+        let fact = Memory::open(&w.store(), "jun")
             .unwrap()
             .fact(&theirs)
             .unwrap()
