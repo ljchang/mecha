@@ -1918,7 +1918,7 @@ impl PersonaChats {
         // digest a change sends back so an editor's edit is never
         // overwritten. A routine that does not load names no cell here;
         // the week below says why.
-        use mecha_core::persona::{drafter, routine};
+        use mecha_core::persona::{drafter, life, routine};
         let texts = routine::read(&self.store, &p.name).map_err(failed)?;
         let text = texts.routine;
         let cell = text
@@ -1941,8 +1941,26 @@ impl PersonaChats {
                 "edited": routine::may_stage(&self.store, &p.name).is_err(),
             })
         });
+        let life = life::read(&self.store, &p.name)
+            .map_err(failed)?
+            .as_deref()
+            .map(|text| match life::parse(text) {
+                Ok(profile) => {
+                    let mut value = profile.to_json();
+                    value["error"] = serde_json::Value::Null;
+                    value
+                }
+                Err(e) => serde_json::json!({
+                    "household": [],
+                    "alone": null,
+                    "sleep": null,
+                    "never": [],
+                    "error": format!("{e:#}"),
+                }),
+            });
         let mut out = serde_json::json!({
             "today": today.to_string(),
+            "life": life,
             "routine": {
                 "digest": routine::digest_of(text.as_deref()),
                 "cell": cell,
@@ -9493,6 +9511,7 @@ mod tests {
         let week = |date: Option<&str>| w.personas().week(&w.library, "mara", None, date, None);
         let off = week(None).unwrap();
         assert_eq!(off["absent"], "off");
+        assert_eq!(off["life"], serde_json::Value::Null);
         assert!(off["why"].as_str().unwrap().contains("[life] world is off"));
         assert!(off.get("week").is_none());
         let dir = w.store().join("mara");
@@ -9504,6 +9523,22 @@ mod tests {
         assert_eq!(none["routine"]["digest"], "");
         assert_eq!(none["routine"]["cell"], serde_json::Value::Null);
         assert!(matches!(week(Some("someday")), Err(Refusal::Bad(_))));
+
+        std::fs::write(
+            dir.join(mecha_core::persona::life::FILE),
+            "never = [\"caring\"]\n\
+             [[household]]\nperson = \"Theo\"\nrelation = \"housemate\"\n\
+             [sleep]\nbed = \"23:30\"\nwake = \"07:30\"\n",
+        )
+        .unwrap();
+        let profiled = week(None).unwrap();
+        assert_eq!(profiled["life"]["alone"], false);
+        assert_eq!(profiled["life"]["household"][0]["person"], "Theo");
+        assert_eq!(profiled["life"]["household"][0]["relation"], "housemate");
+        assert_eq!(profiled["life"]["sleep"]["bed"], "23:30");
+        assert_eq!(profiled["life"]["sleep"]["wake"], "07:30");
+        assert_eq!(profiled["life"]["never"][0], "caring");
+        assert_eq!(profiled["life"]["error"], serde_json::Value::Null);
 
         let body = |cell: &str, base: &str| CellBody {
             cell: cell.into(),
