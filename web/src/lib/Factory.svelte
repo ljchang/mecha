@@ -39,11 +39,14 @@
   // The new-form sheet: a starter and an id, then the draft opens.
   let newing = $state(null); // { starters, starter, title, id, busy, error }
   async function openNew() {
-    newing = { starters: [], starter: 'meeting', title: '', id: '', busy: false, error: null };
+    newing = { starters: [], starter: '', title: '', id: '', busy: false, error: null };
     try {
       const res = await fetch('/api/factory/starters');
       if (!res.ok) throw new Error((await res.text()).trim());
       newing.starters = (await res.json()).starters;
+      // The factory's own list decides the default, so the select and the
+      // value posted cannot disagree about a starter it no longer ships.
+      newing.starter = newing.starters[0]?.name ?? '';
     } catch (e) {
       newing.error = String(e?.message ?? e);
     }
@@ -330,7 +333,7 @@
       {#if draftOnly}
         <!-- Never published: nothing is served yet, so there is no status
              to show — only the draft, and Publish. -->
-        <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} />
+        <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} ondiscarded={(remains) => { loadList(); if (remains) loadItem(id); else navigate('factory'); }} />
       {:else if !item && !itemError}
         <div class="empty">reading {id}…</div>
       {:else if item}
@@ -382,7 +385,7 @@
         {/if}
 
         {#if item.kind !== 'booking'}
-          <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} />
+          <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} ondiscarded={(remains) => { loadList(); if (remains) loadItem(id); else navigate('factory'); }} />
         {:else if item.hours_error}
           <div class="warnline">{@render hazardGlyph()}<span>{item.hours_error}</span></div>
         {:else if draft}
@@ -512,7 +515,7 @@
           {/if}
         {/if}
         {#if item.kind === 'booking'}
-          <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} />
+          <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} ondiscarded={(remains) => { loadList(); if (remains) loadItem(id); else navigate('factory'); }} />
         {/if}
       {/if}
     {/if}
@@ -558,7 +561,7 @@
       <div class="note">The link name is part of the form's public address and cannot change after it is published. Lowercase letters, digits and hyphens. Nothing is published until you press Publish.</div>
       <div class="btnrow">
         <button class="abtn" disabled={newing.busy} onclick={() => (newing = null)}>Back</button>
-        <button class="abtn primary" disabled={newing.busy || !newing.id} onclick={createForm}>Create draft</button>
+        <button class="abtn primary" disabled={newing.busy || !newing.id || !newing.starter} onclick={createForm}>Create draft</button>
       </div>
     </div>
   {/if}

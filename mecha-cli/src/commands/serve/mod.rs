@@ -3762,6 +3762,49 @@ esac
         )
         .await;
         assert_eq!(st, StatusCode::CONFLICT);
+        // Discard: refused with no draft, refused on a stale page, and for a
+        // form never published it is a delete that says nothing remains.
+        let (st, _) = json(
+            req(
+                "POST",
+                "/api/factory/form/discard",
+                Some(serde_json::json!({"id": "letter", "base": "x"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "letter has no draft now");
+        let (st, _) = json(
+            req(
+                "POST",
+                "/api/factory/form/discard",
+                Some(serde_json::json!({"id": "office-hours", "base": "stale"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        let office = home
+            .dir
+            .join("factory")
+            .join("drafts")
+            .join("office-hours.toml");
+        assert!(office.exists(), "a refused discard leaves the draft");
+        let (st, gone) = json(
+            req(
+                "POST",
+                "/api/factory/form/discard",
+                Some(serde_json::json!({"id": "office-hours", "base": made["digest"]})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{gone}");
+        assert_eq!(gone["form_remains"], false);
+        assert!(!office.exists());
     }
 
     /// The list editor's save: rows set in place in the file on disk, so a

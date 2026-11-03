@@ -6,7 +6,7 @@
   // the draft only; Publish is the one act that changes the live form, and
   // it asks first. A booking page's hours are not edited here — they stay
   // the hours editor's, and publishing carries the live ones over.
-  let { id, onpublished = () => {} } = $props();
+  let { id, onpublished = () => {}, ondiscarded = () => {} } = $props();
 
   let st = $state(null); // the GET /api/factory/form body
   let edit = $state(null); // the structured draft being edited
@@ -16,6 +16,8 @@
   let busy = $state(false);
   let preview = $state(null); // { html }
   let confirming = $state(false);
+  // Discard asks too: for a form never published, the draft is the form.
+  let discarding = $state(false);
   let toast = $state(null);
   let toastHazard = $state(false);
 
@@ -108,10 +110,17 @@
   async function discard() {
     busy = true;
     try {
-      await post('/api/factory/form/discard', { id, base: st.digest });
-      say('Draft discarded.');
-      await load();
+      const out = await post('/api/factory/form/discard', { id, base: st.digest });
+      discarding = false;
+      if (out.form_remains) {
+        say('Draft discarded; the live form is unchanged.');
+        await load();
+      }
+      // The parent reloads its list either way, and leaves a form that no
+      // longer exists rather than letting its page 404 on remount.
+      ondiscarded(out.form_remains);
     } catch (e) {
+      discarding = false;
       say(String(e?.message ?? e), true);
     } finally {
       busy = false;
@@ -268,7 +277,7 @@
       {:else}
         <button class="abtn" disabled={busy} onclick={showPreview}>Preview</button>
         {#if st.draft}
-          <button class="abtn" disabled={busy} onclick={discard}>Discard draft</button>
+          <button class="abtn" disabled={busy} onclick={() => (discarding = true)}>{st.published ? 'Discard draft' : 'Delete form…'}</button>
           <button class="abtn primary" disabled={busy} onclick={() => (confirming = true)}>Publish…</button>
         {/if}
       {/if}
@@ -290,6 +299,23 @@
       <div class="btnrow">
         <button class="abtn" disabled={busy} onclick={() => (confirming = false)}>Back</button>
         <button class="abtn primary" disabled={busy} onclick={publish}>{busy ? 'Publishing…' : 'Publish'}</button>
+      </div>
+    </div>
+  {/if}
+
+  {#if discarding}
+    <div class="sheet">
+      <div class="sheet-grip"></div>
+      {#if st.published}
+        <div class="sheet-text">Discard your unpublished changes?</div>
+        <div class="note">The live form stays as it is; only the draft goes.</div>
+      {:else}
+        <div class="sheet-text">Delete this form?</div>
+        <div class="note">It has never been published, so this draft is the only copy: its title, questions and choices are gone for good.</div>
+      {/if}
+      <div class="btnrow">
+        <button class="abtn" disabled={busy} onclick={() => (discarding = false)}>Back</button>
+        <button class="abtn primary" disabled={busy} onclick={discard}>{st.published ? 'Discard changes' : 'Delete form'}</button>
       </div>
     </div>
   {/if}
