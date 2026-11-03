@@ -1541,7 +1541,8 @@ fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
             let name = name.trim().to_lowercase();
             let from = to - chrono::Days::new(u64::from(days - 1));
             let got = story::story(dir, &name, from, to, today)?;
-            let names = story::names(&dir.join(&name))?;
+            let people = load(dir).get(&name).is_some_and(|p| p.settings.life.people);
+            let names = story::names(&dir.join(&name), people)?;
             print!("{}", render_story(&got.days, &names, json, today)?);
             if let Some(why) = &got.why {
                 eprintln!("the rest is not drawn: {why}");
