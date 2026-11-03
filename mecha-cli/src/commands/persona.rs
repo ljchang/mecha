@@ -2540,7 +2540,12 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 // A bulk vouch on provenance: what is vouched for is shown
                 // first, and asked about, as forget --chat asks (review of
                 // #837). The owner signs for text they can read.
-                let waiting = untrusted_from_chat(&m, &chat)?;
+                let found = chat_records(&m, &chat)?;
+                if !found.any {
+                    bail!("`{name}` has no memory records from chat `{chat}`");
+                }
+                let waiting = found.untrusted;
+                let mut count = 0;
                 if !waiting.is_empty() {
                     println!("From chat {chat}, marked as from outside:");
                     for (uid, text) in &waiting {
@@ -2558,20 +2563,16 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                     // chat while the question waits was never read, so it is
                     // not vouched for (review of #837). Each vouch re-checks
                     // its record inside its own write.
-                    let mut count = 0;
                     for (uid, _) in &waiting {
                         m.approve_clean(uid)?;
                         count += 1;
                     }
-                    println!(
-                        "Approved {count} record(s) as clean — recalling them no longer marks the chat untrusted."
-                    );
-                    return Ok(());
                 }
-                // Nothing waiting: a chat with no records is refused, and
-                // records already vouched for have their shared copies
-                // re-synced.
-                let count = m.approve_clean_chat(&chat)?;
+                // Records vouched for before: a repeat re-syncs their shared
+                // copies and vouches for nothing new, so nothing to show.
+                for uid in &found.vouched {
+                    m.approve_clean(uid)?;
+                }
                 if count == 0 {
                     println!(
                         "Nothing from {chat} needed a new clean approval; any existing vouches were re-synced."
@@ -2717,30 +2718,48 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
     Ok(())
 }
 
-/// The live records from `chat` still marked as from outside, as the owner
-/// reviews them before a chat-wide vouch: id and text.
-fn untrusted_from_chat(
-    m: &mecha_core::persona::memory::Memory,
-    chat: &str,
-) -> Result<Vec<(String, String)>> {
+/// What `chat` left in memory, as a chat-wide vouch reviews it: whether it
+/// left anything at all, its live records still marked as from outside (id
+/// and text, what a vouch would sign for), and its live records already
+/// vouched for (whose shared copies a repeat re-syncs).
+struct ChatRecords {
+    any: bool,
+    untrusted: Vec<(String, String)>,
+    vouched: Vec<String>,
+}
+
+fn chat_records(m: &mecha_core::persona::memory::Memory, chat: &str) -> Result<ChatRecords> {
     use mecha_core::persona::memory::{Filter, Status as MemoryStatus, Table};
     use mecha_core::persona::Origin;
-    let mut out = Vec::new();
+    let mut out = ChatRecords {
+        any: false,
+        untrusted: Vec::new(),
+        vouched: Vec::new(),
+    };
+    let mut note = |uid: String, text: String, origin: Origin, vouched: bool, live: bool| {
+        out.any = true;
+        if !live {
+            return;
+        }
+        if origin == Origin::ModelUntrusted {
+            out.untrusted.push((uid, text));
+        } else if vouched {
+            out.vouched.push(uid);
+        }
+    };
     for e in m.episodes(Filter::All)? {
-        if e.source.chat == chat
-            && e.origin == Origin::ModelUntrusted
-            && e.status != MemoryStatus::Invalidated
-        {
-            out.push((e.uid, e.summary));
+        if e.source.chat == chat {
+            let live = e.status != MemoryStatus::Invalidated;
+            note(e.uid, e.summary, e.origin, e.vouched_at.is_some(), live);
         }
     }
-    for table in [Table::Persona, Table::User, Table::Inferred] {
+    // Every fact table the module knows, never a hand list that a new one
+    // would slip past (review of #837).
+    for table in Table::ALL {
         for f in m.facts(table, Filter::All)? {
-            if f.source.chat == chat
-                && f.origin == Origin::ModelUntrusted
-                && f.status != MemoryStatus::Invalidated
-            {
-                out.push((f.uid, f.text));
+            if f.source.chat == chat {
+                let live = f.status != MemoryStatus::Invalidated;
+                note(f.uid, f.text, f.origin, f.vouched_at.is_some(), live);
             }
         }
     }
