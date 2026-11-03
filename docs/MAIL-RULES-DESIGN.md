@@ -447,19 +447,23 @@ lapses the digest (§6.2), and restarts the measurement, confirmed from then
 on, against the words that will actually run: **a group's would-have rate is
 computed only over rows written under its current *match digest*** — the
 part of §6.2's digest that can change what the rate *means*: the rule's own
-directory, plus each compiled instruction version **only for the rules it
-can affect** — the §4.2 confirmation version for rules with an outbound
-action or a `task`, the §5.3 extraction version for rules with a typed
-`send` — so a release that changes one resets only those rules, and a
-mailbox-only or template-reply rule keeps its week of measurement. When a
-release does reset one, the earlier rows sit under a heading that says why:
-*measured under an earlier build*, not *before your edit*. and rows from
-an earlier match digest are shown apart on the rule page (§8), never mixed
-into the number the owner approves against. The whole directory is in it,
+directory, plus the §4.2 confirmation version **for the rules it can
+affect** (those with an outbound action or a `task`), so a release that
+changes it resets only those rules and a mailbox-only rule keeps its week of
+measurement. Rows from an earlier match digest are shown apart on the rule
+page (§8), never mixed into the number the owner approves against, under a
+heading that says why: *measured under an earlier build*, or *before your
+edit*. The §5.3 extraction version is **not** in it: shadow runs no
+extraction, so the version cannot have touched a would-have row. The
+consequence is stated rather than hidden — a typed-send rule's would-have
+rate does not count sends that ungrounded fields would push to `propose`
+(§5.3 step 2), so for those rules the page notes the rate is an upper bound
+on what `auto` will send unattended. The whole directory is in it,
 not only the matcher keys, because §9's gate is over every key and every
 file the rule names: an edit anywhere in it can turn a gate-failing rule
 into a gate-passing one, which is what turns a labelled ceiling into a
-confirmed rate. An `aliases.toml` or `limits.toml` edit lapses approvals
+confirmed rate. Nothing a gate-failing rule says enters any frame that
+judges another rule. An `aliases.toml` or `limits.toml` edit lapses approvals
 (§6.2) but resets no measurement: neither can change a match or the gate.
 Nor does an edit to the `draft_with` skill's directory: the skill is
 owner-authored, cannot change a match, and §9's gate is over the origin of
@@ -467,8 +471,7 @@ the rule's own text, not the skill's.
 The digest's components are always **written, empty when absent** — P1's
 rows carry no compiled instruction versions, because those arrive in P4 and
 P5, and an omitted component that later read as a default would silently
-merge P1 rows into a P4 rate. Nothing a gate-failing rule
-says enters any frame that judges another rule. Each description in the set is
+merge P1 rows into a P4 rate. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
 other would have taken, and the winner then sends only within its own
@@ -932,9 +935,13 @@ The guards:
   provider's sends stay in `propose`. `Authentication-Results` gets its
   own field on `Email` rather than riding the existing loop.
   One consequence worth saying in the UI: mail that reaches an account by
-  forwarding from another address routinely fails alignment, so a rule on
-  such an account may never leave `propose` for its sends. That is the guard
-  working, not a fault, and the rule page says which guard is holding it.
+  forwarding from another address routinely fails alignment. That is an
+  ordinary per-message failure, so it is a **demotion**, not a hold: the
+  group stays at whatever mode the owner set, and each such send stages in
+  the outbox with the DMARC guard as its row's reason. On an account that
+  receives mostly forwarded mail, nearly every send will stage — the guard
+  working, not a fault — and the rule page shows the share of staged rows by
+  reason, so the owner can see why `auto` is sending little.
 - **`From`, never `Reply-To`, and never reply-all.** `Reply-To` is
   sender-chosen and is the other reflection route. An automatic reply answers
   one authenticated person.
