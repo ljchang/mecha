@@ -86,6 +86,9 @@ async fn detail(found: Loaded) -> serde_json::Value {
         "path": inst.path,
         "digest": instrument::digest(&text),
         "pipeline_days": instrument::PIPELINE_DAYS,
+        // Whether the slot timer pushes this page; only then may the page
+        // promise its retries or blame it for a stale push.
+        "timer_pushes": inst.id == instrument::PIPELINE_INSTRUMENT,
         "days": instrument::DAYS,
     });
     let id = inst.id.clone();
@@ -257,41 +260,56 @@ async fn run(
         })
         .kill_on_drop(kind == Child::Read);
     let mut child = cmd.spawn()?;
-    if let Some(bytes) = stdin {
-        let mut pipe = child.stdin.take().expect("piped");
+    let pipe = child.stdin.take();
+    // The write and the wait run together, inside the one timeout. Written
+    // first and outside it, a child that neither reads its stdin nor exits
+    // blocked the save for ever once the busy time outgrew the pipe buffer —
+    // the timeout never started (review of #821; `hooks.rs` keeps the same
+    // rule at the same spot).
+    let feed = async move {
+        let (Some(mut pipe), Some(bytes)) = (pipe, stdin) else {
+            return Ok(());
+        };
         // A child that refuses before reading its stdin (`slots push` checks
         // the manifest's id first) closes the pipe under the write. That is
         // the child's answer arriving early, not a failure of ours: carry on
         // and report its exit and its own refusal, which is what the owner
         // needs to read. Reported as "Broken pipe" it said nothing (CI on
         // #816's merge, where the stand-in exited before the write finished).
-        match pipe.write_all(&bytes).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-            Err(e) => return Err(e.into()),
-        }
+        let written = match pipe.write_all(&bytes).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            Err(e) => Err(e),
+        };
+        // Closed here, the moment the write is done: a child reading to EOF
+        // must see it now, not whenever `join!` drops a finished branch —
+        // `wait_with_output` cannot close a stdin that was taken out of it.
         drop(pipe);
-    }
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        child.wait_with_output(),
-    )
+        written
+    };
+    let (fed, output) = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        tokio::join!(feed, child.wait_with_output())
+    })
     .await
-    .map_err(|_| anyhow::anyhow!("`{name}` timed out"))??;
+    .map_err(|_| anyhow::anyhow!("`{name}` timed out"))?;
+    fed?;
+    let output = output?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // The last line is the refusal itself (`Error: …`), which is what
-        // the owner needs to read; the rest is context the journal keeps.
-        anyhow::bail!(
-            "{}",
-            stderr
-                .lines()
-                .rfind(|l| !l.trim().is_empty())
-                .unwrap_or("failed")
-                .trim_start_matches("Error: ")
-        );
+        anyhow::bail!("{}", refusal(name, &output.stderr, output.status));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// What a child's failure says to the owner: the last line of its stderr
+/// (the refusal itself, `Error: …`), or — for a child that died without a
+/// word, which the early-exit path makes reachable — its exit status, never
+/// a bare "failed".
+fn refusal(name: &str, stderr: &[u8], status: std::process::ExitStatus) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    match stderr.lines().rfind(|l| !l.trim().is_empty()) {
+        Some(line) => line.trim_start_matches("Error: ").to_string(),
+        None => format!("`{name}` {status} and said nothing"),
+    }
 }
 
 async fn preview(id: &str, manifest: &Path) -> anyhow::Result<serde_json::Value> {
@@ -498,4 +516,26 @@ async fn push(id: &str, manifest: &Path) -> anyhow::Result<String> {
         Child::Publish,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn a_childs_refusal_is_its_last_line_or_its_exit_never_a_bare_failed() {
+        let status = std::process::ExitStatus::from_raw(3 << 8);
+        let said = super::refusal(
+            "factory-publish",
+            b"context\nError: the box is down\n\n",
+            status,
+        );
+        assert_eq!(said, "the box is down");
+        // Died without a word: the exit status is the only thing it said.
+        let said = super::refusal("factory-publish", b"", status);
+        assert!(
+            said.contains("exit status: 3") && said.contains("factory-publish"),
+            "{said}"
+        );
+    }
 }
