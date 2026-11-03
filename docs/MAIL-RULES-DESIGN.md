@@ -232,8 +232,9 @@ is a heuristic the harness applies to everyone's mail, while a header rule is
 the owner naming, by hand, the senders it is for. The judgement `prefilter`
 refuses to automate is the one the owner made when writing the rule.
 
-They run **before classification**, and a rule whose actions are all
-mailbox-only can mark the thread handled so the classifier never spends a
+They run **before classification**, and a rule whose actions are only
+`archive`, `trash`, `read`, `unread` or `tag` (the Mailbox group plus `tag`;
+never `spam`, `digest` or `task`) can mark the thread handled so the classifier never spends a
 call on it — **but only when that rule's Mailbox group is in `auto`** (so a
 `spam`-only rule never skips, its Report group never reaching `auto`; a
 `shadow` or `propose` rule has not decided the thread's fate, so it must not
@@ -294,7 +295,8 @@ there is no earlier record to walk. A queued thread is evaluated and its
 deferred actions run whether or not it is still in the window. **The queue
 exists so `classify` re-evaluates the thread, and an entry leaves once it
 has**: each deferred action is then settled with the outcome its own group
-uses — `done` for a mailbox or record action, `sent` / `staged` / `held` for
+uses — `done` for a mailbox, record or Board action (a task created is a
+Board `done`), `sent` / `staged` / `held` for
 an outbound one (a `propose`-mode send settles `staged`, never `offered`), so
 §4.4's per-thread key sees an outbound settlement and a second message in
 the thread never forwards again — or offered to the owner (`offered` — a
@@ -424,7 +426,9 @@ send gate** — a rule whose text is still model-proposed from an armed
 conversation may sit in `propose`, but its description never enters the
 frame that confirms another rule's automatic send, since the pass is sound
 only because nothing a stranger shaped is in that frame. Shadow candidates
-are confirmed among the shadow rules, separately, so a rule being measured
+are confirmed among the shadow rules that pass the same gate, separately —
+shadow is where `ModelUntrusted` proposals live by construction, and the
+would-have rate it produces is the number the owner approves against — so a rule being measured
 never changes what an approved one does. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
@@ -572,7 +576,8 @@ eligible for an action group only if it was received after that group's
 `propose` or above. Rows that move a group *within* `propose` and `auto` —
 an R7 lapse, a brake to `propose`, a re-approval — do not move the cutoff,
 so lapsing and re-approving a rule never orphans mail that arrived in
-between. A step down to `shadow` (a brake or `pause-all`) does end the
+between. A step down to `shadow` or `off` (a brake, `pause-all`, or the
+owner turning it off) does end the
 stretch, but mail arriving while paused is not lost: the rule is in
 `shadow`, so it writes would-have rows for it, and resuming offers *apply to
 these N matches from while I was paused*. **A message found ineligible gets
@@ -594,9 +599,9 @@ preference reissues it is the open P0 question above, which P0 settles
 before this key is relied on — and the once-per-thread check below is a lookup
 on `(rule, account, thread id)` over the outbound rows, a key of its own
 beside the per-message one, and it names its closing outcomes as the
-per-message key does: **`pending`, `sent`, `staged`, `held`, `offered` (a
-proposed `task` waiting in the digest) and an outbound or Board `failed`
-close the thread** — a send that reached the provider, one queued
+per-message key does: **`pending`, `sent`, `staged`, `held`, a Board
+`done` (a task created), `offered` (a proposed `task` waiting in the digest)
+and an outbound or Board `failed` close the thread** — a send that reached the provider, one queued
 and still owed, or one whose fate cannot be told — and **`would have`,
 `skipped` and `expired` leave it open**. Otherwise a rule promoted out of
 `shadow` would find its own would-have rows and never send on the threads it
@@ -1237,7 +1242,8 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   subject, opening in the reader), matched because (header key, or the
   grounded `rule_quote`), the action, the mode it ran in, and the outcome:
   `pending` (written before an action executes, §4.4), `done`, `would have`
-  (shadow), `offered` (a proposed mailbox action waiting in the mail desk),
+  (shadow), `offered` (a proposed mailbox, record or Board action waiting in
+  the mail desk or the digest),
   `staged`, `held: rule cap` and `held: global cap` (§6.4), `held: fate
   unknown` (a send interrupted mid-flight, §4.4), `sent`,
   `released unchanged`,
