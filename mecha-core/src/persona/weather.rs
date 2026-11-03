@@ -589,12 +589,8 @@ pub async fn refresh(
     life_place: Option<&str>,
     today: NaiveDate,
 ) -> Result<Option<(Place, usize)>> {
-    match life_place.map(str::trim).filter(|q| !q.is_empty()) {
-        Some(query) => clear_weather_for_changed_place(pdir, query)?,
-        // Exact coordinates in story.toml have no geocoder cache to prove
-        // ownership. A manual fallback refresh therefore clears first: if
-        // its place changed and the request fails, no old place is shown.
-        None => super::world::World::open(pdir)?.clear_weather()?,
+    if let Some(query) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        clear_weather_for_changed_place(pdir, query)?;
     }
     let Some(place) = place_of(pdir, life_place).await? else {
         return Ok(None);
@@ -603,7 +599,15 @@ pub async fn refresh(
     if days.is_empty() {
         bail!("the weather service answered, but every day was refused");
     }
-    let n = super::world::World::open(pdir)?.set_weather(&days)?;
+    let mut world = super::world::World::open(pdir)?;
+    // Exact coordinates in story.toml have no geocoder cache to prove whose
+    // rows are stored, so a manual fallback replaces them whole, and only
+    // once the new place has answered: a failed fetch keeps what was there
+    // (review of #836).
+    if life_place.map(str::trim).is_none_or(str::is_empty) {
+        world.clear_weather()?;
+    }
+    let n = world.set_weather(&days)?;
     if let Some(q) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
         let mut resolved = cached(pdir, q).context("the resolved place cache was not kept")?;
         resolved.weather_for = Some(q.to_string());

@@ -65,9 +65,12 @@ fn teller_lines(
     at: chrono::NaiveDateTime,
 ) -> Result<String> {
     use mecha_core::persona::{story, today};
-    let today_date = at.date();
+    // The diary day, which runs 4am to 4am, as `world::now` reads it; the
+    // calendar day is what the story's keep window counts from.
+    let today_date = today::diary_date(at);
+    let calendar = at.date();
     let one = |date| -> Result<story::StoryDay> {
-        let story::Story { days, why } = story::story(store, name, date, date, today_date)?;
+        let story::Story { days, why } = story::story(store, name, date, date, calendar)?;
         days.into_iter()
             .find(|day| day.date == date)
             .with_context(|| {
@@ -4984,28 +4987,44 @@ impl PersonaChats {
                 None => chrono::Local::now().naive_local(),
             };
             let events = ps.pinned.settings.life.events;
+            let people = ps.pinned.settings.life.people;
             if events {
-                let place = live_weather_place(&self.store, &name);
+                // A whole-store load: off the reactor, as the rest is.
+                let (store, who) = (self.store.clone(), name.clone());
+                let place = tokio::task::spawn_blocking(move || live_weather_place(&store, &who))
+                    .await
+                    .ok()
+                    .flatten();
                 refresh_weather_in_background(&self.store, &name, place.as_deref(), at.date())
                     .await;
             }
-            match mecha_core::persona::world::now(&self.store, &name, at) {
-                Ok(now) => now.map(|n| {
-                    if !events {
-                        return mecha_core::persona::today::note(&n);
+            // The day and the teller read the store and draw days (up to a
+            // month of sampler draws and SQLite writes on a first walk), so
+            // they run on the blocking pool (review of #836).
+            let (store, who) = (self.store.clone(), name.clone());
+            tokio::task::spawn_blocking(move || {
+                match mecha_core::persona::world::now(&store, &who, at) {
+                    Ok(now) => now.map(|n| {
+                        if !events {
+                            return mecha_core::persona::today::note(&n);
+                        }
+                        let teller = teller_lines(&store, &who, people, at);
+                        if let Err(e) = &teller {
+                            tracing::warn!("persona {who}: no teller lines this turn: {e:#}");
+                        }
+                        mecha_core::persona::today::note_with_events(&n, teller.as_deref().ok())
+                    }),
+                    Err(e) => {
+                        tracing::warn!("persona {who}: no today-block this turn: {e:#}");
+                        None
                     }
-                    let teller =
-                        teller_lines(&self.store, &name, ps.pinned.settings.life.people, at);
-                    if let Err(e) = &teller {
-                        tracing::warn!("persona {name}: no teller lines this turn: {e:#}");
-                    }
-                    mecha_core::persona::today::note_with_events(&n, teller.as_deref().ok())
-                }),
-                Err(e) => {
-                    tracing::warn!("persona {name}: no today-block this turn: {e:#}");
-                    None
                 }
-            }
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("persona {name}: the today-block task failed: {e}");
+                None
+            })
         };
         let notes: Vec<String> = [
             memory_note,
@@ -10021,6 +10040,13 @@ mod tests {
             .story_day(at.date().pred_opt().unwrap())
             .unwrap()
             .is_some());
+        // 1am is the evening of the day before (a day runs 4am to 4am): its
+        // events are today's, not yesterday's, and nothing of the coming
+        // calendar day is drawn (review of #836).
+        let late: chrono::NaiveDateTime = "2026-11-04T01:00:00".parse().unwrap();
+        let lines = teller_lines(&store, "mara", false, late).unwrap();
+        assert!(lines.contains("What happened today:"), "{lines}");
+        assert!(world.story_day(late.date()).unwrap().is_none());
     }
 
     /// §17: a persona with no days answers the week as a 200 saying which,

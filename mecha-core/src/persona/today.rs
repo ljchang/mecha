@@ -98,7 +98,19 @@ fn who(c: Company) -> Option<&'static str> {
 
 /// Whether a turn tells yesterday's events and today's morning levels.
 pub fn before_noon(at: NaiveDateTime) -> bool {
-    at.hour() < 12
+    // A day runs 4am to 4am (`sampler::DAY_START`): before 4am is the
+    // evening of the day before, not its morning (review of #836).
+    (4..12).contains(&at.hour())
+}
+
+/// The day `at` falls in, which runs 4am to 4am: before 4am, the calendar
+/// day before, as `world::now` reads it.
+pub fn diary_date(at: NaiveDateTime) -> chrono::NaiveDate {
+    if at.hour() < 4 {
+        at.date().pred_opt().unwrap_or(at.date())
+    } else {
+        at.date()
+    }
 }
 
 fn fahrenheit(c: i16) -> i16 {
@@ -512,5 +524,24 @@ mod tests {
         );
         assert_eq!(stem_of("What you are doing right now"), None);
         assert_eq!(stem_of(crate::persona::recall::MEMORY_STEM), None);
+    }
+
+    #[test]
+    fn the_teller_day_runs_four_to_four() {
+        let at = |s: &str| -> NaiveDateTime { s.parse().unwrap() };
+        assert!(before_noon(at("2026-11-03T09:00:00")));
+        assert!(!before_noon(at("2026-11-03T13:00:00")));
+        assert!(
+            !before_noon(at("2026-11-04T01:00:00")),
+            "1am is the evening before"
+        );
+        assert_eq!(
+            diary_date(at("2026-11-04T01:00:00")).to_string(),
+            "2026-11-03"
+        );
+        assert_eq!(
+            diary_date(at("2026-11-04T04:00:00")).to_string(),
+            "2026-11-04"
+        );
     }
 }
