@@ -273,6 +273,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Outlook archive and spam leave Sent Items and Drafts alone.** Both now
+  move only the conversation's Inbox messages, following every page of that
+  folder's results. Empty Inbox matches say there is nothing to archive or
+  mark as spam. Trash still moves the whole conversation, as Gmail does;
+  unarchive and untrash retain their source-folder and destination rules.
+  Triage results now carry completion status and successful/failed counts
+  through MCP. Partial operations leave the CLI's triage record unchanged
+  and in its queue. An archive already out of Inbox settles the record;
+  empty spam results stay skipped because no junk training was confirmed.
+  Missing Outlook conversations still return an error. CLI results retain
+  the action and short handle, and restore messages name their action.
+
 - **Pictures and clips no longer disappear from older chats.** The nightly
   `mecha work clean` counted a chat's workspace like a morning brief and kept
   only the ten newest per surface, so every picture drawn in an older persona
