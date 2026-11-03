@@ -290,10 +290,10 @@
     {#if preview}
       <div class="section">Preview <span class="sub">as strangers will see it{st.draft ? ', with your draft' : ''}</span></div>
       <!-- No scripts, no network, no forms: the page itself, looked at. -->
-      {#if preview.servable == null}
-        <div class="note">The factory did not say whether this form can be published (its factory-publish predates the check); Publish will find out.</div>
+      {#if preview.servable === false}
+        <div class="warnline">This form cannot be published as it stands: {preview.refusal ?? 'the factory refuses it'}</div>
       {:else if preview.servable !== true}
-        <div class="warnline">This form cannot be published as it stands: {preview.servable}</div>
+        <div class="note">The factory did not say whether this form can be published (its factory-publish predates the check); Publish will find out.</div>
       {/if}
       <div class="note">The page as it looks, not as it behaves: questions that appear only after an earlier answer are all shown here.</div>
       <iframe class="preview" title="form preview" sandbox="" srcdoc={preview.html}></iframe>
