@@ -11199,7 +11199,13 @@ mod tests {
             },
         )
         .unwrap();
-        let theirs = remember(&w, "wren", Table::User, "Swims at dawn.", Origin::ModelClean);
+        let theirs = remember(
+            &w,
+            "wren",
+            Table::User,
+            "Swims at dawn.",
+            Origin::ModelClean,
+        );
         let fact = Memory::open(&w.store(), "wren")
             .unwrap()
             .fact(&theirs)
