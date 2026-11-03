@@ -3600,7 +3600,7 @@ case "$1 $2" in
   "type starters") printf 'meeting\tRequest a meeting\n' ;;
   "type new") printf '# from the starter\nid = "%s"\nversion = 1\ntitle = "Request a meeting"\n\n[[fields]]\nname = "email"\nlabel = "Email"\nkind = "email"\n' "$5" ;;
   "type render") echo '{{"id":"letter","kind":"request","html":"<html><head><link rel=\"stylesheet\" href=\"form.css\"></head><body><form>Q</form><script src=\"form.js\"></script></body></html>","style":"body{{color:red}}"}}' ;;
-  "type push") cp "$3" "{types}/" ;;
+  "type push") id=$(sed -n 's/^id = "\(.*\)"$/\1/p' "$3" | head -1); cp "$3" "{types}/$id.toml" ;;
   *) echo "unexpected: $*" >&2; exit 9 ;;
 esac
 "#,

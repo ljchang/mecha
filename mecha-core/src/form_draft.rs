@@ -253,7 +253,26 @@ pub fn write_form(text: &str, f: &FormEdit) -> Result<String> {
             root.remove("description");
         }
     }
-    if f.confirmation_heading.is_some() || f.confirmation_body.is_some() {
+    // A confirmation is a heading and a message together (the factory
+    // requires both): both cleared removes it, one cleared is refused.
+    let heading = f
+        .confirmation_heading
+        .as_deref()
+        .filter(|h| !h.trim().is_empty());
+    let body = f
+        .confirmation_body
+        .as_deref()
+        .filter(|b| !b.trim().is_empty());
+    match (heading, body) {
+        (None, None) => {
+            root.remove("confirmation");
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            bail!("the message after submitting needs both a heading and a message, or neither")
+        }
+        (Some(_), Some(_)) => {}
+    }
+    if heading.is_some() {
         if !root.contains_key("confirmation") {
             root["confirmation"] = Item::Table(Table::new());
         }
@@ -472,6 +491,19 @@ expect_reply_within = "a week"
             out.find("[[fields]]").unwrap() < out.find("[verification]").unwrap(),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_confirmation_clears_whole_or_not_at_all() {
+        let mut f = read_form(FORM).unwrap();
+        f.confirmation_heading = None;
+        f.confirmation_body = None;
+        let out = write_form(FORM, &f).unwrap();
+        assert!(!out.contains("[confirmation]"), "{out}");
+        assert_eq!(read_form(&out).unwrap().confirmation_heading, None);
+        f.confirmation_heading = Some("Thanks".into());
+        let err = write_form(FORM, &f).unwrap_err().to_string();
+        assert!(err.contains("both a heading and a message"), "{err}");
     }
 
     #[test]
