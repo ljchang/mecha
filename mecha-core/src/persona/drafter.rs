@@ -1,7 +1,8 @@
 //! The routine drafter: a model's first draft of her week from what the
 //! owner wrote of her (`docs/PERSONA-LIFE-DESIGN.md` §4.1, ruled §16 PL1).
 //!
-//! One quarantined pass over `identity.md` and `motivation.md`
+//! One quarantined pass over `identity.md`, `motivation.md` and the
+//! owner's notes for it (`routine.notes.md`, [`routine::NOTES`])
 //! ([`crate::quarantine::QuarantinedPass`]: no tools, no history), on the
 //! persona's own model, which already reads both files on every turn. The
 //! model answers **typed anchors**, and the harness renders the draft's
@@ -23,7 +24,7 @@ use serde_json::json;
 use std::path::Path;
 
 use super::activity::Activity;
-use super::routine::{self, Routine, MAX_WHAT};
+use super::routine::{self, Routine, MAX_WHAT, MONTH_NAMES};
 use super::{Origin, Persona, Status};
 
 /// The most anchors the drafter is asked for: a week's fixed points, not
@@ -63,8 +64,17 @@ fn system() -> String {
          - \"minutes\": how long it lasts, 5 to 1440\n\
          - \"chance\": how often it really happens, above 0 and at most 1: 1 for a \
          fixed commitment, lower for a habit they sometimes skip\n\
-         Two anchors with chance 1 must not overlap.",
+         - \"months\": only for something seasonal, the months it runs in, any of \
+         {months}; leave it out for all year\n\
+         Two anchors with chance 1 must not overlap in a month they share.\n\n\
+         The author may add notes: the week's fixed points in their own words. Draft \
+         every one a note names, at the days and times it gives, as a fixed commitment \
+         unless the note says otherwise; a note outranks what the rest implies. Where a \
+         note gives a season or part of the year, use months. Where it names a \
+         commitment without its schedule, such as a sport's practices and games, \
+         draft a schedule typical for it.",
         activities = activities.join(", "),
+        months = MONTH_NAMES.join(", "),
     )
 }
 
@@ -90,6 +100,11 @@ pub fn schema() -> serde_json::Value {
                         "at": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
                         "minutes": { "type": "integer", "minimum": 5, "maximum": 1440 },
                         "chance": { "type": "number", "minimum": 0.01, "maximum": 1 },
+                        "months": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string", "enum": MONTH_NAMES },
+                        },
                     },
                     "required": ["what", "activity", "days", "at", "minutes", "chance"],
                     "additionalProperties": false,
@@ -122,19 +137,24 @@ pub fn check(p: &Persona) -> Result<()> {
     Ok(())
 }
 
-/// The one request the drafter makes for `p` on `model`, with the answer
-/// constrained to [`schema`] where the provider takes one (`structured`).
+/// The one request the drafter makes for `p` on `model`, with the owner's
+/// `notes` for it (blank for none), and the answer constrained to
+/// [`schema`] where the provider takes one (`structured`).
 pub fn request(
     model: &str,
     p: &Persona,
+    notes: &str,
     structured: bool,
 ) -> Result<crate::message::CompletionRequest> {
     check(p)?;
-    let user = json!({
+    let mut user = json!({
         "name": p.display(),
         "identity": p.identity,
         "motivation": p.motivation,
     });
+    if !notes.trim().is_empty() {
+        user["notes"] = json!(notes.trim());
+    }
     Ok(
         crate::quarantine::QuarantinedPass::new(model, crate::provider::LOCAL_MAX_TOKENS)
             .system(system())
@@ -158,6 +178,8 @@ struct Drafted {
     at: String,
     minutes: u32,
     chance: Option<f64>,
+    #[serde(default)]
+    months: Option<Vec<String>>,
 }
 
 /// The draft's text from the model's answer: [`HEADER`], then the anchors
@@ -193,6 +215,14 @@ pub fn render(reply: &str) -> Result<Option<String>> {
         t["at"] = toml_edit::value(a.at);
         t["minutes"] = toml_edit::value(i64::from(a.minutes));
         t["chance"] = toml_edit::value(a.chance.unwrap_or(1.0));
+        // An empty list is the drafter's way of saying all year.
+        if let Some(m) = a.months.filter(|m| !m.is_empty()) {
+            let mut months = toml_edit::Array::new();
+            for x in m {
+                months.push(x);
+            }
+            t["months"] = toml_edit::value(months);
+        }
         list.push(t);
     }
     let mut doc = toml_edit::DocumentMut::new();
@@ -229,7 +259,8 @@ pub async fn draft(
     // Every refusal that does not need the answer, before the model runs.
     check(p)?;
     routine::may_stage(dir, &p.name)?;
-    let request = request(model, p, provider.structured_output())?;
+    let notes = routine::read_notes(dir, &p.name)?;
+    let request = request(model, p, &notes, provider.structured_output())?;
     let response = provider.complete(&request, None).await?;
     match response.stop_reason {
         StopReason::Refusal => bail!("the drafter's model refused to draft their week"),
@@ -266,7 +297,7 @@ mod tests {
     #[test]
     fn the_request_is_one_quarantined_question_over_her_two_files() {
         let (_dir, p) = mara();
-        let r = request("local", &p, true).unwrap();
+        let r = request("local", &p, "", true).unwrap();
         assert!(r.tools.is_empty());
         assert_eq!(r.messages.len(), 1);
         let user: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
@@ -278,7 +309,43 @@ mod tests {
             assert!(system.contains(a.id()), "{} missing from the frame", a.id());
         }
         assert_eq!(r.response_schema, Some(schema()));
-        assert_eq!(request("local", &p, false).unwrap().response_schema, None);
+        assert_eq!(
+            request("local", &p, "", false).unwrap().response_schema,
+            None
+        );
+    }
+
+    #[test]
+    fn the_owners_notes_ride_in_the_question_and_blank_ones_do_not() {
+        let (_dir, p) = mara();
+        let notes = "- pottery wheel lessons Thursday 17:00-18:30\n- rowing in the spring";
+        let r = request("local", &p, &format!("  {notes}\n"), true).unwrap();
+        let user: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
+        assert_eq!(user["notes"], notes);
+        let r = request("local", &p, " \n ", true).unwrap();
+        let user: serde_json::Value = serde_json::from_str(&r.messages[0].text()).unwrap();
+        assert!(user.get("notes").is_none(), "{user}");
+        assert!(r.system.unwrap().contains("months"));
+    }
+
+    #[test]
+    fn a_seasonal_anchor_renders_its_months_and_an_empty_list_is_all_year() {
+        let reply = r#"{"anchors": [
+            {"what": "rowing practice", "activity": "exercise", "days": ["mon", "wed"],
+             "at": "16:00", "minutes": 90, "chance": 1, "months": ["mar", "apr", "may"]},
+            {"what": "choir", "activity": "hobbies", "days": ["thu"],
+             "at": "19:00", "minutes": 60, "chance": 1, "months": []}
+        ]}"#;
+        let text = render(reply).unwrap().unwrap();
+        let r = routine::parse(&text).unwrap();
+        let months = |i: usize| {
+            (1..=12)
+                .filter(|m| r.anchors[i].in_month(*m))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(months(0), vec![3, 4, 5]);
+        assert_eq!(months(1), (1..=12).collect::<Vec<_>>());
+        assert!(!text.contains("months = []"), "{text}");
     }
 
     #[test]
@@ -377,7 +444,7 @@ mod tests {
         p.state.origin = Origin::ModelClean;
         check(&p).unwrap();
         p.state.origin = Origin::ModelUntrusted;
-        let got = format!("{:#}", request("local", &p, true).unwrap_err());
+        let got = format!("{:#}", request("local", &p, "", true).unwrap_err());
         assert!(got.contains("untrusted content"), "{got}");
         assert!(format!("{:#}", stage(&dir, &p, ANSWER).unwrap_err()).contains("untrusted"));
         p.state.origin = Origin::Owner;

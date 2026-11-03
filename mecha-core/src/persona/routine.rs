@@ -8,6 +8,15 @@
 //! never over it, and the draft becomes the routine only when the owner
 //! approves it as shown. Nothing here reads a draft as a routine.
 //!
+//! An anchor may hold to some **months** only — a sport's season, a term,
+//! a summer job — and falls in every month when it names none.
+//!
+//! Beside it, the owner may keep **notes** for the drafter
+//! (`routine.notes.md`): fixed points written plainly ("choir on
+//! Wednesday evenings 7 to 9", "rowing in the spring"), which a draft
+//! takes as given. They are the owner's text, read by the drafter's
+//! quarantined pass and nothing else; no day reads them.
+//!
 //! The routine also names her **cell**: which of the time-use table's six
 //! kinds of week her unanchored hours are drawn from (`persona::atus`). The
 //! owner picks it per persona, and with none named no day is sampled: a
@@ -32,6 +41,10 @@ pub const FILE: &str = "routine.toml";
 pub const DRAFT: &str = "routine.draft.toml";
 /// The routine an approved draft replaced, kept so approval loses nothing.
 pub const PREVIOUS: &str = "routine.previous.toml";
+/// The owner's notes for the drafter.
+pub const NOTES: &str = "routine.notes.md";
+/// Notes are a list of fixed points, not a document.
+pub const MAX_NOTES: usize = 4000;
 /// The digest of the draft as a model last staged it. A waiting draft that
 /// no longer hashes to it was edited by the owner, and is theirs.
 const STAGED: &str = ".routine.draft.staged";
@@ -43,11 +56,16 @@ pub const MAX_WHAT: usize = 80;
 const MINUTES_PER_DAY: u32 = 24 * 60;
 const MINUTES_PER_WEEK: u32 = 7 * MINUTES_PER_DAY;
 const DAY_NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+/// The months an anchor may name, January first.
+pub const MONTH_NAMES: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
+const EVERY_MONTH: u16 = 0xFFF;
 
 /// What a new `routine.toml` holds: every line a comment, so it loads as
 /// a routine with no anchors and the sampler fills every hour.
 pub const TEMPLATE: &str = "\
-# Her week. Each [[anchor]] is something that happens at a fixed time;
+# Their week. Each [[anchor]] is something that happens at a fixed time;
 # the rest of each day is filled in from time-use data, from the kind of
 # week `cell` names. No day is sampled until it names one:
 #
@@ -62,6 +80,7 @@ pub const TEMPLATE: &str = "\
 # at = \"07:00\"             # 24-hour clock
 # minutes = 60
 # chance = 0.7             # how often it really happens; 1.0 when left out
+# months = [\"sep\", \"oct\", \"nov\"]  # only in these months; every month when left out
 ";
 
 /// A validated routine.
@@ -84,12 +103,19 @@ pub struct Anchor {
     pub start: u32,
     pub minutes: u32,
     pub chance: f64,
+    /// Bit 0 is January, bit 11 December; every bit when it names none.
+    pub months: u16,
 }
 
 impl Anchor {
     /// Whether it falls on `day` (0 = Monday).
     pub fn on(&self, day: u32) -> bool {
         day < 7 && self.days & (1 << day) != 0
+    }
+
+    /// Whether it holds in `month` (1 = January).
+    pub fn in_month(&self, month: u32) -> bool {
+        (1..=12).contains(&month) && self.months & (1 << (month - 1)) != 0
     }
 
     /// As the CLI's `--json` and the Week tab read it: days as 0 (Monday)
@@ -102,6 +128,7 @@ impl Anchor {
             "start_minute": self.start,
             "minutes": self.minutes,
             "chance": self.chance,
+            "months": (1..=12).filter(|m| self.in_month(*m)).collect::<Vec<_>>(),
         })
     }
 
@@ -128,6 +155,7 @@ struct AnchorForm {
     at: String,
     minutes: u32,
     chance: Option<f64>,
+    months: Option<Vec<String>>,
 }
 
 /// Parse and check a routine's text. A refusal names the anchor by number
@@ -164,6 +192,10 @@ pub fn parse(text: &str) -> Result<Routine> {
             Some(w) => Some(w.trim().to_string()),
         };
         let days = days_of(&a.days).map_err(refuse)?;
+        let months = match &a.months {
+            None => EVERY_MONTH,
+            Some(m) => months_of(m).map_err(refuse)?,
+        };
         let start = time_of(&a.at).ok_or_else(|| {
             refuse(format!(
                 "at = {:?} is not a time: write it as HH:MM, like \"07:00\"",
@@ -189,6 +221,7 @@ pub fn parse(text: &str) -> Result<Routine> {
             start,
             minutes: a.minutes,
             chance,
+            months,
         });
     }
     certain_clashes(&anchors)?;
@@ -222,6 +255,21 @@ fn days_of(words: &[String]) -> std::result::Result<u8, String> {
     Ok(mask)
 }
 
+fn months_of(words: &[String]) -> std::result::Result<u16, String> {
+    let mut mask = 0u16;
+    for w in words {
+        let w = w.trim().to_lowercase();
+        match MONTH_NAMES.iter().position(|m| *m == w) {
+            Some(i) => mask |= 1 << i,
+            None => return Err(format!("months names {w:?}; use jan..dec")),
+        }
+    }
+    if mask == 0 {
+        return Err("months is empty; name at least one, or leave it out for every month".into());
+    }
+    Ok(mask)
+}
+
 fn time_of(at: &str) -> Option<u32> {
     let (h, m) = at.trim().split_once(':')?;
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
@@ -232,9 +280,11 @@ fn time_of(at: &str) -> Option<u32> {
     (h < 24 && m < 60).then_some(h * 60 + m)
 }
 
-/// Two anchors that always happen cannot overlap: she cannot be at both.
+/// Two anchors that always happen cannot overlap: they cannot be at both.
 /// Soft anchors may, and the sampler settles which one a day keeps. Times
 /// are laid on the week as a circle, so Sunday night runs into Monday.
+/// Anchors that share no month never meet; one that runs past midnight
+/// into the other's first month is left to the sampler, as soft ones are.
 fn certain_clashes(anchors: &[Anchor]) -> Result<()> {
     let spans = |a: &Anchor| -> Vec<(u32, u32)> {
         (0..7)
@@ -247,7 +297,7 @@ fn certain_clashes(anchors: &[Anchor]) -> Result<()> {
     };
     for (i, a) in anchors.iter().enumerate() {
         for (j, b) in anchors.iter().enumerate().skip(i + 1) {
-            if a.chance < 1.0 || b.chance < 1.0 {
+            if a.chance < 1.0 || b.chance < 1.0 || a.months & b.months == 0 {
                 continue;
             }
             for (s1, e1) in spans(a) {
@@ -315,11 +365,13 @@ pub fn ensure(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The routine's text and a waiting draft's, as they stand.
+/// The routine's text, a waiting draft's and the owner's notes, as they
+/// stand.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Texts {
     pub routine: Option<String>,
     pub draft: Option<String>,
+    pub notes: Option<String>,
 }
 
 pub fn read(dir: &Path, name: &str) -> Result<Texts> {
@@ -327,7 +379,53 @@ pub fn read(dir: &Path, name: &str) -> Result<Texts> {
     Ok(Texts {
         routine: read_if_there(&pdir.join(FILE))?,
         draft: read_if_there(&pdir.join(DRAFT))?,
+        notes: read_if_there(&pdir.join(NOTES))?,
     })
+}
+
+/// The owner's notes for the drafter, as written; empty when there are
+/// none. Notes edited by hand past what [`write_notes`] takes are an error
+/// naming them, never sent cut.
+pub fn read_notes(dir: &Path, name: &str) -> Result<String> {
+    let text = read_if_there(&persona_dir(dir, name)?.join(NOTES))?.unwrap_or_default();
+    notes_refusal(&text).map_or(Ok(text), |why| Err(anyhow::anyhow!("{NOTES}: {why}")))
+}
+
+/// `routine.notes.md`'s path, written empty first if the persona has none,
+/// for an editor to open.
+pub fn ensure_notes(dir: &Path, name: &str) -> Result<PathBuf> {
+    let path = persona_dir(dir, name)?.join(NOTES);
+    super::write_new(&path, "")?;
+    Ok(path)
+}
+
+fn notes_refusal(text: &str) -> Option<String> {
+    let n = text.trim().chars().count();
+    if n > MAX_NOTES {
+        return Some(format!("the notes are {n} characters; at most {MAX_NOTES}"));
+    }
+    super::forbidden_control(text)
+        .map(|c| format!("the notes hold a control character (U+{:04X})", c as u32))
+}
+
+/// Write the owner's notes for the drafter; blank removes them. Only the
+/// owner's doors call this: a model never writes them. Refused past
+/// [`MAX_NOTES`] characters or with a control character a line break is not.
+pub fn write_notes(dir: &Path, name: &str, text: &str) -> Result<()> {
+    let path = persona_dir(dir, name)?.join(NOTES);
+    let text = text.trim();
+    if text.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("removing {NOTES}"))
+            }
+            _ => Ok(()),
+        };
+    }
+    if let Some(why) = notes_refusal(text) {
+        bail!("{why}");
+    }
+    super::write_private(&path, format!("{text}\n").as_bytes())
 }
 
 /// Stage a model's draft beside the owner's routine, replacing a draft
@@ -610,6 +708,7 @@ chance = 0.7
                 start: 7 * 60,
                 minutes: 60,
                 chance: 0.7,
+                months: EVERY_MONTH,
             }]
         );
         assert!(r.anchors[0].on(1) && r.anchors[0].on(3) && !r.anchors[0].on(0));
@@ -678,6 +777,72 @@ chance = 0.7
             text.find("cell = ").unwrap() < text.find("[[anchor]]").unwrap(),
             "{text}"
         );
+    }
+
+    #[test]
+    fn an_anchor_holds_to_its_months_and_a_bad_month_is_refused() {
+        let r = parse(&GYM.replace(
+            "chance = 0.7",
+            "chance = 0.7\nmonths = [\"Sep\", \"oct\", \"nov\"]",
+        ))
+        .unwrap();
+        let a = &r.anchors[0];
+        assert!(a.in_month(9) && a.in_month(11) && !a.in_month(12) && !a.in_month(0));
+        assert_eq!(a.to_json()["months"], serde_json::json!([9, 10, 11]));
+        assert!(
+            parse(GYM).unwrap().anchors[0].in_month(1),
+            "none named is every month"
+        );
+        let why = refusal(&GYM.replace("chance = 0.7", "months = [\"fall\"]"));
+        assert!(
+            why.contains("anchor 1 (gym): months names \"fall\""),
+            "{why}"
+        );
+        let why = refusal(&GYM.replace("chance = 0.7", "months = []"));
+        assert!(why.contains("months is empty"), "{why}");
+    }
+
+    #[test]
+    fn certain_anchors_in_months_they_do_not_share_may_take_one_slot() {
+        let two = |m1: &str, m2: &str| {
+            format!(
+                "[[anchor]]\nwhat = \"rowing\"\nactivity = \"exercise\"\ndays = [\"mon\"]\nat = \"16:00\"\nminutes = 90\nmonths = {m1}\n\
+                 [[anchor]]\nwhat = \"tutoring\"\nactivity = \"work\"\ndays = [\"mon\"]\nat = \"16:30\"\nminutes = 60\nmonths = {m2}\n"
+            )
+        };
+        parse(&two("[\"mar\", \"apr\"]", "[\"oct\"]")).unwrap();
+        let why = refusal(&two("[\"mar\", \"apr\"]", "[\"apr\", \"may\"]"));
+        assert!(
+            why.contains("both always happen and overlap on mon"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn the_owners_notes_are_kept_beside_the_routine_and_blank_removes_them() {
+        let dir = made();
+        assert_eq!(read_notes(&dir, "mara").unwrap(), "");
+        write_notes(
+            &dir,
+            "mara",
+            "  - pottery Thursday evenings\n- rowing in the spring\n\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_notes(&dir, "mara").unwrap(),
+            "- pottery Thursday evenings\n- rowing in the spring\n"
+        );
+        assert_eq!(
+            read(&dir, "mara").unwrap().notes.as_deref(),
+            Some("- pottery Thursday evenings\n- rowing in the spring\n")
+        );
+        let long = "x".repeat(MAX_NOTES + 1);
+        assert!(format!("{:#}", write_notes(&dir, "mara", &long).unwrap_err()).contains("at most"));
+        assert!(write_notes(&dir, "mara", "a\u{7}b").is_err());
+        write_notes(&dir, "mara", " \n").unwrap();
+        assert!(!dir.join("mara").join(NOTES).exists());
+        write_notes(&dir, "mara", "").unwrap();
+        assert!(write_notes(&dir, "nobody", "x").is_err());
     }
 
     #[test]
