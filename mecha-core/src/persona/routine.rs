@@ -839,6 +839,10 @@ chance = 0.7
         let long = "x".repeat(MAX_NOTES + 1);
         assert!(format!("{:#}", write_notes(&dir, "mara", &long).unwrap_err()).contains("at most"));
         assert!(write_notes(&dir, "mara", "a\u{7}b").is_err());
+        // Edited by hand past the cap: refused when read, never sent cut.
+        std::fs::write(dir.join("mara").join(NOTES), &long).unwrap();
+        let why = format!("{:#}", read_notes(&dir, "mara").unwrap_err());
+        assert!(why.contains("at most"), "{why}");
         write_notes(&dir, "mara", " \n").unwrap();
         assert!(!dir.join("mara").join(NOTES).exists());
         write_notes(&dir, "mara", "").unwrap();
