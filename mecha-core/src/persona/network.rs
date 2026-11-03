@@ -739,7 +739,7 @@ impl Network {
             .collect();
         match named.as_slice() {
             [one] => Ok(one),
-            [] => bail!("no one in her network is named {w:?}"),
+            [] => bail!("no one in their network is named {w:?}"),
             many => bail!(
                 "{} people are named {w:?}; name one by id: {}",
                 many.len(),
@@ -889,7 +889,7 @@ pub fn add_person(pdir: &Path, lib: &crate::imagelib::Library, p: &NewPerson) ->
     let tx = w.conn_mut().transaction()?;
     let count: i64 = tx.query_row("SELECT count(*) FROM people", [], |r| r.get(0))?;
     if count >= MAX_PEOPLE as i64 {
-        bail!("her network holds {count} people; at most {MAX_PEOPLE}");
+        bail!("their network holds {count} people; at most {MAX_PEOPLE}");
     }
     let id = uid();
     let at = stamp();
@@ -929,7 +929,7 @@ pub fn edit_person(
     let mut w = World::open(pdir)?;
     let tx = w.conn_mut().transaction()?;
     if !exists(&tx, uid)? {
-        bail!("no one in her network has the id {uid}");
+        bail!("no one in their network has the id {uid}");
     }
     if let Some(n) = &edit.name {
         tx.execute(
@@ -980,7 +980,7 @@ pub fn record(pdir: &Path, person: &str, other: Option<&str>, e: &NewEvent) -> R
     let tx = w.conn_mut().transaction()?;
     for id in std::iter::once(person).chain(other) {
         if !exists(&tx, id)? {
-            bail!("no one in her network has the id {id}");
+            bail!("no one in their network has the id {id}");
         }
     }
     let id = insert_event(&tx, person, other, e, Source::Owner)?;
@@ -995,7 +995,7 @@ pub fn remove_person(pdir: &Path, uid: &str) -> Result<()> {
     let mut w = World::open(pdir)?;
     let tx = w.conn_mut().transaction()?;
     if !exists(&tx, uid)? {
-        bail!("no one in her network has the id {uid}");
+        bail!("no one in their network has the id {uid}");
     }
     tx.execute(
         "DELETE FROM edge_events WHERE person = ?1 OR other = ?1",
@@ -1111,7 +1111,7 @@ impl Network {
         for p in &self.people {
             if let Some(w) = edge_warning(&self.her_edge(&p.uid)) {
                 out.push(format!(
-                    "has {} in her network, whose tie holds {w}",
+                    "has {} in their network, whose tie holds {w}",
                     p.name
                 ));
             }
@@ -1128,7 +1128,7 @@ impl Network {
                 let mut pair = [name(&a), name(&b)];
                 pair.sort_by_key(|n| n.to_lowercase());
                 out.push(format!(
-                    "has a tie between {} and {} in her network that holds {w}",
+                    "has a tie between {} and {} in their network that holds {w}",
                     pair[0], pair[1]
                 ));
             }
@@ -1142,7 +1142,7 @@ impl Network {
 pub fn markdown(n: &Network) -> String {
     let mut out = String::from(
         "<!-- Rendered from world.db after every change; edits here are not read back.\n     \
-         `mecha persona people` and the People tab change her network. -->\n\n# Her people\n",
+         `mecha persona people` and the People tab change their network. -->\n\n# Their people\n",
     );
     let mut by_layer: BTreeMap<Option<Layer>, Vec<String>> = BTreeMap::new();
     let mut ended: Vec<String> = Vec::new();
@@ -1172,7 +1172,7 @@ pub fn markdown(n: &Network) -> String {
     }
     if !ended.is_empty() {
         out.push_str(&format!(
-            "\n## No longer in her life\n\n{}\n",
+            "\n## No longer in their life\n\n{}\n",
             ended.join("\n")
         ));
     }
@@ -1249,7 +1249,7 @@ impl Network {
             })
             .map(|p| {
                 format!(
-                    "has {} in her network, whose portrait is not an approved image-library \
+                    "has {} in their network, whose portrait is not an approved image-library \
                      character",
                     p.name
                 )
@@ -2147,7 +2147,7 @@ mod tests {
         let broken = Network::read(&pdir).unwrap().broken_links(&lib());
         assert_eq!(broken.len(), 1, "{broken:?}");
         assert!(
-            broken[0].starts_with("has Theo in her network"),
+            broken[0].starts_with("has Theo in their network"),
             "{broken:?}"
         );
         // The character goes from the library afterwards: both broken, and
@@ -2209,7 +2209,7 @@ mod tests {
         .unwrap();
         c.execute("UPDATE edge_events SET layer = 500 WHERE person = ?1 AND event = 'formed' AND other IS NULL", [&theo]).unwrap();
         c.execute(
-            "UPDATE edge_events SET source = 'feed' WHERE other IS NOT NULL",
+            "UPDATE edge_events SET source = 'carrier_pigeon' WHERE other IS NOT NULL",
             [],
         )
         .unwrap();
@@ -2265,7 +2265,7 @@ mod tests {
         assert_eq!(problems.len(), 5, "{problems:?}");
         assert!(problems
             .iter()
-            .any(|p| p.starts_with("has Ines in her network, whose tie holds 1 event")));
+            .any(|p| p.starts_with("has Ines in their network, whose tie holds 1 event")));
         assert!(problems
             .iter()
             .any(|p| p.contains("tie between") && p.contains("not clean")));

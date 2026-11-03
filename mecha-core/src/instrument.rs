@@ -36,6 +36,13 @@ use std::path::{Path, PathBuf};
 /// and the page would go stale while the editor said it saved.
 pub const PIPELINE_DAYS: u32 = 60;
 
+/// The one instrument the slot pipeline pushes (`slots push book` in every
+/// script that pushes). Any other booking page is pushed only when it is
+/// saved on the Factory page, so the page must not promise it a timer's
+/// retries; the scripts are held to this by
+/// `the_pipelines_fetch_the_days_the_editor_allows`.
+pub const PIPELINE_INSTRUMENT: &str = "book";
+
 /// `~/.mecha/factory/types`, found by the factory's own rule
 /// (`Remote::dir()` is `mecha_home()/factory`) — a reader of somebody else's
 /// store uses their rule for finding it.
@@ -1062,8 +1069,22 @@ heading = "You're booked"
                     .unwrap_or_else(|| panic!("{name}: the fetch names --days: {fetch}"));
                 assert_eq!(days, PIPELINE_DAYS, "{name}: {fetch}");
             }
+            // Every `slots push` in the script pushes exactly the pipeline's
+            // instrument: a second one would make the page tell its owner the
+            // timer does not push a page it does.
+            let pushed: std::collections::BTreeSet<&str> = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .filter_map(|l| l.split("slots push ").nth(1))
+                .filter_map(|rest| rest.split_whitespace().next())
+                .collect();
+            assert_eq!(
+                pushed,
+                std::collections::BTreeSet::from([PIPELINE_INSTRUMENT]),
+                "{name} pushes exactly the pipeline's instrument"
+            );
             assert!(
-                text.contains("slots push book --manifest"),
+                text.contains(&format!("slots push {PIPELINE_INSTRUMENT} --manifest")),
                 "{name} computes slots from the manifest the editor writes"
             );
         }

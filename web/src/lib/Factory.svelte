@@ -1,6 +1,6 @@
 <script>
   import { apiFetch as fetch } from './api.js';
-  import { byDay, nameFrom, nextWindow } from './factory.js';
+  import { backwards, byDay, nameFrom, nextWindow, todayIn } from './factory.js';
   import FactoryForm from './FactoryForm.svelte';
   // The Factory view: the instruments on the public surface, from home.
   // A booking page's hours are edited here and nowhere a model can reach —
@@ -172,6 +172,13 @@
       draftError = `Fill in ${missing} before this can be previewed.`;
       return;
     }
+    // A window that runs backwards is said here, in the inputs' 12-hour
+    // clock, before the server's 24-hour refusal can be the first word.
+    const reversed = backwards(JSON.parse(snapshot));
+    if (reversed) {
+      draftError = reversed;
+      return;
+    }
     try {
       previewAbort?.abort();
       const abort = new AbortController();
@@ -214,6 +221,10 @@
       if (!res.ok) throw new Error(text.trim());
       const out = JSON.parse(text);
       confirming = false;
+      // Read off the page that was saved, before `item` is replaced: a
+      // failed re-read leaves it null, and the toast must still say the
+      // save stood rather than raise.
+      const timerPushes = item?.timer_pushes ?? false;
       // The save stands either way; a failed re-read only means the page
       // asks again rather than showing what came back.
       if (out.instrument) adopt(out.instrument);
@@ -222,7 +233,14 @@
         say('Saved and pushed — the booking page offers the new hours now.');
       } else {
         // The save stands; only the immediate push failed.
-        say(`Saved. The push failed (${out.push_error}); the slot timer retries every two minutes.`, true);
+        // Only the instrument the slot timer pushes is retried by it; any
+        // other booking page is pushed when it is saved here, and only then.
+        say(
+          timerPushes
+            ? `Saved. The push failed (${out.push_error}); the slot timer retries every two minutes.`
+            : `Saved. The push failed (${out.push_error}); save again to retry — the slot timer does not push this page.`,
+          true,
+        );
       }
     } catch (e) {
       confirming = false;
@@ -264,7 +282,8 @@
     draft.overrides = [...draft.overrides, { date: newDate, windows: [] }].sort((a, b) => a.date.localeCompare(b.date));
     newDate = '';
   }
-  const today = new Date().toISOString().slice(0, 10);
+  // In the page's zone: UTC's date is tomorrow every evening west of UTC.
+  const today = $derived(todayIn(draft?.timezone ?? 'UTC'));
 
 
   // ── reading the answers ──────────────────────────────────────────────
@@ -353,7 +372,7 @@
               </div>
               <div class="meta" class:hazardtext={pushIsLate(item.preview.last_pushed_at)}>
                 <span>{pushed(item.preview.last_pushed_at) ? `last pushed ${ago(item.preview.last_pushed_at)}` : 'not pushed yet'}</span>
-                {#if pushIsLate(item.preview.last_pushed_at)}<span>— the slot timer (every two minutes) may be failing</span>{/if}
+                {#if pushIsLate(item.preview.last_pushed_at)}<span>{item.timer_pushes ? '— the slot timer (every two minutes) may be failing' : '— the slot timer does not push this page; it is pushed when you save here'}</span>{/if}
                 {#if item.preview.held_slots}<span>{item.preview.held_slots} slot{item.preview.held_slots === 1 ? '' : 's'} held by open polls</span>{/if}
               </div>
             {:else if item.preview_error}
@@ -395,7 +414,8 @@
         {:else if item.hours_error}
           <div class="warnline">{@render hazardGlyph()}<span>{item.hours_error}</span></div>
         {:else if draft}
-          <div class="section">Hours <span class="sub">in {draft.timezone}</span></div>
+          <div class="section">When people can book you <span class="sub">in {draft.timezone}</span></div>
+          <div class="note">Within these windows the page offers only free time: anything already on your calendar, and the gap around it, is taken out automatically.</div>
           <div class="card week">
             {#each item.days as day (day)}
               <div class="dayrow">
@@ -481,7 +501,15 @@
                   {:else}
                     <span class="closed">closed all day</span>
                   {/each}
-                  <button class="add" title="open some hours this day" onclick={() => draft.overrides[oi].windows.push(['09:00', '12:00'])}>+</button>
+                  {#if nextWindow(o.windows.map(([start, end]) => ({ start, end })))}
+                    <button
+                      class="add"
+                      title="open some hours this day"
+                      onclick={() => {
+                        const next = nextWindow(o.windows.map(([start, end]) => ({ start, end })));
+                        if (next) draft.overrides[oi].windows.push([next.start, next.end]);
+                      }}>+</button>
+                  {/if}
                   <button class="x" aria-label="remove exception" title="back to the weekly hours" onclick={() => draft.overrides.splice(oi, 1)}>remove</button>
                 </div>
               </div>
