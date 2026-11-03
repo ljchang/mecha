@@ -875,7 +875,8 @@ holding an outbound group in `auto` while `shell` runs unconfined, as
 attention, with the sandbox as the remedy.
 
 A rule may be `auto` for some actions and not others: `mode` can be set per
-action group (§5's rows), defaulting to the rule's. "Archive these
+action group (§5's rows), and every mode row names one group (§3) — there
+is no rule-wide mode for a group to default to. "Archive these
 automatically, but propose the reply" is the common case.
 
 ### 6.2 Approval binds to what was shown (R1)
@@ -910,7 +911,7 @@ the cost is one click after an edit.
 
 **What the digest covers is everything that decides a send, and it says so
 where it does not cover a match.** For a header rule (one with no
-`describe`, §4.2), `rules/<name>/` is the whole matcher. For a description rule *with an outbound action*, the send
+`describe`, §4.2), `rules/<name>/` is the whole matcher. For a description rule *with an outbound action or a `task`*, the
 decision is the confirmation pass of §4.2, whose inputs are the rule's
 description and an instruction compiled into the binary — so the digest also
 carries the version of that instruction **and of the §5.3 extraction pass's**,
@@ -1182,7 +1183,9 @@ real and worth serving, and the safe shape exists already in
   and not the Board group either, whose `task` name reaches a task run's
   prompt (§7) — may
   enter `auto` while the rule's description, any template it sends, its
-  sender keys (`from`, `from_domain`), or its `to` is model-proposed text
+  sender keys (`from`, `from_domain`), its `fields` declarations (§5.3 —
+  they shape the extraction frame, which is a send decision), or its `to`
+  is model-proposed text
   from an armed conversation.** The sender keys belong on this list because
   §5.2 makes them the control on *who can make a send leave*: a proposed
   header rule has no description to hold back, so without them an injected
@@ -1251,8 +1254,10 @@ inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 
 **P1 — the store, header rules, mailbox actions.** `rule.toml`, approvals,
-the ledger, `off`/`shadow`/`propose`/`auto` for the mailbox and record
-groups (including a `tag` action, which writes mecha's own tag onto the
+the ledger, `off`/`shadow`/`propose`/`auto` for the Mailbox, Private record
+and Board groups — `task` on header rules, with its harness-written name
+(§7); the confirmation pass that description-matched tasks also need lands
+with description rules in P4 — (including a `tag` action, which writes mecha's own tag onto the
 triage record and has no provider verb, since tags are never Gmail labels or
 Graph categories), the five-minute timer, `mecha mail rule add | list | show | mode |
 test | ledger | undo | pause-all` — P1 is where rules first act in `auto`, so
