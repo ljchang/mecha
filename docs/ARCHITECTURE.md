@@ -4432,6 +4432,30 @@ that pair of negatives. The action set is a **closed enum** (`TriageAction`),
 on the `SLACK-ACTIONS-DESIGN.md` §1 reasoning: a free-form label argument
 would put `spam` inside a verb that reads as harmless.
 
+**Outlook triage must choose its source folder before moving messages.**
+`OutlookProvider::archive_thread` lists the conversation through
+`/me/mailFolders/inbox/messages`, paginated, to match Gmail's removal of
+`INBOX`. Listing `/me/messages` instead swept the owner's Sent Items and
+Drafts into Archive. `spam_thread` also uses Inbox as its inbound scope:
+Gmail adds `SPAM` thread-wide, but translating that into moves of every
+Graph message sweeps sent copies and drafts into Junk Email. Already-filed
+mail stays put. `trash_thread` deliberately retains whole-conversation
+scope, including drafts, like Gmail's `threads.trash`; read/unread also
+remain whole-conversation operations. Triage results carry successful and
+failed mutation counts and a completed/partial/nothing-to-do status through
+MCP, in `structuredContent` and matching JSON text for text-only clients.
+`commands::mail::finish_triage` marks `ACTED` only for confirmed completion:
+empty Inbox results say `skipped: nothing in Inbox`; partial failures return
+an error with counts. Both leave the record unchanged, so a classified
+thread remains in the needs-attention queue. Missing or inconsistent outcome
+data must not settle the queue either. Gmail acknowledges thread operations
+without a message count (`moved: null`).
+`restore_conversation` still reads only Archive or Deleted Items, and
+`restore_destination` routes drafts to Drafts, known owner mail to Sent
+Items and inbound mail to Inbox; unknown destinations stay in place.
+Unarchive is not an exact inverse: it has no receipt of which messages a
+particular archive moved. That receipt belongs to P1's ledger, not this fix.
+
 **Bulk reading is an operator verb, never a tool.** `mecha-mail corpus`
 downloads a span of mail for analysis, and it is absent from the MCP surface on
 purpose: the model has no business reading a year of mail, and a corpus verb on

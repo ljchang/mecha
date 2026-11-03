@@ -19,6 +19,8 @@ pub const DISPATCHED_KEY: &str = "mecha-factory.ai/dispatched";
 pub struct Reply {
     pub text: String,
     pub is_error: bool,
+    /// Also serialized into text for MCP clients that only read content.
+    pub structured_content: Option<Value>,
     /// Refused before any provider request — an absent argument, an account
     /// that does not resolve, a thread no account holds — so nothing reached
     /// anybody. **Only a server can know this**: a failure *after* the
@@ -35,7 +37,17 @@ impl Reply {
         Reply {
             text: text.into(),
             is_error: true,
+            structured_content: None,
             not_dispatched: true,
+        }
+    }
+
+    pub fn structured(content: Value, is_error: bool) -> Self {
+        Self {
+            text: content.to_string(),
+            structured_content: Some(content),
+            is_error,
+            not_dispatched: false,
         }
     }
 }
@@ -47,6 +59,7 @@ impl From<(String, bool)> for Reply {
         Reply {
             text,
             is_error,
+            structured_content: None,
             not_dispatched: false,
         }
     }
@@ -81,6 +94,9 @@ pub fn result_json(reply: &Reply) -> Value {
     });
     if reply.not_dispatched {
         result["_meta"] = json!({ DISPATCHED_KEY: false });
+    }
+    if let Some(content) = &reply.structured_content {
+        result["structuredContent"] = content.clone();
     }
     result
 }
