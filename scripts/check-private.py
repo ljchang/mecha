@@ -31,7 +31,11 @@ commit message (`--message FILE`, the commit-msg hook) — for:
 1. a run of `SHINGLE` words that was said in a conversation;
 2. a quoted phrase of three or more words that was said in one;
 3. a real persona or voice session id;
-4. the name of one of the owner's own personas;
+4. the name of one of the owner's own personas, or of someone in a
+   persona's life: a person on its People tab (`world.db`'s `people`, with
+   their aliases) or in its household (`life.toml`), matched as a whole
+   word with its capital, since these are ordinary first names (the owner's
+   ruling, 2026-11-03: no persona data in a public repository);
 5. text from the owner's LoRA registry (`~/.mecha/loras.toml`, and while it is
    still read the old file `[video] loras` names): every file stem, and every
    `name` or `trigger` that is specific (more than one word, or holding `_`,
@@ -61,6 +65,7 @@ instead of passing.
 
 import glob
 import json
+import sqlite3
 import tomllib
 import os
 import re
@@ -570,6 +575,48 @@ def corpus():
     return shingles, phrases, ids, names, bool(whole or partly or names)
 
 
+def people_names():
+    """Everyone in a persona's life, by name: the People tab (`world.db`'s
+    `people`, name and aliases) and the household in `life.toml`. A store
+    that exists and does not read refuses, never passes unread: a persona's
+    people are exactly what a fixture would borrow (the owner's ruling,
+    2026-11-03)."""
+    out = set()
+    for db in glob.glob(f"{MECHA}/personas/*/world.db"):
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                has = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'people'"
+                ).fetchone()
+                if has:
+                    for name, aliases in conn.execute("SELECT name, aliases FROM people"):
+                        if isinstance(name, str) and name.strip():
+                            out.add(name.strip())
+                        try:
+                            for a in json.loads(aliases or "[]"):
+                                if isinstance(a, str) and a.strip():
+                                    out.add(a.strip())
+                        except ValueError:
+                            pass
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    for f in glob.glob(f"{MECHA}/personas/*/life.toml"):
+        try:
+            with open(f, "rb") as fh:
+                life = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            print(f"check-private: the life profile {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+        for h in life.get("household", []) or []:
+            if isinstance(h, dict) and isinstance(h.get("person"), str) and h["person"].strip():
+                out.add(h["person"].strip())
+    return out
+
+
 def lora_registry():
     """(phrases that refuse, {word: field} that only warn) from the owner's
     LoRA registry. A registry that exists and cannot be read is a refusal
@@ -804,6 +851,7 @@ def main(args):
     elif not args or args[0] == "--staged":
         BASE.extend(merging())
     shingles, phrases, ids, names, found = corpus()
+    people = people_names()
     lora_refuse, lora_warn = lora_registry()
     if not found:
         # On the machine that holds the conversations, set
@@ -870,6 +918,12 @@ def main(args):
                 if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
                     hit = "the name of one of the owner's personas"
                     break
+        if not hit:
+            # Case kept: "Will" is a person, "will" a word.
+            for name in people:
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", t) and not in_head(" ".join(words(name))):
+                    hit = "the name of someone in a persona's life"
+                    break
         if hit:
             findings.append((p, n, hit))
         else:
@@ -879,8 +933,9 @@ def main(args):
                     break
     if not findings:
         return 0
-    print("check-private: refusing — this change carries conversation text or LoRA registry")
-    print("text (owner's rulings, 2026-10-04 and 2026-10-23: neither belongs in this repository).")
+    print("check-private: refusing — this change carries conversation text, persona data or LoRA")
+    print("registry text (owner's rulings, 2026-10-04, 2026-10-23 and 2026-11-03: none belongs in")
+    print("this repository).")
     for path, num, hit in findings[:40]:
         print(f"  {path}:{num}: {hit}")
     print("Replace it with made-up text of the same shape. The words are not printed here.")
