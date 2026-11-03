@@ -134,11 +134,14 @@ digest of the rule's directory (§6). A mode written into the file would let an
 edit — or an installed proposal — grant itself `auto`.
 
 **The effective mode is the latest row for the rule and action group, and the
-digest only ever lowers it.** A row names its group (§5's table), or `all`
-for a whole-rule change such as R7's lapse or `pause-all`, which a later
-group row can then raise again only by the owner's approval. Resolution reads
-a group's own rows **and** the rule's `all` rows together, latest wins, so a
-`pause-all` overrides every group until something newer says otherwise. Owner approvals, owner step-downs and §6.4's automatic brakes are
+digest only ever lowers it.** **Every row names one action group** (§5's
+table), and resolution reads only that group's rows, latest wins. A
+whole-rule change — R7's lapse, `pause-all` — is written as **one row per
+group**, each carrying its own value, never as a single row for the rule:
+groups routinely sit at different rungs (*archive automatically, propose the
+reply*), and one value for all of them would either raise a lower group or
+drop an untouched one further than asked. A later row raises a group again
+only by the owner's approval. Owner approvals, owner step-downs and §6.4's automatic brakes are
 all rows in the same file, and the most recent one wins; if its digest no
 longer matches the rule's directory, the mode reads as `propose` (or lower, if
 the row says lower). Never "the current digest matches *some* `auto`
@@ -316,12 +319,17 @@ as numbered lists and returns two more fields:
 ```
 rule: <one of the active rules' names> | none
 rule_quote: words from the message that show it
-shadow_rule: <one of the shadow rules' names> | none
-shadow_quote: words from the message that show it
+shadow_rules: [ { name: <a shadow rule's name>, quote: <words that show it> } ]
 ```
 
 **Shadow rules have their own list and their own field**, so they never
-compete for `rule`. Were they in one list, a rule freshly installed in
+compete for `rule` — and **that field is a list**, so they do not compete
+with each other either. Every rule installs in `shadow`, so several at once
+is the normal state, and a single slot would leave the rule the classifier
+did not name with no would-have row at all: its match rate would read low,
+in the direction that looks safe, on the number the owner approves against.
+Shadow rules act on nothing, so a list needs no overlap semantics, only rows.
+Each named shadow rule's quote is grounded like `rule_quote`. Were they in one list, a rule freshly installed in
 `shadow` could be named instead of a rule the owner approved for `auto`, and
 the approved rule would do nothing and leave no row — against §6.1's promise
 that `shadow` acts on nothing. A shadow rule's would-have row therefore says
@@ -330,7 +338,7 @@ rules interact once both are active is something the owner sees after
 promotion, in `propose`, before either goes back to `auto`.
 
 **A shadow rule with an outbound action is measured by both passes**, so its
-would-have rows are the match rate `auto` will actually have: a `shadow_rule`
+would-have rows are the match rate `auto` will actually have: a `shadow_rules`
 candidate with an outbound action gets the confirmation pass too, exactly as
 a `rule` candidate does, and a disagreement is recorded as `would have:
 propose`. Measuring shadow with the main pass alone would over-state the
@@ -473,6 +481,16 @@ evaluated again. `failed` closes it for outbound actions, which are never
 retried (a failure after a provider accepted a send cannot be told from one
 before), and leaves it open for mailbox and record actions, which are safe
 to retry after a transient error.
+
+**A `pending` row does not stay pending forever.** It exists to survive a
+crash, and a crash is the one way to strand one. A `pending` row older than
+the run timeout settles by group: for mailbox and record actions to
+`failed: interrupted`, which reopens the key, since those are safe to retry;
+for outbound actions to `held: fate unknown`, which keeps the key closed,
+since a send that may have reached the provider is never retried, and puts
+it in front of the owner. `mecha doctor` reports any stranded or settled
+`pending` row as attention, so a thread silently left unarchived is a
+finding rather than an in-flight row nobody reads.
 
 **A key is closed by the presence of a closing row, not by the latest row** —
 deliberately unlike §3's mode resolution. The ledger is append-only, and four
@@ -739,7 +757,12 @@ and none is configurable off:
   **if more than one instance claims the account's own provider, the message
   goes to `propose`.** A genuine provider instance is unique, and a forgery
   added to a submitted message makes two, so this fails closed whatever order
-  the headers arrive in. P0's real-header check covers Gmail's ordering as
+  the headers arrive in. What counts as a *claim* is defined per provider: on
+  Gmail, an instance whose `authserv-id` is the pinned provider value; **on
+  Outlook, any instance carrying a `compauth=` token**, whatever its
+  `authserv-id` — since EOP's own instance is recognised by `compauth=`, a
+  submitted one with it is a second claim and proposes, including when
+  Graph's truncation has dropped EOP's instance and the sender's is topmost. P0's real-header check covers Gmail's ordering as
   well as EOP's shape, with the same fallback: if it is not reliable, that
   provider's sends stay in `propose`. `Authentication-Results` gets its
   own field on `Email` rather than riding the existing loop.
@@ -838,14 +861,17 @@ and the shadow-mode rows so far. The approval written to `approvals.jsonl`
 carries **a digest of the rule's directory** (and of the named skill's, for
 §6.3, and of `aliases.toml` and `limits.toml` for any rule with an outbound
 action, since §5.4's loop guard and caps rest on them — removing an alias or
-raising the global cap must lapse the approvals that counted on them). The
+raising the global cap must lapse the approvals that counted on them). That
+includes tightening edits, and one global-cap edit lapses every outbound
+rule at once; the screen that edits `limits.toml` and `aliases.toml` says so
+before saving, with the count of approvals it will lapse. The
 caps live in the rule store, never on `Config`, so they are not layered
 config and not the two-edit `Config`/`ConfigLayer` trap. On every run the digest is recomputed; **if anything changed, the rule
-drops to `propose` or stays lower** — the row records the lower of the
-current effective mode and `propose`, so a lapse never raises anything: an
-edit to a rule in `shadow` leaves it in `shadow`, and an edit after §6.4's
-failure brake does not release the brake. It is recorded as an `all`-group
-**lapse row appended to
+drops to `propose` or stays lower, group by group** — one lapse row per
+action group, each recording the lower of *that group's* current effective
+mode and `propose`, so a lapse never raises anything: a group in `shadow`
+stays in `shadow`, a group under §6.4's failure brake stays braked, and a
+group in `auto` drops to `propose`. They are recorded as **lapse rows appended to
 `approvals.jsonl`**, as well as a ledger row (`approval lapsed: files
 changed`) for the page, and a notice. The approvals row is what makes it
 stick: with only a ledger row, reverting the edit would make the latest
@@ -974,7 +1000,8 @@ A rule steps itself down, with a notice, when:
   actions are unaffected.
 
 `mecha mail rule pause-all` (and a button) drops every rule to `shadow` at
-once. Stepping down never needs approval; stepping up always does.
+once — one row per group, each recording the lower of its current mode and
+`shadow`, so a group the owner turned `off` stays off. Stepping down never needs approval; stepping up always does.
 
 ---
 
@@ -1178,8 +1205,9 @@ participation in a thread on the thread read — `Authentication-Results` as
 **every instance, in received order, each with its `authserv-id`**, because
 §5.4's guard needs the count as well as the top one; absent stated rather than
 defaulted. A test per provider in **both** directions — a missing, foreign or
-duplicated provider instance proposes, and a single genuine provider instance
-passes — because a test of
+duplicated provider instance proposes (on Outlook, a submitted `compauth=`
+instance beside EOP's), and a single genuine provider instance passes —
+because a test of
 the negative alone passes on a reader that proposes unconditionally (§5.4); the
 immutable-id preference on the rule engine's Graph calls, verified to be
 accepted by a move and a restore on the owner's mailbox, with the
