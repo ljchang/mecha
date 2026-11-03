@@ -269,10 +269,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mark as spam. Trash still moves the whole conversation, as Gmail does;
   unarchive and untrash retain their source-folder and destination rules.
   Triage results now carry completion status and successful/failed counts
-  through MCP. Empty or partial operations leave the CLI's triage record
-  unchanged and in its queue; only confirmed completion records an action.
-  Missing Outlook conversations still return an error; an empty Inbox is
-  skipped only after confirming that the conversation exists elsewhere.
+  through MCP. Partial operations leave the CLI's triage record unchanged
+  and in its queue. An archive already out of Inbox settles the record;
+  empty spam results stay skipped because no junk training was confirmed.
+  Missing Outlook conversations still return an error. CLI results retain
+  the action and short handle, and restore messages name their action.
 
 - **Pictures and clips no longer disappear from older chats.** The nightly
   `mecha work clean` counted a chat's workspace like a morning brief and kept
