@@ -1754,7 +1754,7 @@ impl PersonaChats {
                                 .try_exists()
                                 .unwrap_or(true),
                         "week": p.settings.life.world,
-                        "people": p.settings.life.world && p.settings.life.people,
+                        "people": p.settings.life.people,
                     },
                     "problems": unnamed(store.problems(p, &lib), hidden),
                     "safety": safety_json(&p.settings.safety, None),
@@ -11050,8 +11050,8 @@ mod tests {
     }
 
     /// Which tabs the page offers follows the persona's settings (owner,
-    /// 2026-11-02): the week with `[life] world`, the people with both
-    /// switches, and memories while any kind is on or anything is stored.
+    /// 2026-11-02): the week with `[life] world`, the people with `[life]
+    /// people` alone (2026-11-03), and memories while any kind is on or anything is stored.
     #[test]
     fn the_list_says_which_parts_are_on() {
         let w = world();
@@ -11071,11 +11071,17 @@ mod tests {
             (true.into(), false.into()),
             "the week alone"
         );
-        let both = std::fs::read_to_string(&toml)
+        // Their people without their days: the People tab, not the Week.
+        let people_only = std::fs::read_to_string(&toml)
             .unwrap()
+            .replace("world     = true", "world     = false")
             .replace("people    = false", "people    = true");
-        std::fs::write(&toml, both).unwrap();
-        assert_eq!(shows()["people"], true);
+        std::fs::write(&toml, people_only).unwrap();
+        assert_eq!(
+            (shows()["week"].clone(), shows()["people"].clone()),
+            (false.into(), true.into()),
+            "the people alone"
+        );
         // Every kind of memory off: no tab, until something is stored.
         let off = std::fs::read_to_string(&toml)
             .unwrap()
