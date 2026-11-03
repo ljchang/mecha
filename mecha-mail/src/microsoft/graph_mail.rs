@@ -164,46 +164,16 @@ impl OutlookProvider {
     ///
     /// `on_batch` is called per page so the caller can stream to disk instead
     /// of holding a year of mail in memory.
-    pub async fn page_since<F>(&self, since: &str, mut on_batch: F) -> Result<usize, MailError>
+    pub async fn page_since<F>(&self, since: &str, on_batch: F) -> Result<usize, MailError>
     where
         F: FnMut(&[Email]) -> Result<(), MailError>,
     {
-        const CORPUS_SELECT: &str = "id,conversationId,subject,bodyPreview,from,toRecipients,\
-ccRecipients,receivedDateTime,isRead,hasAttachments,internetMessageHeaders";
-        let mut url = format!(
-            "{GRAPH}/me/messages?$top=100&$select={CORPUS_SELECT}&$orderby=receivedDateTime%20desc"
-        );
-        let mut total = 0usize;
-        loop {
-            let json = self.get_json(&url).await?;
-            let page: Vec<Email> = json["value"]
-                .as_array()
-                .map(|arr| arr.iter().map(parse_outlook_message).collect())
-                .unwrap_or_default();
-            if page.is_empty() {
-                break;
-            }
-            // Newest first, so the first message older than the cutoff ends
-            // the walk — everything after it is older still.
-            let keep: Vec<Email> = page
-                .iter()
-                .take_while(|e| e.date_received.as_str() >= since)
-                .cloned()
-                .collect();
-            let reached_cutoff = keep.len() < page.len();
-            if !keep.is_empty() {
-                total += keep.len();
-                on_batch(&keep)?;
-            }
-            if reached_cutoff {
-                break;
-            }
-            match json["@odata.nextLink"].as_str() {
-                Some(next) => url = next.to_string(),
-                None => break,
-            }
-        }
-        Ok(total)
+        corpus_since(
+            since,
+            on_batch,
+            |url| async move { self.get_json(&url).await },
+        )
+        .await
     }
 
     pub async fn get_message(&self, message_id: &str) -> Result<Email, MailError> {
@@ -613,6 +583,77 @@ where
     Ok(outcome)
 }
 
+/// Validate before fetching: `get_json` attaches the account's bearer token.
+fn validate_page_url(
+    url: &str,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> Result<(), MailError> {
+    if !url.starts_with(&format!("{GRAPH}/")) || !seen.insert(url.to_owned()) {
+        return Err(MailError::ParseError(
+            "invalid or repeated Graph nextLink".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn next_page(page: &Value) -> Result<Option<String>, MailError> {
+    match page.get("@odata.nextLink") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(next)) => Ok(Some(next.clone())),
+        Some(_) => Err(MailError::ParseError("invalid Graph nextLink".into())),
+    }
+}
+
+/// Stream corpus pages through the same link validation as thread reads.
+async fn corpus_since<B, F, Fut>(
+    since: &str,
+    mut on_batch: B,
+    mut fetch: F,
+) -> Result<usize, MailError>
+where
+    B: FnMut(&[Email]) -> Result<(), MailError>,
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, MailError>>,
+{
+    const CORPUS_SELECT: &str = "id,conversationId,subject,bodyPreview,from,toRecipients,\
+ccRecipients,receivedDateTime,isRead,isDraft,hasAttachments,internetMessageHeaders";
+    let mut url = format!(
+        "{GRAPH}/me/messages?$top=100&$select={CORPUS_SELECT}&$orderby=receivedDateTime%20desc"
+    );
+    let mut total = 0usize;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        validate_page_url(&url, &mut seen)?;
+        let json = fetch(url).await?;
+        let page: Vec<Email> = json["value"]
+            .as_array()
+            .ok_or_else(|| MailError::ParseError("Graph message page has no value array".into()))?
+            .iter()
+            .map(parse_outlook_message)
+            .collect();
+        // Newest first, so the first message older than the cutoff ends
+        // the walk — everything after it is older still.
+        let keep: Vec<Email> = page
+            .iter()
+            .take_while(|e| e.date_received.as_str() >= since)
+            .cloned()
+            .collect();
+        let reached_cutoff = keep.len() < page.len();
+        if !keep.is_empty() {
+            total += keep.len();
+            on_batch(&keep)?;
+        }
+        if reached_cutoff {
+            break;
+        }
+        match next_page(&json)? {
+            Some(next) => url = next,
+            None => break,
+        }
+    }
+    Ok(total)
+}
+
 /// Follow every page before returning a thread or acting on it. A failed or
 /// malformed later page must not masquerade as a complete, owner-free thread.
 async fn message_pages<F, Fut>(mut url: String, mut fetch: F) -> Result<Vec<Value>, MailError>
@@ -623,20 +664,15 @@ where
     let mut messages = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     loop {
-        if !url.starts_with(&format!("{GRAPH}/")) || !seen.insert(url.clone()) {
-            return Err(MailError::ParseError(
-                "invalid or repeated Graph nextLink".into(),
-            ));
-        }
+        validate_page_url(&url, &mut seen)?;
         let page = fetch(url).await?;
         let values = page["value"]
             .as_array()
             .ok_or_else(|| MailError::ParseError("Graph message page has no value array".into()))?;
         messages.extend(values.iter().cloned());
-        match page.get("@odata.nextLink") {
-            None | Some(Value::Null) => break,
-            Some(Value::String(next)) => url = next.clone(),
-            Some(_) => return Err(MailError::ParseError("invalid Graph nextLink".into())),
+        match next_page(&page)? {
+            None => break,
+            Some(next) => url = next,
         }
     }
     Ok(messages)
@@ -681,15 +717,17 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         (content, String::new())
     };
 
-    let date_received = msg["receivedDateTime"]
+    let parsed_date = msg["receivedDateTime"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| {
             dt.with_timezone(&chrono::Utc)
                 .format("%Y-%m-%dT%H:%M:%SZ")
                 .to_string()
-        })
-        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        });
+    let date_known = Some(parsed_date.is_some());
+    let date_received =
+        parsed_date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     let headers = msg["internetMessageHeaders"].as_array().map(Vec::as_slice);
 
@@ -712,6 +750,7 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         cc_addresses: addr_list("ccRecipients"),
         bcc_addresses: addr_list("bccRecipients"),
         date_received,
+        date_known,
         body_text,
         body_html,
         snippet: msg["bodyPreview"].as_str().unwrap_or_default().to_string(),
@@ -805,6 +844,106 @@ mod tests {
         let escaped = "AAQk'DROP".replace('\'', "''");
         assert_eq!(escaped, "AAQk''DROP");
     }
+    #[test]
+    fn graph_unknown_inbound_dates_prevent_newest_selection() {
+        use crate::types::ThreadMetadata;
+        let mut message = json!({"id":"known", "isDraft":false,
+            "from":{"emailAddress":{"address":"sender@example.edu"}},
+            "receivedDateTime":"2024-01-01T01:00:00+01:00"});
+        let known = parse_outlook_message(&message);
+        assert_eq!(known.date_known, Some(true));
+        assert_eq!(known.date_received, "2024-01-01T00:00:00Z");
+        for date in [None, Some(json!("not a date")), Some(json!(""))] {
+            message.as_object_mut().unwrap().remove("receivedDateTime");
+            if let Some(date) = date {
+                message["receivedDateTime"] = date;
+            }
+            let unknown = parse_outlook_message(&message);
+            assert_eq!(unknown.date_known, Some(false));
+            assert!(chrono::DateTime::parse_from_rfc3339(&unknown.date_received).is_ok());
+            for certainty in [Some(false), None] {
+                let mut unknown = unknown.clone();
+                unknown.date_known = certainty;
+                let metadata = ThreadMetadata::from_emails(
+                    &[known.clone(), unknown.clone()],
+                    Some("owner@example.com"),
+                );
+                assert_eq!(metadata.newest_inbound_provider_id, None);
+                assert_eq!(metadata.owner_participated, Some(false));
+                unknown.from_address = "owner@example.com".into();
+                let metadata = ThreadMetadata::from_emails(
+                    &[known.clone(), unknown],
+                    Some("owner@example.com"),
+                );
+                assert_eq!(
+                    metadata.newest_inbound_provider_id.as_deref(),
+                    Some("known")
+                );
+                assert_eq!(metadata.owner_participated, Some(true));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn graph_corpus_pages_reject_unsafe_repeated_and_nonstring_links() {
+        for link in [
+            json!(123),
+            json!({}),
+            json!(""),
+            json!("https://example.com/untrusted"),
+            json!("https://graph.microsoft.com.example.com/v1.0/me/messages"),
+            json!(format!("{GRAPH}/me/messages?next")),
+        ] {
+            let mut replies = vec![
+                json!({"value":[], "@odata.nextLink":format!("{GRAPH}/me/messages?next")}),
+                json!({"value":[], "@odata.nextLink":link}),
+            ]
+            .into_iter();
+            let result = corpus_since(
+                "2024-01-01T00:00:00Z",
+                |_| Ok(()),
+                |_| std::future::ready(Ok(replies.next().expect("no fetch after invalid link"))),
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(replies.next().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn graph_corpus_pages_select_drafts_stream_batches_and_stop_at_cutoff() {
+        let mut visits = 0;
+        let mut emails = Vec::new();
+        let total = corpus_since("2024-01-01T00:00:00Z", |batch| {
+            emails.extend_from_slice(batch);
+            Ok(())
+        }, |url| {
+            visits += 1;
+            let page = match visits {
+                1 => {
+                    let url = reqwest::Url::parse(&url).unwrap();
+                    let select = url.query_pairs().find(|(k, _)| k == "$select").unwrap().1;
+                    assert!(select.split(',').any(|field| field == "isDraft"));
+                    json!({"value":[{"id":"draft", "isDraft":true, "receivedDateTime":"2024-02-01T00:00:00Z"}],
+                        "@odata.nextLink":format!("{GRAPH}/me/messages?next")})
+                }
+                2 => {
+                    assert_eq!(url, format!("{GRAPH}/me/messages?next"));
+                    json!({"value":[
+                        {"id":"sent", "isDraft":false, "receivedDateTime":"2024-01-01T00:00:00Z"},
+                        {"id":"old", "isDraft":false, "receivedDateTime":"2023-12-01T00:00:00Z"}],
+                        "@odata.nextLink":format!("{GRAPH}/me/messages?older")})
+                }
+                _ => panic!("no fetch beyond cutoff"),
+            };
+            std::future::ready(Ok(page))
+        }).await.unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(visits, 2);
+        assert_eq!(emails[0].is_draft, Some(true));
+        assert_eq!(emails[1].is_draft, Some(false));
+    }
+
     fn with_authentication_results(values: &[&str]) -> Email {
         let headers: Vec<_> = values
             .iter()

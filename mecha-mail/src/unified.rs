@@ -2962,6 +2962,7 @@ mod tests {
             cc_addresses: cc.iter().map(|s| s.to_string()).collect(),
             bcc_addresses: vec![],
             date_received: "2026-08-05T12:00:00Z".into(),
+            date_known: Some(true),
             body_text: "hi".into(),
             body_html: String::new(),
             snippet: "hi".into(),
