@@ -234,7 +234,10 @@ refuses to automate is the one the owner made when writing the rule.
 
 They run **before classification**, and a rule whose actions are all
 mailbox-only can mark the thread handled so the classifier never spends a
-call on it — **but only when no description rule is enabled at all, and no
+call on it — **but only when that rule's Mailbox group is in `auto`** (a
+`shadow` or `propose` rule has not decided the thread's fate, so it must not
+decide whether the thread is classified), **no description rule is enabled
+at all, and no
 matching header rule has an outbound action, a `digest` or a `task`.** The
 last two need a verdict too: §7 renders a flagged thread with the
 classifier's one-line and an automatic task with the verdict's deadline, and
@@ -418,7 +421,11 @@ fallback if the single field measures badly, not the start.
 
 ### 4.3 Order and overlap
 
-Rules evaluate in `priority` order, header rules before description rules. A
+**`priority` alone decides precedence** — which rule takes a thread's
+outbound slot. "Header rules before description rules" is about *when* they
+are evaluated (header keys on the timer, descriptions at classify), never
+about which wins: a `priority = 5` description rule outranks a
+`priority = 50` header rule for the outbound slot. A
 thread may match several header rules, but **at most one description rule**:
 §4.2's `rule` field is single-valued, so when two descriptions both fit, the
 classifier's choice decides between them and `priority` does not. Priority
@@ -577,7 +584,8 @@ Grouped by what can go wrong, because that decides what may run unattended.
 
 | Group | `do =` | Reaches | May run in `auto`? |
 |---|---|---|---|
-| Mailbox | `archive`, `read`, `unread`, `trash`, `spam` | the owner's mailbox | yes — with the §5.5 limits on `trash`/`spam` |
+| Mailbox | `archive`, `read`, `unread`, `trash` | the owner's mailbox | yes — with the §5.5 limit on `trash` |
+| Report | `spam` | **the provider's filter** — the one mailbox verb with an effect outside the mailbox (`TriageAction::Spam`'s own words) | **never** — it proposes in every mode, as the mail desk's `s` confirms, since no restore verb un-trains a filter |
 | Private record | `tag`, `digest` | the owner (the triage store) | yes |
 | Board | `task` | the owner's board — **and from there a task run's prompt** | yes, with a harness-written name (§7) |
 | Fixed words | `reply` with `template` | the sender | after owner approval (R1) |
@@ -842,8 +850,8 @@ generalises, so it also catches other people's mail that merely resembles the
 description — and a sender can write a message to resemble it. For `archive`
 that costs the owner nothing they cannot see — it is in the digest and the
 ledger, and it is reversible. For `trash` and `spam` it is a way to bury mail.
-So **`trash` and `spam` run in `auto` only from header matchers**; on a
-description match they propose. And every automatic mailbox action lands in
+So **`trash` runs in `auto` only from header matchers**; on a description
+match it proposes. (`spam` never runs in `auto` at all — §5's table.) And every automatic mailbox action lands in
 the next digest (§7), so nothing leaves the inbox without a trace.
 
 ---
@@ -1303,7 +1311,9 @@ there through `OutboxStore`. **Covers
 GitHub notifications and junk with no model involved.** Until P2 ships the
 digest, the trace §5.5 promises is the ledger and `undo` — pulled rather than
 pushed — which is acceptable for P1's actions because all of them are
-recoverable and none reaches anyone.
+recoverable and none reaches anyone — which is true because `spam`, the one
+verb that would reach the provider's filter and has no restore, never runs
+in `auto` (§5).
 
 **P2 — the digest.** `mecha mail digest` and `digest ack`. Then the briefing
 swap, which is **an edit on the owner's machine, not in this repository**:
