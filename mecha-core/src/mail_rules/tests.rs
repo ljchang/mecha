@@ -37,7 +37,7 @@ fn install(store: &RuleStore, text: &str) -> LoadedRule {
     store.install("notices", text, &BTreeMap::new()).unwrap()
 }
 fn approve(store: &RuleStore, rule: &LoadedRule, group: ActionGroup, mode: Mode) {
-    store
+    let decision = store
         .change_mode(
             &rule.name,
             group,
@@ -47,6 +47,11 @@ fn approve(store: &RuleStore, rule: &LoadedRule, group: ActionGroup, mode: Mode)
             &owner_holds(),
         )
         .unwrap();
+    assert!(
+        !decision.refused,
+        "unexpected refusal: {:?}",
+        decision.holds
+    );
 }
 fn message() -> MessageRef {
     MessageRef {
@@ -98,13 +103,30 @@ fn loader_parses_all_matchers_and_defaults_without_evaluating_descriptions() {
     assert_eq!(rule.definition.daily_cap, 20);
     assert!(rule.definition.is_description());
     assert_eq!(rule.definition.matcher.header["X-Notice"], ["yes"]);
-    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    let decision = store
+        .change_mode(
+            "notices",
+            ActionGroup::Mailbox,
+            Mode::Auto,
+            Some(Actor::Owner),
+            &rule.approval_digest,
+            &owner_holds(),
+        )
+        .unwrap();
+    assert!(decision.refused);
+    assert!(!decision.write);
+    assert_eq!(decision.target, Mode::Shadow);
+    assert!(decision
+        .holds
+        .iter()
+        .any(|hold| hold.ceiling == Mode::Shadow && !hold.reason.is_empty()));
     let resolved = resolve_mode(
         &rule,
         ActionGroup::Mailbox,
         &store.approvals().unwrap(),
         &owner_holds(),
     );
+    assert_eq!(resolved.recorded, Mode::Shadow);
     assert_eq!(resolved.effective, Mode::Shadow);
     assert!(!resolved.holds.is_empty());
     assert!(LedgerRow::header(
@@ -136,18 +158,40 @@ fn all_action_groups_load_and_outbound_cannot_leave_shadow() {
     let rule = store.install("notices", &text, &files).unwrap();
     for group in rule.definition.groups() {
         if group.is_outbound() {
-            assert!(store
+            let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+            let decision = store
                 .change_mode(
                     &rule.name,
                     group,
                     Mode::Propose,
                     Some(Actor::Owner),
                     &rule.approval_digest,
-                    &owner_holds()
+                    &owner_holds(),
                 )
-                .is_err());
+                .unwrap();
+            assert!(decision.refused);
+            assert!(!decision.write);
+            assert!(!decision.clamped);
+            assert_eq!(decision.target, Mode::Shadow);
+            assert!(decision
+                .holds
+                .iter()
+                .any(|hold| hold.ceiling == Mode::Shadow && !hold.reason.is_empty()));
+            assert_eq!(
+                fs::read(store.root().join("approvals.jsonl")).unwrap(),
+                before
+            );
         } else {
-            approve(&store, &rule, group, Mode::Auto);
+            approve(
+                &store,
+                &rule,
+                group,
+                if group == ActionGroup::Report {
+                    Mode::Propose
+                } else {
+                    Mode::Auto
+                },
+            );
         }
     }
     assert_eq!(
@@ -1924,4 +1968,195 @@ fn deferred_settlement_retries_exact_rows_and_removes_only_matching_snapshots() 
     let remaining = store.deferred().unwrap();
     assert_eq!(remaining[0].actions.len(), 1);
     assert_eq!(remaining[0].actions[0].message, concurrent.message);
+}
+
+#[test]
+fn permanent_ceilings_refuse_raises_without_recording_permission() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &text("[[action]]\ndo = 'spam'\n"));
+    approve(&store, &rule, ActionGroup::Report, Mode::Propose);
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    let decision = store
+        .change_mode(
+            "notices",
+            ActionGroup::Report,
+            Mode::Auto,
+            Some(Actor::Owner),
+            &rule.approval_digest,
+            &owner_holds(),
+        )
+        .unwrap();
+    assert!(!decision.write, "a permanent ceiling must refuse the raise");
+    assert!(decision.refused);
+    assert!(!decision.clamped);
+    assert_eq!(decision.requested, Mode::Auto);
+    assert!(decision
+        .holds
+        .iter()
+        .any(|hold| hold.ceiling == Mode::Propose && hold.reason.contains("spam")));
+    assert_eq!(decision.target, Mode::Propose);
+    assert_eq!(
+        fs::read(store.root().join("approvals.jsonl")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn permanent_ceiling_refusal_preserves_off_and_shadow_without_partial_raises() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &text("[[action]]\ndo = 'spam'\n"));
+    for current in [Mode::Shadow, Mode::Off] {
+        approve(&store, &rule, ActionGroup::Report, current);
+        let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+        let decision = store
+            .change_mode(
+                "notices",
+                ActionGroup::Report,
+                Mode::Auto,
+                Some(Actor::Owner),
+                &rule.approval_digest,
+                &owner_holds(),
+            )
+            .unwrap();
+        assert!(decision.refused);
+        assert!(!decision.write);
+        assert!(!decision.clamped);
+        assert_eq!(decision.target, current);
+        assert_eq!(
+            fs::read(store.root().join("approvals.jsonl")).unwrap(),
+            before
+        );
+    }
+    approve(&store, &rule, ActionGroup::Report, Mode::Propose);
+}
+
+#[test]
+fn computed_holds_are_reported_without_becoming_permanent_approval_ceilings() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &text("[[action]]\ndo = 'task'\n"));
+    let decision = store
+        .change_mode(
+            "notices",
+            ActionGroup::Board,
+            Mode::Auto,
+            Some(Actor::Owner),
+            &rule.approval_digest,
+            &P1Holds::default(),
+        )
+        .unwrap();
+    assert!(!decision.refused);
+    assert!(decision.write);
+    assert!(decision
+        .holds
+        .iter()
+        .any(|hold| hold.ceiling == Mode::Propose && !hold.reason.is_empty()));
+    let rows = store.approvals().unwrap();
+    assert_eq!(
+        resolve_mode(&rule, ActionGroup::Board, &rows, &P1Holds::default()).effective,
+        Mode::Propose
+    );
+    assert_eq!(
+        resolve_mode(&rule, ActionGroup::Board, &rows, &owner_holds()).effective,
+        Mode::Auto
+    );
+}
+
+#[test]
+fn unknown_failure_kinds_count_toward_the_consecutive_failure_brake() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    for kind in [
+        None,
+        Some(serde_json::json!("future_failure")),
+        Some(serde_json::json!(false)),
+        Some(serde_json::json!({})),
+    ] {
+        let mut value = serde_json::to_value(row(&rule, Outcome::Failed)).unwrap();
+        value.as_object_mut().unwrap().remove("failure_kind");
+        if let Some(kind) = kind {
+            value["failure_kind"] = kind;
+        }
+        let loaded: LedgerRow = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.failure_kind, FailureKind::Unknown);
+        assert!(loaded.is_action_failure());
+        let evidence = BrakeEvidence {
+            consecutive_action_failures: BTreeMap::from([(
+                ActionGroup::Mailbox,
+                (0..3).filter(|_| loaded.is_action_failure()).count(),
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(
+            brake_targets([ActionGroup::Mailbox], &evidence).get(&ActionGroup::Mailbox),
+            Some(&Mode::Shadow)
+        );
+    }
+    for kind in [
+        FailureKind::Action,
+        FailureKind::Unknown,
+        FailureKind::Environment,
+        FailureKind::Interrupted,
+    ] {
+        let mut failed = row(&rule, Outcome::Failed);
+        failed.failure_kind = kind;
+        assert_eq!(
+            failed.is_action_failure(),
+            matches!(kind, FailureKind::Action | FailureKind::Unknown)
+        );
+        for outcome in [
+            Outcome::Done,
+            Outcome::Expired,
+            Outcome::Pending,
+            Outcome::Unknown,
+        ] {
+            failed.outcome = outcome;
+            assert!(!failed.is_action_failure());
+        }
+    }
+}
+
+#[test]
+fn a_settled_failure_without_an_explicit_kind_counts_toward_the_brake() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let failed = row(&rule, Outcome::Pending)
+        .settled(Outcome::Failed, "fictional action failure", Utc::now())
+        .unwrap();
+    assert!(failed.is_action_failure());
+}
+
+#[test]
+fn enqueue_returns_the_effective_entry_id_for_settlement() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let snapshot = row(&rule, Outcome::WouldHave);
+    let entry = DeferredEntry {
+        id: "queued-alpha".into(),
+        account: snapshot.message.account.clone(),
+        thread_id: snapshot.message.thread_id.clone(),
+        queued_at: Utc::now(),
+        actions: vec![snapshot.clone()],
+    };
+    let first = store.enqueue(&entry).unwrap();
+    assert_eq!(first, entry.id);
+    let mut merged = entry.clone();
+    merged.id = "queued-beta".into();
+    merged.actions[0].id = "snapshot-beta".into();
+    merged.actions[0].message.provider_message_id = "provider-beta".into();
+    let effective = store.enqueue(&merged).unwrap();
+    assert_eq!(effective, first);
+    let mut completed = merged.actions[0].clone();
+    completed.id = "completed-beta".into();
+    completed.outcome = Outcome::Done;
+    store.settle_deferred(&effective, &[completed]).unwrap();
+    let remaining = store.deferred().unwrap();
+    assert_eq!(remaining[0].id, entry.id);
+    assert_eq!(remaining[0].actions.len(), 1);
+    assert_eq!(remaining[0].actions[0].id, snapshot.id);
 }

@@ -228,7 +228,13 @@ impl LedgerRow {
     }
 
     pub fn is_action_failure(&self) -> bool {
-        self.outcome == Outcome::Failed && self.failure_kind == FailureKind::Action
+        // Only positively identified environment/interruption failures are
+        // exempt from the brake. Missing or future kinds must count.
+        self.outcome == Outcome::Failed
+            && !matches!(
+                self.failure_kind,
+                FailureKind::Environment | FailureKind::Interrupted
+            )
     }
 
     pub(super) fn same_key(&self, other: &Self) -> bool {
