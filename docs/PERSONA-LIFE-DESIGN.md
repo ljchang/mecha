@@ -336,6 +336,8 @@ no world, no today-block, no new tools, no nightly work.
 [life]                     # owner-written; outside persona_propose's schema
 world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
 people    = false          # her own network (§6); independent of world (owner, 2026-11-03)
+events    = false          # events, levels and weather in the today-block (§4.5); needs world
+place     = "Springfield, Illinois" # optional; where her weather is for (§4.3)
 my_people = false          # her model of the owner's network, and gap questions (§7); needs [memory] on, user_facts != "off"
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
@@ -395,7 +397,7 @@ threshold per persona once the access log says where it should sit. The
   never stores the owner's relatives by another route.
 - **Two rules, by what a setting does.**
   - **Switches that decide which tools, blocks and runs exist** (`world`,
-    `people`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
+    `people`, `events`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
     per persona
     version. A chat pins the version it started with (`PERSONA-DESIGN.md`
     §8.1), because the tool list is the front of the cached prefix, so
@@ -770,18 +772,22 @@ chats.
   (`story_days`, `events`) up to today; today redrawn when the deck,
   weather, her day or her castable people change, and the past kept.
 - **Weather** is pulled ahead from §8.2's shelf A, at the owner's word:
-  - `[place]` in `story.toml` is a label plus latitude and longitude;
-  - `mecha persona story weather` makes one capped read of Open-Meteo for
-    the last two weeks and the next one, parsed into a closed sky and
-    whole degrees, or refused;
+  - `[life] place` is a town and its state or country. The harness resolves
+    it through Open-Meteo's geocoder, caches the coordinates and the label
+    shown to the owner, and resolves it again when the owner's text changes;
+    `story.toml`'s `[place]` with exact coordinates remains the fallback;
+  - the Week route refreshes weather older than six hours before drawing,
+    while a chat with `[life] events` starts the same refresh without
+    waiting. `mecha persona story weather` asks directly. Each fetch covers
+    the last two weeks and the next one, parsed into a closed sky and whole
+    degrees, or refused;
   - it is stored in `weather` and shown as a fact on a day drawn before
     it arrived.
-- **Where it shows:** the Week tab and `mecha persona story show`.
+- **Where it shows:** the Week tab and `mecha persona story show`, and in
+  the today-block when `[life] events` is on.
 - **Not yet:**
   - arcs;
   - tie effects (recorded, held back);
-  - the teller and its `[life] events` switch;
-  - a nightly weather fetch;
   - pruning `story_days` past the keep window.
 
 ### 4.4 The narrator
@@ -933,6 +939,18 @@ one more reason §14's gate part 1 exists.
   persona's version: a version is what a chat's prompt renders from, and
   the block, like the recall block, renders from the world's store, where
   what a chat was told about a day is already kept.
+- **As built (the teller):** `[life] events`, off by default and refused
+  without `[life] world`, adds the director's event titles, levels away from
+  normal and today's closed weather to that same note after the doing-now
+  sentence. Before noon in the owner's timezone it tells yesterday's
+  untimed events with today's morning levels; from noon it tells today's
+  events with evening levels. `persona::story::story` draws and stores each
+  day through the same door as the Week tab, and a story failure is logged
+  and drops only these lines. The fold carries only the owner's deck titles,
+  clean People-tab names, and shelf A's closed sky and integers; the
+  geocoder's owner-facing label never enters a prompt. A due weather refresh
+  runs in the background and never delays the chat. `persona::today::EVENTS_HEADING`
+  marks the arm that `persona::initiative` reads back from the transcript.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -2404,10 +2422,12 @@ ruled for repetition.
   - **The claim the comparison tests** is that world-on raises initiative
     *without* lowering the uptake rate of persona-introduced topics. Rising
     initiative with falling uptake is the ComPeer failure, measured.
-  - **As built (before step 3, `persona::initiative`, `mecha persona
-    measures`):** people only, by the names and aliases in her network,
+  - **As built (`persona::initiative`, `mecha persona measures`):** people
+    only, by the names and aliases in her network,
     the one list read over every chat so before and after share an
-    instrument; events wait for step 3, when they have names. An
+    instrument. Each arm records separately whether the today-block carried
+    `persona::today::EVENTS_HEADING`, so the teller-on comparison is honest
+    even though event-title uptake is not scored yet. An
     introduction is a completed reply naming someone neither side named
     earlier in the chat (harness notes are not read). Uptake is the owner
     naming them in the next turn they speak in (with a question mark:

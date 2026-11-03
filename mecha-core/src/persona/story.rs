@@ -379,7 +379,7 @@ pub fn starter(cell: Cell) -> String {
 
 const HEAD: &str = "\
 # Their storylets: small events the director draws over their days. Yours
-# to edit; nothing here reaches their chats yet. Conditions are all optional and
+# to edit. With [life] events on, a drawn title can reach their chats. Conditions are all optional and
 # all must hold: doing (activities), days, weather (clear, cloudy, fog,
 # drizzle, rain, snow, storm), warmer_than / colder_than (°C), energy /
 # stress / mood (low, normal, high, not_low, not_high), with (ties: kin,

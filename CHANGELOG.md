@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persona day notes can tell their story.** Per persona, **Their events**
+  brings the day's drawn events, non-normal energy/stress/mood and closed
+  weather into chats; it is off by default and needs **Their days**. **Where
+  they live** resolves an owner-written town and region for weather, refreshed
+  on the Week tab and in the background during eligible chats.
+
 - **More chat models, one approval away.** `mecha model catalog` lists the
   chat models mecha knows how to serve — Qwen3.6-35B-A3B uncensored, Qwen3.8-27B
   and its uncensored and abliterated builds, and Gemma 4 26B-A4B — with what
