@@ -26,7 +26,8 @@
 //! **Seeded per persona per day**, like the sampler, so a day's events are
 //! the same every time it is asked for. A day up to today is stored when
 //! first drawn, and today's is drawn again when what it was drawn from has
-//! changed (the deck, the weather, her day); a past day keeps what it was.
+//! changed (the deck, her day, her cast or intensity); weather gates the
+//! first draw but a later forecast changes only the weather shown.
 //!
 //! **Nothing here reaches her prompt.** Events are for the owner to see on
 //! the Week tab and in `mecha persona story`. What she is told of them is the
@@ -54,7 +55,7 @@ use super::weather::{Place, Sky, Weather};
 /// Her deck and place, in her folder.
 pub const FILE: &str = "story.toml";
 /// Bumped when the director's rules change, so today's events redraw.
-pub const STORY_VERSION: &str = "story-3";
+pub const STORY_VERSION: &str = "story-4";
 
 pub const MINOR_CHANCE: f64 = 0.75;
 pub const SECOND_MINOR: f64 = 0.2;
@@ -379,7 +380,7 @@ pub fn starter(cell: Cell) -> String {
 
 const HEAD: &str = "\
 # Their storylets: small events the director draws over their days. Yours
-# to edit; nothing here reaches their chats yet. Conditions are all optional and
+# to edit. With [life] events on, a drawn title can reach their chats. Conditions are all optional and
 # all must hold: doing (activities), days, weather (clear, cloudy, fog,
 # drizzle, rain, snow, storm), warmer_than / colder_than (°C), energy /
 # stress / mood (low, normal, high, not_low, not_high), with (ties: kin,
@@ -718,21 +719,24 @@ impl From<Weather> for WeatherOut {
 /// What a day's events were drawn from, as one digest.
 fn inputs(
     deck_text: &str,
-    weather: Option<Weather>,
     day_digest: &str,
     people: &[Castable],
     severe_open: bool,
+    has_weather: bool,
 ) -> String {
     let mut h = Sha256::new();
     h.update(STORY_VERSION.as_bytes());
+    h.update([0]);
+    // Whether the day had weather, never what it was: the first forecast
+    // redraws a day drawn weather-blind once, so a weather-gated storylet
+    // can fire, and a later refresh changes nothing told (review of #836).
+    h.update(if has_weather { b"weather" } else { b"noweath" });
     h.update([0]);
     // `[life] intensity`: flipping it redraws today, so a severe event
     // never outlives the switch that allowed it (review of #814).
     h.update(if severe_open { b"severe" } else { b"capped" });
     h.update([0]);
     h.update(deck_text.as_bytes());
-    h.update([0]);
-    h.update(format!("{weather:?}").as_bytes());
     h.update([0]);
     h.update(day_digest.as_bytes());
     h.update([0]);
@@ -840,10 +844,10 @@ pub fn story(
                     let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
                     let digest = inputs(
                         deck_text,
-                        weather,
                         &format!("{:?}", day.stretches),
                         &people,
                         severe_open,
+                        weather.is_some(),
                     );
                     if let Some((sd, _)) = stored.filter(|(_, was)| *was == digest) {
                         Some(sd)
@@ -1175,6 +1179,141 @@ with = ["friend"]
         }
     }
 
+    /// Shelf A gate part 3 is a deterministic steering measurement over 30
+    /// days. Weather may change which storylets are eligible, but this fixed
+    /// deck gives every storylet a zero effect, so weather cannot move levels
+    /// directly. The event-mix distance is reported, not thresholded: the
+    /// design states no acceptable distance for that channel yet.
+    #[test]
+    fn shelf_a_weather_steering_measures_event_mix_without_direct_level_motion() {
+        use super::super::world::World;
+
+        const DAYS: u64 = 30;
+        let deck = r#"
+[[storylet]]
+id = "clear_day"
+title = "a clear day"
+size = "minor"
+weather = ["clear"]
+cooldown = 0
+[[storylet]]
+id = "cloudy_day"
+title = "a cloudy day"
+size = "minor"
+weather = ["cloudy"]
+cooldown = 0
+[[storylet]]
+id = "rainy_day"
+title = "a rainy day"
+size = "minor"
+weather = ["rain"]
+cooldown = 0
+[[storylet]]
+id = "stormy_day"
+title = "a stormy day"
+size = "minor"
+weather = ["storm"]
+cooldown = 0
+"#;
+        let from = d("2026-10-05");
+        let to = from + Days::new(DAYS - 1);
+        let run = |skies: &[Sky]| {
+            let dir = store();
+            std::fs::write(dir.join("mara").join(FILE), deck).unwrap();
+            let weather: Vec<Weather> = skies
+                .iter()
+                .enumerate()
+                .map(|(i, sky)| Weather {
+                    date: from + Days::new(i as u64),
+                    sky: *sky,
+                    high_c: 12,
+                    low_c: 4,
+                })
+                .collect();
+            let mut world = World::open(&dir.join("mara")).unwrap();
+            world.set_weather(&weather).unwrap();
+            let days = story(&dir, "mara", from, to, to).unwrap().days;
+            std::fs::remove_dir_all(dir).ok();
+            days
+        };
+        let honest_skies: Vec<Sky> = (0..DAYS)
+            .map(|i| match i % 4 {
+                0 => Sky::Clear,
+                1 => Sky::Cloudy,
+                2 => Sky::Rain,
+                _ => Sky::Storm,
+            })
+            .collect();
+        let adversarial_skies = vec![Sky::Storm; DAYS as usize];
+        let honest = run(&honest_skies);
+        let adversarial = run(&adversarial_skies);
+        assert_eq!(
+            (honest.len(), adversarial.len()),
+            (DAYS as usize, DAYS as usize)
+        );
+
+        let event_for = |sky: Sky| match sky {
+            Sky::Clear => "clear_day",
+            Sky::Cloudy => "cloudy_day",
+            Sky::Rain => "rainy_day",
+            Sky::Storm => "stormy_day",
+            Sky::Fog | Sky::Drizzle | Sky::Snow => unreachable!("not in this source"),
+        };
+        for (day, sky) in honest.iter().zip(&honest_skies) {
+            assert!(day
+                .events
+                .iter()
+                .all(|event| event.storylet == event_for(*sky)));
+        }
+        assert!(adversarial
+            .iter()
+            .flat_map(|day| &day.events)
+            .all(|event| event.storylet == "stormy_day"));
+
+        let level_value = |level| match level {
+            Level::Low => -1_i32,
+            Level::Normal => 0,
+            Level::High => 1,
+        };
+        let end_distance = |a: Levels, b: Levels| {
+            (level_value(a.energy) - level_value(b.energy)).abs()
+                + (level_value(a.stress) - level_value(b.stress)).abs()
+                + (level_value(a.mood) - level_value(b.mood)).abs()
+        };
+        let honest_end = honest.last().unwrap().evening;
+        let adversarial_end = adversarial.last().unwrap().evening;
+        let end_level_distance = end_distance(honest_end, adversarial_end);
+        assert_eq!(
+            end_level_distance, 0,
+            "zero-effect storylets leave no route for weather to move levels"
+        );
+
+        let mix = |days: &[StoryDay]| {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for event in days.iter().flat_map(|day| &day.events) {
+                *counts.entry(event.storylet.clone()).or_default() += 1;
+            }
+            counts
+        };
+        let honest_mix = mix(&honest);
+        let adversarial_mix = mix(&adversarial);
+        let keys: std::collections::BTreeSet<&String> =
+            honest_mix.keys().chain(adversarial_mix.keys()).collect();
+        let mix_distance: usize = keys
+            .into_iter()
+            .map(|key| {
+                honest_mix
+                    .get(key)
+                    .copied()
+                    .unwrap_or_default()
+                    .abs_diff(adversarial_mix.get(key).copied().unwrap_or_default())
+            })
+            .sum();
+        eprintln!(
+            "shelf A weather steering over {DAYS} days: end-level distance {end_level_distance}; event-mix L1 distance {mix_distance}; honest {honest_mix:?}; storm {adversarial_mix:?}"
+        );
+    }
+
     #[test]
     fn a_group_happens_at_most_once_a_day() {
         let deck = deck(
@@ -1222,7 +1361,7 @@ with = ["friend"]
     }
 
     #[test]
-    fn a_story_is_stored_as_drawn_and_today_redraws_when_its_inputs_change() {
+    fn a_story_keeps_its_draw_on_weather_and_redraws_on_other_input_changes() {
         use super::super::world::World;
         let dir = store();
         let today = d("2026-11-02");
@@ -1231,7 +1370,8 @@ with = ["friend"]
         assert_eq!(week.len(), 7);
         assert!(week.iter().all(|s| s.kept && s.weather.is_none()));
         assert_eq!(story(&dir, "mara", from, today, today).unwrap().days, week);
-        // Weather arrives: today redraws with it, the past keeps what it was.
+        // Weather arrives: every stored day keeps its events and levels,
+        // including today, while showing the new fact.
         let mut w = super::super::world::World::open(&dir.join("mara")).unwrap();
         w.set_weather(&[
             Weather {
@@ -1257,6 +1397,35 @@ with = ["friend"]
                 "the past is what it was"
             );
         }
+        // Today was drawn weather-blind, so its first forecast may redraw it
+        // once (a weather-gated storylet can fire); a later change of the
+        // forecast changes nothing told (review of #836).
+        let mut w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        w.set_weather(&[Weather {
+            date: today,
+            sky: Sky::Clear,
+            high_c: 12,
+            low_c: 3,
+        }])
+        .unwrap();
+        drop(w);
+        let later = story(&dir, "mara", from, today, today).unwrap().days;
+        assert_eq!(
+            (&later[6].events, later[6].morning, later[6].evening),
+            (&again[6].events, again[6].morning, again[6].evening),
+            "a changed forecast never redraws today's story"
+        );
+        assert_eq!(later[6].weather.map(|w| w.sky), Some(Sky::Clear));
+        // Put the snow back, so the checks below read the day as before.
+        let mut w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        w.set_weather(&[Weather {
+            date: today,
+            sky: Sky::Snow,
+            high_c: -2,
+            low_c: -9,
+        }])
+        .unwrap();
+        drop(w);
         assert_eq!(
             again[0].weather,
             Some(WeatherOut {
@@ -1274,7 +1443,7 @@ with = ["friend"]
                 low_c: -9
             })
         );
-        // Her own deck: today draws only from it.
+        // Her own deck is a non-weather input: today redraws from it.
         std::fs::write(
             dir.join("mara").join(FILE),
             "[[storylet]]\nid = \"only\"\ntitle = \"the only thing\"\nsize = \"minor\"\n",
@@ -1336,6 +1505,86 @@ with = ["friend"]
         let w = super::super::world::World::open(&dir.join("mara")).unwrap();
         assert!(w.story_day(today + Days::new(1)).unwrap().is_none());
         assert_eq!(w.story_day(today).unwrap().unwrap().0, mine[6]);
+    }
+
+    #[test]
+    fn a_failed_new_place_leaves_no_old_place_weather_to_tell() {
+        use super::super::{today, weather, world::World};
+        let dir = store();
+        let pdir = dir.join("mara");
+        let date = d("2026-11-02");
+        let toml = pdir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace(
+                "world     = true",
+                "world     = true\nplace     = \"Springfield, Illinois\"",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            pdir.join(weather::PLACE_FILE),
+            serde_json::to_vec(&weather::Resolved {
+                query: "Springfield, Illinois".into(),
+                label: "Springfield, Illinois, US".into(),
+                lat: 39.8,
+                lon: -89.6,
+                weather_for: Some("Springfield, Illinois".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut world = World::open(&pdir).unwrap();
+        world
+            .set_weather(&[Weather {
+                date,
+                sky: Sky::Rain,
+                high_c: 9,
+                low_c: 4,
+            }])
+            .unwrap();
+        drop(world);
+        let before = story(&dir, "mara", date, date, date).unwrap().days;
+        assert!(before[0].weather.is_some());
+
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("Springfield, Illinois", "Springfield, Missouri"),
+        )
+        .unwrap();
+        let now = "2026-11-02T10:00:00Z".parse().unwrap();
+        weather::record_failure(
+            &pdir,
+            "Springfield, Missouri",
+            now,
+            "the geocoder found no match",
+        )
+        .unwrap();
+        assert!(!weather::due(&pdir, Some("Springfield, Missouri"), now).unwrap());
+
+        // Clearing the weather is a draw input (whether the day had any),
+        // so today may redraw: what is held here is only that no old
+        // place's weather is shown or told (review of #836).
+        let after = story(&dir, "mara", date, date, date).unwrap().days;
+        assert!(after[0].weather.is_none());
+        let lines = today::teller_lines(
+            "2026-11-02T12:00:00".parse().unwrap(),
+            &after[0],
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!lines.contains("Today's weather"), "{lines}");
+        assert!(World::open(&pdir)
+            .unwrap()
+            .story_day(date)
+            .unwrap()
+            .unwrap()
+            .0
+            .weather
+            .is_none());
     }
 
     #[test]

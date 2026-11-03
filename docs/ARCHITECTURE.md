@@ -1913,7 +1913,8 @@ module.
   owner does with them** (PERSONA-LIFE-DESIGN.md §14), offline from
   transcripts like `persona::echo`, through `mecha persona measures`.
   Turns are filed by what the record shows she was given (a today-block
-  in the run's notes, `agent::PEOPLE_HEADING` in the recorded prompt),
+  in the run's notes, `today::EVENTS_HEADING` inside it, and
+  `agent::PEOPLE_HEADING` in the recorded prompt),
   never by settings, since a chat keeps the version it began with. Only
   owner text (`agent::owner_text`) and her replies are searched, so a name
   riding in a harness note is neither side naming it. Order is time: each
@@ -1926,16 +1927,29 @@ module.
   not spoken after is unanswered, kept out of the uptake rate, and no
   people is no reading rather than zero. Counts only, never names
   or words.
-- **The storyteller is code over an owner deck, and nothing of it reaches a
-  prompt yet** (`persona::story`, `persona::weather`). Storylets in
-  `story.toml` are parsed whole or refused (unknown keys, a duplicate id, an
+- **The storyteller is code over an owner deck, and the teller is its one
+  prompt fold** (`persona::story`, `persona::weather`, `persona::today`).
+  Storylets in `story.toml` are parsed whole or refused (unknown keys, a duplicate id, an
   effect past one step, `{who}` with no `with`), and only clean, active
   people are cast, by id. Weather is shelf A pulled ahead: one capped read of
   one owner-written place, parsed into a closed `Sky` and whole degrees or
   the day refused, so no string the source wrote is kept; unknown weather
-  satisfies no condition. A day's draw is seeded, stored in `world.db` v3 up
-  to today, and today's is redrawn when its inputs' digest changes; weather
-  is shown as the fact it is, even on a day drawn before it arrived.
+  satisfies no condition. `[life] place` is geocoded and cached from the
+  owner's town and region, with `story.toml`'s coordinates as fallback. It
+  is read live for both Week and chat refreshes, unlike the pinned `events`
+  switch; only the harness starts either request, and the geocoder's label is
+  owner-facing only. Failed resolution or fetching is recorded per place and
+  backs off for an hour; a changed place clears the previous forecast and
+  story-day weather snapshot before its first request. A day's draw is seeded
+  and stored in `world.db` v3 up to today. Whether a day has weather is a
+  draw input, never what the weather is: a changed forecast keeps today's
+  events and shows the new weather, while weather arriving on a day drawn
+  without any, or being cleared from one, redraws today once.
+  Other draw inputs still redraw today. With
+  `[life] events` on, the today-block adds event titles, non-normal levels
+  and the closed weather after its doing-now sentence; before noon it uses
+  yesterday's events and today's morning levels. A story error drops that
+  addition only, never the doing-now note.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

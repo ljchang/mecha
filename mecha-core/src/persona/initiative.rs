@@ -61,9 +61,10 @@
 //!
 //! **Arms, from what she was shown, not from her settings.** Each turn is
 //! filed by whether the transcript shows her days (a today-block among the
-//! run's notes) and her people (their heading in the recorded system
-//! prompt). Settings change, and a chat keeps the version it began with,
-//! so the record is the only honest source.
+//! run's notes), the teller (`today::EVENTS_HEADING` in that block), and her
+//! people (their heading in the recorded system prompt). Settings change,
+//! and a chat keeps the version it began with, so the record is the only
+//! honest source.
 //!
 //! **Counts, never words.** A reading holds numbers only. A name is
 //! looked for, never kept, so a reading can be pasted anywhere.
@@ -72,7 +73,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use chrono::{DateTime, Utc};
 
@@ -138,7 +139,9 @@ fn names(text: &[String], s: &Subject, cased: bool) -> bool {
 }
 
 /// What she was shown on one turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
 pub struct Arm {
     /// A today-block among the run's notes.
     #[serde(rename = "shown_days")]
@@ -146,6 +149,9 @@ pub struct Arm {
     /// Her people in the recorded system prompt.
     #[serde(rename = "shown_people")]
     pub people: bool,
+    /// The teller lines in that today-block.
+    #[serde(default, rename = "shown_events")]
+    pub events: bool,
 }
 
 /// One run of a chat, as this reading needs it.
@@ -306,6 +312,11 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
             Ok(Record::Notes { notes }) => {
                 if notes.iter().any(|n| super::today::stem_of(n).is_some()) {
                     run.arm.days = true;
+                }
+                if notes.iter().any(|n| {
+                    super::today::stem_of(n).is_some() && n.contains(super::today::EVENTS_HEADING)
+                }) {
+                    run.arm.events = true;
                 }
             }
             Ok(Record::Outcome(stats)) => {
@@ -576,7 +587,7 @@ pub struct Initiative {
     /// People searched for. None means there is nothing to read, not a
     /// reading of zero.
     pub people: usize,
-    /// One row per arm with a reply, days off and people off first.
+    /// One row per arm with a reply, ordered by days, people and events.
     pub arms: Vec<ArmReading>,
     /// Session files that could not be read: counted, never silently an
     /// empty chat.
@@ -643,10 +654,12 @@ mod tests {
     const OFF: Arm = Arm {
         days: false,
         people: false,
+        events: false,
     };
     const ON: Arm = Arm {
         days: true,
         people: true,
+        events: true,
     };
 
     fn turn(owner: &str, reply: &str, arm: Arm) -> Turn {
@@ -951,8 +964,9 @@ mod tests {
             let mut convo = Conversation::default();
             run(&s, &mut convo, "hi", "Pell is up early.", &[]);
             let today = format!(
-                "{} you are reading.)",
-                super::super::super::today::TODAY_STEM
+                "{} you are reading. {} today: a small win.)",
+                super::super::super::today::TODAY_STEM,
+                super::super::super::today::EVENTS_HEADING,
             );
             config(
                 &s,
@@ -982,7 +996,8 @@ mod tests {
                 turns[1].arm,
                 Arm {
                     days: true,
-                    people: true
+                    people: true,
+                    events: true,
                 }
             );
             assert_eq!(turns[1].owner, "is Pell ok?");
@@ -1087,6 +1102,15 @@ mod tests {
             assert_eq!(turns[6].owner, "is Pell ok?\nand you?");
             assert_eq!(turns[6].reply.as_deref(), Some("Fine."));
             let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn an_old_arm_defaults_shown_events_off() {
+            let arm: Arm =
+                serde_json::from_str(r#"{"shown_days":true,"shown_people":false}"#).unwrap();
+            assert!(arm.days);
+            assert!(!arm.people);
+            assert!(!arm.events);
         }
 
         #[test]

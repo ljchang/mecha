@@ -140,7 +140,7 @@ pub enum Cmd {
     },
     /// Their story: small events drawn over their days by the director,
     /// their energy, stress and mood, and the weather where they live
-    /// (`PERSONA-LIFE-DESIGN.md` §4.3). Nothing of it reaches their chats yet.
+    /// (`PERSONA-LIFE-DESIGN.md` §4.3). `[life] events` brings it into chats.
     Story {
         #[command(subcommand)]
         cmd: StoryCmd,
@@ -187,8 +187,8 @@ pub enum StoryCmd {
     /// Write their deck (`story.toml`) from the starter for their kind of
     /// week, to edit. Refused when they already have one.
     Init { name: String },
-    /// Fetch the weather where they live (`story.toml`'s `[place]`): the
-    /// last two weeks and the next one, parsed into closed fields.
+    /// Fetch the weather where they live (`[life] place`, falling back to
+    /// `story.toml`'s `[place]`): the last two weeks and the next one.
     Weather { name: String },
 }
 
@@ -539,7 +539,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// `mecha persona story weather`: one read of the weather service for her
 /// place, parsed into closed fields and stored. No model is involved.
 async fn fetch_weather(dir: &Path, name: &str) -> Result<()> {
-    use mecha_core::persona::{story, weather, world::World};
+    use mecha_core::persona::weather;
     let store = load(dir);
     let p = find(&store, name)?.clone();
     if !p.settings.life.world {
@@ -549,27 +549,14 @@ async fn fetch_weather(dir: &Path, name: &str) -> Result<()> {
         );
     }
     let pdir = dir.join(&p.name);
-    let text = std::fs::read_to_string(pdir.join(story::FILE)).with_context(|| {
-        format!(
-            "`{}` has no {}; `mecha persona story init {}` writes one, then add their [place]",
-            p.name,
-            story::FILE,
-            p.name
-        )
-    })?;
-    let Some(place) = story::parse(&text)?.place else {
-        bail!("{} names no [place] for `{}`", story::FILE, p.name);
-    };
     let (_, today) = owner_dates(None)?;
-    eprintln!(
-        "asking for the weather at {} ({:.2}, {:.2})",
-        place.name, place.lat, place.lon
-    );
-    let days = weather::fetch(&place, today).await?;
-    if days.is_empty() {
-        bail!("the weather service answered, but every day was refused; nothing stored");
-    }
-    let n = World::open(&pdir)?.set_weather(&days)?;
+    let Some((place, n)) = weather::refresh(&pdir, p.settings.life.place.as_deref(), today).await?
+    else {
+        bail!(
+            "`{}` names no [life] place or story.toml [place] for its weather",
+            p.name
+        );
+    };
     println!(
         "Stored {n} days of weather for `{}` at {}.",
         p.name, place.name
@@ -1108,10 +1095,11 @@ fn initiative_lines(
         let r = &a.reading;
         let decided = r.decided();
         out.push(format!(
-            "days {}, people {}: {} replies, {} brought someone up ({} introductions); \
+            "days {}, events {}, people {}: {} replies, {} brought someone up ({} introductions); \
              you took up {}: {} in your next turn ({} asking), {} in a later chat; \
              {} not answered yet",
             on(a.arm.days),
+            on(a.arm.events),
             on(a.arm.people),
             r.replies,
             share(r.introducing, r.replies),
@@ -3655,6 +3643,7 @@ mod tests {
                 arm: Arm {
                     days: true,
                     people: false,
+                    events: true,
                 },
                 reading,
                 initiative: reading.initiative(),
@@ -3666,7 +3655,7 @@ mod tests {
             lines[0].contains("1 chat(s) could not be read; 2 test or withdrawn left out"),
             "{lines:?}"
         );
-        assert!(lines[1].starts_with("days on, people off: 10 replies, 2 of 10 (20%)"));
+        assert!(lines[1].starts_with("days on, events on, people off: 10 replies, 2 of 10 (20%)"));
         assert!(lines[1].contains("you took up 2 of 2 (100%)"), "{lines:?}");
         assert!(lines[1].contains("1 not answered yet"));
     }

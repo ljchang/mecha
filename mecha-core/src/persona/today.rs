@@ -14,13 +14,21 @@
 use super::activity::Activity;
 use super::atus::Company;
 use super::sampler;
+use super::story::{self, Level, StoryDay};
 use super::world::Now;
+use anyhow::{Context, Result};
+use chrono::{NaiveDateTime, Timelike};
+use std::collections::BTreeMap;
 
 /// The block's opening when every row in it is clean.
 pub const TODAY_STEM: &str = "(What you are doing right now, from the harness";
 /// The opening when any row in it came from outside.
 pub const UNTRUSTED_TODAY_STEM: &str =
     "(What you are doing right now, some of it first read from outside, from the harness";
+/// The teller's event line, and the marker the initiative measure reads.
+pub const EVENTS_HEADING: &str = "What happened";
+/// The shared instruction that closes either shape of the today-block.
+const NOTE_TAIL: &str = "Let it colour what you say when it fits; it is never news to announce, and where it disagrees with who you are, who you are wins.)";
 
 /// `(private, untrusted)` for a today-block, or `None` when `text` is not
 /// one.
@@ -88,9 +96,113 @@ fn who(c: Company) -> Option<&'static str> {
     }
 }
 
+/// Whether a turn tells yesterday's events and today's morning levels.
+pub fn before_noon(at: NaiveDateTime) -> bool {
+    // A day runs 4am to 4am (`sampler::DAY_START`): before 4am is the
+    // evening of the day before, not its morning (review of #836).
+    (4..12).contains(&at.hour())
+}
+
+/// The day `at` falls in, which runs 4am to 4am: before 4am, the calendar
+/// day before, as `world::now` reads it.
+pub fn diary_date(at: NaiveDateTime) -> chrono::NaiveDate {
+    if at.hour() < 4 {
+        at.date().pred_opt().unwrap_or(at.date())
+    } else {
+        at.date()
+    }
+}
+
+fn fahrenheit(c: i16) -> i16 {
+    (f64::from(c) * 9.0 / 5.0 + 32.0).round() as i16
+}
+
+/// The teller lines for a turn at `at`. Before noon, `yesterday` supplies
+/// the events while `today` still supplies the morning levels and today's
+/// weather; after noon, today's events and evening levels are used.
+///
+/// This fold is clean by construction: event titles are from the owner's
+/// deck, names are the clean People-tab names [`story::names`] admits, and
+/// weather is only a closed [`super::weather::Sky`] plus bounded integers
+/// (PERSONA-LIFE-DESIGN.md §8.2, shelf A by capacity).
+pub fn teller_lines(
+    at: NaiveDateTime,
+    today: &StoryDay,
+    yesterday: Option<&StoryDay>,
+    names: &BTreeMap<String, String>,
+) -> Result<String> {
+    let morning = before_noon(at);
+    let events = if morning {
+        yesterday.context("yesterday's story is missing")?
+    } else {
+        today
+    };
+    let happened = if events.events.is_empty() {
+        "nothing notable".to_string()
+    } else {
+        events
+            .events
+            .iter()
+            .map(|event| story::title(event, names))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let mut lines = vec![format!(
+        "{EVENTS_HEADING} {}: {happened}.",
+        if morning { "yesterday" } else { "today" }
+    )];
+
+    let levels = if morning {
+        today.morning
+    } else {
+        today.evening
+    };
+    let mut feeling = Vec::new();
+    match levels.energy {
+        Level::Low => feeling.push("low on energy"),
+        Level::High => feeling.push("full of energy"),
+        Level::Normal => {}
+    }
+    match levels.stress {
+        Level::Low => feeling.push("relaxed"),
+        Level::High => feeling.push("stressed"),
+        Level::Normal => {}
+    }
+    match levels.mood {
+        Level::Low => feeling.push("in a low mood"),
+        Level::High => feeling.push("in a good mood"),
+        Level::Normal => {}
+    }
+    if !feeling.is_empty() {
+        let said = match feeling.split_last() {
+            Some((last, [])) => last.to_string(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => unreachable!("checked non-empty"),
+        };
+        lines.push(format!("You feel {said}."));
+    }
+    if let Some(w) = today.weather {
+        lines.push(format!(
+            "Today's weather is {}, {}–{} °C ({}–{} °F).",
+            w.sky.id(),
+            w.low_c,
+            w.high_c,
+            fahrenheit(w.low_c),
+            fahrenheit(w.high_c)
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
 /// The today-block for `now`. The times are the owner's clock, which is the
 /// one her day runs on.
 pub fn note(now: &Now) -> String {
+    note_with_events(now, None)
+}
+
+/// [`note`] with teller lines after the doing-now sentence. `None` is the
+/// events-off and story-error path and is byte-for-byte the old note.
+pub fn note_with_events(now: &Now, events: Option<&str>) -> String {
     let s = &now.stretch;
     let clock = |m: u32| format!("{:02}:{:02}", (m / 60) % 24, m % 60);
     let mut said = format!("You are {}", doing(s.activity));
@@ -136,11 +248,14 @@ pub fn note(now: &Now) -> String {
     } else {
         UNTRUSTED_TODAY_STEM
     };
-    format!(
-        "{stem} — your own day, drawn from your routine. {said}. Let it colour what you say \
-         when it fits; it is never news to announce, and where it disagrees with who you are, \
-         who you are wins.)"
-    )
+    match events.filter(|e| !e.trim().is_empty()) {
+        None => format!("{stem} — your own day, drawn from your routine. {said}. {NOTE_TAIL}"),
+        Some(events) => {
+            format!(
+                "{stem} — your own day, drawn from your routine. {said}.\n{events}\n{NOTE_TAIL}"
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +282,33 @@ mod tests {
             end,
             company: None,
             anchor: None,
+        }
+    }
+
+    fn story_day(
+        date: &str,
+        title: &str,
+        morning: story::Levels,
+        evening: story::Levels,
+    ) -> StoryDay {
+        StoryDay {
+            date: date.parse().unwrap(),
+            weather: Some(story::WeatherOut {
+                sky: crate::persona::weather::Sky::Rain,
+                high_c: 9,
+                low_c: 4,
+            }),
+            morning,
+            evening,
+            events: vec![story::Event {
+                storylet: "small_win".into(),
+                title: title.into(),
+                size: story::Size::Minor,
+                people: vec!["theo".into()],
+                effect: story::Effect::default(),
+                importance: 1.0,
+            }],
+            kept: true,
         }
     }
 
@@ -269,6 +411,85 @@ mod tests {
         assert!(!text.contains("your housemate"), "{text}");
     }
 
+    #[test]
+    fn teller_lines_are_present_only_when_supplied() {
+        let at = now(
+            stretch(Activity::Reading, 10 * 60 + 7, 11 * 60 + 13),
+            Source::Sampler,
+        );
+        let without = note(&at);
+        assert!(!without.contains(EVENTS_HEADING));
+        assert_eq!(
+            without,
+            // Built from the note's own pieces, as `note` builds it.
+            format!(
+                "{TODAY_STEM} — your own day, drawn from your routine. {}. {NOTE_TAIL}",
+                "You are reading, since 10:07, until about 11:13"
+            ),
+            "the events-off note stays byte-identical"
+        );
+        let text = note_with_events(&at, Some("What happened today: a small win."));
+        assert!(text.contains("What happened today: a small win."), "{text}");
+        assert!(text.contains("who you are wins.)"), "{text}");
+        assert_eq!(text.matches(NOTE_TAIL).count(), 1, "{text}");
+    }
+
+    #[test]
+    fn before_and_after_noon_choose_yesterday_and_today() {
+        let low = story::Levels {
+            energy: Level::Low,
+            stress: Level::High,
+            mood: Level::High,
+        };
+        let high = story::Levels {
+            energy: Level::High,
+            stress: Level::Low,
+            mood: Level::Low,
+        };
+        let today = story_day("2026-11-03", "today with {who}", low, high);
+        let yesterday = story_day(
+            "2026-11-02",
+            "yesterday with {who}",
+            story::Levels::default(),
+            story::Levels::default(),
+        );
+        let names = BTreeMap::from([("theo".into(), "Theo".into())]);
+        let morning = teller_lines(
+            "2026-11-03T09:00:00".parse().unwrap(),
+            &today,
+            Some(&yesterday),
+            &names,
+        )
+        .unwrap();
+        assert!(morning.contains("What happened yesterday: yesterday with Theo."));
+        assert!(morning.contains("low on energy, stressed and in a good mood"));
+        assert!(morning.contains("rain, 4–9 °C (39–48 °F)"));
+        assert!(!morning.contains("today with Theo"));
+
+        let afternoon = teller_lines(
+            "2026-11-03T12:00:00".parse().unwrap(),
+            &today,
+            Some(&yesterday),
+            &names,
+        )
+        .unwrap();
+        assert!(afternoon.contains("What happened today: today with Theo."));
+        assert!(afternoon.contains("full of energy, relaxed and in a low mood"));
+        assert!(!afternoon.contains("yesterday with Theo"));
+    }
+
+    #[test]
+    fn a_story_error_keeps_the_doing_now_note() {
+        let at = now(
+            stretch(Activity::Reading, 10 * 60, 11 * 60),
+            Source::Sampler,
+        );
+        let failed: anyhow::Result<String> = Err(anyhow::anyhow!("the deck does not load"));
+        let text = note_with_events(&at, failed.as_ref().ok().map(String::as_str));
+        assert!(text.contains("You are reading"), "{text}");
+        assert!(!text.contains(EVENTS_HEADING), "{text}");
+    }
+
     /// The fold is taught to all three predicates (§4.5): re-armed from the
     /// transcript and from a run's notes, left off the wire if it was ever
     /// stored, and never mined as the owner's words.
@@ -303,5 +524,24 @@ mod tests {
         );
         assert_eq!(stem_of("What you are doing right now"), None);
         assert_eq!(stem_of(crate::persona::recall::MEMORY_STEM), None);
+    }
+
+    #[test]
+    fn the_teller_day_runs_four_to_four() {
+        let at = |s: &str| -> NaiveDateTime { s.parse().unwrap() };
+        assert!(before_noon(at("2026-11-03T09:00:00")));
+        assert!(!before_noon(at("2026-11-03T13:00:00")));
+        assert!(
+            !before_noon(at("2026-11-04T01:00:00")),
+            "1am is the evening before"
+        );
+        assert_eq!(
+            diary_date(at("2026-11-04T01:00:00")).to_string(),
+            "2026-11-03"
+        );
+        assert_eq!(
+            diary_date(at("2026-11-04T04:00:00")).to_string(),
+            "2026-11-04"
+        );
     }
 }
