@@ -267,7 +267,11 @@
     {/if}
 
     {#if st.kind === 'booking'}
-      <div class="note">This is a booking page: its hours are set above and are not edited here. Publishing keeps the live hours.</div>
+      {#if st.published}
+        <div class="note">This is a booking page: its hours are set above and are not edited here. Publishing keeps the live hours.</div>
+      {:else}
+        <div class="note">This is a booking page that has not been published: its hours are the draft's own <code>[availability]</code> — set them with Edit as TOML before publishing. After the first publish they move to the hours editor.</div>
+      {/if}
     {/if}
 
     <div class="bar">
@@ -286,7 +290,9 @@
     {#if preview}
       <div class="section">Preview <span class="sub">as strangers will see it{st.draft ? ', with your draft' : ''}</span></div>
       <!-- No scripts, no network, no forms: the page itself, looked at. -->
-      {#if preview.servable !== true}
+      {#if preview.servable == null}
+        <div class="note">The factory did not say whether this form can be published (its factory-publish predates the check); Publish will find out.</div>
+      {:else if preview.servable !== true}
         <div class="warnline">This form cannot be published as it stands: {preview.servable}</div>
       {/if}
       <div class="note">The page as it looks, not as it behaves: questions that appear only after an earlier answer are all shown here.</div>

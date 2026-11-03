@@ -598,8 +598,15 @@ pub async fn starters(State(_state): St) -> Response {
         Ok(out) => {
             let rows: Vec<serde_json::Value> = out
                 .lines()
-                .filter_map(|l| l.split_once('\t'))
-                .map(|(name, title)| serde_json::json!({ "name": name, "title": title }))
+                .filter_map(|l| {
+                    // `name<TAB>title<TAB>ready-or-what-it-needs`; a factory
+                    // predating the third column says nothing either way.
+                    let mut cols = l.splitn(3, '\t');
+                    let name = cols.next()?;
+                    let title = cols.next()?;
+                    let ready = cols.next().map(str::to_string);
+                    Some(serde_json::json!({ "name": name, "title": title, "ready": ready }))
+                })
                 .collect();
             Json(serde_json::json!({ "starters": rows })).into_response()
         }
@@ -836,7 +843,9 @@ pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Respons
                 "html": preview_html(page["html"].as_str().unwrap_or(""), page["style"].as_str().unwrap_or("")),
                 // `true`, or why the box would refuse to serve it (and
                 // Publish fail): the page says so beside the preview.
-                "servable": page.get("servable").cloned().unwrap_or(serde_json::Value::Bool(true)),
+                // Absent (a factory-publish predating the field) is unknown,
+                // never "publishable": the page says the box did not answer.
+                "servable": page.get("servable").cloned().unwrap_or(serde_json::Value::Null),
             }))
             .into_response(),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
