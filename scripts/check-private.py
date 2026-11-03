@@ -700,7 +700,7 @@ def added_lines(args):
         # A commit already on the public branch is the repository's own, not
         # this push's: a branch that merged main carries main's commits in
         # its range, and they went public when main took them.
-        public = ["--not", PUBLIC[0]] if PUBLIC else []
+        public = ["--not", *PUBLIC] if PUBLIC else []
         commits = run_git(["git", "rev-list", "--reverse", args[1]] + public).split()
         for c in commits:
             short = c[:8]
@@ -717,7 +717,13 @@ def added_lines(args):
         return
     # A merge being committed: only what the resolution adds against every
     # side, so the text merged in from main is not read as this change's.
-    yield from new_against_all([run_git(DIFF + ["--cached", h]) for h in ["HEAD"] + merging()])
+    # Outside one, the bare form, which also reads a first commit's index
+    # against an unborn HEAD.
+    heads = merging()
+    if heads:
+        yield from new_against_all([run_git(DIFF + ["--cached", h]) for h in ["HEAD"] + heads])
+    else:
+        yield from diff_lines(run_git(DIFF + ["--cached"]))
 
 
 def new_against_all(diffs, where=""):
@@ -786,8 +792,11 @@ def tree_words(rev):
 
 
 def main(args):
-    if "--public" in args:
+    while "--public" in args:
         i = args.index("--public")
+        if i + 1 >= len(args):
+            print("check-private: --public needs a ref; refusing.")
+            return 2
         PUBLIC.append(run_git(["git", "rev-parse", "--verify", f"{args[i + 1]}^{{commit}}"]).strip())
         args = args[:i] + args[i + 2:]
     if args and args[0] == "--range":

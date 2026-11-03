@@ -149,7 +149,9 @@ does have `~/.ssh` and can reach the network.
   `--no-verify` commit is still checked before it leaves. Text merged in from
   main is never this change's: a merge is read only where it is new against
   every parent, and a push skips commits already on the remote's main, so
-  merging main into a branch no longer needs a squashed replacement. On the machine that holds
+  merging main into a branch no longer needs a squashed replacement (a
+  cherry-pick from main is not a merge, and is still read). On the machine
+  that holds
   the conversations, export `CHECK_PRIVATE_REQUIRE=1` so a missing or moved
   store refuses rather than passing; everywhere else the check passes and says
   why. It
