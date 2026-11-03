@@ -786,6 +786,21 @@ class Guard(unittest.TestCase):
     def test_an_unreadable_public_branch_fails_closed(self):
         r = self.run_guard("--range", "HEAD..HEAD", "--public", "no-such-ref")
         self.assertEqual(r.returncode, 2, r.stdout)
+        r = self.run_guard("--range", "HEAD..HEAD", "--public")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("needs a ref", r.stdout)
+
+    def test_a_first_commit_is_read_against_an_unborn_head(self):
+        fresh = os.path.join(self.tmp.name, "fresh")
+        os.makedirs(fresh)
+        git(fresh, "init", "-q")
+        open(os.path.join(fresh, "first.py"), "w").write(f"X = {SAID!r}\n")
+        git(fresh, "add", "first.py")
+        env = dict(os.environ, MECHA_HOME=self.home, CHECK_PRIVATE_JOURNAL="0")
+        r = subprocess.run([sys.executable, GUARD, "--staged"], cwd=fresh, env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("first.py:1:", r.stdout)
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
