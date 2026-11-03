@@ -804,7 +804,7 @@ fn render_triage_result(
             let source = match action {
                 TriageAction::Unarchive => "archive",
                 TriageAction::Untrash => "Deleted Items",
-                _ => unreachable!("only restore actions return RestoreOutcome"),
+                _ => return status,
             };
             format!("{account}: thread {thread_id}: nothing in {source} to restore")
         }
@@ -3254,6 +3254,27 @@ mod tests {
             assert_eq!(
                 text,
                 format!("fixture: thread thread-1: nothing in {source} to restore")
+            );
+        }
+    }
+
+    #[test]
+    fn empty_restore_with_a_non_restore_action_renders_status_without_panicking() {
+        for action in [
+            TriageAction::Archive,
+            TriageAction::Read,
+            TriageAction::Unread,
+            TriageAction::Spam,
+            TriageAction::Trash,
+        ] {
+            assert_eq!(
+                render_triage_result(
+                    "fixture",
+                    "thread-1",
+                    action,
+                    TriageResult::Restore(RestoreOutcome::default())
+                ),
+                format!("fixture: thread thread-1 {}", action.done())
             );
         }
     }

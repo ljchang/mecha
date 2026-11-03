@@ -47,11 +47,20 @@ pub struct RestoreOutcome {
     pub failed: usize,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct ScriptedReads {
+    urls: Vec<String>,
+    pages: std::collections::VecDeque<Result<Value, MailError>>,
+}
+
 #[derive(Clone)]
 pub struct OutlookProvider {
     access_token: String,
     client: reqwest::Client,
     immutable_ids: bool,
+    #[cfg(test)]
+    scripted_reads: Option<std::sync::Arc<std::sync::Mutex<ScriptedReads>>>,
 }
 
 impl OutlookProvider {
@@ -60,6 +69,8 @@ impl OutlookProvider {
             access_token,
             client: crate::http::client(),
             immutable_ids: false,
+            #[cfg(test)]
+            scripted_reads: None,
         }
     }
 
@@ -85,6 +96,14 @@ impl OutlookProvider {
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
+        // Inject only the I/O boundary so tests exercise the real provider
+        // methods, including their decision to follow subsequent pages.
+        #[cfg(test)]
+        if let Some(script) = &self.scripted_reads {
+            let mut script = script.lock().unwrap();
+            script.urls.push(url.to_owned());
+            return script.pages.pop_front().expect("unexpected Graph request");
+        }
         let resp = send_with_retry(
             self.request(reqwest::Method::GET, url)
                 // Required whenever $search is used; harmless otherwise.
@@ -192,7 +211,7 @@ impl OutlookProvider {
             conversation_id.replace('\'', "''")
         );
         let url = format!(
-            "{GRAPH}/me/messages?$filter={}&$select={SELECT}",
+            "{GRAPH}/me/messages?$filter={}&$select={SELECT}&$top=100",
             urlencode(&filter)
         );
         let messages = message_pages(url, |url| async move { self.get_json(&url).await }).await?;
@@ -787,6 +806,94 @@ pub(crate) fn urlencode(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn paginated_provider() -> OutlookProvider {
+        let mut provider = OutlookProvider::new("fixture-token".into());
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: [
+                Ok(json!({"value":[{
+                    "id":"newer", "conversationId":"thread-1", "isDraft":false,
+                    "from":{"emailAddress":{"address":"sender@example.edu"}},
+                    "receivedDateTime":"2024-02-01T00:00:00Z"
+                }], "@odata.nextLink":format!("{GRAPH}/me/messages?$skiptoken=fixture")})),
+                Ok(json!({"value":[{
+                    "id":"older", "conversationId":"thread-1", "isDraft":false,
+                    "from":{"emailAddress":{"address":"owner@example.com"}},
+                    "receivedDateTime":"2024-01-01T00:00:00Z"
+                }]})),
+            ]
+            .into(),
+        })));
+        provider
+    }
+
+    fn assert_followed_both_pages(provider: &OutlookProvider) {
+        let script = provider.scripted_reads.as_ref().unwrap().lock().unwrap();
+        assert!(
+            script.pages.is_empty(),
+            "provider must consume the later page"
+        );
+        assert_eq!(script.urls.len(), 2);
+        assert_eq!(
+            script.urls[1],
+            format!("{GRAPH}/me/messages?$skiptoken=fixture")
+        );
+        let first = reqwest::Url::parse(&script.urls[0]).unwrap();
+        assert!(first
+            .query_pairs()
+            .any(|(key, value)| key == "$top" && value == "100"));
+    }
+
+    #[tokio::test]
+    async fn get_thread_follows_later_pages_and_requests_one_hundred_messages() {
+        let provider = paginated_provider();
+        let emails = provider.get_thread("thread-1").await.unwrap();
+        assert_eq!(
+            emails
+                .iter()
+                .map(|e| e.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            ["older", "newer"]
+        );
+        assert_eq!(
+            crate::types::ThreadMetadata::from_emails(&emails, Some("owner@example.com"))
+                .owner_participated,
+            Some(true)
+        );
+        assert_followed_both_pages(&provider);
+    }
+
+    #[tokio::test]
+    async fn conversation_message_ids_follows_later_pages() {
+        let provider = paginated_provider();
+        assert_eq!(
+            provider.conversation_message_ids("thread-1").await.unwrap(),
+            ["newer", "older"]
+        );
+        assert_followed_both_pages(&provider);
+    }
+
+    #[tokio::test]
+    async fn page_since_follows_later_pages() {
+        let provider = paginated_provider();
+        let mut batches = Vec::new();
+        let total = provider
+            .page_since("2024-01-01T00:00:00Z", |batch| {
+                batches.push(
+                    batch
+                        .iter()
+                        .map(|e| e.provider_id.clone())
+                        .collect::<Vec<_>>(),
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(batches, [vec!["newer"], vec!["older"]]);
+        assert_followed_both_pages(&provider);
+    }
 
     #[test]
     fn every_recipient_field_splits_on_commas() {
