@@ -37,6 +37,14 @@ const SELECT: &str = "id,conversationId,internetMessageId,subject,bodyPreview,bo
 toRecipients,ccRecipients,bccRecipients,receivedDateTime,isRead,isDraft,hasAttachments,flag,\
 internetMessageHeaders";
 
+/// Successful and failed message mutations. For read-state verbs, `moved`
+/// counts successful patches instead of folder moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MutationOutcome {
+    pub moved: usize,
+    pub failed: usize,
+}
+
 /// Result of a folder-scoped restore. Messages with an unknown destination
 /// remain in the source folder. Failed moves are counted separately because
 /// a transport failure does not prove whether the move happened.
@@ -61,6 +69,8 @@ pub struct OutlookProvider {
     immutable_ids: bool,
     #[cfg(test)]
     scripted_reads: Option<std::sync::Arc<std::sync::Mutex<ScriptedReads>>>,
+    #[cfg(test)]
+    scripted_mailbox: Option<std::sync::Arc<std::sync::Mutex<tests::Mailbox>>>,
 }
 
 impl OutlookProvider {
@@ -71,6 +81,8 @@ impl OutlookProvider {
             immutable_ids: false,
             #[cfg(test)]
             scripted_reads: None,
+            #[cfg(test)]
+            scripted_mailbox: None,
         }
     }
 
@@ -96,6 +108,10 @@ impl OutlookProvider {
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
+        #[cfg(test)]
+        if let Some(mailbox) = &self.scripted_mailbox {
+            return mailbox.lock().unwrap().get(url);
+        }
         // Inject only the I/O boundary so tests exercise the real provider
         // methods, including their decision to follow subsequent pages.
         #[cfg(test)]
@@ -326,18 +342,24 @@ impl OutlookProvider {
     // A partly-archived conversation is visibly odd; a silently-half-archived
     // one reported as success is the failure that costs trust.
 
-    /// The message ids in a conversation. Ids only — the triage verbs never
-    /// need the bodies, and `$select=id` keeps a fifty-message thread cheap.
+    /// The message ids in a conversation, optionally restricted to a source
+    /// folder. Ids only — these verbs never need the bodies. An empty source
+    /// folder returns zero ids; an absent whole conversation remains a 404.
     async fn conversation_message_ids(
         &self,
         conversation_id: &str,
+        source_folder: Option<&str>,
     ) -> Result<Vec<String>, MailError> {
         let filter = format!(
             "conversationId eq '{}'",
             conversation_id.replace('\'', "''")
         );
+        let collection = source_folder.map_or_else(
+            || "me/messages".to_owned(),
+            |folder| format!("me/mailFolders/{folder}/messages"),
+        );
         let url = format!(
-            "{GRAPH}/me/messages?$filter={}&$select=id&$top=100",
+            "{GRAPH}/{collection}?$filter={}&$select=id&$top=100",
             urlencode(&filter)
         );
         let messages = message_pages(url, |url| async move { self.get_json(&url).await }).await?;
@@ -351,7 +373,7 @@ impl OutlookProvider {
                     .ok_or_else(|| MailError::ParseError("conversation message has no id".into()))
             })
             .collect::<Result<_, _>>()?;
-        if ids.is_empty() {
+        if ids.is_empty() && source_folder.is_none() {
             return Err(MailError::ApiError {
                 status: 404,
                 message: format!("no messages in conversation {conversation_id}"),
@@ -360,19 +382,22 @@ impl OutlookProvider {
         Ok(ids)
     }
 
-    /// Apply an operation to every message in a conversation, tolerating
-    /// partial failure. Errors only when nothing succeeded, and then with the
-    /// first real error rather than a count.
+    /// Apply an operation to the conversation's messages in the given scope,
+    /// tolerating partial failure. Errors if every attempted operation failed,
+    /// with the first real error; an empty source folder returns zero counts.
     async fn for_each_message<'a, F, Fut>(
         &'a self,
         conversation_id: &str,
+        source_folder: Option<&str>,
         op: F,
-    ) -> Result<usize, MailError>
+    ) -> Result<MutationOutcome, MailError>
     where
         F: Fn(&'a Self, String) -> Fut,
         Fut: std::future::Future<Output = Result<(), MailError>>,
     {
-        let ids = self.conversation_message_ids(conversation_id).await?;
+        let ids = self
+            .conversation_message_ids(conversation_id, source_folder)
+            .await?;
         let total = ids.len();
         let mut first_err = None;
         let mut ok = 0usize;
@@ -397,14 +422,26 @@ impl OutlookProvider {
                         "triage applied to part of the conversation"
                     );
                 }
-                Ok(ok)
+                Ok(MutationOutcome {
+                    moved: ok,
+                    failed: total - ok,
+                })
             }
         }
     }
 
     /// Move one message to a well-known folder.
     async fn move_message(&self, message_id: &str, folder: &str) -> Result<(), MailError> {
-        let resp = send_with_retry(self.move_message_request(message_id, folder)).await?;
+        self.mutate_message(self.move_message_request(message_id, folder))
+            .await
+    }
+
+    async fn mutate_message(&self, request: reqwest::RequestBuilder) -> Result<(), MailError> {
+        #[cfg(test)]
+        if let Some(mailbox) = &self.scripted_mailbox {
+            return mailbox.lock().unwrap().mutate(request.build()?);
+        }
+        let resp = send_with_retry(request).await?;
         self.ok_or_err(resp).await
     }
 
@@ -455,30 +492,34 @@ impl OutlookProvider {
             .await
     }
 
-    /// Move the conversation to Archive. `archive` is a well-known folder
-    /// name Graph resolves per-mailbox, so this works without knowing the
-    /// user's folder ids or their language.
-    pub async fn archive_thread(&self, conversation_id: &str) -> Result<usize, MailError> {
-        self.for_each_message(conversation_id, |s, id| async move {
+    /// Move only this conversation's Inbox messages to Archive, matching
+    /// Gmail's removal of INBOX. Sent Items, Drafts and other folders stay put.
+    /// Well-known folder names work regardless of the mailbox's language.
+    pub async fn archive_thread(
+        &self,
+        conversation_id: &str,
+    ) -> Result<MutationOutcome, MailError> {
+        self.for_each_message(conversation_id, Some("inbox"), |s, id| async move {
             s.move_message(&id, "archive").await
         })
         .await
     }
 
-    /// Report the conversation as junk. Graph has no "mark as spam" verb —
-    /// moving to the Junk Email folder *is* the report, and is what trains
-    /// the filter.
-    pub async fn spam_thread(&self, conversation_id: &str) -> Result<usize, MailError> {
-        self.for_each_message(conversation_id, |s, id| async move {
+    /// Move only this conversation's Inbox mail to Junk Email. Gmail applies
+    /// SPAM thread-wide, but Graph moves would also sweep in sent copies and
+    /// drafts. Use Inbox as the inbound scope; already-filed mail stays put.
+    pub async fn spam_thread(&self, conversation_id: &str) -> Result<MutationOutcome, MailError> {
+        self.for_each_message(conversation_id, Some("inbox"), |s, id| async move {
             s.move_message(&id, "junkemail").await
         })
         .await
     }
 
-    /// Move the conversation to Deleted Items — recoverable, like Gmail's
-    /// trash. Nothing here can permanently delete.
-    pub async fn trash_thread(&self, conversation_id: &str) -> Result<usize, MailError> {
-        self.for_each_message(conversation_id, |s, id| async move {
+    /// Move the whole conversation to Deleted Items, including Sent Items
+    /// and Drafts, matching Gmail's threads.trash (no draft exclusion).
+    /// Recoverable; nothing here can permanently delete.
+    pub async fn trash_thread(&self, conversation_id: &str) -> Result<MutationOutcome, MailError> {
+        self.for_each_message(conversation_id, None, |s, id| async move {
             s.move_message(&id, "deleteditems").await
         })
         .await
@@ -491,17 +532,16 @@ impl OutlookProvider {
         &self,
         conversation_id: &str,
         read: bool,
-    ) -> Result<usize, MailError> {
-        self.for_each_message(conversation_id, move |s, id| async move {
-            let resp = send_with_retry(
+    ) -> Result<MutationOutcome, MailError> {
+        self.for_each_message(conversation_id, None, move |s, id| async move {
+            s.mutate_message(
                 s.request(
                     reqwest::Method::PATCH,
                     &format!("{GRAPH}/me/messages/{}", urlencode(&id)),
                 )
                 .json(&json!({ "isRead": read })),
             )
-            .await?;
-            s.ok_or_err(resp).await
+            .await
         })
         .await
     }
@@ -807,6 +847,360 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // A mailbox at the HTTP boundary: reads select the requested conversation
+    // and folder, and actual mutation requests update that same state.
+    #[derive(Default)]
+    pub(super) struct Mailbox {
+        messages: Vec<Value>,
+        reads: Vec<String>,
+        writes: Vec<reqwest::Request>,
+        fail_moves: std::collections::BTreeSet<String>,
+        fail_later_page: bool,
+    }
+
+    impl Mailbox {
+        pub(super) fn get(&mut self, url: &str) -> Result<Value, MailError> {
+            self.reads.push(url.to_owned());
+            let parsed = reqwest::Url::parse(url).unwrap();
+            let query: std::collections::BTreeMap<_, _> =
+                parsed.query_pairs().into_owned().collect();
+            assert_eq!(query["$filter"], "conversationId eq 'thread''1'");
+            assert_eq!(query["$top"], "100");
+            let folder = if parsed.path() == "/v1.0/me/messages" {
+                None
+            } else {
+                Some(
+                    parsed
+                        .path()
+                        .strip_prefix("/v1.0/me/mailFolders/")
+                        .unwrap()
+                        .strip_suffix("/messages")
+                        .unwrap(),
+                )
+            };
+            let offset: usize = query
+                .get("$skiptoken")
+                .map(|s| s.parse().unwrap())
+                .unwrap_or(0);
+            if offset > 0 && self.fail_later_page {
+                return Err(MailError::InvalidInput("fixture page failed".into()));
+            }
+            let selected: Vec<_> = self
+                .messages
+                .iter()
+                .filter(|m| {
+                    m["conversationId"] == "thread'1"
+                        && folder.is_none_or(|f| m["fixtureFolder"] == f)
+                })
+                .collect();
+            let mut page =
+                json!({"value": selected.iter().skip(offset).take(1).collect::<Vec<_>>()});
+            if offset + 1 < selected.len() {
+                let mut next = parsed.clone();
+                next.set_query(None);
+                next.query_pairs_mut()
+                    .extend_pairs(query.iter().filter(|(key, _)| key.as_str() != "$skiptoken"))
+                    .append_pair("$skiptoken", &(offset + 1).to_string());
+                page["@odata.nextLink"] = json!(next.as_str());
+            }
+            Ok(page)
+        }
+
+        pub(super) fn mutate(&mut self, request: reqwest::Request) -> Result<(), MailError> {
+            let path = request
+                .url()
+                .path()
+                .strip_prefix("/v1.0/me/messages/")
+                .unwrap();
+            let body: Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let id = path.strip_suffix("/move").unwrap_or(path);
+            let message = self.messages.iter_mut().find(|m| m["id"] == id).unwrap();
+            let failed = self.fail_moves.contains(id);
+            if path.ends_with("/move") {
+                assert_eq!(request.method(), reqwest::Method::POST);
+                assert_eq!(body.as_object().unwrap().len(), 1);
+                if !failed {
+                    message["fixtureFolder"] = body["destinationId"].clone();
+                }
+            } else {
+                assert_eq!(request.method(), reqwest::Method::PATCH);
+                assert_eq!(body.as_object().unwrap().len(), 1);
+                message["isRead"] = body["isRead"].clone();
+            }
+            self.writes.push(request);
+            if failed {
+                Err(MailError::InvalidInput("fixture move failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn assert_reads(&self, source: Option<&str>, select: &str, count: usize) {
+            assert_eq!(self.reads.len(), count);
+            for url in &self.reads {
+                let url = reqwest::Url::parse(url).unwrap();
+                assert_eq!(
+                    url.path(),
+                    source.map_or_else(
+                        || "/v1.0/me/messages".to_owned(),
+                        |s| format!("/v1.0/me/mailFolders/{s}/messages")
+                    )
+                );
+                assert!(url
+                    .query_pairs()
+                    .any(|(k, v)| k == "$select" && v == select));
+            }
+        }
+
+        fn assert_folder(&self, id: &str, folder: &str) {
+            assert_eq!(
+                self.messages.iter().find(|m| m["id"] == id).unwrap()["fixtureFolder"],
+                folder
+            );
+        }
+
+        fn assert_moves(&self, ids: &[&str], destination: &str) {
+            assert_eq!(self.writes.len(), ids.len());
+            for (request, id) in self.writes.iter().zip(ids) {
+                assert_eq!(request.method(), reqwest::Method::POST);
+                assert_eq!(request.url().path(), format!("/v1.0/me/messages/{id}/move"));
+                let body: Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body, json!({"destinationId":destination}));
+            }
+        }
+    }
+
+    fn mailbox_provider() -> OutlookProvider {
+        let mut messages = vec![
+            restore_fixture("incoming", "inbox", "sender@example.edu", false),
+            restore_fixture("sent", "sentitems", "owner@example.com", false),
+            restore_fixture("draft", "drafts", "owner@example.com", true),
+            restore_fixture("filed", "custom", "sender@example.edu", false),
+            restore_fixture("incoming2", "inbox", "sender@example.edu", false),
+        ];
+        for message in &mut messages {
+            message["conversationId"] = json!("thread'1");
+        }
+        let mut unrelated = restore_fixture("unrelated", "inbox", "sender@example.edu", false);
+        unrelated["conversationId"] = json!("another-thread");
+        messages.push(unrelated);
+        let mut provider = OutlookProvider::new("fixture-token".into());
+        provider.scripted_mailbox = Some(std::sync::Arc::new(std::sync::Mutex::new(Mailbox {
+            messages,
+            ..Default::default()
+        })));
+        provider
+    }
+
+    #[tokio::test]
+    async fn archive_and_spam_only_move_inbox_mail_across_all_pages() {
+        for destination in ["archive", "junkemail"] {
+            let provider = mailbox_provider();
+            let count = if destination == "archive" {
+                provider.archive_thread("thread'1").await
+            } else {
+                provider.spam_thread("thread'1").await
+            }
+            .unwrap();
+            assert_eq!(
+                count,
+                MutationOutcome {
+                    moved: 2,
+                    failed: 0
+                }
+            );
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            mailbox.assert_reads(Some("inbox"), "id", 2);
+            mailbox.assert_moves(&["incoming", "incoming2"], destination);
+            mailbox.assert_folder("sent", "sentitems");
+            mailbox.assert_folder("draft", "drafts");
+            mailbox.assert_folder("filed", "custom");
+            mailbox.assert_folder("unrelated", "inbox");
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_then_unarchive_round_trips_only_inbox_messages() {
+        let provider = mailbox_provider();
+        assert_eq!(
+            provider.archive_thread("thread'1").await.unwrap(),
+            MutationOutcome {
+                moved: 2,
+                failed: 0
+            }
+        );
+        {
+            let mut mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            mailbox.assert_moves(&["incoming", "incoming2"], "archive");
+            mailbox.assert_folder("incoming", "archive");
+            mailbox.assert_folder("sent", "sentitems");
+            mailbox.assert_folder("draft", "drafts");
+            mailbox.reads.clear();
+            mailbox.writes.clear();
+        }
+        let outcome = provider
+            .unarchive_thread("thread'1", Some("owner@example.com"))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            RestoreOutcome {
+                moved: 2,
+                ..Default::default()
+            }
+        );
+        let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+        mailbox.assert_reads(Some("archive"), "id,isDraft,from", 2);
+        mailbox.assert_moves(&["incoming", "incoming2"], "inbox");
+        mailbox.assert_folder("incoming", "inbox");
+        mailbox.assert_folder("sent", "sentitems");
+        mailbox.assert_folder("draft", "drafts");
+        mailbox.assert_folder("filed", "custom");
+        mailbox.assert_folder("unrelated", "inbox");
+    }
+
+    #[tokio::test]
+    async fn trash_still_moves_the_whole_conversation_and_untrash_restores_roles() {
+        let provider = mailbox_provider();
+        assert_eq!(
+            provider.trash_thread("thread'1").await.unwrap(),
+            MutationOutcome {
+                moved: 5,
+                failed: 0
+            }
+        );
+        {
+            let mut mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            mailbox.assert_reads(None, "id", 5);
+            mailbox.assert_moves(
+                &["incoming", "sent", "draft", "filed", "incoming2"],
+                "deleteditems",
+            );
+            mailbox.reads.clear();
+            mailbox.writes.clear();
+        }
+        let outcome = provider
+            .untrash_thread("thread'1", Some("owner@example.com"))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            RestoreOutcome {
+                moved: 5,
+                ..Default::default()
+            }
+        );
+        let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+        mailbox.assert_reads(Some("deleteditems"), "id,isDraft,from", 5);
+        mailbox.assert_folder("incoming", "inbox");
+        mailbox.assert_folder("sent", "sentitems");
+        mailbox.assert_folder("draft", "drafts");
+        mailbox.assert_folder("unrelated", "inbox");
+    }
+
+    #[tokio::test]
+    async fn read_and_unread_still_patch_the_whole_conversation_without_moves() {
+        for read in [true, false] {
+            let provider = mailbox_provider();
+            assert_eq!(
+                provider.set_thread_read("thread'1", read).await.unwrap(),
+                MutationOutcome {
+                    moved: 5,
+                    failed: 0
+                }
+            );
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            mailbox.assert_reads(None, "id", 5);
+            assert_eq!(mailbox.writes.len(), 5);
+            for (request, id) in
+                mailbox
+                    .writes
+                    .iter()
+                    .zip(["incoming", "sent", "draft", "filed", "incoming2"])
+            {
+                assert_eq!(request.method(), reqwest::Method::PATCH);
+                assert_eq!(request.url().path(), format!("/v1.0/me/messages/{id}"));
+                let body: Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body, json!({"isRead":read}));
+            }
+            mailbox.assert_folder("incoming", "inbox");
+            mailbox.assert_folder("sent", "sentitems");
+            mailbox.assert_folder("draft", "drafts");
+            mailbox.assert_folder("filed", "custom");
+            assert!(mailbox.messages.last().unwrap().get("isRead").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_inbox_does_not_move_other_conversation_messages() {
+        for spam in [false, true] {
+            let provider = mailbox_provider();
+            provider
+                .scripted_mailbox
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .messages
+                .retain(|m| m["fixtureFolder"] != "inbox");
+            let result = if spam {
+                provider.spam_thread("thread'1").await
+            } else {
+                provider.archive_thread("thread'1").await
+            };
+            assert_eq!(result.unwrap(), MutationOutcome::default());
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            mailbox.assert_reads(Some("inbox"), "id", 1);
+            assert!(mailbox.writes.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn inbox_moves_preserve_partial_failure_counts_and_read_before_writing() {
+        for spam in [false, true] {
+            for (failed_ids, fail_page) in [
+                (vec!["incoming"], false),
+                (vec!["incoming", "incoming2"], false),
+                (vec![], true),
+            ] {
+                let provider = mailbox_provider();
+                {
+                    let mut mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+                    mailbox.fail_moves = failed_ids.iter().map(|id| (*id).to_owned()).collect();
+                    mailbox.fail_later_page = fail_page;
+                }
+                let result = if spam {
+                    provider.spam_thread("thread'1").await
+                } else {
+                    provider.archive_thread("thread'1").await
+                };
+                if fail_page || failed_ids.len() == 2 {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(
+                        result.unwrap(),
+                        MutationOutcome {
+                            moved: 1,
+                            failed: 1
+                        }
+                    );
+                }
+                let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+                if fail_page {
+                    assert!(mailbox.writes.is_empty());
+                } else {
+                    mailbox.assert_moves(
+                        &["incoming", "incoming2"],
+                        if spam { "junkemail" } else { "archive" },
+                    );
+                }
+            }
+        }
+    }
+
     fn paginated_provider() -> OutlookProvider {
         let mut provider = OutlookProvider::new("fixture-token".into());
         provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
@@ -868,7 +1262,10 @@ mod tests {
     async fn conversation_message_ids_follows_later_pages() {
         let provider = paginated_provider();
         assert_eq!(
-            provider.conversation_message_ids("thread-1").await.unwrap(),
+            provider
+                .conversation_message_ids("thread-1", None)
+                .await
+                .unwrap(),
             ["newer", "older"]
         );
         assert_followed_both_pages(&provider);
