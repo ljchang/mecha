@@ -1229,12 +1229,29 @@ impl Memory {
         }
         if origin == Origin::ModelUntrusted {
             let stamp = now();
-            self.conn.execute(
+            // The checks above are reads; the writer or a forget may withdraw
+            // the record before this write lands. The predicate holds the
+            // same conditions inside the write, as approve_clean_chat's
+            // transaction does, so a withdrawn record is never revived with
+            // its taint dropped (review of #837).
+            let n = self.conn.execute(
                 &format!(
-                    "UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4 WHERE uid = ?1"
+                    "UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4
+                     WHERE uid = ?1 AND origin = ?5 AND invalidated_at IS NULL
+                       AND status != ?6"
                 ),
-                params![uid, wire(&Status::Active), wire(&Origin::Owner), stamp],
+                params![
+                    uid,
+                    wire(&Status::Active),
+                    wire(&Origin::Owner),
+                    stamp,
+                    wire(&Origin::ModelUntrusted),
+                    wire(&Status::Invalidated)
+                ],
             )?;
+            if n == 0 {
+                bail!("that record changed while it was being approved; read it again");
+            }
         }
         if let Some(shared) = self.shared()? {
             let retry = format!(
