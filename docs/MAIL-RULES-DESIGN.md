@@ -130,7 +130,7 @@ or a symlink that leads out, fails the rule's load rather than reading a file
 elsewhere in the home.
 
 **The mode is not in `rule.toml`.** It lives in `approvals.jsonl`, keyed to a
-digest of the rule's directory (§6). A mode written into the file would let an
+digest of the inputs §6.2 covers. A mode written into the file would let an
 edit — or an installed proposal — grant itself `auto`.
 
 **The effective mode is the latest row for the rule and action group, and the
@@ -143,7 +143,7 @@ reply*), and one value for all of them would either raise a lower group or
 drop an untouched one further than asked. A later row raises a group again
 only by the owner's approval. Owner approvals, owner step-downs and §6.4's automatic brakes are
 all rows in the same file, and the most recent one wins; if its digest no
-longer matches the rule's directory, the mode reads as `propose` (or lower, if
+longer matches the inputs §6.2 covers, the mode reads as `propose` (or lower, if
 the row says lower). Never "the current digest matches *some* `auto`
 approval": that reading would let the next run undo a brake, which changes no
 file, and would re-arm a rule whose edit was reverted to an earlier approved
@@ -426,10 +426,14 @@ send gate** — a rule whose text is still model-proposed from an armed
 conversation may sit in `propose`, but its description never enters the
 frame that confirms another rule's automatic send, since the pass is sound
 only because nothing a stranger shaped is in that frame. Shadow candidates
-are confirmed among the shadow rules that pass the same gate, separately —
-shadow is where `ModelUntrusted` proposals live by construction, and the
-would-have rate it produces is the number the owner approves against — so a rule being measured
-never changes what an approved one does. Each description in the set is
+that pass the gate are confirmed among themselves, separately from active
+rules. A shadow candidate whose own text fails the gate gets its own isolated
+confirmation call, with its description as the only rule in the frame — no
+other rule's text, no learned rules, no few-shot. Shadow is where
+`ModelUntrusted` proposals live by construction, and measuring them by the
+main pass alone over-states the rate the owner approves against; isolation
+measures them without their untrusted descriptions entering any frame that
+judges another rule. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
 other would have taken, and the winner then sends only within its own
@@ -577,12 +581,16 @@ eligible for an action group only if it was received after that group's
 an R7 lapse, a brake to `propose`, a re-approval — do not move the cutoff,
 so lapsing and re-approving a rule never orphans mail that arrived in
 between. A step down to `shadow` or `off` (a brake, `pause-all`, or the
-owner turning it off) does end the
-stretch, but mail arriving while paused is not lost: the rule is in
-`shadow`, so it writes would-have rows for it, and resuming offers *apply to
-these N matches from while I was paused*. **A message found ineligible gets
-a row** — `skipped: before the rule was active` — so nothing is passed over
-without a trace. Acting on past matches is an explicit owner action on the
+owner turning it off) does end the stretch. A group in `shadow` writes
+would-have rows for mail arriving while
+paused, and only resuming from `shadow` offers *apply to these N matches
+from while I was paused*. A group in `off` writes nothing for mail arriving
+while it is off — no would-have row and no `skipped` row — so resuming from
+`off` offers no backlog. An owner turning a rule `off` chooses no record;
+`pause-all` steps to `shadow`, not `off`, precisely so a pause keeps a record.
+**A message found ineligible by an enabled group gets a row** —
+`skipped: before the rule was active` — so an enabled group passes nothing
+over without a trace. Acting on past matches is an explicit owner action on the
 rule page — *apply to these N earlier matches* — and runs in `propose`
 whatever the rule's mode, so the backlog is reviewed, not sent.
 
@@ -748,12 +756,12 @@ Which guard binds which action group, so no section has to infer it:
 |---|---|---|
 | RFC 3834 (`Auto-Submitted`, `Precedence`, lists, `noreply`) | yes | **no** — a vendor receipt is routinely `Auto-Submitted: auto-generated` from a `noreply@`, and §5.3 exists to forward exactly that |
 | DMARC aligned with `From`, topmost instance | yes | yes (§5.2) |
-| Sender-constrained matcher for `auto` | drafted only (§5.2) | yes (§5.2) |
+| Sender-constrained matcher for `auto` — absent holds the affected groups in `propose`, with no per-message row | drafted only (§5.2) | yes (§5.2) |
 | `From` only, never `Reply-To` or reply-all | yes | n/a — the recipient is the owner's `to` |
 | Once per sender per rule per 7 days | yes | **no** — every new receipt thread from a listed vendor is forwarded; §4.4's once-per-thread limit still applies, so a vendor reply into an existing order thread is `skipped: thread already handled`, visibly |
 | Per-rule and global daily caps (they also cap the Board group's automatic `task`s, §6.4) | yes | yes |
 | Not into a conversation the owner has joined | yes | no |
-| Never on a message `From` one of the owner's own addresses | yes | yes |
+| Never on a message `From` one of the owner's own addresses — an unknown own address holds outbound groups in `propose`, with no per-message row | yes | yes |
 | Never on one `From` a `to` address; RFC 3834 on for senders at a `to` domain | n/a | yes |
 | `block_sends_after_private` (§6.3) — a mode-level hold, not a per-message guard: it keeps every outbound group in `propose` and writes no `skipped` row | yes | yes |
 
@@ -798,18 +806,21 @@ cap stopped it. So, both failing closed:
 The rest of this section is about replies. A reply goes to an address the
 sender controls, so the guards keep mecha from
 becoming a spam reflector or joining a mail loop. All are checked in the
-harness, every one that fires is recorded on the ledger row, and none is
-configurable off. They come in three shapes, and the row says which:
+harness, every per-message guard that fires is recorded on the ledger row,
+and none is configurable off. They come in three shapes:
 
 - **A refusal** — the send is not made at all, and the row is `skipped:
   <guard>` (RFC 3834, the loop guards, the per-sender limit, a conversation
   the owner has joined).
 - **A demotion** — the send is not made *unattended*, but staged in the
   outbox for the owner, and the row is `staged` with the guard as its
-  reason (a DMARC or authentication failure, an unknown own address, a
-  matcher with no sender constraint).
-- **A mode-level hold** — `block_sends_after_private`, which keeps the group
-  in `propose` and writes no per-message row (§6.3).
+  reason (a DMARC or authentication failure).
+- **A mode-level hold** — `block_sends_after_private` (§6.3), an unknown own
+  address, or a matcher with no sender constraint (§5.2), which keeps the
+  affected outbound groups in `propose` and writes no per-message row; the
+  rule page names which condition holds them. These are standing conditions
+  of the rule or the account, so repeating them for every message adds no
+  evidence.
 
 The guards:
 
@@ -936,7 +947,7 @@ machine must not be decidable by anything sharing a context window with
 third-party text.
 
 **"Never a tool" is not the whole boundary**, because a model with `shell`
-needs no tool to type `mecha mail rule mode <name> auto`. So **raising** a
+needs no tool to type `mecha mail rule mode <name> <group> auto`. So **raising** a
 mode refuses any process that descends from a registered run — the shell
 registry and run markers `closure.rs` already reads to decide who may close a
 task (`ShellReading`, `POSTURE_ENV` as advisory) — and records the raise with
@@ -1155,7 +1166,9 @@ like a lapse; the two cap bullets change no mode and only stage.
 
 `mecha mail rule pause-all` (and a button) drops every rule to `shadow` at
 once — one row per group, each recording the lower of its current mode and
-`shadow`, so a group the owner turned `off` stays off. Stepping down never needs approval; stepping up always does.
+`shadow`, so a group the owner turned `off` stays off. The target is `shadow`,
+not `off`, so paused groups keep would-have rows for recovery (§4.4).
+Stepping down never needs approval; stepping up always does.
 
 ---
 
@@ -1274,9 +1287,13 @@ wire format — and **each store states its default's direction**, as
 `imagelib::Status` and `imagelib::Origin` do, because the two stores need
 opposite ones. In `approvals.jsonl` an unknown mode reads as **`shadow`**: it
 never acts, so a newer build's rung cannot raise anything in an older one.
-In `ledger.jsonl` an unknown outcome **closes the key**, as an unknown
-`failed` does for a send: an outcome nobody can read is never taken as
-permission to run the action again. Both are shown as `unknown` on the
+In `ledger.jsonl` every row also carries a **`closes` boolean**, written by
+the build that writes the row according to §4.4; a reader honours it when
+present, even for an unknown outcome. A newer non-closing outcome must not
+silently close the key in an older reader, as doing so would leave the rule
+inert. Only a row that lacks `closes` defaults to **closing the key**: without
+that field, an outcome nobody can read is never taken as permission to run
+the action again. Unknown modes and outcomes are shown as `unknown` on the
 page.
 
 ---
@@ -1311,8 +1328,8 @@ real and worth serving, and the safe shape exists already in
   proposal says, and an armed proposal is labelled as one. The accept names
   the digest the owner was shown.
 - **The recorded `Origin` gates what can send.** The confirmation pass
-  (§4.2) is sound only because nothing a stranger wrote can have shaped its
-  frame — the owner's words, or a model's written in a conversation that had
+  for an automatic send (§4.2) is sound only because nothing a stranger wrote
+  can have shaped its frame — the owner's words, or a model's written in a conversation that had
   read nothing untrusted — and a proposal
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group —
