@@ -28,7 +28,7 @@ use crate::google::gmail::GmailProvider;
 use crate::google::server::markdown_to_html;
 use crate::mcp::Reply;
 use crate::microsoft::graph_calendar as mcal;
-use crate::microsoft::graph_mail::{OutlookProvider, RestoreOutcome};
+use crate::microsoft::graph_mail::{MutationOutcome, OutlookProvider, RestoreOutcome};
 use crate::text::clean_body;
 use crate::token::{self, TokenManager};
 use crate::types::{Email, MailError};
@@ -351,7 +351,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "mail_triage",
-            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Undo archive with unarchive; undo trash with untrash. Outlook restores only messages in the corresponding Archive or Deleted Items folder: drafts to Drafts, own messages to Sent Items, others to Inbox; unknown destinations stay put and are counted. Gmail unarchive adds Inbox and untrash restores labels; use untrash for trashed mail. Acts on the WHOLE thread. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
+            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Undo archive with unarchive; undo trash with untrash. Outlook restores only messages in the corresponding Archive or Deleted Items folder: drafts to Drafts, own messages to Sent Items, others to Inbox; unknown destinations stay put and are counted. Gmail unarchive adds Inbox and untrash restores labels; use untrash for trashed mail. Gmail acts on the whole thread. Outlook archive and spam move only the conversation's Inbox messages, leaving filed mail untouched; trash and read/unread act on the whole conversation. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -778,9 +778,11 @@ impl TriageAction {
     ];
 }
 
-enum TriageResult {
+/// Provider outcome before rendering the MCP triage report.
+#[derive(Debug, Clone, Copy)]
+pub enum TriageResult {
     Uncounted,
-    Count(usize),
+    Count(MutationOutcome),
     Restore(RestoreOutcome),
 }
 
@@ -793,8 +795,40 @@ fn render_triage_result(
     let status = format!("{account}: thread {thread_id} {}", action.done());
     match result {
         TriageResult::Uncounted => status,
-        TriageResult::Count(n) => {
-            format!("{status} ({n} message{})", if n == 1 { "" } else { "s" })
+        TriageResult::Count(MutationOutcome {
+            moved: 0,
+            failed: 0,
+        }) if matches!(action, TriageAction::Archive | TriageAction::Spam) => {
+            let verb = if matches!(action, TriageAction::Archive) {
+                "archive"
+            } else {
+                "mark as spam"
+            };
+            format!("{account}: thread {thread_id}: nothing in Inbox to {verb}")
+        }
+        TriageResult::Count(outcome) => {
+            let completion = if outcome.failed > 0 {
+                "partial completion: "
+            } else {
+                ""
+            };
+            if matches!(action, TriageAction::Archive | TriageAction::Spam) {
+                let destination = if action == TriageAction::Archive {
+                    "Archive"
+                } else {
+                    "Junk Email"
+                };
+                format!("{account}: thread {thread_id}: {completion}{} Inbox message{} moved to {destination}; {} failed",
+                    outcome.moved, if outcome.moved == 1 { "" } else { "s" }, outcome.failed)
+            } else {
+                format!(
+                    "{account}: thread {thread_id}: {completion}{} message{} {}; {} failed",
+                    outcome.moved,
+                    if outcome.moved == 1 { "" } else { "s" },
+                    action.done(),
+                    outcome.failed
+                )
+            }
         }
         TriageResult::Restore(RestoreOutcome {
             moved: 0,
@@ -809,10 +843,64 @@ fn render_triage_result(
             format!("{account}: thread {thread_id}: nothing in {source} to restore")
         }
         TriageResult::Restore(outcome) => format!(
-            "{status} ({} moved; {} left in place; {} failed)",
-            outcome.moved, outcome.left_in_place, outcome.failed
+            "{status} ({}{} moved; {} left in place; {} failed)",
+            if outcome.failed > 0 || outcome.left_in_place > 0 {
+                "incomplete restore: "
+            } else {
+                ""
+            },
+            outcome.moved,
+            outcome.left_in_place,
+            outcome.failed
         ),
     }
+}
+
+/// Classify counts independently of any claimed wire status. An absent moved
+/// count is a successful, uncounted thread operation; failures or messages
+/// left in place always take precedence over an empty successful count.
+pub fn status_of(moved: Option<usize>, failed: usize, left_in_place: usize) -> &'static str {
+    if failed > 0 || left_in_place > 0 {
+        "partial"
+    } else if moved == Some(0) {
+        "nothing_to_do"
+    } else {
+        "completed"
+    }
+}
+
+/// Machine-readable result, also included as JSON text for text-only MCP
+/// clients. `moved: null` means Gmail acknowledged the thread operation without
+/// a per-message count. A partial operation is an error, never a clean success.
+pub fn triage_reply(
+    account: &str,
+    thread_id: &str,
+    action: TriageAction,
+    result: TriageResult,
+) -> Reply {
+    let (moved, failed, left_in_place) = match result {
+        TriageResult::Uncounted => (None, 0, 0),
+        TriageResult::Count(outcome) => (Some(outcome.moved), outcome.failed, 0),
+        TriageResult::Restore(outcome) => {
+            (Some(outcome.moved), outcome.failed, outcome.left_in_place)
+        }
+    };
+    let status = status_of(moved, failed, left_in_place);
+    let source = match (result, action) {
+        (TriageResult::Count(_), TriageAction::Archive | TriageAction::Spam) => Some("Inbox"),
+        (TriageResult::Restore(_), TriageAction::Unarchive) => Some("Archive"),
+        (TriageResult::Restore(_), TriageAction::Untrash) => Some("Deleted Items"),
+        _ => None,
+    };
+    Reply::structured(
+        json!({
+            "account": account, "thread_id": thread_id, "action": action.name(),
+            "status": status, "moved": moved, "failed": failed,
+            "left_in_place": left_in_place, "source": source,
+            "message": render_triage_result(account, thread_id, action, result),
+        }),
+        status == "partial",
+    )
 }
 
 /// Apply one triage action to one thread in one account.
@@ -1575,10 +1663,7 @@ impl MailTools {
                     Err(e) => return fail(e),
                 };
                 match triage_one(account, &thread_id, action).await {
-                    Ok(result) => Some(Reply::from((
-                        render_triage_result(&account.name, &thread_id, action, result),
-                        false,
-                    ))),
+                    Ok(result) => Some(triage_reply(&account.name, &thread_id, action, result)),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -2342,6 +2427,10 @@ mod tests {
         // offered a verb that fails or denied one that works.
         let defs = tool_definitions(&names(&["a"]), &conf(Some("a"), None, None));
         let tool = defs.iter().find(|t| t["name"] == "mail_triage").unwrap();
+        let description = tool["description"].as_str().unwrap();
+        assert!(!description.contains("Acts on the WHOLE thread"));
+        assert!(description.contains("Gmail acts on the whole thread"));
+        assert!(description.contains("Outlook archive and spam move only the conversation's Inbox messages, leaving filed mail untouched"));
         let schema: Vec<&str> = tool["inputSchema"]["properties"]["action"]["enum"]
             .as_array()
             .unwrap()
@@ -3240,6 +3329,143 @@ mod tests {
     }
 
     #[test]
+    fn triage_status_classifies_counts_with_incomplete_work_first() {
+        for moved in [None, Some(0), Some(1), Some(2)] {
+            assert_eq!(
+                status_of(moved, 0, 0),
+                if moved == Some(0) {
+                    "nothing_to_do"
+                } else {
+                    "completed"
+                }
+            );
+            // Every combination with any incomplete work is partial.
+            for failed in 0..=1 {
+                for left in 0..=1 {
+                    if failed + left > 0 {
+                        assert_eq!(status_of(moved, failed, left), "partial");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn triage_message_counts_use_singular_and_plural_for_every_verb() {
+        for action in [
+            TriageAction::Archive,
+            TriageAction::Spam,
+            TriageAction::Read,
+            TriageAction::Unread,
+            TriageAction::Trash,
+        ] {
+            for moved in [1, 2] {
+                for failed in [0, 1] {
+                    let text = render_triage_result(
+                        "fixture",
+                        "thread-1",
+                        action,
+                        TriageResult::Count(MutationOutcome { moved, failed }),
+                    );
+                    let scope = if matches!(action, TriageAction::Archive | TriageAction::Spam) {
+                        "Inbox "
+                    } else {
+                        ""
+                    };
+                    assert!(
+                        text.contains(&format!(
+                            "{moved} {scope}message{} ",
+                            if moved == 1 { "" } else { "s" }
+                        )),
+                        "{text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn triage_counts_cross_mcp_as_structured_content_and_json_text() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            for (moved, failed, status) in [
+                (0, 0, "nothing_to_do"),
+                (2, 0, "completed"),
+                (1, 1, "partial"),
+            ] {
+                let reply = triage_reply(
+                    "fixture",
+                    "thread-1",
+                    action,
+                    TriageResult::Count(MutationOutcome { moved, failed }),
+                );
+                let wire = crate::mcp::result_json(&reply);
+                let text: Value =
+                    serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(wire["structuredContent"], text);
+                assert_eq!(text["moved"], moved);
+                assert_eq!(text["failed"], failed);
+                assert_eq!(text["status"], status);
+                assert_eq!(text["source"], "Inbox");
+                assert_eq!(wire["isError"], failed > 0);
+                assert!(
+                    wire.get("_meta").is_none(),
+                    "a partial operation is not a pre-dispatch refusal"
+                );
+                if failed > 0 {
+                    assert!(text["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("partial completion"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_inbox_triage_reports_nothing_in_the_source_folder() {
+        for (action, verb) in [
+            (TriageAction::Archive, "archive"),
+            (TriageAction::Spam, "mark as spam"),
+        ] {
+            assert_eq!(
+                render_triage_result(
+                    "fixture",
+                    "thread-1",
+                    action,
+                    TriageResult::Count(MutationOutcome::default())
+                ),
+                format!("fixture: thread thread-1: nothing in Inbox to {verb}")
+            );
+            for count in [1, 2] {
+                assert_eq!(
+                    render_triage_result(
+                        "fixture",
+                        "thread-1",
+                        action,
+                        TriageResult::Count(MutationOutcome {
+                            moved: count,
+                            failed: 0
+                        })
+                    ),
+                    format!(
+                        "fixture: thread thread-1: {count} Inbox message{} moved to {}; 0 failed",
+                        if count == 1 { "" } else { "s" },
+                        if action == TriageAction::Archive {
+                            "Archive"
+                        } else {
+                            "Junk Email"
+                        }
+                    )
+                );
+            }
+            assert_eq!(
+                render_triage_result("fixture", "thread-1", action, TriageResult::Uncounted),
+                format!("fixture: thread thread-1 {}", action.done())
+            );
+        }
+    }
+
+    #[test]
     fn empty_restores_report_nothing_in_the_source_folder() {
         for (action, source) in [
             (TriageAction::Unarchive, "archive"),
@@ -3276,6 +3502,38 @@ mod tests {
                 ),
                 format!("fixture: thread thread-1 {}", action.done())
             );
+        }
+    }
+
+    #[test]
+    fn nonempty_restore_results_name_the_action() {
+        for action in [TriageAction::Unarchive, TriageAction::Untrash] {
+            for moved in 0..=1 {
+                for failed in 0..=1 {
+                    for left_in_place in 0..=1 {
+                        if moved == 0 && failed == 0 && left_in_place == 0 {
+                            continue;
+                        }
+                        let text = render_triage_result(
+                            "fixture",
+                            "thread-1",
+                            action,
+                            TriageResult::Restore(RestoreOutcome {
+                                moved,
+                                failed,
+                                left_in_place,
+                            }),
+                        );
+                        assert!(text.contains(action.done()), "{text}");
+                        assert!(
+                            text.contains(&format!(
+                                "{moved} moved; {left_in_place} left in place; {failed} failed"
+                            )),
+                            "{text}"
+                        );
+                    }
+                }
+            }
         }
     }
 
