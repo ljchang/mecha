@@ -207,7 +207,22 @@ Five rules hold it together:
 - **"How far ahead" stops at 60 days**, because the timer fetches 60 days of
   your calendar. A longer horizon would make every push refuse.
 
-Cancelling a booking from this page, and editing a form's fields, are not
+Cancelling a booking from this page is not built yet.
+
+## Your forms, from the web
+
+The same Factory view creates and edits the forms strangers fill in. **New
+form** starts a draft from a starter (a meeting request, a letter, a speaking
+invitation, a lab application, a booking page) under a link name you choose
+once. Open any form to edit its title, description, questions (each with a
+kind, a required switch, help text, and choices for the choice kinds) and the
+message people see after they submit, or switch to **Edit as TOML** for
+anything the fields do not show.
+
+Edits are saved as a **draft**: nothing changes for strangers until you press
+**Publish**, which uploads the draft as the live form. **Preview** shows the
+page as strangers will see it. A booking page's hours are not edited here, and
+publishing it keeps the hours that are live. Pausing or retiring a form is not
 built yet.
 
 ## Where to go next
