@@ -314,7 +314,9 @@ wants an automatic trash on a sender alone writes a header rule for it.
 
 `describe` is a sentence the owner writes. The classifier — already one
 isolated, tool-less call per thread — is given the enabled rules' descriptions
-as numbered lists and returns two more fields:
+as numbered lists, **in `priority` then name order** so the frame's bytes are
+stable from thread to thread (the cached-prefix rule), and returns two more
+fields:
 
 ```
 rule: <one of the active rules' names> | none
@@ -414,7 +416,8 @@ reported — the ledger cannot show it was considered, so there is no
 taken, multiple description matches become possible and this paragraph is
 rewritten with it. Mailbox actions and `digest`/`task` from every match
 apply. **Outbound actions come from at most one rule per thread** — the
-first by priority — because two rules answering the same email is never what
+first by priority *that has any outbound action*, so a higher-priority
+mailbox-only rule never takes the slot — because two rules answering the same email is never what
 anyone meant, and the ledger records the other rules' outbound actions as
 `skipped: superseded by <rule>`. Within that one rule every outbound action
 runs: the receipts case is a `forward` of the invoice *and* a typed `send`,
@@ -474,8 +477,9 @@ stays on the row as a display field only; a re-classification, a
 `--force` sweep or a crashed run never sends twice.
 
 **Which outcomes close the key** is part of the key's definition, because
-several §8 outcomes are rows where nothing executed. `pending`, `done`,
-`sent`, `staged`, `offered` and `held` close it. `would have`, `skipped` and
+several §8 outcomes are rows where nothing executed. `pending` (**while
+unsettled** — once its settlement row exists, that row's outcome decides,
+below), `done`, `sent`, `staged`, `offered` and `held` close it. `would have`, `skipped` and
 `expired` do not — nothing ran, and a thread readable again later may be
 evaluated again. `failed` closes it for outbound actions, which are never
 retried (a failure after a provider accepted a send cannot be told from one
@@ -502,11 +506,20 @@ owner restored to the inbox — the engine fighting its owner, with the
 undo-rate brake measuring the fight. The per-thread key follows the same
 rule.
 
-**A rule acts only on messages that arrive after the mode it acts in was
-set.** Promotion out of `shadow` does not replay the week of would-have rows,
-and a `--force` sweep after promotion does not fire a backlog: a message is
+**A rule acts only on messages that arrive after it became active.**
+Promotion out of `shadow` does not replay the week of would-have rows, and a
+`--force` sweep after promotion does not fire a backlog: a message is
 eligible for an action group only if it was received after that group's
-current mode row. Acting on past matches is an explicit owner action on the
+**activation** — the latest row that raised it from `shadow` or `off` to
+`propose` or above. Rows that move a group *within* `propose` and `auto` —
+an R7 lapse, a brake to `propose`, a re-approval — do not move the cutoff,
+so lapsing and re-approving a rule never orphans mail that arrived in
+between. A step down to `shadow` (a brake or `pause-all`) does end the
+stretch, but mail arriving while paused is not lost: the rule is in
+`shadow`, so it writes would-have rows for it, and resuming offers *apply to
+these N matches from while I was paused*. **A message found ineligible gets
+a row** — `skipped: before the rule was active` — so nothing is passed over
+without a trace. Acting on past matches is an explicit owner action on the
 rule page — *apply to these N earlier matches* — and runs in `propose`
 whatever the rule's mode, so the backlog is reviewed, not sent.
 
@@ -752,8 +765,10 @@ and none is configurable off:
   instance, the one a sender can write. On Gmail the reader takes the
   **first** instance; on Graph, `graph_mail.rs`'s `.find(…)` is first-match
   (`find_map`) and needs the provider check added. And because neither
-  provider documents header order — `get_thread` already warns that Gmail's
-  array order is "observed, not documented" — the guard does not rest on it:
+  provider documents header order — the same caution `get_thread` writes
+  down for Gmail's messages array ("observed, not documented") applies to
+  the header array, which is documented no better — the guard does not rest
+  on it:
   **if more than one instance claims the account's own provider, the message
   goes to `propose`.** A genuine provider instance is unique, and a forgery
   added to a submitted message makes two, so this fails closed whatever order
