@@ -668,9 +668,21 @@ pub async fn form_save(State(_state): St, Json(body): Json<FormSave>) -> Respons
     // it. Checked before the factory is asked anything.
     // Read from the document, not matched as a line: `id='x'` and `id="x"`
     // are the same id, and a matching line inside a string is not one.
-    let doc_id = toml::from_str::<toml::Table>(&next)
-        .ok()
-        .and_then(|t| t.get("id").and_then(|v| v.as_str()).map(str::to_string));
+    // A document that does not parse says so first: reported as a moved id
+    // it would send the owner to the one line they did not touch.
+    let parsed = match toml::from_str::<toml::Table>(&next) {
+        Ok(t) => t,
+        Err(e) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("this is not valid TOML: {}", e.message()),
+            )
+        }
+    };
+    let doc_id = parsed
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     if doc_id.as_deref() != Some(w.id.as_str()) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -805,7 +817,15 @@ pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Respons
         Ok(d) => d,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
-    let draft = match Draft::write(&dir.join("x"), &w.text) {
+    // What would be published: a booking draft with the live hours carried,
+    // as Publish will carry them, so the preview is of the same page.
+    let text = match &w.served {
+        Some(served) if w.draft => {
+            form_draft::carry_hours(&w.text, served).unwrap_or(w.text.clone())
+        }
+        _ => w.text.clone(),
+    };
+    let draft = match Draft::write(&dir.join("x"), &text) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
@@ -814,6 +834,9 @@ pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Respons
             Ok(page) => Json(serde_json::json!({
                 "kind": page["kind"],
                 "html": preview_html(page["html"].as_str().unwrap_or(""), page["style"].as_str().unwrap_or("")),
+                // `true`, or why the box would refuse to serve it (and
+                // Publish fail): the page says so beside the preview.
+                "servable": page.get("servable").cloned().unwrap_or(serde_json::Value::Bool(true)),
             }))
             .into_response(),
             Err(e) => err(StatusCode::BAD_GATEWAY, e),
@@ -918,18 +941,27 @@ pub async fn form_publish(State(_state): St, Json(body): Json<IdBody>) -> Respon
     // Pushed from a copy, so a push that fails leaves the draft exactly as
     // the page read it: its `base` still holds and the retry goes through,
     // rather than 409ing on a change only this handler made.
-    let pushing = match Draft::write(&path, &text) {
-        Ok(d) => d,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    //
+    // A plain file, not a `Draft` guard: the push is `Child::Publish`, which
+    // outlives a dropped request on purpose, and a guard's drop would delete
+    // the file from under it. Removed after the push answers; a request
+    // dropped mid-push leaves one hidden temp file, which is the cheap side.
+    let pushing = match path.parent() {
+        Some(dir) => dir.join(format!(".publish.{}.tmp", uuid::Uuid::new_v4())),
+        None => return err(StatusCode::INTERNAL_SERVER_ERROR, "a draft has a directory"),
     };
-    match run(
+    if let Err(e) = std::fs::write(&pushing, &text) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    let pushed = run(
         "factory-publish",
-        &["type".as_ref(), "push".as_ref(), pushing.0.as_os_str()],
+        &["type".as_ref(), "push".as_ref(), pushing.as_os_str()],
         None,
         Child::Publish,
     )
-    .await
-    {
+    .await;
+    let _ = std::fs::remove_file(&pushing);
+    match pushed {
         Ok(out) => {
             // Live, and recorded as served by the push itself; the draft has
             // done its job.
