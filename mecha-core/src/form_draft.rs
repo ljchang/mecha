@@ -416,14 +416,18 @@ pub fn write_form(text: &str, f: &FormEdit) -> Result<String> {
 pub fn carry_hours(draft: &str, served: &str) -> Result<String> {
     let mut doc: DocumentMut = draft.parse().context("parsing the draft")?;
     let served: DocumentMut = served.parse().context("parsing the served copy")?;
-    let (Some(from), Some(to)) = (
-        served.get("availability").and_then(Item::as_table),
-        doc.get("availability").and_then(Item::as_table),
-    ) else {
+    // Only "the served copy has no hours" (a request form) leaves the draft
+    // alone. A booking whose draft lost its [availability], or wrote it
+    // inline, still takes the live hours: returning the draft would publish
+    // its hours — or none — over them, silently.
+    let Some(from) = served.get("availability").and_then(Item::as_table) else {
         return Ok(draft.to_string());
     };
-    let zone = to.get("timezone").cloned();
-    let at = to.position();
+    let to = doc.get("availability").and_then(Item::as_table);
+    // The draft's zone when it states one in a table this can read; else the
+    // live zone stays.
+    let zone = to.and_then(|t| t.get("timezone").cloned());
+    let at = to.and_then(Table::position).or(from.position());
     let mut carried = from.clone();
     if let Some(zone) = zone {
         carried["timezone"] = zone;
@@ -634,6 +638,18 @@ expect_reply_within = "a week"
         );
         // A form has no hours: unchanged.
         assert_eq!(carry_hours(FORM, FORM).unwrap(), FORM);
+        // A draft that lost its hours, or wrote them inline, still gets the
+        // live ones — never its own, or none, over them.
+        let removed = draft.replace(
+            "[availability]\ntimezone = \"Europe/Helsinki\"\ndurations = [30]\n\n[[availability.windows]]\nday = \"fri\"\nstart = \"09:00\"\nend = \"10:00\"\n",
+            "",
+        );
+        assert_ne!(removed, draft, "the fixture edit applied");
+        let out = carry_hours(&removed, served).unwrap();
+        assert!(
+            out.contains("day = \"mon\"") && out.contains("America/New_York"),
+            "{out}"
+        );
     }
 
     #[test]
