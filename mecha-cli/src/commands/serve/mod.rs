@@ -740,6 +740,18 @@ fn api() -> gate::Owned {
             axum::routing::post(persona_chat::approve_draft),
         )
         .at(
+            "/api/personas/{name}/life/draft",
+            Owner::Of(Feature::World),
+            axum::routing::post(persona_chat::draft_life)
+                .put(persona_chat::edit_life_draft)
+                .delete(persona_chat::discard_life_draft),
+        )
+        .at(
+            "/api/personas/{name}/life/draft/approve",
+            Owner::Of(Feature::World),
+            axum::routing::post(persona_chat::approve_life_draft),
+        )
+        .at(
             "/api/personas/{name}/people",
             Owner::Of(Feature::World),
             get(persona_chat::people).post(persona_chat::add_person),

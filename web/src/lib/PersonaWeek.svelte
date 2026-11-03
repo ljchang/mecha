@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, lifeDraftBody, anchorLine, lifeLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -22,6 +22,11 @@
   let acting = $state(false);
   // The owner's text while editing a draft, null when not editing.
   let draftText = $state(null);
+  let lifeDrafting = $state(false);
+  // What the last life draft found, when it found nothing to stage.
+  let lifeNote = $state('');
+  let lifeActing = $state(false);
+  let lifeDraftText = $state(null);
   // What the last draft found, when it found nothing to stage.
   let draftNote = $state('');
   // The owner's notes for the drafter, as typed; read from the server once
@@ -34,6 +39,8 @@
   const unavailable = $derived(weekUnavailable(data));
   const monday = $derived(data?.week?.monday ?? null);
   const draft = $derived(data?.routine?.draft ?? null);
+  const lifeDraft = $derived(data?.life?.draft ?? null);
+  const lifeSummary = $derived(lifeLine(data?.life));
   const cellLabel = (id) => WEEK_CELLS.find(([c]) => c === id)?.[1] ?? id;
   // Where the bar's ticks sit: 8am, noon, 6pm and midnight on a 4am day.
   const TICKS = [
@@ -72,7 +79,7 @@
   async function pickCell(select, cell) {
     // Not while a draft runs or lands: whichever answer came last would
     // show, and a pick's answer was read before the draft was staged.
-    if (!cell || cell === data?.routine?.cell || drafting || acting) {
+    if (!cell || cell === data?.routine?.cell || drafting || acting || lifeDrafting || lifeActing) {
       select.value = data?.routine?.cell ?? '';
       return;
     }
@@ -159,6 +166,56 @@
     }
   }
 
+  async function draftLife() {
+    lifeDrafting = true;
+    error = '';
+    lifeNote = '';
+    try {
+      const res = await fetch(personaUrl(name, '/life/draft', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(lifeDraftBody(data, date, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      picked = null;
+      if (data.life_drafted === false) lifeNote = 'Their model found nothing in what you wrote of them to draft a life profile from; nothing waits on you.';
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      lifeDrafting = false;
+    }
+  }
+
+  // The life draft's digest is independent of the routine draft's. As with
+  // that panel, a stale action reloads before anything can be tried again.
+  async function actOnLifeDraft(method, suffix, text = undefined) {
+    lifeActing = true;
+    error = '';
+    try {
+      const res = await fetch(personaUrl(name, suffix, null), {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(lifeDraftBody(data, date, token, text)),
+      });
+      if (res.status === 409) {
+        const why = (await res.text()).trim();
+        await load();
+        lifeDraftText = null;
+        if (data) error = `${why} It is shown as it stands now.`;
+        return;
+      }
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      lifeDraftText = null;
+      picked = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      lifeActing = false;
+    }
+  }
+
   function step(weeks) {
     if (!monday) return;
     date = shiftWeek(monday, weeks);
@@ -174,6 +231,7 @@
     untrack(() => {
       date = null;
       draftText = null;
+      lifeDraftText = null;
       draftNote = '';
       notesOf = null;
       load();
@@ -199,11 +257,47 @@
   {#if data && data.absent !== 'off' && data.routine}
     <label class="wcell">
       <span>Kind of week</span>
-      <select disabled={saving || drafting || acting} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget, e.currentTarget.value)}>
+      <select disabled={saving || drafting || acting || lifeDrafting || lifeActing} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget, e.currentTarget.value)}>
         {#if !data.routine.cell}<option value="" disabled>Pick one…</option>{/if}
         {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
       </select>
     </label>
+    {#if !lifeSummary}
+      <p class="wnote">No life profile yet: <code>mecha persona life edit {name}</code> writes one.</p>
+    {:else}
+      <p class:warnline={!!data.life.error} class:wnote={!data.life.error}>Their life: {lifeSummary}</p>
+    {/if}
+    <div class="wdraft">
+      {#if lifeDraft}
+        <div class="wdhead">A drafted life waits on you{#if lifeDraft.edited} · edited by you{/if}</div>
+        {#if lifeDraftText !== null}
+          <textarea class="wdtext" rows="12" spellcheck="false" bind:value={lifeDraftText} disabled={lifeActing}></textarea>
+          <div class="wdacts">
+            <button class="abtn" disabled={lifeActing || drafting || acting} onclick={() => actOnLifeDraft('PUT', '/life/draft', lifeDraftText)}>Save draft</button>
+            <button class="linkbtn" disabled={lifeActing} onclick={() => (lifeDraftText = null)}>Cancel</button>
+          </div>
+        {:else}
+          {#if lifeDraft.parsed}
+            <p class="wnote">{lifeLine(lifeDraft.parsed)}</p>
+          {:else}
+            <div class="warnline">It does not load, so it cannot be approved yet: {lifeDraft.error}</div>
+          {/if}
+          {#if lifeSummary}<p class="wnote">Approving replaces their current life profile; the old one is kept beside it.</p>{/if}
+          <div class="wdacts">
+            <button class="abtn" disabled={lifeActing || drafting || acting || saving || !lifeDraft.parsed} onclick={() => actOnLifeDraft('POST', '/life/draft/approve')}>Approve</button>
+            <button class="linkbtn" disabled={lifeActing || drafting || acting} onclick={() => (lifeDraftText = lifeDraft.text)}>Edit</button>
+            <button class="linkbtn" disabled={lifeActing || drafting || acting || saving} onclick={() => actOnLifeDraft('DELETE', '/life/draft')}>Discard</button>
+          </div>
+        {/if}
+      {:else}
+        <button class="abtn" disabled={lifeDrafting || drafting || acting || saving || !!data.life.undraftable} onclick={draftLife}>
+          {lifeDrafting ? 'Drafting their life…' : 'Draft their life from what you wrote'}
+        </button>
+        {#if data.life.undraftable}<p class="wnote">{data.life.undraftable}</p>{/if}
+        {#if lifeNote}<p class="wnote">{lifeNote}</p>{/if}
+        <p class="wnote">Someone must be on their People tab before the drafter can put them in the household.</p>
+      {/if}
+    </div>
     <!-- Her routine's anchors, drafted by her model and shown as they would
          land before anything reaches her days (§4.1). -->
     <div class="wdraft">
@@ -212,7 +306,7 @@
         {#if draftText !== null}
           <textarea class="wdtext" rows="14" spellcheck="false" bind:value={draftText} disabled={acting}></textarea>
           <div class="wdacts">
-            <button class="abtn" disabled={acting} onclick={() => actOnDraft('PUT', '/routine/draft', draftText)}>Save draft</button>
+            <button class="abtn" disabled={acting || lifeDrafting || lifeActing} onclick={() => actOnDraft('PUT', '/routine/draft', draftText)}>Save draft</button>
             <button class="linkbtn" disabled={acting} onclick={() => (draftText = null)}>Cancel</button>
           </div>
         {:else}
@@ -226,9 +320,9 @@
           {#if draft.kept_cell}<p class="wnote">Approving keeps their kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
           {#if data.routine.digest}<p class="wnote">Approving replaces the anchors their routine has now; the old routine is kept beside it.</p>{/if}
           <div class="wdacts">
-            <button class="abtn" disabled={acting || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
-            <button class="linkbtn" disabled={acting} onclick={() => (draftText = draft.text)}>Edit</button>
-            <button class="linkbtn" disabled={acting || saving} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
+            <button class="abtn" disabled={acting || lifeDrafting || lifeActing || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
+            <button class="linkbtn" disabled={acting || lifeDrafting || lifeActing} onclick={() => (draftText = draft.text)}>Edit</button>
+            <button class="linkbtn" disabled={acting || lifeDrafting || lifeActing || saving} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
           </div>
         {/if}
       {:else}
@@ -236,7 +330,7 @@
         <textarea id="wnotes" class="wdtext" rows="4" maxlength="4000" bind:value={notes} disabled={drafting}
           placeholder={'Fixed points in your own words, one a line. For example:\n- choir on Wednesday evenings, 7 to 9\n- rowing in the spring'}></textarea>
         <p class="wnote">Saved when you draft. The draft takes each one as given, a season as its months, and fills in a schedule where a note gives none.</p>
-        <button class="abtn" disabled={drafting || saving || !!data.routine.undraftable} onclick={draftWeek}>
+        <button class="abtn" disabled={drafting || lifeDrafting || lifeActing || saving || !!data.routine.undraftable} onclick={draftWeek}>
           {drafting ? 'Drafting their week…' : 'Draft their week from what you wrote'}
         </button>
         {#if data.routine.undraftable}<p class="wnote">{data.routine.undraftable}</p>{/if}
