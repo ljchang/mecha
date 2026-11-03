@@ -295,9 +295,11 @@ deferred actions run whether or not it is still in the window. **The queue
 exists so `classify` re-evaluates the thread, and an entry leaves once it
 has**: each deferred action is then settled with the outcome its own group
 uses — `done` for a mailbox or record action, `sent` / `staged` / `held` for
-an outbound one, so §4.4's per-thread key sees an outbound settlement and a
-second message in the thread never forwards again — or offered to the owner
-(`offered` — a `propose`-mode action now waiting in the mail desk, which
+an outbound one (a `propose`-mode send settles `staged`, never `offered`), so
+§4.4's per-thread key sees an outbound settlement and a second message in
+the thread never forwards again — or offered to the owner (`offered` — a
+`propose`-mode mailbox, record or Board action now waiting in the mail desk
+or the digest, which
 carries it from there and counts in `backlog.rs`), staged, skipped, or
 failed. A thread that cannot be read is a `failed: thread unreadable` row,
 never a silent drop. An entry older than seven days settles as `expired`
@@ -417,7 +419,11 @@ rule; disagreement goes to `propose` with both answers on the ledger row.
 Judging only the winner would leave the choice *between* two automatic send
 rules whose descriptions both honestly fit — which owner-fixed recipient an
 attacker's message reaches — to the pass that carries the learned rules. The
-set is the eligible **active** rules (`propose` or `auto`); shadow candidates
+set is the eligible **active** rules (`propose` or `auto`) **that pass §9's
+send gate** — a rule whose text is still model-proposed from an armed
+conversation may sit in `propose`, but its description never enters the
+frame that confirms another rule's automatic send, since the pass is sound
+only because nothing a stranger shaped is in that frame. Shadow candidates
 are confirmed among the shadow rules, separately, so a rule being measured
 never changes what an approved one does. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
@@ -588,8 +594,9 @@ preference reissues it is the open P0 question above, which P0 settles
 before this key is relied on — and the once-per-thread check below is a lookup
 on `(rule, account, thread id)` over the outbound rows, a key of its own
 beside the per-message one, and it names its closing outcomes as the
-per-message key does: **`pending`, `sent`, `staged`, `held` and an outbound
-`failed` close the thread** — a send that reached the provider, one queued
+per-message key does: **`pending`, `sent`, `staged`, `held`, `offered` (a
+proposed `task` waiting in the digest) and an outbound or Board `failed`
+close the thread** — a send that reached the provider, one queued
 and still owed, or one whose fate cannot be told — and **`would have`,
 `skipped` and `expired` leave it open**. Otherwise a rule promoted out of
 `shadow` would find its own would-have rows and never send on the threads it
