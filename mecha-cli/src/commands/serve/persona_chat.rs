@@ -1979,7 +1979,10 @@ impl PersonaChats {
                         // Their people unreadable: titles read "someone", and
                         // the page says why rather than looking right. Its
                         // own field: it is not why the story stops.
-                        let names = match story::names(&self.store.join(&p.name)) {
+                        let names = match story::names(
+                            &self.store.join(&p.name),
+                            p.settings.life.people,
+                        ) {
                             Ok(n) => n,
                             Err(e) => {
                                 out["story_names_error"] = serde_json::json!(format!(

@@ -386,8 +386,8 @@ const HEAD: &str = "\
 # romantic, ex, friend, colleague, mentor, neighbour, acquaintance, rival).
 # effect moves energy / stress / mood one step (-1 or 1). size is minor,
 # major or severe (severe only with [life] intensity = \"full\"). cooldown
-# is the days before it may happen again (5 for a minor, 28 otherwise), and
-# at most one storylet of a group happens a day.
+# is the days before it may happen again (5 for a minor, 28 otherwise, and
+# at most 28), and at most one storylet of a group happens a day.
 #
 # Where they live, for their weather (fetched by `mecha persona story weather`):
 # [place]
@@ -831,9 +831,10 @@ pub fn story(
             match super::world::day(store_dir, &p.name, d, today) {
                 Err(e) => {
                     // The chain is broken from here: later days are not
-                    // drawn on a guess, and the stored ones still show.
+                    // drawn on a guess, and the stored ones still show,
+                    // this one too when it was kept.
                     why = Some(format!("{e:#}"));
-                    None
+                    stored.map(|(sd, _)| sd)
                 }
                 Ok(day) => {
                     let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
@@ -901,8 +902,14 @@ pub fn story(
     Ok(Story { days: out, why })
 }
 
-/// The names of her people by id, for showing a `{who}`.
-pub fn names(pdir: &Path) -> Result<BTreeMap<String, String>> {
+/// The names of their people by id, for showing a `{who}`; none, and the
+/// network unread, while `people` (their `[life] people`) is off, as
+/// nothing reads it then and only a cast person needs a name. A title cast
+/// while it was on reads "someone".
+pub fn names(pdir: &Path, people: bool) -> Result<BTreeMap<String, String>> {
+    if !people {
+        return Ok(BTreeMap::new());
+    }
     Ok(Network::read(pdir)?
         .people
         .into_iter()
@@ -964,8 +971,12 @@ mod tests {
         for cell in Cell::ALL {
             let deck = parse(&starter(cell)).unwrap_or_else(|e| panic!("{cell:?}: {e:#}"));
             assert!(deck.storylets.len() >= 10, "{cell:?}");
+            // A major that casts nobody, so a persona with no one in their
+            // network still has one to draw.
             assert!(
-                deck.storylets.iter().any(|s| s.size == Size::Major),
+                deck.storylets
+                    .iter()
+                    .any(|s| s.size == Size::Major && s.with.is_empty()),
                 "{cell:?}"
             );
             assert!(deck.place.is_none());
@@ -1408,5 +1419,15 @@ with = ["friend"]
         assert_eq!(title(&e, &names), "coffee with someone");
         names.insert("u1".to_string(), "Theo".to_string());
         assert_eq!(title(&e, &names), "coffee with Theo");
+    }
+
+    #[test]
+    fn names_are_not_read_while_their_people_are_off() {
+        // A network that cannot be read: refused with people on, never
+        // read with them off.
+        let dir = crate::persona::tests_support::scratch();
+        std::fs::write(dir.join("world.db"), b"not a database").unwrap();
+        assert!(names(&dir, false).unwrap().is_empty());
+        assert!(names(&dir, true).is_err());
     }
 }
