@@ -43,12 +43,19 @@ impl RuleStore {
     /// Explicit roots are for isolated homes; no project/layered config is read.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        fs::create_dir_all(&root)?;
+        crate::create_private_dir(&root)?;
         let root = root.canonicalize()?;
         let rules = root.join("rules");
-        if !rules.try_exists()? {
-            fs::create_dir(&rules)?;
+        // Check existing links before chmod: opening a store must not change
+        // permissions on a directory outside its root.
+        match fs::symlink_metadata(&rules) {
+            Ok(_) => {
+                contained(&root, &rules)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
+        crate::create_private_dir(&rules)?;
         contained(&root, &rules)?;
         Ok(Self { root })
     }
@@ -265,7 +272,7 @@ impl RuleStore {
             "rule name was previously used; choose a fresh name"
         );
         let temp = rules.join(format!(".{name}-{}.tmp", uuid::Uuid::new_v4()));
-        fs::create_dir(&temp)?;
+        crate::create_private_dir(&temp)?;
         let result = (|| {
             let temp = contained(&rules, &temp)?;
             write_new(&temp.join("rule.toml"), text.as_bytes())?;
@@ -809,10 +816,15 @@ impl RuleStore {
         self.append("ledger.jsonl", row)
     }
 
+    /// Accepts only non-closing WouldHave snapshots without settlement links.
     /// Returns the retained entry id, including when this thread was already queued.
     pub fn enqueue(&self, entry: &DeferredEntry) -> Result<String> {
         for row in &entry.actions {
             row.validate_key()?;
+            ensure!(
+                row.outcome == Outcome::WouldHave && !row.closes && row.settlement.is_none(),
+                "deferred entries need unexecuted snapshots, not execution rows"
+            );
         }
         ensure!(
             !entry.actions.is_empty(),
@@ -823,9 +835,7 @@ impl RuleStore {
                 .actions
                 .iter()
                 .all(|r| r.message.account == entry.account
-                    && r.message.thread_id == entry.thread_id
-                    && r.outcome != Outcome::ApprovalLapsed
-                    && r.settlement.is_none()),
+                    && r.message.thread_id == entry.thread_id),
             "deferred actions must belong to the queued thread"
         );
         let _lock = self.lock()?;
