@@ -63,3 +63,48 @@ export function nameFrom(label, taken = []) {
   if (!used.has(base)) return base;
   for (let i = 2; ; i++) if (!used.has(`${base}_${i}`)) return `${base}_${i}`;
 }
+
+const DAY_WORDS = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+
+/** "21:30" → "9:30 PM": the clock the time inputs show, not the file's. */
+export function clock12(hhmm) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return String(hhmm);
+  const suffix = h < 12 ? 'AM' : 'PM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${suffix}`;
+}
+
+/**
+ * The first window that ends before it starts, said in the page's own
+ * words — the inputs show a 12-hour clock, so the likely mistake is an AM
+ * typed as PM, and the sentence says so. `null` when every window runs
+ * forwards. Checked on the page so the owner reads this, not the server's
+ * 24-hour refusal.
+ */
+export function backwards(hours) {
+  for (const w of hours?.windows ?? []) {
+    if (w.start >= w.end) {
+      return `${DAY_WORDS[w.day] ?? w.day} starts at ${clock12(w.start)}, after it ends at ${clock12(w.end)} — check AM and PM.`;
+    }
+  }
+  for (const o of hours?.overrides ?? []) {
+    for (const [s, e] of o.windows ?? []) {
+      if (s >= e) return `${o.date} starts at ${clock12(s)}, after it ends at ${clock12(e)} — check AM and PM.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Today's date in `tz` as YYYY-MM-DD — the zone the page's dates are in.
+ * `toISOString()` is UTC, which west of UTC turns into tomorrow every
+ * evening and refused today as a date off.
+ */
+export function todayIn(tz, now = new Date()) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  } catch {
+    return now.toISOString().slice(0, 10);
+  }
+}

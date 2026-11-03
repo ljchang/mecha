@@ -617,7 +617,7 @@
               type="text"
               bind:value={regionList[k].words}
               aria-label={`What changes in region ${k + 1}`}
-              placeholder={r.file ? 'What to take from the picture, e.g. her face' : `What changes in ${r.colour}? e.g. make it red`}
+              placeholder={r.file ? 'What to take from the picture, e.g. their face' : `What changes in ${r.colour}? e.g. make it red`}
               onpaste={(e) => pasteOn(k, e)}
               disabled={busy}
             />

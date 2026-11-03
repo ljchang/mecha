@@ -1,0 +1,59 @@
+# A college student.
+
+[[storylet]]
+id = "pop_quiz"
+title = "a pop quiz they weren't ready for"
+size = "minor"
+doing = ["class"]
+effect = { stress = 1 }
+
+[[storylet]]
+id = "good_lecture"
+title = "a lecture that actually clicked"
+size = "minor"
+doing = ["class"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "all_nighter"
+title = "stayed up far too late studying"
+size = "minor"
+doing = ["studying"]
+effect = { energy = -1, stress = 1 }
+
+[[storylet]]
+id = "study_group"
+title = "a study session with {who} that went well"
+size = "minor"
+doing = ["studying"]
+with = ["friend", "acquaintance"]
+effect = { mood = 1, stress = -1 }
+
+[[storylet]]
+id = "late_to_class"
+title = "ran late to class"
+size = "minor"
+days = ["weekdays"]
+doing = ["class"]
+effect = { stress = 1 }
+
+[[storylet]]
+id = "exam_went_well"
+title = "an exam went better than expected"
+size = "major"
+doing = ["class", "studying"]
+effect = { mood = 1, stress = -1 }
+
+[[storylet]]
+id = "exam_went_badly"
+title = "an exam went badly"
+size = "major"
+doing = ["class", "studying"]
+effect = { mood = -1, stress = 1 }
+
+[[storylet]]
+id = "paper_due"
+title = "a paper due, left too late"
+size = "major"
+days = ["weekdays"]
+effect = { stress = 1, energy = -1 }

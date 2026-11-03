@@ -670,6 +670,7 @@ export function factoryInstrument(id = 'book', now = Date.now()) {
     path: '/home/demo/.mecha/factory/types/book.toml',
     digest: 'demo',
     pipeline_days: 60,
+    timer_pushes: true,
     days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
     requests_open: 1,
     hours: demoHours,
@@ -1814,12 +1815,12 @@ export const chatImages = {
 
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, shows: { memories: true, week: true, people: true }, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', shows: { memories: true, week: false, people: false }, relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     // Proposed from the main chat and waiting on the owner (the Waiting
     // section): the review below is what its page reads.
-    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, shows: { memories: true, week: false, people: false }, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
+    { name: 'rook', display: 'Rook', shows: { memories: false, week: false, people: false }, relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
   image_options: imageOptions,
   unlocked: false,
@@ -1998,6 +1999,19 @@ export function personaWeek(date) {
       undraftable: null,
     },
     week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
+    // Her story over the week (`story::to_json`): invented events.
+    story: days.map((d, i) => ({
+      date: d.date,
+      weather: i % 3 === 0 ? { sky: 'rain', high_c: 9, low_c: 4 } : { sky: 'cloudy', high_c: 12, low_c: 6 },
+      morning: { energy: 'normal', stress: 'normal', mood: 'normal' },
+      evening: { energy: i === 2 ? 'low' : 'normal', stress: i === 2 ? 'high' : 'normal', mood: 'normal' },
+      events: i === 2
+        ? [{ storylet: 'deadline_crunch', title: 'a deadline crunch', size: 'minor', people: [], effect: { energy: 0, stress: 1, mood: 0 }, importance: 1.33, shown: 'a deadline crunch' }]
+        : i === 4
+          ? [{ storylet: 'good_news_friend', title: '{who} shared big good news', size: 'major', people: [DEMO_P(1)], effect: { energy: 0, stress: 0, mood: 1 }, importance: 5.6, shown: 'Ines shared big good news' }]
+          : [],
+      kept: d.when !== 'ahead',
+    })),
   };
 }
 

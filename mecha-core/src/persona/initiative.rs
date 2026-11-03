@@ -674,7 +674,10 @@ mod tests {
         let s = Subject::new(["Will"]);
         assert!(names(&words("Will called."), &s, true));
         assert!(names(&words("Will's coat"), &s, true), "a possessive");
-        assert!(!names(&words("I will call."), &s, true), "will is not Will");
+        assert!(
+            !names(&words("I will bake rye loaves."), &s, true),
+            "will is not Will"
+        );
         assert!(
             names(&words("did will call?"), &s, false),
             "uncased: a turn typed with no capital"
@@ -792,13 +795,13 @@ mod tests {
 
     #[test]
     fn the_owner_is_held_to_capitals_once_they_type_any() {
-        // "I will call" has a capital, so its will is not Will; an
+        // "I will bake rye" has a capital, so its will is not Will; an
         // all-lowercase turn is read case-blind (review of #808).
         let will = vec![Subject::new(["Will"])];
         let r = score(
             &chats(&[vec![
                 turn("hi", "Will is visiting.", ON),
-                turn("I will call you later", "Ok.", ON),
+                turn("I will bake rye loaves at noon", "Ok.", ON),
             ]]),
             &will,
         );

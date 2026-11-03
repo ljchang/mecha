@@ -50,3 +50,18 @@ assert.equal(nameFrom('Topic', ['topic']), 'topic_2');
 assert.equal(nameFrom('Topic', ['topic', 'topic_2']), 'topic_3');
 assert.equal(nameFrom('Café notes'), 'cafe_notes');
 console.log('factory names: ok');
+// The page's own words for a window that runs backwards.
+import { backwards, clock12, todayIn } from '../src/lib/factory.js';
+assert.equal(clock12('21:30'), '9:30 PM');
+assert.equal(clock12('00:15'), '12:15 AM');
+assert.equal(clock12('12:00'), '12:00 PM');
+assert.equal(
+  backwards({ windows: [{ day: 'tue', start: '21:30', end: '12:00' }], overrides: [] }),
+  'Tuesday starts at 9:30 PM, after it ends at 12:00 PM — check AM and PM.',
+);
+assert.equal(backwards({ windows: [{ day: 'wed', start: '09:00', end: '12:00' }], overrides: [] }), null);
+assert.match(backwards({ windows: [], overrides: [{ date: '2026-12-24', windows: [['15:00', '10:00']] }] }), /2026-12-24 starts at 3:00 PM/);
+// Today in the page's zone, not UTC: 03:00Z on the 3rd is still the 2nd in New York.
+assert.equal(todayIn('America/New_York', new Date('2026-11-03T03:00:00Z')), '2026-11-02');
+assert.equal(todayIn('UTC', new Date('2026-11-03T03:00:00Z')), '2026-11-03');
+console.log('factory polish: ok');
