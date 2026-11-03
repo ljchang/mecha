@@ -802,6 +802,41 @@ class Guard(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("first.py:1:", r.stdout)
 
+    def people_store(self):
+        """quillon's People tab with one person and an alias, and a household
+        in life.toml."""
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Orrin', '[\"Rinny\"]')")
+        db.commit()
+        db.close()
+        with open(os.path.join(pdir, "life.toml"), "w") as f:
+            f.write('[[household]]\nperson = "Brisa"\nrelation = "housemate"\n')
+
+    def test_a_name_from_a_personas_life_is_refused(self):
+        self.people_store()
+        for name, text in [("people.py", "X = 'Orrin came by.'\n"),
+                           ("alias.py", "X = 'Rinny says hi.'\n"),
+                           ("house.py", "X = 'Brisa cooked.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("the name of someone in a persona's life", r.stdout)
+            self.assertNotIn(text.split("'")[1].split()[0], r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+        # Case kept: a lowercase word is not the person.
+        self.stage("word.py", "X = 'the orrin and the brisa'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_an_unreadable_people_store_refuses(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        open(os.path.join(pdir, "world.db"), "w").write("not a database")
+        self.stage("ok.py", "X = 'The ferry leaves at noon.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("people store", r.stdout)
+
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
         self.assertEqual(self.run_guard("--staged").returncode, 0)
