@@ -614,7 +614,7 @@ def people_names():
             try:
                 with open(f, "rb") as fh:
                     life = tomllib.load(fh)
-            except (OSError, tomllib.TOMLDecodeError) as e:
+            except (OSError, ValueError) as e:
                 print(f"check-private: the life profile {f} could not be read ({e}); refusing rather than passing unread.")
                 sys.exit(2)
             for h in life.get("household", []) or []:
@@ -910,6 +910,9 @@ def main(args):
     # so a sentence wrapped across lines — which prose here always is — is
     # still a run of words and a quote (review of #557). Ids and names are
     # line-local and checked per line.
+    # Names excused because the repository already spells them: one warning
+    # per name at the end, never one per line.
+    excused = {}
     passages = []
     for p, n, t in lines:
         if passages and passages[-1][0] == p and passages[-1][2] == n - 1:
@@ -951,10 +954,17 @@ def main(args):
                 break
         if not hit:
             for name in names:
-                if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
-                    hit = "the name of one of the owner's personas"
-                    break
-        excused_person = False
+                found_names = [m.group(0) for m in re.finditer(rf"\b{re.escape(name)}\b", t, re.I)]
+                if not found_names:
+                    continue
+                # Excused only by the same spelling already in the
+                # repository, never by a lowercase word it shares, and said
+                # when excused (review of #841).
+                if all(in_head_cased(f) for f in found_names):
+                    excused.setdefault(name, []).append(f"{p}:{n}")
+                    continue
+                hit = "the name of one of the owner's personas"
+                break
         if not hit:
             # A capitalised use only: "Will" is a person, "will" a word,
             # whatever case the store happened to spell the name in (review
@@ -967,19 +977,20 @@ def main(args):
                     # Excused, since the repository already spells it (its
                     # made-up cast holds ordinary first names): said, never
                     # silent, so a real person sharing one is looked at.
-                    excused_person = True
+                    excused.setdefault(name, []).append(f"{p}:{n}")
                     continue
                 hit = "the name of someone in a persona's life"
                 break
         if hit:
             findings.append((p, n, hit))
         else:
-            if excused_person:
-                print(f"check-private: warning: {p}:{n} names someone in a persona's life whose name the repository already uses; check it is the made-up one.")
             for word, field in lora_warn.items():
                 if phrase_in(word, t) and not in_head(word):
                     print(f"check-private: warning: {p}:{n} has a word that is a LoRA registry `{field}`; check it is not one of the owner's LoRAs.")
                     break
+    for name, where in sorted(excused.items()):
+        shown = ", ".join(where[:3]) + (f" and {len(where) - 3} more" if len(where) > 3 else "")
+        print(f"check-private: warning: a name from a persona or its life, already used in the repository, appears at {shown}; check each is the made-up one.")
     if not findings:
         return 0
     print("check-private: refusing — this change carries conversation text, persona data or LoRA")
