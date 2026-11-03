@@ -37,6 +37,9 @@ pub const PAST_DAYS: u32 = 14;
 pub const AHEAD_DAYS: u32 = 7;
 /// The most bytes a fetch reads; the answer for three weeks is a few KB.
 pub const MAX_BYTES: usize = 64 * 1024;
+/// The failure key for the `story.toml` `[place]` fallback, which has no
+/// owner-written text of its own to key a backoff by.
+pub const FALLBACK_KEY: &str = "story.toml [place]";
 /// Stored weather older than this is fetched again.
 pub const STALE_HOURS: i64 = 6;
 /// A failed geocode or forecast is not retried before this many hours.
@@ -359,7 +362,7 @@ pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
         #[serde(default)]
         results: Vec<Hit>,
     }
-    let a: Answer =
+    let mut a: Answer =
         serde_json::from_str(body).context("the geocoder's answer is not a list of places")?;
     let (_, narrow) = split_query(query);
     let wanted: Vec<Vec<String>> = narrow.iter().map(|part| place_aliases(part)).collect();
@@ -373,27 +376,42 @@ pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
             })
             .map(str::to_string)
     };
+    let field = |v: &Option<String>| v.as_deref().map(|x| x.trim().to_lowercase());
+    let generic = |h: &Hit, aliases: &Vec<String>| {
+        [&h.admin1, &h.country, &h.country_code]
+            .iter()
+            .any(|f| field(f).is_some_and(|value| aliases.contains(&value)))
+    };
+    // A part that is a US state's code is read as that state first, so
+    // "Springfield, CA" is California, not Canada; only when no result fits
+    // that reading is it matched as any field, so "Munich, DE" or "Tel
+    // Aviv, IL" still find their countries (review of #836).
+    let as_state = |h: &Hit| {
+        narrow.iter().zip(&wanted).all(|(part, aliases)| {
+            match US_STATES
+                .iter()
+                .find(|(code, _)| code.eq_ignore_ascii_case(part.trim()))
+            {
+                Some((_, state)) => {
+                    field(&h.country_code).as_deref() == Some("us")
+                        && field(&h.admin1).as_deref() == Some(&state.to_lowercase())
+                }
+                None => generic(h, aliases),
+            }
+        })
+    };
+    let as_any = |h: &Hit| {
+        narrow
+            .iter()
+            .zip(&wanted)
+            .all(|(_, aliases)| generic(h, aliases))
+    };
     let hit = a
         .results
-        .into_iter()
-        .find(|h| {
-            let field = |v: &Option<String>| v.as_deref().map(|x| x.trim().to_lowercase());
-            narrow.iter().zip(&wanted).all(|(part, aliases)| {
-                // A US state's code means that state in the US, never a
-                // country with the same two letters: "Springfield, CA" is
-                // California, not Canada (review of #836).
-                if let Some((_, state)) = US_STATES
-                    .iter()
-                    .find(|(code, _)| code.eq_ignore_ascii_case(part.trim()))
-                {
-                    return field(&h.country_code).as_deref() == Some("us")
-                        && field(&h.admin1).as_deref() == Some(&state.to_lowercase());
-                }
-                [&h.admin1, &h.country, &h.country_code]
-                    .iter()
-                    .any(|f| field(f).is_some_and(|value| aliases.contains(&value)))
-            })
-        })
+        .iter()
+        .position(as_state)
+        .or_else(|| a.results.iter().position(as_any))
+        .map(|i| a.results.swap_remove(i))
         .with_context(|| {
             format!(
                 "no place named {query:?} was found; try the town and its state or country spelled out"
@@ -614,6 +632,9 @@ pub fn due(
         if place.weather_for.as_deref() != Some(q) {
             return Ok(true);
         }
+    } else if backoff_error(pdir, FALLBACK_KEY, now)?.is_some() {
+        // The story.toml fallback backs off after a failure too.
+        return Ok(false);
     }
     let last = super::world::World::open(pdir)?.weather_fetched_at()?;
     Ok(last.is_none_or(|at| now - at > chrono::Duration::hours(STALE_HOURS)))
@@ -1041,6 +1062,13 @@ mod tests {
         // Canada spelled out is still Canada.
         let r = parse_geocode(body, "Springfield, Canada").unwrap();
         assert!(r.label.contains("Nova Scotia"), "{}", r.label);
+        // A country whose code is also a state's: with no US result for the
+        // state, the code is the country's.
+        let de = r#"{"results": [
+            {"name": "Munich", "latitude": 48.14, "longitude": 11.58, "admin1": "Bavaria", "country": "Germany", "country_code": "DE"}
+        ]}"#;
+        let r = parse_geocode(de, "Munich, DE").unwrap();
+        assert!(r.label.contains("DE"), "{}", r.label);
     }
 
     #[test]
@@ -1060,5 +1088,15 @@ mod tests {
         std::fs::write(dir.join(PLACE_FILE), "{not json").unwrap();
         assert!(clear_weather_for_changed_place(&dir, "Springfield, Illinois").is_err());
         assert!(world.weather(d("2026-11-03")).unwrap().is_some(), "kept");
+    }
+
+    #[test]
+    fn the_story_place_fallback_backs_off_after_a_failure_too() {
+        let dir = crate::persona::tests_support::scratch();
+        let now = chrono::Utc::now();
+        assert!(due(&dir, None, now).unwrap(), "no weather stored");
+        record_failure(&dir, FALLBACK_KEY, now, "the weather service answered 503").unwrap();
+        assert!(!due(&dir, None, now).unwrap(), "backing off");
+        assert!(due(&dir, None, now + chrono::Duration::hours(2)).unwrap());
     }
 }
