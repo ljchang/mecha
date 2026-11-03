@@ -24,6 +24,10 @@
   let draftText = $state(null);
   // What the last draft found, when it found nothing to stage.
   let draftNote = $state('');
+  // The owner's notes for the drafter, as typed; read from the server once
+  // per persona, so stepping through weeks keeps what is being typed.
+  let notes = $state('');
+  let notesOf = null;
 
   const days = $derived(weekDays(data));
   const folded = $derived(foldedHours(data));
@@ -48,6 +52,10 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
       picked = null;
+      if (notesOf !== name) {
+        notes = data?.routine?.notes ?? '';
+        notesOf = name;
+      }
     } catch (e) {
       // A failed step keeps no stale week under the error, or the nav
       // would step on from a week no longer shown.
@@ -95,9 +103,10 @@
     }
   }
 
-  // Her model drafts her week from what the owner wrote of her (§4.1): a
-  // model run of tens of seconds, so the button says so while it runs. Zero
-  // anchors is the model finding no fixed point, said rather than failed.
+  // Their model drafts their week from what the owner wrote of them (§4.1),
+  // with the owner's notes, which the server saves first: a model run of
+  // tens of seconds, so the button says so while it runs. Zero anchors is
+  // the model finding no fixed point, said rather than failed.
   async function draftWeek() {
     drafting = true;
     error = '';
@@ -106,10 +115,11 @@
       const res = await fetch(personaUrl(name, '/routine/draft', null), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(draftBody(data, date, token)),
+        body: JSON.stringify(draftBody(data, date, token, undefined, notes)),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
+      notes = data?.routine?.notes ?? '';
       picked = null;
       if (data.drafted === 0) draftNote = 'Their model found no fixed point in their week to draft from what you wrote of them.';
     } catch (e) {
@@ -165,6 +175,7 @@
       date = null;
       draftText = null;
       draftNote = '';
+      notesOf = null;
       load();
     });
   });
@@ -221,6 +232,10 @@
           </div>
         {/if}
       {:else}
+        <label class="wnlabel" for="wnotes">Notes for the drafter</label>
+        <textarea id="wnotes" class="wdtext" rows="4" maxlength="4000" bind:value={notes} disabled={drafting}
+          placeholder={'Fixed points in your own words, one a line. For example:\n- choir on Wednesday evenings, 7 to 9\n- rowing in the spring'}></textarea>
+        <p class="wnote">Saved when you draft. The draft takes each one as given, a season as its months, and fills in a schedule where a note gives none.</p>
         <button class="abtn" disabled={drafting || saving || !!data.routine.undraftable} onclick={draftWeek}>
           {drafting ? 'Drafting their week…' : 'Draft their week from what you wrote'}
         </button>
@@ -362,6 +377,7 @@
   .linkbtn { background: none; border: none; padding: 4px 0; min-height: 32px; color: var(--accent-400); font-size: 12px; cursor: pointer; }
   .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+  .wnlabel { font-size: 12px; color: var(--text-muted); }
   .wdraft { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
   .wdhead { font-size: 13px; color: var(--text); }
   .wdlist { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); line-height: 1.4; }

@@ -373,7 +373,9 @@ pub struct Life {
     /// Her simulated day, events, arcs and the today-block (§4–§5).
     #[serde(default)]
     pub world: bool,
-    /// Her own network (§6); needs `world`.
+    /// Her own network (§6): the people the owner wrote on the People tab,
+    /// in each chat beside who she is. Independent of `world` (owner,
+    /// 2026-11-03): a list the owner wrote needs no simulated day.
     #[serde(default)]
     pub people: bool,
     /// Her model of the owner's network (§7); needs `[memory] user_facts`
@@ -411,7 +413,6 @@ impl Life {
     /// is built over.
     pub fn check(&self, memory: &MemorySettings) -> Result<()> {
         let needs = [
-            ("people", self.people, "world", self.world),
             ("news", self.news, "world", self.world),
             ("camera", self.camera, "world", self.world),
             ("feed", self.feed, "camera", self.camera),
@@ -1638,7 +1639,7 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
          \n\
          [life]   # a life of its own, every part off; docs/PERSONA-LIFE-DESIGN.md §3.1\n\
          world     = false        # its simulated day and what happens in it\n\
-         people    = false        # its own network; needs world\n\
+         people    = false        # the people in its life, from the People tab\n\
          my_people = false        # what it learns of your people; needs user_facts\n\
          news      = false        # feeds you register; needs world\n\
          camera    = false        # a camera roll; needs world\n\
@@ -2617,7 +2618,7 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                 ))
                 .field(Field::toggle("life.people", "Their people").help(
                     "The people in their life, written on the People tab, come into each chat \
-                     beside who they are. Needs Their days.",
+                     beside who they are.",
                 )),
         ],
     }
@@ -3198,7 +3199,6 @@ mod tests {
     #[test]
     fn a_life_part_without_what_it_needs_fails_the_load_naming_both() {
         for (part, need) in [
-            ("people", "world"),
             ("news", "world"),
             ("camera", "world"),
             ("feed", "camera"),
@@ -3218,6 +3218,12 @@ mod tests {
         let life = &p.settings.life;
         assert!(life.world && life.camera && life.feed);
         assert!(!life.people && !life.news && !life.proactive);
+    }
+
+    #[test]
+    fn their_people_need_no_days() {
+        let p = load_life("[life]\npeople = true\n", &|t| t).unwrap();
+        assert!(p.settings.life.people && !p.settings.life.world);
     }
 
     #[test]

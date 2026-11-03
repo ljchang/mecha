@@ -335,7 +335,7 @@ no world, no today-block, no new tools, no nightly work.
 ```toml
 [life]                     # owner-written; outside persona_propose's schema
 world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
-people    = false          # her own network (§6); needs world
+people    = false          # her own network (§6); independent of world (owner, 2026-11-03)
 my_people = false          # her model of the owner's network, and gap questions (§7); needs [memory] on, user_facts != "off"
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
@@ -375,6 +375,13 @@ threshold per persona once the access log says where it should sit. The
 - **Dependencies are refused by name, never silently satisfied.** `camera`
   without `world` is a load error naming the missing switch, the way an
   unknown key is. It never quietly turns `world` on.
+- **`people` needs no world either (owner, 2026-11-03).** As built it is the
+  people the owner wrote on the People tab, rendered into each chat beside
+  who she is, and nothing in that reads a simulated day. Tying it to
+  `world` meant that switching off a day note that had gone wrong also took
+  away an accurate list the owner wrote. Where the world later reads her
+  people (a storylet casting someone, §4.3), it reads them only when both
+  are on, as `story::story` already does.
 - **`my_people` needs no world, but it needs memory of the owner.** It is
   memory of the owner, not of her world (§7.1), so a persona can learn the
   owner's people without a simulated life of its own. But it is built over
@@ -619,6 +626,22 @@ tab reviews a draft too (§15). The draft's header comment survives
 approval, so it is worded to stay true after it and sends a change of her
 kind of week to the picker: approval writes `cell` above it, and a
 comment inviting "add `cell` here" would have made two, which does not load.
+
+**As built (notes and seasons; owner's request, 2026-11-02):** the owner
+keeps notes for the drafter in `routine.notes.md` beside the routine: the
+week's fixed points in their own words, a class's days and hours or a
+sport's season. They ride in the drafter's one question as `notes` and the
+frame tells it to draft each as given, to turn a season into months, and to
+fill in a typical schedule where a note names a commitment without one. They
+are the owner's text and reach nothing else: no day, no chat. The Week tab
+shows them above the draft button and saves them with the draft request
+(blank removes them); `mecha persona routine notes <name>` edits them in an
+editor, and `show` prints them. They are capped at 4,000 characters, and a
+hand edit past that is refused when read, never sent cut. An anchor may
+also name `months` (`jan`..`dec`): out of them it is not on that day at all,
+as on a weekday it does not name, and two certain anchors that share no
+month may take the same slot. One that runs past midnight into the other's
+first month is left to the sampler, as soft anchors are.
 
 ### 4.2 The day sampler
 
@@ -2532,10 +2555,11 @@ ruled for repetition.
     gender-neutral ("Their days", "Their people", "Draft their week"), and
     its tabs show only the parts that are on, Settings always last:
     Memories while any kind is on or anything is stored, Week with `world`,
-    People with `people` too (`shows` on the persona list,
+    People with `people` alone, since 2026-11-03 (`shows` on the persona list,
     `personaTabs`).
   - **As built (step 2, her people):** a People tab beside Week, behind the
-    same world gate, answering "off for this persona" while `[life] people`
+    same world gate (the feature's, on whenever personas are; the persona's
+    own switch is `[life] people`), answering "off for this persona" while `[life] people`
     is off (the form's Life section gains the "Their people" switch). Rings
     for the four layers, a dashed ring for those not placed and a greyed
     outer band for ended ties; spokes green when warm, orange and dashed

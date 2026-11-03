@@ -1754,7 +1754,7 @@ impl PersonaChats {
                                 .try_exists()
                                 .unwrap_or(true),
                         "week": p.settings.life.world,
-                        "people": p.settings.life.world && p.settings.life.people,
+                        "people": p.settings.life.people,
                     },
                     "problems": unnamed(store.problems(p, &lib), hidden),
                     "safety": safety_json(&p.settings.safety, None),
@@ -1947,6 +1947,8 @@ impl PersonaChats {
                 "digest": routine::digest_of(text.as_deref()),
                 "cell": cell,
                 "draft": draft,
+                // The owner's notes for the drafter, as saved; null for none.
+                "notes": texts.notes,
                 // Why no draft can be asked for her, or null when one can.
                 "undraftable": drafter::check(&p).err().map(|e| format!("{e:#}")),
             },
@@ -2032,7 +2034,8 @@ impl PersonaChats {
 
     /// Her own model drafts her week from what the owner wrote of her, held
     /// on the router as a turn is, and staged beside her routine to wait on
-    /// the owner (`persona::drafter`). What can be refused without the
+    /// the owner (`persona::drafter`). Notes sent with the request are the
+    /// owner's, saved for the drafter first, so a refused draft keeps them. What can be refused without the
     /// answer is refused before the model runs, as a 409: she cannot be
     /// drafted for as she stands. Answers with the week, and how many
     /// anchors were drafted: 0 is the model finding no fixed point, a
@@ -2049,16 +2052,20 @@ impl PersonaChats {
         let conflict = |e: anyhow::Error| Refusal::Conflict(format!("{e:#}"));
         // The store is read off the executor, as every other route here
         // reads it (review of #800).
-        let (me, lib, who, unlock) = (
+        let (me, lib, who, unlock, notes) = (
             Arc::clone(self),
             Arc::clone(library),
             name.to_string(),
             body.unlock.clone(),
+            body.notes.clone(),
         );
         let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
             let p = me
                 .visible(&lib, &who, unlock.as_deref())
                 .ok_or(Refusal::NotFound)?;
+            if let Some(notes) = notes {
+                routine::write_notes(&me.store, &p.name, &notes).map_err(routine_refusal)?;
+            }
             drafter::check(&p).map_err(conflict)?;
             routine::may_stage(&me.store, &p.name).map_err(conflict)?;
             Ok(p)
@@ -6509,6 +6516,10 @@ pub struct DraftBody {
     /// The owner's text for the draft (edit).
     #[serde(default)]
     text: Option<String>,
+    /// The owner's notes for the drafter, saved before it runs (draft);
+    /// absent leaves the saved ones as they are, blank removes them.
+    #[serde(default)]
+    notes: Option<String>,
     /// The week the page is showing, answered back after the change.
     #[serde(default)]
     date: Option<String>,
@@ -9653,6 +9664,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notes_sent_with_a_draft_are_saved_and_reach_the_drafter() {
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        let notes = "- pottery Tuesday 18:30 to 20:30\n- early swims most weekdays";
+        let body = |notes: Option<&str>| DraftBody {
+            notes: notes.map(Into::into),
+            ..DraftBody::default()
+        };
+        let out = ps
+            .draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &body(Some(notes)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["routine"]["notes"], format!("{notes}\n"));
+        let asked = w.seen.lock().unwrap().last().cloned().unwrap();
+        let user: serde_json::Value = serde_json::from_str(&asked.messages[0].text()).unwrap();
+        assert_eq!(user["notes"], notes);
+        // Absent keeps them; too long is refused as bad input, nothing run.
+        ps.act_on_draft(
+            &w.library,
+            "mara",
+            DraftAct::Discard,
+            &DraftBody::default(),
+            None,
+        )
+        .unwrap();
+        let again = ps
+            .draft_routine(&w.chat.follower, &w.library, "mara", &body(None), None)
+            .await
+            .unwrap();
+        assert_eq!(again["routine"]["notes"], format!("{notes}\n"));
+        let asked = w.seen.lock().unwrap().len();
+        let long = "x".repeat(mecha_core::persona::routine::MAX_NOTES + 1);
+        assert!(matches!(
+            ps.draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &body(Some(&long)),
+                None
+            )
+            .await,
+            Err(Refusal::Bad(_))
+        ));
+        assert_eq!(
+            w.seen.lock().unwrap().len(),
+            asked,
+            "no model run for refused notes"
+        );
+    }
+
+    #[tokio::test]
     async fn a_week_with_no_fixed_point_is_a_finding_and_a_candidate_is_not_drafted() {
         let w = world_drafting(r#"{"anchors": []}"#);
         let ps = w.personas();
@@ -11045,8 +11113,8 @@ mod tests {
     }
 
     /// Which tabs the page offers follows the persona's settings (owner,
-    /// 2026-11-02): the week with `[life] world`, the people with both
-    /// switches, and memories while any kind is on or anything is stored.
+    /// 2026-11-02): the week with `[life] world`, the people with `[life]
+    /// people` alone (2026-11-03), and memories while any kind is on or anything is stored.
     #[test]
     fn the_list_says_which_parts_are_on() {
         let w = world();
@@ -11066,11 +11134,17 @@ mod tests {
             (true.into(), false.into()),
             "the week alone"
         );
-        let both = std::fs::read_to_string(&toml)
+        // Their people without their days: the People tab, not the Week.
+        let people_only = std::fs::read_to_string(&toml)
             .unwrap()
+            .replace("world     = true", "world     = false")
             .replace("people    = false", "people    = true");
-        std::fs::write(&toml, both).unwrap();
-        assert_eq!(shows()["people"], true);
+        std::fs::write(&toml, people_only).unwrap();
+        assert_eq!(
+            (shows()["week"].clone(), shows()["people"].clone()),
+            (false.into(), true.into()),
+            "the people alone"
+        );
         // Every kind of memory off: no tab, until something is stored.
         let off = std::fs::read_to_string(&toml)
             .unwrap()
