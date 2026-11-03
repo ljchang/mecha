@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A persona's life profile, and a draft of it from what you wrote.**
+  `life.toml` says who a persona lives with (people on their People tab),
+  their usual night and what their days never hold, and their sampled days
+  obey it: no household member the profile lacks, sleep near their usual
+  times, no forbidden activity. Their own model can draft it from identity,
+  motivation, routine notes and People-tab names into a waiting
+  `life.draft.toml`, which the Week tab and `mecha persona life` let you
+  review, edit, approve or discard; nobody absent from the People tab is
+  invented into the household.
+
 - **Persona day notes can tell their story.** Per persona, **Their events**
   brings the day's drawn events, non-normal energy/stress/mood and closed
   weather into chats; it is off by default and needs **Their days**. **Where
