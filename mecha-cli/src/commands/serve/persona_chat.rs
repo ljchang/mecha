@@ -1947,6 +1947,8 @@ impl PersonaChats {
                 "digest": routine::digest_of(text.as_deref()),
                 "cell": cell,
                 "draft": draft,
+                // The owner's notes for the drafter, as saved; null for none.
+                "notes": texts.notes,
                 // Why no draft can be asked for her, or null when one can.
                 "undraftable": drafter::check(&p).err().map(|e| format!("{e:#}")),
             },
@@ -2037,7 +2039,8 @@ impl PersonaChats {
 
     /// Her own model drafts her week from what the owner wrote of her, held
     /// on the router as a turn is, and staged beside her routine to wait on
-    /// the owner (`persona::drafter`). What can be refused without the
+    /// the owner (`persona::drafter`). Notes sent with the request are the
+    /// owner's, saved for the drafter first, so a refused draft keeps them. What can be refused without the
     /// answer is refused before the model runs, as a 409: she cannot be
     /// drafted for as she stands. Answers with the week, and how many
     /// anchors were drafted: 0 is the model finding no fixed point, a
@@ -2054,16 +2057,20 @@ impl PersonaChats {
         let conflict = |e: anyhow::Error| Refusal::Conflict(format!("{e:#}"));
         // The store is read off the executor, as every other route here
         // reads it (review of #800).
-        let (me, lib, who, unlock) = (
+        let (me, lib, who, unlock, notes) = (
             Arc::clone(self),
             Arc::clone(library),
             name.to_string(),
             body.unlock.clone(),
+            body.notes.clone(),
         );
         let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
             let p = me
                 .visible(&lib, &who, unlock.as_deref())
                 .ok_or(Refusal::NotFound)?;
+            if let Some(notes) = notes {
+                routine::write_notes(&me.store, &p.name, &notes).map_err(routine_refusal)?;
+            }
             drafter::check(&p).map_err(conflict)?;
             routine::may_stage(&me.store, &p.name).map_err(conflict)?;
             Ok(p)
@@ -6514,6 +6521,10 @@ pub struct DraftBody {
     /// The owner's text for the draft (edit).
     #[serde(default)]
     text: Option<String>,
+    /// The owner's notes for the drafter, saved before it runs (draft);
+    /// absent leaves the saved ones as they are, blank removes them.
+    #[serde(default)]
+    notes: Option<String>,
     /// The week the page is showing, answered back after the change.
     #[serde(default)]
     date: Option<String>,
@@ -9655,6 +9666,63 @@ mod tests {
             ps.act_on_draft(&w.library, "mara", DraftAct::Discard, &body("", None), None),
             Err(Refusal::Bad(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn notes_sent_with_a_draft_are_saved_and_reach_the_drafter() {
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        let notes = "- pottery Tuesday 18:30 to 20:30\n- early swims most weekdays";
+        let body = |notes: Option<&str>| DraftBody {
+            notes: notes.map(Into::into),
+            ..DraftBody::default()
+        };
+        let out = ps
+            .draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &body(Some(notes)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["routine"]["notes"], format!("{notes}\n"));
+        let asked = w.seen.lock().unwrap().last().cloned().unwrap();
+        let user: serde_json::Value = serde_json::from_str(&asked.messages[0].text()).unwrap();
+        assert_eq!(user["notes"], notes);
+        // Absent keeps them; too long is refused as bad input, nothing run.
+        ps.act_on_draft(
+            &w.library,
+            "mara",
+            DraftAct::Discard,
+            &DraftBody::default(),
+            None,
+        )
+        .unwrap();
+        let again = ps
+            .draft_routine(&w.chat.follower, &w.library, "mara", &body(None), None)
+            .await
+            .unwrap();
+        assert_eq!(again["routine"]["notes"], format!("{notes}\n"));
+        let asked = w.seen.lock().unwrap().len();
+        let long = "x".repeat(mecha_core::persona::routine::MAX_NOTES + 1);
+        assert!(matches!(
+            ps.draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &body(Some(&long)),
+                None
+            )
+            .await,
+            Err(Refusal::Bad(_))
+        ));
+        assert_eq!(
+            w.seen.lock().unwrap().len(),
+            asked,
+            "no model run for refused notes"
+        );
     }
 
     #[tokio::test]

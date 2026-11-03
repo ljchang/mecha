@@ -620,6 +620,22 @@ approval, so it is worded to stay true after it and sends a change of her
 kind of week to the picker: approval writes `cell` above it, and a
 comment inviting "add `cell` here" would have made two, which does not load.
 
+**As built (notes and seasons; owner's request, 2026-11-02):** the owner
+keeps notes for the drafter in `routine.notes.md` beside the routine: the
+week's fixed points in their own words, a class's days and hours or a
+sport's season. They ride in the drafter's one question as `notes` and the
+frame tells it to draft each as given, to turn a season into months, and to
+fill in a typical schedule where a note names a commitment without one. They
+are the owner's text and reach nothing else: no day, no chat. The Week tab
+shows them above the draft button and saves them with the draft request
+(blank removes them); `mecha persona routine notes <name>` edits them in an
+editor, and `show` prints them. They are capped at 4,000 characters, and a
+hand edit past that is refused when read, never sent cut. An anchor may
+also name `months` (`jan`..`dec`): out of them it is not on that day at all,
+as on a weekday it does not name, and two certain anchors that share no
+month may take the same slot. One that runs past midnight into the other's
+first month is left to the sampler, as soft anchors are.
+
 ### 4.2 The day sampler
 
 A semi-Markov chain over ATUS tier-1/2 activities (§2.2), estimated once from

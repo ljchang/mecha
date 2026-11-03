@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine, storyDay, storyNotes } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine, monthsLine, storyDay, storyNotes } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -93,8 +93,11 @@ console.log('persona-week: ok');
 assert.ok(ENDPOINTS.includes('/api/personas/X/routine/draft'));
 assert.ok(ENDPOINTS.includes('/api/personas/X/routine/draft/approve'));
 const shown = { routine: { digest: 'r', draft: { digest: 'd' } } };
-assert.deepEqual(draftBody(shown, null, 'tok'), { digest: 'd', text: undefined, date: undefined, unlock: 'tok' });
-assert.deepEqual(draftBody(shown, '2026-11-02', null, 'x'), { digest: 'd', text: 'x', date: '2026-11-02', unlock: undefined });
+assert.deepEqual(draftBody(shown, null, 'tok'), { digest: 'd', text: undefined, notes: undefined, date: undefined, unlock: 'tok' });
+assert.deepEqual(draftBody(shown, '2026-11-02', null, 'x'), { digest: 'd', text: 'x', notes: undefined, date: '2026-11-02', unlock: undefined });
+// The owner's notes ride with a draft request, blank ones too (blank removes).
+assert.equal(draftBody(shown, null, null, undefined, '- choir Wednesdays').notes, '- choir Wednesdays');
+assert.equal(draftBody(shown, null, null, undefined, '').notes, '');
 assert.equal(draftBody({ routine: { digest: 'r' } }, null).digest, '');
 // Each anchor said in a line: named days or their group, hours, name,
 // activity, and how often.
@@ -108,6 +111,17 @@ assert.equal(
 );
 assert.equal(anchorLine({ what: 'late shift', activity: 'work', days: [5, 6], start_minute: 22 * 60, minutes: 240, chance: 1 }), 'Weekends 22:00–02:00+1 · late shift (work) · always');
 assert.equal(anchorLine({ what: 'x', activity: 'work', days: [0, 2], start_minute: 0, minutes: 60, chance: 1 }).slice(0, 8), 'Mon, Wed');
+// A seasonal anchor says its months; all year says nothing.
+assert.equal(monthsLine([9, 10, 11]), 'Sep–Nov');
+assert.equal(monthsLine([11, 12, 1, 2]), 'Nov–Feb');
+assert.equal(monthsLine([3, 4]), 'Mar, Apr');
+assert.equal(monthsLine([1, 6, 7]), 'Jan, Jun, Jul');
+assert.equal(monthsLine([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), '');
+assert.equal(monthsLine(undefined), '');
+assert.equal(
+  anchorLine({ what: 'rowing', activity: 'exercise', days: [0, 2], start_minute: 16 * 60, minutes: 90, chance: 1, months: [3, 4, 5] }),
+  'Mon, Wed 16:00–17:30 · rowing (exercise) · always · Mar–May',
+);
 
 // Her story on a day: weather, the levels that ended away from normal, and
 // the events as the server shows them; nothing when the week has none.
