@@ -45,6 +45,7 @@ pub mod files;
 pub mod initiative;
 pub mod judge;
 pub mod life;
+pub mod life_drafter;
 pub mod memory;
 pub mod memory_tools;
 pub mod network;

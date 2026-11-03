@@ -1766,7 +1766,18 @@ module.
   `Store::problems` entry, never an empty week.
 - **`persona::life` is the owner's opt-in boundary on sampled filler:**
   `life.toml` names household relations, usual sleep and impossible
-  activities; without it the sampler's old draw stream is unchanged.
+  activities; without it the sampler's old draw stream is unchanged. A
+  model's `life.draft.toml` waits beside it and is swapped in only by
+  digest-checked owner approval, keeping the old profile as
+  `life.previous.toml`; an owner-edited waiting draft is never overwritten.
+- **The life drafter answers a typed profile, never TOML**
+  (`persona::life_drafter`). One quarantined pass sees identity, motivation,
+  routine notes and only clean People-tab names with their ties. Household
+  names are schema-constrained to that list and checked again before the
+  harness renders the file; an absent person is left out until the owner adds
+  them on the People tab. Relations and impossible activities are closed
+  sets, sleep is never impossible, and the same approved/clean provenance
+  boundary as the routine drafter is checked before a model runs.
 - **The ATUS table ships counts, and the code that reads it decides**
   (`persona::atus`, §4.2). `scripts/atus-table.py` writes
   `mecha-core/data/atus/table.tsv.gz` from sha256-pinned public files, and
