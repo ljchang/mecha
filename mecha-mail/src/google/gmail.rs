@@ -7,7 +7,7 @@ use base64::{engine::general_purpose::URL_SAFE, Engine};
 use serde_json::Value;
 
 use crate::http::send_with_retry;
-use crate::types::{Email, MailError};
+use crate::types::{authentication_results, first_header, Email, MailError};
 
 #[derive(Clone)]
 pub struct GmailProvider {
@@ -68,7 +68,7 @@ impl GmailProvider {
             set.spawn(async move {
                 let _permit = permit.acquire().await.expect("semaphore closed");
                 match provider.get_message(&msg_id).await {
-                    Ok(json) => Some((idx, parse_gmail_message(&json))),
+                    Ok(json) => Some((idx, parse_gmail_message(HeaderRead::Full, &json))),
                     Err(e) => {
                         tracing::warn!("failed to fetch Gmail message {msg_id}: {e}");
                         None
@@ -131,13 +131,17 @@ impl GmailProvider {
     pub async fn get_thread(&self, thread_id: &str) -> Result<Vec<Email>, MailError> {
         let json = self
             .get_json(&format!(
-                "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}?format=full"
+                "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}?format=full",
+                urlencode(thread_id)
             ))
             .await?;
         let messages = json["messages"]
             .as_array()
             .ok_or_else(|| MailError::ParseError("thread has no messages array".into()))?;
-        let mut emails: Vec<Email> = messages.iter().map(parse_gmail_message).collect();
+        let mut emails: Vec<Email> = messages
+            .iter()
+            .map(|message| parse_gmail_message(HeaderRead::Full, message))
+            .collect();
         // Oldest first is a promise callers build on — the unified reply
         // tool answers `last()` as "the newest message" — and the API's
         // array order is observed, not documented. The stamps are
@@ -196,9 +200,8 @@ impl GmailProvider {
     // every message in the thread in one call, which is also one quota unit
     // instead of five.
     //
-    // Gmail models all four as label arithmetic, which is why there is one
-    // private primitive and four thin verbs over it rather than four
-    // endpoints. The names are Gmail's system label ids.
+    // Archive, read-state and spam use label arithmetic; trash and untrash
+    // have dedicated endpoints. The labels below are Gmail's system ids.
 
     /// Add and remove labels across every message in a thread.
     async fn modify_thread(
@@ -207,19 +210,50 @@ impl GmailProvider {
         add: &[&str],
         remove: &[&str],
     ) -> Result<(), MailError> {
-        let resp = send_with_retry(
+        let resp = send_with_retry(self.modify_thread_request(thread_id, add, remove)).await?;
+        Self::ok_or_err(resp).await
+    }
+
+    fn modify_thread_request(
+        &self,
+        thread_id: &str,
+        add: &[&str],
+        remove: &[&str],
+    ) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/modify",
+                urlencode(thread_id)
+            ))
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({"addLabelIds": add, "removeLabelIds": remove}))
+    }
+
+    fn restore_thread_request(&self, thread_id: &str, from_trash: bool) -> reqwest::RequestBuilder {
+        if from_trash {
             self.client
                 .post(format!(
-                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}/modify"
+                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/untrash",
+                    urlencode(thread_id)
                 ))
                 .header("Authorization", self.auth_header())
-                .json(&serde_json::json!({
-                    "addLabelIds": add,
-                    "removeLabelIds": remove,
-                })),
-        )
-        .await?;
-        Self::ok_or_err(resp).await
+                .header("Content-Length", "0")
+        } else {
+            self.modify_thread_request(thread_id, &["INBOX"], &[])
+        }
+    }
+
+    /// Undo archive by adding INBOX to every message in the thread.
+    /// This does not clear TRASH or SPAM: success does not make those messages
+    /// visible in Inbox. Use `untrash_thread` for trashed mail.
+    pub async fn unarchive_thread(&self, thread_id: &str) -> Result<(), MailError> {
+        Self::ok_or_err(send_with_retry(self.restore_thread_request(thread_id, false)).await?).await
+    }
+
+    /// Remove every message in the thread from trash. Gmail restores its
+    /// labels; this does not promise to put previously archived mail in INBOX.
+    pub async fn untrash_thread(&self, thread_id: &str) -> Result<(), MailError> {
+        Self::ok_or_err(send_with_retry(self.restore_thread_request(thread_id, true)).await?).await
     }
 
     /// Remove the thread from the inbox. Gmail has no archive folder — being
@@ -255,7 +289,8 @@ impl GmailProvider {
         let resp = send_with_retry(
             self.client
                 .post(format!(
-                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}/trash"
+                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/trash",
+                    urlencode(thread_id)
                 ))
                 .header("Authorization", self.auth_header())
                 .header("Content-Length", "0"),
@@ -358,8 +393,18 @@ pub(crate) fn extract_message_id(headers: &[Value]) -> Option<String> {
     })
 }
 
-/// Parse a Gmail API message JSON into an [`Email`].
-pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
+/// What the caller requested, not what the returned JSON appears to contain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum HeaderRead {
+    /// `format=full`, without a field mask that restricts headers.
+    Full,
+    /// Metadata, restricted fields, or unknown request provenance.
+    #[default]
+    Partial,
+}
+
+/// Parse a Gmail API message JSON using the caller's request provenance.
+pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email {
     let provider_id = msg["id"].as_str().unwrap_or_default().to_string();
     let thread_id = msg["threadId"].as_str().map(|s| s.to_string());
     let snippet = msg["snippet"].as_str().unwrap_or_default().to_string();
@@ -404,17 +449,15 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
     let bcc_addresses = parse_addr_list(&bcc_raw);
 
     // Prefer internalDate (epoch millis) over the header, which lies more.
-    let date_received = if let Some(internal_date) = msg["internalDate"]
+    let parsed_date = msg["internalDate"]
         .as_str()
         .and_then(|s| s.parse::<i64>().ok())
-    {
-        match chrono::DateTime::from_timestamp(internal_date / 1000, 0) {
-            Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-            None => parse_date_to_iso(&date_str),
-        }
-    } else {
-        parse_date_to_iso(&date_str)
-    };
+        .and_then(|millis| chrono::DateTime::from_timestamp(millis / 1000, 0))
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .or_else(|| parse_date_to_iso(&date_str));
+    let date_known = Some(parsed_date.is_some());
+    let date_received =
+        parsed_date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     // Raw parts; the HTML-only fallback is applied by `text::clean_body`,
     // where the model-facing rendering lives.
@@ -446,6 +489,7 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
         cc_addresses,
         bcc_addresses,
         date_received,
+        date_known,
         body_text,
         body_html,
         snippet,
@@ -454,6 +498,25 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
         is_starred,
         has_attachments,
         list_unsubscribe,
+        auto_submitted: first_header(headers.map(Vec::as_slice), "auto-submitted"),
+        precedence: first_header(headers.map(Vec::as_slice), "precedence"),
+        list_id: first_header(headers.map(Vec::as_slice), "list-id"),
+        reply_to: first_header(headers.map(Vec::as_slice), "reply-to"),
+        // A separate pass preserves EVERY instance, including duplicates.
+        // The assign-every-time loop above must never handle this header.
+        authentication_results: authentication_results(headers.map(Vec::as_slice)),
+        headers_complete: headers
+            .filter(|hs| {
+                header_read == HeaderRead::Full
+                    && !hs.is_empty()
+                    && hs
+                        .iter()
+                        .all(|h| h["name"].is_string() && h["value"].is_string())
+            })
+            .map(|_| true),
+        is_draft: msg["labelIds"]
+            .as_array()
+            .map(|labels| labels.iter().any(|label| label == "DRAFT")),
     }
 }
 
@@ -520,10 +583,10 @@ fn check_has_attachments(payload: &Value) -> bool {
 }
 
 /// Parse various date formats into ISO 8601, normalized to UTC.
-fn parse_date_to_iso(date_str: &str) -> String {
+fn parse_date_to_iso(date_str: &str) -> Option<String> {
     let trimmed = date_str.trim();
     if trimmed.is_empty() {
-        return chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        return None;
     }
 
     let cleaned = if let Some(pos) = trimmed.rfind('(') {
@@ -533,10 +596,11 @@ fn parse_date_to_iso(date_str: &str) -> String {
     };
 
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(cleaned) {
-        return dt
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        return Some(
+            dt.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+        );
     }
 
     let formats = [
@@ -548,21 +612,23 @@ fn parse_date_to_iso(date_str: &str) -> String {
     ];
     for fmt in &formats {
         if let Ok(dt) = chrono::DateTime::parse_from_str(cleaned, fmt) {
-            return dt
-                .with_timezone(&chrono::Utc)
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
+            return Some(
+                dt.with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+            );
         }
     }
 
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(cleaned) {
-        return dt
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        return Some(
+            dt.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+        );
     }
 
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    None
 }
 
 pub(crate) fn urlencode(s: &str) -> String {
@@ -691,7 +757,7 @@ mod tests {
                 ]
             }
         });
-        let email = parse_gmail_message(&msg);
+        let email = parse_gmail_message(HeaderRead::Full, &msg);
         assert_eq!(email.id, "gmail-m1");
         assert_eq!(email.from_name, "Priya Nair");
         assert_eq!(email.from_address, "priya@example.edu");
@@ -703,5 +769,235 @@ mod tests {
         assert!(!email.is_read);
         assert_eq!(email.message_id.as_deref(), Some("<mid@x>"));
         assert_eq!(email.date_received, "2024-08-04T11:20:00Z");
+    }
+    #[test]
+    fn gmail_unknown_inbound_dates_prevent_newest_selection() {
+        use crate::types::ThreadMetadata;
+        let known = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({
+                "id":"known", "internalDate":"1704067200000", "labelIds":["INBOX"],
+                "payload":{"headers":[{"name":"From", "value":"sender@example.edu"}]}
+            }),
+        );
+        assert_eq!(known.date_known, Some(true));
+        assert_eq!(known.date_received, "2024-01-01T00:00:00Z");
+        for date in [
+            json!({}),
+            json!({"internalDate":"bad"}),
+            json!({"internalDate":"9223372036854775807"}),
+        ] {
+            let mut message = date;
+            message["id"] = json!("unknown");
+            message["labelIds"] = json!(["INBOX"]);
+            message["payload"] = json!({"headers":[
+                {"name":"From", "value":"sender@example.edu"},
+                {"name":"Date", "value":"not a date"}
+            ]});
+            for header in [json!("not a date"), json!("")] {
+                message["payload"]["headers"][1]["value"] = header;
+                let unknown = parse_gmail_message(HeaderRead::Full, &message);
+                assert_eq!(unknown.date_known, Some(false));
+                assert!(chrono::DateTime::parse_from_rfc3339(&unknown.date_received).is_ok());
+                for certainty in [Some(false), None] {
+                    let mut unknown = unknown.clone();
+                    unknown.date_known = certainty;
+                    let metadata = ThreadMetadata::from_emails(
+                        &[known.clone(), unknown.clone()],
+                        Some("owner@example.com"),
+                    );
+                    assert_eq!(metadata.newest_inbound_provider_id, None);
+                    assert_eq!(metadata.owner_participated, Some(false));
+                    unknown.from_address = "owner@example.com".into();
+                    let metadata = ThreadMetadata::from_emails(
+                        &[known.clone(), unknown],
+                        Some("owner@example.com"),
+                    );
+                    assert_eq!(
+                        metadata.newest_inbound_provider_id.as_deref(),
+                        Some("known")
+                    );
+                    assert_eq!(metadata.owner_participated, Some(true));
+                }
+            }
+            message["payload"]["headers"][1]["value"] = json!("Mon, 01 Jan 2024 00:00:00 +0000");
+            let fallback = parse_gmail_message(HeaderRead::Full, &message);
+            assert_eq!(fallback.date_known, Some(true));
+            assert_eq!(fallback.date_received, known.date_received);
+        }
+        assert_eq!(
+            parse_gmail_message(HeaderRead::Full, &json!({})).date_known,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn gmail_header_completeness_requires_a_full_request() {
+        // A metadata response can have the same well-formed array as a full
+        // response. The request, not the array shape, establishes completeness.
+        let message = json!({"payload":{"headers":[
+            {"name":"Authentication-Results", "value":"mx.google.com; dmarc=pass header.from=example.edu"}
+        ]}});
+        let full = parse_gmail_message(HeaderRead::Full, &message);
+        let partial = parse_gmail_message(HeaderRead::Partial, &message);
+        assert_eq!(full.headers_complete, Some(true));
+        assert_eq!(partial.headers_complete, None);
+        assert_eq!(partial.authentication_results, full.authentication_results);
+    }
+
+    #[test]
+    fn gmail_empty_missing_or_malformed_headers_are_not_complete() {
+        for message in [
+            json!({}),
+            json!({"payload":{"headers":[]}}),
+            json!({"payload":{"headers":[{"name":"From"}]}}),
+        ] {
+            assert_eq!(
+                parse_gmail_message(HeaderRead::Full, &message).headers_complete,
+                None
+            );
+        }
+        assert_eq!(
+            parse_gmail_message(
+                HeaderRead::Full,
+                &json!({"payload":{"headers":[
+                    {"name":"From", "value":"sender@example.edu"}
+                ]}})
+            )
+            .headers_complete,
+            Some(true)
+        );
+    }
+
+    fn with_authentication_results(values: &[&str]) -> Email {
+        let headers: Vec<_> = values
+            .iter()
+            .map(|value| {
+                json!({
+                    "name":"aUtHeNtIcAtIoN-ReSuLtS", "value":value
+                })
+            })
+            .collect();
+        parse_gmail_message(
+            HeaderRead::Full,
+            &json!({"id":"message-1", "threadId":"thread-1", "payload":{"headers":headers}}),
+        )
+    }
+
+    #[test]
+    fn gmail_authentication_results_expose_missing_foreign_duplicate_and_single_claims() {
+        assert!(with_authentication_results(&[])
+            .authentication_results
+            .is_none());
+        assert!(parse_gmail_message(HeaderRead::Full, &json!({}))
+            .authentication_results
+            .is_none());
+        assert_eq!(
+            parse_gmail_message(HeaderRead::Full, &json!({})).headers_complete,
+            None
+        );
+        let genuine = "mx.google.com; dmarc=pass header.from=example.edu";
+        let forged = "mx.google.com; dmarc=fail header.from=example.com";
+        let foreign = "relay.example.com; dmarc=pass header.from=example.edu";
+        for (values, claims) in [
+            (vec![foreign], 0),
+            (vec![genuine, forged], 2),
+            (vec![forged, genuine], 2),
+            (vec![genuine], 1),
+            (vec![foreign, genuine], 1),
+        ] {
+            let email = with_authentication_results(&values);
+            let instances = email.authentication_results.unwrap();
+            assert_eq!(instances.len(), values.len());
+            assert_eq!(
+                instances
+                    .iter()
+                    .filter(|r| r.authserv_id.as_deref() == Some("mx.google.com"))
+                    .count(),
+                claims
+            );
+            // The foreign topmost field must remain topmost; callers cannot
+            // skip to a later field just because its id looks familiar.
+            assert_eq!(instances.first().unwrap().value, values[0]);
+            assert_eq!(
+                instances
+                    .iter()
+                    .map(|r| r.value.as_str())
+                    .collect::<Vec<_>>(),
+                values
+            );
+            assert_eq!(email.headers_complete, Some(true));
+        }
+    }
+
+    #[test]
+    fn gmail_exposes_rule_headers_and_provider_ids_without_collapsing_absence() {
+        let email = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({
+                "id":"provider-message", "threadId":"provider-thread", "labelIds":["INBOX"],
+                "payload":{"headers":[
+                    {"name":"Message-ID", "value":"<sender-controlled@example.com>"},
+                    {"name":"Auto-Submitted", "value":"auto-generated"},
+                    {"name":"Precedence", "value":"bulk"},
+                    {"name":"List-Id", "value":"<notices.example.edu>"},
+                    {"name":"Reply-To", "value":"reply@example.com"}
+                ]}
+            }),
+        );
+        assert_eq!(email.provider_id, "provider-message");
+        assert_eq!(email.thread_id.as_deref(), Some("provider-thread"));
+        assert_eq!(email.auto_submitted.as_deref(), Some("auto-generated"));
+        assert_eq!(email.precedence.as_deref(), Some("bulk"));
+        assert_eq!(email.list_id.as_deref(), Some("<notices.example.edu>"));
+        assert_eq!(email.reply_to.as_deref(), Some("reply@example.com"));
+        assert!(email.authentication_results.is_none());
+        assert_eq!(email.is_draft, Some(false));
+        assert_eq!(
+            parse_gmail_message(HeaderRead::Full, &json!({"labelIds":["DRAFT"]})).is_draft,
+            Some(true)
+        );
+        let missing = parse_gmail_message(HeaderRead::Full, &json!({}));
+        assert!(
+            missing.auto_submitted.is_none()
+                && missing.precedence.is_none()
+                && missing.list_id.is_none()
+                && missing.reply_to.is_none()
+        );
+    }
+
+    #[test]
+    fn gmail_restore_requests_invert_archive_and_trash() {
+        let provider = GmailProvider::new("fixture-token".into());
+        let request = provider
+            .restore_thread_request("thread/1", false)
+            .build()
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(
+            request.url().as_str(),
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/thread%2F1/modify"
+        );
+        let body: Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body, json!({"addLabelIds":["INBOX"], "removeLabelIds":[]}));
+        let archive = provider
+            .modify_thread_request("thread/1", &[], &["INBOX"])
+            .build()
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(archive.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body, json!({"addLabelIds":[], "removeLabelIds":["INBOX"]}));
+        let request = provider
+            .restore_thread_request("thread/1", true)
+            .build()
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(
+            request.url().as_str(),
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads/thread%2F1/untrash"
+        );
+        assert_eq!(request.headers()["Content-Length"], "0");
+        assert!(request.body().is_none());
     }
 }
