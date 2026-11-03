@@ -44,6 +44,7 @@ pub mod edit;
 pub mod files;
 pub mod initiative;
 pub mod judge;
+pub mod life;
 pub mod memory;
 pub mod memory_tools;
 pub mod network;
@@ -1265,12 +1266,35 @@ impl Store {
         if let Err(e) = routine::load(&self.persona_dir(&p.name)) {
             out.push(format!("{e:#}"));
         }
+        let life = match life::load(&self.persona_dir(&p.name)) {
+            Ok(profile) => profile,
+            Err(e) => {
+                out.push(format!("{e:#}"));
+                None
+            }
+        };
         // Their network's portrait links, resolved on load like the
         // persona's own; a network that cannot be read is named, never an
         // empty one. Whatever the switches say: the measures and `mecha
         // persona people` read it with their people off too (review of #828).
         match network::Network::read(&self.persona_dir(&p.name)) {
             Ok(n) => {
+                if !n.people.is_empty() {
+                    if let Some(life) = &life {
+                        for h in &life.household {
+                            let known = n.people.iter().any(|p| {
+                                p.name.eq_ignore_ascii_case(&h.person)
+                                    || p.aliases.iter().any(|a| a.eq_ignore_ascii_case(&h.person))
+                            });
+                            if !known {
+                                out.push(format!(
+                                    "life.toml household person {:?} names no one on their People tab",
+                                    h.person
+                                ));
+                            }
+                        }
+                    }
+                }
                 out.extend(n.broken_links(lib));
                 out.extend(n.unreadable_edges());
             }
@@ -3034,6 +3058,52 @@ mod tests {
         assert!(store
             .problems(store.get("mara").unwrap(), &no_lib())
             .is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn life_profile_problems_name_a_missing_person_and_a_bad_file() {
+        use super::network::{self, NewPerson, When};
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        fill_core(&dir, "mara");
+        let pdir = dir.join("mara");
+        network::add_person(
+            &pdir,
+            &no_lib(),
+            &NewPerson {
+                name: "Ines".into(),
+                aliases: vec!["Theo".into()],
+                role: None,
+                description: None,
+                character: None,
+                tie: None,
+                label: None,
+                layer: None,
+                since: When::UNKNOWN,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            pdir.join(life::FILE),
+            "[[household]]\nperson = \"Theo\"\nrelation = \"housemate\"\n\
+             [[household]]\nperson = \"Cal\"\nrelation = \"family\"\n",
+        )
+        .unwrap();
+        let store = Store::load(&dir);
+        let problems = store
+            .problems(store.get("mara").unwrap(), &no_lib())
+            .join("\n");
+        assert!(problems.contains("Cal"), "{problems}");
+        assert!(!problems.contains("Theo"), "{problems}");
+
+        std::fs::write(pdir.join(life::FILE), "never = [\"juggling\"]\n").unwrap();
+        let store = Store::load(&dir);
+        let problems = store
+            .problems(store.get("mara").unwrap(), &no_lib())
+            .join("\n");
+        assert!(problems.contains("life.toml does not load"), "{problems}");
+        assert!(problems.contains("juggling"), "{problems}");
         std::fs::remove_dir_all(dir).ok();
     }
 

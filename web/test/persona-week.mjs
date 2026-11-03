@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine, monthsLine, storyDay, storyNotes } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine, monthsLine, storyDay, storyNotes, lifeLine } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -25,6 +25,22 @@ assert.equal(Object.keys(ACTIVITY_GROUP).length, 26);
 
 // Each reason she has no days has its own words.
 for (const why of ['off', 'no_routine', 'no_cell']) assert.ok(WEEK_ABSENT[why]);
+
+// A life profile is a short owner-facing line; no profile is formatted by
+// the component with the persona-specific edit command.
+assert.equal(lifeLine(null), '');
+assert.equal(
+  lifeLine({
+    household: [{ person: 'Theo', relation: 'housemate' }, { person: 'Ines', relation: 'family' }],
+    alone: false,
+    sleep: { bed: '23:30', wake: '07:30' },
+    never: ['work', 'personal_care'],
+    error: null,
+  }),
+  'Lives with Theo (housemate), Ines (family) · usually sleeps 23:30–07:30 · never work, personal care',
+);
+assert.equal(lifeLine({ household: [], alone: true, sleep: null, never: [], error: null }), 'Lives alone');
+assert.match(lifeLine({ error: 'bad relation' }), /life\.toml does not load: bad relation/);
 
 // A day's stretches sit on a 4am-to-4am bar; past midnight is the next morning.
 assert.equal(dayClock(25 * 60 + 5), '01:05');

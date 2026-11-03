@@ -1981,6 +1981,13 @@ export function personaWeek(date) {
   }
   return {
     today: DEMO_TODAY,
+    life: {
+      household: [{ person: 'Theo', relation: 'partner' }],
+      alone: false,
+      sleep: { bed: '23:00', wake: '07:00' },
+      never: ['caring'],
+      error: null,
+    },
     routine: {
       digest: '0'.repeat(64),
       cell: 'full_time',
