@@ -383,6 +383,9 @@ pub enum MemoryCmd {
         chat: Option<String>,
         #[arg(long)]
         clean: bool,
+        /// With --chat: skip the question after the records are listed.
+        #[arg(long)]
+        yes: bool,
     },
     /// Replace a fact with your wording; the old one is kept, invalidated.
     Correct {
@@ -2530,9 +2533,28 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
             id,
             chat,
             clean,
+            yes,
         } => {
             let m = Memory::open_to_edit(dir, &named(&name)?)?;
             if let Some(chat) = chat {
+                // A bulk vouch on provenance: what is vouched for is shown
+                // first, and asked about, as forget --chat asks (review of
+                // #837). The owner signs for text they can read.
+                let waiting = untrusted_from_chat(&m, &chat)?;
+                if !waiting.is_empty() {
+                    println!("From chat {chat}, marked as from outside:");
+                    for (uid, text) in &waiting {
+                        println!("  {}  {}", &uid[..8.min(uid.len())], text);
+                    }
+                    let question = format!(
+                        "Vouch for these {} record(s) as clean? Recalling them will no longer mark a chat untrusted.",
+                        waiting.len()
+                    );
+                    if !yes && !confirm(&question)? {
+                        println!("Kept as they were.");
+                        return Ok(());
+                    }
+                }
                 let count = m.approve_clean_chat(&chat)?;
                 if count == 0 {
                     println!(
@@ -2679,6 +2701,36 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
     Ok(())
 }
 
+/// The live records from `chat` still marked as from outside, as the owner
+/// reviews them before a chat-wide vouch: id and text.
+fn untrusted_from_chat(
+    m: &mecha_core::persona::memory::Memory,
+    chat: &str,
+) -> Result<Vec<(String, String)>> {
+    use mecha_core::persona::memory::{Filter, Status as MemoryStatus, Table};
+    use mecha_core::persona::Origin;
+    let mut out = Vec::new();
+    for e in m.episodes(Filter::All)? {
+        if e.source.chat == chat
+            && e.origin == Origin::ModelUntrusted
+            && e.status != MemoryStatus::Invalidated
+        {
+            out.push((e.uid, e.summary));
+        }
+    }
+    for table in [Table::Persona, Table::User, Table::Inferred] {
+        for f in m.facts(table, Filter::All)? {
+            if f.source.chat == chat
+                && f.origin == Origin::ModelUntrusted
+                && f.status != MemoryStatus::Invalidated
+            {
+                out.push((f.uid, f.text));
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2805,6 +2857,7 @@ mod tests {
                 id: Some(one.uid.clone()),
                 chat: None,
                 clean: true,
+                yes: false,
             },
         )
         .unwrap();
@@ -2815,6 +2868,7 @@ mod tests {
                 id: None,
                 chat: Some("chosen-chat".into()),
                 clean: true,
+                yes: true,
             },
         )
         .unwrap();
@@ -2825,6 +2879,7 @@ mod tests {
                 id: Some(plain.uid.clone()),
                 chat: None,
                 clean: false,
+                yes: false,
             },
         )
         .unwrap();
@@ -2835,6 +2890,7 @@ mod tests {
                 id: None,
                 chat: Some("missing-chat".into()),
                 clean: true,
+                yes: true,
             },
         )
         .unwrap_err();
