@@ -22,7 +22,7 @@
 //! when they get names a transcript can be searched for. A name is matched
 //! as whole words, and a capitalised name must be capitalised, since "will"
 //! is not Will. The one exception is an owner turn typed with no capital
-//! at all, as a phone often is ("is milo ok"), where case is ignored
+//! at all, as a phone often is ("is pell ok"), where case is ignored
 //! (review of #808). A name that is also a common word still over-counts
 //! where a sentence starts with it.
 //!
@@ -636,8 +636,8 @@ pub fn initiative(
 mod tests {
     use super::*;
 
-    fn milo() -> Vec<Subject> {
-        vec![Subject::new(["Milo"]), Subject::new(["Ines", "Nessa"])]
+    fn pell() -> Vec<Subject> {
+        vec![Subject::new(["Pell"]), Subject::new(["Ines", "Nessa"])]
     }
 
     const OFF: Arm = Arm {
@@ -664,7 +664,7 @@ mod tests {
     }
 
     fn only(list: &[Vec<Turn>]) -> Reading {
-        let got = score(&chats(list), &milo());
+        let got = score(&chats(list), &pell());
         assert_eq!(got.len(), 1, "{got:?}");
         got[0].1
     }
@@ -693,8 +693,8 @@ mod tests {
     #[test]
     fn an_introduction_taken_up_asked_about_or_let_go() {
         let r = only(&[vec![
-            turn("hi", "Milo kept me up all night.", ON),
-            turn("oh no, is milo ok?", "He is, and Nessa came by.", ON),
+            turn("hi", "Pell kept me up all night.", ON),
+            turn("oh no, is pell ok?", "He is, and Nessa came by.", ON),
             turn("that's nice", "Anyway, how was your day?", ON),
         ]]);
         assert_eq!(r.replies, 3);
@@ -708,8 +708,8 @@ mod tests {
     #[test]
     fn someone_the_owner_named_first_is_not_hers_to_introduce() {
         let r = only(&[vec![
-            turn("how's Milo?", "Milo is fine.", ON),
-            turn("good", "Milo says hello.", ON),
+            turn("how's Pell?", "Pell is fine.", ON),
+            turn("good", "Pell says hello.", ON),
         ]]);
         assert_eq!((r.replies, r.introductions), (2, 0));
         assert_eq!(r.initiative(), Some(0.0));
@@ -720,21 +720,21 @@ mod tests {
     fn a_return_in_a_later_chat_is_uptake_and_her_repeat_is_not() {
         let r = only(&[
             vec![
-                turn("hi", "Milo started school.", ON),
+                turn("hi", "Pell started school.", ON),
                 turn("cool", "Mm.", ON),
             ],
-            vec![turn("how did Milo's first week go?", "Well!", ON)],
+            vec![turn("how did Pell's first week go?", "Well!", ON)],
         ]);
         assert_eq!((r.taken_up, r.came_back, r.not_taken_up), (0, 1, 0));
         assert_eq!(r.uptake(), Some(1.0));
         let r = only(&[
             vec![
-                turn("hi", "Milo started school.", ON),
+                turn("hi", "Pell started school.", ON),
                 turn("ok", "Mm.", ON),
             ],
             vec![
-                turn("hey", "Milo loves it.", ON),
-                turn("great, Milo sounds happy", "He is.", ON),
+                turn("hey", "Pell loves it.", ON),
+                turn("great, Pell sounds happy", "He is.", ON),
             ],
         ]);
         // The first went untaken; the second was taken up in its next turn.
@@ -746,11 +746,11 @@ mod tests {
 
     #[test]
     fn a_chats_last_introduction_is_unknown_until_a_return_settles_it() {
-        let last = vec![turn("hi", "Milo is home.", ON)];
+        let last = vec![turn("hi", "Pell is home.", ON)];
         let r = only(std::slice::from_ref(&last));
         assert_eq!((r.introductions, r.unanswered), (1, 1));
         assert_eq!(r.uptake(), None, "unknown is never a no");
-        let r = only(&[last.clone(), vec![turn("is Milo better?", "Yes.", ON)]]);
+        let r = only(&[last.clone(), vec![turn("is Pell better?", "Yes.", ON)]]);
         assert_eq!((r.came_back, r.unanswered), (1, 0));
         // The owner spoke in a later chat and never named him: a no, not
         // unknown (review of #808).
@@ -759,18 +759,18 @@ mod tests {
         assert_eq!(r.uptake(), Some(0.0));
         // The owner naming them in the same chat later is not a return.
         let r = only(&[vec![
-            turn("hi", "Milo is home.", ON),
+            turn("hi", "Pell is home.", ON),
             turn("ok", "Mm.", ON),
-            turn("wait, Milo?", "Yes.", ON),
+            turn("wait, Pell?", "Yes.", ON),
         ]]);
         assert_eq!((r.came_back, r.not_taken_up), (0, 1));
     }
 
     #[test]
     fn a_stopped_reply_names_but_is_not_scored() {
-        let mut cut = turn("hi", "Milo", ON);
+        let mut cut = turn("hi", "Pell", ON);
         cut.completed = false;
-        let r = only(&[vec![cut, turn("hm", "Milo again.", ON)]]);
+        let r = only(&[vec![cut, turn("hm", "Pell again.", ON)]]);
         assert_eq!((r.replies, r.introductions), (1, 0));
     }
 
@@ -778,17 +778,17 @@ mod tests {
     fn arms_are_read_apart() {
         let got = score(
             &chats(&[
-                vec![turn("hi", "Milo!", OFF)],
-                vec![turn("hi", "Milo!", ON), turn("Milo?", "Yes", ON)],
+                vec![turn("hi", "Pell!", OFF)],
+                vec![turn("hi", "Pell!", ON), turn("Pell?", "Yes", ON)],
             ]),
-            &milo(),
+            &pell(),
         );
         assert_eq!(
             got.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
             vec![OFF, ON]
         );
         assert_eq!(got[0].1.introductions, 1);
-        // The off arm's Milo was settled by her bringing him up again.
+        // The off arm's Pell was settled by her bringing him up again.
         assert_eq!(got[0].1.not_taken_up, 1);
         assert_eq!(got[1].1.taken_up, 1);
     }
@@ -818,26 +818,26 @@ mod tests {
 
     #[test]
     fn a_resumed_chat_is_read_where_it_happened() {
-        // Chat 0 introduces Milo and stops; chat 1 comes after; then chat 0
+        // Chat 0 introduces Pell and stops; chat 1 comes after; then chat 0
         // is resumed and the owner asks about him: that is the owner's next
         // turn in chat 0, so taken up, not a return.
         let got = score(
             &[
-                (0, vec![turn("hi", "Milo is home.", ON)]),
+                (0, vec![turn("hi", "Pell is home.", ON)]),
                 (1, vec![turn("rain again", "Ugh.", ON)]),
-                (0, vec![turn("how is Milo?", "Better.", ON)]),
+                (0, vec![turn("how is Pell?", "Better.", ON)]),
             ],
-            &milo(),
+            &pell(),
         );
         let r = got[0].1;
         assert_eq!((r.came_back, r.taken_up, r.introductions), (0, 1, 1));
         // Asked about in chat 1 instead, while chat 0 waits: a return.
         let got = score(
             &[
-                (0, vec![turn("hi", "Milo is home.", ON)]),
-                (1, vec![turn("is Milo ok?", "Yes.", ON)]),
+                (0, vec![turn("hi", "Pell is home.", ON)]),
+                (1, vec![turn("is Pell ok?", "Yes.", ON)]),
             ],
-            &milo(),
+            &pell(),
         );
         assert_eq!((got[0].1.came_back, got[0].1.unanswered), (1, 0));
         // On resuming, the owner's first turn passes him by; her raising
@@ -845,16 +845,16 @@ mod tests {
         // naming him after that is not a return.
         let got = score(
             &[
-                (0, vec![turn("hi", "Milo is home.", ON)]),
+                (0, vec![turn("hi", "Pell is home.", ON)]),
                 (
                     0,
                     vec![
-                        turn("back", "Milo slept well.", ON),
-                        turn("good, Milo needed it", "Yes.", ON),
+                        turn("back", "Pell slept well.", ON),
+                        turn("good, Pell needed it", "Yes.", ON),
                     ],
                 ),
             ],
-            &milo(),
+            &pell(),
         );
         let r = got[0].1;
         assert_eq!((r.introductions, r.not_taken_up, r.came_back), (1, 1, 0));
@@ -866,18 +866,18 @@ mod tests {
         // stretches; every reading must match the unsplit chat's (review
         // of #808).
         let script = [
-            turn("hi", "Milo is home.", ON),
+            turn("hi", "Pell is home.", ON),
             turn("ok", "Mm.", ON),
-            turn("wait, Milo?", "Yes.", ON),
+            turn("wait, Pell?", "Yes.", ON),
             turn("tell me", "Nessa visited.", ON),
             turn("Nessa! how is she?", "Well.", ON),
-            turn("and then", "Milo slept.", ON),
+            turn("and then", "Pell slept.", ON),
         ];
-        let whole = score(&[(0, script.to_vec())], &milo());
+        let whole = score(&[(0, script.to_vec())], &pell());
         for cut in 1..script.len() {
             let split = score(
                 &[(0, script[..cut].to_vec()), (0, script[cut..].to_vec())],
-                &milo(),
+                &pell(),
             );
             assert_eq!(split, whole, "split at {cut}");
         }
@@ -949,7 +949,7 @@ mod tests {
             let s = scratch(&dir);
             config(&s, "# Who you are\n\nMara.", "2026-01-01T09:00:00Z");
             let mut convo = Conversation::default();
-            run(&s, &mut convo, "hi", "Milo is up early.", &[]);
+            run(&s, &mut convo, "hi", "Pell is up early.", &[]);
             let today = format!(
                 "{} you are reading.)",
                 super::super::super::today::TODAY_STEM
@@ -957,12 +957,12 @@ mod tests {
             config(
                 &s,
                 &format!(
-                    "# Who you are\n\nMara.\n\n{}\n\nMilo.",
+                    "# Who you are\n\nMara.\n\n{}\n\nPell.",
                     super::super::super::agent::PEOPLE_HEADING
                 ),
                 "2026-01-03T09:00:00Z",
             );
-            run(&s, &mut convo, "is Milo ok?", "Yes.", &[&today]);
+            run(&s, &mut convo, "is Pell ok?", "Yes.", &[&today]);
             // Two stretches, split at the resume, each at its clock.
             let parts = session_turns(&s.path).unwrap();
             assert_eq!(
@@ -985,8 +985,8 @@ mod tests {
                     people: true
                 }
             );
-            assert_eq!(turns[1].owner, "is Milo ok?");
-            assert_eq!(turns[0].reply.as_deref(), Some("Milo is up early."));
+            assert_eq!(turns[1].owner, "is Pell ok?");
+            assert_eq!(turns[0].reply.as_deref(), Some("Pell is up early."));
             // A compaction's rewrite still yields the run's own words.
             let before = convo.messages.clone();
             convo.messages = vec![
@@ -1006,9 +1006,9 @@ mod tests {
             // A run that spoke, called a tool and spoke again is read
             // whole, appended or rewritten (review of #808).
             let hop = |convo: &mut Conversation| {
-                convo.push(Message::user("and Milo?"));
+                convo.push(Message::user("and Pell?"));
                 convo.push(Message::assistant(vec![
-                    Block::text("Milo kept me up."),
+                    Block::text("Pell kept me up."),
                     Block::ToolUse {
                         id: "t1".into(),
                         name: "persona_recall".into(),
@@ -1044,16 +1044,16 @@ mod tests {
             .unwrap();
             let turns = flat(&s.path);
             for t in &turns[3..5] {
-                assert_eq!(t.owner, "and Milo?");
-                assert_eq!(t.reply.as_deref(), Some("Milo kept me up.\nAnyway."));
+                assert_eq!(t.owner, "and Pell?");
+                assert_eq!(t.reply.as_deref(), Some("Pell kept me up.\nAnyway."));
             }
             // A cut past the owner's message: the rewrite opens on the
-            // rebuilt head, whose summary names Milo. That is not the
+            // rebuilt head, whose summary names Pell. That is not the
             // owner speaking, and the run's own words are unknown.
             let before = convo.messages.clone();
             let mut head = Message::user("hello");
             head.content.push(Block::text(format!(
-                "\n\n{} They talked about Milo.",
+                "\n\n{} They talked about Pell.",
                 crate::compact::SUMMARY_HEADER
             )));
             convo.messages = vec![head, Message::assistant(vec![Block::text("Mm.")])];
@@ -1071,7 +1071,7 @@ mod tests {
             // The rollback re-reads nothing; the owner's words join the turn
             // that answered them.
             let before_fail = convo.messages.clone();
-            let asked = Message::user("is Milo ok?");
+            let asked = Message::user("is Pell ok?");
             s.append(&Record::Message(asked.clone())).unwrap();
             let mut with_ask = before_fail.clone();
             with_ask.push(asked);
@@ -1084,7 +1084,7 @@ mod tests {
             run(&s, &mut convo, "and you?", "Fine.", &[]);
             let turns = flat(&s.path);
             assert_eq!(turns.len(), 7, "the failed turn is no turn of its own");
-            assert_eq!(turns[6].owner, "is Milo ok?\nand you?");
+            assert_eq!(turns[6].owner, "is Pell ok?\nand you?");
             assert_eq!(turns[6].reply.as_deref(), Some("Fine."));
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -1096,12 +1096,12 @@ mod tests {
             let a = scratch(&dir);
             config(&a, "p", "2026-01-01T09:00:00Z");
             let mut ca = Conversation::default();
-            run(&a, &mut ca, "hi", "Milo is home.", &[]);
+            run(&a, &mut ca, "hi", "Pell is home.", &[]);
             let b = scratch(&dir);
             config(&b, "p", "2026-01-02T09:00:00Z");
             run(&b, &mut Conversation::default(), "rain", "Ugh.", &[]);
             config(&a, "p", "2026-01-03T09:00:00Z");
-            run(&a, &mut ca, "how is Milo?", "Better.", &[]);
+            run(&a, &mut ca, "how is Pell?", "Better.", &[]);
             // A test run and a chat the owner withdrew are not her chats:
             // left out and counted (review of #808).
             for kind in [
@@ -1113,8 +1113,8 @@ mod tests {
                 run(
                     &t,
                     &mut Conversation::default(),
-                    "is Milo ok?",
-                    "Milo is fine.",
+                    "is Pell ok?",
+                    "Pell is fine.",
                     &[],
                 );
             }
@@ -1122,7 +1122,7 @@ mod tests {
             assert_eq!((read.chats, read.unreadable, read.left_out), (2, 0, 2));
             let said = read.stretches;
             let owners: Vec<&str> = said.iter().map(|(_, t)| t[0].owner.as_str()).collect();
-            assert_eq!(owners, vec!["hi", "rain", "how is Milo?"]);
+            assert_eq!(owners, vec!["hi", "rain", "how is Pell?"]);
             assert_eq!(said[0].0, said[2].0, "one chat, two stretches");
             assert_ne!(said[0].0, said[1].0);
             let _ = std::fs::remove_dir_all(&dir);
