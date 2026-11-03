@@ -827,9 +827,12 @@ pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Respons
     // What would be published: a booking draft with the live hours carried,
     // as Publish will carry them, so the preview is of the same page.
     let text = match &w.served {
-        Some(served) if w.draft => {
-            form_draft::carry_hours(&w.text, served).unwrap_or(w.text.clone())
-        }
+        // Refused as Publish refuses it: falling back to the draft's own
+        // hours would preview a page Publish would not make.
+        Some(served) if w.draft => match form_draft::carry_hours(&w.text, served) {
+            Ok(t) => t,
+            Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+        },
         _ => w.text.clone(),
     };
     let draft = match Draft::write(&dir.join("x"), &text) {
@@ -901,6 +904,42 @@ pub async fn form_new(State(_state): St, Json(body): Json<NewForm>) -> Response 
         Ok(t) => t,
         Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
+    // Checked as a save is, not taken on trust: the id the starter came
+    // back with is the one asked for, and the factory would take it.
+    let came_back = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .and_then(|t| t.get("id").and_then(|v| v.as_str()).map(str::to_string));
+    if came_back.as_deref() != Some(body.id.as_str()) {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "the starter came back as `{}`, not `{}`",
+                came_back.unwrap_or_default(),
+                body.id
+            ),
+        );
+    }
+    let checked = match form_draft::drafts_dir().and_then(|d| {
+        std::fs::create_dir_all(&d)?;
+        Draft::write(&d.join("x"), &text)
+    }) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if let Err(e) = run(
+        "factory-publish",
+        &["type".as_ref(), "check".as_ref(), checked.0.as_os_str()],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        return err(
+            StatusCode::BAD_GATEWAY,
+            format!("the factory refuses its own starter: {e:#}"),
+        );
+    }
+    drop(checked);
     let id = body.id.clone();
     let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<Working> {
         let dir = form_draft::drafts_dir()?;
