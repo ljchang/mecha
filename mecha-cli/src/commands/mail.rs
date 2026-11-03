@@ -13,9 +13,9 @@
 //! **`classify` is the quarantined pass.**
 //!
 //! Mail arrives the same way it does for the model: through the MCP tool
-//! surface. This crate has no dependency on `mecha-mail` and does not gain
-//! one here — `mail_recent` already answers in JSON, so the driver reads the
-//! same bytes the loop would.
+//! surface, so the driver reads the same JSON bytes the loop would. The CLI
+//! has no runtime dependency on `mecha-mail`; tests use its dev-dependency to
+//! check that the independently implemented triage status rules agree.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -2818,6 +2818,18 @@ async fn triage(
     Ok(())
 }
 
+/// Keep the CLI independent of the mail library at runtime. The parity test
+/// compares this rule with mecha-mail's `status_of` through a dev-dependency.
+fn triage_status_of(moved: Option<usize>, failed: usize, left_in_place: usize) -> &'static str {
+    if failed > 0 || left_in_place > 0 {
+        "partial"
+    } else if moved == Some(0) {
+        "nothing_to_do"
+    } else {
+        "completed"
+    }
+}
+
 /// The MCP result must attest completion before the local queue is settled.
 /// No-ops and partial failures leave the record (including its timestamps)
 /// untouched, so a classified thread stays in the needs-attention queue.
@@ -2852,18 +2864,15 @@ fn finish_triage(
     let moved = match &outcome.moved {
         Value::Null => None,
         value => Some(
-            value
-                .as_u64()
-                .context("invalid triage moved count; state unchanged")?,
+            usize::try_from(
+                value
+                    .as_u64()
+                    .context("invalid triage moved count; state unchanged")?,
+            )
+            .context("triage moved count exceeds usize; state unchanged")?,
         ),
     };
-    let expected = if outcome.failed > 0 || outcome.left_in_place > 0 {
-        "partial"
-    } else if moved == Some(0) {
-        "nothing_to_do"
-    } else {
-        "completed"
-    };
+    let expected = triage_status_of(moved, outcome.failed, outcome.left_in_place);
     if outcome.account != account
         || outcome.thread_id != thread_id
         || outcome.action != action
@@ -2895,6 +2904,34 @@ mod triage_result_tests {
     use mecha_core::tool::ToolOutput;
     use mecha_mail::microsoft::graph_mail::{MutationOutcome, RestoreOutcome};
     use mecha_mail::unified::{triage_reply, TriageAction, TriageResult};
+
+    #[test]
+    fn independent_cli_and_mail_status_rules_agree() {
+        let cases = [
+            (None, 0, 0),
+            (None, 1, 0),
+            (None, 0, 1),
+            (None, 1, 1),
+            (Some(0), 0, 0),
+            (Some(0), 1, 0),
+            (Some(0), 0, 1),
+            (Some(0), 1, 1),
+            (Some(1), 0, 0),
+            (Some(1), 1, 0),
+            (Some(1), 0, 1),
+            (Some(1), 1, 1),
+            (Some(2), 3, 4),
+            (Some(usize::MAX), 0, 0),
+            (Some(0), usize::MAX, usize::MAX),
+        ];
+        for (moved, failed, left_in_place) in cases {
+            assert_eq!(
+                triage_status_of(moved, failed, left_in_place),
+                mecha_mail::unified::status_of(moved, failed, left_in_place),
+                "status rules diverged for {moved:?} moved, {failed} failed, {left_in_place} left in place"
+            );
+        }
+    }
 
     struct Fixture {
         root: std::path::PathBuf,

@@ -822,8 +822,9 @@ fn render_triage_result(
                     outcome.moved, if outcome.moved == 1 { "" } else { "s" }, outcome.failed)
             } else {
                 format!(
-                    "{account}: thread {thread_id}: {completion}{} messages {}; {} failed",
+                    "{account}: thread {thread_id}: {completion}{} message{} {}; {} failed",
                     outcome.moved,
+                    if outcome.moved == 1 { "" } else { "s" },
                     action.done(),
                     outcome.failed
                 )
@@ -855,6 +856,19 @@ fn render_triage_result(
     }
 }
 
+/// Classify counts independently of any claimed wire status. An absent moved
+/// count is a successful, uncounted thread operation; failures or messages
+/// left in place always take precedence over an empty successful count.
+pub fn status_of(moved: Option<usize>, failed: usize, left_in_place: usize) -> &'static str {
+    if failed > 0 || left_in_place > 0 {
+        "partial"
+    } else if moved == Some(0) {
+        "nothing_to_do"
+    } else {
+        "completed"
+    }
+}
+
 /// Machine-readable result, also included as JSON text for text-only MCP
 /// clients. `moved: null` means Gmail acknowledged the thread operation without
 /// a per-message count. A partial operation is an error, never a clean success.
@@ -871,13 +885,7 @@ pub fn triage_reply(
             (Some(outcome.moved), outcome.failed, outcome.left_in_place)
         }
     };
-    let status = if failed > 0 || left_in_place > 0 {
-        "partial"
-    } else if moved == Some(0) {
-        "nothing_to_do"
-    } else {
-        "completed"
-    };
+    let status = status_of(moved, failed, left_in_place);
     let source = match (result, action) {
         (TriageResult::Count(_), TriageAction::Archive | TriageAction::Spam) => Some("Inbox"),
         (TriageResult::Restore(_), TriageAction::Unarchive) => Some("Archive"),
@@ -3318,6 +3326,62 @@ mod tests {
             .find(|tool| tool["name"] == "mail_get_thread")
             .unwrap();
         assert_eq!(tool["description"], "Read a whole conversation by thread_id, oldest first, with clean text bodies. thread_ids are account-scoped: pass the `account` from the search row the id came from.");
+    }
+
+    #[test]
+    fn triage_status_classifies_counts_with_incomplete_work_first() {
+        for moved in [None, Some(0), Some(1), Some(2)] {
+            assert_eq!(
+                status_of(moved, 0, 0),
+                if moved == Some(0) {
+                    "nothing_to_do"
+                } else {
+                    "completed"
+                }
+            );
+            // Every combination with any incomplete work is partial.
+            for failed in 0..=1 {
+                for left in 0..=1 {
+                    if failed + left > 0 {
+                        assert_eq!(status_of(moved, failed, left), "partial");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn triage_message_counts_use_singular_and_plural_for_every_verb() {
+        for action in [
+            TriageAction::Archive,
+            TriageAction::Spam,
+            TriageAction::Read,
+            TriageAction::Unread,
+            TriageAction::Trash,
+        ] {
+            for moved in [1, 2] {
+                for failed in [0, 1] {
+                    let text = render_triage_result(
+                        "fixture",
+                        "thread-1",
+                        action,
+                        TriageResult::Count(MutationOutcome { moved, failed }),
+                    );
+                    let scope = if matches!(action, TriageAction::Archive | TriageAction::Spam) {
+                        "Inbox "
+                    } else {
+                        ""
+                    };
+                    assert!(
+                        text.contains(&format!(
+                            "{moved} {scope}message{} ",
+                            if moved == 1 { "" } else { "s" }
+                        )),
+                        "{text}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
