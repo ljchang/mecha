@@ -377,15 +377,21 @@ pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
         .results
         .into_iter()
         .find(|h| {
-            wanted.iter().all(|aliases| {
+            let field = |v: &Option<String>| v.as_deref().map(|x| x.trim().to_lowercase());
+            narrow.iter().zip(&wanted).all(|(part, aliases)| {
+                // A US state's code means that state in the US, never a
+                // country with the same two letters: "Springfield, CA" is
+                // California, not Canada (review of #836).
+                if let Some((_, state)) = US_STATES
+                    .iter()
+                    .find(|(code, _)| code.eq_ignore_ascii_case(part.trim()))
+                {
+                    return field(&h.country_code).as_deref() == Some("us")
+                        && field(&h.admin1).as_deref() == Some(&state.to_lowercase());
+                }
                 [&h.admin1, &h.country, &h.country_code]
                     .iter()
-                    .any(|field| {
-                        field.as_deref().is_some_and(|value| {
-                            let value = value.trim().to_lowercase();
-                            aliases.contains(&value)
-                        })
-                    })
+                    .any(|f| field(f).is_some_and(|value| aliases.contains(&value)))
             })
         })
         .with_context(|| {
@@ -1008,5 +1014,19 @@ mod tests {
         forget_removed_place(&dir).unwrap();
         assert!(world.weather(d("2026-11-03")).unwrap().is_none());
         assert!(!dir.join(PLACE_FILE).exists());
+    }
+
+    #[test]
+    fn a_state_code_is_a_us_state_never_a_country() {
+        // Canada first: "CA" is California's code and Canada's.
+        let body = r#"{"results": [
+            {"name": "Springfield", "latitude": 45.65, "longitude": -64.85, "admin1": "Nova Scotia", "country": "Canada", "country_code": "CA"},
+            {"name": "Springfield", "latitude": 37.6, "longitude": -122.4, "admin1": "California", "country": "United States", "country_code": "US"}
+        ]}"#;
+        let r = parse_geocode(body, "Springfield, CA").unwrap();
+        assert!(r.label.contains("California"), "{}", r.label);
+        // Canada spelled out is still Canada.
+        let r = parse_geocode(body, "Springfield, Canada").unwrap();
+        assert!(r.label.contains("Nova Scotia"), "{}", r.label);
     }
 }
