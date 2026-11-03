@@ -1941,8 +1941,10 @@ module.
   owner-facing only. Failed resolution or fetching is recorded per place and
   backs off for an hour; a changed place clears the previous forecast and
   story-day weather snapshot before its first request. A day's draw is seeded
-  and stored in `world.db` v3 up to today; a stored day keeps its events when
-  only weather changes, while the new weather is shown as the fact it is.
+  and stored in `world.db` v3 up to today. Whether a day has weather is a
+  draw input, never what the weather is: a changed forecast keeps today's
+  events and shows the new weather, while weather arriving on a day drawn
+  without any, or being cleared from one, redraws today once.
   Other draw inputs still redraw today. With
   `[life] events` on, the today-block adds event titles, non-normal levels
   and the closed weather after its doing-now sentence; before noon it uses

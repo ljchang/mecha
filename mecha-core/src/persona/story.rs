@@ -1564,8 +1564,10 @@ cooldown = 0
         .unwrap();
         assert!(!weather::due(&pdir, Some("Springfield, Missouri"), now).unwrap());
 
+        // Clearing the weather is a draw input (whether the day had any),
+        // so today may redraw: what is held here is only that no old
+        // place's weather is shown or told (review of #836).
         let after = story(&dir, "mara", date, date, date).unwrap().days;
-        assert_eq!(after[0].events, before[0].events);
         assert!(after[0].weather.is_none());
         let lines = today::teller_lines(
             "2026-11-02T12:00:00".parse().unwrap(),

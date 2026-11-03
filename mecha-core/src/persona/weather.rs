@@ -551,9 +551,19 @@ pub fn forget_removed_place(pdir: &std::path::Path) -> Result<()> {
 /// place must not leave the previous place in the teller while it waits.
 fn clear_weather_for_changed_place(pdir: &std::path::Path, query: &str) -> Result<()> {
     let query = query.trim();
-    let current = cached(pdir, query)
-        .and_then(|place| place.weather_for)
-        .is_some_and(|weather_for| weather_for == query);
+    // A cache that is there but does not read is unknown, never a changed
+    // place: clearing on it would wipe weather on a corrupt file. It is an
+    // error the caller records, and the weather stays (review of #836).
+    let path = pdir.join(PLACE_FILE);
+    let current = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        Ok(text) => {
+            let r: Resolved = serde_json::from_str(&text)
+                .with_context(|| format!("{} does not read", path.display()))?;
+            r.query == query && r.weather_for.as_deref() == Some(query)
+        }
+    };
     if !current {
         super::world::World::open(pdir)?.clear_weather()?;
     }
@@ -584,7 +594,10 @@ pub async fn place_of(pdir: &std::path::Path, life_place: Option<&str>) -> Resul
 /// Whether `pdir`'s weather is due: none stored, the last fetch older than
 /// [`STALE_HOURS`] at `now`, or `[life] place` changed since it was
 /// resolved. A recorded failure for the same place pauses retries for
-/// [`FAILURE_BACKOFF_HOURS`].
+/// [`FAILURE_BACKOFF_HOURS`]. **It writes as well as reads:** a changed
+/// place's old weather is cleared here, before any lookup, so a failed one
+/// tells no old town's weather; a place cache that does not read is an
+/// error, never a clear.
 pub fn due(
     pdir: &std::path::Path,
     life_place: Option<&str>,
@@ -1028,5 +1041,24 @@ mod tests {
         // Canada spelled out is still Canada.
         let r = parse_geocode(body, "Springfield, Canada").unwrap();
         assert!(r.label.contains("Nova Scotia"), "{}", r.label);
+    }
+
+    #[test]
+    fn an_unreadable_place_cache_never_clears_the_weather() {
+        let dir = crate::persona::tests_support::scratch();
+        let world = crate::persona::world::World::open(&dir).unwrap();
+        drop(world);
+        let mut world = crate::persona::world::World::open(&dir).unwrap();
+        world
+            .set_weather(&[Weather {
+                date: d("2026-11-03"),
+                sky: Sky::Fog,
+                high_c: 7,
+                low_c: 2,
+            }])
+            .unwrap();
+        std::fs::write(dir.join(PLACE_FILE), "{not json").unwrap();
+        assert!(clear_weather_for_changed_place(&dir, "Springfield, Illinois").is_err());
+        assert!(world.weather(d("2026-11-03")).unwrap().is_some(), "kept");
     }
 }
