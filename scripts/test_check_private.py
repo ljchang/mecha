@@ -873,6 +873,23 @@ class Guard(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             git(self.repo, "rm", "-q", "--cached", name)
 
+    def test_what_the_owner_wrote_of_a_persona_and_its_people_is_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        with open(os.path.join(pdir, "identity.md"), "w") as f:
+            f.write("## Core\nShe keeps bees on a rooftop above the old cannery by the harbour.\n")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT, role TEXT, description TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Orrin', '[]', 'cousin', 'Repairs clocks in a shop that smells of lamp oil and cedar.')")
+        db.commit()
+        db.close()
+        for name, text in [("a.py", "X = 'keeps bees on a rooftop above the old cannery'\n"),
+                           ("b.py", "X = 'repairs clocks in a shop that smells of lamp oil'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("words said in a conversation", r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
