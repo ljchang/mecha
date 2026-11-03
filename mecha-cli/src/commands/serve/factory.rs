@@ -555,12 +555,10 @@ fn working(id: &str) -> anyhow::Result<Working> {
         },
         Err(e) => return Err(e.into()),
     };
-    let kind = if text.contains("kind = \"booking\"") {
-        "booking"
-    } else {
-        "request"
-    }
-    .to_string();
+    let kind = toml::from_str::<toml::Table>(&text)
+        .ok()
+        .and_then(|t| t.get("kind").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "request".into());
     Ok(Working {
         id: id.to_string(),
         kind,
@@ -668,8 +666,12 @@ pub async fn form_save(State(_state): St, Json(body): Json<FormSave>) -> Respons
     };
     // The id is the file's name and the form's URL: a raw edit may not move
     // it. Checked before the factory is asked anything.
-    let id_line = format!("id = \"{}\"", w.id);
-    if !next.lines().any(|l| l.trim() == id_line) {
+    // Read from the document, not matched as a line: `id='x'` and `id="x"`
+    // are the same id, and a matching line inside a string is not one.
+    let doc_id = toml::from_str::<toml::Table>(&next)
+        .ok()
+        .and_then(|t| t.get("id").and_then(|v| v.as_str()).map(str::to_string));
+    if doc_id.as_deref() != Some(w.id.as_str()) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("the id must stay `{}`: it names the form's URL", w.id),
@@ -741,14 +743,19 @@ pub struct IdBody {
 }
 
 /// The page a form serves, made safe to show inside the owner's page: its
-/// stylesheet inlined and every script removed, for a `sandbox` frame with
-/// no network and no scripts at all.
+/// stylesheet inlined and every script and link removed, for a `sandbox`
+/// frame that runs no script and submits nothing. Not a network guarantee —
+/// a `url()` in the owner's own stylesheet would still fetch — and fine for
+/// that, since the manifest and the style are the owner's.
 fn preview_html(html: &str, style: &str) -> String {
     let mut out = String::with_capacity(html.len() + style.len());
     let mut rest = html;
     loop {
-        let script = rest.find("<script");
-        let link = rest.find("<link");
+        // Case-insensitive: `<SCRIPT` is a script. The shadow is ASCII-lowered
+        // byte for byte, so its offsets are the original's.
+        let lower = rest.to_ascii_lowercase();
+        let script = lower.find("<script");
+        let link = lower.find("<link");
         let next = match (script, link) {
             (Some(a), Some(b)) => a.min(b),
             (Some(a), None) => a,
@@ -757,8 +764,9 @@ fn preview_html(html: &str, style: &str) -> String {
         };
         out.push_str(&rest[..next]);
         let tail = &rest[next..];
-        if tail.starts_with("<script") {
-            match tail.find("</script>") {
+        let tail_lower = &lower[next..];
+        if tail_lower.starts_with("<script") {
+            match tail_lower.find("</script>") {
                 Some(end) => rest = &tail[end + "</script>".len()..],
                 None => {
                     rest = "";
@@ -824,6 +832,13 @@ pub struct NewForm {
 pub async fn form_new(State(_state): St, Json(body): Json<NewForm>) -> Response {
     if let Err(e) = form_draft::valid_id(&body.id) {
         return err(StatusCode::BAD_REQUEST, e);
+    }
+    // A starter name rides into an argv; it is a name, nothing else.
+    if form_draft::valid_id(&body.starter).is_err() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("`{}` is not a starter", body.starter),
+        );
     }
     let id = body.id.clone();
     let taken = tokio::task::spawn_blocking(move || working(&id).is_ok())
@@ -900,14 +915,16 @@ pub async fn form_publish(State(_state): St, Json(body): Json<IdBody>) -> Respon
         Ok(p) => p,
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
     };
-    if text != w.text {
-        if let Err(e) = instrument::replace_file(&path, &text) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, e);
-        }
-    }
+    // Pushed from a copy, so a push that fails leaves the draft exactly as
+    // the page read it: its `base` still holds and the retry goes through,
+    // rather than 409ing on a change only this handler made.
+    let pushing = match Draft::write(&path, &text) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
     match run(
         "factory-publish",
-        &["type".as_ref(), "push".as_ref(), path.as_os_str()],
+        &["type".as_ref(), "push".as_ref(), pushing.0.as_os_str()],
         None,
         Child::Publish,
     )
@@ -945,5 +962,25 @@ pub async fn form_discard(State(_state): St, Json(body): Json<IdBody>) -> Respon
         }
         Ok(Err(e)) => err(StatusCode::NOT_FOUND, e),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_preview_has_no_script_or_link_in_any_case_and_keeps_the_page() {
+        let html = "<html><head><LINK rel=stylesheet href=form.css></head><body>\
+                    <form>Q</form><SCRIPT>alert(1)</SCRIPT><script src=x></script>after</body></html>";
+        let out = super::preview_html(html, "p{}");
+        let lower = out.to_ascii_lowercase();
+        assert!(
+            !lower.contains("<script") && !lower.contains("<link"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<form>Q</form>") && out.contains("after"),
+            "{out}"
+        );
+        assert!(out.contains("<style>p{}</style></head>"), "{out}");
     }
 }

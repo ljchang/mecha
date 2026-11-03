@@ -40,12 +40,12 @@
     if (id) load();
   });
 
+  // The TOML box is what is edited whenever it is the one shown — in TOML
+  // mode, and also in fields mode when the field editor cannot show this
+  // form — so its typing always gets a Save.
+  const tomlShown = $derived(mode === 'toml' || !edit);
   const dirty = $derived(
-    st
-      ? mode === 'toml'
-        ? raw !== st.text
-        : edit && JSON.stringify(edit) !== JSON.stringify(st.form)
-      : false,
+    st ? (tomlShown ? raw !== st.text : JSON.stringify(edit) !== JSON.stringify(st.form)) : false,
   );
 
   function say(text, hazard = false) {
@@ -68,7 +68,7 @@
   async function saveDraft() {
     busy = true;
     try {
-      const body = mode === 'toml' ? { id, base: st.digest, raw } : { id, base: st.digest, form: $state.snapshot(edit) };
+      const body = tomlShown ? { id, base: st.digest, raw } : { id, base: st.digest, form: $state.snapshot(edit) };
       adopt(await post('/api/factory/form/save', body));
       say('Draft saved. Nothing changes for strangers until you publish.');
     } catch (e) {
@@ -158,6 +158,18 @@
     const label = `Option ${(f.options?.length ?? 0) + 1}`;
     f.options = [...(f.options ?? []), { value: nameFrom(label, taken), label }];
   }
+  // An option's value is what every request records and Review shows, so
+  // it follows the label until the field is saved with it; after that it is
+  // a value requests already carry, and stays.
+  const savedValues = $derived(
+    new Map((st?.form?.fields ?? []).map((f) => [f.name, new Set((f.options ?? []).map((o) => o.value))])),
+  );
+  function relabelOption(f, o, label) {
+    o.label = label;
+    if (!savedValues.get(f.name)?.has(o.value)) {
+      o.value = nameFrom(label, (f.options ?? []).filter((x) => x !== o).map((x) => x.value));
+    }
+  }
   // A new field's name follows its label until it is saved; a saved one's
   // name is its key in every request already received, so it stays.
   const savedNames = $derived(new Set((st?.form?.fields ?? []).map((f) => f.name)));
@@ -186,7 +198,7 @@
     </div>
 
     {#if mode === 'toml' || !edit}
-      {#if st.form_error && mode === 'fields'}<div class="note">This form uses a shape the field editor does not show ({st.form_error}); edit it as TOML.</div>{/if}
+      {#if st.form_error && mode === 'fields' && !edit}<div class="note">This form uses a shape the field editor does not show ({st.form_error}); edit it as TOML.</div>{/if}
       <textarea class="toml" spellcheck="false" bind:value={raw} rows="24"></textarea>
     {:else}
       <div class="card fields">
@@ -221,7 +233,7 @@
             <div class="opts">
               {#each f.options ?? [] as o, oi (oi)}
                 <div class="opt">
-                  <input class="in grow" bind:value={o.label} aria-label="option" />
+                  <input class="in grow" value={o.label} oninput={(e) => relabelOption(f, o, e.currentTarget.value)} aria-label="option" />
                   <button class="x" aria-label="remove option" disabled={f.options.length === 1} onclick={() => f.options.splice(oi, 1)}>×</button>
                 </div>
               {/each}
@@ -265,6 +277,7 @@
     {#if preview}
       <div class="section">Preview <span class="sub">as strangers will see it{st.draft ? ', with your draft' : ''}</span></div>
       <!-- No scripts, no network, no forms: the page itself, looked at. -->
+      <div class="note">The page as it looks, not as it behaves: questions that appear only after an earlier answer are all shown here.</div>
       <iframe class="preview" title="form preview" sandbox="" srcdoc={preview.html}></iframe>
     {/if}
   {/if}

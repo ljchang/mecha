@@ -4175,8 +4175,11 @@ served copy only once the box accepts it, then removes the draft. Three rules:
   form's id is chosen once, from `type new <starter> --id`.
 
 The preview is `type render`'s page with its stylesheet inlined and every
-script and link removed, in a `sandbox=""` `srcdoc` frame: no scripts, no
-network, no submit. The writers are reached from the web handler only
+script and link removed, in a `sandbox=""` `srcdoc` frame: no scripts and no
+submit. It is the markup without behaviour, so a `show_when` field shows
+unconditionally, and the page says so. Not a network guarantee (a `url()` in
+the owner's own stylesheet would fetch), which is fine while the manifest and
+style are the owner's. The writers are reached from the web handler only
 (`only_the_owners_page_writes_forms`). Pause and retire need a box-side state
 the factory does not have yet.
 
