@@ -68,19 +68,26 @@ fn doing(a: Activity) -> &'static str {
     }
 }
 
-/// How the note names a kind of company.
-fn who(c: Company) -> &'static str {
+/// How the note names a kind of company, or `None` for one it never says.
+///
+/// **A household relation is never said.** The kinds come from the diary
+/// a stretch was drawn from, a stranger's: their partner, child, parent,
+/// family or housemate, not the persona's. Who a persona lives with is the
+/// owner's to write in who they are; a note saying "with your child" made a
+/// persona written with none invent a toddler (2026-11-03). The kinds left
+/// carry no relation to anyone.
+fn who(c: Company) -> Option<&'static str> {
     match c {
-        Company::Alone => "alone",
-        Company::Partner => "your partner",
-        Company::Child => "your child",
-        Company::Parent => "a parent",
-        Company::Family => "family",
-        Company::Housemate => "a housemate",
-        Company::Friend => "friends",
-        Company::Acquaintance => "people you know",
-        Company::Colleague => "colleagues",
-        Company::Public => "people you don't know",
+        Company::Alone => Some("alone"),
+        Company::Partner
+        | Company::Child
+        | Company::Parent
+        | Company::Family
+        | Company::Housemate => None,
+        Company::Friend => Some("friends"),
+        Company::Acquaintance => Some("people you know"),
+        Company::Colleague => Some("colleagues"),
+        Company::Public => Some("people you don't know"),
     }
 }
 
@@ -108,13 +115,20 @@ pub fn note(now: &Now) -> String {
         None | Some([]) => {}
         Some([Company::Alone]) => said.push_str(", alone"),
         Some(kinds) => {
-            let names: Vec<&str> = kinds.iter().map(|k| who(*k)).collect();
-            let listed = match names.split_last() {
-                Some((last, [])) => last.to_string(),
-                Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-                None => String::new(),
-            };
-            said.push_str(&format!(", with {listed}"));
+            let names: Vec<&str> = kinds
+                .iter()
+                .filter(|k| **k != Company::Alone)
+                .filter_map(|k| who(*k))
+                .collect();
+            // With only household kinds, nothing is said of company at all:
+            // "alone" would be as wrong as "with your child".
+            if let Some(listed) = match names.split_last() {
+                Some((last, [])) => Some(last.to_string()),
+                Some((last, rest)) => Some(format!("{} and {last}", rest.join(", "))),
+                None => None,
+            } {
+                said.push_str(&format!(", with {listed}"));
+            }
         }
     }
     let stem = if now.source.is_clean() {
@@ -189,10 +203,14 @@ mod tests {
         assert!(text.contains("You are asleep. Let it"), "{text}");
         // Three kinds of company read as a list.
         let mut s = stretch(Activity::Eating, 19 * 60, 20 * 60);
-        s.company = Some(vec![Company::Partner, Company::Family, Company::Colleague]);
+        s.company = Some(vec![
+            Company::Friend,
+            Company::Acquaintance,
+            Company::Colleague,
+        ]);
         let text = note(&now(s, Source::Sampler));
         assert!(
-            text.contains("with your partner, family and colleagues."),
+            text.contains("with friends, people you know and colleagues."),
             "{text}"
         );
         // Past midnight, the clock wraps.
@@ -203,6 +221,35 @@ mod tests {
             text.contains("since 22:00, until about 01:15, alone."),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_household_relation_from_the_diary_is_never_said() {
+        // The diary's child, family and strangers: only the strangers.
+        let mut s = stretch(Activity::Eating, 22 * 60 + 51, 23 * 60 + 21);
+        s.company = Some(vec![Company::Child, Company::Family, Company::Public]);
+        let text = note(&now(s, Source::Sampler));
+        assert!(
+            text.contains("until about 23:21, with people you don't know."),
+            "{text}"
+        );
+        // Only household kinds: nothing said of company, not "alone".
+        for kinds in [
+            vec![Company::Partner],
+            vec![Company::Child, Company::Parent],
+            vec![Company::Family, Company::Housemate],
+        ] {
+            let mut s = stretch(Activity::Cooking, 18 * 60, 19 * 60);
+            s.company = Some(kinds.clone());
+            let text = note(&now(s, Source::Sampler));
+            assert!(
+                text.contains("until about 19:00. Let it"),
+                "{kinds:?}: {text}"
+            );
+            for word in ["partner", "child", "parent", "family", "housemate", "alone"] {
+                assert!(!text.contains(word), "{kinds:?} said {word}: {text}");
+            }
+        }
     }
 
     /// The fold is taught to all three predicates (§4.5): re-armed from the
