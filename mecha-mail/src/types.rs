@@ -23,6 +23,11 @@ pub struct Email {
     pub bcc_addresses: Vec<String>,
     /// RFC 3339, UTC.
     pub date_received: String,
+    /// Whether `date_received` came from a usable provider/header date.
+    /// Some(false) means the display date was synthesized; None covers old
+    /// records whose date certainty was not recorded. Only Some(true) ranks.
+    #[serde(default)]
+    pub date_known: Option<bool>,
     pub body_text: String,
     pub body_html: String,
     pub snippet: String,
@@ -39,8 +44,9 @@ pub struct Email {
     pub list_id: Option<String>,
     #[serde(default)]
     pub reply_to: Option<String>,
-    /// Every instance in the order returned by the provider (topmost first
-    /// on the observed API shape). None means absent from the returned
+    /// Every instance in the provider's array order; that this is received
+    /// order is unverified (MAIL-RULES-DESIGN.md §5.4 counts claims rather
+    /// than relying on order). None means absent from the returned
     /// collection, or not read; consult `headers_complete` before trusting
     /// absence or uniqueness. Never a provider-authentication verdict.
     #[serde(default)]
@@ -165,6 +171,9 @@ pub(crate) fn authentication_results(
     (!instances.is_empty()).then_some(instances)
 }
 
+/// Pick the first matching instance in provider array order, deliberately
+/// first-wins unlike Gmail's legacy last-wins loop. Duplicates of Auto-Submitted,
+/// Precedence, List-Id and Reply-To are not counted: the sender controls every copy.
 pub(crate) fn first_header(headers: Option<&[serde_json::Value]>, name: &str) -> Option<String> {
     headers?
         .iter()
@@ -183,7 +192,8 @@ pub struct ThreadMetadata {
     pub account_address: Option<String>,
     pub owner_participated: Option<bool>,
     /// Provider id, never the sender-written RFC Message-ID. None when no
-    /// inbound message is known, or when the direction cannot be determined.
+    /// inbound message is known, direction cannot be determined, or any
+    /// inbound message has an unknown date.
     pub newest_inbound_provider_id: Option<String>,
 }
 
@@ -213,12 +223,11 @@ impl ThreadMetadata {
         } else {
             Some(false)
         };
-        if !unknown {
-            result.newest_inbound_provider_id = emails
-                .iter()
-                .filter(|e| {
-                    e.is_draft == Some(false) && !e.from_address.eq_ignore_ascii_case(address)
-                })
+        let inbound = emails
+            .iter()
+            .filter(|e| e.is_draft == Some(false) && !e.from_address.eq_ignore_ascii_case(address));
+        if !unknown && inbound.clone().all(|e| e.date_known == Some(true)) {
+            result.newest_inbound_provider_id = inbound
                 .max_by(|a, b| a.date_received.cmp(&b.date_received))
                 .map(|e| e.provider_id.clone());
         }
@@ -328,6 +337,7 @@ mod tests {
         let email = crate::google::gmail::parse_gmail_message(&serde_json::json!({"id":"m1"}));
         let mut value = serde_json::to_value(email).unwrap();
         for name in [
+            "date_known",
             "auto_submitted",
             "precedence",
             "list_id",
@@ -342,6 +352,7 @@ mod tests {
         assert!(loaded.authentication_results.is_none());
         assert!(loaded.headers_complete.is_none());
         assert!(loaded.is_draft.is_none());
+        assert!(loaded.date_known.is_none());
         assert!(loaded.auto_submitted.is_none());
         assert!(loaded.precedence.is_none());
         assert!(loaded.list_id.is_none());

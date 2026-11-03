@@ -91,6 +91,7 @@ mod tests {
             cc_addresses: vec![],
             bcc_addresses: vec![],
             date_received: String::new(),
+            date_known: None,
             body_text: text.into(),
             body_html: html.into(),
             snippet: "snippet".into(),

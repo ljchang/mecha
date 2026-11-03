@@ -432,17 +432,15 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
     let bcc_addresses = parse_addr_list(&bcc_raw);
 
     // Prefer internalDate (epoch millis) over the header, which lies more.
-    let date_received = if let Some(internal_date) = msg["internalDate"]
+    let parsed_date = msg["internalDate"]
         .as_str()
         .and_then(|s| s.parse::<i64>().ok())
-    {
-        match chrono::DateTime::from_timestamp(internal_date / 1000, 0) {
-            Some(dt) => dt.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-            None => parse_date_to_iso(&date_str),
-        }
-    } else {
-        parse_date_to_iso(&date_str)
-    };
+        .and_then(|millis| chrono::DateTime::from_timestamp(millis / 1000, 0))
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .or_else(|| parse_date_to_iso(&date_str));
+    let date_known = Some(parsed_date.is_some());
+    let date_received =
+        parsed_date.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     // Raw parts; the HTML-only fallback is applied by `text::clean_body`,
     // where the model-facing rendering lives.
@@ -474,6 +472,7 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
         cc_addresses,
         bcc_addresses,
         date_received,
+        date_known,
         body_text,
         body_html,
         snippet,
@@ -491,8 +490,10 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
         authentication_results: authentication_results(headers.map(Vec::as_slice)),
         headers_complete: headers
             .filter(|hs| {
-                hs.iter()
-                    .all(|h| h["name"].is_string() && h["value"].is_string())
+                !hs.is_empty()
+                    && hs
+                        .iter()
+                        .all(|h| h["name"].is_string() && h["value"].is_string())
             })
             .map(|_| true),
         is_draft: msg["labelIds"]
@@ -564,10 +565,10 @@ fn check_has_attachments(payload: &Value) -> bool {
 }
 
 /// Parse various date formats into ISO 8601, normalized to UTC.
-fn parse_date_to_iso(date_str: &str) -> String {
+fn parse_date_to_iso(date_str: &str) -> Option<String> {
     let trimmed = date_str.trim();
     if trimmed.is_empty() {
-        return chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        return None;
     }
 
     let cleaned = if let Some(pos) = trimmed.rfind('(') {
@@ -577,10 +578,11 @@ fn parse_date_to_iso(date_str: &str) -> String {
     };
 
     if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(cleaned) {
-        return dt
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        return Some(
+            dt.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+        );
     }
 
     let formats = [
@@ -592,21 +594,23 @@ fn parse_date_to_iso(date_str: &str) -> String {
     ];
     for fmt in &formats {
         if let Ok(dt) = chrono::DateTime::parse_from_str(cleaned, fmt) {
-            return dt
-                .with_timezone(&chrono::Utc)
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
+            return Some(
+                dt.with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+            );
         }
     }
 
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(cleaned) {
-        return dt
-            .with_timezone(&chrono::Utc)
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        return Some(
+            dt.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+        );
     }
 
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    None
 }
 
 pub(crate) fn urlencode(s: &str) -> String {
@@ -748,6 +752,79 @@ mod tests {
         assert_eq!(email.message_id.as_deref(), Some("<mid@x>"));
         assert_eq!(email.date_received, "2024-08-04T11:20:00Z");
     }
+    #[test]
+    fn gmail_unknown_inbound_dates_prevent_newest_selection() {
+        use crate::types::ThreadMetadata;
+        let known = parse_gmail_message(&json!({
+            "id":"known", "internalDate":"1704067200000", "labelIds":["INBOX"],
+            "payload":{"headers":[{"name":"From", "value":"sender@example.edu"}]}
+        }));
+        assert_eq!(known.date_known, Some(true));
+        assert_eq!(known.date_received, "2024-01-01T00:00:00Z");
+        for date in [
+            json!({}),
+            json!({"internalDate":"bad"}),
+            json!({"internalDate":"9223372036854775807"}),
+        ] {
+            let mut message = date;
+            message["id"] = json!("unknown");
+            message["labelIds"] = json!(["INBOX"]);
+            message["payload"] = json!({"headers":[
+                {"name":"From", "value":"sender@example.edu"},
+                {"name":"Date", "value":"not a date"}
+            ]});
+            for header in [json!("not a date"), json!("")] {
+                message["payload"]["headers"][1]["value"] = header;
+                let unknown = parse_gmail_message(&message);
+                assert_eq!(unknown.date_known, Some(false));
+                assert!(chrono::DateTime::parse_from_rfc3339(&unknown.date_received).is_ok());
+                for certainty in [Some(false), None] {
+                    let mut unknown = unknown.clone();
+                    unknown.date_known = certainty;
+                    let metadata = ThreadMetadata::from_emails(
+                        &[known.clone(), unknown.clone()],
+                        Some("owner@example.com"),
+                    );
+                    assert_eq!(metadata.newest_inbound_provider_id, None);
+                    assert_eq!(metadata.owner_participated, Some(false));
+                    unknown.from_address = "owner@example.com".into();
+                    let metadata = ThreadMetadata::from_emails(
+                        &[known.clone(), unknown],
+                        Some("owner@example.com"),
+                    );
+                    assert_eq!(
+                        metadata.newest_inbound_provider_id.as_deref(),
+                        Some("known")
+                    );
+                    assert_eq!(metadata.owner_participated, Some(true));
+                }
+            }
+            message["payload"]["headers"][1]["value"] = json!("Mon, 01 Jan 2024 00:00:00 +0000");
+            let fallback = parse_gmail_message(&message);
+            assert_eq!(fallback.date_known, Some(true));
+            assert_eq!(fallback.date_received, known.date_received);
+        }
+        assert_eq!(parse_gmail_message(&json!({})).date_known, Some(false));
+    }
+
+    #[test]
+    fn gmail_empty_missing_or_malformed_headers_are_not_complete() {
+        for message in [
+            json!({}),
+            json!({"payload":{"headers":[]}}),
+            json!({"payload":{"headers":[{"name":"From"}]}}),
+        ] {
+            assert_eq!(parse_gmail_message(&message).headers_complete, None);
+        }
+        assert_eq!(
+            parse_gmail_message(&json!({"payload":{"headers":[
+                {"name":"From", "value":"sender@example.edu"}
+            ]}}))
+            .headers_complete,
+            Some(true)
+        );
+    }
+
     fn with_authentication_results(values: &[&str]) -> Email {
         let headers: Vec<_> = values
             .iter()
