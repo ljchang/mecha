@@ -335,7 +335,7 @@ no world, no today-block, no new tools, no nightly work.
 ```toml
 [life]                     # owner-written; outside persona_propose's schema
 world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
-people    = false          # her own network (§6); needs world
+people    = false          # her own network (§6); independent of world (owner, 2026-11-03)
 my_people = false          # her model of the owner's network, and gap questions (§7); needs [memory] on, user_facts != "off"
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
@@ -375,6 +375,13 @@ threshold per persona once the access log says where it should sit. The
 - **Dependencies are refused by name, never silently satisfied.** `camera`
   without `world` is a load error naming the missing switch, the way an
   unknown key is. It never quietly turns `world` on.
+- **`people` needs no world either (owner, 2026-11-03).** As built it is the
+  people the owner wrote on the People tab, rendered into each chat beside
+  who she is, and nothing in that reads a simulated day. Tying it to
+  `world` meant that switching off a day note that had gone wrong also took
+  away an accurate list the owner wrote. Where the world later reads her
+  people (a storylet casting someone, §4.3), it reads them only when both
+  are on, as `story::story` already does.
 - **`my_people` needs no world, but it needs memory of the owner.** It is
   memory of the owner, not of her world (§7.1), so a persona can learn the
   owner's people without a simulated life of its own. But it is built over
