@@ -145,23 +145,31 @@ pub fn read_form(text: &str) -> Result<FormEdit> {
     if let Some(list) = doc.get("fields").and_then(Item::as_array_of_tables) {
         for t in list.iter() {
             let get = |k: &str| t.get(k);
-            let options = get("options").and_then(Item::as_array).map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_inline_table())
-                    .map(|c| Choice {
-                        value: c
-                            .get("value")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        label: c
-                            .get("label")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    })
-                    .collect()
-            });
+            let fname = s(get("name")).unwrap_or_default();
+            // Options are read in the inline spelling the editor writes; any
+            // other (`[[fields.options]]`) is said, not dropped — the page
+            // then opens the TOML editor instead of a choice with no choices.
+            let options = match get("options") {
+                None => None,
+                Some(item) => {
+                    let Some(arr) = item.as_array() else {
+                        bail!("`{fname}`'s options are written as tables; edit this form as TOML");
+                    };
+                    let mut out = Vec::new();
+                    for v in arr.iter() {
+                        let Some(c) = v.as_inline_table() else {
+                            bail!("`{fname}` has an option that is not `{{ value, label }}`; edit this form as TOML");
+                        };
+                        let text =
+                            |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        out.push(Choice {
+                            value: text("value"),
+                            label: text("label"),
+                        });
+                    }
+                    Some(out)
+                }
+            };
             fields.push(FieldEdit {
                 name: s(get("name")).context("a field has no name")?,
                 label: s(get("label")).unwrap_or_default(),
@@ -328,6 +336,25 @@ pub fn write_form(text: &str, f: &FormEdit) -> Result<String> {
                 t.remove(key);
             }
         }
+        // A kind change keeps only what both kinds mean the same way: a
+        // text cap across the text kinds, choices across the choice kinds.
+        // `date` and `integer` share the names `min`/`max` but not their
+        // values, so a change between them drops them.
+        fn family(k: &str) -> &str {
+            match k {
+                "text" | "long_text" | "email" | "url" => "text",
+                "select" | "multi_select" => "choice",
+                other => other,
+            }
+        }
+        if was
+            .as_deref()
+            .is_some_and(|w| family(w) != family(&field.kind))
+        {
+            for key in ALL_KIND_KEYS {
+                t.remove(key);
+            }
+        }
         // `text` and `long_text` require a cap; `email` and `url` default
         // one, so theirs is written only when stated.
         let required_cap = matches!(field.kind.as_str(), "text" | "long_text");
@@ -491,6 +518,29 @@ expect_reply_within = "a week"
             out.find("[[fields]]").unwrap() < out.find("[verification]").unwrap(),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_date_turned_number_drops_its_date_bounds_and_table_options_are_said() {
+        let dated = FORM.to_string()
+            + "\n[[fields]]\nname = \"when\"\nlabel = \"When\"\nkind = \"date\"\nmin = \"2026-01-01\"\n";
+        let mut f = read_form(&dated).unwrap();
+        let when = f.fields.iter_mut().find(|x| x.name == "when").unwrap();
+        when.kind = "integer".into();
+        let out = write_form(&dated, &f).unwrap();
+        let tail = &out[out.find("name = \"when\"").unwrap()..];
+        assert!(
+            !tail.contains("min ="),
+            "a date's bound does not ride onto a number: {out}"
+        );
+        // Options in the table spelling are reported, not read as none.
+        let tables = FORM.replace(
+            "options = [\n  { value = \"advising\", label = \"Advising\" },\n]",
+            "[[fields.options]]\nvalue = \"advising\"\nlabel = \"Advising\"",
+        );
+        assert_ne!(tables, FORM);
+        let err = read_form(&tables).unwrap_err().to_string();
+        assert!(err.contains("as TOML"), "{err}");
     }
 
     #[test]

@@ -941,26 +941,33 @@ pub async fn form_publish(State(_state): St, Json(body): Json<IdBody>) -> Respon
     }
 }
 
+#[allow(clippy::result_large_err)]
 /// POST /api/factory/form/discard — drop the draft; what is served stays.
+/// For a form never published the draft is the form, so the page confirms
+/// that as a delete before it calls this.
 pub async fn form_discard(State(_state): St, Json(body): Json<IdBody>) -> Response {
-    let done = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let w = working(&body.id)?;
+    let done = tokio::task::spawn_blocking(move || -> Result<bool, Response> {
+        let w = working(&body.id).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
         if !w.draft {
-            return Ok(());
+            return Err(err(StatusCode::BAD_REQUEST, "there is no draft to discard"));
         }
         if body.base.as_deref() != Some(instrument::digest(&w.text).as_str()) {
-            anyhow::bail!(instrument::Stale);
+            return Err(err(StatusCode::CONFLICT, instrument::Stale));
         }
-        std::fs::remove_file(form_draft::draft_path(&form_draft::drafts_dir()?, &w.id)?)?;
-        Ok(())
+        let path = form_draft::drafts_dir()
+            .and_then(|d| form_draft::draft_path(&d, &w.id))
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        std::fs::remove_file(path).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        // Whether anything is left: a form never published is gone.
+        Ok(w.served.is_some())
     })
     .await;
     match done {
-        Ok(Ok(())) => Json(serde_json::json!({ "discarded": true })).into_response(),
-        Ok(Err(e)) if e.downcast_ref::<instrument::Stale>().is_some() => {
-            err(StatusCode::CONFLICT, e)
+        Ok(Ok(published)) => {
+            Json(serde_json::json!({ "discarded": true, "form_remains": published }))
+                .into_response()
         }
-        Ok(Err(e)) => err(StatusCode::NOT_FOUND, e),
+        Ok(Err(refused)) => refused,
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
