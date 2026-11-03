@@ -133,6 +133,15 @@ async fn refresh_weather_in_background(
 ) {
     use mecha_core::persona::weather;
     let Some(place) = place.map(str::trim).filter(|p| !p.is_empty()) else {
+        // A removed place takes its weather with it, before this turn's
+        // teller reads any.
+        let pdir = store.join(name);
+        let who = name.to_string();
+        if let Ok(Err(e)) =
+            tokio::task::spawn_blocking(move || weather::forget_removed_place(&pdir)).await
+        {
+            tracing::warn!("persona {who}: a removed place's weather was not cleared: {e:#}");
+        }
         return;
     };
     let pdir = store.join(name);
@@ -7303,14 +7312,21 @@ pub async fn week(
         let mut refresh = None;
         let mut weather_error = None;
         if p.settings.life.world {
-            if let Some(place) = p
+            let place = p
                 .settings
                 .life
                 .place
                 .as_deref()
                 .map(str::trim)
-                .filter(|place| !place.is_empty())
-            {
+                .filter(|place| !place.is_empty());
+            if place.is_none() {
+                // A removed place takes its weather with it (review of #836).
+                if let Err(e) = weather::forget_removed_place(&loading.store.join(&p.name)) {
+                    weather_error =
+                        Some(format!("a removed place's weather was not cleared: {e:#}"));
+                }
+            }
+            if let Some(place) = place {
                 let pdir = loading.store.join(&p.name);
                 let now = chrono::Utc::now();
                 match weather::due(&pdir, Some(place), now) {
