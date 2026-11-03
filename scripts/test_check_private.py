@@ -22,6 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GUARD = os.path.join(HERE, "check-private.py")
 SAID = "The lighthouse keeper painted every second stair a pale blue colour."
 SESSION = "20990101T000000-0a1b2c3d"
+# Said too, and never on main in the merge tests: what a branch adds itself.
+ALSO = "The orchard gate was left open so the goats could find the clover field."
 
 
 def git(repo, *args):
@@ -41,6 +43,8 @@ class Guard(unittest.TestCase):
             f.write(json.dumps({"record": "meta", "id": SESSION}) + "\n")
             f.write(json.dumps({"record": "message", "role": "assistant",
                                 "content": [{"type": "text", "text": SAID}]}) + "\n")
+            f.write(json.dumps({"record": "message", "role": "assistant",
+                                "content": [{"type": "text", "text": ALSO}]}) + "\n")
         self.repo = os.path.join(root, "repo")
         os.makedirs(self.repo)
         git(self.repo, "init", "-q")
@@ -724,6 +728,64 @@ class Guard(unittest.TestCase):
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("LoRA registry", r.stdout)
+
+    def merge_main_with_said(self):
+        """A main that took SAID after this branch forked, as when a harness
+        line reaches a transcript once deployed; returns the branch's tip
+        before the merge."""
+        git(self.repo, "branch", "-M", "work")
+        fork = git(self.repo, "rev-parse", "HEAD").strip()
+        git(self.repo, "checkout", "-q", "-b", "main")
+        self.stage("harness.py", f"NOTE = {SAID!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "main's own")
+        git(self.repo, "checkout", "-q", "work")
+        self.stage("mine.py", 'X = "The ferry leaves at noon."\n')
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "mine")
+        return fork
+
+    def test_text_merged_in_from_main_is_the_repositorys(self):
+        # Pre-commit, mid-merge: main's lines came with MERGE_HEAD.
+        self.merge_main_with_said()
+        git(self.repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        # A resolution that writes conversation words main does not hold is
+        # still read; main's own are excused wherever they land.
+        self.stage("resolved.py", f"Y = {ALSO!r}\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("resolved.py:1:", r.stdout)
+
+    def test_a_push_after_merging_main_skips_mains_commits(self):
+        fork = self.merge_main_with_said()
+        git(self.repo, "merge", "-q", "--no-verify", "--no-ff", "-m", "merge main", "main")
+        main = git(self.repo, "rev-parse", "main").strip()
+        # Without the public branch the range holds main's commit, refused:
+        # what the exemption changes, not a range that was clean anyway.
+        self.assertEqual(self.run_guard("--range", f"{fork}..HEAD").returncode, 1)
+        r = self.run_guard("--range", f"{fork}..HEAD", "--public", main)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        # The branch's own commit after the merge is still read.
+        self.stage("later.py", f"Z = {ALSO!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "later")
+        r = self.run_guard("--range", f"{fork}..HEAD", "--public", main)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("later.py (in ", r.stdout)
+
+    def test_a_merge_resolution_in_a_push_is_read(self):
+        fork = self.merge_main_with_said()
+        git(self.repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+        self.stage("resolved.py", f"Y = {ALSO!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "merge main")
+        main = git(self.repo, "rev-parse", "main").strip()
+        r = self.run_guard("--range", f"{fork}..HEAD", "--public", main)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("resolved.py (in ", r.stdout)
+        self.assertNotIn("harness.py", r.stdout)
+
+    def test_an_unreadable_public_branch_fails_closed(self):
+        r = self.run_guard("--range", "HEAD..HEAD", "--public", "no-such-ref")
+        self.assertEqual(r.returncode, 2, r.stdout)
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
