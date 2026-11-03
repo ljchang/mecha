@@ -2336,3 +2336,123 @@ fn closed_thread_skips_outbound_and_board_but_not_open_mailbox_actions() {
         }
     }
 }
+
+#[test]
+fn store_and_installed_rule_directories_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let root = RuleStore::root_under(&home.0);
+    // Simulate an existing store created under a permissive umask without
+    // changing the process-wide umask used by concurrent tests.
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    for directory in [store.root(), &store.root().join("rules"), &rule.directory] {
+        assert_eq!(
+            fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "directory must be private: {}",
+            directory.display()
+        );
+    }
+    // Opening an existing rules directory must also repair its permissions.
+    fs::set_permissions(
+        store.root().join("rules"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let reopened = home.store();
+    assert_eq!(
+        fs::metadata(reopened.root().join("rules"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[test]
+fn enqueue_refuses_execution_rows_without_changing_the_queue() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let snapshot = row(&rule, Outcome::WouldHave);
+    let entry = DeferredEntry {
+        id: "queued-alpha".into(),
+        account: snapshot.message.account.clone(),
+        thread_id: snapshot.message.thread_id.clone(),
+        queued_at: Utc::now(),
+        actions: vec![snapshot.clone()],
+    };
+    store.enqueue(&entry).unwrap();
+    let before = fs::read(store.root().join("deferred.jsonl")).unwrap();
+    for outcome in [
+        Outcome::Pending,
+        Outcome::Done,
+        Outcome::Failed,
+        Outcome::Held,
+        Outcome::Staged,
+        Outcome::Sent,
+        Outcome::Offered,
+        Outcome::Undone,
+        Outcome::Edited,
+        Outcome::Rejected,
+        Outcome::ReleasedUnchanged,
+        Outcome::Expired,
+        Outcome::Skipped,
+        Outcome::ApprovalLapsed,
+        Outcome::Unknown,
+    ] {
+        let mut invalid = entry.clone();
+        invalid.id = "queued-beta".into();
+        let mut action = row(&rule, outcome);
+        action.message.provider_message_id = "provider-beta".into();
+        invalid.actions = vec![action];
+        assert!(
+            store.enqueue(&invalid).is_err(),
+            "execution outcome {outcome:?} must be refused"
+        );
+        assert_eq!(
+            fs::read(store.root().join("deferred.jsonl")).unwrap(),
+            before
+        );
+    }
+    for closed in [true, false] {
+        let mut invalid = entry.clone();
+        invalid.actions[0].closes = closed;
+        if !closed {
+            invalid.actions[0].settlement = Some("pending-alpha".into());
+        }
+        assert!(store.enqueue(&invalid).is_err());
+        assert_eq!(
+            fs::read(store.root().join("deferred.jsonl")).unwrap(),
+            before
+        );
+    }
+    store
+        .expire_deferred(entry.queued_at + Duration::days(8))
+        .unwrap();
+    assert!(store.deferred().unwrap().is_empty());
+    let rows = store.ledger().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome, Outcome::Expired);
+    assert!(!message_closed(&rows, &key(&snapshot)));
+}
+
+#[test]
+fn opening_a_store_does_not_chmod_an_escaping_rules_symlink() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let home = Home::new();
+    let outside = Home::new();
+    let store = home.store();
+    fs::remove_dir(store.root().join("rules")).unwrap();
+    fs::set_permissions(&outside.0, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&outside.0, store.root().join("rules")).unwrap();
+    assert!(RuleStore::open(store.root()).is_err());
+    assert_eq!(
+        fs::metadata(&outside.0).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+}
