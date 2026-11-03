@@ -1148,6 +1148,20 @@ export function storyNotes(data) {
   };
 }
 
+// The owner-facing place line and refresh error. The geocoder's label is
+// display data only; no prompt reads it.
+export function weatherPlace(data) {
+  if (!data || data.absent === 'off') return null;
+  const label = typeof data?.place?.label === 'string' ? data.place.label.trim() : '';
+  return label ? `Weather for ${label}` : 'Set Where they live in Settings to add local weather.';
+}
+
+export function weatherError(data) {
+  if (!data || data.absent === 'off') return null;
+  const error = typeof data?.weather_error === 'string' ? data.weather_error.trim() : '';
+  return error || null;
+}
+
 export function storyDay(data, date) {
   const d = (data?.story ?? []).find((s) => s.date === date);
   // A past day the store does not keep was drawn for this view alone: not

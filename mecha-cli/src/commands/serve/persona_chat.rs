@@ -55,6 +55,143 @@ fn new_key() -> String {
     )
 }
 
+/// The teller half of a today-block, drawn only when `[life] events` is on.
+/// Before noon its event day is yesterday, while levels and weather are
+/// still today's (PERSONA-LIFE-DESIGN.md §4.5).
+fn teller_lines(
+    store: &Path,
+    name: &str,
+    people: bool,
+    at: chrono::NaiveDateTime,
+) -> Result<String> {
+    use mecha_core::persona::{story, today};
+    // The diary day, which runs 4am to 4am, as `world::now` reads it; the
+    // calendar day is what the story's keep window counts from.
+    let today_date = today::diary_date(at);
+    let calendar = at.date();
+    let one = |date| -> Result<story::StoryDay> {
+        let story::Story { days, why } = story::story(store, name, date, date, calendar)?;
+        days.into_iter()
+            .find(|day| day.date == date)
+            .with_context(|| {
+                why.unwrap_or_else(|| format!("{name}'s story returned no day for {date}"))
+            })
+    };
+    let today_day = one(today_date)?;
+    let yesterday = if today::before_noon(at) {
+        let date = today_date
+            .pred_opt()
+            .context("the day before this date cannot be represented")?;
+        Some(one(date)?)
+    } else {
+        None
+    };
+    let names = story::names(&store.join(name), people)?;
+    today::teller_lines(at, &today_day, yesterday.as_ref(), &names)
+}
+
+/// The owner-written weather place as it stands now. Unlike the `events`
+/// switch, this is not part of a chat's pinned tool/block shape. `None`
+/// when the persona could not be read now: unknown, never "no place", or a
+/// mid-save `persona.toml` would read as a removed place and clear the
+/// weather (review of #836).
+fn live_weather_place(store: &Path, name: &str) -> Option<Option<String>> {
+    Store::load(store)
+        .get(name)
+        .map(|p| p.settings.life.place.clone())
+}
+
+/// Run one refresh from a blocking-pool thread. The runtime handle still
+/// drives its async HTTP, while place-cache and SQLite work never run on an
+/// async worker. A failure is recorded before it comes back.
+fn refresh_weather_on_blocking_thread(
+    handle: &tokio::runtime::Handle,
+    pdir: &Path,
+    place: Option<&str>,
+    today: chrono::NaiveDate,
+) -> Option<String> {
+    use mecha_core::persona::weather;
+    let Err(e) = handle.block_on(weather::refresh(pdir, place, today)) else {
+        return None;
+    };
+    let why = format!("{e:#}");
+    let key = place.unwrap_or(weather::FALLBACK_KEY);
+    Some(
+        match weather::record_failure(pdir, key, chrono::Utc::now(), &why) {
+            Ok(()) => why,
+            Err(record) => format!("{why}; recording it failed: {record:#}"),
+        },
+    )
+}
+
+/// Start a due weather refresh without making the chat turn wait for its
+/// network request. The blocking-pool due check is awaited so a changed
+/// place clears old weather before this turn's teller reads it; the refresh
+/// itself, its bookkeeping and failure stamp stay detached on that pool.
+async fn refresh_weather_in_background(
+    store: &Path,
+    name: &str,
+    place: Option<&str>,
+    today: chrono::NaiveDate,
+) {
+    use mecha_core::persona::weather;
+    let place = place
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    let pdir = store.join(name);
+    let name = name.to_string();
+    let check_pdir = pdir.clone();
+    let check_place = place.clone();
+    let due = tokio::task::spawn_blocking(move || {
+        // A removed [life] place takes its weather with it before this
+        // turn's teller reads any; story.toml's [place], if any, then
+        // stands in and is refreshed like it (review of #836).
+        if check_place.is_none() {
+            weather::forget_removed_place(&check_pdir)
+                .map_err(|e| format!("a removed place's weather was not cleared: {e:#}"))?;
+        }
+        match weather::due(&check_pdir, check_place.as_deref(), chrono::Utc::now()) {
+            Ok(due) => Ok(due),
+            Err(e) => {
+                let why = format!("weather could not be checked: {e:#}");
+                Err(
+                    match weather::record_failure(
+                        &check_pdir,
+                        check_place.as_deref().unwrap_or(weather::FALLBACK_KEY),
+                        chrono::Utc::now(),
+                        &why,
+                    ) {
+                        Ok(()) => why,
+                        Err(record) => format!("{why}; recording it failed: {record:#}"),
+                    },
+                )
+            }
+        }
+    })
+    .await;
+    match due {
+        Ok(Ok(false)) => return,
+        Ok(Ok(true)) => {}
+        Ok(Err(why)) => {
+            tracing::warn!("persona {name}: {why}");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("persona {name}: weather due task failed: {e}");
+            return;
+        }
+    }
+    let handle = tokio::runtime::Handle::current();
+    let _refresh = tokio::task::spawn_blocking(move || {
+        if let Some(why) =
+            refresh_weather_on_blocking_thread(&handle, &pdir, place.as_deref(), today)
+        {
+            tracing::warn!("persona {name}: weather refresh failed: {why}");
+        }
+    });
+}
+
 /// A transcript id as `Session::new_id` mints one — letters, digits and `-`,
 /// never a separator or a dot — checked before it becomes a file name.
 fn valid_session_id(id: &str) -> bool {
@@ -1905,6 +2042,18 @@ impl PersonaChats {
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
+        self.week_for(&p, date, tz, None)
+    }
+
+    /// Build [`PersonaChats::week`] from the persona the caller already
+    /// loaded, with the result of the route's asynchronous weather refresh.
+    fn week_for(
+        &self,
+        p: &Persona,
+        date: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+        weather_error: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
         let today = match tz {
             Some(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
             None => chrono::Local::now().date_naive(),
@@ -1980,10 +2129,17 @@ impl PersonaChats {
             });
         life_value["draft"] = serde_json::json!(life_draft);
         life_value["undraftable"] =
-            serde_json::json!(life_drafter::check(&p).err().map(|e| format!("{e:#}")));
+            serde_json::json!(life_drafter::check(p).err().map(|e| format!("{e:#}")));
         let mut out = serde_json::json!({
             "today": today.to_string(),
             "life": life_value,
+            "place": p.settings.life.place.as_deref().and_then(|query| {
+                mecha_core::persona::weather::cached(&self.store.join(&p.name), query)
+            }).map(|place| serde_json::json!({
+                "query": place.query,
+                "label": place.label,
+            })),
+            "weather_error": weather_error,
             "routine": {
                 "digest": routine::digest_of(text.as_deref()),
                 "cell": cell,
@@ -1991,7 +2147,7 @@ impl PersonaChats {
                 // The owner's notes for the drafter, as saved; null for none.
                 "notes": texts.notes,
                 // Why no draft can be asked for her, or null when one can.
-                "undraftable": drafter::check(&p).err().map(|e| format!("{e:#}")),
+                "undraftable": drafter::check(p).err().map(|e| format!("{e:#}")),
             },
         });
         match mecha_core::persona::world::week_view(&self.store, &p.name, date, today)
@@ -1999,9 +2155,10 @@ impl PersonaChats {
         {
             Ok(week) => {
                 out["week"] = week.to_json();
-                // Her story over the same week (§4.3): events, levels and
-                // weather, for the owner only; nothing of it reaches her
-                // chats. Why it is missing rides beside, never a route error.
+                // Her story over the same week (§4.3): the owner always sees
+                // it here; the teller folds it into chats only when
+                // `[life] events` is on. Why it is missing rides beside,
+                // never a route error.
                 use chrono::Datelike;
                 use mecha_core::persona::story;
                 let monday =
@@ -4846,13 +5003,57 @@ impl PersonaChats {
                 Some(tz) => chrono::Utc::now().with_timezone(&tz).naive_local(),
                 None => chrono::Local::now().naive_local(),
             };
-            match mecha_core::persona::world::now(&self.store, &name, at) {
-                Ok(now) => now.map(|n| mecha_core::persona::today::note(&n)),
-                Err(e) => {
-                    tracing::warn!("persona {name}: no today-block this turn: {e:#}");
-                    None
+            let events = ps.pinned.settings.life.events;
+            let people = ps.pinned.settings.life.people;
+            if events {
+                // A whole-store load: off the reactor, as the rest is.
+                let (store, who) = (self.store.clone(), name.clone());
+                let place = tokio::task::spawn_blocking(move || live_weather_place(&store, &who))
+                    .await
+                    .ok()
+                    .flatten();
+                match place {
+                    Some(place) => {
+                        refresh_weather_in_background(
+                            &self.store,
+                            &name,
+                            place.as_deref(),
+                            at.date(),
+                        )
+                        .await
+                    }
+                    None => tracing::warn!(
+                        "persona {name}: their settings did not read now; weather left as it is"
+                    ),
                 }
             }
+            // The day and the teller read the store and draw days (up to a
+            // month of sampler draws and SQLite writes on a first walk), so
+            // they run on the blocking pool (review of #836).
+            let (store, who) = (self.store.clone(), name.clone());
+            tokio::task::spawn_blocking(move || {
+                match mecha_core::persona::world::now(&store, &who, at) {
+                    Ok(now) => now.map(|n| {
+                        if !events {
+                            return mecha_core::persona::today::note(&n);
+                        }
+                        let teller = teller_lines(&store, &who, people, at);
+                        if let Err(e) = &teller {
+                            tracing::warn!("persona {who}: no teller lines this turn: {e:#}");
+                        }
+                        mecha_core::persona::today::note_with_events(&n, teller.as_deref().ok())
+                    }),
+                    Err(e) => {
+                        tracing::warn!("persona {who}: no today-block this turn: {e:#}");
+                        None
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("persona {name}: the today-block task failed: {e}");
+                None
+            })
         };
         let notes: Vec<String> = [
             memory_note,
@@ -7119,8 +7320,100 @@ pub async fn week(
     let personas = Arc::clone(&chat.personas);
     let library = Arc::clone(&state.library);
     let tz = chat.follower.current().config.agent.timezone();
+    let unlock = q.unlock;
+    let date = q.date;
+    let loading = Arc::clone(&personas);
+    let weather_tz = tz;
+    // The persona load and due check are blocking file/SQLite work. Keep
+    // them off the reactor and return the same loaded persona the payload
+    // builder will use after the one async network step.
+    let prepared = tokio::task::spawn_blocking(move || {
+        use mecha_core::persona::weather;
+        let p = loading
+            .visible(&library, &name, unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let mut refresh = None;
+        let mut weather_error = None;
+        if p.settings.life.world {
+            let place = p
+                .settings
+                .life
+                .place
+                .as_deref()
+                .map(str::trim)
+                .filter(|place| !place.is_empty());
+            let pdir = loading.store.join(&p.name);
+            if place.is_none() {
+                // A removed place takes its weather with it; story.toml's
+                // [place], if any, then stands in (review of #836).
+                if let Err(e) = weather::forget_removed_place(&pdir) {
+                    weather_error =
+                        Some(format!("a removed place's weather was not cleared: {e:#}"));
+                }
+            }
+            let key = place.unwrap_or(weather::FALLBACK_KEY);
+            let now = chrono::Utc::now();
+            match weather::due(&pdir, place, now) {
+                Ok(true) => {
+                    let today = match weather_tz {
+                        Some(tz) => now.with_timezone(&tz).date_naive(),
+                        None => chrono::Local::now().date_naive(),
+                    };
+                    refresh = Some((pdir, place.map(str::to_string), today));
+                }
+                Ok(false) => {
+                    if weather_error.is_none() {
+                        weather_error =
+                            weather::backoff_error(&pdir, key, now).unwrap_or_else(|e| {
+                                Some(format!("weather failure does not load: {e:#}"))
+                            });
+                    }
+                }
+                Err(e) => {
+                    let why = format!("weather could not be checked: {e:#}");
+                    weather_error = Some(match weather::record_failure(&pdir, key, now, &why) {
+                        Ok(()) => why,
+                        Err(record) => {
+                            format!("{why}; recording that failure also failed: {record:#}")
+                        }
+                    });
+                }
+            }
+        }
+        Ok::<_, Refusal>((p, refresh, weather_error))
+    })
+    .await;
+    let (p, refresh, mut weather_error) = match prepared {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(refusal)) => return refusal.into_response(),
+        Err(e) => {
+            return Refusal::Failed(format!("preparing a persona's week: {e}")).into_response()
+        }
+    };
+
+    // Weather is the one network half of this route. It is harness-started
+    // from the owner's `[life] place`; an error is page data, never a failed
+    // Week route. The whole refresh is polled from the blocking pool so its
+    // cache and SQLite work never land on an async worker; success clears a
+    // previous failure.
+    if let Some((pdir, place, today)) = refresh {
+        let handle = tokio::runtime::Handle::current();
+        match tokio::task::spawn_blocking(move || {
+            refresh_weather_on_blocking_thread(&handle, &pdir, place.as_deref(), today)
+        })
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some(why)) => {
+                weather_error = Some(format!("weather could not be refreshed: {why}"));
+            }
+            Err(e) => {
+                weather_error = Some(format!("weather refresh task failed: {e}"));
+            }
+        }
+    }
     match tokio::task::spawn_blocking(move || {
-        personas.week(&library, &name, q.unlock.as_deref(), q.date.as_deref(), tz)
+        personas.week_for(&p, date.as_deref(), tz, weather_error.as_deref())
     })
     .await
     {
@@ -9657,10 +9950,11 @@ mod tests {
     /// PERSONA-LIFE-DESIGN.md §4.5: with `[life] world` on and a routine
     /// naming her cell, every request's newest message carries what she is
     /// doing now, once, as a run note never stored in a message; with the
-    /// switch off, none does.
+    /// switch off, none does. The pinned `events` switch changes that same
+    /// live fold, so this also measures the `note_with_events` call site.
     #[tokio::test]
     async fn her_day_rides_as_a_note_only_with_the_world_switched_on() {
-        use mecha_core::persona::today::{TODAY_STEM, UNTRUSTED_TODAY_STEM};
+        use mecha_core::persona::today::{EVENTS_HEADING, TODAY_STEM, UNTRUSTED_TODAY_STEM};
         let w = world();
         let key = |opened: serde_json::Value| opened["key"].as_str().unwrap().to_string();
         // Her routine names a cell from the start, so with the switch off
@@ -9669,6 +9963,11 @@ mod tests {
         std::fs::write(
             dir.join(mecha_core::persona::routine::FILE),
             "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
         )
         .unwrap();
         let off = key(w
@@ -9697,6 +9996,7 @@ mod tests {
             let newest = req.messages.last().unwrap().text();
             assert!(newest.contains(TODAY_STEM), "{newest}");
             assert!(!newest.contains(UNTRUSTED_TODAY_STEM), "{newest}");
+            assert!(!newest.contains(EVENTS_HEADING), "{newest}");
             let copies: usize = req
                 .messages
                 .iter()
@@ -9706,6 +10006,90 @@ mod tests {
         }
         // Her day was drawn and kept, so the next turn reads it back.
         assert!(dir.join(mecha_core::persona::world::WORLD_DB).exists());
+
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(text.contains("events    = false"));
+        std::fs::write(&toml, text.replace("events    = false", "events    = true")).unwrap();
+        let events = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &events, "One more turn.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        let newest = seen.last().unwrap().messages.last().unwrap().text();
+        assert!(newest.contains(TODAY_STEM), "{newest}");
+        assert!(newest.contains(EVENTS_HEADING), "{newest}");
+    }
+
+    #[test]
+    fn a_chat_weather_refresh_reads_the_owner_place_live() {
+        let w = world();
+        let store = w.store();
+        let stale = Store::load(&store).get("mara").unwrap().clone();
+        assert!(stale.settings.life.place.is_none());
+        let path = store.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace(
+                "world     = false",
+                "world     = false\nplace     = \"Springfield, Illinois\"",
+            ),
+        )
+        .unwrap();
+        assert!(
+            stale.settings.life.place.is_none(),
+            "the snapshot stays old"
+        );
+        assert_eq!(
+            live_weather_place(&store, "mara"),
+            Some(Some("Springfield, Illinois".to_string()))
+        );
+        // A persona.toml that does not read now is unknown, never no place.
+        std::fs::write(store.join("mara").join("persona.toml"), "not = [toml").unwrap();
+        assert_eq!(live_weather_place(&store, "mara"), None);
+    }
+
+    /// The CLI teller wrapper asks story::story for today and, before noon,
+    /// yesterday. A real temporary persona store exercises both calls while
+    /// keeping network and the model out of the test.
+    #[test]
+    fn the_teller_wrapper_draws_today_and_yesterday_before_noon() {
+        let w = world();
+        let store = w.store();
+        let pdir = store.join("mara");
+        let path = pdir.join("persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("world     = false", "world     = true")).unwrap();
+        std::fs::write(
+            pdir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pdir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
+        )
+        .unwrap();
+        let at: chrono::NaiveDateTime = "2026-11-03T09:00:00".parse().unwrap();
+        let lines = teller_lines(&store, "mara", false, at).unwrap();
+        assert!(lines.contains("What happened yesterday:"), "{lines}");
+        assert!(!lines.contains("What happened today:"), "{lines}");
+        let world = mecha_core::persona::world::World::open(&pdir).unwrap();
+        assert!(world.story_day(at.date()).unwrap().is_some());
+        assert!(world
+            .story_day(at.date().pred_opt().unwrap())
+            .unwrap()
+            .is_some());
+        // 1am is the evening of the day before (a day runs 4am to 4am): its
+        // events are today's, not yesterday's, and nothing of the coming
+        // calendar day is drawn (review of #836).
+        let late: chrono::NaiveDateTime = "2026-11-04T01:00:00".parse().unwrap();
+        let lines = teller_lines(&store, "mara", false, late).unwrap();
+        assert!(lines.contains("What happened today:"), "{lines}");
+        assert!(world.story_day(late.date()).unwrap().is_none());
     }
 
     /// §17: a persona with no days answers the week as a 200 saying which,
@@ -9720,17 +10104,57 @@ mod tests {
         assert_eq!(off["life"]["alone"], serde_json::Value::Null);
         assert_eq!(off["life"]["draft"], serde_json::Value::Null);
         assert_eq!(off["life"]["undraftable"], serde_json::Value::Null);
+        assert_eq!(off["place"], serde_json::Value::Null);
+        assert_eq!(off["weather_error"], serde_json::Value::Null);
         assert!(off["why"].as_str().unwrap().contains("[life] world is off"));
         assert!(off.get("week").is_none());
         let dir = w.store().join("mara");
         let toml = dir.join("persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap();
-        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace(
+                "world     = false",
+                "world     = true\nplace     = \"Springfield, Illinois\"",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::weather::PLACE_FILE),
+            serde_json::to_vec(&mecha_core::persona::weather::Resolved {
+                query: "Springfield, Illinois".into(),
+                label: "Springfield, Illinois, US".into(),
+                lat: 39.8,
+                lon: -89.6,
+                weather_for: Some("Springfield, Illinois".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
         let none = week(None).unwrap();
         assert_eq!(none["absent"], "no_routine");
+        assert_eq!(none["place"]["query"], "Springfield, Illinois");
+        assert_eq!(none["place"]["label"], "Springfield, Illinois, US");
         assert_eq!(none["routine"]["digest"], "");
         assert_eq!(none["routine"]["cell"], serde_json::Value::Null);
         assert!(matches!(week(Some("someday")), Err(Refusal::Bad(_))));
+        let now = chrono::Utc::now();
+        mecha_core::persona::weather::record_failure(
+            &dir,
+            "Springfield, Illinois",
+            now,
+            "weather unavailable",
+        )
+        .unwrap();
+        let backoff =
+            mecha_core::persona::weather::backoff_error(&dir, "Springfield, Illinois", now)
+                .unwrap();
+        let p = w.personas().visible(&w.library, "mara", None).unwrap();
+        let weather_error = w
+            .personas()
+            .week_for(&p, None, None, backoff.as_deref())
+            .unwrap();
+        assert_eq!(weather_error["weather_error"], "weather unavailable");
 
         std::fs::write(
             dir.join(mecha_core::persona::life::FILE),

@@ -1981,6 +1981,8 @@ export function personaWeek(date) {
   }
   return {
     today: DEMO_TODAY,
+    place: { query: 'Springfield, Illinois', label: 'Springfield, Illinois, US' },
+    weather_error: null,
     life: {
       household: [{ person: 'Theo', relation: 'partner' }],
       alone: false,

@@ -24,7 +24,7 @@
 //! writer so far.
 
 use anyhow::{bail, Context, Result};
-use chrono::{Datelike, Days, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{DateTime, Datelike, Days, NaiveDate, NaiveDateTime, Timelike, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -668,6 +668,20 @@ impl World {
         }))
     }
 
+    /// When the newest stored weather was fetched. An unreadable timestamp
+    /// is an error, never fresh weather.
+    pub fn weather_fetched_at(&self) -> Result<Option<DateTime<Utc>>> {
+        let at: Option<String> =
+            self.conn
+                .query_row("SELECT MAX(fetched_at) FROM weather", [], |r| r.get(0))?;
+        at.map(|at| {
+            DateTime::parse_from_rfc3339(&at)
+                .map(|at| at.with_timezone(&Utc))
+                .with_context(|| format!("weather has an unreadable fetched_at {at:?}"))
+        })
+        .transpose()
+    }
+
     /// Store fetched weather, replacing what a day had: a later fetch knows
     /// the day better (a forecast becomes an observation).
     pub fn set_weather(&mut self, days: &[super::weather::Weather]) -> Result<usize> {
@@ -691,6 +705,21 @@ impl World {
         }
         tx.commit()?;
         Ok(days.len())
+    }
+
+    /// Remove weather whose place no longer applies, including the snapshot
+    /// stored beside an already-drawn story day. Events and levels stay as
+    /// drawn; [`super::story::story`] will show no weather until a new place
+    /// has fetched successfully.
+    pub fn clear_weather(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM weather", [])?;
+        tx.execute(
+            "UPDATE story_days SET weather = NULL WHERE weather IS NOT NULL",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// A stored story day and the digest it was drawn from. One whose

@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, lifeDraftBody, anchorLine, monthsLine, storyDay, storyNotes, lifeLine } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, lifeDraftBody, anchorLine, monthsLine, storyDay, storyNotes, weatherPlace, weatherError, lifeLine } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -42,6 +42,20 @@ assert.equal(
 );
 assert.equal(lifeLine({ household: [], alone: true, sleep: null, never: [], error: null }), 'Lives alone');
 assert.match(lifeLine({ error: 'bad relation' }), /life\.toml does not load: bad relation/);
+
+// The geocoder's owner-facing label and a refresh failure stay page data;
+// an unset place gets the Settings hint.
+assert.equal(
+  weatherPlace({ place: { query: 'Springfield, Illinois', label: 'Springfield, Illinois, US' } }),
+  'Weather for Springfield, Illinois, US',
+);
+assert.equal(weatherPlace({ place: null }), 'Set Where they live in Settings to add local weather.');
+assert.equal(weatherError({ weather_error: 'weather service unavailable' }), 'weather service unavailable');
+assert.equal(weatherError({ weather_error: null }), null);
+assert.equal(weatherPlace(null), null);
+assert.equal(weatherError(null), null);
+assert.equal(weatherPlace({ absent: 'off', place: { label: 'Springfield, Illinois, US' } }), null);
+assert.equal(weatherError({ absent: 'off', weather_error: 'weather service unavailable' }), null);
 
 // A day's stretches sit on a 4am-to-4am bar; past midnight is the next morning.
 assert.equal(dayClock(25 * 60 + 5), '01:05');

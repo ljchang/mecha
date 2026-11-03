@@ -336,6 +336,8 @@ no world, no today-block, no new tools, no nightly work.
 [life]                     # owner-written; outside persona_propose's schema
 world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
 people    = false          # her own network (§6); independent of world (owner, 2026-11-03)
+events    = false          # events, levels and weather in the today-block (§4.5); needs world
+place     = "Springfield, Illinois" # optional; where her weather is for (§4.3)
 my_people = false          # her model of the owner's network, and gap questions (§7); needs [memory] on, user_facts != "off"
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
@@ -395,7 +397,7 @@ threshold per persona once the access log says where it should sit. The
   never stores the owner's relatives by another route.
 - **Two rules, by what a setting does.**
   - **Switches that decide which tools, blocks and runs exist** (`world`,
-    `people`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
+    `people`, `events`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
     per persona
     version. A chat pins the version it started with (`PERSONA-DESIGN.md`
     §8.1), because the tool list is the front of the cached prefix, so
@@ -406,6 +408,9 @@ threshold per persona once the access log says where it should sit. The
     (`setup::persona_agent`: "turning memory off reaches the chat at its
     next call"). `remember_articles` in particular is the one an owner may
     want to revoke in a hurry, and turning it off stops the next recall.
+    Owner-written inputs that do not change the chat's shape are live too:
+    `[life] place` is read from the store for every eligible weather refresh,
+    while the `events` switch that admits the teller remains pinned.
   - **But `remember_articles` never reaches backwards.** Read live, it would
     also work in the other direction: switching it on after weeks of `news`
     would admit every candidate already stored from past article chats, a
@@ -774,21 +779,32 @@ chats.
   - severe only under `intensity = "full"`;
   - cast storylets weighted ×2, and who is cast weighted by closeness.
 - **Storage:** seeded per persona per day; stored in `world.db` version 3
-  (`story_days`, `events`) up to today; today redrawn when the deck,
-  weather, her day or her castable people change, and the past kept.
+  (`story_days`, `events`) up to today; today redrawn when the deck, her day,
+  intensity, director version or castable people change, and the past kept.
+  Whether a day had weather is an input, never what it was: a day drawn
+  before its first forecast is redrawn once when one arrives, so a
+  weather-gated storylet can fire, and a later forecast changes only the
+  weather shown, never the day's events or levels.
 - **Weather** is pulled ahead from §8.2's shelf A, at the owner's word:
-  - `[place]` in `story.toml` is a label plus latitude and longitude;
-  - `mecha persona story weather` makes one capped read of Open-Meteo for
-    the last two weeks and the next one, parsed into a closed sky and
-    whole degrees, or refused;
+  - `[life] place` is a town and its state or country. The harness resolves
+    it through Open-Meteo's geocoder, caches the coordinates and the label
+    shown to the owner, and resolves it again when the owner's text changes;
+    before that first new-place attempt, the previous place's weather rows
+    and stored story snapshot are cleared, so a failed lookup tells no old
+    town's weather;
+    `story.toml`'s `[place]` with exact coordinates remains the fallback;
+  - the Week route refreshes weather older than six hours before drawing,
+    while a chat with `[life] events` starts the same refresh without
+    waiting. `mecha persona story weather` asks directly. Each fetch covers
+    the last two weeks and the next one, parsed into a closed sky and whole
+    degrees, or refused;
   - it is stored in `weather` and shown as a fact on a day drawn before
     it arrived.
-- **Where it shows:** the Week tab and `mecha persona story show`.
+- **Where it shows:** the Week tab and `mecha persona story show`, and in
+  the today-block when `[life] events` is on.
 - **Not yet:**
   - arcs;
   - tie effects (recorded, held back);
-  - the teller and its `[life] events` switch;
-  - a nightly weather fetch;
   - pruning `story_days` past the keep window.
 
 ### 4.4 The narrator
@@ -940,6 +956,23 @@ one more reason §14's gate part 1 exists.
   persona's version: a version is what a chat's prompt renders from, and
   the block, like the recall block, renders from the world's store, where
   what a chat was told about a day is already kept.
+- **As built (the teller):** `[life] events`, off by default and refused
+  without `[life] world`, adds the director's event titles, levels away from
+  normal and today's closed weather to that same note after the doing-now
+  sentence. Before noon in the owner's timezone it tells yesterday's
+  untimed events with today's morning levels; from noon it tells today's
+  events with evening levels. `persona::story::story` draws and stores each
+  day through the same door as the Week tab, and a story failure is logged
+  and drops only these lines. The fold carries only the owner's deck titles,
+  clean People-tab names, and shelf A's closed sky and integers; the
+  geocoder's owner-facing label never enters a prompt. The `events` switch is
+  pinned with the chat's other switches, while `[life] place` is read live;
+  a due weather refresh runs in the background and never delays the chat.
+  A stored day's event draw and levels stay fixed when only its weather
+  changes, so a refresh updates the weather line without changing "What
+  happened" on the next turn; deck, routine/day, cast, intensity and director
+  changes still redraw today. `persona::today::EVENTS_HEADING` marks the arm that
+  `persona::initiative` reads back from the transcript.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -1528,8 +1561,8 @@ so its rules must hold before any of §14's gate exists:**
   stated as one. What makes it safe to lean on is a **per-field render
   bound**, fixed in code:
   - an integer has a plausible range stated per field: a score is 0–200
-    (about 7.65 bits), a temperature is a whole degree Celsius from −40 to
-    50 (91 values, about 6.5 bits);
+    (about 7.65 bits); the built weather type uses whole degrees Celsius
+    from −60 to 60 (121 values), with low constrained not to exceed high;
   - a date has **a window per field**: a game or weather date within ±7 days
     of today (15 values, about 3.9 bits); an airdate or release date within
     the next 90 days (91 values, about 6.5 bits). A forward-looking date is
@@ -1548,7 +1581,8 @@ so its rules must hold before any of §14's gate exists:**
     date costs 15.3 + 3.9 ≈ 19.2 bits, which fails. So it renders as a win,
     loss or draw (1.6 bits), a margin band of eight (3 bits), the date (3.9)
     and the opponent's registry id (5): about 13.5 bits, which passes. A
-    weather item, a temperature and a date, is about 10.4 bits;
+    weather item is one of seven skies and an ordered low/high pair from
+    those 121 degrees: log₂(7 × 121·122/2), about 15.66 bits;
   - **at most three shelf A items a day**;
   - **expiry fixed at five days**.
 
@@ -1562,6 +1596,16 @@ so its rules must hold before any of §14's gate exists:**
 - **Gate part 1 covers shelf A from its first build.** The conformance test
   (§14) runs over shelf A's parsers too: a canary in any feed field must
   never reach the world or a prompt.
+
+  **As built for weather, all three gate parts exist before its teller
+  fold:** `persona::weather::tests::regression_shelf_a_weather_canary_never_reaches_world_or_prompt`
+  is part 1, including the page-only geocoder label;
+  `persona::weather::tests::shelf_a_weather_item_stays_within_sixteen_bits`
+  derives part 2 from `Sky::ALL`, `COLDEST` and `HOTTEST`; and
+  `persona::story::tests::shelf_a_weather_steering_measures_event_mix_without_direct_level_motion`
+  is part 3's deterministic 30-day honest-versus-storm arm. It reports the
+  event-mix distance without inventing a threshold; its zero-effect deck
+  asserts the narrower invariant that weather moves no level directly.
 
 Shelf B meets §2.7's three conditions in code:
 
@@ -2411,10 +2455,12 @@ ruled for repetition.
   - **The claim the comparison tests** is that world-on raises initiative
     *without* lowering the uptake rate of persona-introduced topics. Rising
     initiative with falling uptake is the ComPeer failure, measured.
-  - **As built (before step 3, `persona::initiative`, `mecha persona
-    measures`):** people only, by the names and aliases in her network,
+  - **As built (`persona::initiative`, `mecha persona measures`):** people
+    only, by the names and aliases in her network,
     the one list read over every chat so before and after share an
-    instrument; events wait for step 3, when they have names. An
+    instrument. Each arm records separately whether the today-block carried
+    `persona::today::EVENTS_HEADING`, so the teller-on comparison is honest
+    even though event-title uptake is not scored yet. An
     introduction is a completed reply naming someone neither side named
     earlier in the chat (harness notes are not read). Uptake is the owner
     naming them in the next turn they speak in (with a question mark:
@@ -2489,6 +2535,16 @@ ruled for repetition.
   it is built** (§16 PL9). Part 3 would
   be, as far as the research found, the first measurement of what endorsement
   by capacity leaves over.
+
+  **Weather's shelf A gate is now present in all three parts:** part 1 is
+  `persona::weather::tests::regression_shelf_a_weather_canary_never_reaches_world_or_prompt`,
+  part 2 is
+  `persona::weather::tests::shelf_a_weather_item_stays_within_sixteen_bits`,
+  and part 3 is
+  `persona::story::tests::shelf_a_weather_steering_measures_event_mix_without_direct_level_motion`.
+  The third prints end-level and event-mix distances; only the structural
+  no-direct-level-motion claim is pass/fail, because the design has not set
+  an acceptable event-mix threshold.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
 - **Out of the gate's reach:** two kinds of residual, each bounded by
