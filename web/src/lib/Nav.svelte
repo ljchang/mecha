@@ -13,6 +13,8 @@
     ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11'],
     ['personas', 'M12 12a4 4 0 100-8 4 4 0 000 8zM4.5 20c.8-3.5 3.8-5.5 7.5-5.5s6.7 2 7.5 5.5'],
     ['library', 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01'],
+    // A sawtooth roof and a stack: the instruments on the public surface.
+    ['factory', 'M3 20h18M4 20v-9l5 3v-3l5 3V5h3v15M8 17h2M13 17h2'],
   ];
   // A place whose feature is off is removed, not greyed out: the greyed
   // style this bar used to carry ("coming in a later phase") was
@@ -63,7 +65,8 @@
     gap: 3px;
     /* Shared, not fixed: eight places at a fixed 52px need 432px and pushed
        the last tab off a 375px phone when Personas became the eighth. Each
-       now takes an equal share — about 45px there, still a thumb's width. */
+       now takes an equal share — about 45px there, still a thumb's width;
+       Factory, the ninth, brings it to about 40px. */
     flex: 1 1 0;
     min-width: 0;
     min-height: 44px;

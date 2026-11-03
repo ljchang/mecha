@@ -139,6 +139,18 @@ export const ROUTES = [
   // silent `[object Object]` in the pane.
   ['GET', /^\/api\/frontdoor\/read$/, () => text(fx.frontdoorShow)],
 
+  // The Factory view: one booking page and one form. A preview answers with
+  // the page's own slots — the demo computes nothing — and a save declines.
+  ['GET', /^\/api\/factory$/, () => fx.factory],
+  ['GET', /^\/api\/factory\/instrument$/, (url) => fx.factoryInstrument(url.searchParams.get('id'))],
+  ['POST', /^\/api\/factory\/preview$/, () => ({ preview: fx.factoryInstrument('book').preview })],
+  ['POST', /^\/api\/factory\/hours$/, () => new Response('the demo does not keep hours', { status: 501 })],
+  // Forms: the demo shows a form and its preview; it keeps and publishes nothing.
+  ['GET', /^\/api\/factory\/starters$/, () => ({ starters: [{ name: 'meeting', title: 'Request a meeting' }, { name: 'speaking', title: 'Invite me to speak' }] })],
+  ['GET', /^\/api\/factory\/form$/, () => fx.factoryForm],
+  ['POST', /^\/api\/factory\/form\/render$/, () => ({ kind: 'request', html: fx.factoryFormPreview })],
+  ['POST', /^\/api\/factory\/form\/(save|new|publish|discard)$/, () => new Response('the demo does not keep or publish forms', { status: 501 })],
+
   // The Proposals pane: the store chips, one store's listing, one item's
   // `show`. Every store answers with the same demo listing — the pane is
   // what is being demonstrated, not the stores' distinct contents.
@@ -236,13 +248,13 @@ export const ROUTES = [
   ['POST', /^\/api\/personas\/[^/]+\/routine\/draft\/approve$/, () => new Response('the demo does not change routines', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/people$/, (url) => fx.personaPeopleAsOf(url.searchParams.get('as_of'))],
   ['POST', /^\/api\/personas\/[^/]+\/people\/proposal$/, () => new Response('the demo does not read identity.md', { status: 501 })],
-  ['DELETE', /^\/api\/personas\/[^/]+\/people\/proposal$/, () => new Response('the demo does not change her people', { status: 501 })],
-  ['POST', /^\/api\/personas\/[^/]+\/people\/proposal\/accept$/, () => new Response('the demo does not change her people', { status: 501 })],
-  ['POST', /^\/api\/personas\/[^/]+\/people$/, () => new Response('the demo does not change her people', { status: 501 })],
-  ['PUT', /^\/api\/personas\/[^/]+\/people\/[^/]+$/, () => new Response('the demo does not change her people', { status: 501 })],
-  ['DELETE', /^\/api\/personas\/[^/]+\/people\/[^/]+$/, () => new Response('the demo does not change her people', { status: 501 })],
-  ['POST', /^\/api\/personas\/[^/]+\/people\/[^/]+\/events$/, () => new Response('the demo does not change her people', { status: 501 })],
-  ['DELETE', /^\/api\/personas\/[^/]+\/people\/[^/]+\/events\/[^/]+$/, () => new Response('the demo does not change her people', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/people\/proposal$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/people\/proposal\/accept$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/people$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['PUT', /^\/api\/personas\/[^/]+\/people\/[^/]+$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/people\/[^/]+$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/people\/[^/]+\/events$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/people\/[^/]+\/events\/[^/]+$/, () => new Response('the demo does not change their people', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/memory$/, () => new Response('the demo does not change memories', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/review$/, () => fx.personaReview],
   ['POST', /^\/api\/personas\/[^/]+\/(approve|reject)$/, () => new Response('the demo does not approve or reject personas', { status: 501 })],

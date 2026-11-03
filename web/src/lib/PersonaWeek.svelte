@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -111,7 +111,7 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
       picked = null;
-      if (data.drafted === 0) draftNote = 'Her model found no fixed point in her week to draft from what you wrote of her.';
+      if (data.drafted === 0) draftNote = 'Their model found no fixed point in their week to draft from what you wrote of them.';
     } catch (e) {
       error = String(e?.message ?? e);
     } finally {
@@ -208,12 +208,12 @@
           {#if draft.anchors?.length}
             <ul class="wdlist">{#each draft.anchors as a}<li>{anchorLine(a)}</li>{/each}</ul>
           {:else if draft.anchors}
-            <div class="warnline">It holds no anchors, so approving it would empty her week. Edit it or discard it.</div>
+            <div class="warnline">It holds no anchors, so approving it would empty their week. Edit it or discard it.</div>
           {:else}
             <div class="warnline">It does not load, so it cannot be approved yet: {draft.error}</div>
           {/if}
-          {#if draft.kept_cell}<p class="wnote">Approving keeps her kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
-          {#if data.routine.digest}<p class="wnote">Approving replaces the anchors her routine has now; the old routine is kept beside it.</p>{/if}
+          {#if draft.kept_cell}<p class="wnote">Approving keeps their kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
+          {#if data.routine.digest}<p class="wnote">Approving replaces the anchors their routine has now; the old routine is kept beside it.</p>{/if}
           <div class="wdacts">
             <button class="abtn" disabled={acting || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
             <button class="linkbtn" disabled={acting} onclick={() => (draftText = draft.text)}>Edit</button>
@@ -222,7 +222,7 @@
         {/if}
       {:else}
         <button class="abtn" disabled={drafting || saving || !!data.routine.undraftable} onclick={draftWeek}>
-          {drafting ? 'Drafting her week…' : 'Draft her week from what you wrote'}
+          {drafting ? 'Drafting their week…' : 'Draft their week from what you wrote'}
         </button>
         {#if data.routine.undraftable}<p class="wnote">{data.routine.undraftable}</p>{/if}
         {#if draftNote}<p class="wnote">{draftNote}</p>{/if}
@@ -237,6 +237,7 @@
     </div>
     <div class="wrows">
       {#each days as d (d.date)}
+        {@const st = storyDay(data, d.date)}
         <div class="wrow" class:today={d.when === 'today'}>
           <div class="wday">
             <span>{d.weekday} {d.dayOfMonth}</span>
@@ -270,6 +271,13 @@
               <div class="wline">{b.line}{#if b.unclean} · from a source this version does not know{/if}</div>
             {/if}
           {/each}
+          {#if st}
+            <div class="wstory">
+              {#if st.weather}<span class="wsky">{st.weather}</span>{/if}
+              {#each st.events as e}<span class="wev" class:major={e.major}>{e.text}</span>{/each}
+              {#if st.levels}<span class="wlev">{st.levels}</span>{/if}
+            </div>
+          {/if}
         </div>
       {/each}
       <div class="wrow">
@@ -281,7 +289,7 @@
       </div>
     </div>
     {#if unavailable}
-      <div class="warnline">The days not drawn wait on her routine: {unavailable}</div>
+      <div class="warnline">The days not drawn wait on their routine: {unavailable}</div>
     {/if}
     <div class="wlegend">
       {#each WEEK_GROUPS as [group, label]}<span class="lchip"><span class="swatch {group}"></span>{label}</span>{/each}
@@ -292,8 +300,15 @@
       </div>
     {/if}
     <div class="barnote">
-      Drawn from her routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
+      Drawn from their routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
     </div>
+    {#if storyNotes(data).drawn}
+      <div class="barnote">Events are drawn from their deck (<code>story.toml</code>) by a director that keeps a rhythm; the weather is where they live. Only you see these: nothing here reaches their chats yet.</div>
+    {/if}
+    {#if storyNotes(data).why}
+      <!-- Beside what was kept, never instead of it (review of #814). -->
+      <div class="warnline">No story for the rest of the week: {storyNotes(data).why}</div>
+    {/if}
   {/if}
   <button class="abtn" onclick={() => onclose?.()}>Close</button>
 </div>
@@ -314,6 +329,11 @@
   .wtag.dim { color: var(--text-muted); }
   .wbar { position: relative; height: 28px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); overflow: hidden; }
   .wbar.ahead { opacity: 0.6; }
+  .wstory { grid-column: 2; display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0; font-size: 12px; line-height: 1.4; color: var(--text); }
+  .wsky { color: var(--text-muted); }
+  .wev::before { content: '• '; color: var(--text-muted); }
+  .wev.major { font-weight: 600; }
+  .wlev { color: var(--text-muted); font-style: italic; }
   .wbar.folded { display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--text-muted); }
   .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent-900); pointer-events: none; }
   .seg { position: absolute; top: 2px; bottom: 2px; border: none; padding: 0; border-radius: 3px; cursor: pointer; min-width: 2px; box-shadow: inset -1px 0 0 var(--surface); }

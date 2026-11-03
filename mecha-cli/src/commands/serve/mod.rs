@@ -41,6 +41,7 @@ use mecha_core::config::Config;
 mod archive;
 mod board;
 mod chat;
+mod factory;
 mod features;
 mod files;
 mod frontdoor;
@@ -1265,6 +1266,71 @@ fn api() -> gate::Owned {
             "/api/frontdoor/act",
             Owner::Of(Feature::Frontdoor),
             axum::routing::post(frontdoor::act),
+        )
+        // The Factory view: the instruments the front door's requests arrive
+        // through. Same feature — a factory is what the front door is the
+        // door of — so one switch hides both, and no second registry entry
+        // can disagree with the first about whether the factory is here.
+        .at(
+            "/api/factory",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::list),
+        )
+        .at(
+            "/api/factory/instrument",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::instrument),
+        )
+        .at(
+            "/api/factory/preview",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::preview_hours).layer(
+                axum::extract::DefaultBodyLimit::max(factory::MAX_HOURS_BODY),
+            ),
+        )
+        .at(
+            "/api/factory/hours",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::save_hours).layer(axum::extract::DefaultBodyLimit::max(
+                factory::MAX_HOURS_BODY,
+            )),
+        )
+        // Forms: a draft beside what is served, a preview, and Publish.
+        .at(
+            "/api/factory/starters",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::starters),
+        )
+        .at(
+            "/api/factory/form",
+            Owner::Of(Feature::Frontdoor),
+            get(factory::form),
+        )
+        .at(
+            "/api/factory/form/save",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_save)
+                .layer(axum::extract::DefaultBodyLimit::max(factory::MAX_FORM_BODY)),
+        )
+        .at(
+            "/api/factory/form/render",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_render),
+        )
+        .at(
+            "/api/factory/form/new",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_new),
+        )
+        .at(
+            "/api/factory/form/publish",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_publish),
+        )
+        .at(
+            "/api/factory/form/discard",
+            Owner::Of(Feature::Frontdoor),
+            axum::routing::post(factory::form_discard),
         )
         .at("/api/find", Owner::Of(Feature::Graph), get(board::find))
         .at(
@@ -3369,6 +3435,456 @@ mod tests {
             good,
             "a refused save must leave the old charter byte-for-byte intact"
         );
+    }
+
+    /// The Factory page's hours save, end to end through the router, over a
+    /// scratch home and stand-in children — never the developer's own
+    /// `factory-publish`, which pushes to a real box. The headline claim is
+    /// the first: a save the push fails after still stands, and says so.
+    #[tokio::test]
+    async fn a_factory_hours_save_stands_past_its_push_and_refuses_what_it_should() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::testenv::HomeGuard::new("serve-factory");
+        let types = home.dir.join("factory").join("types");
+        std::fs::create_dir_all(&types).unwrap();
+        let manifest = "# the owner's note\nid = \"book\"\nversion = 1\nkind = \"booking\"\n\
+                        title = \"Book a meeting\"\n\n[availability]\n\
+                        timezone = \"America/New_York\"\ndurations = [30]\n\n\
+                        [[availability.windows]]\nday = \"tue\"\nstart = \"13:00\"\nend = \"17:00\"\n";
+        let book = types.join("book.toml");
+        std::fs::write(&book, manifest).unwrap();
+        std::fs::write(
+            types.join("letter.toml"),
+            "id = \"letter\"\ntitle = \"A letter\"\n",
+        )
+        .unwrap();
+
+        // Stand-ins: the factory checks and previews, and the push fails.
+        let bin = home.dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        script(
+            "factory-publish",
+            r#"case "$1 $2" in
+  "type check") exit 0 ;;
+  "slots preview") echo '{"instrument":"book","timezone":"America/New_York","horizon_days":60,"busy_generated_at":"2026-11-02T00:00:00Z","busy_age_seconds":1,"last_pushed_at":"2026-11-02T00:00:00Z","held_slots":0,"slots":[]}' ;;
+  "slots push")
+    # `book` refuses before reading, as the real one does on an id mismatch;
+    # `talk` reads its stdin to the end first, which only finishes if the
+    # server closes the pipe — the normal save's path.
+    if [ "$3" = "talk" ]; then n=$(wc -c); echo "Error: the box is down after $n bytes" >&2; exit 1; fi
+    echo "Error: the box is down" >&2; exit 1 ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac"#,
+        );
+        // More busy time than a pipe holds (64 KiB on Linux), so the write to
+        // the push's stdin always outlives a push that refuses without reading
+        // it — as the real one does on an id mismatch. The refusal must still
+        // reach the page, not "Broken pipe" (CI found this on #816's merge).
+        script(
+            "mecha-mail",
+            r#"printf '{"generated_at":"2026-11-02T00:00:00Z","time_min":"2026-11-02T00:00:00Z","time_max":"2027-01-02T00:00:00Z","pad":"'
+head -c 200000 /dev/zero | tr '\0' 'x'
+printf '","busy":[]}\n'"#,
+        );
+        *super::factory::TEST_BIN_DIR.lock().unwrap() = Some(bin.clone());
+        struct Unpin;
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                *super::factory::TEST_BIN_DIR.lock().unwrap() = None;
+            }
+        }
+        let _unpin = Unpin;
+
+        let post = |body: serde_json::Value| {
+            test_router().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/factory/hours")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+        };
+        let hours = |end: &str| {
+            serde_json::json!({
+                "timezone": "America/New_York", "durations": [30], "buffer_minutes": 0,
+                "min_notice_hours": 24, "horizon_days": 60, "per_day_cap": null,
+                "windows": [{"day": "tue", "start": "13:00", "end": end}], "overrides": [],
+            })
+        };
+        let base = mecha_core::instrument::digest(manifest);
+
+        // The save stands past a failed push, and the reply says both.
+        let res = post(serde_json::json!({"id": "book", "base": base, "hours": hours("16:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let out: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["saved"], true, "{out}");
+        assert_eq!(out["pushed"], false, "{out}");
+        assert!(
+            out["push_error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("box is down"),
+            "{out}"
+        );
+        let written = std::fs::read_to_string(&book).unwrap();
+        assert!(written.contains("end = \"16:00\""), "{written}");
+        assert!(written.starts_with("# the owner's note"), "{written}");
+
+        // A push that reads its whole stdin first — the real path — sees EOF
+        // once the write is done and answers at once, past a payload larger
+        // than the pipe; a pipe left open would hold it to the 120 s timeout.
+        let talk = manifest.replace("id = \"book\"", "id = \"talk\"");
+        std::fs::write(types.join("talk.toml"), &talk).unwrap();
+        let began = std::time::Instant::now();
+        let res = post(serde_json::json!({
+            "id": "talk", "base": mecha_core::instrument::digest(&talk), "hours": hours("16:00")
+        }))
+        .await
+        .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let out: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let said = out["push_error"].as_str().unwrap_or("");
+        assert!(
+            said.contains("after") && !said.contains("after 0 "),
+            "{out}"
+        );
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(20),
+            "the child waited for an EOF"
+        );
+        assert_eq!(
+            out["instrument"]["timer_pushes"], false,
+            "only book is the timer's: {out}"
+        );
+
+        // The page's old digest is now stale: 409, and the file is left.
+        let res = post(serde_json::json!({"id": "book", "base": base, "hours": hours("15:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&book).unwrap(), written);
+
+        // Unknown id, a form, and an oversized manifest: refused before any child.
+        let now = mecha_core::instrument::digest(&written);
+        let res = post(serde_json::json!({"id": "nope", "base": now, "hours": hours("15:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = post(serde_json::json!({"id": "letter", "base": now, "hours": hours("15:00")}))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let huge = format!(
+            "{written}\n# {}\n",
+            "x".repeat(mecha_core::instrument::MAX_MANIFEST_BYTES)
+        );
+        std::fs::write(&book, &huge).unwrap();
+        let res = post(serde_json::json!({
+            "id": "book", "base": mecha_core::instrument::digest(&huge), "hours": hours("15:00")
+        }))
+        .await
+        .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            std::fs::read_to_string(&book).unwrap(),
+            huge,
+            "a refused save writes nothing"
+        );
+    }
+
+    /// A form is drafted beside what is served, previewed without scripts,
+    /// and published by push — never written in place. Over a scratch home
+    /// with stand-in children (the test bin dir), never the real factory.
+    #[tokio::test]
+    async fn a_form_is_drafted_previewed_and_published_never_written_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::testenv::HomeGuard::new("serve-forms");
+        let types = home.dir.join("factory").join("types");
+        std::fs::create_dir_all(&types).unwrap();
+        let letter = "# a note\nid = \"letter\"\nversion = 1\ntitle = \"Request a letter\"\n\n\
+                      [[fields]]\nname = \"email\"\nlabel = \"Your email\"\nkind = \"email\"\nrequired = true\n";
+        let served = types.join("letter.toml");
+        std::fs::write(&served, letter).unwrap();
+        let bin = home.dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fp = bin.join("factory-publish");
+        std::fs::write(
+            &fp,
+            format!(
+                r#"#!/bin/sh
+case "$1 $2" in
+  "type check") if grep -q REFUSE_ME "$3"; then echo "Error: the factory refuses this" >&2; exit 1; fi; exit 0 ;;
+  "type starters") printf 'meeting\tRequest a meeting\n' ;;
+  "type new") printf '# from the starter\nid = "%s"\nversion = 1\ntitle = "Request a meeting"\n\n[[fields]]\nname = "email"\nlabel = "Email"\nkind = "email"\n' "$5" ;;
+  "type render") echo '{{"id":"letter","kind":"request","html":"<html><head><link rel=\"stylesheet\" href=\"form.css\"></head><body><form>Q</form><script src=\"form.js\"></script></body></html>","style":"body{{color:red}}"}}' ;;
+  "type push") id=$(sed -n 's/^id = "\(.*\)"$/\1/p' "$3" | head -1); cp "$3" "{types}/$id.toml" ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac
+"#,
+                types = types.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *super::factory::TEST_BIN_DIR.lock().unwrap() = Some(bin.clone());
+        struct Unpin;
+        impl Drop for Unpin {
+            fn drop(&mut self) {
+                *super::factory::TEST_BIN_DIR.lock().unwrap() = None;
+            }
+        }
+        let _unpin = Unpin;
+        let req = |method: &str, uri: &str, body: Option<serde_json::Value>| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri(uri.to_string())
+                .header("Tailscale-User-Login", "owner@example.com")
+                .header("x-mecha-request", "1");
+            if body.is_some() {
+                b = b.header("content-type", "application/json");
+            }
+            test_router().oneshot(
+                b.body(body.map_or(Body::empty(), |v| Body::from(v.to_string())))
+                    .unwrap(),
+            )
+        };
+        let json = |res: axum::response::Response| async move {
+            let status = res.status();
+            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_else(|_| {
+                    serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+                }),
+            )
+        };
+
+        // Read: the served copy, no draft yet.
+        let (st, form) = json(
+            req("GET", "/api/factory/form?id=letter", None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{form}");
+        assert_eq!(form["draft"], false);
+        // Save: the draft takes the edit; the served copy does not move.
+        let mut edit = form["form"].clone();
+        edit["title"] = "A letter, please".into();
+        let (st, saved) = json(
+            req(
+                "POST",
+                "/api/factory/form/save",
+                Some(serde_json::json!({"id": "letter", "base": form["digest"], "form": edit})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{saved}");
+        assert_eq!(saved["draft"], true);
+        assert_eq!(
+            std::fs::read_to_string(&served).unwrap(),
+            letter,
+            "the served copy is never the edit target"
+        );
+        let draft = home.dir.join("factory").join("drafts").join("letter.toml");
+        let drafted = std::fs::read_to_string(&draft).unwrap();
+        assert!(
+            drafted.contains("A letter, please") && drafted.starts_with("# a note"),
+            "{drafted}"
+        );
+        // A raw edit may not move the id: it names the URL.
+        let (st, _) = json(
+            req("POST", "/api/factory/form/save", Some(serde_json::json!({
+                "id": "letter", "base": saved["digest"], "raw": drafted.replace("id = \"letter\"", "id = \"other\"")
+            })))
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        // A draft the factory refuses never lands; nor does one that is not
+        // TOML, and that one is said as such rather than as a moved id.
+        let before = std::fs::read_to_string(&draft).unwrap();
+        let (st, refused) = json(
+            req(
+                "POST",
+                "/api/factory/form/save",
+                Some(serde_json::json!({"id": "letter", "base": saved["digest"], "raw": format!("{drafted}\n# REFUSE_ME\n")})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert!(
+            refused
+                .as_str()
+                .unwrap_or("")
+                .contains("factory would refuse"),
+            "{refused}"
+        );
+        let (st, broken) = json(
+            req(
+                "POST",
+                "/api/factory/form/save",
+                Some(
+                    serde_json::json!({"id": "letter", "base": saved["digest"], "raw": "id = [\n"}),
+                ),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            broken.as_str().unwrap_or("").contains("not valid TOML"),
+            "{broken}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&draft).unwrap(),
+            before,
+            "a refused save writes nothing"
+        );
+        // Preview: the page, with its style inlined and no script or link.
+        let (st, pv) = json(
+            req(
+                "POST",
+                "/api/factory/form/render",
+                Some(serde_json::json!({"id": "letter"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{pv}");
+        let html = pv["html"].as_str().unwrap();
+        assert!(
+            html.contains("<style>body{color:red}</style>") && html.contains("<form>Q</form>"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<script") && !html.contains("<link"),
+            "{html}"
+        );
+        // Publish: pushed, now served, and the draft has done its job.
+        let (st, out) = json(
+            req(
+                "POST",
+                "/api/factory/form/publish",
+                Some(serde_json::json!({"id": "letter", "base": saved["digest"]})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{out}");
+        assert!(std::fs::read_to_string(&served)
+            .unwrap()
+            .contains("A letter, please"));
+        assert!(!draft.exists(), "a published draft is removed");
+        // New: from a starter, listed as unpublished; an id in use is refused.
+        let (st, made) = json(
+            req(
+                "POST",
+                "/api/factory/form/new",
+                Some(serde_json::json!({"starter": "meeting", "id": "office-hours"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{made}");
+        assert_eq!(made["published"], false);
+        let (_, listed) = json(req("GET", "/api/factory", None).await.unwrap()).await;
+        let row = listed["instruments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "office-hours")
+            .cloned();
+        assert_eq!(
+            row.map(|r| r["draft_only"].clone()),
+            Some(serde_json::Value::Bool(true)),
+            "{listed}"
+        );
+        let (st, _) = json(
+            req(
+                "POST",
+                "/api/factory/form/new",
+                Some(serde_json::json!({"starter": "meeting", "id": "letter"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        // Discard: refused with no draft, refused on a stale page, and for a
+        // form never published it is a delete that says nothing remains.
+        let (st, _) = json(
+            req(
+                "POST",
+                "/api/factory/form/discard",
+                Some(serde_json::json!({"id": "letter", "base": "x"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "letter has no draft now");
+        let (st, _) = json(
+            req(
+                "POST",
+                "/api/factory/form/discard",
+                Some(serde_json::json!({"id": "office-hours", "base": "stale"})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        let office = home
+            .dir
+            .join("factory")
+            .join("drafts")
+            .join("office-hours.toml");
+        assert!(office.exists(), "a refused discard leaves the draft");
+        let (st, gone) = json(
+            req(
+                "POST",
+                "/api/factory/form/discard",
+                Some(serde_json::json!({"id": "office-hours", "base": made["digest"]})),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{gone}");
+        assert_eq!(gone["form_remains"], false);
+        assert!(!office.exists());
     }
 
     /// The list editor's save: rows set in place in the file on disk, so a
