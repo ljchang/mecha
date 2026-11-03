@@ -11191,16 +11191,22 @@ mod tests {
             &w.store(),
             &lib,
             NewPersona {
-                name: "jun".into(),
-                display: "Jun".into(),
+                name: "wren".into(),
+                display: "Wren".into(),
                 relationships: vec!["colleague".into()],
                 origin: Origin::Owner,
                 ..NewPersona::default()
             },
         )
         .unwrap();
-        let theirs = remember(&w, "jun", Table::User, "Swims at dawn.", Origin::ModelClean);
-        let fact = Memory::open(&w.store(), "jun")
+        let theirs = remember(
+            &w,
+            "wren",
+            Table::User,
+            "Swims at dawn.",
+            Origin::ModelClean,
+        );
+        let fact = Memory::open(&w.store(), "wren")
             .unwrap()
             .fact(&theirs)
             .unwrap()
