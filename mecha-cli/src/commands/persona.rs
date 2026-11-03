@@ -372,11 +372,20 @@ pub enum MemoryCmd {
     Export {
         name: String,
     },
-    /// Let a candidate be recalled. It keeps its origin, so a recalled
-    /// untrusted record still marks the chat untrusted.
+    /// Let a candidate be recalled. By default it keeps its origin; --clean
+    /// is the owner's vouch that it no longer marks a recalling chat
+    /// untrusted. With --chat, vouch for that chat's untrusted records.
     Approve {
         name: String,
-        id: String,
+        #[arg(required_unless_present = "chat", conflicts_with = "chat")]
+        id: Option<String>,
+        #[arg(long, requires = "clean")]
+        chat: Option<String>,
+        #[arg(long)]
+        clean: bool,
+        /// With --chat: skip the question after the records are listed.
+        #[arg(long)]
+        yes: bool,
     },
     /// Replace a fact with your wording; the old one is kept, invalidated.
     Correct {
@@ -2455,27 +2464,32 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 );
                 return Ok(());
             }
-            let mark = |status: memory::Status, origin: Origin, pinned: bool| {
-                let mut tags = Vec::new();
-                if pinned {
-                    tags.push("pinned");
-                }
-                match status {
-                    memory::Status::Candidate => tags.push("waiting on you"),
-                    memory::Status::Invalidated => tags.push("invalidated"),
-                    memory::Status::Active => {}
-                }
-                match origin {
-                    Origin::Owner => tags.push("yours"),
-                    Origin::ModelUntrusted => tags.push("untrusted"),
-                    Origin::ModelClean => {}
-                }
-                if tags.is_empty() {
-                    String::new()
-                } else {
-                    format!("  [{}]", tags.join(", "))
-                }
-            };
+            let mark =
+                |status: memory::Status, origin: Origin, pinned: bool, vouched_at: Option<&str>| {
+                    let mut tags = Vec::new();
+                    if pinned {
+                        tags.push("pinned");
+                    }
+                    match status {
+                        memory::Status::Candidate => tags.push("waiting on you"),
+                        memory::Status::Invalidated => tags.push("invalidated"),
+                        memory::Status::Active => {}
+                    }
+                    if vouched_at.is_some() {
+                        tags.push("approved as clean");
+                    }
+                    match origin {
+                        Origin::Owner if vouched_at.is_none() => tags.push("yours"),
+                        Origin::Owner => {}
+                        Origin::ModelUntrusted => tags.push("untrusted"),
+                        Origin::ModelClean => {}
+                    }
+                    if tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{}]", tags.join(", "))
+                    }
+                };
             println!("Episodes ({})", episodes.len());
             for e in &episodes {
                 println!(
@@ -2484,7 +2498,7 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                     e.source.chat,
                     e.source.from,
                     e.source.to,
-                    mark(e.status, e.origin, e.pinned)
+                    mark(e.status, e.origin, e.pinned, e.vouched_at.as_deref())
                 );
                 println!("            {}", e.summary);
                 if !e.open_threads.is_empty() {
@@ -2503,7 +2517,7 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                         "  {}  {}{}",
                         &f.uid[..8],
                         f.text,
-                        mark(f.status, f.origin, f.pinned)
+                        mark(f.status, f.origin, f.pinned, f.vouched_at.as_deref())
                     );
                 }
             }
@@ -2514,10 +2528,78 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 print!("{}", m.export()?);
             }
         }
-        MemoryCmd::Approve { name, id } => {
+        MemoryCmd::Approve {
+            name,
+            id,
+            chat,
+            clean,
+            yes,
+        } => {
             let m = Memory::open_to_edit(dir, &named(&name)?)?;
-            m.approve(&m.resolve(&id)?)?;
-            println!("Approved — it can be recalled now.");
+            if let Some(chat) = chat {
+                // A bulk vouch on provenance: what is vouched for is shown
+                // first, and asked about, as forget --chat asks (review of
+                // #837). The owner signs for text they can read.
+                let found = chat_records(&m, &chat)?;
+                if !found.any {
+                    bail!("`{name}` has no memory records from chat `{chat}`");
+                }
+                let waiting = found.untrusted;
+                let mut count = 0;
+                if !waiting.is_empty() {
+                    println!("From chat {chat}, marked as from outside:");
+                    for (uid, text) in &waiting {
+                        println!("  {}  {}", &uid[..8.min(uid.len())], text);
+                    }
+                    let question = format!(
+                        "Vouch for these {} record(s) as clean? Recalling them will no longer mark a chat untrusted.",
+                        waiting.len()
+                    );
+                    if !yes && !confirm(&question)? {
+                        println!("Kept as they were.");
+                        return Ok(());
+                    }
+                    // Exactly the records shown, in one transaction: one the
+                    // writer adds while the question waits was never read, and
+                    // one withdrawn meanwhile is skipped and named, never a
+                    // half-done loop (review of #837).
+                    let uids: Vec<String> = waiting.iter().map(|(uid, _)| uid.clone()).collect();
+                    let (vouched, skipped) = m.approve_clean_listed(&chat, &uids)?;
+                    count = vouched;
+                    for uid in &skipped {
+                        println!(
+                            "  {} changed while you were asked and was left as it was.",
+                            &uid[..8.min(uid.len())]
+                        );
+                    }
+                }
+                // Records vouched for before: a repeat re-syncs their shared
+                // copies and vouches for nothing new, so nothing to show.
+                for uid in &found.vouched {
+                    m.approve_clean(uid)?;
+                }
+                if count == 0 {
+                    println!(
+                        "Nothing from {chat} needed a new clean approval; any existing vouches were re-synced."
+                    );
+                } else {
+                    println!(
+                        "Approved {count} record(s) as clean — recalling them no longer marks the chat untrusted."
+                    );
+                }
+            } else {
+                let id = id.expect("clap requires an id or --chat");
+                let uid = m.resolve(&id)?;
+                if clean {
+                    m.approve_clean(&uid)?;
+                    println!(
+                        "Approved as clean — it can be recalled without marking the chat untrusted."
+                    );
+                } else {
+                    m.approve(&uid)?;
+                    println!("Approved — it can be recalled now.");
+                }
+            }
         }
         MemoryCmd::Correct { name, id, text } => {
             let m = Memory::open_to_edit(dir, &named(&name)?)?;
@@ -2641,10 +2723,255 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
     Ok(())
 }
 
+/// What `chat` left in memory, as a chat-wide vouch reviews it: whether it
+/// left anything at all, its live records still marked as from outside (id
+/// and text, what a vouch would sign for), and its live records already
+/// vouched for (whose shared copies a repeat re-syncs).
+struct ChatRecords {
+    any: bool,
+    untrusted: Vec<(String, String)>,
+    vouched: Vec<String>,
+}
+
+fn chat_records(m: &mecha_core::persona::memory::Memory, chat: &str) -> Result<ChatRecords> {
+    use mecha_core::persona::memory::{Filter, Status as MemoryStatus, Table};
+    use mecha_core::persona::Origin;
+    let mut out = ChatRecords {
+        any: false,
+        untrusted: Vec::new(),
+        vouched: Vec::new(),
+    };
+    let mut note = |uid: String, text: String, origin: Origin, vouched: bool, live: bool| {
+        out.any = true;
+        if !live {
+            return;
+        }
+        if origin == Origin::ModelUntrusted {
+            out.untrusted.push((uid, text));
+        } else if vouched {
+            out.vouched.push(uid);
+        }
+    };
+    for e in m.episodes(Filter::All)? {
+        if e.source.chat == chat {
+            let live = e.status != MemoryStatus::Invalidated;
+            // The whole episode, as recall folds it: a vouch signs for its
+            // threads and decisions too, not only the summary (review of
+            // #837).
+            let mut text = e.summary.clone();
+            for (label, items) in [
+                ("topics", &e.topics),
+                ("decisions", &e.decisions),
+                ("open threads", &e.open_threads),
+            ] {
+                if !items.is_empty() {
+                    text.push_str(&format!("\n      {label}: {}", items.join("; ")));
+                }
+            }
+            note(e.uid, text, e.origin, e.vouched_at.is_some(), live);
+        }
+    }
+    // Every fact table the module knows, never a hand list that a new one
+    // would slip past (review of #837).
+    for table in Table::ALL {
+        for f in m.facts(table, Filter::All)? {
+            if f.source.chat == chat {
+                let live = f.status != MemoryStatus::Invalidated;
+                note(f.uid, f.text, f.origin, f.vouched_at.is_some(), live);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[derive(clap::Parser)]
+    struct PersonaCli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    fn parse_memory(argv: &[&str]) -> std::result::Result<MemoryCmd, clap::Error> {
+        use clap::Parser;
+        let cli =
+            PersonaCli::try_parse_from(std::iter::once("persona").chain(argv.iter().copied()))?;
+        let Cmd::Memory { cmd } = cli.args.cmd else {
+            unreachable!("the test argv begins with memory")
+        };
+        Ok(cmd)
+    }
+
+    #[test]
+    fn memory_approve_parses_plain_clean_and_clean_chat_forms() {
+        let plain = parse_memory(&["memory", "approve", "mara", "abcd1234"]).unwrap();
+        assert!(matches!(
+            plain,
+            MemoryCmd::Approve {
+                id: Some(id),
+                chat: None,
+                clean: false,
+                ..
+            } if id == "abcd1234"
+        ));
+        let clean = parse_memory(&["memory", "approve", "mara", "abcd1234", "--clean"]).unwrap();
+        assert!(matches!(
+            clean,
+            MemoryCmd::Approve {
+                id: Some(id),
+                chat: None,
+                clean: true,
+                ..
+            } if id == "abcd1234"
+        ));
+        let chat = parse_memory(&[
+            "memory",
+            "approve",
+            "mara",
+            "--chat",
+            "20261103T010203-made-up",
+            "--clean",
+        ])
+        .unwrap();
+        assert!(matches!(
+            chat,
+            MemoryCmd::Approve {
+                id: None,
+                chat: Some(chat),
+                clean: true,
+                ..
+            } if chat == "20261103T010203-made-up"
+        ));
+        assert!(parse_memory(&["memory", "approve", "mara", "--chat", "c1"]).is_err());
+        assert!(parse_memory(&["memory", "approve", "mara"]).is_err());
+        assert!(parse_memory(&[
+            "memory", "approve", "mara", "abcd1234", "--chat", "c1", "--clean"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn memory_approve_executes_plain_clean_and_clean_chat_forms() {
+        use mecha_core::persona::memory::{
+            Kind, Memory, NewFact, Source, Status as MemoryStatus, Table,
+        };
+
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let store = dir.join("personas");
+        let (lib, _) = Library::load(&lib_dir);
+        persona::create(
+            &store,
+            &lib,
+            NewPersona {
+                name: "mara".into(),
+                origin: Origin::Owner,
+                ..NewPersona::default()
+            },
+        )
+        .unwrap();
+        let (one, chat_one, chat_two, other, plain) = {
+            let memory = Memory::open(&store, "mara").unwrap();
+            let remember = |text: &str, chat: &str| {
+                memory
+                    .add_fact(
+                        Table::Persona,
+                        NewFact {
+                            text: text.into(),
+                            kind: Kind::Observed,
+                            source: Source {
+                                chat: chat.into(),
+                                from: 0,
+                                to: 1,
+                            },
+                            origin: Origin::ModelUntrusted,
+                            model: "local".into(),
+                            valid_from: None,
+                            valid_to: None,
+                        },
+                    )
+                    .unwrap()
+            };
+            let one = remember("A field guide called the inlet silver.", "one-chat");
+            let chat_one = remember("The guide marked a bell-shaped rock.", "chosen-chat");
+            let chat_two = remember("Its map used blue contour lines.", "chosen-chat");
+            let other = remember("Another map used a red cover.", "other-chat");
+            let plain = remember("A leaflet described the western pier.", "plain-chat");
+            (one, chat_one, chat_two, other, plain)
+        };
+
+        memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: Some(one.uid.clone()),
+                chat: None,
+                clean: true,
+                yes: false,
+            },
+        )
+        .unwrap();
+        memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: None,
+                chat: Some("chosen-chat".into()),
+                clean: true,
+                yes: true,
+            },
+        )
+        .unwrap();
+        memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: Some(plain.uid.clone()),
+                chat: None,
+                clean: false,
+                yes: false,
+            },
+        )
+        .unwrap();
+        let err = memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: None,
+                chat: Some("missing-chat".into()),
+                clean: true,
+                yes: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing-chat"), "{err}");
+
+        let memory = Memory::open_existing(&store, "mara").unwrap().unwrap();
+        let one = memory.fact(&one.uid).unwrap().unwrap();
+        assert_eq!(one.status, MemoryStatus::Active);
+        assert_eq!(one.origin, Origin::Owner);
+        assert!(one.vouched_at.is_some());
+        for uid in [&chat_one.uid, &chat_two.uid] {
+            let row = memory.fact(uid).unwrap().unwrap();
+            assert_eq!(row.status, MemoryStatus::Active);
+            assert_eq!(row.origin, Origin::Owner);
+            assert!(row.vouched_at.is_some());
+        }
+        let other = memory.fact(&other.uid).unwrap().unwrap();
+        assert_eq!(other.status, MemoryStatus::Candidate);
+        assert_eq!(other.origin, Origin::ModelUntrusted);
+        assert!(other.vouched_at.is_none());
+        let plain = memory.fact(&plain.uid).unwrap().unwrap();
+        assert_eq!(plain.status, MemoryStatus::Active);
+        assert_eq!(plain.origin, Origin::ModelUntrusted);
+        assert!(plain.vouched_at.is_none());
+
+        drop(memory);
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn a_day_prints_its_clock_company_anchors_and_the_turn_of_midnight() {

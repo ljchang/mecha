@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Approve persona memories as clean.** `mecha persona memory approve` and
+  the Memories tab can now record the owner's vouch for a memory that came
+  from outside content. It becomes active with owner origin, so recalling it
+  no longer marks the new chat untrusted; memories approved the old way can
+  be vouched later, and `--chat <id> --clean` handles a whole source chat.
+
 - **A persona's life profile, and a draft of it from what you wrote.**
   `life.toml` says who a persona lives with (people on their People tab),
   their usual night and what their days never hold, and their sampled days
