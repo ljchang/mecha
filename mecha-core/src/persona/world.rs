@@ -1179,13 +1179,13 @@ impl Absent {
     /// The refusal [`day`] gives, naming the fix.
     pub fn why(self, name: &str) -> String {
         match self {
-            Absent::Off => format!("[life] world is off for `{name}`: she has no simulated days"),
+            Absent::Off => format!("[life] world is off for `{name}`: they have no simulated days"),
             Absent::NoRoutine => format!(
-                "`{name}` has no routine.toml, so no cell to draw her days from; \
+                "`{name}` has no routine.toml, so no cell to draw their days from; \
                  `mecha persona routine edit {name}` writes one"
             ),
             Absent::NoCell => format!(
-                "`{name}`'s routine.toml names no cell, so there is no kind of week to draw her \
+                "`{name}`'s routine.toml names no cell, so there is no kind of week to draw their \
                  days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
             ),
         }
