@@ -1310,9 +1310,7 @@ A reader decides a key in this order: first the settlement lookup (a
 remaining row, `closes: true` from any build closes; an outcome the reader
 *can* read with `closes` absent falls back to the reader's own §4.4 table, so
 an omitted field on a `would have` row never closes anything; and an outcome
-the reader cannot read closes the key unless the row says `closes: false`
-and the reader can read it — which, being unreadable, it cannot, so it
-closes. A newer build's
+the reader cannot read closes the key whatever its `closes` says. A newer build's
 `closes: false` on an outcome an older reader does not know is therefore not
 permission to run the action again — for an outbound row that would be a
 duplicate send, which is irreversible, while the opposite error (an older
