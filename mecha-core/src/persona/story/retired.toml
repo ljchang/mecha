@@ -28,6 +28,12 @@ with = ["kin"]
 effect = { mood = 1 }
 
 [[storylet]]
+id = "good_checkup"
+title = "good news from a medical checkup"
+size = "major"
+effect = { mood = 1, stress = -1 }
+
+[[storylet]]
 id = "doctor_visit"
 title = "a doctor's appointment that ran long"
 size = "minor"
