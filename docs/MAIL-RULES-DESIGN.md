@@ -895,7 +895,10 @@ The guards:
   `internetMessageHeaders` can be told from a complete one (or reads the
   headers through the MIME source, which is not truncated), and a read that
   cannot be shown whole proposes. If neither is possible, Outlook sends stay
-  in `propose`, as stated below. P0's real-header check covers Gmail's ordering as
+  in `propose`, as stated below — and that provider-wide fallback is a
+  **mode-level hold** like the other standing conditions, holding the
+  account's outbound groups with no per-message row, while an ordinary
+  DMARC failure on one message stays a per-message demotion. P0's real-header check covers Gmail's ordering as
   well as EOP's shape, with the same fallback: if it is not reliable, that
   provider's sends stay in `propose`. `Authentication-Results` gets its
   own field on `Email` rather than riding the existing loop.
@@ -1000,7 +1003,8 @@ automatically, but propose the reply" is the common case.
 
 Entering `auto` for any send group shows the owner, on one screen: the
 matcher, the exact template or covering note, the recipient rule, the guards,
-and the shadow-mode rows so far. The approval written to `approvals.jsonl`
+and the shadow-mode rows so far **under the current digest** — earlier
+rows are shown apart, as on the rule page (§8). The approval written to `approvals.jsonl`
 carries **a digest of the rule's directory** (and of the named skill's, for
 §6.3, and of `aliases.toml` and `limits.toml` for any rule with an outbound
 action or a `task` (§6.4 caps tasks too), since §5.4's loop guard and caps rest on them — removing an alias or
@@ -1269,7 +1273,12 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   the template files shown as rendered text — what the recipient will read.
 - **The ledger**: one row per action — when, which message (sender and
   subject, opening in the reader), matched because (header key, or the
-  grounded `rule_quote`), the action, the mode it ran in, and the outcome:
+  grounded `rule_quote`), the action, the mode it ran in, **the rule digest
+  in force when the row was written** (§6.2), and the outcome. The digest is
+  what lets the page compute a group's would-have rate over the current
+  digest only and show rows from an earlier digest apart, under a dated
+  heading, never counted into the rate; a gate-failing shadow rule's rate is
+  labelled a **ceiling** (§4.2). Outcomes:
   `pending` (written before an action executes, §4.4), `done`, `would have`
   (shadow), `offered` (a proposed mailbox, record or Board action waiting in
   the mail desk or the digest),
@@ -1305,12 +1314,15 @@ opposite ones. In `approvals.jsonl` an unknown mode reads as **`shadow`**: it
 never acts, so a newer build's rung cannot raise anything in an older one.
 In `ledger.jsonl` every row also carries a **`closes` boolean**, written by
 the build that writes the row according to §4.4, and **it may only tighten**.
-A reader decides a key in this order: first the settlement lookup (a
-`pending` row is superseded by its settlement row, below); then for each
-remaining row, `closes: true` from any build closes; an outcome the reader
-*can* read with `closes` absent falls back to the reader's own §4.4 table, so
-an omitted field on a `would have` row never closes anything; and an outcome
-the reader cannot read closes the key whatever its `closes` says. A newer build's
+A reader first runs the settlement lookup (a `pending` row is superseded by
+its settlement row, below). Then **a key is closed if any remaining row
+closes it by any of three signals**: the row says `closes: true`; the
+reader's own §4.4 table closes the row's outcome; or the outcome is one the
+reader cannot read. A union, so `closes: false` can only ever mean "this
+build adds no closure" and never overrides the reader's own table — a `sent`
+row marked `closes: false` still closes the key in a reader that knows
+`sent`. And an omitted field on a `would have` row closes nothing, because
+neither the field nor the reader's table nor unreadability says to. A newer build's
 `closes: false` on an outcome an older reader does not know is therefore not
 permission to run the action again — for an outbound row that would be a
 duplicate send, which is irreversible, while the opposite error (an older
@@ -1321,8 +1333,10 @@ holds only until its settlement row exists**: then the settlement row's own
 `closes` decides, as §4.4 has it, so a Mailbox `failed: interrupted` reopens
 the key while an outbound `held: fate unknown` keeps it closed — and a
 settlement row an older reader cannot read closes the key. One boolean serves both of §4.4's
-keys, because their closing sets coincide over the outbound and Board rows
-the per-thread lookup reads. Unknown modes and outcomes are shown as `unknown` on the
+keys: over the outbound and Board rows the per-thread lookup reads, the two
+closing sets agree on every outcome that can appear first in a thread
+(`released unchanged`, `edited` and `rejected` only ever follow a `staged`
+row that has already closed it). Unknown modes and outcomes are shown as `unknown` on the
 page.
 
 ---
