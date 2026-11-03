@@ -18,7 +18,9 @@
 //! capped at the door. What leaves the machine is the town, to the
 //! geocoder, and its latitude and longitude, to the weather service: nothing
 //! about the persona or the owner. [`refresh`] runs it when the stored
-//! weather is older than [`STALE_HOURS`], from the Week tab and a chat turn.
+//! weather is older than [`STALE_HOURS`], from the Week tab and a chat turn;
+//! either caller records a failure and pauses the same place for
+//! [`FAILURE_BACKOFF_HOURS`].
 //!
 //! **What the geocoder answers is shown to the owner, never told.** Its
 //! label (town, region, country code) is how the Week tab says which place
@@ -26,7 +28,7 @@
 //! whole degrees, the closed fields above.
 
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Days back a fetch asks for: the window her stored days cover.
@@ -37,11 +39,17 @@ pub const AHEAD_DAYS: u32 = 7;
 pub const MAX_BYTES: usize = 64 * 1024;
 /// Stored weather older than this is fetched again.
 pub const STALE_HOURS: i64 = 6;
+/// A failed geocode or forecast is not retried before this many hours.
+pub const FAILURE_BACKOFF_HOURS: i64 = 1;
 /// The resolved place, cached beside `persona.toml`.
 pub const PLACE_FILE: &str = "weather.place.json";
+/// The last failed refresh, private beside the place cache.
+pub const FAILURE_FILE: &str = ".weather.failed";
 /// The range a temperature must fall in, in °C.
 pub const COLDEST: i16 = -60;
 pub const HOTTEST: i16 = 60;
+/// The longest resolved label shown on the owner's Week page.
+pub const MAX_PLACE_LABEL: usize = 120;
 
 /// The day's sky, from the WMO weather code the source reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -133,8 +141,11 @@ impl Place {
     /// the globe.
     pub fn check(&self) -> Result<()> {
         let name = self.name.trim();
-        if name.is_empty() || name.chars().count() > 60 || name.chars().any(char::is_control) {
-            bail!("a place's name is a short line, at most 60 characters");
+        if name.is_empty()
+            || name.chars().count() > MAX_PLACE_LABEL
+            || name.chars().any(char::is_control)
+        {
+            bail!("a place's name is a short line, at most {MAX_PLACE_LABEL} characters");
         }
         if !(-90.0..=90.0).contains(&self.lat) || !(-180.0..=180.0).contains(&self.lon) {
             bail!("a place's lat is -90 to 90 and its lon -180 to 180");
@@ -296,20 +307,41 @@ const US_STATES: [(&str, &str); 51] = [
     ("WY", "Wyoming"),
 ];
 
-/// The name the geocoder is asked for, and what narrows its answers: the
-/// text before the first comma, and the rest.
-fn split_query(query: &str) -> (String, Option<String>) {
-    match query.split_once(',') {
-        Some((town, rest)) if !rest.trim().is_empty() => {
-            (town.trim().to_string(), Some(rest.trim().to_string()))
-        }
-        _ => (query.trim().trim_end_matches(',').trim().to_string(), None),
+/// The name the geocoder is asked for, and each comma-separated part that
+/// narrows its answers after the town.
+fn split_query(query: &str) -> (String, Vec<String>) {
+    let mut parts = query.split(',').map(str::trim);
+    let town = parts.next().unwrap_or_default().to_string();
+    let narrow = parts
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    (town, narrow)
+}
+
+/// Spellings one owner-written region or country part may match. Country
+/// aliases live beside the state-code aliases they complement: `USA`
+/// matches either Open-Meteo's `US` code or its `United States` country.
+fn place_aliases(part: &str) -> Vec<String> {
+    let part = part.trim().to_lowercase();
+    let mut aliases = vec![part.clone()];
+    if let Some((_, name)) = US_STATES
+        .iter()
+        .find(|(code, _)| code.eq_ignore_ascii_case(&part))
+    {
+        aliases.push(name.to_lowercase());
     }
+    if part == "usa" {
+        aliases.push("us".into());
+        aliases.push("united states".into());
+    }
+    aliases
 }
 
 /// The geocoder's answer to `query`, the first result whose region,
-/// country or country code matches what follows the comma (a US state's
-/// code standing for its name), or the first result when nothing follows.
+/// country or country code matches every comma part after the town (a US
+/// state's code standing for its name), or the first result when nothing
+/// follows. All parts must match fields on the same result.
 /// Refused when nothing matches or the answer is not that shape; a name,
 /// region or country outside a short line is left out of the label.
 pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
@@ -330,22 +362,14 @@ pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
     let a: Answer =
         serde_json::from_str(body).context("the geocoder's answer is not a list of places")?;
     let (_, narrow) = split_query(query);
-    let wanted: Vec<String> = narrow
-        .iter()
-        .flat_map(|n| {
-            let n = n.trim().to_lowercase();
-            let full = US_STATES
-                .iter()
-                .find(|(code, _)| code.eq_ignore_ascii_case(&n))
-                .map(|(_, name)| name.to_lowercase());
-            std::iter::once(n).chain(full)
-        })
-        .collect();
+    let wanted: Vec<Vec<String>> = narrow.iter().map(|part| place_aliases(part)).collect();
     let short = |v: &Option<String>| {
         v.as_deref()
             .map(str::trim)
             .filter(|t| {
-                !t.is_empty() && t.chars().count() <= 60 && !t.chars().any(char::is_control)
+                !t.is_empty()
+                    && t.chars().count() <= MAX_PLACE_LABEL
+                    && !t.chars().any(char::is_control)
             })
             .map(str::to_string)
     };
@@ -353,11 +377,16 @@ pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
         .results
         .into_iter()
         .find(|h| {
-            wanted.is_empty()
-                || [&h.admin1, &h.country, &h.country_code].iter().any(|f| {
-                    f.as_deref()
-                        .is_some_and(|v| wanted.iter().any(|w| v.trim().to_lowercase() == *w))
-                })
+            wanted.iter().all(|aliases| {
+                [&h.admin1, &h.country, &h.country_code]
+                    .iter()
+                    .any(|field| {
+                        field.as_deref().is_some_and(|value| {
+                            let value = value.trim().to_lowercase();
+                            aliases.contains(&value)
+                        })
+                    })
+            })
         })
         .with_context(|| {
             format!(
@@ -383,7 +412,9 @@ pub fn parse_geocode(body: &str, query: &str) -> Result<Resolved> {
         lon: hit.longitude,
         weather_for: None,
     };
-    r.place().check()?;
+    r.place().check().with_context(|| {
+        format!("the place found for the owner's input {query:?} is not usable")
+    })?;
     Ok(r)
 }
 
@@ -437,6 +468,60 @@ pub fn cached(pdir: &std::path::Path, query: &str) -> Option<Resolved> {
     (r.query == query.trim() && r.place().check().is_ok()).then_some(r)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Failure {
+    query: String,
+    at: String,
+    message: String,
+}
+
+/// The recorded failure message while `query` is inside its retry backoff.
+/// A changed query never inherits the old place's pause.
+pub fn backoff_error(
+    pdir: &std::path::Path,
+    query: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<String>> {
+    let text = match std::fs::read_to_string(pdir.join(FAILURE_FILE)) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("reading the last weather failure"),
+    };
+    let failure: Failure =
+        serde_json::from_str(&text).context("the last weather failure does not load")?;
+    if failure.query != query.trim() {
+        return Ok(None);
+    }
+    let at = DateTime::parse_from_rfc3339(&failure.at)
+        .map(|at| at.with_timezone(&Utc))
+        .context("the last weather failure has an unreadable time")?;
+    Ok((now - at < chrono::Duration::hours(FAILURE_BACKOFF_HOURS)).then_some(failure.message))
+}
+
+/// Pace a failed refresh for this exact owner-written place.
+pub fn record_failure(
+    pdir: &std::path::Path,
+    query: &str,
+    now: DateTime<Utc>,
+    message: &str,
+) -> Result<()> {
+    let failure = Failure {
+        query: query.trim().to_string(),
+        at: now.to_rfc3339(),
+        message: message.to_string(),
+    };
+    let bytes = serde_json::to_vec(&failure)?;
+    super::write_private(&pdir.join(FAILURE_FILE), &bytes)
+}
+
+fn clear_failure(pdir: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(pdir.join(FAILURE_FILE)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("clearing the last weather failure"),
+    }
+}
+
 /// Where `pdir`'s weather is for: `[life] place`, resolved through the
 /// cache or the geocoder, or `story.toml`'s `[place]` when that is unset.
 /// `None` when neither names one.
@@ -460,13 +545,17 @@ pub async fn place_of(pdir: &std::path::Path, life_place: Option<&str>) -> Resul
 
 /// Whether `pdir`'s weather is due: none stored, the last fetch older than
 /// [`STALE_HOURS`] at `now`, or `[life] place` changed since it was
-/// resolved.
+/// resolved. A recorded failure for the same place pauses retries for
+/// [`FAILURE_BACKOFF_HOURS`].
 pub fn due(
     pdir: &std::path::Path,
     life_place: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<bool> {
     if let Some(q) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        if backoff_error(pdir, q, now)?.is_some() {
+            return Ok(false);
+        }
         let Some(place) = cached(pdir, q) else {
             return Ok(true);
         };
@@ -501,6 +590,7 @@ pub async fn refresh(
             serde_json::to_string(&resolved)?.as_bytes(),
         )?;
     }
+    clear_failure(pdir)?;
     Ok(Some((place, n)))
 }
 
@@ -572,9 +662,9 @@ mod tests {
     #[test]
     fn a_place_is_checked() {
         let ok = Place {
-            name: "Hanover, NH".into(),
-            lat: 43.7,
-            lon: -72.29,
+            name: "Springfield, Illinois".into(),
+            lat: 39.8,
+            lon: -89.6,
         };
         ok.check().unwrap();
         assert!(Place {
@@ -589,11 +679,11 @@ mod tests {
         }
         .check()
         .is_err());
-        assert!(url(&ok).contains("latitude=43.7000&longitude=-72.2900"));
+        assert!(url(&ok).contains("latitude=39.8000&longitude=-89.6000"));
     }
 
     #[test]
-    fn geocoding_picks_the_named_region_and_expands_a_us_code() {
+    fn geocoding_matches_each_named_part_and_expands_us_aliases() {
         let body = r#"{"results":[
             {"name":"Springfield","latitude":37.2,"longitude":-93.3,"admin1":"Missouri","country":"United States","country_code":"US"},
             {"name":"Springfield","latitude":39.8,"longitude":-89.6,"admin1":"Illinois","country":"United States","country_code":"US"},
@@ -604,6 +694,41 @@ mod tests {
         assert_eq!((state.lat, state.lon), (39.8, -89.6));
         let country = parse_geocode(body, "Springfield, Canada").unwrap();
         assert_eq!(country.label, "Springfield, Nova Scotia, CA");
+        let three = parse_geocode(body, "Springfield, Illinois, US").unwrap();
+        assert_eq!(three.label, "Springfield, Illinois, US");
+        assert!(parse_geocode(body, "Springfield, Illinois, CA").is_err());
+
+        let austin = r#"{"results":[
+            {"name":"Austin","latitude":30.1,"longitude":-97.7,"admin1":"Texas","country":"Canada","country_code":"CA"},
+            {"name":"Austin","latitude":30.3,"longitude":-97.7,"admin1":"Texas","country":"United States","country_code":"US"}
+        ]}"#;
+        let austin = parse_geocode(austin, "Austin, TX, USA").unwrap();
+        assert_eq!(austin.label, "Austin, Texas, US");
+        assert_eq!(
+            place_aliases("USA"),
+            vec![
+                "usa".to_string(),
+                "us".to_string(),
+                "united states".to_string()
+            ]
+        );
+
+        let paris = r#"{"results":[
+            {"name":"Paris","latitude":48.9,"longitude":2.3,"admin1":"Île-de-France","country":"France","country_code":"FR"}
+        ]}"#;
+        let paris = parse_geocode(paris, "Paris, Île-de-France, France").unwrap();
+        assert_eq!(paris.label, "Paris, Île-de-France, FR");
+
+        let long = "w".repeat(65);
+        let body =
+            format!(r#"{{"results":[{{"name":"{long}","latitude":39.8,"longitude":-89.6}}]}}"#);
+        assert_eq!(parse_geocode(&body, "Springfield").unwrap().label, long);
+        let component = "w".repeat(50);
+        let body = format!(
+            r#"{{"results":[{{"name":"{component}","latitude":39.8,"longitude":-89.6,"admin1":"{component}","country_code":"{component}"}}]}}"#
+        );
+        let why = format!("{:#}", parse_geocode(&body, "Springfield").unwrap_err());
+        assert!(why.contains("owner's input \"Springfield\""), "{why}");
     }
 
     #[test]
@@ -650,5 +775,173 @@ mod tests {
         .unwrap();
         assert!(due(&dir, Some("Springfield, Illinois"), now).unwrap());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_failed_place_backs_off_for_one_hour_but_not_for_a_changed_place() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-weather-failed-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = "2026-11-03T10:00:00Z".parse().unwrap();
+        record_failure(
+            &dir,
+            "Springfield, Illinois",
+            now,
+            "the geocoder found no match",
+        )
+        .unwrap();
+        assert!(!due(&dir, Some("Springfield, Illinois"), now).unwrap());
+        assert_eq!(
+            backoff_error(&dir, "Springfield, Illinois", now)
+                .unwrap()
+                .as_deref(),
+            Some("the geocoder found no match")
+        );
+        assert!(due(
+            &dir,
+            Some("Springfield, Illinois"),
+            now + chrono::Duration::hours(FAILURE_BACKOFF_HOURS)
+        )
+        .unwrap());
+        assert!(due(&dir, Some("Springfield, Missouri"), now).unwrap());
+        clear_failure(&dir).unwrap();
+        assert!(backoff_error(&dir, "Springfield, Illinois", now)
+            .unwrap()
+            .is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Regression gate part 1 for shelf A: strings from every weather and
+    /// geocoder field may reach the owner-facing place label, but no canary
+    /// survives the closed weather row or either prompt fold.
+    #[test]
+    fn regression_shelf_a_weather_canary_never_reaches_world_or_prompt() {
+        const CANARY: &str = "CANARY-wren-7731";
+        let from = d("2026-11-01");
+        let to = d("2026-11-05");
+        let body = format!(
+            r#"{{"outside":"{CANARY}","daily":{{
+                "time":["2026-11-03","{CANARY}"],
+                "weather_code":[61,61],
+                "temperature_2m_max":[9,9],
+                "temperature_2m_min":[4,4],
+                "extra":"{CANARY}"
+            }}}}"#
+        );
+        let parsed = parse(&body, from, to).unwrap();
+        assert_eq!(parsed.len(), 1, "the canary date is refused");
+        for bad in [
+            format!(
+                r#"{{"daily":{{"time":["2026-11-03"],"weather_code":["{CANARY}"],"temperature_2m_max":[9],"temperature_2m_min":[4]}}}}"#
+            ),
+            format!(
+                r#"{{"daily":{{"time":["2026-11-03"],"weather_code":[61],"temperature_2m_max":["{CANARY}"],"temperature_2m_min":[4]}}}}"#
+            ),
+            format!(
+                r#"{{"daily":{{"time":["2026-11-03"],"weather_code":[61],"temperature_2m_max":[9],"temperature_2m_min":["{CANARY}"]}}}}"#
+            ),
+        ] {
+            assert!(parse(&bad, from, to).is_err(), "string columns are refused");
+        }
+
+        let geocode = format!(
+            r#"{{"extra":"{CANARY}","results":[{{
+                "name":"{CANARY}","latitude":39.8,"longitude":-89.6,
+                "admin1":"Illinois","country":"{CANARY}",
+                "country_code":"US","extra":"{CANARY}"
+            }}]}}"#
+        );
+        let resolved = parse_geocode(&geocode, &format!("Springfield, {CANARY}")).unwrap();
+        assert!(resolved.label.contains(CANARY));
+        let admin = format!(
+            r#"{{"results":[{{"name":"Springfield","latitude":39.8,"longitude":-89.6,"admin1":"{CANARY}","country":"United States","country_code":"US"}}]}}"#
+        );
+        assert!(parse_geocode(&admin, &format!("Springfield, {CANARY}"))
+            .unwrap()
+            .label
+            .contains(CANARY));
+        let country_code = format!(
+            r#"{{"results":[{{"name":"Springfield","latitude":39.8,"longitude":-89.6,"admin1":"Illinois","country":"United States","country_code":"{CANARY}"}}]}}"#
+        );
+        assert!(
+            parse_geocode(&country_code, &format!("Springfield, {CANARY}"))
+                .unwrap()
+                .label
+                .contains(CANARY)
+        );
+        for (lat, lon) in [
+            (format!(r#""{CANARY}""#), "-89.6".to_string()),
+            ("39.8".to_string(), format!(r#""{CANARY}""#)),
+        ] {
+            let bad = format!(
+                r#"{{"results":[{{"name":"Springfield","latitude":{lat},"longitude":{lon}}}]}}"#
+            );
+            assert!(parse_geocode(&bad, "Springfield").is_err());
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-weather-canary-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut world = super::super::world::World::open(&dir).unwrap();
+        world.set_weather(&parsed).unwrap();
+        let stored = world.weather(d("2026-11-03")).unwrap().unwrap();
+        assert!(!stored.to_json().to_string().contains(CANARY));
+
+        let story = super::super::story::StoryDay {
+            date: stored.date,
+            weather: Some(stored.into()),
+            morning: super::super::story::Levels::default(),
+            evening: super::super::story::Levels::default(),
+            events: Vec::new(),
+            kept: true,
+        };
+        let lines = super::super::today::teller_lines(
+            "2026-11-03T12:00:00".parse().unwrap(),
+            &story,
+            None,
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!lines.contains(CANARY));
+        assert!(!lines.contains(&resolved.label));
+        let now = super::super::world::Now {
+            date: stored.date,
+            minute: 12 * 60,
+            stretch: super::super::sampler::Stretch {
+                activity: super::super::activity::Activity::Reading,
+                start: 12 * 60,
+                end: 13 * 60,
+                company: None,
+                anchor: None,
+            },
+            source: super::super::world::Source::Sampler,
+            with_names: Vec::new(),
+        };
+        let note = super::super::today::note_with_events(&now, Some(&lines));
+        assert!(!note.contains(CANARY));
+        assert!(!note.contains(&resolved.label));
+        assert!(
+            resolved.label.contains(CANARY),
+            "the label remains page-only"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Gate part 2 for shelf A derives the rendered weather item's capacity
+    /// from the shipped enum and degree bounds, and refuses more than 16 bits.
+    #[test]
+    fn shelf_a_weather_item_stays_within_sixteen_bits() {
+        let degrees = u128::from((i32::from(HOTTEST) - i32::from(COLDEST) + 1) as u32);
+        let ordered_low_high = degrees * (degrees + 1) / 2;
+        let states = Sky::ALL.len() as u128 * ordered_low_high;
+        let bits = (states as f64).log2();
+        assert!(
+            bits <= 16.0,
+            "weather renders {bits:.2} bits ({states} states)"
+        );
     }
 }

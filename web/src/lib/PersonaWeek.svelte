@@ -254,7 +254,7 @@
   {:else if data?.absent}
     <p class="wnote">{WEEK_ABSENT[data.absent] ?? data.why}</p>
   {/if}
-  {#if data}
+  {#if weatherPlace(data)}
     <p class="wnote">{weatherPlace(data)}</p>
     {#if weatherError(data)}<p class="warnline">{weatherError(data)}</p>{/if}
   {/if}

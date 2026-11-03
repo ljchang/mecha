@@ -27,6 +27,8 @@ pub const UNTRUSTED_TODAY_STEM: &str =
     "(What you are doing right now, some of it first read from outside, from the harness";
 /// The teller's event line, and the marker the initiative measure reads.
 pub const EVENTS_HEADING: &str = "What happened";
+/// The shared instruction that closes either shape of the today-block.
+const NOTE_TAIL: &str = "Let it colour what you say when it fits; it is never news to announce, and where it disagrees with who you are, who you are wins.)";
 
 /// `(private, untrusted)` for a today-block, or `None` when `text` is not
 /// one.
@@ -235,16 +237,12 @@ pub fn note_with_events(now: &Now, events: Option<&str>) -> String {
         UNTRUSTED_TODAY_STEM
     };
     match events.filter(|e| !e.trim().is_empty()) {
-        None => format!(
-            "{stem} — your own day, drawn from your routine. {said}. Let it colour what you say \
-             when it fits; it is never news to announce, and where it disagrees with who you are, \
-             who you are wins.)"
-        ),
-        Some(events) => format!(
-            "{stem} — your own day, drawn from your routine. {said}.\n{events}\nLet it colour what you say \
-             when it fits; it is never news to announce, and where it disagrees with who you are, \
-             who you are wins.)"
-        ),
+        None => format!("{stem} — your own day, drawn from your routine. {said}. {NOTE_TAIL}"),
+        Some(events) => {
+            format!(
+                "{stem} — your own day, drawn from your routine. {said}.\n{events}\n{NOTE_TAIL}"
+            )
+        }
     }
 }
 
@@ -404,13 +402,24 @@ mod tests {
     #[test]
     fn teller_lines_are_present_only_when_supplied() {
         let at = now(
-            stretch(Activity::Reading, 10 * 60, 11 * 60),
+            stretch(Activity::Reading, 10 * 60 + 7, 11 * 60 + 13),
             Source::Sampler,
         );
-        assert!(!note(&at).contains(EVENTS_HEADING));
+        let without = note(&at);
+        assert!(!without.contains(EVENTS_HEADING));
+        assert_eq!(
+            without,
+            // Built from the note's own pieces, as `note` builds it.
+            format!(
+                "{TODAY_STEM} — your own day, drawn from your routine. {}. {NOTE_TAIL}",
+                "You are reading, since 10:07, until about 11:13"
+            ),
+            "the events-off note stays byte-identical"
+        );
         let text = note_with_events(&at, Some("What happened today: a small win."));
         assert!(text.contains("What happened today: a small win."), "{text}");
         assert!(text.contains("who you are wins.)"), "{text}");
+        assert_eq!(text.matches(NOTE_TAIL).count(), 1, "{text}");
     }
 
     #[test]

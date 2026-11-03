@@ -408,6 +408,9 @@ threshold per persona once the access log says where it should sit. The
     (`setup::persona_agent`: "turning memory off reaches the chat at its
     next call"). `remember_articles` in particular is the one an owner may
     want to revoke in a hurry, and turning it off stops the next recall.
+    Owner-written inputs that do not change the chat's shape are live too:
+    `[life] place` is read from the store for every eligible weather refresh,
+    while the `events` switch that admits the teller remains pinned.
   - **But `remember_articles` never reaches backwards.** Read live, it would
     also work in the other direction: switching it on after weeks of `news`
     would admit every candidate already stored from past article chats, a
@@ -955,9 +958,14 @@ one more reason §14's gate part 1 exists.
   day through the same door as the Week tab, and a story failure is logged
   and drops only these lines. The fold carries only the owner's deck titles,
   clean People-tab names, and shelf A's closed sky and integers; the
-  geocoder's owner-facing label never enters a prompt. A due weather refresh
-  runs in the background and never delays the chat. `persona::today::EVENTS_HEADING`
-  marks the arm that `persona::initiative` reads back from the transcript.
+  geocoder's owner-facing label never enters a prompt. The `events` switch is
+  pinned with the chat's other switches, while `[life] place` is read live;
+  a due weather refresh runs in the background and never delays the chat.
+  A stored day's event draw and levels stay fixed when only its weather
+  changes, so a refresh updates the weather line without changing "What
+  happened" on the next turn; deck, routine/day, cast, intensity and director
+  changes still redraw today. `persona::today::EVENTS_HEADING` marks the arm that
+  `persona::initiative` reads back from the transcript.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -1546,8 +1554,8 @@ so its rules must hold before any of §14's gate exists:**
   stated as one. What makes it safe to lean on is a **per-field render
   bound**, fixed in code:
   - an integer has a plausible range stated per field: a score is 0–200
-    (about 7.65 bits), a temperature is a whole degree Celsius from −40 to
-    50 (91 values, about 6.5 bits);
+    (about 7.65 bits); the built weather type uses whole degrees Celsius
+    from −60 to 60 (121 values), with low constrained not to exceed high;
   - a date has **a window per field**: a game or weather date within ±7 days
     of today (15 values, about 3.9 bits); an airdate or release date within
     the next 90 days (91 values, about 6.5 bits). A forward-looking date is
@@ -1566,7 +1574,8 @@ so its rules must hold before any of §14's gate exists:**
     date costs 15.3 + 3.9 ≈ 19.2 bits, which fails. So it renders as a win,
     loss or draw (1.6 bits), a margin band of eight (3 bits), the date (3.9)
     and the opponent's registry id (5): about 13.5 bits, which passes. A
-    weather item, a temperature and a date, is about 10.4 bits;
+    weather item is one of seven skies and an ordered low/high pair from
+    those 121 degrees: log₂(7 × 121·122/2), about 15.66 bits;
   - **at most three shelf A items a day**;
   - **expiry fixed at five days**.
 
@@ -1580,6 +1589,16 @@ so its rules must hold before any of §14's gate exists:**
 - **Gate part 1 covers shelf A from its first build.** The conformance test
   (§14) runs over shelf A's parsers too: a canary in any feed field must
   never reach the world or a prompt.
+
+  **As built for weather, all three gate parts exist before its teller
+  fold:** `persona::weather::tests::regression_shelf_a_weather_canary_never_reaches_world_or_prompt`
+  is part 1, including the page-only geocoder label;
+  `persona::weather::tests::shelf_a_weather_item_stays_within_sixteen_bits`
+  derives part 2 from `Sky::ALL`, `COLDEST` and `HOTTEST`; and
+  `persona::story::tests::shelf_a_weather_steering_measures_event_mix_without_direct_level_motion`
+  is part 3's deterministic 30-day honest-versus-storm arm. It reports the
+  event-mix distance without inventing a threshold; its zero-effect deck
+  asserts the narrower invariant that weather moves no level directly.
 
 Shelf B meets §2.7's three conditions in code:
 
@@ -2509,6 +2528,16 @@ ruled for repetition.
   it is built** (§16 PL9). Part 3 would
   be, as far as the research found, the first measurement of what endorsement
   by capacity leaves over.
+
+  **Weather's shelf A gate is now present in all three parts:** part 1 is
+  `persona::weather::tests::regression_shelf_a_weather_canary_never_reaches_world_or_prompt`,
+  part 2 is
+  `persona::weather::tests::shelf_a_weather_item_stays_within_sixteen_bits`,
+  and part 3 is
+  `persona::story::tests::shelf_a_weather_steering_measures_event_mix_without_direct_level_motion`.
+  The third prints end-level and event-mix distances; only the structural
+  no-direct-level-motion claim is pass/fail, because the design has not set
+  an acceptable event-mix threshold.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
 - **Out of the gate's reach:** two kinds of residual, each bounded by

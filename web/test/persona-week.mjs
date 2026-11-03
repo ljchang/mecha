@@ -52,6 +52,10 @@ assert.equal(
 assert.equal(weatherPlace({ place: null }), 'Set Where they live in Settings to add local weather.');
 assert.equal(weatherError({ weather_error: 'weather service unavailable' }), 'weather service unavailable');
 assert.equal(weatherError({ weather_error: null }), null);
+assert.equal(weatherPlace(null), null);
+assert.equal(weatherError(null), null);
+assert.equal(weatherPlace({ absent: 'off', place: { label: 'Springfield, Illinois, US' } }), null);
+assert.equal(weatherError({ absent: 'off', weather_error: 'weather service unavailable' }), null);
 
 // A day's stretches sit on a 4am-to-4am bar; past midnight is the next morning.
 assert.equal(dayClock(25 * 60 + 5), '01:05');
