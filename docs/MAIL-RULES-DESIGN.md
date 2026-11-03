@@ -895,7 +895,11 @@ the next digest (§7), so nothing leaves the inbox without a trace.
 **Every rule installs in `shadow`.** That is how "is it working?" gets
 answered before it can do anything: a week of *would-have* rows against real
 mail. Moving up a rung is the owner's act and only the owner's — the CLI
-(`mecha mail rule mode <name> <mode>`) or the web page — and never a tool.
+(`mecha mail rule mode <name> <group> <mode>`) or the web page — and never a
+tool. **A raise always names its group**: a rule-wide raise would lift every
+group to one value, which §3 rules out. With the group omitted, `mode` may
+only lower, and then each group takes the lower of its current mode and the
+target, as `pause-all` does.
 This is `/review now|later|auto`'s rule: a policy that decides what leaves the
 machine must not be decidable by anything sharing a context window with
 third-party text.
@@ -996,9 +1000,17 @@ acceptance rate and no waiting period gates the switch, and nothing ever flips
 it on the owner's behalf. The approval screen of §6.2 is the whole ceremony.
 
 The one precondition is structural, not historical. It binds **`auto`
-only**: in `propose`, a drafting run may use whatever tools its skill
-declares, as `mecha mail reply` does today, because the owner reads every
-draft in the outbox before it goes and that review is the control. The leak
+only**: in `propose`, a drafting run may *read* with whatever tools its
+skill declares, because the owner reads every draft in the outbox before it
+goes and that review is the control for the draft. But the review comes
+after the run, and unlike `mecha mail reply` — which drafts on a thread the
+owner chose — a rule's run starts on arriving mail, unattended, steerable by
+whatever the thread says. So **every drafting run, in any mode, runs
+read-only**: `permission_mode = "read-only"`, as a trigger does by default,
+with the skill's `tools:` as its allowlist intersected with tools that write
+and destroy nothing; its one effect is the staged draft. The interlock still
+owns `Egress::Chosen` within it, and a `Blind` tool is absent because the
+run has no send to make — its draft is the send, and the outbox holds it. The leak
 argument below is therefore the argument for `auto`, and it is true of a rule
 from the moment it graduates, not before.
 
@@ -1066,13 +1078,19 @@ Graduated drafts go through §5.4's guards like any automatic reply.
 
 A rule steps itself down, with a notice, when:
 
-- **Any automatic send is marked wrong** by the owner → `propose`. Zero
-  tolerance for sends.
-- **The owner undoes, or marks as a wrong match, more than 20% of its
-  automatic mailbox actions** over at least 10 → `propose`. A wrong match the
-  owner does not undo still counts: the archive may be harmless while the
-  matcher is wrong.
-- **Three consecutive action failures** → `shadow`. *Action* failures only —
+Every brake names the groups it lowers, and each lowers a group to the
+lower of its current mode and the brake's target, like a lapse.
+
+- **Any automatic send is marked wrong** by the owner → **that send's group**
+  to `propose`. Zero tolerance for sends.
+- **More than 20% of its automatic mailbox actions undone** over at least 10
+  → **the Mailbox group** to `propose`.
+- **More than 20% marked a wrong match**, undone or not, over at least 10 →
+  **every group of the rule** to `propose`. A wrong match indicts the matcher,
+  which every group shares; the archive may be harmless while the matcher is
+  wrong, and the same matcher is choosing the rule's sends.
+- **Three consecutive action failures** in one group → **that group** to
+  `shadow`. *Action* failures only —
   the rule's own action refused or erroring. A failure of the environment
   (`failed: thread unreadable`, a provider unreachable, a token needing
   re-auth) does not count, on `expired`'s reasoning: an outage would
