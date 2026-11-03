@@ -843,10 +843,23 @@ class Guard(unittest.TestCase):
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("the name of someone in a persona's life", r.stdout)
-        # Spelled as written already in the repository: excused.
+        # Spelled as written already in the repository: excused, but said.
         git(self.repo, "commit", "-q", "--no-verify", "-m", "the name")
         self.stage("again.py", "Y = 'Will again.'\n")
-        self.assertEqual(self.run_guard("--staged").returncode, 0)
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("names someone in a persona's life", r.stdout)
+
+    def test_a_name_stored_in_lowercase_still_refuses_its_capital(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'corwin', '[]')")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = 'Corwin came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
 
     def test_a_name_waiting_in_a_draft_is_refused_too(self):
         pdir = os.path.join(self.home, "personas", "quillon")

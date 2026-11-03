@@ -954,15 +954,28 @@ def main(args):
                 if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
                     hit = "the name of one of the owner's personas"
                     break
+        excused_person = False
         if not hit:
-            # Case kept: "Will" is a person, "will" a word.
+            # A capitalised use only: "Will" is a person, "will" a word,
+            # whatever case the store happened to spell the name in (review
+            # of #841).
             for name in people:
-                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", t) and not in_head_cased(name):
-                    hit = "the name of someone in a persona's life"
-                    break
+                pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
+                if not any(m.group(0)[:1].isupper() for m in re.finditer(pattern, t, re.I)):
+                    continue
+                if in_head_cased(name[:1].upper() + name[1:]):
+                    # Excused, since the repository already spells it (its
+                    # made-up cast holds ordinary first names): said, never
+                    # silent, so a real person sharing one is looked at.
+                    excused_person = True
+                    continue
+                hit = "the name of someone in a persona's life"
+                break
         if hit:
             findings.append((p, n, hit))
         else:
+            if excused_person:
+                print(f"check-private: warning: {p}:{n} names someone in a persona's life whose name the repository already uses; check it is the made-up one.")
             for word, field in lora_warn.items():
                 if phrase_in(word, t) and not in_head(word):
                     print(f"check-private: warning: {p}:{n} has a word that is a LoRA registry `{field}`; check it is not one of the owner's LoRAs.")
