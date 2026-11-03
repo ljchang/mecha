@@ -15,6 +15,13 @@ use super::activity::Activity;
 use super::atus::Company;
 
 pub const FILE: &str = "life.toml";
+/// A model's draft, waiting on the owner.
+pub const DRAFT: &str = "life.draft.toml";
+/// The life profile an approved draft replaced.
+pub const PREVIOUS: &str = "life.previous.toml";
+/// The digest of the draft as the model staged it. A mismatch means the
+/// owner edited it, so another model draft must not overwrite it.
+const STAGED: &str = ".life.draft.staged";
 pub const MAX_HOUSEHOLD: usize = 12;
 
 /// A commented starter is an empty profile: present, but making no claims
@@ -316,9 +323,156 @@ pub fn read(dir: &Path, name: &str) -> Result<Option<String>> {
     super::read_prose(&path).map(Some)
 }
 
+/// A waiting draft as written, or `None` when nothing waits.
+pub fn read_draft(dir: &Path, name: &str) -> Result<Option<String>> {
+    let path = persona_dir(dir, name)?.join(DRAFT);
+    if !path.exists() {
+        return Ok(None);
+    }
+    super::read_prose(&path).map(Some)
+}
+
+/// Stage a clean model's draft beside the owner's profile, replacing only a
+/// draft still exactly as the model staged it. The profile itself is never
+/// touched here.
+pub fn stage_draft(dir: &Path, name: &str, text: &str, origin: super::Origin) -> Result<()> {
+    match origin {
+        super::Origin::Owner => bail!("a draft is a model's; the owner edits {FILE} directly"),
+        super::Origin::ModelUntrusted => bail!(
+            "a life draft from a run that read untrusted content is refused; once approved it would reach their days as clean"
+        ),
+        super::Origin::ModelClean => {}
+    }
+    let pdir = persona_dir(dir, name)?;
+    check_draft_text(text, "the draft does not load")?;
+    may_stage(dir, name)?;
+    super::write_private(&pdir.join(DRAFT), text.as_bytes())?;
+    super::write_private(&pdir.join(STAGED), super::text_digest(text).as_bytes())
+}
+
+fn check_draft_text(text: &str, context: &str) -> Result<Life> {
+    if text.len() as u64 > super::MAX_PROSE_BYTES {
+        bail!(
+            "the draft is capped at {} KB",
+            super::MAX_PROSE_BYTES / 1024
+        );
+    }
+    if let Some(c) = super::forbidden_control(text) {
+        bail!("the draft holds a control character (U+{:04X})", c as u32);
+    }
+    parse(text).with_context(|| context.to_string())
+}
+
+/// Refuse a redraft over text the owner changed after staging it.
+pub fn may_stage(dir: &Path, name: &str) -> Result<()> {
+    let pdir = persona_dir(dir, name)?;
+    if let Some(waiting) = read_draft(dir, name)? {
+        let staged = std::fs::read_to_string(pdir.join(STAGED)).unwrap_or_default();
+        if staged.trim() != super::text_digest(&waiting) {
+            return Err(EditedDraft { name: name.into() }.into());
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct EditedDraft {
+    pub name: String,
+}
+
+impl std::fmt::Display for EditedDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}`'s waiting life draft has been edited since it was staged; approve or discard it before another is drafted",
+            self.name
+        )
+    }
+}
+
+impl std::error::Error for EditedDraft {}
+
+#[derive(Debug)]
+pub struct StaleLife {
+    pub name: String,
+}
+
+impl std::fmt::Display for StaleLife {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}`'s {} changed since it was shown; read it again before changing it",
+            self.name, DRAFT
+        )
+    }
+}
+
+impl std::error::Error for StaleLife {}
+
+/// Make the waiting draft the life profile only if it is still what the
+/// owner was shown. The replaced profile is kept as [`PREVIOUS`].
+pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Life> {
+    let pdir = persona_dir(dir, name)?;
+    let Some(text) = read_draft(dir, name)? else {
+        bail!("`{name}` has no life draft waiting");
+    };
+    if super::text_digest(&text) != digest {
+        return Err(StaleLife { name: name.into() }.into());
+    }
+    let life = check_draft_text(&text, "the draft does not load")?;
+    if let Some(old) = read(dir, name)? {
+        super::write_private(&pdir.join(PREVIOUS), old.as_bytes())?;
+    }
+    super::write_private(&pdir.join(FILE), text.as_bytes())?;
+    std::fs::remove_file(pdir.join(DRAFT)).with_context(|| {
+        format!("the life profile is approved, but {DRAFT} could not be removed")
+    })?;
+    let _ = std::fs::remove_file(pdir.join(STAGED));
+    Ok(life)
+}
+
+/// Save the owner's edit over the waiting draft as shown. The staged digest
+/// remains the model's, marking the waiting text as owner-edited.
+pub fn edit_draft_as_shown(dir: &Path, name: &str, text: &str, digest: &str) -> Result<Life> {
+    let pdir = persona_dir(dir, name)?;
+    let Some(waiting) = read_draft(dir, name)? else {
+        bail!("`{name}` has no life draft waiting");
+    };
+    if super::text_digest(&waiting) != digest {
+        return Err(StaleLife { name: name.into() }.into());
+    }
+    let life = check_draft_text(text, "the draft does not load as saved")?;
+    super::write_private(&pdir.join(DRAFT), text.as_bytes())?;
+    Ok(life)
+}
+
+/// Drop a waiting draft. The life profile is untouched.
+pub fn discard_draft(dir: &Path, name: &str) -> Result<()> {
+    let pdir = persona_dir(dir, name)?;
+    match std::fs::remove_file(pdir.join(DRAFT)) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(pdir.join(STAGED));
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("`{name}` has no life draft waiting")
+        }
+        Err(e) => Err(e).with_context(|| format!("removing {DRAFT}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persona::tests_support::*;
+
+    fn made() -> PathBuf {
+        let dir = scratch();
+        crate::persona::create(&dir, &no_lib(), new("mara")).unwrap();
+        dir
+    }
+
+    const DRAFTED: &str = "alone = true\nnever = [\"work\"]\n";
 
     fn refusal(text: &str) -> String {
         format!("{:#}", parse(text).unwrap_err())
@@ -391,6 +545,58 @@ mod tests {
         }
         assert!(refusal("surprise = true\n").contains("surprise"));
     }
+
+    #[test]
+    fn a_draft_never_overwrites_an_owner_edit() {
+        let dir = made();
+        stage_draft(&dir, "mara", DRAFTED, super::super::Origin::ModelClean).unwrap();
+        let path = dir.join("mara").join(DRAFT);
+        std::fs::write(&path, "alone = true\nnever = [\"caring\"]\n").unwrap();
+        let why = stage_draft(&dir, "mara", DRAFTED, super::super::Origin::ModelClean).unwrap_err();
+        assert!(why.downcast_ref::<EditedDraft>().is_some(), "{why:#}");
+    }
+
+    #[test]
+    fn only_a_clean_model_run_stages_a_draft() {
+        for origin in [
+            super::super::Origin::Owner,
+            super::super::Origin::ModelUntrusted,
+        ] {
+            let dir = made();
+            let why = stage_draft(&dir, "mara", DRAFTED, origin).unwrap_err();
+            assert!(!dir.join("mara").join(DRAFT).exists(), "{why:#}");
+        }
+    }
+
+    #[test]
+    fn approval_is_as_shown_and_keeps_the_previous_profile() {
+        let dir = made();
+        let pdir = dir.join("mara");
+        std::fs::write(pdir.join(FILE), TEMPLATE).unwrap();
+        stage_draft(&dir, "mara", DRAFTED, super::super::Origin::ModelClean).unwrap();
+        let stale = approve_draft_as_shown(&dir, "mara", "0").unwrap_err();
+        assert!(stale.downcast_ref::<StaleLife>().is_some(), "{stale:#}");
+        let life =
+            approve_draft_as_shown(&dir, "mara", &crate::persona::text_digest(DRAFTED)).unwrap();
+        assert!(life.alone);
+        assert_eq!(
+            std::fs::read_to_string(pdir.join(PREVIOUS)).unwrap(),
+            TEMPLATE
+        );
+        assert!(!pdir.join(DRAFT).exists());
+        assert!(!pdir.join(STAGED).exists());
+    }
+
+    #[test]
+    fn discard_removes_the_draft_and_its_staged_digest() {
+        let dir = made();
+        let pdir = dir.join("mara");
+        stage_draft(&dir, "mara", DRAFTED, super::super::Origin::ModelClean).unwrap();
+        discard_draft(&dir, "mara").unwrap();
+        assert!(!pdir.join(DRAFT).exists());
+        assert!(!pdir.join(STAGED).exists());
+    }
+
     #[test]
     fn a_household_name_is_held_to_the_label_limits() {
         let long = format!(
