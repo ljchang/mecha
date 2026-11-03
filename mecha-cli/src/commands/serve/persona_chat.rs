@@ -2181,7 +2181,7 @@ impl PersonaChats {
         .map_err(|e| Refusal::Failed(format!("reading their life profile: {e}")))??;
         let (_held, bound) = follower.enter("life draft", |_| {}).await.map_err(failed)?;
         let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
-        life_drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
+        let drafted = life_drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
             .await
             .map_err(|e| {
                 if e.chain().any(|c| c.is::<life::EditedDraft>()) {
@@ -2202,7 +2202,7 @@ impl PersonaChats {
         })
         .await
         .map_err(|e| Refusal::Failed(format!("reading their week: {e}")))??;
-        out["life_drafted"] = serde_json::json!(true);
+        out["life_drafted"] = serde_json::json!(drafted.is_some());
         Ok(out)
     }
 
