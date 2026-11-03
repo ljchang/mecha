@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve', '/people', '/people/proposal', '/people/proposal/accept'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve', '/life/draft', '/life/draft/approve', '/people', '/people/proposal', '/people/proposal/accept'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -872,6 +872,23 @@ export const WEEK_CELLS = [
   ['retired', 'Retired'],
 ];
 
+// The owner-written constraints on the sampled filler, in one read-only
+// line under the kind-of-week picker. A missing file gets its command in
+// the component, where the persona's name is available.
+export function lifeLine(life) {
+  if (!life) return '';
+  if (life.error) return `life.toml does not load: ${life.error}`;
+  if (life.alone == null && life.household == null && life.sleep == null && life.never == null) return '';
+  const parts = [];
+  if (life.alone) parts.push('Lives alone');
+  else if (life.household?.length) {
+    parts.push(`Lives with ${life.household.map((h) => `${h.person} (${h.relation})`).join(', ')}`);
+  } else parts.push('Household not named');
+  if (life.sleep) parts.push(`usually sleeps ${life.sleep.bed}–${life.sleep.wake}`);
+  if (life.never?.length) parts.push(`never ${life.never.map((a) => a.replace(/_/g, ' ')).join(', ')}`);
+  return parts.join(' · ');
+}
+
 // The body of the owner's cell pick: the cell, the routine's digest as the
 // page was shown it, and the week on screen. A cell the server does not
 // draw is refused here, so the page can never send one.
@@ -888,6 +905,18 @@ export function draftBody(data, date, token = null, text = undefined, notes = un
     digest: data?.routine?.draft?.digest ?? '',
     text,
     notes,
+    date: date ?? undefined,
+    unlock: token ?? undefined,
+  };
+}
+
+// The life-draft doors have the same wire body, but their digest lives under
+// `life`: keeping that choice here prevents a page from approving one draft
+// with the other draft's digest.
+export function lifeDraftBody(data, date, token = null, text = undefined) {
+  return {
+    digest: data?.life?.draft?.digest ?? '',
+    text,
     date: date ?? undefined,
     unlock: token ?? undefined,
   };

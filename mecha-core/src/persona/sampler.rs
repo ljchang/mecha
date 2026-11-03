@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use super::activity::Activity;
 use super::atus::{Band, Cell, Company, DayType, Table};
+use super::life::Life;
 use super::routine::Routine;
 
 /// When a day begins, in minutes after midnight: an ATUS diary's 4am.
@@ -62,7 +63,9 @@ pub struct Day {
     /// Back to back from [`DAY_START`] to [`DAY_END`], never empty.
     pub stretches: Vec<Stretch>,
     /// Draws that had to read past her cell's row at that hour: the pool
-    /// alone, a nearer hour or band, or the last resort.
+    /// alone, a nearer hour or band, or the last resort. With a life
+    /// profile it also counts a row the profile emptied, so a profiled
+    /// day's count is not purely the table running thin.
     pub backoffs: u32,
     /// The anchor that runs past this day's end, which the next day opens
     /// with. Stored with the day, so the next day reads what this one was.
@@ -119,11 +122,18 @@ pub fn seed(persona: &str, date: NaiveDate) -> u64 {
 }
 
 /// Sample `persona`'s day on `date`, in `cell`, around `routine`'s anchors.
-pub fn sample(table: &Table, cell: Cell, routine: &Routine, persona: &str, date: NaiveDate) -> Day {
+pub fn sample(
+    table: &Table,
+    cell: Cell,
+    routine: &Routine,
+    life: Option<&Life>,
+    persona: &str,
+    date: NaiveDate,
+) -> Day {
     let before = date
         .pred_opt()
         .and_then(|prev| carried_from(routine, persona, prev));
-    sample_after(table, cell, routine, persona, date, before)
+    sample_after(table, cell, routine, life, persona, date, before)
 }
 
 /// The anchor `routine` would carry out of `persona`'s `date`, redrawn:
@@ -180,6 +190,7 @@ pub fn sample_after(
     table: &Table,
     cell: Cell,
     routine: &Routine,
+    life: Option<&Life>,
     persona: &str,
     date: NaiveDate,
     before: Option<Carry>,
@@ -190,16 +201,29 @@ pub fn sample_after(
         day: day_type(date),
         draw: Draw(seed(persona, date)),
         backoffs: 0,
+        life,
+        main_sleep: None,
     };
     let anchors = anchors_of(routine, date, &mut s.draw, before);
     let carries = carry_out(&anchors);
+    // Anchors remain the first draws, so `carried_from` can reproduce them.
+    // A profile spends draws only after those; with no profile, the stream
+    // is exactly where it was before this feature.
+    s.main_sleep = life
+        .and_then(|l| l.sleep.as_ref())
+        .map(|sleep| main_sleep(&mut s.draw, sleep));
     let mut out: Vec<Stretch> = Vec::new();
     let mut next_anchor = 0;
     let (mut t, mut from) = (DAY_START, Activity::Sleep);
-    // The day opens asleep, unless an anchor opens it.
+    // Without a usual night the day opens asleep, as the ATUS sampler
+    // always has. A usual main sleep may instead sit wholly inside the day
+    // (a night-shift profile), or overlap this 4am edge.
     if anchors.first().is_none_or(|a| a.start > DAY_START) {
         let limit = anchors.first().map_or(DAY_END, |a| a.start);
-        let wake = s.wake().min(limit);
+        let wake = match &s.main_sleep {
+            Some(_) => s.sleep_end_at(DAY_START).unwrap_or(DAY_START).min(limit),
+            None => s.wake().min(limit),
+        };
         if wake > DAY_START {
             out.push(Stretch {
                 activity: Activity::Sleep,
@@ -230,9 +254,36 @@ pub fn sample_after(
             continue;
         }
         let limit = anchors.get(next_anchor).map_or(DAY_END, |a| a.start);
+        // A usual main sleep begins wherever its circular bed-to-wake span
+        // falls on this day. A routine anchor occupying it wins; after an
+        // anchor it resumes only for the part of the span still left.
+        if let Some(wake) = s.sleep_end_at(t) {
+            out.push(Stretch {
+                activity: Activity::Sleep,
+                start: t,
+                end: wake.min(limit),
+                company: None,
+                anchor: None,
+            });
+            (t, from) = (wake.min(limit), Activity::Sleep);
+            continue;
+        }
         let hour = ((t / 60) % 24) as u8;
-        let act = s.next(from, hour);
-        let end = (t + s.duration(act, Band::of(hour)).max(1)).min(limit);
+        // A daytime nap is separate from the morning or night sleep, and a
+        // transition near bedtime cannot begin a nap that runs into it.
+        let next_sleep = s.next_sleep_start(t);
+        let permit_sleep = s.main_sleep.is_none()
+            || (next_sleep.is_none_or(|bed| bed.saturating_sub(t) > 90)
+                && out
+                    .last()
+                    .is_none_or(|last| last.activity != Activity::Sleep));
+        let act = s.next(from, hour, permit_sleep);
+        let duration = if s.main_sleep.is_some() && act == Activity::Sleep {
+            s.duration(act, Band::of(hour)).clamp(1, 90)
+        } else {
+            s.duration(act, Band::of(hour)).max(1)
+        };
+        let end = (t + duration).min(limit).min(next_sleep.unwrap_or(DAY_END));
         out.push(Stretch {
             activity: act,
             start: t,
@@ -322,6 +373,11 @@ struct Sampler<'a> {
     day: DayType,
     draw: Draw,
     backoffs: u32,
+    life: Option<&'a Life>,
+    /// The pieces of the circular main sleep that fall inside this 4am day,
+    /// in order. A conventional night has an opening and a tail; a night
+    /// shift's can be one span in the middle.
+    main_sleep: Option<Vec<(u32, u32)>>,
 }
 
 impl Sampler<'_> {
@@ -366,9 +422,11 @@ impl Sampler<'_> {
     }
 
     /// What follows `from` at `hour`.
-    fn next(&mut self, from: Activity, hour: u8) -> Activity {
+    fn next(&mut self, from: Activity, hour: u8, permit_sleep: bool) -> Activity {
         let day = self.day;
-        if let Some((w, pooled)) = self.blend(|c| self.table.next(c, day, hour, from).cloned()) {
+        if let Some((mut w, pooled)) = self.blend(|c| self.table.next(c, day, hour, from).cloned())
+        {
+            self.retain_allowed(&mut w, permit_sleep);
             if let Some(a) = self.draw.pick(&w) {
                 self.backoffs += u32::from(pooled);
                 return a;
@@ -378,22 +436,30 @@ impl Sampler<'_> {
         // The pool's nearest hour that saw `from` end, later first.
         for d in 1..=12u8 {
             for h in [(hour + d) % 24, (hour + 24 - d) % 24] {
-                if let Some(a) = self
-                    .table
-                    .next(None, day, h, from)
-                    .and_then(|w| self.draw.pick(w))
-                {
-                    return a;
+                if let Some(w) = self.table.next(None, day, h, from) {
+                    if self.life.is_none() && permit_sleep {
+                        if let Some(a) = self.draw.pick(w) {
+                            return a;
+                        }
+                    } else {
+                        let mut w = w.clone();
+                        self.retain_allowed(&mut w, permit_sleep);
+                        if let Some(a) = self.draw.pick(&w) {
+                            return a;
+                        }
+                    }
                 }
             }
         }
         // Every activity ends somewhere in the pool on either day type
         // (`persona::atus`'s tests), so this is a table that broke them.
-        if from == Activity::Sleep {
-            Activity::PersonalCare
-        } else {
-            Activity::Sleep
-        }
+        // Unreachable while that holds, so the no-profile digest pin cannot
+        // see it: before profiles it fell back to sleep or personal care,
+        // now to the first activity the profile allows (review of #833).
+        Activity::ALL
+            .into_iter()
+            .find(|a| *a != from && self.allowed(*a, permit_sleep))
+            .unwrap_or(Activity::Sleep)
     }
 
     /// How long `act` lasts, begun in `band`, in minutes.
@@ -457,7 +523,38 @@ impl Sampler<'_> {
                 others.iter().map(|who| (*who, share(*who))).collect();
             with.push(self.draw.pick(&weights).unwrap_or(Company::Public));
         }
-        Some(with)
+        match self.life {
+            None => Some(with),
+            Some(life) => {
+                with.retain(|who| life.keeps(*who));
+                (!with.is_empty()).then_some(with)
+            }
+        }
+    }
+
+    fn allowed(&self, activity: Activity, permit_sleep: bool) -> bool {
+        (permit_sleep || activity != Activity::Sleep)
+            && self.life.is_none_or(|life| life.allows(activity))
+    }
+
+    fn retain_allowed(&self, weights: &mut BTreeMap<Activity, f64>, permit_sleep: bool) {
+        if self.life.is_some() || !permit_sleep {
+            weights.retain(|activity, _| self.allowed(*activity, permit_sleep));
+        }
+    }
+
+    fn sleep_end_at(&self, minute: u32) -> Option<u32> {
+        self.main_sleep
+            .as_ref()?
+            .iter()
+            .find_map(|(start, end)| (*start <= minute && minute < *end).then_some(*end))
+    }
+
+    fn next_sleep_start(&self, minute: u32) -> Option<u32> {
+        self.main_sleep
+            .as_ref()?
+            .iter()
+            .find_map(|(start, _)| (*start > minute).then_some(*start))
     }
 
     /// A transition row for her cell blended with the pool's shares, or the
@@ -480,6 +577,38 @@ impl Sampler<'_> {
         }
         Some((cell, false))
     }
+}
+
+/// A clock minute placed on the 4am-to-4am day. A bedtime after midnight
+/// belongs to the end of this day, not the morning that opened it.
+fn day_minute(minute: u32) -> u32 {
+    if minute < DAY_START {
+        minute + MINUTES_PER_DAY
+    } else {
+        minute
+    }
+}
+
+/// The circular main sleep, shifted as a whole within an hour either side
+/// so both its bed and wake stay in their windows. Its translated copies
+/// are clipped to this 4am-to-4am day: this supports both a conventional
+/// night split across the boundary and a night-shift sleep in the middle.
+fn main_sleep(draw: &mut Draw, sleep: &super::life::Sleep) -> Vec<(u32, u32)> {
+    let duration = (sleep.wake + MINUTES_PER_DAY - sleep.bed) % MINUTES_PER_DAY;
+    debug_assert!(duration > 0, "life::parse refuses equal bed and wake");
+    let offset = (draw.unit() * 121.0) as i32 - 60;
+    let start = day_minute(sleep.bed) as i32 + offset;
+    let end = start + duration as i32;
+    let mut spans = Vec::new();
+    for shift in [-(MINUTES_PER_DAY as i32), 0, MINUTES_PER_DAY as i32] {
+        let from = (start + shift).max(DAY_START as i32);
+        let to = (end + shift).min(DAY_END as i32);
+        if from < to {
+            spans.push((from as u32, to as u32));
+        }
+    }
+    spans.sort_unstable();
+    spans
 }
 
 /// Seeded uniform draws: splitmix64, like `sample::SeedStream`, kept here so
@@ -525,7 +654,7 @@ impl Draw {
 mod tests {
     use super::*;
     use crate::persona::atus::table;
-    use crate::persona::routine;
+    use crate::persona::{life, routine};
 
     fn date(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
@@ -561,13 +690,173 @@ mod tests {
     fn a_day_is_the_same_every_time_and_differs_by_persona_and_date() {
         let r = empty();
         let d = date("2026-11-02");
-        let a = sample(table(), Cell::FullTime, &r, "mara", d);
-        assert_eq!(a, sample(table(), Cell::FullTime, &r, "mara", d));
-        assert_ne!(a, sample(table(), Cell::FullTime, &r, "jun", d));
+        let a = sample(table(), Cell::FullTime, &r, None, "mara", d);
+        assert_eq!(a, sample(table(), Cell::FullTime, &r, None, "mara", d));
+        assert_ne!(a, sample(table(), Cell::FullTime, &r, None, "jun", d));
         assert_ne!(
             a,
-            sample(table(), Cell::FullTime, &r, "mara", date("2026-11-03"))
+            sample(
+                table(),
+                Cell::FullTime,
+                &r,
+                None,
+                "mara",
+                date("2026-11-03")
+            )
         );
+    }
+
+    #[test]
+    fn no_profile_keeps_the_historical_draw_stream() {
+        use sha2::{Digest, Sha256};
+
+        // Taken from the sampler before life profiles existed. A change here
+        // changes a profile-less persona's days, so SAMPLER_VERSION's redraw
+        // contract applies.
+        let ward = routine::parse(
+            "cell = \"full_time\"\n[[anchor]]\nwhat = \"ward\"\nactivity = \"work\"\ndays = [\"mon\"]\nat = \"22:00\"\nminutes = 480\n",
+        ).unwrap();
+        let mut h = Sha256::new();
+        for r in [empty(), ward] {
+            for cell in Cell::ALL {
+                let mut d = date("2026-01-01");
+                for _ in 0..60 {
+                    h.update(
+                        format!("{:?}", sample(table(), cell, &r, None, "mara", d)).as_bytes(),
+                    );
+                    d = d.succ_opt().unwrap();
+                }
+            }
+        }
+        let fingerprint = h
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            fingerprint,
+            "95a5140f1e813dae7f3e1ce7eee661d8706d50c00af6367b5d609eeb49b80639"
+        );
+    }
+
+    #[test]
+    fn a_profile_removes_household_kinds_it_does_not_name() {
+        let r = empty();
+        let profile =
+            life::parse("[[household]]\nperson = \"Theo\"\nrelation = \"housemate\"\n").unwrap();
+        let mut d = date("2026-01-01");
+        for _ in 0..200 {
+            let day = sample(table(), Cell::AtHome, &r, Some(&profile), "mara", d);
+            assert!(day.stretches.iter().all(|s| s
+                .company
+                .as_ref()
+                .is_none_or(|c| !c.contains(&Company::Child))));
+            assert!(day.stretches.iter().all(|s| s.activity != Activity::Caring));
+            d = d.succ_opt().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_never_activity_is_removed_from_every_transition() {
+        let r = empty();
+        let profile = life::parse("never = [\"work\"]\n").unwrap();
+        let mut d = date("2026-01-01");
+        for _ in 0..200 {
+            let day = sample(table(), Cell::FullTime, &r, Some(&profile), "mara", d);
+            assert!(day.stretches.iter().all(|s| s.activity != Activity::Work));
+            check_shape(&day);
+            d = d.succ_opt().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_usual_night_bounds_waking_bedtime_and_naps() {
+        let r = empty();
+        let profile = life::parse("[sleep]\nbed = \"23:00\"\nwake = \"07:00\"\n").unwrap();
+        let mut d = date("2026-01-01");
+        for _ in 0..120 {
+            let day = sample(table(), Cell::Student, &r, Some(&profile), "mara", d);
+            check_shape(&day);
+            let morning = day.stretches.first().expect("a day");
+            assert_eq!(morning.activity, Activity::Sleep);
+            assert!((6 * 60..=8 * 60).contains(&morning.end), "{morning:?}");
+            let night = day
+                .stretches
+                .iter()
+                .rev()
+                .find(|s| s.activity == Activity::Sleep && s.end == DAY_END)
+                .expect("night sleep");
+            assert!((22 * 60..=24 * 60).contains(&night.start), "{night:?}");
+            for nap in day.stretches.iter().filter(|s| {
+                s.activity == Activity::Sleep && s.start >= morning.end && s.end <= night.start
+            }) {
+                assert!(nap.end - nap.start <= 90, "{nap:?}");
+            }
+            d = d.succ_opt().unwrap();
+        }
+        let after_midnight = life::parse("[sleep]\nbed = \"00:30\"\nwake = \"07:00\"\n").unwrap();
+        let day = sample(table(), Cell::Student, &r, Some(&after_midnight), "mara", d);
+        let night = day.stretches.last().unwrap();
+        assert!((23 * 60 + 30..=25 * 60 + 30).contains(&night.start));
+    }
+
+    #[test]
+    fn a_night_shift_sleeps_between_its_daytime_bed_and_wake() {
+        let r = empty();
+        let profile = life::parse("[sleep]\nbed = \"08:00\"\nwake = \"15:00\"\n").unwrap();
+        let mut d = date("2026-01-01");
+        for _ in 0..120 {
+            let day = sample(table(), Cell::FullTime, &r, Some(&profile), "mara", d);
+            check_shape(&day);
+            let main = day
+                .stretches
+                .iter()
+                .find(|s| s.activity == Activity::Sleep && s.end - s.start > 90)
+                .expect("daytime main sleep");
+            assert!((7 * 60..=9 * 60).contains(&main.start), "{main:?}");
+            assert!((14 * 60..=16 * 60).contains(&main.end), "{main:?}");
+            assert!(day.stretches.iter().any(|s| s.activity != Activity::Sleep));
+            d = d.succ_opt().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_wake_before_4am_wraps_without_filling_the_day() {
+        let r = empty();
+        let profile = life::parse("[sleep]\nbed = \"23:00\"\nwake = \"03:30\"\n").unwrap();
+        let mut d = date("2026-01-01");
+        for _ in 0..120 {
+            let day = sample(table(), Cell::FullTime, &r, Some(&profile), "mara", d);
+            check_shape(&day);
+            let tail = day
+                .stretches
+                .iter()
+                .find(|s| {
+                    s.activity == Activity::Sleep
+                        && (22 * 60..=24 * 60).contains(&s.start)
+                        && s.end - s.start > 90
+                })
+                .expect("main sleep's late-evening portion");
+            // The main sleep lasts 4h30. Deriving its unclipped wake from
+            // the tail distinguishes a wake exactly at 4am from one after
+            // 4am: both tails end at DAY_END, but only the latter overlaps
+            // the opening of this day.
+            let wake = tail.start + 4 * 60 + 30;
+            if wake < DAY_END {
+                assert_eq!(tail.end, wake);
+            } else if wake == DAY_END {
+                assert_eq!(tail.end, DAY_END);
+            } else {
+                assert_eq!(tail.end, DAY_END);
+                let opening = day.stretches.first().expect("a day");
+                assert_eq!(opening.activity, Activity::Sleep);
+                assert_eq!(opening.start, DAY_START);
+                assert_eq!(opening.end + MINUTES_PER_DAY, wake);
+            }
+            assert!((26 * 60 + 30..=28 * 60 + 30).contains(&wake), "{day:?}");
+            assert!(day.stretches.iter().any(|s| s.activity != Activity::Sleep));
+            d = d.succ_opt().unwrap();
+        }
     }
 
     #[test]
@@ -576,7 +865,7 @@ mod tests {
         let mut d = date("2026-01-01");
         for _ in 0..60 {
             for cell in Cell::ALL {
-                check_shape(&sample(table(), cell, &r, "mara", d));
+                check_shape(&sample(table(), cell, &r, None, "mara", d));
             }
             d = d.succ_opt().unwrap();
         }
@@ -593,7 +882,7 @@ mod tests {
         let (mut runs, mut days) = (0, 0);
         let mut d = date("2026-01-05"); // a Monday
         for _ in 0..140 {
-            let day = sample(table(), Cell::Student, &r, "mara", d);
+            let day = sample(table(), Cell::Student, &r, None, "mara", d);
             check_shape(&day);
             let lecture = day
                 .stretches
@@ -627,7 +916,7 @@ mod tests {
         .unwrap();
         let mut d = date("2026-08-25");
         for _ in 0..80 {
-            let day = sample(table(), Cell::Student, &r, "mara", d);
+            let day = sample(table(), Cell::Student, &r, None, "mara", d);
             let rowed = day
                 .stretches
                 .iter()
@@ -647,7 +936,7 @@ mod tests {
         )
         .unwrap();
         let shifted = |day: &str| {
-            sample(table(), Cell::Student, &r, "mara", date(day))
+            sample(table(), Cell::Student, &r, None, "mara", date(day))
                 .stretches
                 .iter()
                 .any(|s| s.anchor.as_deref() == Some("night shift"))
@@ -664,8 +953,8 @@ mod tests {
             "cell = \"student\"\n[[anchor]]\nwhat = \"late set\"\nactivity = \"socializing\"\ndays = [\"fri\"]\nat = \"01:00\"\nminutes = 60\n",
         )
         .unwrap();
-        let thu = sample(table(), Cell::Student, &r, "mara", date("2026-01-08"));
-        let fri = sample(table(), Cell::Student, &r, "mara", date("2026-01-09"));
+        let thu = sample(table(), Cell::Student, &r, None, "mara", date("2026-01-08"));
+        let fri = sample(table(), Cell::Student, &r, None, "mara", date("2026-01-09"));
         let late = |d: &Day| d.stretches.iter().any(|s| s.anchor.is_some());
         assert!(late(&thu) && !late(&fri));
         let s = thu.stretches.iter().find(|s| s.anchor.is_some()).unwrap();
@@ -679,9 +968,30 @@ mod tests {
             "cell = \"full_time\"\n[[anchor]]\nwhat = \"ward\"\nactivity = \"work\"\ndays = [\"mon\"]\nat = \"22:00\"\nminutes = 480\n",
         )
         .unwrap();
-        let mon = sample(table(), Cell::FullTime, &r, "mara", date("2026-01-05"));
-        let tue = sample(table(), Cell::FullTime, &r, "mara", date("2026-01-06"));
-        let wed = sample(table(), Cell::FullTime, &r, "mara", date("2026-01-07"));
+        let mon = sample(
+            table(),
+            Cell::FullTime,
+            &r,
+            None,
+            "mara",
+            date("2026-01-05"),
+        );
+        let tue = sample(
+            table(),
+            Cell::FullTime,
+            &r,
+            None,
+            "mara",
+            date("2026-01-06"),
+        );
+        let wed = sample(
+            table(),
+            Cell::FullTime,
+            &r,
+            None,
+            "mara",
+            date("2026-01-07"),
+        );
         let ward = |d: &Day| -> Vec<(u32, u32)> {
             d.stretches
                 .iter()
@@ -716,6 +1026,7 @@ mod tests {
             table(),
             Cell::FullTime,
             &now,
+            None,
             "mara",
             date("2026-01-06"),
             Some(carried),
@@ -726,6 +1037,7 @@ mod tests {
             table(),
             Cell::FullTime,
             &now,
+            None,
             "mara",
             date("2026-01-06"),
             None,
@@ -746,7 +1058,7 @@ mod tests {
         )
         .unwrap();
         let tue = date("2026-01-06");
-        let drawn = sample(table(), Cell::FullTime, &r, "mara", tue);
+        let drawn = sample(table(), Cell::FullTime, &r, None, "mara", tue);
         assert_eq!(drawn.stretches[0].anchor.as_deref(), Some("long"));
         assert!(drawn.carries.is_none());
         assert_eq!(carried_from(&r, "mara", tue), drawn.carries);
@@ -763,7 +1075,7 @@ mod tests {
             let mut total = 0;
             for _ in 0..70 {
                 if day_type(d) == DayType::Weekday {
-                    total += sample(table(), cell, &r, "mara", d)
+                    total += sample(table(), cell, &r, None, "mara", d)
                         .stretches
                         .iter()
                         .filter(|s| s.activity == act)
@@ -792,6 +1104,8 @@ mod tests {
             day: DayType::Weekday,
             draw: Draw(1),
             backoffs: 0,
+            life: None,
+            main_sleep: None,
         };
         let mut cell = BTreeMap::new();
         cell.insert(Activity::Work, 1.0);

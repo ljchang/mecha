@@ -32,6 +32,7 @@ use std::path::Path;
 
 use super::activity::Activity;
 use super::atus::{self, Cell, Company};
+use super::life;
 use super::memory::{connect, now as stamp, uid};
 use super::routine;
 use super::sampler::{self, Carry, Day, Stretch};
@@ -41,7 +42,7 @@ pub const WORLD_DB: &str = "world.db";
 pub const KEEP_DAYS: u64 = 14;
 /// Bumped when the sampler would draw a different day from the same inputs,
 /// so today's stored day is drawn again.
-const SAMPLER_VERSION: &str = "1";
+const SAMPLER_VERSION: &str = "2";
 /// A state value is a few words: "nurse at the county hospital".
 pub const MAX_STATE: usize = 200;
 /// The `weeks` activity a day no binary could read folds under: never an
@@ -123,6 +124,9 @@ pub struct Now {
     pub stretch: Stretch,
     /// Where the stretch came from; unknown is never clean.
     pub source: Source,
+    /// Household members whose relation this stretch kept, in the owner's
+    /// profile order. Non-household company remains a closed kind.
+    pub with_names: Vec<String>,
 }
 
 /// Whether a label read back from the store is one the routine's parser
@@ -298,18 +302,27 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// What a day is drawn from, as one digest: the routine's text, the table,
-/// and the sampler's own version.
-fn inputs(routine_text: &str) -> String {
-    inputs_of(SAMPLER_VERSION, atus::TEXT_SHA256, routine_text)
+/// What a day is drawn from, as one digest: the routine and optional life
+/// profile text, the table, and the sampler's own version.
+fn inputs(routine_text: &str, life_text: Option<&str>) -> String {
+    inputs_of(SAMPLER_VERSION, atus::TEXT_SHA256, routine_text, life_text)
 }
 
 /// [`inputs`] over its parts, so a test can vary each one.
-fn inputs_of(version: &str, table: &str, routine_text: &str) -> String {
+fn inputs_of(version: &str, table: &str, routine_text: &str, life_text: Option<&str>) -> String {
     let mut h = Sha256::new();
     for part in [version, table, routine_text] {
         h.update(part.as_bytes());
         h.update([0]);
+    }
+    // Presence matters: an empty profile still suppresses Caring without a
+    // household, while no file preserves the old draw exactly.
+    match life_text {
+        Some(text) => {
+            h.update([1]);
+            h.update(text.as_bytes());
+        }
+        None => h.update([0]),
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -930,6 +943,20 @@ pub fn now(store_dir: &Path, name: &str, at: NaiveDateTime) -> Result<Option<Now
         minute,
         stretch: day.stretches[i].clone(),
         source: sources.get(i).copied().unwrap_or(Source::Unknown),
+        with_names: life::load(&store_dir.join(name))?
+            .as_ref()
+            .and_then(|life| {
+                day.stretches[i]
+                    .company
+                    .as_deref()
+                    .map(|c| life.names_for(c))
+            })
+            .unwrap_or_default()
+            .into_iter()
+            // Held to the label limits on the way out too, as an anchor's
+            // label is: the parser already refuses worse.
+            .filter(|n| label_ok(n))
+            .collect(),
     }))
 }
 
@@ -1133,11 +1160,18 @@ fn drawable(store_dir: &Path, name: &str) -> Result<std::result::Result<Drawing,
     };
     let routine =
         routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
+    let life_text = life::read(store_dir, name)?;
+    let profile = life_text
+        .as_deref()
+        .map(life::parse)
+        .transpose()
+        .with_context(|| format!("{} does not load", life::FILE))?;
     Ok(match routine.cell {
         Some(cell) => Ok(Drawing {
-            digest: inputs(&text),
+            digest: inputs(&text, life_text.as_deref()),
             routine,
             cell,
+            profile,
         }),
         None => Err(Absent::NoCell),
     })
@@ -1149,6 +1183,7 @@ struct Drawing {
     routine: routine::Routine,
     cell: Cell,
     digest: String,
+    profile: Option<life::Life>,
 }
 
 /// A day, or why she has none.
@@ -1218,6 +1253,7 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         routine,
         cell,
         digest,
+        profile,
     } = match drawable(store_dir, &persona.name)? {
         Ok(d) => d,
         Err(why) => return Ok(Drawn::Absent(why)),
@@ -1258,7 +1294,15 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         ),
     };
     let label = before.as_ref().map(|c| c.label.clone());
-    let day = sampler::sample_after(atus::table(), cell, &routine, &persona.name, date, before);
+    let day = sampler::sample_after(
+        atus::table(),
+        cell,
+        &routine,
+        profile.as_ref(),
+        &persona.name,
+        date,
+        before,
+    );
     let mut drawn = vec![Source::Sampler; day.stretches.len()];
     if let (Some(label), Some(first)) = (label, day.stretches.first()) {
         if first.start == sampler::DAY_START && first.anchor.as_deref() == Some(label.as_str()) {
@@ -1651,14 +1695,45 @@ mod tests {
     fn every_input_moves_the_digest_and_no_two_splits_digest_alike() {
         let text = "cell = \"student\"\n";
         assert_eq!(
-            inputs(text),
-            inputs_of(SAMPLER_VERSION, atus::TEXT_SHA256, text)
+            inputs(text, None),
+            inputs_of(SAMPLER_VERSION, atus::TEXT_SHA256, text, None)
         );
-        let base = inputs_of("1", "abc", text);
-        assert_ne!(inputs_of("2", "abc", text), base);
-        assert_ne!(inputs_of("1", "abd", text), base);
-        assert_ne!(inputs_of("1", "abc", "cell = \"retired\"\n"), base);
-        assert_ne!(inputs_of("1a", "bc", text), inputs_of("1", "abc", text));
+        let base = inputs_of("1", "abc", text, None);
+        assert_ne!(inputs_of("2", "abc", text, None), base);
+        assert_ne!(inputs_of("1", "abd", text, None), base);
+        assert_ne!(inputs_of("1", "abc", "cell = \"retired\"\n", None), base);
+        assert_ne!(inputs_of("1", "abc", text, Some("")), base);
+        assert_ne!(
+            inputs_of("1", "abc", text, Some("alone = true\n")),
+            inputs_of("1", "abc", text, Some("alone = false\n"))
+        );
+        assert_ne!(
+            inputs_of("1a", "bc", text, None),
+            inputs_of("1", "abc", text, None)
+        );
+    }
+
+    #[test]
+    fn changing_life_toml_changes_todays_stored_inputs() {
+        let dir = store(Some("cell = \"full_time\"\n"), true);
+        let today = date("2026-11-02");
+        day(dir.as_path(), "mara", today, today).unwrap();
+        let digest = |dir: &Path| {
+            World::open_existing(&dir.join("mara"))
+                .unwrap()
+                .unwrap()
+                .conn
+                .query_row(
+                    "SELECT inputs FROM sampled WHERE date = ?1",
+                    [today.to_string()],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        let before = digest(&dir);
+        std::fs::write(dir.join("mara").join(life::FILE), "never = [\"work\"]\n").unwrap();
+        day(dir.as_path(), "mara", today, today).unwrap();
+        assert_ne!(digest(&dir), before);
     }
 
     #[test]
