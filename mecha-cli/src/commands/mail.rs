@@ -13,9 +13,9 @@
 //! **`classify` is the quarantined pass.**
 //!
 //! Mail arrives the same way it does for the model: through the MCP tool
-//! surface. This crate has no dependency on `mecha-mail` and does not gain
-//! one here — `mail_recent` already answers in JSON, so the driver reads the
-//! same bytes the loop would.
+//! surface, so the driver reads the same JSON bytes the loop would. The CLI
+//! has no runtime dependency on `mecha-mail`; tests use its dev-dependency to
+//! check that the independently implemented triage status rules agree.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -2811,15 +2811,436 @@ async fn triage(
             &tool_ctx(&prepared),
         )
         .await?;
-    if out.is_error {
-        bail!("{action} failed: {}", out.content);
-    }
-    // Recorded before reporting: the mailbox has already changed, and a store
-    // that disagrees with it would send the next sweep back over a thread the
-    // user has dealt with.
-    store.mark(&account, thread_id, action, mecha_core::mail_triage::ACTED)?;
-    println!("{action}d {} — {}", handle(thread_id), out.content.trim());
+    println!(
+        "{}",
+        finish_triage(&store, &account, thread_id, action, &out)?
+    );
     Ok(())
+}
+
+/// Keep the CLI independent of the mail library at runtime. The parity test
+/// compares this rule with mecha-mail's `status_of` through a dev-dependency.
+fn triage_status_of(moved: Option<usize>, failed: usize, left_in_place: usize) -> &'static str {
+    if failed > 0 || left_in_place > 0 {
+        "partial"
+    } else if moved == Some(0) {
+        "nothing_to_do"
+    } else {
+        "completed"
+    }
+}
+
+/// Settle confirmed completion, including an archive already out of Inbox.
+/// A spam no-op does not establish junk training; partial failures likewise
+/// leave the record untouched and in the needs-attention queue.
+fn finish_triage(
+    store: &TriageStore,
+    account: &str,
+    thread_id: &str,
+    action: &str,
+    out: &mecha_core::tool::ToolOutput,
+) -> Result<String> {
+    let short = handle(thread_id);
+    let frame = format!("{action} {short}");
+    let completed = match action {
+        "archive" => "archived",
+        "spam" => "marked as spam",
+        "trash" => "trashed",
+        "read" => "marked read",
+        "unread" => "marked unread",
+        "unarchive" => "unarchived",
+        "untrash" => "untrashed",
+        _ => action,
+    };
+    #[derive(serde::Deserialize)]
+    struct Outcome {
+        account: String,
+        thread_id: String,
+        action: String,
+        status: String,
+        // Required even when null: Gmail acknowledges a thread operation
+        // without counting messages. Missing counts are not that promise.
+        moved: Value,
+        failed: usize,
+        left_in_place: usize,
+        source: Option<String>,
+        message: String,
+    }
+    let outcome: Outcome = match serde_json::from_str(&out.content) {
+        Ok(outcome) => outcome,
+        Err(_) if out.is_error => bail!("{frame} — failed: {}", out.content),
+        Err(_) => bail!(
+            "{frame} — missing structured triage outcome; state unchanged — update the mail server"
+        ),
+    };
+    let moved = match &outcome.moved {
+        Value::Null => None,
+        value => Some(
+            usize::try_from(value.as_u64().with_context(|| {
+                format!("{frame} — invalid triage moved count; state unchanged")
+            })?)
+            .with_context(|| {
+                format!("{frame} — triage moved count exceeds usize; state unchanged")
+            })?,
+        ),
+    };
+    let expected = triage_status_of(moved, outcome.failed, outcome.left_in_place);
+    if outcome.account != account
+        || outcome.thread_id != thread_id
+        || outcome.action != action
+        || outcome.status != expected
+    {
+        bail!("{frame} — inconsistent triage outcome; state unchanged");
+    }
+    if expected == "partial" {
+        bail!("{frame} — partial completion — {} moved; {} failed; {} left in place; state unchanged — {}",
+            moved.unwrap_or(0), outcome.failed, outcome.left_in_place, outcome.message);
+    }
+    if out.is_error {
+        bail!("{frame} — failed: {}", outcome.message);
+    }
+    if expected == "nothing_to_do" {
+        if action == "archive" {
+            if outcome.source.as_deref() != Some("Inbox") {
+                bail!("{frame} — inconsistent archive source; state unchanged");
+            }
+            // The existence probe established that the conversation exists
+            // outside Inbox: archive's desired state is already satisfied.
+            store
+                .mark(account, thread_id, action, mecha_core::mail_triage::ACTED)
+                .with_context(|| format!("{frame} — could not record archive completion"))?;
+            return Ok(format!("{completed} {short} — already out of the Inbox"));
+        }
+        return Ok(format!(
+            "{frame} — skipped: nothing in {}",
+            outcome.source.as_deref().unwrap_or("the source"),
+        ));
+    }
+    store
+        .mark(account, thread_id, action, mecha_core::mail_triage::ACTED)
+        .with_context(|| format!("{frame} — could not record completion"))?;
+    Ok(format!("{completed} {short} — {}", outcome.message))
+}
+
+#[cfg(test)]
+mod triage_result_tests {
+    use super::*;
+    use mecha_core::tool::ToolOutput;
+    use mecha_mail::microsoft::graph_mail::{MutationOutcome, RestoreOutcome};
+    use mecha_mail::unified::{triage_reply, TriageAction, TriageResult};
+
+    #[test]
+    fn independent_cli_and_mail_status_rules_agree() {
+        let counts = || (0..=2).chain(std::iter::once(usize::MAX));
+        for moved in std::iter::once(None).chain(counts().map(Some)) {
+            for failed in counts() {
+                for left_in_place in counts() {
+                    assert_eq!(
+                        triage_status_of(moved, failed, left_in_place),
+                        mecha_mail::unified::status_of(moved, failed, left_in_place),
+                        "status rules diverged for {moved:?} moved, {failed} failed, {left_in_place} left in place"
+                    );
+                }
+            }
+        }
+    }
+
+    struct Fixture {
+        root: std::path::PathBuf,
+        store: TriageStore,
+        file: std::path::PathBuf,
+        before: Vec<u8>,
+        thread_id: String,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self::for_thread("thread-1")
+        }
+
+        fn for_thread(thread_id: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("mecha-mail-triage-{}", uuid::Uuid::new_v4()));
+            let store = TriageStore::open(root.clone()).unwrap();
+            let record: Record = serde_json::from_value(json!({
+                "account":"fixture", "thread_id":thread_id, "state":"classified",
+                "from":"sender@example.edu", "subject":"Fixture",
+                "verdict":{"bucket":"respond", "urgency":"today", "proposed":"reply"}
+            }))
+            .unwrap();
+            assert!(record.needs_me());
+            store.put(&record).unwrap();
+            let file = root.join(record.file_name());
+            let before = std::fs::read(&file).unwrap();
+            Self {
+                root,
+                store,
+                file,
+                before,
+                thread_id: thread_id.to_owned(),
+            }
+        }
+
+        fn settled_with(&self, action: TriageAction) {
+            let record = self.store.get("fixture", &self.thread_id).unwrap();
+            assert_eq!(record.state, mecha_core::mail_triage::ACTED);
+            assert_eq!(record.acted.as_deref(), Some(action.name()));
+            assert!(record.acted_at.is_some());
+            assert!(!self.store.list().unwrap().iter().any(|r| r.needs_me()));
+        }
+
+        fn unchanged_and_still_needs_attention(&self) {
+            assert_eq!(std::fs::read(&self.file).unwrap(), self.before);
+            assert_eq!(
+                self.store
+                    .list()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r.needs_me())
+                    .count(),
+                1
+            );
+            let record = self.store.get("fixture", &self.thread_id).unwrap();
+            assert_eq!(record.state, CLASSIFIED);
+            assert!(record.acted.is_none());
+            assert!(record.acted_at.is_none());
+        }
+
+        fn finish(&self, action: TriageAction, result: TriageResult) -> Result<String> {
+            finish_triage(
+                &self.store,
+                "fixture",
+                &self.thread_id,
+                action.name(),
+                &wire_output_for(&self.thread_id, action, result),
+            )
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    // Use the actual server renderer and MCP serializer, then the text
+    // content preserved by mecha-core's MCP adapter. No invented prose or
+    // synthetic count-only result bypasses the wire contract in these tests.
+    fn wire_output(action: TriageAction, result: TriageResult) -> ToolOutput {
+        wire_output_for("thread-1", action, result)
+    }
+
+    fn wire_output_for(thread_id: &str, action: TriageAction, result: TriageResult) -> ToolOutput {
+        let reply = triage_reply("fixture", thread_id, action, result);
+        let wire = mecha_mail::mcp::result_json(&reply);
+        let text = wire["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            wire["structuredContent"]
+        );
+        let mut out = ToolOutput::ok(text);
+        out.is_error = wire["isError"].as_bool().unwrap();
+        out
+    }
+
+    #[test]
+    fn empty_inbox_settles_archive_but_leaves_spam_needing_attention() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            let fixture = Fixture::new();
+            let text = fixture
+                .finish(action, TriageResult::Count(MutationOutcome::default()))
+                .unwrap();
+            if action == TriageAction::Archive {
+                assert!(
+                    text.starts_with("archived thread-1 — already out of the Inbox"),
+                    "{text}"
+                );
+                fixture.settled_with(action);
+            } else {
+                assert!(
+                    text.starts_with("spam thread-1 — skipped: nothing in Inbox"),
+                    "{text}"
+                );
+                fixture.unchanged_and_still_needs_attention();
+            }
+        }
+    }
+
+    #[test]
+    fn partial_triage_reports_failure_and_keeps_the_record_for_attention() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            let fixture = Fixture::new();
+            let result = TriageResult::Count(MutationOutcome {
+                moved: 1,
+                failed: 1,
+            });
+            assert!(wire_output(action, result).is_error);
+            let error = fixture.finish(action, result).unwrap_err().to_string();
+            assert!(
+                error.contains("partial completion — 1 moved; 1 failed"),
+                "{error}"
+            );
+            fixture.unchanged_and_still_needs_attention();
+            // Failed moves may have reached the server. A later confirmed
+            // empty Inbox establishes archive's end state, but not spam's.
+            fixture
+                .finish(action, TriageResult::Count(MutationOutcome::default()))
+                .unwrap();
+            if action == TriageAction::Archive {
+                fixture.settled_with(action);
+            } else {
+                fixture.unchanged_and_still_needs_attention();
+            }
+        }
+    }
+
+    #[test]
+    fn every_triage_outcome_keeps_the_action_and_short_handle() {
+        let thread_id: String = "fixture-graph-id".chars().cycle().take(76).collect();
+        let short = handle(&thread_id);
+        assert_eq!(short.chars().count(), mecha_core::mail_triage::HANDLE_CHARS);
+        assert_ne!(short, thread_id);
+        for action in TriageAction::ALL {
+            let restores = matches!(action, TriageAction::Unarchive | TriageAction::Untrash);
+            for moved in 0..=1 {
+                for failed in 0..=1 {
+                    for left_in_place in 0..=1 {
+                        if !restores && left_in_place > 0 {
+                            continue;
+                        }
+                        let outcome = if restores {
+                            TriageResult::Restore(RestoreOutcome {
+                                moved,
+                                failed,
+                                left_in_place,
+                            })
+                        } else {
+                            TriageResult::Count(MutationOutcome { moved, failed })
+                        };
+                        let fixture = Fixture::for_thread(&thread_id);
+                        let result = fixture.finish(action, outcome);
+                        assert_eq!(result.is_err(), failed > 0 || left_in_place > 0);
+                        let text = result.unwrap_or_else(|error| error.to_string());
+                        let (frame, _) = text.split_once(" — ").expect("CLI result framing");
+                        assert!(frame.contains(action.name()), "{text}");
+                        assert!(frame.ends_with(&format!(" {short}")), "{text}");
+                        assert!(!frame.contains(&thread_id), "{text}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn archive_noop_needs_a_confirmed_inbox_source_to_settle() {
+        let action = TriageAction::Archive;
+        for source in [None, Some("Archive")] {
+            let fixture = Fixture::new();
+            let mut out = wire_output(action, TriageResult::Count(MutationOutcome::default()));
+            let mut report: Value = serde_json::from_str(&out.content).unwrap();
+            report["source"] = json!(source);
+            out.content = report.to_string();
+            assert!(
+                finish_triage(&fixture.store, "fixture", "thread-1", action.name(), &out).is_err()
+            );
+            fixture.unchanged_and_still_needs_attention();
+        }
+    }
+
+    #[test]
+    fn completed_outlook_and_gmail_triage_settle_the_store() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            for result in [
+                TriageResult::Count(MutationOutcome {
+                    moved: 2,
+                    failed: 0,
+                }),
+                TriageResult::Uncounted,
+            ] {
+                let fixture = Fixture::new();
+                let text = fixture.finish(action, result).unwrap();
+                if matches!(result, TriageResult::Count(_)) {
+                    assert!(text.contains("2 Inbox messages moved"), "{text}");
+                } else {
+                    assert!(!text.contains("Inbox messages"), "{text}");
+                    assert!(
+                        text.contains(if action == TriageAction::Archive {
+                            "archived"
+                        } else {
+                            "reported as spam and removed from the inbox"
+                        }),
+                        "{text}"
+                    );
+                }
+                fixture.settled_with(action);
+            }
+        }
+    }
+
+    #[test]
+    fn empty_or_incomplete_restores_do_not_settle_the_store() {
+        for action in [TriageAction::Unarchive, TriageAction::Untrash] {
+            for outcome in [
+                RestoreOutcome::default(),
+                RestoreOutcome {
+                    moved: 1,
+                    failed: 1,
+                    left_in_place: 0,
+                },
+                RestoreOutcome {
+                    moved: 0,
+                    failed: 0,
+                    left_in_place: 1,
+                },
+            ] {
+                let fixture = Fixture::new();
+                let result = fixture.finish(action, TriageResult::Restore(outcome));
+                assert_eq!(
+                    result.is_err(),
+                    outcome.failed > 0 || outcome.left_in_place > 0
+                );
+                fixture.unchanged_and_still_needs_attention();
+            }
+        }
+    }
+
+    #[test]
+    fn missing_inconsistent_or_error_results_cannot_mark_acted() {
+        let action = TriageAction::Archive;
+        let success = wire_output(
+            action,
+            TriageResult::Count(MutationOutcome {
+                moved: 1,
+                failed: 0,
+            }),
+        );
+        let valid: Value = serde_json::from_str(&success.content).unwrap();
+        let mut outputs = vec![
+            ToolOutput::ok("archived"),
+            ToolOutput::err("fixture unavailable"),
+        ];
+        for (key, value) in [
+            ("status", json!("nothing_to_do")),
+            ("failed", json!(1)),
+            ("thread_id", json!("other-thread")),
+            ("account", json!("other-account")),
+            ("action", json!("spam")),
+            ("moved", json!(-1)),
+        ] {
+            let mut bad = valid.clone();
+            bad[key] = value;
+            outputs.push(ToolOutput::ok(bad.to_string()));
+        }
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("moved");
+        outputs.push(ToolOutput::ok(missing.to_string()));
+        outputs.push(ToolOutput::err(valid.to_string()));
+        for out in outputs {
+            let fixture = Fixture::new();
+            assert!(finish_triage(&fixture.store, "fixture", "thread-1", "archive", &out).is_err());
+            fixture.unchanged_and_still_needs_attention();
+        }
+    }
 }
 
 /// Parse a closed-vocabulary value, listing the alternatives on failure.
