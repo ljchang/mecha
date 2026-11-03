@@ -368,14 +368,18 @@ what it would do *beside* the active rules, not in place of one; how two
 rules interact once both are active is something the owner sees after
 promotion, in `propose`, before either goes back to `auto`.
 
-**A shadow rule with an outbound action is measured by both passes**, so its
+**A shadow rule with an outbound action whose text passes §9's gate is
+measured by both passes**, so its
 would-have rows are the match rate `auto` will actually have: a `shadow_rules`
 candidate with an outbound action gets the confirmation pass too, exactly as
 a `rule` candidate does, and a disagreement is recorded as `would have:
 propose`. Measuring shadow with the main pass alone would over-state the
-rate the owner approves against. It costs one call per thread for the
-gate-passing shadow candidates together (gate-failing ones are not
-confirmed, below), which is a small fraction of mail and only while a rule is being
+rate the owner approves against. For shadow the confirmation pass answers
+with **a verdict per candidate**, a list mirroring `shadow_rules`, not one
+choice among them: shadow rules have no outbound slot to share (§4.3), and a
+single choice would make two matching shadow rules compete and under-state
+the one not chosen. It costs one call per thread for the gate-passing shadow
+candidates together (gate-failing ones are not confirmed, below), which is a small fraction of mail and only while a rule is being
 evaluated.
 The same discipline as `request_type` and `deadline_quote`:
 
@@ -435,7 +439,10 @@ nothing can act on — §9 forbids such a rule's outbound and Board groups from
 ever entering `auto`, and the confirmation pass only decides auto against
 propose — and the owner's edit that would unblock it makes the text `Owner`,
 lapses the digest (§6.2), and restarts the measurement, confirmed from then
-on, against the words that will actually run. Nothing a gate-failing rule
+on, against the words that will actually run: **a group's would-have rate is
+computed only over rows written under its current digest**, and rows from an
+earlier digest are shown apart on the rule page (§8), never mixed into the
+number the owner approves against. Nothing a gate-failing rule
 says enters any frame that judges another rule. Each description in the set is
 covered by its own rule's digest (§6.2), so an edit to one rule lapses that
 rule; its effect on another approved rule can only be to win a thread the
@@ -571,7 +578,9 @@ finding rather than an in-flight row nobody reads.
 **A key is closed by the presence of a closing row, not by the latest row** —
 deliberately unlike §3's mode resolution. The ledger is append-only, and four
 outcomes land *after* a closing row: `released unchanged`, `edited`,
-`rejected`, `undone`. None of them reopens the key. Under "latest row wins",
+`rejected`, `undone`. None of them reopens the key, and each is written
+with `closes: true` (§8), so no writer can encode "nothing was sent" on a
+`rejected` row as permission to stage again. Under "latest row wins",
 an owner's `rejected` would let the next classify pass re-stage the send just
 refused, and an owner's `undone` would let the rule re-archive the thread the
 owner restored to the inbox — the engine fighting its owner, with the
@@ -1295,9 +1304,15 @@ wire format — and **each store states its default's direction**, as
 opposite ones. In `approvals.jsonl` an unknown mode reads as **`shadow`**: it
 never acts, so a newer build's rung cannot raise anything in an older one.
 In `ledger.jsonl` every row also carries a **`closes` boolean**, written by
-the build that writes the row according to §4.4, and **it may only tighten**:
-a reader honours `closes: true` from any build, and closes the key whenever
-`closes` is absent *or* the outcome is one it cannot read. A newer build's
+the build that writes the row according to §4.4, and **it may only tighten**.
+A reader decides a key in this order: first the settlement lookup (a
+`pending` row is superseded by its settlement row, below); then for each
+remaining row, `closes: true` from any build closes; an outcome the reader
+*can* read with `closes` absent falls back to the reader's own §4.4 table, so
+an omitted field on a `would have` row never closes anything; and an outcome
+the reader cannot read closes the key unless the row says `closes: false`
+and the reader can read it — which, being unreadable, it cannot, so it
+closes. A newer build's
 `closes: false` on an outcome an older reader does not know is therefore not
 permission to run the action again — for an outbound row that would be a
 duplicate send, which is irreversible, while the opposite error (an older
