@@ -443,7 +443,10 @@ fallback if the single field measures badly, not the start.
 
 ### 4.3 Order and overlap
 
-**`priority` alone decides precedence** — which rule takes a thread's
+**`priority` defaults to `100`** when a rule omits it (lower runs first, so
+an unprioritised rule yields to any that states one), and ties break by rule
+name, so both the outbound slot and the classifier frame's order (§4.2) are
+fixed for every rule. **`priority` alone decides precedence** — which rule takes a thread's
 outbound slot. "Header rules before description rules" is about *when* they
 are evaluated (header keys on the timer, descriptions at classify), never
 about which wins: a `priority = 5` description rule outranks a
@@ -729,7 +732,7 @@ Which guard binds which action group, so no section has to infer it:
 | Sender-constrained matcher for `auto` | drafted only (§5.2) | yes (§5.2) |
 | `From` only, never `Reply-To` or reply-all | yes | n/a — the recipient is the owner's `to` |
 | Once per sender per rule per 7 days | yes | **no** — every new receipt thread from a listed vendor is forwarded; §4.4's once-per-thread limit still applies, so a vendor reply into an existing order thread is `skipped: thread already handled`, visibly |
-| Per-rule and global daily caps | yes | yes |
+| Per-rule and global daily caps (they also cap the Board group's automatic `task`s, §6.4) | yes | yes |
 | Not into a conversation the owner has joined | yes | no |
 | Never on a message `From` one of the owner's own addresses | yes | yes |
 | Never on one `From` a `to` address; RFC 3834 on for senders at a `to` domain | n/a | yes |
@@ -1085,8 +1088,13 @@ A rule steps itself down, with a notice, when:
 - **The cap across all rules is hit** → no rule changes mode, because the
   rule that happened to be fifty-first is not the cause. Every outbound action
   for the rest of the local day stages in the outbox instead, the ledger rows
-  say `held: global cap`, and the owner gets one notice. Mailbox and record
-  actions are unaffected.
+  say `held: global cap`, and the owner gets one notice. Mailbox and
+  Private record actions are unaffected.
+- **The caps count the Board group too.** An automatic `task` reaches a task
+  run's prompt (§7), so it sits on the send side of the risk line and is
+  capped like a send: a rule's daily cap and the global cap count its tasks
+  with its outbound actions, and past either cap further tasks are offered in
+  the digest (`held`) rather than created.
 
 `mecha mail rule pause-all` (and a button) drops every rule to `shadow` at
 once — one row per group, each recording the lower of its current mode and
@@ -1145,9 +1153,13 @@ has tools and may be unattended. `mecha mail task` names a task from the
 classifier's `one_line` or the subject — prose a sender influences — which is
 fine when the owner presses `t` on a thread they read, and is not fine
 unattended. So **an automatic `task`'s name is written by the harness, never
-taken from the message**: the rule's own `description` (the owner's words),
-the deadline if the verdict carried one, and the thread pointer in
-`context`, so what reaches a task run is typed rather than quoted — the
+taken from the message**: the rule's own `description` (the owner's words)
+followed by harness-filled slots from a closed set — the sender's address
+(one address that parses, else omitted), the date the message arrived, and
+the deadline if the verdict carried one — with the thread pointer in
+`context`. So each task names its own email rather than every task from a
+rule sharing one name, and what reaches a task run is still typed rather
+than quoted — the
 reviewable-object rule applied one surface further. A proposed `task` offered
 in the digest keeps today's naming, because the owner's tap is the review.
 The approval screen still recommends `propose`, since a board filled by
@@ -1323,7 +1335,9 @@ Report (`spam`, which never rises above `propose`) and Board groups — `task` o
 (§7); the confirmation pass that description-matched tasks also need lands
 with description rules in P4 — (including a `tag` action, which writes mecha's own tag onto the
 triage record and has no provider verb, since tags are never Gmail labels or
-Graph categories), the five-minute timer, `mecha mail rule add | list | show | mode |
+Graph categories), the five-minute timer and the hook at the end of
+`classify` that runs `digest`, `task` and every deferred action (§4.1, §4.4),
+`mecha mail rule add | list | show | mode |
 test | ledger | undo | pause-all` — P1 is where rules first act in `auto`, so
 the panic button ships with them, and so do §6.4's brakes over P1's actions
 (the undo-rate brake and the consecutive-failure brake) — the feature
