@@ -22,7 +22,7 @@
 //! when they get names a transcript can be searched for. A name is matched
 //! as whole words, and a capitalised name must be capitalised, since "will"
 //! is not Will. The one exception is an owner turn typed with no capital
-//! at all, as a phone often is ("is milo ok"), where case is ignored
+//! at all, as a phone often is ("is pell ok"), where case is ignored
 //! (review of #808). A name that is also a common word still over-counts
 //! where a sentence starts with it.
 //!
@@ -647,7 +647,7 @@ pub fn initiative(
 mod tests {
     use super::*;
 
-    fn milo() -> Vec<Subject> {
+    fn pell() -> Vec<Subject> {
         vec![Subject::new(["Pell"]), Subject::new(["Ines", "Nessa"])]
     }
 
@@ -677,7 +677,7 @@ mod tests {
     }
 
     fn only(list: &[Vec<Turn>]) -> Reading {
-        let got = score(&chats(list), &milo());
+        let got = score(&chats(list), &pell());
         assert_eq!(got.len(), 1, "{got:?}");
         got[0].1
     }
@@ -707,7 +707,7 @@ mod tests {
     fn an_introduction_taken_up_asked_about_or_let_go() {
         let r = only(&[vec![
             turn("hi", "Pell kept me up all night.", ON),
-            turn("oh no, is milo ok?", "He is, and Nessa came by.", ON),
+            turn("oh no, is pell ok?", "He is, and Nessa came by.", ON),
             turn("that's nice", "Anyway, how was your day?", ON),
         ]]);
         assert_eq!(r.replies, 3);
@@ -794,7 +794,7 @@ mod tests {
                 vec![turn("hi", "Pell!", OFF)],
                 vec![turn("hi", "Pell!", ON), turn("Pell?", "Yes", ON)],
             ]),
-            &milo(),
+            &pell(),
         );
         assert_eq!(
             got.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
@@ -840,7 +840,7 @@ mod tests {
                 (1, vec![turn("rain again", "Ugh.", ON)]),
                 (0, vec![turn("how is Pell?", "Better.", ON)]),
             ],
-            &milo(),
+            &pell(),
         );
         let r = got[0].1;
         assert_eq!((r.came_back, r.taken_up, r.introductions), (0, 1, 1));
@@ -850,7 +850,7 @@ mod tests {
                 (0, vec![turn("hi", "Pell is home.", ON)]),
                 (1, vec![turn("is Pell ok?", "Yes.", ON)]),
             ],
-            &milo(),
+            &pell(),
         );
         assert_eq!((got[0].1.came_back, got[0].1.unanswered), (1, 0));
         // On resuming, the owner's first turn passes him by; her raising
@@ -867,7 +867,7 @@ mod tests {
                     ],
                 ),
             ],
-            &milo(),
+            &pell(),
         );
         let r = got[0].1;
         assert_eq!((r.introductions, r.not_taken_up, r.came_back), (1, 1, 0));
@@ -886,11 +886,11 @@ mod tests {
             turn("Nessa! how is she?", "Well.", ON),
             turn("and then", "Pell slept.", ON),
         ];
-        let whole = score(&[(0, script.to_vec())], &milo());
+        let whole = score(&[(0, script.to_vec())], &pell());
         for cut in 1..script.len() {
             let split = score(
                 &[(0, script[..cut].to_vec()), (0, script[cut..].to_vec())],
-                &milo(),
+                &pell(),
             );
             assert_eq!(split, whole, "split at {cut}");
         }
@@ -971,7 +971,7 @@ mod tests {
             config(
                 &s,
                 &format!(
-                    "# Who you are\n\nMara.\n\n{}\n\nMilo.",
+                    "# Who you are\n\nMara.\n\n{}\n\nPell.",
                     super::super::super::agent::PEOPLE_HEADING
                 ),
                 "2026-01-03T09:00:00Z",
