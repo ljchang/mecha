@@ -522,6 +522,24 @@ fn clear_failure(pdir: &std::path::Path) -> Result<()> {
     }
 }
 
+/// With `[life] place` removed, forget the place it named: its resolved
+/// cache, its failure stamp and the weather fetched for it, so the teller
+/// tells no town's weather the persona no longer lives in (review of
+/// #836). Nothing happens where no `[life] place` was ever resolved.
+pub fn forget_removed_place(pdir: &std::path::Path) -> Result<()> {
+    let path = pdir.join(PLACE_FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    super::world::World::open(pdir)?.clear_weather()?;
+    clear_failure(pdir)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("forgetting the removed place"),
+    }
+}
+
 /// Clear weather unless the place cache proves that the rows were fetched
 /// for this exact owner-written query. This runs before backoff: a failed new
 /// place must not leave the previous place in the teller while it waits.
@@ -969,5 +987,26 @@ mod tests {
             bits <= 16.0,
             "weather renders {bits:.2} bits ({states} states)"
         );
+    }
+
+    #[test]
+    fn removing_the_place_forgets_its_weather() {
+        let dir = crate::persona::tests_support::scratch();
+        let mut world = crate::persona::world::World::open(&dir).unwrap();
+        world
+            .set_weather(&[Weather {
+                date: d("2026-11-03"),
+                sky: Sky::Rain,
+                high_c: 9,
+                low_c: 4,
+            }])
+            .unwrap();
+        // Never a [life] place here: nothing is touched.
+        forget_removed_place(&dir).unwrap();
+        assert!(world.weather(d("2026-11-03")).unwrap().is_some());
+        std::fs::write(dir.join(PLACE_FILE), "{}").unwrap();
+        forget_removed_place(&dir).unwrap();
+        assert!(world.weather(d("2026-11-03")).unwrap().is_none());
+        assert!(!dir.join(PLACE_FILE).exists());
     }
 }
