@@ -31,7 +31,7 @@
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
-    taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
+    taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits, personaTabs,
     toolStatus, waitingLine, withWorking, withJob, clockOf, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM, avatarSrc,
@@ -151,6 +151,14 @@
   let weekOpen = $state(false);
   // Her people (§15), beside her week, behind the same world gate.
   let peopleOpen = $state(false);
+  // A tab whose part was just turned off closes, rather than staying open
+  // behind a chip that is gone.
+  $effect(() => {
+    const tabs = personaTabs(chosen?.shows, isShown(features.rows, 'world'));
+    if (memoryOpen && !tabs.includes('memories')) memoryOpen = false;
+    if (weekOpen && !tabs.includes('week')) weekOpen = false;
+    if (peopleOpen && !tabs.includes('people')) peopleOpen = false;
+  });
   // A relationship or group being added from the form: { kind, name, text }.
   let adding = $state(null);
   // How many runs this page has seen end, so a `done` that overtakes
@@ -1771,14 +1779,19 @@
     <div class="scroll" bind:this={scroller}>
       {#if editing}
         <div class="chips">
-          {#each OWNER_FILES as [file, label]}
-            <button class="chipbtn" class:active={!memoryOpen && !weekOpen && !peopleOpen && editing.file === file} onclick={() => { memoryOpen = false; weekOpen = false; peopleOpen = false; pickFile(file); }}>{label}</button>
+          <!-- Settings last, and a tab only for a part that is on
+               (owner, 2026-11-02; `personaTabs`). -->
+          {#each personaTabs(chosen?.shows, isShown(features.rows, 'world')) as tab (tab)}
+            {#if tab === 'memories'}
+              <button class="chipbtn" class:active={memoryOpen} onclick={() => { weekOpen = false; peopleOpen = false; memoryOpen = true; }}>Memories</button>
+            {:else if tab === 'week'}
+              <button class="chipbtn" class:active={weekOpen} onclick={() => { memoryOpen = false; peopleOpen = false; weekOpen = true; }}>Week</button>
+            {:else if tab === 'people'}
+              <button class="chipbtn" class:active={peopleOpen} onclick={() => { memoryOpen = false; weekOpen = false; peopleOpen = true; }}>People</button>
+            {:else}
+              <button class="chipbtn" class:active={!memoryOpen && !weekOpen && !peopleOpen && editing.file === tab} onclick={() => { memoryOpen = false; weekOpen = false; peopleOpen = false; pickFile(tab); }}>{OWNER_FILES.find(([f]) => f === tab)?.[1]}</button>
+            {/if}
           {/each}
-          <button class="chipbtn" class:active={memoryOpen} onclick={() => { weekOpen = false; peopleOpen = false; memoryOpen = true; }}>Memories</button>
-          {#if isShown(features.rows, 'world')}
-            <button class="chipbtn" class:active={weekOpen} onclick={() => { memoryOpen = false; peopleOpen = false; weekOpen = true; }}>Week</button>
-            <button class="chipbtn" class:active={peopleOpen} onclick={() => { memoryOpen = false; weekOpen = false; peopleOpen = true; }}>People</button>
-          {/if}
         </div>
         {#if weekOpen && isShown(features.rows, 'world')}
           <PersonaWeek name={chosen.name} {token} onclose={() => (weekOpen = false)} />
