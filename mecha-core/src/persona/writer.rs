@@ -25,7 +25,9 @@
 //! - **An untrusted stretch may only add.** It cannot withdraw or rewrite a
 //!   fact the persona already holds — otherwise a web page could quietly
 //!   delete what a persona knows. Nor can any stretch touch the owner's own
-//!   words or a pinned record.
+//!   words or a pinned record. A clean vouch changes a model-written row's
+//!   recall provenance, not its authorship, so the writer may still maintain
+//!   it.
 //!
 //! The model call is the distiller's shape (`distill::Distiller`): a
 //! [`crate::quarantine::QuarantinedPass`] with no tools and no history, so a
@@ -473,10 +475,12 @@ pub struct Applied {
 }
 
 /// What the writer may change of what the persona already knows: only what
-/// a model wrote, still active, and not pinned. The owner's words, and
-/// anything the owner pinned, are the owner's.
+/// a model wrote, still active, and not pinned. A clean-vouched model row has
+/// owner recall provenance but remains model-written. The owner's own words
+/// (owner origin without a vouch), and anything the owner pinned, are the
+/// owner's.
 fn changeable(f: &Fact) -> bool {
-    f.origin != Origin::Owner && f.status == Status::Active && !f.pinned
+    (f.origin != Origin::Owner || f.vouched_at.is_some()) && f.status == Status::Active && !f.pinned
 }
 
 fn same_text(a: &str, b: &str) -> bool {

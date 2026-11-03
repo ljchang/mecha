@@ -2222,11 +2222,13 @@ module.
     candidate, never recalled until the owner approves; anything else is
     active (inferred facts included, D18). Ordinary approval keeps the origin,
     so recall can re-arm the taint. `Memory::approve_clean` and
-    `Memory::approve_clean_chat` are the owner's vouch: they accept only live
+    `Memory::approve_clean_chat` are the owner's vouch: they accept live
     model-untrusted records, stamp `vouched_at`, and change origin to owner.
-    Only the CLI and owner-authenticated memory route call them; no model,
-    writer, or tool can promote its own lane. Shared copies follow the vouch,
-    as they follow correction and invalidation.
+    Repeating either operation on an existing vouch idempotently repairs any
+    shared copy left with its old origin after a cross-database failure. Only
+    the CLI and owner-authenticated memory route call them; no model, writer,
+    or tool can promote its own lane. Shared copies follow the vouch, as they
+    follow correction and invalidation.
   - Inferred facts about the owner can only go in `inferred_user_facts`, and
     only inferred ones can; the split is enforced at `Memory::add_fact`.
   - Text is append-only: `correct` invalidates and inserts an owner-origin row
@@ -2433,10 +2435,14 @@ module.
       An id the model names is validated (`named_id`), consumed once per
       proposal, and re-read inside the transaction, so a correction the
       owner made during the model call stands.
-      Only model-origin, active, unpinned facts can be updated or withdrawn.
-      A kind switched off in `[memory]` is turned away, and so is a duplicate.
-      If memory is entirely off, nothing is asked and the ledger still
-      advances.
+      Only model-written, active, unpinned facts can be updated or withdrawn.
+      An owner's clean vouch changes recall provenance to owner but leaves
+      `vouched_at` as the authorship distinction, so the writer can maintain
+      that fact; an owner-written fact (owner origin without a vouch) remains
+      immutable. An update's replacement takes the current stretch's origin,
+      never the vouched row's owner origin. A kind switched off in `[memory]`
+      is turned away, and so is a duplicate. If memory is entirely off,
+      nothing is asked and the ledger still advances.
     - `Memory::write_stretch` commits the records and the ledger advance in
       one IMMEDIATE transaction, after checking the ledger still stands where
       the run started. The model call happens before that, holding no lock.

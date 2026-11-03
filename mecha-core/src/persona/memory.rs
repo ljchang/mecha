@@ -24,7 +24,9 @@
 //!   record is stored as a **candidate** and never recalled until the owner
 //!   approves it (§9.6) — memory is not a laundering path. Ordinary approval
 //!   keeps that origin. Only the owner's [`Memory::approve_clean`] vouches for
-//!   the record and changes its origin; no model or persona tool may do so.
+//!   the record and changes its origin; no model or persona tool may do so. A
+//!   vouch changes recall provenance, not authorship: the nightly writer may
+//!   still update or invalidate that model-written record.
 //! - **Append-only text.** A correction invalidates the old row and adds a
 //!   new one pointing at it ([`Fact::replaces`]), so what was believed on a
 //!   given day stays answerable. Only forgetting deletes, and it deletes with
@@ -1179,15 +1181,6 @@ impl Memory {
         Ok(unwire(&s))
     }
 
-    fn origin_in(&self, table: &str, uid: &str) -> Result<Origin> {
-        let origin: String = self.conn.query_row(
-            &format!("SELECT origin FROM {table} WHERE uid = ?1"),
-            [uid],
-            |r| r.get(0),
-        )?;
-        Ok(unwire(&origin))
-    }
-
     /// The owner approves a candidate: it may now be recalled. Its origin is
     /// kept, so recalling it re-arms the taint it was written under (§9.6).
     /// Only a candidate: a withdrawn record stays withdrawn — approving it
@@ -1212,35 +1205,55 @@ impl Memory {
     /// active record, make it recallable, and stop it re-arming untrusted
     /// taint. This is an owner door only; a model may never call it. An active
     /// record is accepted because older ordinary approvals kept the origin.
-    /// Withdrawn records stay withdrawn, exactly as in [`Self::approve`].
-    /// Shared copies follow the fact, as they do for correction and removal.
+    /// Withdrawn records stay withdrawn, exactly as in [`Self::approve`]. An
+    /// already-vouched record retries the idempotent shared-copy sync, so a
+    /// failure after the local commit can be repaired by repeating the same
+    /// command. A clean record without a vouch is not eligible. Shared copies
+    /// follow the fact, as they do for correction and removal.
     pub fn approve_clean(&self, uid: &str) -> Result<()> {
         self.writable()?;
         let table = self.locate(uid)?;
         if self.status_in(table, uid)? == Status::Invalidated {
             bail!("that record was withdrawn, not waiting on you");
         }
-        if self.origin_in(table, uid)? != Origin::ModelUntrusted {
+        let (origin, vouched_at): (String, Option<String>) = self.conn.query_row(
+            &format!("SELECT origin, vouched_at FROM {table} WHERE uid = ?1"),
+            [uid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let origin: Origin = unwire(&origin);
+        if origin != Origin::ModelUntrusted && vouched_at.is_none() {
             bail!(
                 "that record is already clean; only an untrusted record can be approved as clean"
             );
         }
-        let stamp = now();
-        self.conn.execute(
-            &format!("UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4 WHERE uid = ?1"),
-            params![uid, wire(&Status::Active), wire(&Origin::Owner), stamp],
-        )?;
+        if origin == Origin::ModelUntrusted {
+            let stamp = now();
+            self.conn.execute(
+                &format!(
+                    "UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4 WHERE uid = ?1"
+                ),
+                params![uid, wire(&Status::Active), wire(&Origin::Owner), stamp],
+            )?;
+        }
         if let Some(shared) = self.shared()? {
-            shared.vouch_from(&self.persona, &[uid.to_owned()])?;
+            let retry = format!(
+                "mecha persona memory approve {} {} --clean",
+                self.persona, uid
+            );
+            shared.vouch_from(&self.persona, &[uid.to_owned()], &retry)?;
         }
         Ok(())
     }
 
     /// Vouch for every model-untrusted candidate or active record written
-    /// from `chat`, in one transaction. Clean records, withdrawn records and
-    /// records from other chats are untouched. Returns the records vouched.
-    /// Shared copies follow after the local transaction, like correction and
-    /// invalidation, because the two SQLite files cannot share one commit.
+    /// from `chat`, in one transaction. Already-vouched live records are also
+    /// sent through the idempotent shared-copy sync, but are not counted as
+    /// newly vouched. Other clean records, withdrawn records and records from
+    /// other chats are untouched. A chat with no records is an error; one
+    /// whose records need no new vouch returns zero. Shared copies follow
+    /// after the local transaction, like correction and invalidation, because
+    /// the two SQLite files cannot share one commit.
     pub fn approve_clean_chat(&self, chat: &str) -> Result<usize> {
         self.writable()?;
         if chat.trim().is_empty() {
@@ -1253,24 +1266,34 @@ impl Memory {
         )?;
         let mut vouched = Vec::new();
         let mut count = 0;
+        let mut found = false;
         for table in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+            let has_records: bool = tx.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE source_chat = ?1)"),
+                [chat],
+                |r| r.get(0),
+            )?;
+            found |= has_records;
             let sql = format!(
-                "SELECT uid FROM {table} WHERE source_chat = ?1 AND origin = ?2
-                 AND status IN (?3, ?4) AND invalidated_at IS NULL"
+                "SELECT uid, origin = ?4 FROM {table} WHERE source_chat = ?1
+                 AND status IN (?2, ?3) AND invalidated_at IS NULL
+                 AND (origin = ?4 OR vouched_at IS NOT NULL)"
             );
             let mut stmt = tx.prepare(&sql)?;
             let rows = stmt.query_map(
                 params![
                     chat,
-                    wire(&Origin::ModelUntrusted),
                     wire(&Status::Candidate),
-                    wire(&Status::Active)
+                    wire(&Status::Active),
+                    wire(&Origin::ModelUntrusted)
                 ],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
             )?;
-            let uids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
             drop(stmt);
-            if !uids.is_empty() {
+            let has_new = rows.iter().any(|(_, untrusted)| *untrusted);
+            vouched.extend(rows.into_iter().map(|(uid, _)| uid));
+            if has_new {
                 count += tx.execute(
                     &format!(
                         "UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4
@@ -1287,12 +1310,21 @@ impl Memory {
                         wire(&Status::Active)
                     ],
                 )?;
-                vouched.extend(uids);
             }
         }
+        if !found {
+            bail!("{} has no memory records from chat `{chat}`", self.persona);
+        }
         tx.commit()?;
+        if vouched.is_empty() {
+            return Ok(count);
+        }
         if let Some(shared) = self.shared()? {
-            shared.vouch_from(&self.persona, &vouched)?;
+            let retry = format!(
+                "mecha persona memory approve {} --chat {} --clean",
+                self.persona, chat
+            );
+            shared.vouch_from(&self.persona, &vouched, &retry)?;
         }
         Ok(count)
     }
@@ -2008,7 +2040,16 @@ impl Shared {
     /// Vouch for copies of records whose originals the owner approved as
     /// clean. A shared copy follows its fact's provenance just as it follows
     /// correction and invalidation.
-    fn vouch_from(&self, persona: &str, from_uids: &[String]) -> Result<usize> {
+    fn vouch_from(&self, persona: &str, from_uids: &[String], retry: &str) -> Result<usize> {
+        self.vouch_from_inner(persona, from_uids).with_context(|| {
+            format!(
+                "approved as clean locally, but a shared copy may still carry its old origin; \
+                 retry with `{retry}`"
+            )
+        })
+    }
+
+    fn vouch_from_inner(&self, persona: &str, from_uids: &[String]) -> Result<usize> {
         self.writable()?;
         let tx = self.conn.unchecked_transaction()?;
         let mut n = 0;
@@ -2019,10 +2060,7 @@ impl Shared {
                 params![persona, from_uid, wire(&Origin::Owner)],
             )?;
         }
-        tx.commit().context(
-            "approved as clean, but a shared copy still carries its old origin — \
-             `mecha persona memory shared` lists it",
-        )?;
+        tx.commit()?;
         Ok(n)
     }
 
