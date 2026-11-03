@@ -831,24 +831,24 @@ class Guard(unittest.TestCase):
 
     def test_a_common_name_is_not_excused_by_its_lowercase_word(self):
         # The word is already in the repository; the person is not.
-        self.stage("prose.py", "X = 'it will rain'\n")
+        self.stage("prose.py", "X = 'a larkin of rain'\n")
         git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
         pdir = os.path.join(self.home, "personas", "quillon")
         db = sqlite3.connect(os.path.join(pdir, "world.db"))
         db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
-        db.execute("INSERT INTO people VALUES ('u1', 'Will', 5)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Larkin', 5)")
         db.commit()
         db.close()
-        self.stage("fixture.py", "X = 'Will came by.'\n")
+        self.stage("fixture.py", "X = 'Larkin came by.'\n")
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("the name of someone in a persona's life", r.stdout)
         # Spelled as written already in the repository: excused, but said.
         git(self.repo, "commit", "-q", "--no-verify", "-m", "the name")
-        self.stage("again.py", "Y = 'Will again.'\n")
+        self.stage("again.py", "Y = 'Larkin again.'\n")
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("names someone in a persona's life", r.stdout)
+        self.assertIn("already used in the repository", r.stdout)
 
     def test_a_name_stored_in_lowercase_still_refuses_its_capital(self):
         pdir = os.path.join(self.home, "personas", "quillon")
