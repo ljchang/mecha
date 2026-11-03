@@ -595,7 +595,9 @@ and still owed, or one whose fate cannot be told — and **`would have`,
 `shadow` would find its own would-have rows and never send on the threads it
 was approved against, and a rule that lost the outbound slot to another on
 one message could never take it on the next. Outbound actions are additionally limited to **one
-occasion per rule per thread**: all of a rule's outbound actions fire together
+occasion per rule per thread** — and the Board group's `task` with them, so
+an active thread produces one task per rule rather than one per message: all
+of a rule's outbound actions and tasks fire together
 on the first message that triggers them — the receipts rule's `forward` *and*
 typed `send` both go (§4.3) — and a later message in a thread the rule has
 already sent from is `skipped: thread already handled`, never a second forward
@@ -613,7 +615,7 @@ Grouped by what can go wrong, because that decides what may run unattended.
 | Group | `do =` | Reaches | May run in `auto`? |
 |---|---|---|---|
 | Mailbox | `archive`, `read`, `unread`, `trash` | the owner's mailbox | yes — with the §5.5 limit on `trash` |
-| Report | `spam` | **the provider's filter** — the one mailbox verb with an effect outside the mailbox (`TriageAction::Spam`'s own words) | **never** — it never rises above `propose` (in `auto` it proposes, as the mail desk's `s` confirms), since no restore verb un-trains a filter |
+| Report | `spam` | **the provider's filter** — the one mailbox verb with an effect outside the mailbox (`TriageAction::Spam`'s own words) | **never** — it never rises above `propose` (in `auto` it proposes, as the mail desk's `!` confirms), since no restore verb un-trains a filter |
 | Private record | `tag`, `digest` | the owner (the triage store) | yes |
 | Board | `task` | the owner's board — **and from there a task run's prompt** | yes, with a harness-written name (§7) |
 | Fixed words | `reply` with `template` | the sender | after owner approval (R1) |
@@ -1100,10 +1102,10 @@ Graduated drafts go through §5.4's guards like any automatic reply.
 
 ### 6.4 Brakes
 
-A rule steps itself down, with a notice, when:
-
-Every brake names the groups it lowers, and each lowers a group to the
-lower of its current mode and the brake's target, like a lapse.
+A rule steps itself down, or holds its sends, with a notice, when one of the
+conditions below fires. The step-down brakes name the groups they lower, and
+each lowers a group to the lower of its current mode and the brake's target,
+like a lapse; the two cap bullets change no mode and only stage.
 
 - **Any automatic send is marked wrong** by the owner → **that send's group**
   to `propose`. Zero tolerance for sends.
@@ -1229,7 +1231,8 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   grounded `rule_quote`), the action, the mode it ran in, and the outcome:
   `pending` (written before an action executes, §4.4), `done`, `would have`
   (shadow), `offered` (a proposed mailbox action waiting in the mail desk),
-  `staged`, `held: rule cap` and `held: global cap` (§6.4), `sent`,
+  `staged`, `held: rule cap` and `held: global cap` (§6.4), `held: fate
+  unknown` (a send interrupted mid-flight, §4.4), `sent`,
   `released unchanged`,
   `edited`, `rejected`, `undone`, `expired` (§4.1), `failed: <why>`,
   `skipped: <guard>`. One more row is not an action outcome and touches no
@@ -1386,7 +1389,8 @@ Graph categories), the five-minute timer and the hook at the end of
 `mecha mail rule add | list | show | mode |
 test | ledger | undo | pause-all` — P1 is where rules first act in `auto`, so
 the panic button ships with them, and so do §6.4's brakes over P1's actions
-(the undo-rate brake and the consecutive-failure brake) — the feature
+(the undo-rate brake, the wrong-match brake — a header rule's wrong match
+counts toward it, §10 — and the consecutive-failure brake) — the feature
 registry entry (off by
 default) — through
 `ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
