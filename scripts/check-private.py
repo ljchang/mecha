@@ -597,7 +597,7 @@ def people_names():
                             for a in json.loads(aliases or "[]"):
                                 if isinstance(a, str) and a.strip():
                                     out.add(a.strip())
-                        except ValueError:
+                        except (ValueError, TypeError):
                             pass
             finally:
                 conn.close()
@@ -823,6 +823,19 @@ def in_head(normalised, head_cache={}):
     return False
 
 
+def in_head_cased(name, cache={}):
+    """Whether the repository already spells `name` as written, capital and
+    all, as a whole word: a person's name is excused only by itself, never
+    by the lowercase word it shares (review of #841: `in_head` folds case,
+    so "Will" was excused by every "will")."""
+    if name not in cache:
+        cache[name] = any(
+            subprocess.run(["git", "grep", "-q", "-I", "-w", "-F", "-e", name, rev, "--"],
+                           capture_output=True).returncode == 0
+            for rev in BASE + PUBLIC)
+    return cache[name]
+
+
 def tree_words(rev):
     """Every file of `rev` as one run of words, files apart."""
     # Per file: `git grep -h` gives no file boundaries, so ask with them.
@@ -921,7 +934,7 @@ def main(args):
         if not hit:
             # Case kept: "Will" is a person, "will" a word.
             for name in people:
-                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", t) and not in_head(" ".join(words(name))):
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", t) and not in_head_cased(name):
                     hit = "the name of someone in a persona's life"
                     break
         if hit:

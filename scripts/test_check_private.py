@@ -829,6 +829,25 @@ class Guard(unittest.TestCase):
         self.stage("word.py", "X = 'the orrin and the brisa'\n")
         self.assertEqual(self.run_guard("--staged").returncode, 0)
 
+    def test_a_common_name_is_not_excused_by_its_lowercase_word(self):
+        # The word is already in the repository; the person is not.
+        self.stage("prose.py", "X = 'it will rain'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Will', 5)")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = 'Will came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("the name of someone in a persona's life", r.stdout)
+        # Spelled as written already in the repository: excused.
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "the name")
+        self.stage("again.py", "Y = 'Will again.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
