@@ -2234,8 +2234,17 @@ module.
     behind. `Memory::delete` is private for the same reason.
   - `Status::initial` is the one rule for a new record: `ModelUntrusted` is a
     candidate, never recalled until the owner approves; anything else is
-    active (inferred facts included, D18). Approval keeps the origin, so
-    recall can re-arm the taint.
+    active (inferred facts included, D18). Ordinary approval keeps the origin,
+    so recall can re-arm the taint. `Memory::approve_clean` (and its bulk
+    form `Memory::approve_clean_chat`, which no surface calls: the CLI's
+    `--chat --clean` lists a chat's records and vouches the ones it showed,
+    one by one) are the owner's vouch: they accept live
+    model-untrusted records, stamp `vouched_at`, and change origin to owner.
+    Repeating either operation on an existing vouch idempotently repairs any
+    shared copy left with its old origin after a cross-database failure. Only
+    the CLI and owner-authenticated memory route call them; no model, writer,
+    or tool can promote its own lane. Shared copies follow the vouch, as they
+    follow correction and invalidation.
   - Inferred facts about the owner can only go in `inferred_user_facts`, and
     only inferred ones can; the split is enforced at `Memory::add_fact`.
   - Text is append-only: `correct` invalidates and inserts an owner-origin row
@@ -2348,7 +2357,8 @@ module.
       recall opens `memory.db` writable on every turn: the step takes the
       write lock, reads the version again under it, and skips records
       already indexed — `an_upgrade_run_twice_indexes_each_record_once`.
-    - The index is schema v3 of `memory.db`, backfilled on upgrade. FTS5 is
+    - The index arrived in schema v3 of `memory.db`, backfilled on upgrade;
+      schema v4 adds the owner's nullable `vouched_at` stamp. FTS5 is
       created with `secure-delete`, and every delete takes the record out of
       `recall_fts` and `vectors` first; without `secure-delete` a forgotten
       term survives in the file — `forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it`
@@ -2359,13 +2369,13 @@ module.
       has no vector after writing.
   - **The curation page** (§9.8): the editor's Memories tab, over
     `GET`/`POST /api/personas/{name}/memory` (`PersonaChats::memory`,
-    `memory_act`). Acts are a closed set (`MemoryAct`: approve, pin, unpin,
-    correct, forget, share, unshare), each the same core call the CLI's
-    owner door makes, and each answers with the page as it now stands. The
-    lock holds as for every persona route (hidden answers as missing), and
-    a page shows and unshares only copies its own persona learned, so a
-    locked persona's shared facts never surface through another's page. No
-    tool reaches the route, so no model edits memory.
+    `memory_act`). Acts are a closed set (`MemoryAct`: approve,
+    approve_clean, pin, unpin, correct, forget, share, unshare), each the same
+    core call the CLI's owner door makes, and each answers with the page as it
+    now stands. The lock holds as for every persona route: a hidden persona
+    answers as missing, and a page shows and unshares only copies its own
+    persona learned, so a locked persona's shared facts never surface through
+    another's page. No tool reaches the route, so no model edits memory.
   - **The memory tools** (`persona::memory_tools`, §9.7 "on demand"):
     `memory_search` and `memory_read`, inserted in `setup::persona_agent`
     beside the file tools, and only if they can never send.
@@ -2441,10 +2451,14 @@ module.
       An id the model names is validated (`named_id`), consumed once per
       proposal, and re-read inside the transaction, so a correction the
       owner made during the model call stands.
-      Only model-origin, active, unpinned facts can be updated or withdrawn.
-      A kind switched off in `[memory]` is turned away, and so is a duplicate.
-      If memory is entirely off, nothing is asked and the ledger still
-      advances.
+      Only model-written, active, unpinned facts can be updated or withdrawn.
+      An owner's clean vouch changes recall provenance to owner but leaves
+      `vouched_at` as the authorship distinction, so the writer can maintain
+      that fact; an owner-written fact (owner origin without a vouch) remains
+      immutable. An update's replacement takes the current stretch's origin,
+      never the vouched row's owner origin. A kind switched off in `[memory]`
+      is turned away, and so is a duplicate. If memory is entirely off,
+      nothing is asked and the ledger still advances.
     - `Memory::write_stretch` commits the records and the ledger advance in
       one IMMEDIATE transaction, after checking the ledger still stands where
       the run started. The model call happens before that, holding no lock.

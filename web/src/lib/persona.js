@@ -828,7 +828,17 @@ export function memoryText(r) {
   return r.section === 'episodes' ? r.summary : r.text;
 }
 
-const MEMORY_ACTIONS = ['approve', 'pin', 'unpin', 'correct', 'forget', 'share', 'unshare'];
+// Only outside-origin records still in use can receive the owner's clean
+// vouch. Active is included for records approved before clean approval existed.
+export function canApproveMemoryClean(r) {
+  return r?.origin === 'model_untrusted' && (r.status === 'candidate' || r.status === 'active');
+}
+
+export function memoryVouchLabel(r) {
+  return r?.vouched_at ? 'approved as clean' : '';
+}
+
+const MEMORY_ACTIONS = ['approve', 'approve_clean', 'pin', 'unpin', 'correct', 'forget', 'share', 'unshare'];
 
 // The body of one curation act. An action the server does not take is
 // refused here, so the page can never send one.

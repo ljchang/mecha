@@ -1,7 +1,7 @@
 // The persona memory page's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { personaUrl, ENDPOINTS, memorySections, memoryText, memoryActBody, MEMORY_KINDS } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, memorySections, memoryText, canApproveMemoryClean, memoryVouchLabel, memoryActBody, MEMORY_KINDS } from '../src/lib/persona.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
 assert.equal(personaUrl('mara', '/memory', 'tok'), '/api/personas/mara/memory?unlock=tok');
@@ -29,6 +29,13 @@ assert.equal(s.empty, false);
 assert.equal(memoryText(s.kept.episodes[0]), 'Talked kelp.');
 assert.equal(memoryText(s.kept.persona[0]), 'Grew up on the coast.');
 assert.deepEqual(MEMORY_KINDS.map(([k]) => k), ['episodes', 'persona', 'user', 'inferred']);
+assert.equal(canApproveMemoryClean({ origin: 'model_untrusted', status: 'candidate' }), true);
+assert.equal(canApproveMemoryClean({ origin: 'model_untrusted', status: 'active' }), true,
+  'an old plain approval can still be vouched');
+assert.equal(canApproveMemoryClean({ origin: 'owner', status: 'active' }), false);
+assert.equal(canApproveMemoryClean({ origin: 'model_untrusted', status: 'invalidated' }), false);
+assert.equal(memoryVouchLabel({ vouched_at: '2026-11-03T01:02:03Z' }), 'approved as clean');
+assert.equal(memoryVouchLabel({ vouched_at: null }), '');
 
 // Nothing, or an older server's missing lists: an empty page, never a throw.
 assert.equal(memorySections(null).empty, true);
@@ -38,6 +45,7 @@ assert.equal(memorySections({ episodes: [] }).empty, true);
 assert.deepEqual(memoryActBody('correct', 'u1', { text: 'Tuesdays.' }, 'tok'),
   { action: 'correct', id: 'u1', text: 'Tuesdays.', unlock: 'tok' });
 assert.equal(memoryActBody('pin', 'u1').unlock, undefined);
+assert.equal(memoryActBody('approve_clean', 'u2').action, 'approve_clean');
 assert.throws(() => memoryActBody('delete_everything', 'u1'));
 
 // The Memories tab is not an owner file: kept out of the list whose every
