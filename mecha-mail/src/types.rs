@@ -65,8 +65,10 @@ pub struct Email {
 /// stay in provider-returned order; an authserv-id is a claim, not proof.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthenticationResults {
+    #[serde(default)]
     pub value: String,
     /// None for absent or malformed ids, including EOP's `spf=...` shape.
+    #[serde(default)]
     pub authserv_id: Option<String>,
 }
 
@@ -388,6 +390,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn authentication_results_missing_fields_load_with_safe_defaults() {
+        let empty: AuthenticationResults = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.value.is_empty());
+        assert_eq!(empty.authserv_id, None);
+        let old: AuthenticationResults = serde_json::from_value(serde_json::json!({
+            "value":"relay.example.edu; dmarc=pass header.from=example.edu"
+        }))
+        .unwrap();
+        assert_eq!(
+            old.value,
+            "relay.example.edu; dmarc=pass header.from=example.edu"
+        );
+        assert_eq!(old.authserv_id, None);
     }
 
     #[test]

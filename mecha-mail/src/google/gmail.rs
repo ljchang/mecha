@@ -131,7 +131,8 @@ impl GmailProvider {
     pub async fn get_thread(&self, thread_id: &str) -> Result<Vec<Email>, MailError> {
         let json = self
             .get_json(&format!(
-                "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}?format=full"
+                "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}?format=full",
+                urlencode(thread_id)
             ))
             .await?;
         let messages = json["messages"]
@@ -288,7 +289,8 @@ impl GmailProvider {
         let resp = send_with_retry(
             self.client
                 .post(format!(
-                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{thread_id}/trash"
+                    "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/trash",
+                    urlencode(thread_id)
                 ))
                 .header("Authorization", self.auth_header())
                 .header("Content-Length", "0"),

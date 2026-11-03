@@ -4406,7 +4406,8 @@ annotations ride on the unified tools (there is a shared
 list now covers every account it could send from.
 
 **And there is one more quadrant, which is neither.** `mail_triage` — archive,
-read/unread, spam, trash — mutates the user's own mailbox and reaches nobody:
+read/unread, spam, trash, unarchive (undo archive), untrash (recover trashed
+mail) — mutates the user's own mailbox and reaches nobody:
 no third party learns anything, so it is not `external_send` and **must never
 appear in `[outbox] tools`**. Staging it would make triage circular, reviewing
 a queue in order to fill another queue. It is not `readOnlyHint` either, or a
