@@ -1511,17 +1511,6 @@ mod tests {
         dir.join("mara")
     }
 
-    /// `[life] people` switched on in `pdir`'s persona.toml, their days
-    /// left off: the network's faults are the persona's problems whenever
-    /// their people are on, as the version reads it.
-    fn people_on(pdir: &Path) {
-        let toml = pdir.join("persona.toml");
-        let text = std::fs::read_to_string(&toml).unwrap();
-        let on = text.replace("people    = false", "people    = true");
-        assert_ne!(on, text);
-        std::fs::write(&toml, on).unwrap();
-    }
-
     fn sister() -> NewPerson {
         NewPerson {
             name: "Ines".into(),
@@ -2164,12 +2153,6 @@ mod tests {
         // The character goes from the library afterwards: both broken, and
         // no library name in any line the persona's page may show.
         std::fs::remove_dir_all(&lib_dir).unwrap();
-        // With their people off nothing reads the network: no fault of it
-        // is the persona's problem.
-        let store = crate::persona::Store::load(&dir);
-        let off = store.problems(store.get("mara").unwrap(), &lib());
-        assert!(!off.iter().any(|p| p.contains("portrait")), "{off:?}");
-        people_on(&pdir);
         let store = crate::persona::Store::load(&dir);
         let problems = store.problems(store.get("mara").unwrap(), &lib());
         let portraits: Vec<&String> = problems.iter().filter(|p| p.contains("portrait")).collect();
@@ -2286,7 +2269,6 @@ mod tests {
         assert!(problems
             .iter()
             .any(|p| p.contains("tie between") && p.contains("not clean")));
-        people_on(&pdir);
         let store = crate::persona::Store::load(pdir.parent().unwrap());
         let listed = store.problems(store.get("mara").unwrap(), &no_lib());
         assert!(

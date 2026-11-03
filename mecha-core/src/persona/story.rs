@@ -972,7 +972,8 @@ mod tests {
             let deck = parse(&starter(cell)).unwrap_or_else(|e| panic!("{cell:?}: {e:#}"));
             assert!(deck.storylets.len() >= 10, "{cell:?}");
             // A major that casts nobody, so a persona with no one in their
-            // network still has one to draw.
+            // network still has one to draw: today the shared deck's, a
+            // guard on the composed deck rather than on any one cell's.
             assert!(
                 deck.storylets
                     .iter()

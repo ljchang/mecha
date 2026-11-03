@@ -1267,17 +1267,14 @@ impl Store {
         }
         // Their network's portrait links, resolved on load like the
         // persona's own; a network that cannot be read is named, never an
-        // empty one. Only while their people are on, as the version and the
-        // prompt read it (`version_files`): with them off nothing reads the
-        // network, so its faults are nothing to act on.
-        if p.settings.life.people {
-            match network::Network::read(&self.persona_dir(&p.name)) {
-                Ok(n) => {
-                    out.extend(n.broken_links(lib));
-                    out.extend(n.unreadable_edges());
-                }
-                Err(e) => out.push(format!("their network does not load: {e:#}")),
+        // empty one. Whatever the switches say: the measures and `mecha
+        // persona people` read it with their people off too (review of #828).
+        match network::Network::read(&self.persona_dir(&p.name)) {
+            Ok(n) => {
+                out.extend(n.broken_links(lib));
+                out.extend(n.unreadable_edges());
             }
+            Err(e) => out.push(format!("their network does not load: {e:#}")),
         }
         out
     }
