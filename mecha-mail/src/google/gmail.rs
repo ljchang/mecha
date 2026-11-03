@@ -68,7 +68,7 @@ impl GmailProvider {
             set.spawn(async move {
                 let _permit = permit.acquire().await.expect("semaphore closed");
                 match provider.get_message(&msg_id).await {
-                    Ok(json) => Some((idx, parse_gmail_message(&json))),
+                    Ok(json) => Some((idx, parse_gmail_message(HeaderRead::Full, &json))),
                     Err(e) => {
                         tracing::warn!("failed to fetch Gmail message {msg_id}: {e}");
                         None
@@ -137,7 +137,10 @@ impl GmailProvider {
         let messages = json["messages"]
             .as_array()
             .ok_or_else(|| MailError::ParseError("thread has no messages array".into()))?;
-        let mut emails: Vec<Email> = messages.iter().map(parse_gmail_message).collect();
+        let mut emails: Vec<Email> = messages
+            .iter()
+            .map(|message| parse_gmail_message(HeaderRead::Full, message))
+            .collect();
         // Oldest first is a promise callers build on — the unified reply
         // tool answers `last()` as "the newest message" — and the API's
         // array order is observed, not documented. The stamps are
@@ -240,6 +243,8 @@ impl GmailProvider {
     }
 
     /// Undo archive by adding INBOX to every message in the thread.
+    /// This does not clear TRASH or SPAM: success does not make those messages
+    /// visible in Inbox. Use `untrash_thread` for trashed mail.
     pub async fn unarchive_thread(&self, thread_id: &str) -> Result<(), MailError> {
         Self::ok_or_err(send_with_retry(self.restore_thread_request(thread_id, false)).await?).await
     }
@@ -386,8 +391,18 @@ pub(crate) fn extract_message_id(headers: &[Value]) -> Option<String> {
     })
 }
 
-/// Parse a Gmail API message JSON into an [`Email`].
-pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
+/// What the caller requested, not what the returned JSON appears to contain.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum HeaderRead {
+    /// `format=full`, without a field mask that restricts headers.
+    Full,
+    /// Metadata, restricted fields, or unknown request provenance.
+    #[default]
+    Partial,
+}
+
+/// Parse a Gmail API message JSON using the caller's request provenance.
+pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email {
     let provider_id = msg["id"].as_str().unwrap_or_default().to_string();
     let thread_id = msg["threadId"].as_str().map(|s| s.to_string());
     let snippet = msg["snippet"].as_str().unwrap_or_default().to_string();
@@ -490,7 +505,8 @@ pub(crate) fn parse_gmail_message(msg: &Value) -> Email {
         authentication_results: authentication_results(headers.map(Vec::as_slice)),
         headers_complete: headers
             .filter(|hs| {
-                !hs.is_empty()
+                header_read == HeaderRead::Full
+                    && !hs.is_empty()
                     && hs
                         .iter()
                         .all(|h| h["name"].is_string() && h["value"].is_string())
@@ -739,7 +755,7 @@ mod tests {
                 ]
             }
         });
-        let email = parse_gmail_message(&msg);
+        let email = parse_gmail_message(HeaderRead::Full, &msg);
         assert_eq!(email.id, "gmail-m1");
         assert_eq!(email.from_name, "Priya Nair");
         assert_eq!(email.from_address, "priya@example.edu");
@@ -755,10 +771,13 @@ mod tests {
     #[test]
     fn gmail_unknown_inbound_dates_prevent_newest_selection() {
         use crate::types::ThreadMetadata;
-        let known = parse_gmail_message(&json!({
-            "id":"known", "internalDate":"1704067200000", "labelIds":["INBOX"],
-            "payload":{"headers":[{"name":"From", "value":"sender@example.edu"}]}
-        }));
+        let known = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({
+                "id":"known", "internalDate":"1704067200000", "labelIds":["INBOX"],
+                "payload":{"headers":[{"name":"From", "value":"sender@example.edu"}]}
+            }),
+        );
         assert_eq!(known.date_known, Some(true));
         assert_eq!(known.date_received, "2024-01-01T00:00:00Z");
         for date in [
@@ -775,7 +794,7 @@ mod tests {
             ]});
             for header in [json!("not a date"), json!("")] {
                 message["payload"]["headers"][1]["value"] = header;
-                let unknown = parse_gmail_message(&message);
+                let unknown = parse_gmail_message(HeaderRead::Full, &message);
                 assert_eq!(unknown.date_known, Some(false));
                 assert!(chrono::DateTime::parse_from_rfc3339(&unknown.date_received).is_ok());
                 for certainty in [Some(false), None] {
@@ -800,11 +819,28 @@ mod tests {
                 }
             }
             message["payload"]["headers"][1]["value"] = json!("Mon, 01 Jan 2024 00:00:00 +0000");
-            let fallback = parse_gmail_message(&message);
+            let fallback = parse_gmail_message(HeaderRead::Full, &message);
             assert_eq!(fallback.date_known, Some(true));
             assert_eq!(fallback.date_received, known.date_received);
         }
-        assert_eq!(parse_gmail_message(&json!({})).date_known, Some(false));
+        assert_eq!(
+            parse_gmail_message(HeaderRead::Full, &json!({})).date_known,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn gmail_header_completeness_requires_a_full_request() {
+        // A metadata response can have the same well-formed array as a full
+        // response. The request, not the array shape, establishes completeness.
+        let message = json!({"payload":{"headers":[
+            {"name":"Authentication-Results", "value":"mx.google.com; dmarc=pass header.from=example.edu"}
+        ]}});
+        let full = parse_gmail_message(HeaderRead::Full, &message);
+        let partial = parse_gmail_message(HeaderRead::Partial, &message);
+        assert_eq!(full.headers_complete, Some(true));
+        assert_eq!(partial.headers_complete, None);
+        assert_eq!(partial.authentication_results, full.authentication_results);
     }
 
     #[test]
@@ -814,12 +850,18 @@ mod tests {
             json!({"payload":{"headers":[]}}),
             json!({"payload":{"headers":[{"name":"From"}]}}),
         ] {
-            assert_eq!(parse_gmail_message(&message).headers_complete, None);
+            assert_eq!(
+                parse_gmail_message(HeaderRead::Full, &message).headers_complete,
+                None
+            );
         }
         assert_eq!(
-            parse_gmail_message(&json!({"payload":{"headers":[
-                {"name":"From", "value":"sender@example.edu"}
-            ]}}))
+            parse_gmail_message(
+                HeaderRead::Full,
+                &json!({"payload":{"headers":[
+                    {"name":"From", "value":"sender@example.edu"}
+                ]}})
+            )
             .headers_complete,
             Some(true)
         );
@@ -835,6 +877,7 @@ mod tests {
             })
             .collect();
         parse_gmail_message(
+            HeaderRead::Full,
             &json!({"id":"message-1", "threadId":"thread-1", "payload":{"headers":headers}}),
         )
     }
@@ -844,10 +887,13 @@ mod tests {
         assert!(with_authentication_results(&[])
             .authentication_results
             .is_none());
-        assert!(parse_gmail_message(&json!({}))
+        assert!(parse_gmail_message(HeaderRead::Full, &json!({}))
             .authentication_results
             .is_none());
-        assert_eq!(parse_gmail_message(&json!({})).headers_complete, None);
+        assert_eq!(
+            parse_gmail_message(HeaderRead::Full, &json!({})).headers_complete,
+            None
+        );
         let genuine = "mx.google.com; dmarc=pass header.from=example.edu";
         let forged = "mx.google.com; dmarc=fail header.from=example.com";
         let foreign = "relay.example.com; dmarc=pass header.from=example.edu";
@@ -884,16 +930,19 @@ mod tests {
 
     #[test]
     fn gmail_exposes_rule_headers_and_provider_ids_without_collapsing_absence() {
-        let email = parse_gmail_message(&json!({
-            "id":"provider-message", "threadId":"provider-thread", "labelIds":["INBOX"],
-            "payload":{"headers":[
-                {"name":"Message-ID", "value":"<sender-controlled@example.com>"},
-                {"name":"Auto-Submitted", "value":"auto-generated"},
-                {"name":"Precedence", "value":"bulk"},
-                {"name":"List-Id", "value":"<notices.example.edu>"},
-                {"name":"Reply-To", "value":"reply@example.com"}
-            ]}
-        }));
+        let email = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({
+                "id":"provider-message", "threadId":"provider-thread", "labelIds":["INBOX"],
+                "payload":{"headers":[
+                    {"name":"Message-ID", "value":"<sender-controlled@example.com>"},
+                    {"name":"Auto-Submitted", "value":"auto-generated"},
+                    {"name":"Precedence", "value":"bulk"},
+                    {"name":"List-Id", "value":"<notices.example.edu>"},
+                    {"name":"Reply-To", "value":"reply@example.com"}
+                ]}
+            }),
+        );
         assert_eq!(email.provider_id, "provider-message");
         assert_eq!(email.thread_id.as_deref(), Some("provider-thread"));
         assert_eq!(email.auto_submitted.as_deref(), Some("auto-generated"));
@@ -903,10 +952,10 @@ mod tests {
         assert!(email.authentication_results.is_none());
         assert_eq!(email.is_draft, Some(false));
         assert_eq!(
-            parse_gmail_message(&json!({"labelIds":["DRAFT"]})).is_draft,
+            parse_gmail_message(HeaderRead::Full, &json!({"labelIds":["DRAFT"]})).is_draft,
             Some(true)
         );
-        let missing = parse_gmail_message(&json!({}));
+        let missing = parse_gmail_message(HeaderRead::Full, &json!({}));
         assert!(
             missing.auto_submitted.is_none()
                 && missing.precedence.is_none()
