@@ -173,7 +173,12 @@ when the lapse was the point. That is why a detected digest change is itself
 written as a row (§6.2), not only inferred at read time. Permission moves up
 only by a new owner row. **A group with no rows at all reads as `shadow`** —
 a hand-created rule directory, a renamed one, or one whose rows were lost —
-the same direction as an unknown mode (§8).
+the same direction as an unknown mode (§8). That default does not bypass
+§4.2's list-entry admission check: the loader counts a hand-created rule's
+shadow entry, refuses admission beyond the cap, and exposes `held: list cap`
+on omitted rules and as `mecha doctor` attention. A hold leaves the recorded
+modes intact; it stops evaluation, not the record of what permission the
+owner set.
 
 ### A rule, written out
 
@@ -357,42 +362,39 @@ precondition* checked in the same classify pass, against the same newest
 inbound message, **before** the classifier answers: only rules whose header
 preconditions pass for this message are *eligible*, so a rule that could not
 apply never takes the single `rule` slot from one that could. Eligibility
-does not change the frame's prefix: the full active and shadow lists stay in
-the stable part (§4.2), and the per-message eligible names for each list
-arrive after the message as a short suffix, with `rule` and `shadow_rules`
-constrained to the eligible names in their respective lists. Never a
-separate header rule — and **none of its actions run on the `--headers`
-timer**. This is the common shape, not an edge: §5.2 requires a sender key
-for any automatic forward, send or drafted reply, so §3's
-`receipts-to-finance` example with `from_domain` and `describe` is exactly
-it. Read as a header rule, its `digest` would fire for every message from
-the vendor, whether or not it was a receipt. For §5.5, such a rule counts as
-a description rule, so its `trash` and `spam` propose: a pinned sender set
-narrows who can trigger it but not what the description generalises to, and
-an owner who wants an automatic trash on a sender alone writes a header rule
-for it.
+does not change the frame's prefix: the full active and shadow lists
+admitted under §4.2's entry cap stay in the stable part, and the per-message
+eligible names for each list arrive after the message as a short suffix,
+with `rule` and `shadow_rules` constrained to the eligible names in their
+respective lists. Never a separate header rule — and **none of its actions
+run on the `--headers` timer**. This is the common shape, not an edge: §5.2
+requires a sender key for any automatic forward, send or drafted reply, so
+§3's `receipts-to-finance` example with `from_domain` and `describe` is
+exactly it. Read as a header rule, its `digest` would fire for every message
+from the vendor, whether or not it was a receipt. For §5.5, such a rule
+counts as a description rule, so its `trash` and `spam` propose: a pinned
+sender set narrows who can trigger it but not what the description
+generalises to, and an owner who wants an automatic trash on a sender alone
+writes a header rule for it.
 
 `match.describe` is a sentence the owner writes, distinct from the top-level
 `description` label. The classifier — already one isolated, tool-less call
-per thread — is given the enabled rules' `match.describe` texts as **two
-distinct numbered lists, active and shadow, which the model sees
+per thread — is given the admitted enabled rules' `match.describe` texts as
+**two distinct numbered lists, active and shadow, which the model sees
 separately**, each **in `priority` then name order** so the frame's bytes
 are stable from thread to thread (the cached-prefix rule) — the *whole
-enabled set*, never a per-message subset, since a stable order over a
-varying set is not a stable prefix; which rules are eligible for this
+admitted enabled set*, never a per-message subset, since a stable order over
+a varying set is not a stable prefix; which rules are eligible for this
 message comes after it (§4.2's header-precondition paragraph).
 
-**List membership follows the individual groups' effective modes (§3).** A
-rule appears once in the active list if any group is `propose` or `auto`,
-and once in the shadow list if any group is `shadow`; it appears in both
-when both conditions hold. The active list's `rule` result governs only that
-rule's `propose`/`auto` groups, and the shadow list's `shadow_rules` result
-governs only its `shadow` groups; `off` groups use neither. The two results
-are independent, so a mixed rule can lose the active choice and still
-measure its shadow groups. Otherwise promoting one group would either
-activate its shadow siblings or deprive them of measurement. For
-Mailbox=`auto` and Fixed words=`shadow`, `rule` governs Mailbox and
-`shadow_rules` governs Fixed words. The classifier returns:
+**List membership follows the individual groups' effective modes (§3),
+subject to the entry cap below.** A rule appears once in the active list if
+any group is `propose` or `auto`, and once in the shadow list if any group
+is `shadow`; it appears in both when both conditions hold. Only the grounded
+`rule` result can authorise evaluation leading to active actions. The two
+results are reconciled for measurement below, so an omission from one list's
+result cannot erase a match reported by the other. `off` groups use neither
+result. The classifier returns:
 
 ```
 rule: <one of the active rules' names> | none
@@ -400,7 +402,22 @@ rule_quote: words from the message that show it
 shadow_rules: [ { name: <a shadow rule's name>, quote: <words that show it> } ]
 ```
 
-**Shadow groups are measured through their rules' own list and field**, so
+**Reconcile the final grounded results by rule name before evaluating
+groups.** A rule named in either `rule` or `shadow_rules` counts as a match
+for all its non-off groups' evaluation, with one match per rule and thread.
+Its shadow groups write would-have rows even if only `rule` named it; use
+the grounded shadow quote when present, otherwise `rule_quote`. If both name
+it, each shadow action still gets only one would-have row. A name only in
+`shadow_rules` is evidence for evaluation, never an active selection: active
+actions still require that rule to be the grounded `rule` result, then pass
+their own confirmation and guards. Thus Mailbox=`auto` and Fixed
+words=`shadow` records the latter's would-have match when either result
+names the rule, but only `rule` can cause the mailbox action. Without this
+union, the classifier could recognise the thread in the active result and
+leave the shadow rate falsely low by omitting the same name from its other
+answer.
+
+**Shadow groups have their own list and field plus that reconciliation**, so
 they never compete for `rule` — and **that field is a list**, so they do not
 compete with each other either. Every rule installs in `shadow`, so several
 at once is the normal state, and a single slot would leave the rule the
@@ -417,30 +434,34 @@ nothing. A shadow rule's would-have row therefore says what it would do
 both are active is something the owner sees after promotion, in `propose`,
 before either goes back to `auto`.
 
-**Every shadow outbound or Board rate is labelled an upper bound, for header
-and description rules alike.** Shadow outbound groups never compete for
-§4.3's single outbound slot and never record `skipped: superseded`, so
-promotion can lose actions to another rule even when header matching is
-exact. Description rules also avoid the main pass's single `rule` slot and
-the confirmation pass's single choice among active rules. Board groups still
-face §4.4's once-per-thread limit and §6.4's caps when active. A **ceiling**
-and an **upper bound** both mean the rate can overstate unattended activity;
-a ceiling additionally marks measurement with §9's gate closed, so a
-gate-failing shadow rate is both.
+**Every description rule's shadow rate is labelled an upper bound, for every
+group; a header rule's shadow rate gets that label only for outbound and
+Board groups.** All description shadow groups — Mailbox, Private record and
+Report included — avoid the main pass's single `rule` slot, so promotion can
+lose matches to another rule. Description outbound and Board groups also
+avoid the confirmation pass's single active choice. Shadow outbound groups
+of either rule kind never compete for §4.3's outbound slot or record
+`skipped: superseded`, even when header matching is exact. Board groups
+still face §4.4's once-per-thread limit and §6.4's caps when active. A
+**ceiling** and an **upper bound** both mean the rate can overstate
+unattended activity; a ceiling additionally marks measurement with §9's gate
+closed, so a gate-failing shadow rate is both.
 
 **A description rule's shadow outbound or Board group whose text passes §9's
-gate is measured by both passes.** A `shadow_rules` candidate with a
-gate-passing shadow outbound or Board group gets the confirmation pass too,
+gate is measured by both passes.** A candidate in the reconciled match set
+with a gate-passing shadow outbound or Board group gets the shadow
+confirmation pass, whether it was named in `shadow_rules`, `rule` or both,
 and a disagreement is recorded as `would have: propose` for those groups
 only. Measuring description-rule shadow with the main pass alone would
 over-state even that bound. For shadow the confirmation pass answers with
-**a verdict per candidate**, a list mirroring `shadow_rules`, not one choice
-among them: shadow groups have no outbound slot to share (§4.3), and a
-single choice would make two matching shadow rules compete and under-state
-the one not chosen. It costs one call per thread for the gate-passing shadow
-candidates together (gate-failing ones are not confirmed, below), which is a
-small fraction of mail and only while a rule is being evaluated. The same
-discipline as `request_type` and `deadline_quote`:
+**a verdict per candidate**, a list over the reconciled shadow candidates,
+not one choice among them: shadow groups have no outbound slot to share
+(§4.3), and a single choice would make two matching shadow rules compete and
+under-state the one not chosen. It costs one call per thread for the
+gate-passing shadow candidates together (gate-failing ones are not
+confirmed, below), which is a small fraction of mail and only while a rule
+is being evaluated. The same discipline as `request_type` and
+`deadline_quote`:
 
 - **Recognition, never invention.** The value is checked against the live
   list; an unknown name is `none`. Constrained decoding gets the enum.
@@ -496,9 +517,11 @@ task run's prompt (§7) and an unattended run with tools is the consumer
 `learnable()`'s comment names as well as a send is. The harness-written name
 closes what a task *says*; the confirmation pass closes *which threads start
 one*. Confirmation eligibility is per group: an outbound or Board group must
-be in the result's modes (`propose`/`auto` for `rule`, `shadow` for
-`shadow_rules`) and pass its §9 gate. A Mailbox, Private record or Report
-sibling keeps the main pass's result, regardless of that confirmation.
+pass its §9 gate, with active candidates drawn from the grounded `rule`
+selection and shadow candidates from the reconciled match set. A shadow
+match alone never authorises active actions. A Mailbox, Private record or
+Report sibling keeps the main pass's result, regardless of that
+confirmation.
 
 Such a candidate gets a second quarantined call, the **confirmation pass**:
 no tools, no history, and a frame made only of the eligible rules'
@@ -520,8 +543,8 @@ Acknowledgement changes no bytes, so an untrusted `match.describe` still
 requires an actual owner edit (§9); changing its origin label alone cannot
 satisfy that premise.
 
-Shadow candidates with confirmation-eligible shadow groups are confirmed in
-their own call, once per rule, with **a verdict per candidate** (above),
+Reconciled candidates with confirmation-eligible shadow groups are confirmed
+in their own call, once per rule, with **a verdict per candidate** (above),
 never one choice among them. Only descriptions eligible through those shadow
 groups enter this frame. A mixed rule may appear in both confirmation calls,
 but each call's result governs only its eligible groups on that side; an
@@ -615,15 +638,37 @@ confirmation.
 active and shadow lists together**, not 12 distinct description rules. A
 rule in both lists occupies two entries in the stable frame and contributes
 its tokens twice, so the worst case is two entries per rule. Shadow mode
-(§6) measures precision with a real list before the cap moves. **A promotion
-whose resulting list membership would exceed the cap is refused before any
-mode row is written.** The CLI and page name the 12-entry cap, the resulting
-count, and rules/groups whose demotion would free the needed entries; only
-the owner may choose an `off` target (§6.1). No shadow entry is silently
-dropped to make room, because that would stop the measurement the owner is
-evaluating. A per-rule yes/no pass would be more accurate and costs one call
-per rule per thread; it is the fallback if the single field measures badly,
-not the start.
+(§6) measures precision with a real list before the cap moves.
+
+**Every act that adds a list entry goes through the same admission check:**
+installation, promotion, enable, an edit that adds membership, and a
+hand-created or no-rows rule discovered by the loader (§3). Except for
+safety lowerings below, an operation that would exceed the cap is refused
+before its files or mode rows are written; the loader refuses excess entries
+rather than admitting them just because their files already exist. The
+refusal names the 12-entry cap, the resulting count, and rules/groups whose
+demotion would free the needed entries; only a positive `Actor::Owner` may
+choose an `off` target (§6.1). A safety lowering must still stop actions: if
+a brake creates another list entry, the permission lowers and admission uses
+the over-cap hold below, never retaining `auto` to make the count fit.
+
+**If the store is over cap anyway, offer entries in `priority` then name
+order up to the cap and visibly hold the rest.** Hand edits can bypass the
+write check, and the loader must have a deterministic answer. Keep a mixed
+rule's two entries together: if the next rule does not fit, omit it and all
+later rules from both lists rather than offering only its active half. Every
+omitted rule shows **`held: list cap`** on its page and as `mecha doctor`
+attention, with the cap, entry count and remedy. None of its groups is
+evaluated or acts while held; the frame and constrained enums contain only
+admitted entries. This is an evaluation hold, not an action outcome or a
+mode row, so it closes no ledger key and changes no stored permission. The
+page marks measurement unavailable while held rather than reporting no
+matches. No shadow entry is ever dropped silently: the owner must see when
+the measurement they are evaluating has stopped.
+
+A per-rule yes/no pass would be more accurate and costs one call per rule
+per thread; it is the fallback if the single field measures badly, not the
+start.
 
 ### 4.3 Order and overlap
 
@@ -635,34 +680,35 @@ takes a thread's outbound slot. "Header rules before description rules" is
 about *when* they are evaluated (header keys on the timer, descriptions at
 classify), never about which wins: a `priority = 5` description rule
 outranks a `priority = 50` header rule for the outbound slot. A thread may
-match several header rules, but **at most one active description rule**
-(`propose` or `auto`; shadow has its own list, §4.2): §4.2's `rule` field is
-single-valued, so when two descriptions both fit, the classifier's choice
-decides between them and `priority` does not. Priority orders header rules
-among themselves and header rules against the one description match. Two
-consequences follow and are accepted: the owner who wants two description
-rules' active actions on one kind of mail writes one rule with both, and a
-description rule not named by `rule` gets no active-group match row — the
-ledger cannot show it was considered, so there is no `superseded` row for
-those groups. Its shadow groups may still have would-have rows from
-`shadow_rules` (§4.2). If the per-rule yes/no fallback of §4.2 is ever
-taken, multiple description matches become possible and this paragraph is
-rewritten with it. Mailbox actions and `digest`/`task` from every match
-follow their own groups' modes and results (§4.2). **Only active outbound
-groups can take the single outbound slot**, and they come from at most one
-rule per thread — the first matched rule by priority *with an outbound group
-in `propose` or `auto`*. A higher-priority mailbox-only rule, or one whose
-outbound groups are all `shadow` or `off`, never takes the slot, because two
-rules answering the same email is never what anyone meant. A rule appearing
-in both lists is considered once for that slot through its active result;
-its shadow result only writes would-have rows, so it neither competes nor
-double-counts. The ledger records other matched rules' active outbound
-actions as `skipped: superseded by <rule>`; shadow outbound groups never
-write that outcome, which is why even a header rule's shadow rate is an
-upper bound (§4.2). Within the winning rule every active outbound action
-runs according to its group's mode: the receipts case is a `forward` of the
-invoice *and* a typed `send`, when both groups are active. Shadow siblings
-only record would-have rows, and off siblings do nothing.
+match several header rules, but **at most one active description rule is
+selected for actions** (`propose` or `auto`; shadow has its own list, §4.2):
+§4.2's `rule` field is single-valued, so when two descriptions both fit, the
+classifier's choice decides between them and `priority` does not. Priority
+orders header rules among themselves and header rules against the one
+description match. Two consequences follow and are accepted: the owner who
+wants two description rules' active actions on one kind of mail writes one
+rule with both, and a description rule not named by `rule` gets no
+active-group match row — the ledger cannot show it was considered, so there
+is no `superseded` row for those groups. Its shadow groups may still have
+would-have rows from the reconciled match set (§4.2). If the per-rule yes/no
+fallback of §4.2 is ever taken, multiple description matches become possible
+and this paragraph is rewritten with it. Mailbox actions and `digest`/`task`
+from every match follow their own groups' modes and results (§4.2). **Only
+active outbound groups can take the single outbound slot**, and they come
+from at most one rule per thread — the first matched rule by priority *with
+an outbound group in `propose` or `auto`*. A higher-priority mailbox-only
+rule, or one whose outbound groups are all `shadow` or `off`, never takes
+the slot, because two rules answering the same email is never what anyone
+meant. A rule appearing in both lists is considered once for that slot
+through its active result; the reconciled match set writes its shadow
+would-have rows once per action, so a shadow-only match neither takes the
+slot nor double-counts. The ledger records other matched rules' active
+outbound actions as `skipped: superseded by <rule>`; shadow outbound groups
+never write that outcome, which is why even a header rule's shadow outbound
+rate is an upper bound (§4.2). Within the winning rule every active outbound
+action runs according to its group's mode: the receipts case is a `forward`
+of the invoice *and* a typed `send`, when both groups are active. Shadow
+siblings only record would-have rows, and off siblings do nothing.
 
 ### 4.4 When it runs
 
@@ -764,16 +810,17 @@ owner turning it off) does end the stretch. A group in `shadow` writes
 would-have rows for mail arriving while paused, and only resuming from
 `shadow` offers *apply to these N matches from while I was paused*. A group
 in `off` writes nothing for mail arriving while it is off — no would-have
-row and no `skipped` row — so resuming from `off` offers no backlog. Only
-`Actor::Owner` may write `off` (§6.1): an owner turning a rule `off` chooses
-no record; a run may lower no further than `shadow`, and `pause-all` targets
-`shadow`, so a pause keeps a record. **A message found ineligible by a group
-in `propose` or `auto` gets a row** — `skipped: before the rule was active`
-— so an active group passes nothing over without a trace. (A `shadow` group
-has no activation and writes `would have` rows instead; an `off` group
-writes nothing.) Acting on past matches is an explicit owner action on the
-rule page — *apply to these N earlier matches* — and runs in `propose`
-whatever the rule's mode, so the backlog is reviewed, not sent.
+row and no `skipped` row — so resuming from `off` offers no backlog. Only a
+positive `Actor::Owner` reading permits writing `off` (§6.1): an owner
+turning a rule `off` chooses no record; every other actor is clamped at
+`shadow`, and `pause-all` targets `shadow`, so a pause keeps a record. **A
+message found ineligible by a group in `propose` or `auto` gets a row** —
+`skipped: before the rule was active` — so an active group passes nothing
+over without a trace. (A `shadow` group has no activation and writes `would
+have` rows instead; an `off` group writes nothing.) Acting on past matches
+is an explicit owner action on the rule page — *apply to these N earlier
+matches* — and runs in `propose` whatever the rule's mode, so the backlog is
+reviewed, not sent.
 
 **Matching is per thread; guards and keys are per message, and outbound
 actions are once per thread.** The classifier reads a thread, but a thread
@@ -1144,48 +1191,53 @@ third-party text.
 
 **"Never a tool" is not the whole boundary**, because a model with `shell`
 needs no tool to type `mecha mail rule mode <name> <group> auto`. So
-**raising** a mode refuses any process that descends from a registered run —
-the shell registry and run markers `closure.rs` already reads to decide who
-may close a task (`ShellReading`, `POSTURE_ENV` as advisory) — and records
-the raise with `Actor::Owner` only. This deliberately does **not** inherit
-the outbox's ruling that a release from an unknown actor is stamped
-`unknown` but not refused: one release sends one reviewed draft, while a
-raise is a standing permission to send unattended, and a run with the owner
-present is still a context window with mail in it.
+**raising** a mode requires a positive `Actor::Owner` reading from the shell
+registry and run markers `closure.rs` already reads to decide who may close
+a task (`ShellReading`, `POSTURE_ENV` as advisory). A registered run,
+`Actor::Unknown` or an unreadable actor is refused; the raise is recorded
+with `Actor::Owner` only. This deliberately does **not** inherit the
+outbox's ruling that a release from an unknown actor is stamped `unknown`
+but not refused: one release sends one reviewed draft, while a raise is a
+standing permission to send unattended, and a run with the owner present is
+still a context window with mail in it.
 
-**A lowering from a process that descends from a registered run may go no
-lower than `shadow`, and only `Actor::Owner` may write `off`.** A run's
-attempt to write `off` is clamped to `shadow`, not refused, and the CLI says
-that it clamped the requested mode. A run may stop actions without approval
-(§6.4), but may not stop the would-have record that explains the pause
-(§4.4). The lowering uses the same actor reading as the raise gate and
-records who made it, so an owner's pause and a run's pause are told apart on
-the page. A group already `off` stays there without a new row on any
-non-owner step-down, automatic lapses and brakes included; none may raise it
-or write an owner-only mode on another actor's behalf.
+**Writing `off` requires a positive `Actor::Owner` reading.** Every other
+reading — a registered run, `Actor::Unknown`, or an unreadable actor —
+clamps an `off` request to `shadow`, not a refusal, and the CLI says that it
+clamped the requested mode. Anyone may stop actions without approval (§6.4),
+but only an identified owner may stop the would-have record that explains
+the pause (§4.4). The lowering uses the same actor reading as the raise gate
+and records who made it, including `Unknown`, so the page does not attribute
+an unidentified pause to the owner. A group already `off` stays there
+without a new row on any non-owner step-down, automatic lapses and brakes
+included; clamping the target must not raise it or write an owner-only mode
+on another actor's behalf.
 
 **Both actor gates are advisory without the sandbox**, exactly as in
-`closure.rs`. `closure::decide`'s own documentation names the way past it —
-a command detached from the run with its environment cleared — and an
-unconfined `shell` does not need the CLI at all: it can append a row to
-`approvals.jsonl` directly. That matters more here than for task closure,
-because §3 moved the mode out of `rule.toml` precisely so nothing could
-self-grant `auto`. With `shell` confined (§Security model, the sandbox), the
-store is outside anything a run can write and the gate is real. Without it,
-the residual is stated rather than hidden: `mecha doctor` reports any rule
-holding an outbound group in `auto` while `shell` runs unconfined, as
-attention, with the sandbox as the remedy.
+`closure.rs`. A detached command with its environment cleared defeats an
+ancestry check, but missing identity is not proof of ownership: it is
+`Unknown`, refused for a raise and clamped for `off`. An unconfined `shell`
+can still bypass the CLI by appending to `approvals.jsonl` directly. That
+matters more here than for task closure, because §3 moved the mode out of
+`rule.toml` precisely so nothing could self-grant `auto`. With `shell`
+confined (§Security model, the sandbox), the store is outside anything a run
+can write and the gate is real. Without it, the residual is stated rather
+than hidden: `mecha doctor` reports any rule holding an outbound group in
+`auto` while `shell` runs unconfined, as attention, with the sandbox as the
+remedy.
 
 A rule may be `auto` for some actions and not others: `mode` can be set per
 action group (§5's rows), and every mode row names one group (§3) — there is
 no rule-wide mode for a group to default to. "Archive these automatically,
 but propose the reply" is the common case. For description rules, any
 `propose`/`auto` group puts the rule in the active list and any `shadow`
-group puts it in the shadow list (§4.2), independently. Each result governs
-only its own groups, so changing one group's mode cannot activate another;
-only active outbound groups can take §4.3's outbound slot. A promotion that
-would exceed §4.2's list-entry cap is refused with the cap and the demotions
-needed to make room, so no shadow measurement disappears to accommodate it.
+group puts it in the shadow list (§4.2), independently, subject to entry
+admission. The reconciled match set feeds shadow measurement, while only the
+grounded active `rule` result can lead to active actions; changing one
+group's mode cannot activate another. Only active outbound groups can take
+§4.3's outbound slot. §4.2 checks the cap on every entry addition, not just
+promotion; if the loader finds an over-cap store, omitted rules are visibly
+`held: list cap`, never silently missing from measurement.
 
 ### 6.2 Approval binds to what was shown (R1)
 
@@ -1372,6 +1424,8 @@ conditions below fires. The step-down brakes name the groups they lower, and
 each lowers a group to the lower of its current mode and the brake's target,
 like a lapse, leaving an already-off group's row untouched (§6.1). Only the
 owner may write `off`; the two cap bullets change no mode and only stage.
+§4.2's list-entry cap never blocks a safety lowering: excess entries are
+held visibly rather than leaving a failed group in `auto`.
 
 - **Any automatic send is marked wrong** by the owner → **that send's group**
   to `propose`. Zero tolerance for sends.
@@ -1488,9 +1542,13 @@ Inside Mail rather than Settings: it is watched daily, and the rows link into
 the mail desk's reader. Every mutation is a `mecha mail rule …` CLI child, the
 `/triggers` and outbox pattern, so the page can do nothing the CLI cannot.
 
-**The list.** One row per rule: name, mode (per group, as chips), fires in the
-last 7 days, last fired, pending in the outbox, failures, the owner's undo and
-edit rate, and a pause toggle. A rule that stepped itself down shows why.
+**The list.** One row per rule: name, mode (per group, as chips), fires in
+the last 7 days, last fired, pending in the outbox, failures, the owner's
+undo and edit rate, and a pause toggle. A rule that stepped itself down
+shows why. A rule omitted by §4.2's entry cap shows `held: list cap`, its
+measurement unavailable, the cap and the entry count, with the same
+attention in `mecha doctor`; a missing evaluation must never look like a
+zero match rate.
 
 **A rule.**
 
@@ -1499,51 +1557,59 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   read.
 - **The ledger**: one row per action — when, which message (sender and
   subject, opening in the reader), matched because (header key, or the
-  grounded `rule_quote` or shadow quote, according to the group's mode), the
-  action, the mode it ran in, **the match digest in force for the row's
-  group when it was written** (§4.2: the matcher keys, including
-  `match.describe`, `priority`, applicable origin-gate status and, for a
-  description rule's confirmed groups, the compiled confirmation version),
-  **the always-written `verdict_input`** (`snippet` or `full_body` for a
-  description rule's final matching verdict, `not_applicable` for header
-  rules or rows with no matching verdict, and `unknown` when a value cannot
-  be read), and the outcome. Every P1 row writes `not_applicable` from the
-  start (§4.2), because an omitted field would otherwise read as `unknown`
-  and never join the header bucket; the reader still treats missing or
-  unreadable values as `unknown`, never as `not_applicable`. The top-level
-  `description` label and a per-rule full-body boolean are not match-digest
-  inputs. The page computes rates under the current match digest only,
-  separately for each `verdict_input`, and shows earlier digests apart under
-  a dated heading naming the change. Snippet and full-body rows never share
-  a rate, even under the same digest; `not_applicable` and `unknown` are
-  separate too, with no pooled headline rate, because escalation is per
-  thread and can come from another rule. **Every shadow outbound or Board
-  rate is labelled an upper bound**, for header and description rules alike:
-  shadow outbound groups bypass §4.3's slot, description rules also bypass
-  the active classifier choices, and Board groups still face the per-thread
-  limit and caps. A gate-failing shadow rate is additionally labelled a
-  **ceiling** (§4.2); both labels mean potential overstatement, with the
-  ceiling naming the closed gate. Typed sends also face §5.3's grounding
-  check. Recipient text, notes and templates remain outside the match
-  digest, so their edit or an acknowledgement permitted by §9 preserves
-  matching history unless the applicable gate status changes. Adding,
-  removing or changing the mode of a send in a non-off group may change
-  escalation across rules; each new row records the evidence its verdict
-  actually read. Only a group's own list result contributes to its rows, so
-  a rule in both lists does not count a match twice for any group (§4.2).
-  Earlier ceiling rows stay visible after an origin-gate transition (§4.2).
-  Outcomes: `pending` (written before an action executes, §4.4), `done`,
-  `would have` (shadow), `offered` (a proposed mailbox, record or Board
-  action waiting in the mail desk or the digest), `staged`, `held: rule cap`
-  and `held: global cap` (§6.4), `held: fate unknown` (a send interrupted
-  mid-flight, §4.4), `sent`, `released unchanged`, `edited`, `rejected`,
-  `undone`, `expired` (§4.1), `failed: <why>`, `skipped: <guard>`. One more
-  row is not an action outcome and touches no action's key: `approval
-  lapsed: files changed` (§6.2), a rule-level row for the page, reporting
-  only non-off groups; an off group's old digest triggers no lapse row or
-  notice. It is listed here so the unknown-outcome rule cannot mistake it
-  for one. `skipped` rows are shown, not hidden — a guard visibly firing is
-  how the owner learns to trust the guards.
+  grounded `rule_quote` for active actions or the reconciled quote for
+  shadow rows (§4.2)), the action, the mode it ran in, **the match digest in
+  force for the row's group when it was written** (§4.2: the matcher keys,
+  including `match.describe`, `priority`, applicable origin-gate status and,
+  for a description rule's confirmed groups, the compiled confirmation
+  version), **the always-written `verdict_input`** (`snippet` or `full_body`
+  for a description rule's final matching verdict, `not_applicable` for
+  header rules or rows with no matching verdict, and `unknown` when a value
+  cannot be read), and the outcome. Every P1 row writes `not_applicable`
+  from the start (§4.2), because an omitted field would otherwise read as
+  `unknown` and never join the header bucket; the reader still treats
+  missing or unreadable values as `unknown`, never as `not_applicable`. The
+  top-level `description` label and a per-rule full-body boolean are not
+  match-digest inputs. The page computes rates under the current match
+  digest only, separately for each `verdict_input`, and shows earlier
+  digests apart under a dated heading naming the change. Snippet and
+  full-body rows never share a rate, even under the same digest;
+  `not_applicable` and `unknown` are separate too, with no pooled headline
+  rate, because escalation is per thread and can come from another rule.
+  **Every description rule's shadow rate is labelled an upper bound, in
+  every group; a header rule's shadow rate gets that label only for outbound
+  and Board groups.** All description shadow groups bypass the main pass's
+  single choice; their outbound and Board groups also bypass the
+  confirmation choice. Shadow outbound groups of either kind bypass §4.3's
+  slot, and Board groups still face the per-thread limit and caps. A
+  gate-failing shadow rate is additionally labelled a **ceiling** (§4.2);
+  both labels mean potential overstatement, with the ceiling naming the
+  closed gate. Typed sends also face §5.3's grounding check. Recipient text,
+  notes and templates remain outside the match digest, so their edit or an
+  acknowledgement permitted by §9 preserves matching history unless the
+  applicable gate status changes. Adding, removing or changing the mode of a
+  send in a non-off group may change escalation across rules; each new row
+  records the evidence its verdict actually read. Shadow rows use the
+  reconciled union of grounded matches, with one would-have row per action
+  even if both results name the rule; active actions still require the
+  active `rule` selection (§4.2). Earlier ceiling rows stay visible after an
+  origin-gate transition (§4.2). Outcomes: `pending` (written before an
+  action executes, §4.4), `done`, `would have` (shadow), `offered` (a
+  proposed mailbox, record or Board action waiting in the mail desk or the
+  digest), `staged`, `held: rule cap` and `held: global cap` (§6.4), `held:
+  fate unknown` (a send interrupted mid-flight, §4.4), `sent`, `released
+  unchanged`, `edited`, `rejected`, `undone`, `expired` (§4.1), `failed:
+  <why>`, `skipped: <guard>`. One more row is not an action outcome and
+  touches no action's key: `approval lapsed: files changed` (§6.2), a
+  rule-level row for the page, reporting only non-off groups; an off group's
+  old digest triggers no lapse row or notice. It is listed here so the
+  unknown-outcome rule cannot mistake it for one. `skipped` rows are shown,
+  not hidden — a guard visibly firing is how the owner learns to trust the
+  guards.
+- **`held: list cap`** when §4.2 omits the rule, with the cap, entry count
+  and demotions that would make room. It is an evaluation hold shown by
+  `mecha doctor` too, not the ledger's closing `held` action outcome,
+  because no action ran; measurements are unavailable while held.
 - **The share of staged rows by reason** (§5.4), so the owner can see which
   per-message guards explain why a group in `auto` is sending little.
 - **Undo** on mailbox rows (archive → back to inbox, trash → restore), and
@@ -1622,11 +1688,15 @@ real and worth serving, and the safe shape exists already in
   rather than the only one. The proposal id is minted by the store, never
   taken from the model.
 - The proposal is checked by the same loader an installed rule uses, so a
-  proposal that previews clean installs clean.
+  proposal that previews clean has a valid definition. Installation also
+  checks §4.2's current list-entry capacity, which may change after preview.
 - The owner sees the rendered rule — the template as the recipient would
   read it — and installs it. **Installation is always into `shadow`**,
   whatever the proposal says, and an armed proposal is labelled as one. The
-  accept names the digest the owner was shown.
+  accept names the digest the owner was shown. An install that would add an
+  entry beyond §4.2's cap is refused with the cap and remedy; installing in
+  `shadow` is no exception, because its description still occupies the
+  frame.
 - **The recorded `Origin` gates what can send.** The confirmation frame
   (§4.2) must be shaped by the owner's words or a clean proposal, never
   unchanged prose shaped by a stranger. Acknowledgement changes no bytes, so
@@ -1872,7 +1942,14 @@ The rest are answered by measurement or by a decision made elsewhere:
    shadow lists is a guess at what the classifier holds without precision
    dropping; a rule in both counts twice (§4.2). Shadow mode measures it;
    the cap moves then.
-2. **Retention.** The ledger grows forever, as `~/.mecha/mail-triage/` does
+2. **Mode-dependent frame measurement.** Promoting one group of rule A can
+   add or remove a list entry and change the stable frame bytes in which
+   every other description rule is matched. Their match digests do not
+   change, so their rates pool rows from before and after that frame change.
+   Measure whether that pooling changes the interpretation of the rates;
+   this is an open measurement question, not a new digest or reset
+   mechanism.
+3. **Retention.** The ledger grows forever, as `~/.mecha/mail-triage/` does
    (`MAIL-UX-DESIGN.md` §7 Q6). Same answer, whenever that one is given.
 
 ---
@@ -1888,8 +1965,9 @@ The rest are answered by measurement or by a decision made elsewhere:
 - **Auto-promotion, or a history-based promotion gate.** No rule moves up
   the ladder without the owner, no statistic moves it, and no history
   threshold stands between the owner and the switch either (R6). §4.2's
-  list-entry cap is a frame-capacity limit, so a promotion that exceeds it
-  is refused without requiring a track record.
+  list-entry cap is a frame-capacity limit checked on every entry addition,
+  with explicit refusal or a visible loader hold when over cap, without
+  requiring a track record.
 - **Model-written rules that go live.** §9: proposals install in `shadow`.
 - **Rules in project config.** Global store only.
 - **Provider-side filters.** A rule is mecha's, like tags: no Gmail filter
