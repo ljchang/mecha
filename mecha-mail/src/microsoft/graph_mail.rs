@@ -373,7 +373,29 @@ impl OutlookProvider {
                     .ok_or_else(|| MailError::ParseError("conversation message has no id".into()))
             })
             .collect::<Result<_, _>>()?;
-        if ids.is_empty() && source_folder.is_none() {
+        if ids.is_empty() {
+            if source_folder.is_some() {
+                // Empty Inbox is a no-op only if the conversation exists.
+                // This is an existence probe, never a source of move ids;
+                // one result suffices, so do not follow its nextLink.
+                let url = format!(
+                    "{GRAPH}/me/messages?$filter={}&$select=id&$top=1",
+                    urlencode(&filter)
+                );
+                let page = self.get_json(&url).await?;
+                let messages = page["value"].as_array().ok_or_else(|| {
+                    MailError::ParseError("Graph message page has no value array".into())
+                })?;
+                if let Some(message) = messages.first() {
+                    message["id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| {
+                            MailError::ParseError("conversation message has no id".into())
+                        })?;
+                    return Ok(ids);
+                }
+            }
             return Err(MailError::ApiError {
                 status: 404,
                 message: format!("no messages in conversation {conversation_id}"),
@@ -865,7 +887,13 @@ mod tests {
             let query: std::collections::BTreeMap<_, _> =
                 parsed.query_pairs().into_owned().collect();
             assert_eq!(query["$filter"], "conversationId eq 'thread''1'");
-            assert_eq!(query["$top"], "100");
+            if query["$top"] == "1" {
+                assert_eq!(parsed.path(), "/v1.0/me/messages");
+                assert_eq!(query["$select"], "id");
+                assert!(!query.contains_key("$skiptoken"));
+            } else {
+                assert_eq!(query["$top"], "100");
+            }
             let folder = if parsed.path() == "/v1.0/me/messages" {
                 None
             } else {
@@ -1151,10 +1179,93 @@ mod tests {
             } else {
                 provider.archive_thread("thread'1").await
             };
-            assert_eq!(result.unwrap(), MutationOutcome::default());
+            let outcome = result.unwrap();
+            assert_eq!(outcome, MutationOutcome::default());
+            let action = if spam {
+                crate::unified::TriageAction::Spam
+            } else {
+                crate::unified::TriageAction::Archive
+            };
+            let reply = crate::unified::triage_reply(
+                "fixture",
+                "thread'1",
+                action,
+                crate::unified::TriageResult::Count(outcome),
+            );
+            assert_eq!(reply.structured_content.unwrap()["status"], "nothing_to_do");
             let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
-            mailbox.assert_reads(Some("inbox"), "id", 1);
+            assert_eq!(mailbox.reads.len(), 2);
+            let first = reqwest::Url::parse(&mailbox.reads[0]).unwrap();
+            assert_eq!(first.path(), "/v1.0/me/mailFolders/inbox/messages");
+            let probe = reqwest::Url::parse(&mailbox.reads[1]).unwrap();
+            assert_eq!(probe.path(), "/v1.0/me/messages");
+            let query: std::collections::BTreeMap<_, _> =
+                probe.query_pairs().into_owned().collect();
+            assert_eq!(query["$filter"], "conversationId eq 'thread''1'");
+            assert_eq!(query["$select"], "id");
+            assert_eq!(query["$top"], "1");
             assert!(mailbox.writes.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_and_spam_reject_a_conversation_missing_from_every_folder() {
+        for spam in [false, true] {
+            let provider = mailbox_provider();
+            // Keep unrelated mail: finding any message in the mailbox is
+            // insufficient evidence that this particular conversation exists.
+            provider
+                .scripted_mailbox
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .messages
+                .retain(|m| m["conversationId"] != "thread'1");
+            let result = if spam {
+                provider.spam_thread("thread'1").await
+            } else {
+                provider.archive_thread("thread'1").await
+            };
+            assert!(
+                matches!(result, Err(MailError::ApiError { status: 404, .. })),
+                "{result:?}"
+            );
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            assert_eq!(mailbox.reads.len(), 2);
+            assert!(mailbox.writes.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_existence_probe_does_not_claim_nothing_to_do() {
+        for probe in [
+            Err(MailError::ApiError {
+                status: 503,
+                message: "fixture unavailable".into(),
+            }),
+            Ok(json!({})),
+            Ok(json!({"value":[{}]})),
+            Ok(json!({"value":[{"id":""}]})),
+        ] {
+            let mut provider = OutlookProvider::new("fixture-token".into());
+            provider.scripted_reads =
+                Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+                    urls: Vec::new(),
+                    pages: [Ok(json!({"value":[]})), probe].into(),
+                })));
+            assert!(provider.archive_thread("thread'1").await.is_err());
+            assert_eq!(
+                provider
+                    .scripted_reads
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .urls
+                    .len(),
+                2
+            );
         }
     }
 

@@ -4444,6 +4444,13 @@ scope, including drafts, like Gmail's `threads.trash`; read/unread also
 remain whole-conversation operations. Triage results carry successful and
 failed mutation counts and a completed/partial/nothing-to-do status through
 MCP, in `structuredContent` and matching JSON text for text-only clients.
+An empty Inbox listing triggers one unscoped existence probe (`$select=id`,
+`$top=1`): a missing conversation remains a 404, while a conversation with
+only filed mail is a no-op. Probe results never become move targets.
+`unified::status_of` and the CLI's `triage_status_of` independently classify
+counts; a CLI parity test uses the mail dev-dependency to keep them aligned.
+The CLI checks the server's claimed status without linking the mail library
+at runtime: mailbox access stays over MCP.
 `commands::mail::finish_triage` marks `ACTED` only for confirmed completion:
 empty Inbox results say `skipped: nothing in Inbox`; partial failures return
 an error with counts. Both leave the record unchanged, so a classified
