@@ -2559,13 +2559,18 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                         println!("Kept as they were.");
                         return Ok(());
                     }
-                    // Exactly the records shown: one the writer adds to this
-                    // chat while the question waits was never read, so it is
-                    // not vouched for (review of #837). Each vouch re-checks
-                    // its record inside its own write.
-                    for (uid, _) in &waiting {
-                        m.approve_clean(uid)?;
-                        count += 1;
+                    // Exactly the records shown, in one transaction: one the
+                    // writer adds while the question waits was never read, and
+                    // one withdrawn meanwhile is skipped and named, never a
+                    // half-done loop (review of #837).
+                    let uids: Vec<String> = waiting.iter().map(|(uid, _)| uid.clone()).collect();
+                    let (vouched, skipped) = m.approve_clean_listed(&chat, &uids)?;
+                    count = vouched;
+                    for uid in &skipped {
+                        println!(
+                            "  {} changed while you were asked and was left as it was.",
+                            &uid[..8.min(uid.len())]
+                        );
                     }
                 }
                 // Records vouched for before: a repeat re-syncs their shared
@@ -2750,7 +2755,20 @@ fn chat_records(m: &mecha_core::persona::memory::Memory, chat: &str) -> Result<C
     for e in m.episodes(Filter::All)? {
         if e.source.chat == chat {
             let live = e.status != MemoryStatus::Invalidated;
-            note(e.uid, e.summary, e.origin, e.vouched_at.is_some(), live);
+            // The whole episode, as recall folds it: a vouch signs for its
+            // threads and decisions too, not only the summary (review of
+            // #837).
+            let mut text = e.summary.clone();
+            for (label, items) in [
+                ("topics", &e.topics),
+                ("decisions", &e.decisions),
+                ("open threads", &e.open_threads),
+            ] {
+                if !items.is_empty() {
+                    text.push_str(&format!("\n      {label}: {}", items.join("; ")));
+                }
+            }
+            note(e.uid, text, e.origin, e.vouched_at.is_some(), live);
         }
     }
     // Every fact table the module knows, never a hand list that a new one

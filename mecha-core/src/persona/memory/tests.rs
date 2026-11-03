@@ -1539,7 +1539,10 @@ fn no_model_facing_core_path_can_approve_memory_as_clean() {
                 && !path.ends_with("persona/memory.rs")
             {
                 let source = std::fs::read_to_string(&path).unwrap();
-                if source.contains("approve_clean(") || source.contains("approve_clean_chat(") {
+                if source.contains("approve_clean(")
+                    || source.contains("approve_clean_chat(")
+                    || source.contains("approve_clean_listed(")
+                {
                     offenders.push(path);
                 }
             }
@@ -1555,4 +1558,36 @@ fn no_model_facing_core_path_can_approve_memory_as_clean() {
         offenders.is_empty(),
         "only the owner's CLI and web route may call clean approval; core callers: {offenders:?}"
     );
+}
+
+#[test]
+fn a_listed_vouch_takes_only_the_records_shown_and_skips_a_withdrawn_one() {
+    let dir = store(&["mara"]);
+    let m = Memory::open(&dir, "mara").unwrap();
+    let add = |text: &str| {
+        m.add_fact(
+            Table::Persona,
+            fact(text, Kind::Observed, "listed-chat", Origin::ModelUntrusted),
+        )
+        .unwrap()
+    };
+    let shown = add("The lantern hangs by the gate.");
+    let withdrawn = add("The kettle is copper.");
+    let added_later = add("The well is deep.");
+    m.invalidate(&withdrawn.uid).unwrap();
+    let (count, skipped) = m
+        .approve_clean_listed("listed-chat", &[shown.uid.clone(), withdrawn.uid.clone()])
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(skipped, vec![withdrawn.uid.clone()]);
+    assert_eq!(m.fact(&shown.uid).unwrap().unwrap().origin, Origin::Owner);
+    let later = m.fact(&added_later.uid).unwrap().unwrap();
+    assert_eq!(
+        later.origin,
+        Origin::ModelUntrusted,
+        "never shown, never vouched"
+    );
+    let gone = m.fact(&withdrawn.uid).unwrap().unwrap();
+    assert_eq!(gone.status, Status::Invalidated);
+    assert_eq!(gone.origin, Origin::ModelUntrusted);
 }

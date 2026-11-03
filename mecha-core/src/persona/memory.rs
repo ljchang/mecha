@@ -1346,6 +1346,70 @@ impl Memory {
         Ok(count)
     }
 
+    /// Vouch for exactly `uids` from `chat`, the records the owner was shown,
+    /// in one transaction: each must still be from that chat, untrusted and
+    /// live inside the write, or it is skipped and returned by id rather
+    /// than aborting the rest (review of #837). A record the writer adds to
+    /// the chat meanwhile is never among them. Shared copies follow after,
+    /// as in [`Self::approve_clean_chat`]. Returns the count vouched and the
+    /// ids skipped.
+    pub fn approve_clean_listed(
+        &self,
+        chat: &str,
+        uids: &[String],
+    ) -> Result<(usize, Vec<String>)> {
+        self.writable()?;
+        let stamp = now();
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut vouched = Vec::new();
+        let mut skipped = Vec::new();
+        for uid in uids {
+            let mut done = false;
+            for table in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+                let n = tx.execute(
+                    &format!(
+                        "UPDATE {table} SET status = ?3, origin = ?4, vouched_at = ?5
+                         WHERE uid = ?1 AND source_chat = ?2 AND origin = ?6
+                         AND status IN (?7, ?8) AND invalidated_at IS NULL"
+                    ),
+                    params![
+                        uid,
+                        chat,
+                        wire(&Status::Active),
+                        wire(&Origin::Owner),
+                        stamp,
+                        wire(&Origin::ModelUntrusted),
+                        wire(&Status::Candidate),
+                        wire(&Status::Active)
+                    ],
+                )?;
+                if n > 0 {
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                vouched.push(uid.clone());
+            } else {
+                skipped.push(uid.clone());
+            }
+        }
+        tx.commit()?;
+        if !vouched.is_empty() {
+            if let Some(shared) = self.shared()? {
+                let retry = format!(
+                    "mecha persona memory approve {} --chat {} --clean",
+                    self.persona, chat
+                );
+                shared.vouch_from(&self.persona, &vouched, &retry)?;
+            }
+        }
+        Ok((vouched.len(), skipped))
+    }
+
     /// Withdraw a record without deleting it, and stop sharing it: a fact
     /// withdrawn here is not one other personas should still read. The first
     /// withdrawal's time is kept. Returns the shared copies removed.
