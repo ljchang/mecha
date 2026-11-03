@@ -71,7 +71,10 @@
     busy = true;
     try {
       const body = tomlShown ? { id, base: st.digest, raw } : { id, base: st.digest, form: $state.snapshot(edit) };
-      adopt(await post('/api/factory/form/save', body));
+      const out = await post('/api/factory/form/save', body);
+      // The save stands either way; a failed re-read only means asking again.
+      if (out.reread_error) await load();
+      else adopt(out);
       say('Draft saved. Nothing changes for strangers until you publish.');
     } catch (e) {
       say(String(e?.message ?? e), true);

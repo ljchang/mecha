@@ -764,11 +764,16 @@ pub async fn form_save(State(_state): St, Json(body): Json<FormSave>) -> Respons
         Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
+    // The draft is written: from here the save stands, and a re-read that
+    // fails is said beside it (as `save_hours` does), never as a failed save
+    // that would send the page back with the pre-write base and a 409.
     let id = body.id.clone();
     match tokio::task::spawn_blocking(move || working(&id)).await {
         Ok(Ok(w)) => Json(form_state(&w)).into_response(),
-        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Ok(Err(e)) => Json(serde_json::json!({ "saved": true, "reread_error": format!("{e:#}") }))
+            .into_response(),
+        Err(e) => Json(serde_json::json!({ "saved": true, "reread_error": format!("{e:#}") }))
+            .into_response(),
     }
 }
 
