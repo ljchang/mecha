@@ -377,7 +377,11 @@ steers which rule sends. `rule_quote` grounding does not bound it — whoever
 wrote the message chose the words it must quote.
 
 So the main pass's `rule` field is **a candidate, never a decision, for any
-rule with an outbound action.** Such a candidate gets a second quarantined
+rule with an outbound action or a `task`** — the Board group too, because a
+task reaches a task run's prompt (§7) and an unattended run with tools is the
+consumer `learnable()`'s comment names as well as a send is. The harness-written
+name closes what a task *says*; the confirmation pass closes *which threads
+start one*. Such a candidate gets a second quarantined
 call, the **confirmation pass**: no tools, no history, and a frame made only
 of the owner's rule description and a fixed instruction compiled into the
 binary — **no learned rules and no few-shot examples**. It answers one
@@ -389,11 +393,12 @@ That keeps the exemption's premise true rather than re-arguing it: untrusted
 triage rules still reach only a pass whose output cannot send on its own. When
 this is built, `learnable()`'s comment gains one sentence naming the
 confirmation pass as the reason the premise still holds, so the next reader
-inherits a true argument. The cost is one extra call per *send candidate*, not
-per thread — a small fraction of mail. Rules with only mailbox and record
-actions keep matching in the main pass alone, learned rules and all: their
-worst case is a reversible archive or an unwanted task, both shown in the
-digest (§5.5, §7).
+inherits a true argument. The cost is one extra call per *send or task
+candidate*, not per thread — a small fraction of mail. Rules whose actions
+are only in the **Mailbox and Private record groups** (§5's table: `archive`,
+`read`, `unread`, `trash`, `spam`, `tag`, `digest` — not `task`) keep
+matching in the main pass alone, learned rules and all: their worst case is a
+reversible archive shown in the digest (§5.5, §7).
 
 **Cost.** Each description adds its tokens to every classification. The
 working assumption is a cap of 12 enabled description rules, revisited once
@@ -425,7 +430,7 @@ both declared by the same rule.
 
 ### 4.4 When it runs
 
-- Header rules' **mailbox and record actions**: `mecha mail rule apply
+- Header rules' **mailbox actions and `tag`**: `mecha mail rule apply
   --headers`, on its own five-minute timer — `read`, `unread` and `tag`
   always, and the inbox-removing ones only when §4.1 does not defer them.
   `digest` and `task` run after `classify`, since they read the verdict. No model, so no `model-idle.sh` gate.
@@ -483,14 +488,16 @@ below), `done`, `sent`, `staged`, `offered` and `held` close it. `would have`, `
 `expired` do not — nothing ran, and a thread readable again later may be
 evaluated again. `failed` closes it for outbound actions, which are never
 retried (a failure after a provider accepted a send cannot be told from one
-before), and leaves it open for mailbox and record actions, which are safe
-to retry after a transient error.
+before), and for `task`, where a retry after a create that succeeded but went
+unrecorded would put a second task on the board; it leaves the key open for
+the Mailbox and Private record groups, which are idempotent and safe to retry
+after a transient error.
 
 **A `pending` row does not stay pending forever.** It exists to survive a
 crash, and a crash is the one way to strand one. A `pending` row older than
-the run timeout settles by group: for mailbox and record actions to
-`failed: interrupted`, which reopens the key, since those are safe to retry;
-for outbound actions to `held: fate unknown`, which keeps the key closed,
+the run timeout settles by group: for the Mailbox and Private record groups
+to `failed: interrupted`, which reopens the key, since those are safe to
+retry; for outbound actions and `task` to `held: fate unknown`, which keeps the key closed,
 since a send that may have reached the provider is never retried, and puts
 it in front of the owner. `mecha doctor` reports any stranded or settled
 `pending` row as attention, so a thread silently left unarchived is a
@@ -530,7 +537,10 @@ that is the message the header matchers read, the one §5.4's guards check
 (its `From`, its `Authentication-Results`), and the one whose provider id
 keys mailbox actions. Every ledger row therefore carries the **thread id**
 as well as the message id — Gmail's `threadId`, Outlook's `conversationId`,
-both stable across moves — and the once-per-thread check below is a lookup
+both stable across moves, with one caveat on Outlook: the rule engine reads
+`conversationId` under the `ImmutableId` preference, and whether that
+preference reissues it is the open P0 question above, which P0 settles
+before this key is relied on — and the once-per-thread check below is a lookup
 on `(rule, account, thread id)` over the outbound rows, a key of its own
 beside the per-message one, and it names its closing outcomes as the
 per-message key does: **`pending`, `sent`, `staged`, `held` and an outbound
@@ -909,8 +919,9 @@ lapses every approval that rests on it. What the digest does **not** cover is th
 triage rules, which change by design every time the owner corrects a verdict
 (§10). For send rules that is harmless, because a learned rule can only
 nominate a candidate the confirmation pass then judges without it. For a
-description rule with only mailbox and record actions it means the matcher
-can widen after approval: accepted, because those actions are reversible,
+description rule whose actions are only in the Mailbox and Private record
+groups (not Board, which gets the confirmation pass, §4.2) it means the
+matcher can widen after approval: accepted, because those actions are reversible,
 appear in the digest, and exclude `trash` and `spam` (§5.5), and stated here
 so nobody reads "approval binds to what was shown" as covering it.
 
@@ -1122,7 +1133,14 @@ from the thread's headers (sender, domain, list id), no model, opened in
 The ledger is append-only JSONL, and its reader follows `Proposed`'s rule:
 **an outcome or action this build does not know degrades to a default rather
 than failing the row.** A closed enum written to an append-only store is a
-wire format.
+wire format — and **each store states its default's direction**, as
+`imagelib::Status` and `imagelib::Origin` do, because the two stores need
+opposite ones. In `approvals.jsonl` an unknown mode reads as **`shadow`**: it
+never acts, so a newer build's rung cannot raise anything in an older one.
+In `ledger.jsonl` an unknown outcome **closes the key**, as an unknown
+`failed` does for a send: an outcome nobody can read is never taken as
+permission to run the action again. Both are shown as `unknown` on the
+page.
 
 ---
 
