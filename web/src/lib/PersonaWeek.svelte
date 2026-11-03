@@ -324,6 +324,9 @@
       <!-- Beside what was kept, never instead of it (review of #814). -->
       <div class="warnline">No story for the rest of the week: {storyNotes(data).why}</div>
     {/if}
+    {#if storyNotes(data).names}
+      <div class="warnline">{storyNotes(data).names}</div>
+    {/if}
   {/if}
   <button class="abtn" onclick={() => onclose?.()}>Close</button>
 </div>

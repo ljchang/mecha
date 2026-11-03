@@ -742,7 +742,8 @@ chats.
   (`{who}` names the person cast), a size (minor, major, severe), a
   weight, conditions (activities in her day, weekdays, sky and
   temperature, her levels, a tie to cast) and an effect of one step per
-  level. A `cooldown` (5 days for a minor, the 28-day lookback otherwise)
+  level. A `cooldown` (5 days for a minor, the 28-day lookback otherwise,
+  and never more than that lookback, or the deck is refused)
   and a `group` (at most one a day) keep it from repeating itself.
 - **Starter decks come from her cell**: one shared everyday deck plus her
   cell's, written for editing by `mecha persona story init`.

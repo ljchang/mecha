@@ -1265,8 +1265,10 @@ impl Store {
         if let Err(e) = routine::load(&self.persona_dir(&p.name)) {
             out.push(format!("{e:#}"));
         }
-        // Her network's portrait links, resolved on load like the persona's
-        // own; a network that cannot be read is named, never an empty one.
+        // Their network's portrait links, resolved on load like the
+        // persona's own; a network that cannot be read is named, never an
+        // empty one. Whatever the switches say: the measures and `mecha
+        // persona people` read it with their people off too (review of #828).
         match network::Network::read(&self.persona_dir(&p.name)) {
             Ok(n) => {
                 out.extend(n.broken_links(lib));
