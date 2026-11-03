@@ -555,6 +555,7 @@ def corpus():
             sys.exit(2)
     for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
+    said.extend(persona_prose())
     # The worker journal is this machine's; a test of the check itself sets
     # CHECK_PRIVATE_JOURNAL=0 and reads only the store it built.
     if os.environ.get("CHECK_PRIVATE_JOURNAL", "1") == "0":
@@ -573,6 +574,42 @@ def corpus():
             phrases |= grams(w, n)
     # Persona folders with no chats yet still have names to refuse.
     return shingles, phrases, ids, names, bool(whole or partly or names)
+
+
+def persona_prose():
+    """What the owner wrote of each persona and its people, read as text a
+    fixture could copy: `identity.md` and `motivation.md`, and each person's
+    role and description and each tie event's label and context in
+    `world.db`. Matched by runs of words, like a conversation (the owner's
+    ruling, 2026-11-03: no persona data; review of #841). A store that
+    exists and does not read refuses."""
+    out = []
+    for name in ("identity.md", "motivation.md"):
+        for f in glob.glob(f"{MECHA}/personas/*/{name}"):
+            try:
+                with open(f, errors="replace") as fh:
+                    out.append(fh.read())
+            except OSError as e:
+                print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
+                sys.exit(2)
+    for db in glob.glob(f"{MECHA}/personas/*/world.db"):
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                for table, cols in (("people", ("role", "description")), ("edge_events", ("label", "context"))):
+                    if table not in tables:
+                        continue
+                    have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                    for col in cols:
+                        if col in have:
+                            out.extend(v for (v,) in conn.execute(f"SELECT {col} FROM {table}") if isinstance(v, str))
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    return out
 
 
 def people_names():
@@ -926,7 +963,7 @@ def main(args):
         hit = None
         for g in grams(words(text), SHINGLE) & shingles:
             if not in_head(g):
-                hit = "words said in a conversation"
+                hit = "words said in a conversation or written of a persona"
                 break
         if not hit:
             for m in QUOTE.finditer(text):
