@@ -22,7 +22,9 @@
 //! - **`origin`** is classified from the conversation's taint, as image
 //!   library candidates are ([`Origin::of_proposal`]). A model-untrusted
 //!   record is stored as a **candidate** and never recalled until the owner
-//!   approves it (§9.6) — memory is not a laundering path.
+//!   approves it (§9.6) — memory is not a laundering path. Ordinary approval
+//!   keeps that origin. Only the owner's [`Memory::approve_clean`] vouches for
+//!   the record and changes its origin; no model or persona tool may do so.
 //! - **Append-only text.** A correction invalidates the old row and adds a
 //!   new one pointing at it ([`Fact::replaces`]), so what was believed on a
 //!   given day stays answerable. Only forgetting deletes, and it deletes with
@@ -57,8 +59,8 @@ pub const MAX_SUMMARY_CHARS: usize = 4000;
 
 /// `PRAGMA user_version` this binary writes. Migrations are additive:
 /// 1 is the records, 2 the writer's ledger (`written`), 3 the recall index
-/// (`recall_fts`, `vectors`).
-const SCHEMA: i64 = 3;
+/// (`recall_fts`, `vectors`), 4 records the owner's clean vouch.
+const SCHEMA: i64 = 4;
 
 /// Which table of `memory.db` a fact lives in. A closed set mapped to fixed
 /// names, so no caller's string ever reaches SQL as an identifier.
@@ -224,6 +226,8 @@ pub struct Fact {
     pub valid_from: Option<String>,
     pub valid_to: Option<String>,
     pub ingested_at: String,
+    /// When the owner vouched that an untrusted record may be treated as clean.
+    pub vouched_at: Option<String>,
     pub invalidated_at: Option<String>,
     pub status: Status,
     pub pinned: bool,
@@ -282,6 +286,8 @@ pub struct Episode {
     pub origin: Origin,
     pub model: String,
     pub ingested_at: String,
+    /// When the owner vouched that an untrusted record may be treated as clean.
+    pub vouched_at: Option<String>,
     pub invalidated_at: Option<String>,
     pub status: Status,
     pub pinned: bool,
@@ -535,7 +541,33 @@ fn migrate_memory(conn: &Connection) -> Result<()> {
             tx.execute_batch("PRAGMA user_version = 3;")?;
         }
         tx.commit()?;
-        debug_assert_eq!(SCHEMA, 3, "a new step goes above, and this moves with it");
+    }
+    if version < 4 {
+        // The owner's clean vouch (§9.8). Unlike ordinary approval, this is
+        // an attestation that the record no longer carries outside origin.
+        // Take the write lock before reading the version again, as v3 does:
+        // recall routinely opens this database from more than one place.
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        let now: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if now < 4 {
+            for table in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+                let has_column = {
+                    let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+                    let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                    names
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                        .iter()
+                        .any(|name| name == "vouched_at")
+                };
+                if !has_column {
+                    tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN vouched_at TEXT;"))?;
+                }
+            }
+            tx.execute_batch("PRAGMA user_version = 4;")?;
+        }
+        tx.commit()?;
+        debug_assert_eq!(SCHEMA, 4, "a new step goes above, and this moves with it");
     }
     Ok(())
 }
@@ -558,6 +590,7 @@ fn migrate_memory_v1(conn: &Connection) -> Result<()> {
             origin TEXT NOT NULL,
             model TEXT NOT NULL,
             ingested_at TEXT NOT NULL,
+            vouched_at TEXT,
             invalidated_at TEXT,
             status TEXT NOT NULL,
             pinned INTEGER NOT NULL DEFAULT 0
@@ -570,7 +603,8 @@ fn migrate_memory_v1(conn: &Connection) -> Result<()> {
             "CREATE TABLE IF NOT EXISTS {name} ({cols});
              CREATE INDEX IF NOT EXISTS {name}_chat ON {name}(source_chat);",
             cols = fact_columns(
-                "invalidated_at TEXT,
+                "vouched_at TEXT,
+                 invalidated_at TEXT,
                  status TEXT NOT NULL,
                  pinned INTEGER NOT NULL DEFAULT 0,
                  replaces TEXT"
@@ -643,11 +677,18 @@ pub struct Memory {
 }
 
 const FACT_SELECT: &str = "uid, text, kind, source_chat, source_from, source_to, learned_by,
-     origin, model, valid_from, valid_to, ingested_at, invalidated_at, status, pinned, replaces";
+     origin, model, valid_from, valid_to, ingested_at, vouched_at, invalidated_at, status, pinned,
+     replaces";
+const FACT_SELECT_BEFORE_VOUCH: &str = "uid, text, kind, source_chat, source_from, source_to,
+     learned_by, origin, model, valid_from, valid_to, ingested_at, NULL AS vouched_at,
+     invalidated_at, status, pinned, replaces";
 
 const EPISODE_SELECT: &str = "uid, source_chat, source_from, source_to, started_at, ended_at,
      summary, topics, decisions, open_threads, scenario, files, origin, model, ingested_at,
-     invalidated_at, status, pinned";
+     vouched_at, invalidated_at, status, pinned";
+const EPISODE_SELECT_BEFORE_VOUCH: &str = "uid, source_chat, source_from, source_to, started_at,
+     ended_at, summary, topics, decisions, open_threads, scenario, files, origin, model,
+     ingested_at, NULL AS vouched_at, invalidated_at, status, pinned";
 
 fn source_of(r: &Row, at: usize) -> rusqlite::Result<Source> {
     Ok(Source {
@@ -670,10 +711,11 @@ fn fact_of(table: Table, r: &Row) -> rusqlite::Result<Fact> {
         valid_from: r.get(9)?,
         valid_to: r.get(10)?,
         ingested_at: r.get(11)?,
-        invalidated_at: r.get(12)?,
-        status: unwire(&r.get::<_, String>(13)?),
-        pinned: r.get(14)?,
-        replaces: r.get(15)?,
+        vouched_at: r.get(12)?,
+        invalidated_at: r.get(13)?,
+        status: unwire(&r.get::<_, String>(14)?),
+        pinned: r.get(15)?,
+        replaces: r.get(16)?,
     })
 }
 
@@ -692,9 +734,10 @@ fn episode_of(r: &Row) -> rusqlite::Result<Episode> {
         origin: unwire(&r.get::<_, String>(12)?),
         model: r.get(13)?,
         ingested_at: r.get(14)?,
-        invalidated_at: r.get(15)?,
-        status: unwire(&r.get::<_, String>(16)?),
-        pinned: r.get(17)?,
+        vouched_at: r.get(15)?,
+        invalidated_at: r.get(16)?,
+        status: unwire(&r.get::<_, String>(17)?),
+        pinned: r.get(18)?,
     })
 }
 
@@ -872,6 +915,20 @@ impl Memory {
         Ok(())
     }
 
+    /// A read-only handle never migrates. Project a null vouch for a store
+    /// from before schema 4 so recall and the page can still read it without
+    /// quietly turning a read into a write.
+    fn select_columns(&self) -> Result<(&'static str, &'static str)> {
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        Ok(if version >= 4 {
+            (FACT_SELECT, EPISODE_SELECT)
+        } else {
+            (FACT_SELECT_BEFORE_VOUCH, EPISODE_SELECT_BEFORE_VOUCH)
+        })
+    }
+
     /// Write a fact. Facts about the owner are sorted by how they are known,
     /// structurally: an inferred one goes in [`Table::Inferred`] and nowhere
     /// else (D18).
@@ -900,6 +957,7 @@ impl Memory {
             valid_from: new.valid_from,
             valid_to: new.valid_to,
             ingested_at: now(),
+            vouched_at: None,
             invalidated_at: None,
             status: Status::initial(new.origin),
             pinned: false,
@@ -913,7 +971,7 @@ impl Memory {
         self.conn.execute(
             &format!(
                 "INSERT INTO {} ({FACT_SELECT}) VALUES
-                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 f.table.sql()
             ),
             params![
@@ -929,6 +987,7 @@ impl Memory {
                 f.valid_from,
                 f.valid_to,
                 f.ingested_at,
+                f.vouched_at,
                 f.invalidated_at,
                 wire(&f.status),
                 f.pinned,
@@ -981,6 +1040,7 @@ impl Memory {
             origin: new.origin,
             model: new.model,
             ingested_at: now(),
+            vouched_at: None,
             invalidated_at: None,
             status: Status::initial(new.origin),
             pinned: false,
@@ -988,7 +1048,7 @@ impl Memory {
         self.conn.execute(
             &format!(
                 "INSERT INTO episodes ({EPISODE_SELECT}) VALUES
-                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
+                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
             ),
             params![
                 ep.uid,
@@ -1006,6 +1066,7 @@ impl Memory {
                 wire(&ep.origin),
                 ep.model,
                 ep.ingested_at,
+                ep.vouched_at,
                 ep.invalidated_at,
                 wire(&ep.status),
                 ep.pinned,
@@ -1018,8 +1079,9 @@ impl Memory {
     /// Facts in one table: pinned first, then the most recently said first.
     pub fn facts(&self, table: Table, filter: Filter) -> Result<Vec<Fact>> {
         let (filter_sql, binds) = filter.sql();
+        let (columns, _) = self.select_columns()?;
         let sql = format!(
-            "SELECT {FACT_SELECT} FROM {}{filter_sql} ORDER BY pinned DESC, ingested_at DESC, uid",
+            "SELECT {columns} FROM {}{filter_sql} ORDER BY pinned DESC, ingested_at DESC, uid",
             table.sql()
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1035,8 +1097,9 @@ impl Memory {
     /// Episodes, pinned first, then the most recent chat first.
     pub fn episodes(&self, filter: Filter) -> Result<Vec<Episode>> {
         let (filter_sql, binds) = filter.sql();
+        let (_, columns) = self.select_columns()?;
         let sql = format!(
-            "SELECT {EPISODE_SELECT} FROM episodes{filter_sql}
+            "SELECT {columns} FROM episodes{filter_sql}
              ORDER BY pinned DESC, coalesce(ended_at, started_at, ingested_at) DESC, uid"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -1050,11 +1113,12 @@ impl Memory {
 
     /// One fact, wherever it lives.
     pub fn fact(&self, uid: &str) -> Result<Option<Fact>> {
+        let (columns, _) = self.select_columns()?;
         for t in Table::ALL {
             let found = self
                 .conn
                 .query_row(
-                    &format!("SELECT {FACT_SELECT} FROM {} WHERE uid = ?1", t.sql()),
+                    &format!("SELECT {columns} FROM {} WHERE uid = ?1", t.sql()),
                     [uid],
                     |r| fact_of(t, r),
                 )
@@ -1115,6 +1179,15 @@ impl Memory {
         Ok(unwire(&s))
     }
 
+    fn origin_in(&self, table: &str, uid: &str) -> Result<Origin> {
+        let origin: String = self.conn.query_row(
+            &format!("SELECT origin FROM {table} WHERE uid = ?1"),
+            [uid],
+            |r| r.get(0),
+        )?;
+        Ok(unwire(&origin))
+    }
+
     /// The owner approves a candidate: it may now be recalled. Its origin is
     /// kept, so recalling it re-arms the taint it was written under (§9.6).
     /// Only a candidate: a withdrawn record stays withdrawn — approving it
@@ -1133,6 +1206,95 @@ impl Memory {
             params![uid, wire(&Status::Active)],
         )?;
         Ok(())
+    }
+
+    /// The owner's clean approval: vouch for a model-untrusted candidate or
+    /// active record, make it recallable, and stop it re-arming untrusted
+    /// taint. This is an owner door only; a model may never call it. An active
+    /// record is accepted because older ordinary approvals kept the origin.
+    /// Withdrawn records stay withdrawn, exactly as in [`Self::approve`].
+    /// Shared copies follow the fact, as they do for correction and removal.
+    pub fn approve_clean(&self, uid: &str) -> Result<()> {
+        self.writable()?;
+        let table = self.locate(uid)?;
+        if self.status_in(table, uid)? == Status::Invalidated {
+            bail!("that record was withdrawn, not waiting on you");
+        }
+        if self.origin_in(table, uid)? != Origin::ModelUntrusted {
+            bail!(
+                "that record is already clean; only an untrusted record can be approved as clean"
+            );
+        }
+        let stamp = now();
+        self.conn.execute(
+            &format!("UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4 WHERE uid = ?1"),
+            params![uid, wire(&Status::Active), wire(&Origin::Owner), stamp],
+        )?;
+        if let Some(shared) = self.shared()? {
+            shared.vouch_from(&self.persona, &[uid.to_owned()])?;
+        }
+        Ok(())
+    }
+
+    /// Vouch for every model-untrusted candidate or active record written
+    /// from `chat`, in one transaction. Clean records, withdrawn records and
+    /// records from other chats are untouched. Returns the records vouched.
+    /// Shared copies follow after the local transaction, like correction and
+    /// invalidation, because the two SQLite files cannot share one commit.
+    pub fn approve_clean_chat(&self, chat: &str) -> Result<usize> {
+        self.writable()?;
+        if chat.trim().is_empty() {
+            bail!("which chat?");
+        }
+        let stamp = now();
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut vouched = Vec::new();
+        let mut count = 0;
+        for table in std::iter::once("episodes").chain(Table::ALL.map(Table::sql)) {
+            let sql = format!(
+                "SELECT uid FROM {table} WHERE source_chat = ?1 AND origin = ?2
+                 AND status IN (?3, ?4) AND invalidated_at IS NULL"
+            );
+            let mut stmt = tx.prepare(&sql)?;
+            let rows = stmt.query_map(
+                params![
+                    chat,
+                    wire(&Origin::ModelUntrusted),
+                    wire(&Status::Candidate),
+                    wire(&Status::Active)
+                ],
+                |r| r.get::<_, String>(0),
+            )?;
+            let uids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            if !uids.is_empty() {
+                count += tx.execute(
+                    &format!(
+                        "UPDATE {table} SET status = ?2, origin = ?3, vouched_at = ?4
+                         WHERE source_chat = ?1 AND origin = ?5 AND status IN (?6, ?7)
+                         AND invalidated_at IS NULL"
+                    ),
+                    params![
+                        chat,
+                        wire(&Status::Active),
+                        wire(&Origin::Owner),
+                        stamp,
+                        wire(&Origin::ModelUntrusted),
+                        wire(&Status::Candidate),
+                        wire(&Status::Active)
+                    ],
+                )?;
+                vouched.extend(uids);
+            }
+        }
+        tx.commit()?;
+        if let Some(shared) = self.shared()? {
+            shared.vouch_from(&self.persona, &vouched)?;
+        }
+        Ok(count)
     }
 
     /// Withdraw a record without deleting it, and stop sharing it: a fact
@@ -1224,6 +1386,7 @@ impl Memory {
             text: text.trim().to_owned(),
             origin: Origin::Owner,
             ingested_at: stamp,
+            vouched_at: None,
             invalidated_at: None,
             status: Status::Active,
             replaces: Some(old.uid.clone()),
@@ -1839,6 +2002,27 @@ impl Shared {
             )?;
         // The old wording was overwritten in place: scrub it from the log.
         scrub(&[&self.conn]).context("corrected, and the shared copy follows")?;
+        Ok(n)
+    }
+
+    /// Vouch for copies of records whose originals the owner approved as
+    /// clean. A shared copy follows its fact's provenance just as it follows
+    /// correction and invalidation.
+    fn vouch_from(&self, persona: &str, from_uids: &[String]) -> Result<usize> {
+        self.writable()?;
+        let tx = self.conn.unchecked_transaction()?;
+        let mut n = 0;
+        for from_uid in from_uids {
+            n += tx.execute(
+                "UPDATE shared_facts SET origin = ?3
+                 WHERE learned_by = ?1 AND from_uid = ?2",
+                params![persona, from_uid, wire(&Origin::Owner)],
+            )?;
+        }
+        tx.commit().context(
+            "approved as clean, but a shared copy still carries its old origin — \
+             `mecha persona memory shared` lists it",
+        )?;
         Ok(n)
     }
 
