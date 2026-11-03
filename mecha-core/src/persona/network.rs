@@ -1511,14 +1511,13 @@ mod tests {
         dir.join("mara")
     }
 
-    /// `[life] world` and `people` switched on in `pdir`'s persona.toml:
-    /// only then are the network's faults the persona's problems.
+    /// `[life] people` switched on in `pdir`'s persona.toml, their days
+    /// left off: the network's faults are the persona's problems whenever
+    /// their people are on, as the version reads it.
     fn people_on(pdir: &Path) {
         let toml = pdir.join("persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap();
-        let on = text
-            .replace("world     = false", "world     = true")
-            .replace("people    = false", "people    = true");
+        let on = text.replace("people    = false", "people    = true");
         assert_ne!(on, text);
         std::fs::write(&toml, on).unwrap();
     }
