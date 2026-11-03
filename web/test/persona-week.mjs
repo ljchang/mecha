@@ -121,9 +121,11 @@ assert.equal(anchorLine({ what: 'x', activity: 'work', days: [0, 2], start_minut
   assert.equal(storyDay(data, '2026-11-03'), null);
   assert.equal(storyDay({}, '2026-11-02'), null);
   // An empty story with a reason says the reason; kept days and a reason say both.
-  assert.deepEqual(storyNotes({ story: [], story_error: 'no kind of week' }), { drawn: false, why: 'no kind of week' });
-  assert.deepEqual(storyNotes({ story: [{ date: 'd' }], story_error: 'no kind of week' }), { drawn: true, why: 'no kind of week' });
-  assert.deepEqual(storyNotes({}), { drawn: false, why: null });
+  assert.deepEqual(storyNotes({ story: [], story_error: 'no kind of week' }), { drawn: false, why: 'no kind of week', names: null });
+  assert.deepEqual(storyNotes({ story: [{ date: 'd' }], story_error: 'no kind of week' }), { drawn: true, why: 'no kind of week', names: null });
+  assert.deepEqual(storyNotes({}), { drawn: false, why: null, names: null });
+  // An unreadable network is its own line, never the story's reason.
+  assert.deepEqual(storyNotes({ story: [{ date: 'd' }], story_names_error: 'unreadable' }), { drawn: true, why: null, names: 'unreadable' });
   const unkept = { today: '2026-11-02', story: [{ date: '2026-10-01', kept: false, weather: { sky: 'rain', high_c: 1, low_c: 0 }, events: [] }, { date: '2026-11-04', kept: false, weather: { sky: 'rain', high_c: 1, low_c: 0 }, events: [] }] };
   assert.equal(storyDay(unkept, '2026-10-01'), null, 'a past day not kept is not shown as her history');
   assert.ok(storyDay(unkept, '2026-11-04'), 'a day ahead is shown, though not kept');

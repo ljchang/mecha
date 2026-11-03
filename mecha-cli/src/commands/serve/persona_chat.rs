@@ -1974,20 +1974,15 @@ impl PersonaChats {
                         if let Some(why) = why {
                             out["story_error"] = serde_json::json!(why);
                         }
-                        // Her people unreadable: titles read "someone", and
-                        // the page says why rather than looking right.
+                        // Their people unreadable: titles read "someone", and
+                        // the page says why rather than looking right. Its
+                        // own field: it is not why the story stops.
                         let names = match story::names(&self.store.join(&p.name)) {
                             Ok(n) => n,
                             Err(e) => {
-                                // Beside a reason already there, never over it.
-                                let people = format!(
-                                    "her people could not be read, so who was there is not shown: {e:#}"
-                                );
-                                out["story_error"] =
-                                    serde_json::json!(match out["story_error"].as_str() {
-                                        Some(was) => format!("{was}; {people}"),
-                                        None => people,
-                                    });
+                                out["story_names_error"] = serde_json::json!(format!(
+                                    "their people could not be read, so who was there is not shown: {e:#}"
+                                ));
                                 Default::default()
                             }
                         };
