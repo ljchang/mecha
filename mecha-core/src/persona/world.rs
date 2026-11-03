@@ -951,7 +951,12 @@ pub fn now(store_dir: &Path, name: &str, at: NaiveDateTime) -> Result<Option<Now
                     .as_deref()
                     .map(|c| life.names_for(c))
             })
-            .unwrap_or_default(),
+            .unwrap_or_default()
+            .into_iter()
+            // Held to the label limits on the way out too, as an anchor's
+            // label is: the parser already refuses worse.
+            .filter(|n| label_ok(n))
+            .collect(),
     }))
 }
 
