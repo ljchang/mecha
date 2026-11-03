@@ -447,7 +447,13 @@ lapses the digest (§6.2), and restarts the measurement, confirmed from then
 on, against the words that will actually run: **a group's would-have rate is
 computed only over rows written under its current *match digest*** — the
 part of §6.2's digest that can change what the rate *means*: the rule's own
-directory and the compiled §4.2 and §5.3 instruction versions — and rows from
+directory, plus each compiled instruction version **only for the rules it
+can affect** — the §4.2 confirmation version for rules with an outbound
+action or a `task`, the §5.3 extraction version for rules with a typed
+`send` — so a release that changes one resets only those rules, and a
+mailbox-only or template-reply rule keeps its week of measurement. When a
+release does reset one, the earlier rows sit under a heading that says why:
+*measured under an earlier build*, not *before your edit*. and rows from
 an earlier match digest are shown apart on the rule page (§8), never mixed
 into the number the owner approves against. The whole directory is in it,
 not only the matcher keys, because §9's gate is over every key and every
@@ -455,6 +461,9 @@ file the rule names: an edit anywhere in it can turn a gate-failing rule
 into a gate-passing one, which is what turns a labelled ceiling into a
 confirmed rate. An `aliases.toml` or `limits.toml` edit lapses approvals
 (§6.2) but resets no measurement: neither can change a match or the gate.
+Nor does an edit to the `draft_with` skill's directory: the skill is
+owner-authored, cannot change a match, and §9's gate is over the origin of
+the rule's own text, not the skill's.
 The digest's components are always **written, empty when absent** — P1's
 rows carry no compiled instruction versions, because those arrive in P4 and
 P5, and an omitted component that later read as a default would silently
