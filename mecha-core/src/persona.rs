@@ -453,7 +453,10 @@ impl Life {
             bail!("[life] my_people needs [memory] user_facts to be \"own\" or \"shared\", not \"off\"");
         }
         if let Some(place) = &self.place {
-            if place.trim().is_empty()
+            let town = place
+                .split_once(',')
+                .map_or(place.as_str(), |(town, _)| town);
+            if town.trim().is_empty()
                 || place.chars().count() > MAX_PLACE
                 || place.chars().any(char::is_control)
             {
@@ -3346,7 +3349,7 @@ mod tests {
             Some("Springfield, Illinois")
         );
         let too_long = "x".repeat(MAX_PLACE + 1);
-        for place in ["", "Springfield\nIllinois", too_long.as_str()] {
+        for place in ["", ", Illinois", "Springfield\nIllinois", too_long.as_str()] {
             let why = load_life(&format!("[life]\nplace = {:?}\n", place), &|t| t).unwrap_err();
             assert!(why.contains("[life] place"), "{why}");
         }

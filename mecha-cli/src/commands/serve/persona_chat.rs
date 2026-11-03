@@ -96,8 +96,33 @@ fn live_weather_place(store: &Path, name: &str) -> Option<String> {
         .and_then(|p| p.settings.life.place.clone())
 }
 
-/// Start a due weather refresh without making the chat turn wait for it.
-fn refresh_weather_in_background(
+/// Run one refresh from a blocking-pool thread. The runtime handle still
+/// drives its async HTTP, while place-cache and SQLite work never run on an
+/// async worker. A failure is recorded before it comes back.
+fn refresh_weather_on_blocking_thread(
+    handle: &tokio::runtime::Handle,
+    pdir: &Path,
+    place: &str,
+    today: chrono::NaiveDate,
+) -> Option<String> {
+    use mecha_core::persona::weather;
+    let Err(e) = handle.block_on(weather::refresh(pdir, Some(place), today)) else {
+        return None;
+    };
+    let why = format!("{e:#}");
+    Some(
+        match weather::record_failure(pdir, place, chrono::Utc::now(), &why) {
+            Ok(()) => why,
+            Err(record) => format!("{why}; recording it failed: {record:#}"),
+        },
+    )
+}
+
+/// Start a due weather refresh without making the chat turn wait for its
+/// network request. The blocking-pool due check is awaited so a changed
+/// place clears old weather before this turn's teller reads it; the refresh
+/// itself, its bookkeeping and failure stamp stay detached on that pool.
+async fn refresh_weather_in_background(
     store: &Path,
     name: &str,
     place: Option<&str>,
@@ -108,35 +133,48 @@ fn refresh_weather_in_background(
         return;
     };
     let pdir = store.join(name);
-    match weather::due(&pdir, Some(place), chrono::Utc::now()) {
-        Ok(false) => {}
-        Ok(true) => {
-            let name = name.to_string();
-            let place = place.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = weather::refresh(&pdir, Some(&place), today).await {
-                    let why = format!("{e:#}");
-                    if let Err(record) =
-                        weather::record_failure(&pdir, &place, chrono::Utc::now(), &why)
-                    {
-                        tracing::warn!(
-                            "persona {name}: weather refresh failed: {why}; recording it failed: {record:#}"
-                        );
-                    } else {
-                        tracing::warn!("persona {name}: weather refresh failed: {why}");
-                    }
-                }
-            });
-        }
-        Err(e) => {
-            let why = format!("weather could not be checked: {e:#}");
-            if let Err(record) = weather::record_failure(&pdir, place, chrono::Utc::now(), &why) {
-                tracing::warn!("persona {name}: {why}; recording it failed: {record:#}");
-            } else {
-                tracing::warn!("persona {name}: {why}");
+    let name = name.to_string();
+    let place = place.to_string();
+    let check_pdir = pdir.clone();
+    let check_place = place.clone();
+    let due = tokio::task::spawn_blocking(move || {
+        match weather::due(&check_pdir, Some(&check_place), chrono::Utc::now()) {
+            Ok(due) => Ok(due),
+            Err(e) => {
+                let why = format!("weather could not be checked: {e:#}");
+                Err(
+                    match weather::record_failure(
+                        &check_pdir,
+                        &check_place,
+                        chrono::Utc::now(),
+                        &why,
+                    ) {
+                        Ok(()) => why,
+                        Err(record) => format!("{why}; recording it failed: {record:#}"),
+                    },
+                )
             }
         }
+    })
+    .await;
+    match due {
+        Ok(Ok(false)) => return,
+        Ok(Ok(true)) => {}
+        Ok(Err(why)) => {
+            tracing::warn!("persona {name}: {why}");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("persona {name}: weather due task failed: {e}");
+            return;
+        }
     }
+    let handle = tokio::runtime::Handle::current();
+    let _refresh = tokio::task::spawn_blocking(move || {
+        if let Some(why) = refresh_weather_on_blocking_thread(&handle, &pdir, &place, today) {
+            tracing::warn!("persona {name}: weather refresh failed: {why}");
+        }
+    });
 }
 
 /// A transcript id as `Session::new_id` mints one — letters, digits and `-`,
@@ -4948,7 +4986,8 @@ impl PersonaChats {
             let events = ps.pinned.settings.life.events;
             if events {
                 let place = live_weather_place(&self.store, &name);
-                refresh_weather_in_background(&self.store, &name, place.as_deref(), at.date());
+                refresh_weather_in_background(&self.store, &name, place.as_deref(), at.date())
+                    .await;
             }
             match mecha_core::persona::world::now(&self.store, &name, at) {
                 Ok(now) => now.map(|n| {
@@ -7295,21 +7334,23 @@ pub async fn week(
 
     // Weather is the one network half of this route. It is harness-started
     // from the owner's `[life] place`; an error is page data, never a failed
-    // Week route. [`weather::refresh`] clears a previous failure on success.
+    // Week route. The whole refresh is polled from the blocking pool so its
+    // cache and SQLite work never land on an async worker; success clears a
+    // previous failure.
     if let Some((pdir, place, today)) = refresh {
-        if let Err(e) = mecha_core::persona::weather::refresh(&pdir, Some(&place), today).await {
-            let why = format!("weather could not be refreshed: {e:#}");
-            weather_error = Some(
-                match mecha_core::persona::weather::record_failure(
-                    &pdir,
-                    &place,
-                    chrono::Utc::now(),
-                    &why,
-                ) {
-                    Ok(()) => why,
-                    Err(record) => format!("{why}; recording that failure also failed: {record:#}"),
-                },
-            );
+        let handle = tokio::runtime::Handle::current();
+        match tokio::task::spawn_blocking(move || {
+            refresh_weather_on_blocking_thread(&handle, &pdir, &place, today)
+        })
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some(why)) => {
+                weather_error = Some(format!("weather could not be refreshed: {why}"));
+            }
+            Err(e) => {
+                weather_error = Some(format!("weather refresh task failed: {e}"));
+            }
         }
     }
     match tokio::task::spawn_blocking(move || {
@@ -9850,10 +9891,11 @@ mod tests {
     /// PERSONA-LIFE-DESIGN.md §4.5: with `[life] world` on and a routine
     /// naming her cell, every request's newest message carries what she is
     /// doing now, once, as a run note never stored in a message; with the
-    /// switch off, none does.
+    /// switch off, none does. The pinned `events` switch changes that same
+    /// live fold, so this also measures the `note_with_events` call site.
     #[tokio::test]
     async fn her_day_rides_as_a_note_only_with_the_world_switched_on() {
-        use mecha_core::persona::today::{TODAY_STEM, UNTRUSTED_TODAY_STEM};
+        use mecha_core::persona::today::{EVENTS_HEADING, TODAY_STEM, UNTRUSTED_TODAY_STEM};
         let w = world();
         let key = |opened: serde_json::Value| opened["key"].as_str().unwrap().to_string();
         // Her routine names a cell from the start, so with the switch off
@@ -9862,6 +9904,11 @@ mod tests {
         std::fs::write(
             dir.join(mecha_core::persona::routine::FILE),
             "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
         )
         .unwrap();
         let off = key(w
@@ -9890,6 +9937,7 @@ mod tests {
             let newest = req.messages.last().unwrap().text();
             assert!(newest.contains(TODAY_STEM), "{newest}");
             assert!(!newest.contains(UNTRUSTED_TODAY_STEM), "{newest}");
+            assert!(!newest.contains(EVENTS_HEADING), "{newest}");
             let copies: usize = req
                 .messages
                 .iter()
@@ -9899,6 +9947,21 @@ mod tests {
         }
         // Her day was drawn and kept, so the next turn reads it back.
         assert!(dir.join(mecha_core::persona::world::WORLD_DB).exists());
+
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(text.contains("events    = false"));
+        std::fs::write(&toml, text.replace("events    = false", "events    = true")).unwrap();
+        let events = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &events, "One more turn.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        let newest = seen.last().unwrap().messages.last().unwrap().text();
+        assert!(newest.contains(TODAY_STEM), "{newest}");
+        assert!(newest.contains(EVENTS_HEADING), "{newest}");
     }
 
     #[test]
