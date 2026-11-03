@@ -133,12 +133,18 @@ elsewhere in the home.
 digest of the inputs §6.2 covers. A mode written into the file would let an
 edit — or an installed proposal — grant itself `auto`.
 
-**The store keeps provenance separately from `rule.toml`.** Its record binds
-each proposed text's origin to its digest; an owner acknowledgement records
-`Owner` for the text shown without rewriting the rule (§9). Approval still
-binds to the full inputs in §6.2, while measurement uses only §4.2's match
-digest, so adopting action text does not discard matching history unless the
-origin gate changes.
+**The store keeps provenance separately from `rule.toml`, keyed by `(rule,
+field, digest)`.** For provenance, `rule` identifies the installed proposal
+instance, not just its reusable name; a later re-proposal gets a fresh
+identity. `field` identifies the exact key, including its owning action, or
+the named file, and `digest` identifies the shown bytes. Identical text in
+another rule, another field or a later proposal must not inherit an earlier
+acknowledgement. An owner acknowledgement records `Owner` without rewriting
+the rule only for a proposed action's `to` at any origin, or for other text
+whose origin is `ModelClean` (§9). Other `ModelUntrusted` text still
+requires an actual owner edit. Approval binds to the full inputs in §6.2,
+while measurement uses only §4.2's match digest, so adopting action text
+does not discard matching history unless the origin gate changes.
 
 **The effective mode is the latest row for the rule and action group, and
 the digest and §5.4's mode-level holds only ever lower it.** The holds —
@@ -362,12 +368,13 @@ for it.
 
 `match.describe` is a sentence the owner writes, distinct from the top-level
 `description` label. The classifier — already one isolated, tool-less call
-per thread — is given the enabled rules' `match.describe` texts as numbered
-lists, **in `priority` then name order** so the frame's bytes are stable
-from thread to thread (the cached-prefix rule) — the *whole enabled set*,
-never a per-message subset, since a stable order over a varying set is not a
-stable prefix; which rules are eligible for this message comes after it
-(§4.2's header-precondition paragraph).
+per thread — is given the enabled rules' `match.describe` texts as **two
+distinct numbered lists, active and shadow, which the model sees
+separately**, each **in `priority` then name order** so the frame's bytes
+are stable from thread to thread (the cached-prefix rule) — the *whole
+enabled set*, never a per-message subset, since a stable order over a
+varying set is not a stable prefix; which rules are eligible for this
+message comes after it (§4.2's header-precondition paragraph).
 
 **List membership follows the individual groups' effective modes (§3).** A
 rule appears once in the active list if any group is `propose` or `auto`,
@@ -440,12 +447,17 @@ discipline as `request_type` and `deadline_quote`:
   installed from a proposal (§9) carries its `Origin` into that frame's
   provenance.
 - **Escalation.** The classifier reads a snippet first. A match in either
-  list on a rule whose declared actions include any send (`reply`, `forward`
-  or `send`) forces full-body escalation before the verdicts are final,
-  whatever those actions' modes, so nothing is sent on the strength of a
-  snippet. Escalation is **per thread, across rules**: one rule's send can
-  cause every description verdict for that thread to read the full body.
-  Each ledger row therefore records `verdict_input` from the final main-pass
+  list on a rule with a send (`reply`, `forward` or `send`) in a non-off
+  group forces full-body escalation before the verdicts are final. Shadow
+  sends need the same evidence they would use when active, but an `off`
+  group never triggers escalation, so disabling a send does not keep paying
+  for full-body reads or split other rules' rates. Raising it from `off` to
+  `propose` or `auto` starts a new activation stretch (§4.4); a raise to
+  `shadow` only starts measurement. In either case, `verdict_input` keeps
+  any earlier snippet-only evidence apart from new full-body verdicts.
+  Escalation is **per thread, across rules**: one rule's send can cause
+  every description verdict for that thread to read the full body. Each
+  ledger row therefore records `verdict_input` from the final main-pass
   verdict: `snippet` or `full_body`, or `not_applicable` when no classifier
   verdict was used. The record is what the verdict actually read, never
   inferred from the row's own rule's actions. A missing or unreadable value
@@ -491,8 +503,11 @@ rules whose descriptions both honestly fit — which owner-fixed recipient an
 attacker's message reaches — to the pass that carries the learned rules. A
 rule whose text is still model-proposed from an armed conversation may sit
 in `propose`, but its description never enters the frame that confirms
-another rule's automatic send, since no text left as untrusted may shape
-that frame (§9).
+another rule's automatic send: the frame must be shaped by the owner's words
+or a clean proposal, never unchanged prose shaped by a stranger.
+Acknowledgement changes no bytes, so an untrusted `match.describe` still
+requires an actual owner edit (§9); changing its origin label alone cannot
+satisfy that premise.
 
 Shadow candidates with confirmation-eligible shadow groups are confirmed in
 their own call, once per rule, with **a verdict per candidate** (above),
@@ -507,10 +522,10 @@ gate is not confirmed at all**: it is measured by the main pass alone, and
 the page labels its would-have rate a **ceiling**, as well as an **upper
 bound**. A confirmation rate for it would be a number nothing can act on,
 because §9 forbids that group from entering `auto`. A sibling's confirmation
-does not change its ceiling. An owner edit or acknowledgement (§9) starts
-confirmed measurement only when it changes the relevant group's gate status
-from failing to passing; changing a file by itself says nothing about that
-transition.
+does not change its ceiling. An owner edit or an acknowledgement permitted
+by §9 starts confirmed measurement only when it changes the relevant group's
+gate status from failing to passing; changing a file by itself says nothing
+about that transition.
 
 **A group's would-have rates are computed only over rows written under its
 current *match digest*, separately for each `verdict_input`**: the digest
@@ -540,24 +555,25 @@ without counting it as confirmed evidence.
 
 **Action text is not in the match digest**: an action's `to`, `note`,
 `fields` declarations and rendering templates, and reply or forward
-templates do not change a match. Adding or removing a send may change which
-threads escalate, for this rule and others; the resulting rows stay apart by
-`verdict_input` rather than resetting a per-rule full-body boolean. Text
-edits still lapse approval (§6.2), but preserve matching history unless they
-change the applicable §9 gate status; an acknowledgement changes only the
-provenance record, and resets measurement only if that status changes. The
-gate is still evaluated over every key and named file, so adopting the last
-untrusted text changes the status even when that text is outside the
-matcher. The §5.3 extraction version is **not** in the match digest either:
-shadow runs no extraction, so the version cannot have touched a would-have
-row. A typed-send rule's would-have rate therefore does not subtract the
-sends that ungrounded fields would push to `propose` (§5.3 step 2), and the
-page labels it an upper bound on what `auto` will send unattended. An
-`aliases.toml` or `limits.toml` edit lapses approvals (§6.2) but resets no
-measurement: neither can change a match or the gate. Nor does an edit to the
-`draft_with` skill's directory: the skill is owner-authored, cannot change a
-match, and §9's gate is over the origin of the rule's own text, not the
-skill's.
+templates do not change a match. Adding, removing or changing the mode of a
+send in a non-off group may change which threads escalate, for this rule and
+others; the resulting rows stay apart by `verdict_input` rather than
+resetting a per-rule full-body boolean. Text edits still lapse approval
+(§6.2), but preserve matching history unless they change the applicable §9
+gate status; an acknowledgement permitted by §9 changes only the provenance
+record, and resets measurement only if that status changes. The gate is
+still evaluated over every key and named file, so editing the last untrusted
+text — or acknowledging it only if it is an action's `to` — changes the
+status even when that text is outside the matcher. The §5.3 extraction
+version is **not** in the match digest either: shadow runs no extraction, so
+the version cannot have touched a would-have row. A typed-send rule's
+would-have rate therefore does not subtract the sends that ungrounded fields
+would push to `propose` (§5.3 step 2), and the page labels it an upper bound
+on what `auto` will send unattended. An `aliases.toml` or `limits.toml` edit
+lapses approvals (§6.2) but resets no measurement: neither can change a
+match or the gate. Nor does an edit to the `draft_with` skill's directory:
+the skill is owner-authored, cannot change a match, and §9's gate is over
+the origin of the rule's own text, not the skill's.
 
 The match digest's components are always **written, empty when absent** —
 P1's rows carry no compiled confirmation version, because it arrives in P4,
@@ -584,11 +600,13 @@ reversible archive shown in the digest (§5.5, §7), since `spam`, the one
 irreversible verb among them, never runs in `auto` and is always the owner's
 confirmation.
 
-**Cost.** Each description adds its tokens to every classification. The
-working assumption is a cap of 12 enabled description rules, revisited once
-shadow mode (§6) has measured precision with a real list. A per-rule yes/no
-pass would be more accurate and costs one call per rule per thread; it is the
-fallback if the single field measures badly, not the start.
+**Cost.** The working assumption is a cap of **12 list entries across the
+active and shadow lists together**, not 12 distinct description rules. A
+rule in both lists occupies two entries in the stable frame and contributes
+its tokens twice, so the worst case is two entries per rule. Shadow mode
+(§6) measures precision with a real list before the cap moves. A per-rule
+yes/no pass would be more accurate and costs one call per rule per thread;
+it is the fallback if the single field measures badly, not the start.
 
 ### 4.3 Order and overlap
 
@@ -1159,14 +1177,18 @@ with separate rates for each `verdict_input`** (§4.2). Earlier digests and
 snippet versus full-body measurements stay apart, as on the rule page (§8),
 because a rule's own files cannot say which evidence another rule made the
 classifier read. The recipient `to` is shown first, with its origin and an
-**acknowledge this text** action beside editing (§9). Acknowledgement is an
-`Actor::Owner` act under §6.1's raise gate, bound to the digest of the text
-shown, and records `Owner` in the store's provenance record without
-rewriting `rule.toml`; a run cannot adopt proposed text to unblock its own
-automatic sends. The screen then recomputes the gate and match digest before
-approval: a gate transition shows the earlier ceiling apart, while an
-acknowledgement or recipient, note or template edit that leaves the gate
-unchanged keeps the measured rate.
+**acknowledge this text** action beside editing (§9). A proposed action's
+`to` may be acknowledged at any origin; other text offers acknowledgement
+only when `ModelClean`, and `ModelUntrusted` prose requires an actual edit.
+An unchanged stranger-shaped description cannot enter the confirmation frame
+merely because the owner clicked once. Acknowledgement is an `Actor::Owner`
+act under §6.1's raise gate, bound to the shown `(rule, field, digest)`
+(§3), and records `Owner` in the store's provenance record without rewriting
+`rule.toml`; a run cannot adopt proposed text to unblock its own automatic
+sends. The screen then recomputes the gate and match digest before approval:
+a gate transition shows the earlier ceiling apart, while an acknowledgement
+or recipient, note or template edit that leaves the gate unchanged keeps the
+measured rate.
 
 The approval written to `approvals.jsonl` carries **a digest of the rule's
 directory** (and of the named skill's, for §6.3, and of `aliases.toml` and
@@ -1480,25 +1502,26 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
   shadow rate is additionally labelled a **ceiling** (§4.2); both labels
   mean potential overstatement, with the ceiling naming the closed gate.
   Typed sends also face §5.3's grounding check. Recipient text, notes and
-  templates remain outside the match digest, so their edit or
-  acknowledgement preserves matching history unless the applicable gate
-  status changes. Adding or removing a send may change escalation across
-  rules; each new row records the evidence its verdict actually read. Only a
-  group's own list result contributes to its rows, so a rule in both lists
-  does not count a match twice for any group (§4.2). Earlier ceiling rows
-  stay visible after an origin-gate transition (§4.2). Outcomes: `pending`
-  (written before an action executes, §4.4), `done`, `would have` (shadow),
-  `offered` (a proposed mailbox, record or Board action waiting in the mail
-  desk or the digest), `staged`, `held: rule cap` and `held: global cap`
-  (§6.4), `held: fate unknown` (a send interrupted mid-flight, §4.4),
-  `sent`, `released unchanged`, `edited`, `rejected`, `undone`, `expired`
-  (§4.1), `failed: <why>`, `skipped: <guard>`. One more row is not an action
-  outcome and touches no action's key: `approval lapsed: files changed`
-  (§6.2), a rule-level row for the page, reporting only non-off groups; an
-  off group's old digest triggers no lapse row or notice. It is listed here
-  so the unknown-outcome rule cannot mistake it for one. `skipped` rows are
-  shown, not hidden — a guard visibly firing is how the owner learns to
-  trust the guards.
+  templates remain outside the match digest, so their edit or an
+  acknowledgement permitted by §9 preserves matching history unless the
+  applicable gate status changes. Adding, removing or changing the mode of a
+  send in a non-off group may change escalation across rules; each new row
+  records the evidence its verdict actually read. Only a group's own list
+  result contributes to its rows, so a rule in both lists does not count a
+  match twice for any group (§4.2). Earlier ceiling rows stay visible after
+  an origin-gate transition (§4.2). Outcomes: `pending` (written before an
+  action executes, §4.4), `done`, `would have` (shadow), `offered` (a
+  proposed mailbox, record or Board action waiting in the mail desk or the
+  digest), `staged`, `held: rule cap` and `held: global cap` (§6.4), `held:
+  fate unknown` (a send interrupted mid-flight, §4.4), `sent`, `released
+  unchanged`, `edited`, `rejected`, `undone`, `expired` (§4.1), `failed:
+  <why>`, `skipped: <guard>`. One more row is not an action outcome and
+  touches no action's key: `approval lapsed: files changed` (§6.2), a
+  rule-level row for the page, reporting only non-off groups; an off group's
+  old digest triggers no lapse row or notice. It is listed here so the
+  unknown-outcome rule cannot mistake it for one. `skipped` rows are shown,
+  not hidden — a guard visibly firing is how the owner learns to trust the
+  guards.
 - **The share of staged rows by reason** (§5.4), so the owner can see which
   per-message guards explain why a group in `auto` is sending little.
 - **Undo** on mailbox rows (archive → back to inbox, trash → restore), and
@@ -1582,10 +1605,11 @@ real and worth serving, and the safe shape exists already in
   read it — and installs it. **Installation is always into `shadow`**,
   whatever the proposal says, and an armed proposal is labelled as one. The
   accept names the digest the owner was shown.
-- **The recorded `Origin` gates what can send.** The confirmation pass for
-  an automatic send (§4.2) admits only the owner's text and clean proposals:
-  nothing left as untrusted text may shape its frame. A proposal drafted
-  after reading mail installs a description whose origin is
+- **The recorded `Origin` gates what can send.** The confirmation frame
+  (§4.2) must be shaped by the owner's words or a clean proposal, never
+  unchanged prose shaped by a stranger. Acknowledgement changes no bytes, so
+  it cannot release an untrusted description into that frame. A proposal
+  drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group —
   and not the Board group either, whose `task` name reaches a task run's
   prompt (§7) — may enter `auto` while any part of the rule remains
@@ -1606,31 +1630,40 @@ real and worth serving, and the safe shape exists already in
   clean conversation.** `to` bounds where every automatic forward and send
   lands, and a proposal writes the whole `rule.toml`, so installation alone
   cannot count as adopting its destination. The approval screen shows `to`
-  first and offers editing or acknowledgement of the exact text shown.
+  first and offers editing or acknowledgement of the exact address shown, at
+  any origin: adopting that destination is the owner act that matters.
 
-  **The store records `Owner` for text the owner wrote, changed or
-  acknowledged**, and `ModelClean` or `ModelUntrusted` for proposed text
-  left as proposed, in `imagelib::Origin`'s terms. The installed record
-  keeps a digest of each proposed text, extending `Reflexion::provenance`'s
-  existing move for edits with an explicit acknowledgement: the owner may
-  agree with the text without inventing a rewrite. Acknowledgement binds to
-  the shown text's digest and records `Owner` in the store's provenance
-  record, without rewriting `rule.toml`; changed text cannot inherit an
-  acknowledgement of different bytes. Only `Actor::Owner` may acknowledge,
-  with the same registered-run refusal as §6.1's raise gate, advisory
-  without the sandbox, because adopting text can unblock a standing
-  permission to send. It does not itself raise a mode.
+  **Acknowledgement adopts a proposed action's `to` at any origin, and any
+  other text only when its origin is `ModelClean`.** Other `ModelUntrusted`
+  text requires an actual owner edit to become `Owner`, following
+  `Reflexion::provenance`: an edit makes the bytes partly the owner's, while
+  acknowledgement makes none of them so. The store records `Owner` for text
+  the owner wrote, edited or acknowledged within that scope, and otherwise
+  keeps `ModelClean` or `ModelUntrusted`, in `imagelib::Origin`'s terms.
+
+  **The provenance record and acknowledgement bind to `(rule, field,
+  digest)`**, as defined in §3: this installed proposal's identity, the
+  exact key (including its owning action) or named file, and the shown
+  bytes. Another rule or field with identical bytes cannot reuse that
+  acknowledgement, and a later re-proposal gets a fresh provenance identity
+  even under the same rule name. Acknowledgement records `Owner` without
+  rewriting `rule.toml`; changed bytes cannot inherit it either. Only
+  `Actor::Owner` may acknowledge, with the same registered-run refusal as
+  §6.1's raise gate, advisory without the sandbox, because adopting text can
+  unblock a standing permission to send. It does not itself raise a mode.
 
   The gate admits `Owner` and `ModelClean` text **except for `to`, which
-  requires `Owner`**. The approval screen names each text holding the group
-  back and offers editing or acknowledgement. The applicable gate status
-  enters §4.2's match digest directly: an edit or acknowledgement that
-  changes it from failing to passing starts confirmed measurement for the
-  groups the confirmation pass decides, keeping the earlier ceiling visible
-  apart. Editing a recipient, note or template without changing the gate
-  keeps matching history, even though a file edit still lapses approval
-  (§6.2). Shadow bounds when a proposed rule acts; this bounds what it may
-  say.
+  requires `Owner`**. In practice it holds the `ModelUntrusted` texts;
+  acknowledgement does not release them, except an action's `to`. The
+  approval screen names each text holding the group back and offers editing,
+  with acknowledgement only for `to` or `ModelClean` text. The applicable
+  gate status enters §4.2's match digest directly: an edit or permitted
+  acknowledgement that changes it from failing to passing starts confirmed
+  measurement for the groups the confirmation pass decides, keeping the
+  earlier ceiling visible apart. Editing a recipient, note or template
+  without changing the gate keeps matching history, even though a file edit
+  still lapses approval (§6.2). Shadow bounds when a proposed rule acts;
+  this bounds what it may say.
 
 So "write me a rule that answers prerequisite questions with the usual
 reply" works from a chat, ends as a rule in shadow mode, and the first
@@ -1811,8 +1844,10 @@ One is the owner's:
 
 The rest are answered by measurement or by a decision made elsewhere:
 
-1. **Description rule cap.** 12 is a guess at what the classifier holds
-   without precision dropping. Shadow mode measures it; the cap moves then.
+1. **Description list-entry cap.** 12 total entries across the active and
+   shadow lists is a guess at what the classifier holds without precision
+   dropping; a rule in both counts twice (§4.2). Shadow mode measures it;
+   the cap moves then.
 2. **Retention.** The ledger grows forever, as `~/.mecha/mail-triage/` does
    (`MAIL-UX-DESIGN.md` §7 Q6). Same answer, whenever that one is given.
 
