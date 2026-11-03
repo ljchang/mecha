@@ -246,18 +246,22 @@ skipped classification is a description rule never evaluated, so a
 a `priority = 5` archive silence a `priority = 90` reply**, because §4.3 gives
 outbound actions to the first rule *that has any*, so a higher-priority
 mailbox-only rule does not take the thread's outbound slot. So the condition is
-not about rank: whenever any description rule is enabled (for any action, not
-only outbound ones), or any matching header rule has an outbound action, a
-`digest` or a `task` — the last two because they need the verdict (§7) — the
-same header rule's own (one rule holding both `forward` and `archive` is §5.2's
-expected shape) or another's — where **enabled means any mode but `off`,
-`shadow` included**. A shadow rule's would-be actions have to see the thread too, or an archive would
-silently truncate the would-have rows the owner is reading to decide whether
-to approve it, and shadow would under-measure in exactly the direction that
-looks safe —
-**the header rule's inbox-removing
-actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
-its `read`, `unread` and `tag` run on the timer. **`digest` and `task` never
+not about rank. **A header rule's inbox-removing actions (`archive`,
+`trash`, `spam`) wait for the classify pass whenever either holds:**
+
+- any description rule is enabled, for any action, not only outbound ones; or
+- any matching header rule — this one included, since one rule holding both
+  `forward` and `archive` is §5.2's expected shape — has an outbound action,
+  a `digest` or a `task` (the last two because they need the verdict, §7).
+
+**Enabled means any mode but `off`, `shadow` included**: a shadow rule's
+would-be actions have to see the thread too, or an archive would silently
+truncate the would-have rows the owner is reading to decide whether to
+approve it, and shadow would under-measure in exactly the direction that
+looks safe.
+
+Otherwise the inbox-removing actions run on the timer. Either way, `read`,
+`unread` and `tag` run on the timer. **`digest` and `task` never
 run on the timer**: they read the verdict, so they run at the end of the
 classify pass with everything else that does, and a thread carrying one is
 always classified. The header case
@@ -1014,7 +1018,14 @@ A rule steps itself down, with a notice, when:
   automatic mailbox actions** over at least 10 → `propose`. A wrong match the
   owner does not undo still counts: the archive may be harmless while the
   matcher is wrong.
-- **Three consecutive action failures** → `shadow`.
+- **Three consecutive action failures** → `shadow`. *Action* failures only —
+  the rule's own action refused or erroring. A failure of the environment
+  (`failed: thread unreadable`, a provider unreachable, a token needing
+  re-auth) does not count, on `expired`'s reasoning: an outage would
+  otherwise demote every matching rule to `shadow` and end its activation
+  stretch (§4.4), so recovering from someone else's downtime would cost an
+  owner raise per group. Environment failures are `mecha doctor`'s to
+  report, where the remedy is.
 - **A rule's daily cap is hit** (§5.4) → that rule's outbound actions stage
   in the outbox for the rest of the local day, with a notice and ledger rows
   saying `held: rule cap`; its mode is unchanged. Twenty matching messages in a day is the likeliest brake to
@@ -1181,15 +1192,17 @@ real and worth serving, and the safe shape exists already in
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group —
   and not the Board group either, whose `task` name reaches a task run's
-  prompt (§7) — may
-  enter `auto` while the rule's description, any template it sends, its
-  sender keys (`from`, `from_domain`), its `fields` declarations (§5.3 —
-  they shape the extraction frame, which is a send decision), or its `to`
-  is model-proposed text
-  from an armed conversation.** The sender keys belong on this list because
-  §5.2 makes them the control on *who can make a send leave*: a proposed
-  header rule has no description to hold back, so without them an injected
-  `from_domain` would choose the trigger set of a forward to finance. And `to` is held
+  prompt (§7) — may enter `auto` while any part of the rule is
+  model-proposed text from an armed conversation: every key of `rule.toml`
+  and every file it names.** The gate is the whole rule rather than a list of
+  fields, because a list stops being complete without anyone noticing: in
+  review it grew from the description to templates, the sender keys (§5.2's
+  control on *who can make a send leave*, which a header rule has no
+  description to hold back), `fields` (which shape the extraction frame, a
+  send decision), `note` (words a forward sends) and `draft_with` (which
+  chooses the skill whose `shareable` files are given whole), and a key
+  added later would have been the next omission. Every one of those, and
+  every future key, is covered by construction. And `to` is held
   to a stricter rule than words: **an outbound group may enter `auto` only
   when its `to` is `Owner` — typed or edited by the owner — never a proposed
   address left as proposed, even from a clean conversation.** `to` is the one
@@ -1269,7 +1282,8 @@ default) — through
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
 and
 `mecha doctor` reporting an unreadable store or a lapsed approval. The store
-also registers with `backlog.rs`, so proposals awaiting install and lapsed
+also registers with `backlog.rs` (and `CLAUDE.md`'s module-map line for it,
+"across five stores", gains one), so proposals awaiting install and lapsed
 approvals count in `mecha review` and `/queues` — what is *waiting*, beside
 the doctor's what is *wrong*; rule sends staged in the outbox already count
 there through `OutboxStore`. **Covers
