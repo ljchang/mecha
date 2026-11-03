@@ -715,6 +715,13 @@ sleep within its stated windows while routine anchors still win. The file's
 text is one of today's sampled inputs, so an edit redraws today and later but
 never rewrites a stored past day; a today-block names a kept household member
 rather than announcing a relation borrowed from a stranger's diary.
+`persona::life_drafter` can make a waiting `life.draft.toml` from the two
+persona files, routine notes and clean People-tab names. Its one quarantined
+answer is closed JSON, with household names constrained to that list; the
+harness renders and parses TOML, and only digest-checked owner approval swaps
+it into `life.toml` while keeping the replaced profile as
+`life.previous.toml`. Someone absent from the People tab is left out rather
+than invented.
 
 ### 4.3 The storyteller and the director
 
