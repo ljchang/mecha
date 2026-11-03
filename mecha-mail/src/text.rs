@@ -91,6 +91,7 @@ mod tests {
             cc_addresses: vec![],
             bcc_addresses: vec![],
             date_received: String::new(),
+            date_known: None,
             body_text: text.into(),
             body_html: html.into(),
             snippet: "snippet".into(),
@@ -99,6 +100,13 @@ mod tests {
             is_starred: false,
             has_attachments: false,
             list_unsubscribe: None,
+            auto_submitted: None,
+            precedence: None,
+            list_id: None,
+            reply_to: None,
+            authentication_results: None,
+            headers_complete: None,
+            is_draft: Some(false),
         }
     }
 

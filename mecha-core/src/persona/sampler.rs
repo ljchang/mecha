@@ -692,7 +692,7 @@ mod tests {
         let d = date("2026-11-02");
         let a = sample(table(), Cell::FullTime, &r, None, "mara", d);
         assert_eq!(a, sample(table(), Cell::FullTime, &r, None, "mara", d));
-        assert_ne!(a, sample(table(), Cell::FullTime, &r, None, "jun", d));
+        assert_ne!(a, sample(table(), Cell::FullTime, &r, None, "wren", d));
         assert_ne!(
             a,
             sample(
