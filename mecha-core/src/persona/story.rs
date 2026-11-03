@@ -1472,6 +1472,84 @@ cooldown = 0
     }
 
     #[test]
+    fn a_failed_new_place_leaves_no_old_place_weather_to_tell() {
+        use super::super::{today, weather, world::World};
+        let dir = store();
+        let pdir = dir.join("mara");
+        let date = d("2026-11-02");
+        let toml = pdir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace(
+                "world     = true",
+                "world     = true\nplace     = \"Springfield, Illinois\"",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            pdir.join(weather::PLACE_FILE),
+            serde_json::to_vec(&weather::Resolved {
+                query: "Springfield, Illinois".into(),
+                label: "Springfield, Illinois, US".into(),
+                lat: 39.8,
+                lon: -89.6,
+                weather_for: Some("Springfield, Illinois".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut world = World::open(&pdir).unwrap();
+        world
+            .set_weather(&[Weather {
+                date,
+                sky: Sky::Rain,
+                high_c: 9,
+                low_c: 4,
+            }])
+            .unwrap();
+        drop(world);
+        let before = story(&dir, "mara", date, date, date).unwrap().days;
+        assert!(before[0].weather.is_some());
+
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("Springfield, Illinois", "Springfield, Missouri"),
+        )
+        .unwrap();
+        let now = "2026-11-02T10:00:00Z".parse().unwrap();
+        weather::record_failure(
+            &pdir,
+            "Springfield, Missouri",
+            now,
+            "the geocoder found no match",
+        )
+        .unwrap();
+        assert!(!weather::due(&pdir, Some("Springfield, Missouri"), now).unwrap());
+
+        let after = story(&dir, "mara", date, date, date).unwrap().days;
+        assert_eq!(after[0].events, before[0].events);
+        assert!(after[0].weather.is_none());
+        let lines = today::teller_lines(
+            "2026-11-02T12:00:00".parse().unwrap(),
+            &after[0],
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!lines.contains("Today's weather"), "{lines}");
+        assert!(World::open(&pdir)
+            .unwrap()
+            .story_day(date)
+            .unwrap()
+            .unwrap()
+            .0
+            .weather
+            .is_none());
+    }
+
+    #[test]
     fn what_was_kept_shows_beside_why_the_rest_was_not_drawn() {
         let dir = store();
         let today = d("2026-11-02");

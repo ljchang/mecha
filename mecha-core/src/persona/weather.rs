@@ -522,6 +522,20 @@ fn clear_failure(pdir: &std::path::Path) -> Result<()> {
     }
 }
 
+/// Clear weather unless the place cache proves that the rows were fetched
+/// for this exact owner-written query. This runs before backoff: a failed new
+/// place must not leave the previous place in the teller while it waits.
+fn clear_weather_for_changed_place(pdir: &std::path::Path, query: &str) -> Result<()> {
+    let query = query.trim();
+    let current = cached(pdir, query)
+        .and_then(|place| place.weather_for)
+        .is_some_and(|weather_for| weather_for == query);
+    if !current {
+        super::world::World::open(pdir)?.clear_weather()?;
+    }
+    Ok(())
+}
+
 /// Where `pdir`'s weather is for: `[life] place`, resolved through the
 /// cache or the geocoder, or `story.toml`'s `[place]` when that is unset.
 /// `None` when neither names one.
@@ -553,6 +567,7 @@ pub fn due(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<bool> {
     if let Some(q) = life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        clear_weather_for_changed_place(pdir, q)?;
         if backoff_error(pdir, q, now)?.is_some() {
             return Ok(false);
         }
@@ -574,6 +589,13 @@ pub async fn refresh(
     life_place: Option<&str>,
     today: NaiveDate,
 ) -> Result<Option<(Place, usize)>> {
+    match life_place.map(str::trim).filter(|q| !q.is_empty()) {
+        Some(query) => clear_weather_for_changed_place(pdir, query)?,
+        // Exact coordinates in story.toml have no geocoder cache to prove
+        // ownership. A manual fallback refresh therefore clears first: if
+        // its place changed and the request fails, no old place is shown.
+        None => super::world::World::open(pdir)?.clear_weather()?,
+    }
     let Some(place) = place_of(pdir, life_place).await? else {
         return Ok(None);
     };

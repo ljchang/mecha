@@ -707,6 +707,21 @@ impl World {
         Ok(days.len())
     }
 
+    /// Remove weather whose place no longer applies, including the snapshot
+    /// stored beside an already-drawn story day. Events and levels stay as
+    /// drawn; [`super::story::story`] will show no weather until a new place
+    /// has fetched successfully.
+    pub fn clear_weather(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM weather", [])?;
+        tx.execute(
+            "UPDATE story_days SET weather = NULL WHERE weather IS NOT NULL",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// A stored story day and the digest it was drawn from. One whose
     /// levels or events this binary cannot read is none, so it is drawn
     /// again rather than shown wrong.

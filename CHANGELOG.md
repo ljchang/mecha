@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the Week tab and in the background during eligible chats. Failed weather
   refreshes pause for an hour, and a later forecast updates the weather shown
   without changing events the day already drew. Place edits take effect in
-  open chats, and town, region, country forms resolve each named part.
+  open chats, clear the previous place's weather before lookup, and town,
+  region, country forms resolve each named part.
 
 - **More chat models, one approval away.** `mecha model catalog` lists the
   chat models mecha knows how to serve — Qwen3.6-35B-A3B uncensored, Qwen3.8-27B

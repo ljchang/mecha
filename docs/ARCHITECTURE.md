@@ -1939,10 +1939,11 @@ module.
   is read live for both Week and chat refreshes, unlike the pinned `events`
   switch; only the harness starts either request, and the geocoder's label is
   owner-facing only. Failed resolution or fetching is recorded per place and
-  backs off for an hour. A day's draw is seeded and stored in `world.db` v3 up to
-  today; a stored day keeps its events when only weather changes, while the
-  new weather is shown as the fact it is. Other draw inputs still redraw
-  today. With
+  backs off for an hour; a changed place clears the previous forecast and
+  story-day weather snapshot before its first request. A day's draw is seeded
+  and stored in `world.db` v3 up to today; a stored day keeps its events when
+  only weather changes, while the new weather is shown as the fact it is.
+  Other draw inputs still redraw today. With
   `[life] events` on, the today-block adds event titles, non-normal levels
   and the closed weather after its doing-now sentence; before noon it uses
   yesterday's events and today's morning levels. A story error drops that

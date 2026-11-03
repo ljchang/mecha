@@ -779,12 +779,17 @@ chats.
   - severe only under `intensity = "full"`;
   - cast storylets weighted ×2, and who is cast weighted by closeness.
 - **Storage:** seeded per persona per day; stored in `world.db` version 3
-  (`story_days`, `events`) up to today; today redrawn when the deck,
-  weather, her day or her castable people change, and the past kept.
+  (`story_days`, `events`) up to today; today redrawn when the deck, her day,
+  intensity, director version or castable people change, and the past kept.
+  Weather gates the first draw, but a later forecast changes only the weather
+  shown; it does not redraw the day's events or levels.
 - **Weather** is pulled ahead from §8.2's shelf A, at the owner's word:
   - `[life] place` is a town and its state or country. The harness resolves
     it through Open-Meteo's geocoder, caches the coordinates and the label
     shown to the owner, and resolves it again when the owner's text changes;
+    before that first new-place attempt, the previous place's weather rows
+    and stored story snapshot are cleared, so a failed lookup tells no old
+    town's weather;
     `story.toml`'s `[place]` with exact coordinates remains the fallback;
   - the Week route refreshes weather older than six hours before drawing,
     while a chat with `[life] events` starts the same refresh without
