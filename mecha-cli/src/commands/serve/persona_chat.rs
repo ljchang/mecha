@@ -2771,6 +2771,7 @@ impl PersonaChats {
                     "summary": e.summary, "open_threads": e.open_threads,
                     "chat": e.source.chat, "origin": e.origin,
                     "status": e.status, "pinned": e.pinned,
+                    "vouched_at": e.vouched_at,
                 })
             })
             .collect();
@@ -2791,6 +2792,7 @@ impl PersonaChats {
                         "uid": f.uid, "day": day(&said), "said_at": said,
                         "text": f.text, "kind": f.kind, "origin": f.origin,
                         "status": f.status, "pinned": f.pinned,
+                        "vouched_at": f.vouched_at,
                         "shared": shared.remove(&f.uid).unwrap_or_default(),
                     })
                 })
@@ -2822,6 +2824,9 @@ impl PersonaChats {
         let m = Memory::open_to_edit(&self.store, &p.name).map_err(bad)?;
         match act {
             MemoryAct::Approve { id } => m.approve(&m.resolve(&id).map_err(bad)?).map_err(bad)?,
+            MemoryAct::ApproveClean { id } => m
+                .approve_clean(&m.resolve(&id).map_err(bad)?)
+                .map_err(bad)?,
             MemoryAct::Pin { id } => m.pin(&m.resolve(&id).map_err(bad)?, true).map_err(bad)?,
             MemoryAct::Unpin { id } => m.pin(&m.resolve(&id).map_err(bad)?, false).map_err(bad)?,
             MemoryAct::Correct { id, text } => {
@@ -6562,6 +6567,9 @@ pub async fn open(
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum MemoryAct {
     Approve {
+        id: String,
+    },
+    ApproveClean {
         id: String,
     },
     Pin {
@@ -11081,6 +11089,13 @@ mod tests {
             "Read about kelp.",
             Origin::ModelUntrusted,
         );
+        let clean_cand = remember(
+            &w,
+            "mara",
+            Table::User,
+            "A field guide called the inlet silver.",
+            Origin::ModelUntrusted,
+        );
         let short = |u: &str| u[..8].to_string();
         // Unsharing before anything was ever shared makes no shared store.
         assert!(matches!(
@@ -11096,7 +11111,23 @@ mod tests {
         assert!(!mecha_core::persona::memory::Shared::path(&w.store()).exists());
 
         let v = act(&w, MemoryAct::Approve { id: short(&cand) }, None).unwrap();
-        assert!(user(&v).iter().all(|f| f["status"] == "active"), "{v}");
+        let approved = user(&v).into_iter().find(|f| f["uid"] == cand).unwrap();
+        assert_eq!(approved["status"], "active", "{approved}");
+        assert_eq!(approved["origin"], "model_untrusted", "{approved}");
+        let v = act(
+            &w,
+            MemoryAct::ApproveClean {
+                id: short(&clean_cand),
+            },
+            None,
+        )
+        .unwrap();
+        let vouched = user(&v)
+            .into_iter()
+            .find(|f| f["uid"] == clean_cand)
+            .unwrap();
+        assert_eq!(vouched["origin"], "owner", "{vouched}");
+        assert!(vouched["vouched_at"].is_string(), "{vouched}");
         let v = act(&w, MemoryAct::Pin { id: short(&uid) }, None).unwrap();
         assert!(
             user(&v)
@@ -13849,7 +13880,14 @@ mod tests {
         assert!(b.unlock.is_none());
         let b: MemoryBody = body(serde_json::json!({ "action": "share", "id": "u1" }));
         assert!(matches!(&b.act, MemoryAct::Share { group: None, .. }));
-        for a in ["approve", "pin", "unpin", "forget", "unshare"] {
+        for a in [
+            "approve",
+            "approve_clean",
+            "pin",
+            "unpin",
+            "forget",
+            "unshare",
+        ] {
             let _: MemoryBody = body(serde_json::json!({ "action": a, "id": "u1" }));
         }
         for bad in [
