@@ -446,8 +446,11 @@ That keeps the exemption's premise true rather than re-arguing it: untrusted
 triage rules still reach only a pass whose output cannot send on its own. When
 this is built, `learnable()`'s comment gains one sentence naming the
 confirmation pass as the reason the premise still holds, so the next reader
-inherits a true argument. The cost is one extra call per *send or task
-candidate*, not per thread — a small fraction of mail. Rules whose actions
+inherits a true argument. The cost is one extra call per *thread that has a
+send or task candidate* — the pass is batched, choosing among every eligible
+candidate at once — plus one more when gate-passing shadow candidates are
+being measured; not one per candidate, and not one per thread of mail, so a
+small fraction of mail. Rules whose actions
 are only in the **Mailbox, Private record and Report groups** (§5's table:
 `archive`, `read`, `unread`, `trash`, `tag`, `digest`, and `spam` — not
 `task`) keep matching in the main pass alone, learned rules and all: their
@@ -591,9 +594,10 @@ from while I was paused*. A group in `off` writes nothing for mail arriving
 while it is off — no would-have row and no `skipped` row — so resuming from
 `off` offers no backlog. An owner turning a rule `off` chooses no record;
 `pause-all` steps to `shadow`, not `off`, precisely so a pause keeps a record.
-**A message found ineligible by an enabled group gets a row** —
-`skipped: before the rule was active` — so an enabled group passes nothing
-over without a trace. Acting on past matches is an explicit owner action on the
+**A message found ineligible by a group in `propose` or `auto` gets a row**
+— `skipped: before the rule was active` — so an active group passes nothing
+over without a trace. (A `shadow` group has no activation and writes `would
+have` rows instead; an `off` group writes nothing.) Acting on past matches is an explicit owner action on the
 rule page — *apply to these N earlier matches* — and runs in `propose`
 whatever the rule's mode, so the backlog is reviewed, not sent.
 
@@ -1299,7 +1303,11 @@ permission to run the action again — for an outbound row that would be a
 duplicate send, which is irreversible, while the opposite error (an older
 reader treating a thread as handled) is visible as `unknown` on the page and
 in `mecha doctor`. That inert-in-an-older-build cost is accepted, as Outlook
-sends staying in `propose` is elsewhere. One boolean serves both of §4.4's
+sends staying in `propose` is elsewhere. **A `pending` row's `closes: true`
+holds only until its settlement row exists**: then the settlement row's own
+`closes` decides, as §4.4 has it, so a Mailbox `failed: interrupted` reopens
+the key while an outbound `held: fate unknown` keeps it closed — and a
+settlement row an older reader cannot read closes the key. One boolean serves both of §4.4's
 keys, because their closing sets coincide over the outbound and Board rows
 the per-thread lookup reads. Unknown modes and outcomes are shown as `unknown` on the
 page.
@@ -1434,7 +1442,8 @@ default) — through
 `ARCHITECTURE.md` §Features → *Adding a feature*, whose dozen places include
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
 and
-`mecha doctor` reporting an unreadable store or a lapsed approval. The store
+`mecha doctor` reporting an unreadable store, a lapsed approval, and ledger
+rows with an outcome this build cannot read (§8). The store
 also registers with `backlog.rs` (and `CLAUDE.md`'s module-map line for it,
 "across five stores", and `backlog.rs`'s own module doc, "Five stores
 collect work for a person", each gain one), so proposals awaiting install and lapsed
