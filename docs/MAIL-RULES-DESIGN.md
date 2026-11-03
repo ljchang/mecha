@@ -316,9 +316,12 @@ notification should cost a string comparison, not a model call, whenever
 **A rule is a description rule if and only if it declares `describe`.** Its
 header keys, if any, are then an *additional precondition* checked in the
 same classify pass, against the same newest inbound message, **before** the
-classifier's list is built: only rules whose header preconditions pass for
-this message are offered to it, so a rule that could not apply never takes
-the single `rule` slot from one that could. Never a separate header rule — and **none of its actions run on the `--headers`
+classifier answers: only rules whose header preconditions pass for this
+message are *eligible*, so a rule that could not apply never takes the single
+`rule` slot from one that could. Eligibility does not change the frame's
+prefix: the full enabled list stays in the stable part (§4.2), and the
+per-message eligible names arrive after the message as a short suffix, with
+the constrained-decoding enum for `rule` narrowed to them. Never a separate header rule — and **none of its actions run on the `--headers`
 timer**. This is the common shape, not an edge: §5.2 requires a sender key
 for any automatic forward, send or drafted reply, so §3's `receipts-to-finance`
 example (`from_domain` + `describe`) is exactly it. Read as a header rule, its
@@ -331,7 +334,10 @@ wants an automatic trash on a sender alone writes a header rule for it.
 `describe` is a sentence the owner writes. The classifier — already one
 isolated, tool-less call per thread — is given the enabled rules' descriptions
 as numbered lists, **in `priority` then name order** so the frame's bytes are
-stable from thread to thread (the cached-prefix rule), and returns two more
+stable from thread to thread (the cached-prefix rule) — the *whole enabled
+set*, never a per-message subset, since a stable order over a varying set is
+not a stable prefix; which rules are eligible for this message comes after
+it (§4.2's header-precondition paragraph) — and returns two more
 fields:
 
 ```
@@ -400,10 +406,14 @@ name closes what a task *says*; the confirmation pass closes *which threads
 start one*. Such a candidate gets a second quarantined
 call, the **confirmation pass**: no tools, no history, and a frame made only
 of the owner's rule description and a fixed instruction compiled into the
-binary — **no learned rules and no few-shot examples**. It answers one
-question about one rule, `matches: yes | no` with its own grounded quote. A
-send proceeds only when both passes agree; disagreement goes to `propose` with
-both answers on the ledger row.
+binary — **no learned rules and no few-shot examples**. It is given **every
+eligible rule with an outbound action or a `task`**, not only the main
+pass's pick, and answers with its own choice among them (or `none`) and its
+own grounded quote. A send proceeds only when both passes name the same
+rule; disagreement goes to `propose` with both answers on the ledger row.
+Judging only the winner would leave the choice *between* two automatic send
+rules whose descriptions both honestly fit — which owner-fixed recipient an
+attacker's message reaches — to the pass that carries the learned rules.
 
 That keeps the exemption's premise true rather than re-arguing it: untrusted
 triage rules still reach only a pass whose output cannot send on its own. When
@@ -590,7 +600,7 @@ Grouped by what can go wrong, because that decides what may run unattended.
 | Group | `do =` | Reaches | May run in `auto`? |
 |---|---|---|---|
 | Mailbox | `archive`, `read`, `unread`, `trash` | the owner's mailbox | yes — with the §5.5 limit on `trash` |
-| Report | `spam` | **the provider's filter** — the one mailbox verb with an effect outside the mailbox (`TriageAction::Spam`'s own words) | **never** — it proposes in every mode, as the mail desk's `s` confirms, since no restore verb un-trains a filter |
+| Report | `spam` | **the provider's filter** — the one mailbox verb with an effect outside the mailbox (`TriageAction::Spam`'s own words) | **never** — it never rises above `propose` (in `auto` it proposes, as the mail desk's `s` confirms), since no restore verb un-trains a filter |
 | Private record | `tag`, `digest` | the owner (the triage store) | yes |
 | Board | `task` | the owner's board — **and from there a task run's prompt** | yes, with a harness-written name (§7) |
 | Fixed words | `reply` with `template` | the sender | after owner approval (R1) |
@@ -856,7 +866,7 @@ description — and a sender can write a message to resemble it. For `archive`
 that costs the owner nothing they cannot see — it is in the digest and the
 ledger, and it is reversible. For `trash` and `spam` it is a way to bury mail.
 So **`trash` runs in `auto` only from header matchers**; on a description
-match it proposes. (`spam` never runs in `auto` at all — §5's table.) And every automatic mailbox action lands in
+match it never rises above `propose`. (`spam` never runs in `auto` at all — §5's table.) And every automatic mailbox action lands in
 the next digest (§7), so nothing leaves the inbox without a trace.
 
 ---
@@ -949,7 +959,9 @@ the other compiled frame a send depends on, and a build that changes either
 lapses every approval that rests on it. What the digest does **not** cover is the main pass's learned
 triage rules, which change by design every time the owner corrects a verdict
 (§10). For send rules that is harmless, because a learned rule can only
-nominate a candidate the confirmation pass then judges without it. For a
+nominate a candidate: the confirmation pass then chooses among every
+eligible send and task rule without it, so a learned line can neither make a
+send happen nor pick which of two rules sends. For a
 description rule whose actions are only in the Mailbox and Private record
 groups (not Board, which gets the confirmation pass, §4.2) it means the
 matcher can widen after approval: accepted, because those actions are reversible,
@@ -1299,8 +1311,8 @@ inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 
 **P1 — the store, header rules, mailbox actions.** `rule.toml`, approvals,
-the ledger, `off`/`shadow`/`propose`/`auto` for the Mailbox, Private record
-and Board groups — `task` on header rules, with its harness-written name
+the ledger, `off`/`shadow`/`propose`/`auto` for the Mailbox, Private record,
+Report (`spam`, which never rises above `propose`) and Board groups — `task` on header rules, with its harness-written name
 (§7); the confirmation pass that description-matched tasks also need lands
 with description rules in P4 — (including a `tag` action, which writes mecha's own tag onto the
 triage record and has no provider verb, since tags are never Gmail labels or
@@ -1315,7 +1327,8 @@ the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
 and
 `mecha doctor` reporting an unreadable store or a lapsed approval. The store
 also registers with `backlog.rs` (and `CLAUDE.md`'s module-map line for it,
-"across five stores", gains one), so proposals awaiting install and lapsed
+"across five stores", and `backlog.rs`'s own module doc, "Five stores
+collect work for a person", each gain one), so proposals awaiting install and lapsed
 approvals count in `mecha review` and `/queues` — what is *waiting*, beside
 the doctor's what is *wrong*; rule sends staged in the outbox already count
 there through `OutboxStore`. **Covers
