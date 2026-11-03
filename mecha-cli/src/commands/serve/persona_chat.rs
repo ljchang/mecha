@@ -107,16 +107,17 @@ fn live_weather_place(store: &Path, name: &str) -> Option<Option<String>> {
 fn refresh_weather_on_blocking_thread(
     handle: &tokio::runtime::Handle,
     pdir: &Path,
-    place: &str,
+    place: Option<&str>,
     today: chrono::NaiveDate,
 ) -> Option<String> {
     use mecha_core::persona::weather;
-    let Err(e) = handle.block_on(weather::refresh(pdir, Some(place), today)) else {
+    let Err(e) = handle.block_on(weather::refresh(pdir, place, today)) else {
         return None;
     };
     let why = format!("{e:#}");
+    let key = place.unwrap_or(weather::FALLBACK_KEY);
     Some(
-        match weather::record_failure(pdir, place, chrono::Utc::now(), &why) {
+        match weather::record_failure(pdir, key, chrono::Utc::now(), &why) {
             Ok(()) => why,
             Err(record) => format!("{why}; recording it failed: {record:#}"),
         },
@@ -134,32 +135,30 @@ async fn refresh_weather_in_background(
     today: chrono::NaiveDate,
 ) {
     use mecha_core::persona::weather;
-    let Some(place) = place.map(str::trim).filter(|p| !p.is_empty()) else {
-        // A removed place takes its weather with it, before this turn's
-        // teller reads any.
-        let pdir = store.join(name);
-        let who = name.to_string();
-        if let Ok(Err(e)) =
-            tokio::task::spawn_blocking(move || weather::forget_removed_place(&pdir)).await
-        {
-            tracing::warn!("persona {who}: a removed place's weather was not cleared: {e:#}");
-        }
-        return;
-    };
+    let place = place
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
     let pdir = store.join(name);
     let name = name.to_string();
-    let place = place.to_string();
     let check_pdir = pdir.clone();
     let check_place = place.clone();
     let due = tokio::task::spawn_blocking(move || {
-        match weather::due(&check_pdir, Some(&check_place), chrono::Utc::now()) {
+        // A removed [life] place takes its weather with it before this
+        // turn's teller reads any; story.toml's [place], if any, then
+        // stands in and is refreshed like it (review of #836).
+        if check_place.is_none() {
+            weather::forget_removed_place(&check_pdir)
+                .map_err(|e| format!("a removed place's weather was not cleared: {e:#}"))?;
+        }
+        match weather::due(&check_pdir, check_place.as_deref(), chrono::Utc::now()) {
             Ok(due) => Ok(due),
             Err(e) => {
                 let why = format!("weather could not be checked: {e:#}");
                 Err(
                     match weather::record_failure(
                         &check_pdir,
-                        &check_place,
+                        check_place.as_deref().unwrap_or(weather::FALLBACK_KEY),
                         chrono::Utc::now(),
                         &why,
                     ) {
@@ -185,7 +184,9 @@ async fn refresh_weather_in_background(
     }
     let handle = tokio::runtime::Handle::current();
     let _refresh = tokio::task::spawn_blocking(move || {
-        if let Some(why) = refresh_weather_on_blocking_thread(&handle, &pdir, &place, today) {
+        if let Some(why) =
+            refresh_weather_on_blocking_thread(&handle, &pdir, place.as_deref(), today)
+        {
             tracing::warn!("persona {name}: weather refresh failed: {why}");
         }
     });
@@ -7333,40 +7334,41 @@ pub async fn week(
                 .as_deref()
                 .map(str::trim)
                 .filter(|place| !place.is_empty());
+            let pdir = loading.store.join(&p.name);
             if place.is_none() {
-                // A removed place takes its weather with it (review of #836).
-                if let Err(e) = weather::forget_removed_place(&loading.store.join(&p.name)) {
+                // A removed place takes its weather with it; story.toml's
+                // [place], if any, then stands in (review of #836).
+                if let Err(e) = weather::forget_removed_place(&pdir) {
                     weather_error =
                         Some(format!("a removed place's weather was not cleared: {e:#}"));
                 }
             }
-            if let Some(place) = place {
-                let pdir = loading.store.join(&p.name);
-                let now = chrono::Utc::now();
-                match weather::due(&pdir, Some(place), now) {
-                    Ok(true) => {
-                        let today = match weather_tz {
-                            Some(tz) => now.with_timezone(&tz).date_naive(),
-                            None => chrono::Local::now().date_naive(),
-                        };
-                        refresh = Some((pdir, place.to_string(), today));
-                    }
-                    Ok(false) => {
+            let key = place.unwrap_or(weather::FALLBACK_KEY);
+            let now = chrono::Utc::now();
+            match weather::due(&pdir, place, now) {
+                Ok(true) => {
+                    let today = match weather_tz {
+                        Some(tz) => now.with_timezone(&tz).date_naive(),
+                        None => chrono::Local::now().date_naive(),
+                    };
+                    refresh = Some((pdir, place.map(str::to_string), today));
+                }
+                Ok(false) => {
+                    if weather_error.is_none() {
                         weather_error =
-                            weather::backoff_error(&pdir, place, now).unwrap_or_else(|e| {
+                            weather::backoff_error(&pdir, key, now).unwrap_or_else(|e| {
                                 Some(format!("weather failure does not load: {e:#}"))
                             });
                     }
-                    Err(e) => {
-                        let why = format!("weather could not be checked: {e:#}");
-                        weather_error =
-                            Some(match weather::record_failure(&pdir, place, now, &why) {
-                                Ok(()) => why,
-                                Err(record) => {
-                                    format!("{why}; recording that failure also failed: {record:#}")
-                                }
-                            });
-                    }
+                }
+                Err(e) => {
+                    let why = format!("weather could not be checked: {e:#}");
+                    weather_error = Some(match weather::record_failure(&pdir, key, now, &why) {
+                        Ok(()) => why,
+                        Err(record) => {
+                            format!("{why}; recording that failure also failed: {record:#}")
+                        }
+                    });
                 }
             }
         }
@@ -7389,7 +7391,7 @@ pub async fn week(
     if let Some((pdir, place, today)) = refresh {
         let handle = tokio::runtime::Handle::current();
         match tokio::task::spawn_blocking(move || {
-            refresh_weather_on_blocking_thread(&handle, &pdir, &place, today)
+            refresh_weather_on_blocking_thread(&handle, &pdir, place.as_deref(), today)
         })
         .await
         {
