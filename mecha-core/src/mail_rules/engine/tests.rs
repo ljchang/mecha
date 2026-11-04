@@ -1440,3 +1440,65 @@ async fn unknown_owner_read_holds_without_closing_deferred_board_occasions() {
     assert_eq!(f.run(Some(&sink)).await.rows[0].outcome, Outcome::Done);
     assert_eq!(sink.0.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn missing_sink_stays_nonclosing_when_caps_reset_at_local_midnight() {
+    let mut f = Fixture::new();
+    f.options.timezone = chrono_tz::Asia::Tokyo;
+    let before = (Utc::now().date_naive() + Duration::days(2))
+        .and_hms_opt(14, 59, 59)
+        .unwrap()
+        .and_utc();
+    f.clock.set(before);
+    let rule = f.store.install("task", &format!("description = 'Notice'\ndaily_cap = 1\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'tag'\ntag = 'notice'\n{TASK}"), &BTreeMap::new()).unwrap();
+    f.mode(&rule, ActionGroup::Board, Mode::Auto);
+    f.mode(&rule, ActionGroup::PrivateRecord, Mode::Auto);
+    let mut previous = f.mail.candidates.lock().unwrap()[0].message.clone();
+    previous.provider_message_id = "previous-message".into();
+    previous.thread_id = "previous-thread".into();
+    f.store
+        .append_ledger(
+            &LedgerRow::header(
+                &rule,
+                1,
+                previous,
+                Mode::Auto,
+                GateStatus::Passing,
+                Outcome::Done,
+                before - Duration::minutes(1),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        cs[0].arrival_at = Some(before - Duration::minutes(1));
+        cs[0].classified.as_mut().unwrap().at = before;
+    }
+    f.options.pass = Pass::AfterClassify;
+    let clock = f.clock.clone();
+    *f.mail.on_effect.lock().unwrap() = Some(Box::new(move || clock.advance(Duration::seconds(2))));
+    let report = f.run(None).await;
+    let held = report
+        .rows
+        .iter()
+        .find(|r| r.action.verb == ActionVerb::Task)
+        .unwrap();
+    assert_eq!(held.outcome, Outcome::Held);
+    assert_eq!(held.reason, "task sink unavailable");
+    assert!(!held.closes);
+    assert_eq!(held.failure_kind, FailureKind::Environment);
+    assert!(!f
+        .store
+        .ledger()
+        .unwrap()
+        .iter()
+        .any(|r| r.message.thread_id == "thread-alpha" && r.action.verb == ActionVerb::Task));
+    let sink = Sink::default();
+    f.run(Some(&sink)).await;
+    assert_eq!(
+        sink.0.lock().unwrap().len(),
+        1,
+        "new-day capacity and occasion remain available"
+    );
+}

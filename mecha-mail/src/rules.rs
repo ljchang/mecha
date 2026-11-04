@@ -120,6 +120,30 @@ fn owner_addresses(
         .collect())
 }
 
+fn finish_read(
+    account: &str,
+    thread: &str,
+    emails: Result<Vec<Email>, MailError>,
+    owners: Result<Vec<String>>,
+    record: Result<Option<mail_triage::Record>>,
+) -> Result<ThreadRead> {
+    let emails = match emails {
+        Ok(emails) => emails,
+        Err(MailError::ParseError(_)) => {
+            return Ok(ThreadRead::Held {
+                reason: "provider message facts unknown".into(),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let Ok(record) = record else {
+        return Ok(ThreadRead::Held {
+            reason: "rule annotations unreadable".into(),
+        });
+    };
+    candidate_with_owners(account, thread, &emails, owners, record.as_ref())
+}
+
 fn candidate_with_owners(
     account: &str,
     thread: &str,
@@ -132,7 +156,12 @@ fn candidate_with_owners(
             reason: "owner addresses unknown".into(),
         });
     };
-    candidate(account, thread, emails, &owners, record).map(ThreadRead::from)
+    Ok(match candidate(account, thread, emails, &owners, record) {
+        Ok(candidate) => candidate.into(),
+        Err(reason) => ThreadRead::Held {
+            reason: reason.into(),
+        },
+    })
 }
 
 fn candidate(
@@ -141,30 +170,36 @@ fn candidate(
     emails: &[Email],
     owners: &[String],
     record: Option<&mail_triage::Record>,
-) -> Result<Candidate> {
-    ensure!(!owners.is_empty(), "account address unknown");
-    ensure!(
-        emails.iter().all(|e| e.sender_known == Some(true)
+) -> Result<Candidate, &'static str> {
+    // This function only inspects facts, never performs provider I/O. Its
+    // uncertainty must become a held read, not a closing failed occasion.
+    if owners.is_empty() {
+        return Err("account address unknown");
+    }
+    if !emails.iter().all(|e| {
+        e.sender_known == Some(true)
             && !e.from_address.is_empty()
             && e.direction(owners).is_some()
-            && !e.provider_id.is_empty()),
-        "message direction unknown"
-    );
+            && !e.provider_id.is_empty()
+    }) {
+        return Err("message direction unknown");
+    }
     let inbound: Vec<_> = emails
         .iter()
         .filter(|e| e.direction(owners) == Some(MailDirection::Inbound))
         .collect();
-    ensure!(!inbound.is_empty(), "no inbound message");
+    if inbound.is_empty() {
+        return Err("no inbound message");
+    }
     // With several inbound messages an unknown arrival makes newest selection
     // unknowable. For one message preserve the unknown for an explicit hold.
-    ensure!(
-        inbound.len() == 1 || inbound.iter().all(|e| e.provider_arrival_at.is_some()),
-        "newest inbound message is unknown"
-    );
+    if inbound.len() > 1 && inbound.iter().any(|e| e.provider_arrival_at.is_none()) {
+        return Err("newest inbound message is unknown");
+    }
     let email = inbound
         .into_iter()
         .max_by_key(|e| e.provider_arrival_at)
-        .context("newest inbound missing")?;
+        .ok_or("newest inbound missing")?;
     let arrival_at = email.provider_arrival_at;
     let classified = record
         .filter(|r| r.state != mail_triage::FAILED && r.verdict.is_some())
@@ -362,17 +397,23 @@ impl Mailbox for RuleMailbox {
             .collect())
     }
     async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead> {
-        let a = self.account(account)?;
-        let owners = owner_addresses(
-            &self
-                .tools
-                .accounts()
-                .iter()
-                .map(|a| a.address.clone())
-                .collect::<Vec<_>>(),
-            a.address.as_deref(),
-            &RuleStore::open_existing(&self.rule_root)?,
-        );
+        let Ok(a) = self.account(account) else {
+            return Ok(ThreadRead::Held {
+                reason: "account unknown".into(),
+            });
+        };
+        let owners = RuleStore::open_existing(&self.rule_root).and_then(|store| {
+            owner_addresses(
+                &self
+                    .tools
+                    .accounts()
+                    .iter()
+                    .map(|a| a.address.clone())
+                    .collect::<Vec<_>>(),
+                a.address.as_deref(),
+                &store,
+            )
+        });
         if owners.is_err() {
             // Ownership uncertainty is an observation, before credential or
             // provider I/O and before reading any classifier record.
@@ -390,13 +431,13 @@ impl Mailbox for RuleMailbox {
                     }
                 }
             })
-            .await?;
-        candidate_with_owners(
+            .await;
+        finish_read(
             account,
             thread,
-            &emails,
+            emails,
             owners,
-            self.record(account, thread)?.as_ref(),
+            self.record(account, thread),
         )
     }
     async fn mailbox_action(&self, c: &Candidate, action: ActionVerb) -> ActionResult {

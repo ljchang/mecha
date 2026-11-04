@@ -4591,6 +4591,9 @@ facts cannot be overridden by a different sender address; missing direction
 holds instead of promoting an alias reply to the newest inbound message.
 Every configured account must have an address before the owner set is used;
 unknown ownership holds the read and leaves deferred Board occasions open.
+The same held-read path handles uncertain sender, direction, newest-message
+identity and unreadable annotations or malformed message facts. These are
+observations, not closing action failures; seven-day expiry still closes them.
 Every dispatch rechecks the fresh mode's activation against provider arrival;
 an owner can pause and reactivate while an earlier sibling awaits I/O.
 
@@ -4614,9 +4617,10 @@ brake; positively identified outages and interruptions do not.
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound
 action defer removals regardless of priority. Owed actions enter the store's
-deferred queue before the pass finishes. An unreadable thread fails visibly;
-a stale verdict keeps its queue entry. Unknown header completeness, attachment
-presence and provider arrival remain unknown through the adapter. Dedicated
+deferred queue before the pass finishes. Provider/transport read failures fail
+visibly; uncertain facts hold the read and a stale verdict keeps its queue entry.
+Unknown header completeness, attachment presence and provider arrival remain
+unknown through the adapter. Dedicated
 Graph subject and To/Cc/Bcc fields carry their own completeness: raw-header
 uncertainty must not turn a known envelope negative into an indefinite hold.
 Semantic comparisons unfold raw headers and strictly decode RFC 2047 words;
@@ -4641,8 +4645,10 @@ plus a validated address, arrival date and typed deadline supply the name;
 context is a thread pointer. Disabled graph entries count as unconfigured in
 both live and dry runs. Missing graph configuration or a failed connection
 holds tasks without consuming action keys, once-per-thread occasions or cap
-capacity; the next pass retries once the sink is available. Cap holds still
-close their occasions, and an uncertain dispatched task remains closed.
+capacity; the next pass retries once the sink is available. Sink availability
+is checked before caps, since a local midnight can free capacity before dispatch.
+Cap holds still close their occasions, and an uncertain dispatched task remains
+closed.
 Description matching and all sends remain unsupported in P1b;
 `resolve_mode` supplies their permanent ceilings, including spam's propose-only
 ceiling and the Board origin gate.

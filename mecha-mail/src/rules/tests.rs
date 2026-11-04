@@ -1462,3 +1462,201 @@ fn missing_second_account_address_holds_instead_of_selecting_its_outlook_reply()
     };
     assert_eq!(c.message.provider_message_id, "inbound");
 }
+
+#[test]
+fn uncertain_candidate_facts_are_held_reads() {
+    let valid = email("inbound", "sender@example.com", "2026-11-03T12:00:00Z");
+    let mut missing_direction = valid.clone();
+    missing_direction.direction_evidence = None;
+    let mut missing_identity = valid.clone();
+    missing_identity.provider_id.clear();
+    let mut missing_arrival = valid.clone();
+    missing_arrival.provider_arrival_at = None;
+    for emails in [
+        Vec::new(),
+        vec![missing_direction],
+        vec![missing_identity],
+        vec![valid, missing_arrival],
+        vec![email("sent", "owner@example.edu", "2026-11-03T13:00:00Z")],
+    ] {
+        let read = candidate_with_owners(
+            "campus",
+            "thread",
+            &emails,
+            Ok(vec!["owner@example.edu".into()]),
+            None,
+        );
+        assert!(
+            matches!(read, Ok(ThreadRead::Held { .. })),
+            "fact uncertainty became {read:?}"
+        );
+    }
+    assert!(matches!(
+        candidate_with_owners("campus", "thread", &[], Ok(Vec::new()), None),
+        Ok(ThreadRead::Held { .. })
+    ));
+}
+
+#[tokio::test]
+async fn deferred_board_survives_unknown_from_until_expiry() {
+    use mecha_core::mail_rules::{ActionGroup, Mode, Outcome, P1Holds};
+    struct ChangingMailbox {
+        messages: std::sync::Mutex<Vec<Email>>,
+        record: mail_triage::Record,
+    }
+    #[async_trait]
+    impl Mailbox for ChangingMailbox {
+        async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+            Ok(vec!["thread".into()])
+        }
+        async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead> {
+            candidate_with_owners(
+                account,
+                thread,
+                &self.messages.lock().unwrap(),
+                Ok(vec!["owner@example.edu".into()]),
+                Some(&self.record),
+            )
+        }
+        async fn mailbox_action(&self, _: &Candidate, _: ActionVerb) -> ActionResult {
+            panic!("no mailbox effects")
+        }
+        async fn private_record(&self, _: &Candidate, _: &str, _: &Action) -> ActionResult {
+            panic!("no record effects")
+        }
+        async fn handled(&self, _: &Candidate) -> Result<()> {
+            panic!("no classification skips")
+        }
+        fn origin_gate(&self, _: &LoadedRule) -> GateStatus {
+            GateStatus::Passing
+        }
+    }
+    for bad_from in [
+        json!([{"name":"From", "value":"Broken <sender@example.com"}]),
+        json!([{"name":"From", "value":"first@example.com"}, {"name":"From", "value":"second@example.com"}]),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RuleStore::open(dir.path().join("rules")).unwrap();
+        let rule = store.install("task", "description = 'Review notice'\ndaily_cap = 1\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'task'", &Default::default()).unwrap();
+        store
+            .change_mode(
+                &rule.name,
+                ActionGroup::Board,
+                Mode::Auto,
+                Some(mecha_core::closure::Actor::Owner),
+                &rule.approval_digest,
+                &P1Holds {
+                    origin_gate: GateStatus::Passing,
+                },
+            )
+            .unwrap();
+        let now = Utc::now() + chrono::Duration::hours(1);
+        let clock = Arc::new(mecha_core::clock::TestClock::new(now));
+        let original = email("original", "sender@example.com", &now.to_rfc3339());
+        let mailbox = ChangingMailbox {
+            messages: std::sync::Mutex::new(vec![original]),
+            record: serde_json::from_value(
+                json!({"account":"campus", "thread_id":"thread", "state":"classified",
+                "date":now.to_rfc3339(), "classified_at":now.to_rfc3339(),
+                "verdict":{"bucket":"notify", "urgency":"none", "proposed":"none"}}),
+            )
+            .unwrap(),
+        };
+        let mut options = engine::EngineOptions {
+            clock: clock.clone(),
+            ..Default::default()
+        };
+        engine::apply(&store, &mailbox, None, &["campus".into()], &options)
+            .await
+            .unwrap();
+        let queued = store.deferred().unwrap().remove(0);
+        let before = store.ledger().unwrap().len();
+        mailbox.messages.lock().unwrap().push(crate::google::gmail::parse_gmail_message(
+            crate::google::gmail::HeaderRead::Full,
+            &json!({"id":"later", "labelIds":["INBOX"], "internalDate":(now + chrono::Duration::seconds(1)).timestamp_millis().to_string(),
+                "payload":{"headers":bad_from}})));
+        options.pass = Pass::AfterClassify;
+        for at in [now, queued.queued_at + chrono::Duration::days(7)] {
+            clock.set(at);
+            let report = engine::apply(
+                &store,
+                &mailbox,
+                Some(&PlannedSink),
+                &["campus".into()],
+                &options,
+            )
+            .await
+            .unwrap();
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.rows[0].outcome, Outcome::Held);
+            assert!(!report.rows[0].closes);
+            assert_eq!(store.ledger().unwrap().len(), before);
+            assert_eq!(store.deferred().unwrap().len(), 1);
+        }
+        clock.advance(chrono::Duration::seconds(1));
+        engine::apply(
+            &store,
+            &mailbox,
+            Some(&PlannedSink),
+            &["campus".into()],
+            &options,
+        )
+        .await
+        .unwrap();
+        assert!(store.deferred().unwrap().is_empty());
+        assert!(store
+            .ledger()
+            .unwrap()
+            .iter()
+            .any(|r| r.outcome == Outcome::Expired && r.closes));
+        assert!(
+            store.enqueue(&queued).is_err(),
+            "expiry is terminal even if facts recover"
+        );
+    }
+}
+
+#[test]
+fn uncertain_read_inputs_hold_but_provider_failures_remain_errors() {
+    let owners = || Ok(vec!["owner@example.edu".into()]);
+    let message = || {
+        Ok(vec![email(
+            "inbound",
+            "sender@example.com",
+            "2026-11-03T12:00:00Z",
+        )])
+    };
+    let malformed = finish_read(
+        "campus",
+        "thread",
+        Err(MailError::ParseError("missing message array".into())),
+        owners(),
+        Ok(None),
+    );
+    assert!(
+        matches!(malformed, Ok(ThreadRead::Held { .. })),
+        "unknown payload became {malformed:?}"
+    );
+    let annotations = finish_read(
+        "campus",
+        "thread",
+        message(),
+        owners(),
+        Err(anyhow::anyhow!("unreadable annotation sidecar")),
+    );
+    assert!(
+        matches!(annotations, Ok(ThreadRead::Held { .. })),
+        "unknown annotations became {annotations:?}"
+    );
+    assert!(finish_read(
+        "campus",
+        "thread",
+        Err(MailError::ApiError {
+            status: 503,
+            message: "unavailable".into()
+        }),
+        owners(),
+        Ok(None)
+    )
+    .is_err());
+}

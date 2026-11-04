@@ -733,6 +733,17 @@ impl Run<'_> {
                     self.write(row)?;
                     continue;
                 }
+                if mode == Mode::Auto && action.verb == ActionVerb::Task && self.sink.is_none() {
+                    // No dispatch was possible: this environmental observation
+                    // consumes neither a claim nor capacity. Keep the queue.
+                    row.outcome = Outcome::Held;
+                    row.closes = false;
+                    row.reason = "task sink unavailable".into();
+                    row.failure_kind = FailureKind::Environment;
+                    self.report.rows.push(row);
+                    rule_handled = false;
+                    continue;
+                }
                 row.outcome = Outcome::Pending;
                 row.closes = true;
                 // Reserve cumulatively within this batch, including siblings.
@@ -746,21 +757,6 @@ impl Run<'_> {
                 } else {
                     None
                 };
-                if cap.is_none()
-                    && mode == Mode::Auto
-                    && action.verb == ActionVerb::Task
-                    && self.sink.is_none()
-                {
-                    // No dispatch was possible: this environmental observation
-                    // consumes neither a claim nor capacity. Keep the queue.
-                    row.outcome = Outcome::Held;
-                    row.closes = false;
-                    row.reason = "task sink unavailable".into();
-                    row.failure_kind = FailureKind::Environment;
-                    self.report.rows.push(row);
-                    rule_handled = false;
-                    continue;
-                }
                 if cap.is_none() && mode == Mode::Auto && action.group().once_per_thread() {
                     reservations.push(row.clone());
                 }
@@ -886,12 +882,16 @@ impl Run<'_> {
                                 ActionGroup::PrivateRecord => {
                                     self.mailbox.private_record(c, &rule.name, action).await
                                 }
-                                ActionGroup::Board => {
-                                    self.sink
-                                        .expect("checked task sink")
-                                        .create(&task(rule, c))
-                                        .await
-                                }
+                                // The sink is checked before the cap at
+                                // planning; hold here, never panic, if that
+                                // order ever moves.
+                                ActionGroup::Board => match self.sink {
+                                    Some(sink) => sink.create(&task(rule, c)).await,
+                                    None => ActionResult::Held {
+                                        kind: FailureKind::Environment,
+                                        reason: "task sink unavailable".into(),
+                                    },
+                                },
                                 _ => ActionResult::Held {
                                     kind: FailureKind::Unknown,
                                     reason: "unsupported action".into(),
