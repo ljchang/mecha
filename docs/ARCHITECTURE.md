@@ -4579,7 +4579,10 @@ binary.** `mail_rules::engine::apply` takes `Mailbox` and `TaskSink` interfaces;
 **dev-dependency only**, and P1c will invoke the mail binary as a child
 (`MAIL-RULES-DESIGN.md` R10). Every engine Outlook read and mutation uses
 `with_immutable_ids`; a folder move must not manufacture a new ledger key.
-Mailbox effects address the authorized provider message ID. A thread-wide
+Candidate pagination validates Graph origins and repeated links before any
+credential-bearing fetch; malformed pages or continuation tokens fail the pass.
+Gmail tokens are encoded as query values and repetitions are errors, never an
+apparently complete result. Mailbox effects address the authorized provider message ID. A thread-wide
 mutation would also touch pre-activation or newly arrived, unmatched messages.
 Gmail's rule sender evidence is parsed as a mailbox, never by selecting
 angle-bracket text: a quoted display name may contain a different address.
@@ -4609,6 +4612,12 @@ short store writer lock. Lock guards explicitly unlock before closing: a
 parallel fork can inherit the same open file description and retain its flock
 until exec, even though the original run has finished and every test uses a
 unique store root. Closing the parent's descriptor alone is not release.
+Mode resolution is cached within a pass; ordinary threads and actions do not
+repeat whole-store lapse/brake transactions. Dispatch still rereads approvals,
+and an append-only ledger cursor picks up concurrent owner corrections. Actual
+input changes persist a fresh lapse, and new adverse evidence can lower a mode
+immediately. Ledger replacement, truncation or a same-length rewrite refuses
+the pass rather than discarding closure evidence.
 Pending sweeps name the
 exact attempt; uncertain task creation stays held, while an interrupted
 mailbox/record action reopens. Unknown action failure kinds count toward the
@@ -4659,6 +4668,8 @@ closed. Graph task tools that advertise background execution are refused at
 connection. A defensive deferred result is cancelled without starting its job;
 its unused claim settles as skipped and its report shows a non-closing hold.
 Only a typed guarantee of no dispatch releases a claim, never an outage alone.
+Graph shutdown errors become report notices; they cannot discard completed
+effects or override the typed apply exit status.
 Description matching and all sends remain unsupported in P1b;
 `resolve_mode` supplies their permanent ceilings, including spam's propose-only
 ceiling and the Board origin gate.

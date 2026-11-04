@@ -717,15 +717,33 @@ pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -
         },
     )
     .await;
-    if let Some(graph) = &graph {
-        graph.client.close().await?;
-    }
+    let report = finish_apply(result, sink_notice, async {
+        if let Some(graph) = &graph {
+            graph.client.close().await?;
+        }
+        Ok(())
+    })
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    report_status(&report)
+}
+
+async fn finish_apply(
+    result: Result<engine::ApplyReport>,
+    sink_notice: Option<String>,
+    close: impl std::future::Future<Output = Result<()>>,
+) -> Result<engine::ApplyReport> {
+    let close_result = close.await;
     let mut report = result?;
+    if let Err(error) = close_result {
+        report
+            .notices
+            .push(format!("graph close failed: {error:#}"));
+    }
     if let Some(notice) = sink_notice {
         report.notices.push(notice);
     }
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    report_status(&report)
+    Ok(report)
 }
 
 fn report_status(report: &engine::ApplyReport) -> Result<()> {

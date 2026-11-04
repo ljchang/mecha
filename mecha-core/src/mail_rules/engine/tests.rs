@@ -992,6 +992,11 @@ async fn sibling_reservations_share_rule_and_global_capacity() {
             sink: Some(&sink),
             options: &f.options,
             rows: Vec::new(),
+            row_ids: HashSet::new(),
+            report_row_ids: HashSet::new(),
+            ledger_cursor: Default::default(),
+            mode_cache: BTreeMap::new(),
+            checked_inputs: BTreeMap::from([(r.name.clone(), r.approval_digest.clone())]),
             report: ApplyReport::default(),
         };
         run.apply_thread(&[r], &c).await.unwrap();
@@ -1582,4 +1587,323 @@ async fn read_failure_count_distinguishes_errors_from_observation_holds() {
     f.mail.hold_read = true;
     let held = f.run(None).await;
     assert_eq!(serde_json::to_value(&held).unwrap()["read_failures"], 0);
+}
+
+#[tokio::test]
+async fn mode_transactions_are_bounded_by_rules_not_threads_or_actions() {
+    for thread_count in 1..=8 {
+        let f = Fixture::new();
+        let r = f.rule(
+            "notice",
+            "[[action]]\ndo = 'read'\n[[action]]\ndo = 'tag'\ntag = 'notice'\n",
+        );
+        f.mode(&r, ActionGroup::Mailbox, Mode::Auto);
+        f.mode(&r, ActionGroup::PrivateRecord, Mode::Auto);
+        let original = f.mail.candidates.lock().unwrap()[0].clone();
+        *f.mail.candidates.lock().unwrap() = (0..thread_count)
+            .map(|index| {
+                let mut c = original.clone();
+                c.message.thread_id = format!("thread-{index}");
+                c.message.provider_message_id = format!("message-{index}");
+                c
+            })
+            .collect();
+        f.store
+            .mode_transactions
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        let report = f.run(None).await;
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .filter(|r| r.outcome == Outcome::Done)
+                .count(),
+            thread_count * 2
+        );
+        let transactions = f
+            .store
+            .mode_transactions
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            transactions <= 2,
+            "one rule used {transactions} mode transactions for {thread_count} threads"
+        );
+    }
+}
+
+#[tokio::test]
+async fn concurrent_ledger_failures_still_brake_the_next_sibling() {
+    let f = Fixture::new();
+    let rule = f.rule(
+        "notice",
+        "[[action]]\ndo = 'tag'\ntag = 'notice'\n[[action]]\ndo = 'read'\n",
+    );
+    f.mode(&rule, ActionGroup::PrivateRecord, Mode::Auto);
+    f.mode(&rule, ActionGroup::Mailbox, Mode::Auto);
+    let store = RuleStore::open_existing(f.store.root()).unwrap();
+    let r = rule.clone();
+    let c = f.mail.candidates.lock().unwrap()[0].clone();
+    let now = f.options.clock.now();
+    *f.mail.on_effect.lock().unwrap() = Some(Box::new(move || {
+        for index in 0..3 {
+            let mut message = c.message.clone();
+            message.thread_id = format!("other-thread-{index}");
+            message.provider_message_id = format!("other-message-{index}");
+            let mut row = LedgerRow::header(
+                &r,
+                1,
+                message,
+                Mode::Auto,
+                GateStatus::Passing,
+                Outcome::Failed,
+                now,
+            )
+            .unwrap();
+            row.failure_kind = FailureKind::Action;
+            store.append_ledger(&row).unwrap();
+        }
+    }));
+    let report = f.run(None).await;
+    assert_eq!(f.mail.calls.lock().unwrap().as_slice(), ["Tag"]);
+    assert!(report
+        .rows
+        .iter()
+        .any(|r| r.action.verb == ActionVerb::Read && r.outcome == Outcome::WouldHave));
+}
+
+#[tokio::test]
+async fn input_edit_during_io_lapses_before_dispatch_and_cannot_be_reverted_to_auto() {
+    let f = Fixture::new();
+    let r = f.rule(
+        "notice",
+        "[[action]]\ndo = 'tag'\ntag = 'notice'\n[[action]]\ndo = 'read'\n",
+    );
+    f.mode(&r, ActionGroup::PrivateRecord, Mode::Auto);
+    f.mode(&r, ActionGroup::Mailbox, Mode::Auto);
+    let path = r.directory.join("extra.md");
+    let edit = path.clone();
+    *f.mail.on_effect.lock().unwrap() = Some(Box::new(move || {
+        std::fs::write(edit, "Owner edit").unwrap()
+    }));
+    let report = f.run(None).await;
+    assert!(report
+        .rows
+        .iter()
+        .any(|r| r.reason == "rule inputs changed during apply"));
+    assert_eq!(f.mail.calls.lock().unwrap().as_slice(), ["Tag"]);
+    std::fs::remove_file(path).unwrap();
+    f.mail.next("after-revert");
+    let report = f.run(None).await;
+    assert!(report.rows.iter().all(|r| r.outcome != Outcome::Done));
+    assert_eq!(f.mail.calls.lock().unwrap().as_slice(), ["Tag"]);
+}
+
+#[tokio::test]
+async fn concurrent_success_keeps_ledger_order_for_failure_brakes() {
+    let f = Fixture::new();
+    let rule = f.rule("notice", "[[action]]\ndo = 'read'\n");
+    f.mode(&rule, ActionGroup::Mailbox, Mode::Auto);
+    let original = f.mail.candidates.lock().unwrap()[0].clone();
+    let now = f.options.clock.now();
+    for label in ["prior-alpha", "prior-beta"] {
+        let mut message = original.message.clone();
+        message.provider_message_id = label.into();
+        message.thread_id = label.into();
+        let mut row = LedgerRow::header(
+            &rule,
+            0,
+            message,
+            Mode::Auto,
+            GateStatus::Passing,
+            Outcome::Failed,
+            now,
+        )
+        .unwrap();
+        row.failure_kind = FailureKind::Action;
+        f.store.append_ledger(&row).unwrap();
+    }
+    *f.mail.candidates.lock().unwrap() = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|label| {
+            let mut c = original.clone();
+            c.message.provider_message_id = label.into();
+            c.message.thread_id = label.into();
+            c
+        })
+        .collect();
+    *f.mail.results.lock().unwrap() = (0..3)
+        .map(|_| ActionResult::Failed {
+            kind: FailureKind::Action,
+            reason: "fixture refusal".into(),
+        })
+        .collect();
+    let store = RuleStore::open_existing(f.store.root()).unwrap();
+    let r = rule.clone();
+    *f.mail.on_effect.lock().unwrap() = Some(Box::new(move || {
+        let mut message = original.message;
+        message.provider_message_id = "concurrent-success".into();
+        message.thread_id = "concurrent-success".into();
+        store
+            .append_ledger(
+                &LedgerRow::header(
+                    &r,
+                    0,
+                    message,
+                    Mode::Auto,
+                    GateStatus::Passing,
+                    Outcome::Done,
+                    now,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }));
+    let report = f.run(None).await;
+    assert_eq!(
+        report
+            .rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Failed)
+            .count(),
+        3
+    );
+    assert_eq!(
+        resolve_mode(
+            &rule,
+            ActionGroup::Mailbox,
+            &f.store.approvals().unwrap(),
+            &P1Holds {
+                origin_gate: GateStatus::Passing
+            }
+        )
+        .effective,
+        Mode::Shadow,
+        "the concurrent success precedes all three new failures in ledger order"
+    );
+}
+
+fn cursor_fixture_row(f: &Fixture, rule: &LoadedRule) -> LedgerRow {
+    LedgerRow::header(
+        rule,
+        0,
+        f.mail.candidates.lock().unwrap()[0].message.clone(),
+        Mode::Shadow,
+        GateStatus::Passing,
+        Outcome::WouldHave,
+        f.options.clock.now(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn ledger_snapshot_initial_sync_never_reparses_history() {
+    use std::io::Write;
+    use std::sync::atomic::Ordering;
+    let f = Fixture::new();
+    let rule = f.rule("notice", "[[action]]\ndo = 'read'\n");
+    let row_count = 2048;
+    let rows: Vec<_> = (0..row_count)
+        .map(|_| cursor_fixture_row(&f, &rule))
+        .collect();
+    let path = f.store.root().join("ledger.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    for row in &rows {
+        serde_json::to_writer(&mut file, row).unwrap();
+        file.write_all(b"\n").unwrap();
+    }
+    let (snapshot, mut cursor) = f.store.ledger_snapshot().unwrap();
+    assert_eq!(snapshot.len(), row_count);
+    assert_eq!(
+        f.store.ledger_rows_parsed.load(Ordering::Relaxed),
+        row_count
+    );
+    let updates = f.store.ledger_updates(&mut cursor).unwrap();
+    assert_eq!(
+        f.store.ledger_rows_parsed.load(Ordering::Relaxed),
+        row_count,
+        "initial sync reparsed the existing history"
+    );
+    assert!(updates.is_empty());
+    // An append after the snapshot must still be observed exactly once.
+    let appended = cursor_fixture_row(&f, &rule);
+    serde_json::to_writer(&mut file, &appended).unwrap();
+    file.write_all(b"\n").unwrap();
+    let updates = f.store.ledger_updates(&mut cursor).unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].id, appended.id);
+    assert!(f.store.ledger_updates(&mut cursor).unwrap().is_empty());
+    assert_eq!(
+        f.store.ledger_rows_parsed.load(Ordering::Relaxed),
+        row_count + 1
+    );
+}
+
+#[test]
+fn ledger_cursor_waits_for_partial_line_then_consumes_it_once() {
+    use std::io::Write;
+    let f = Fixture::new();
+    let rule = f.rule("notice", "[[action]]\ndo = 'read'\n");
+    let first = cursor_fixture_row(&f, &rule);
+    let second = cursor_fixture_row(&f, &rule);
+    let path = f.store.root().join("ledger.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    serde_json::to_writer(&mut file, &first).unwrap();
+    file.write_all(b"\n").unwrap();
+    let bytes = serde_json::to_vec(&second).unwrap();
+    let split = bytes.len() / 2;
+    file.write_all(&bytes[..split]).unwrap();
+    let mut cursor = store::LedgerCursor::default();
+    let updates = f
+        .store
+        .ledger_updates(&mut cursor)
+        .expect("partial append is not corruption");
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].id, first.id);
+    assert!(f.store.ledger_updates(&mut cursor).unwrap().is_empty());
+    file.write_all(&bytes[split..]).unwrap();
+    // A complete object without its newline is still uncommitted to this reader.
+    assert!(f.store.ledger_updates(&mut cursor).unwrap().is_empty());
+    file.write_all(b"\n").unwrap();
+    let updates = f.store.ledger_updates(&mut cursor).unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].id, second.id);
+    assert!(f.store.ledger_updates(&mut cursor).unwrap().is_empty());
+    file.write_all(b"{invalid}\n").unwrap();
+    assert!(
+        f.store.ledger_updates(&mut cursor).is_err(),
+        "complete invalid rows must refuse"
+    );
+}
+
+#[tokio::test]
+async fn changed_off_rule_emits_no_lapse_notice() {
+    let f = Fixture::new();
+    let active = f.rule("active", "[[action]]\ndo = 'tag'\ntag = 'notice'\n");
+    let inactive = f.rule("inactive", "[[action]]\ndo = 'read'\n");
+    f.mode(&active, ActionGroup::PrivateRecord, Mode::Auto);
+    f.mode(&inactive, ActionGroup::Mailbox, Mode::Off);
+    let path = inactive.directory.join("extra.md");
+    *f.mail.on_effect.lock().unwrap() = Some(Box::new(move || {
+        std::fs::write(path, "Owner edit to an inactive rule").unwrap();
+    }));
+    let mut next = f.mail.candidates.lock().unwrap()[0].clone();
+    next.message.thread_id = "thread-next".into();
+    next.message.provider_message_id = "message-next".into();
+    f.mail.candidates.lock().unwrap().push(next);
+    let report = f.run(None).await;
+    assert_eq!(f.mail.calls.lock().unwrap().len(), 2);
+    assert!(f
+        .store
+        .ledger()
+        .unwrap()
+        .iter()
+        .all(|row| row.outcome != Outcome::ApprovalLapsed));
+    assert!(
+        report
+            .notices
+            .iter()
+            .all(|notice| !notice.contains("approval lapsed")),
+        "an Off rule cannot lapse: {:?}",
+        report.notices
+    );
 }

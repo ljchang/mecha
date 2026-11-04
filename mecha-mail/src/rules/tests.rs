@@ -1949,3 +1949,30 @@ async fn rule_exit_status_uses_read_failures_without_notices() {
         "read failure must survive reworded or missing notices"
     );
 }
+
+#[tokio::test]
+async fn graph_close_failure_preserves_report_and_typed_exit_status() {
+    for read_failures in 0..=1 {
+        let report = engine::ApplyReport {
+            read_failures,
+            handled: vec!["thread-alpha".into()],
+            ..Default::default()
+        };
+        let result = finish_apply(Ok(report), None, async {
+            anyhow::bail!("fixture close failure")
+        })
+        .await;
+        assert!(
+            result.is_ok(),
+            "cleanup discarded completed effects: {result:?}"
+        );
+        let report = result.unwrap();
+        assert_eq!(report.handled, ["thread-alpha"]);
+        assert_eq!(report.read_failures, read_failures);
+        assert!(report
+            .notices
+            .iter()
+            .any(|n| n.contains("close") && n.contains("fixture close failure")));
+        assert_eq!(report_status(&report).is_err(), read_failures != 0);
+    }
+}

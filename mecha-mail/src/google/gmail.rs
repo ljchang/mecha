@@ -104,12 +104,44 @@ impl GmailProvider {
         slots.into_iter().flatten().collect()
     }
 
+    fn next_list_token(
+        page: &Value,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> Result<Option<String>, MailError> {
+        match page.get("nextPageToken") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(token)) if !token.is_empty() && seen.insert(token.clone()) => {
+                Ok(Some(token.clone()))
+            }
+            _ => Err(MailError::ParseError(
+                "invalid or repeated Gmail page token".into(),
+            )),
+        }
+    }
+
+    fn list_messages(page: &Value) -> Result<&[Value], MailError> {
+        match page.get("messages") {
+            Some(Value::Array(messages)) => Ok(messages),
+            // Gmail omits messages for an empty result set. A continued page
+            // or an explicit non-array is not evidence of an empty mailbox.
+            None if page.get("nextPageToken").is_none_or(Value::is_null)
+                && page
+                    .get("resultSizeEstimate")
+                    .is_none_or(|value| value.as_u64() == Some(0)) =>
+            {
+                Ok(&[])
+            }
+            _ => Err(MailError::ParseError("invalid Gmail messages page".into())),
+        }
+    }
+
     /// Search: list matching message ids (cheap), then fetch them
     /// concurrently. `query` is Gmail search syntax (`from:`, `after:`, …).
     pub async fn search(&self, query: &str, max_results: u32) -> Result<Vec<Email>, MailError> {
         let page_size = max_results.clamp(1, 100);
         let mut message_ids: Vec<String> = Vec::new();
         let mut page_token: Option<String> = None;
+        let mut tokens = std::collections::BTreeSet::new();
 
         loop {
             let mut list_url = format!(
@@ -117,11 +149,12 @@ impl GmailProvider {
                 urlencode(query)
             );
             if let Some(ref token) = page_token {
-                list_url.push_str(&format!("&pageToken={token}"));
+                list_url.push_str(&format!("&pageToken={}", urlencode(token)));
             }
 
             let list_json = self.get_json(&list_url).await?;
-            if let Some(refs) = list_json["messages"].as_array() {
+            {
+                let refs = Self::list_messages(&list_json)?;
                 for msg_ref in refs {
                     if message_ids.len() >= max_results as usize {
                         break;
@@ -133,9 +166,9 @@ impl GmailProvider {
                     }
                 }
             }
-            match list_json["nextPageToken"].as_str() {
+            match Self::next_list_token(&list_json, &mut tokens)? {
                 Some(token) if message_ids.len() < max_results as usize => {
-                    page_token = Some(token.to_string());
+                    page_token = Some(token);
                 }
                 _ => break,
             }
@@ -161,7 +194,8 @@ impl GmailProvider {
                 url.push_str(&format!("&pageToken={}", urlencode(token)));
             }
             let page = self.get_json(&url).await?;
-            if let Some(messages) = page["messages"].as_array() {
+            {
+                let messages = Self::list_messages(&page)?;
                 for message in messages.iter().take((max_results - seen) as usize) {
                     seen += 1;
                     if let Some(id) = message["threadId"].as_str().filter(|id| !id.is_empty()) {
@@ -169,11 +203,9 @@ impl GmailProvider {
                     }
                 }
             }
-            match page["nextPageToken"].as_str() {
-                Some(token) if tokens.insert(token.to_owned()) => {
-                    page_token = Some(token.to_owned())
-                }
-                _ => break,
+            match Self::next_list_token(&page, &mut tokens)? {
+                Some(token) => page_token = Some(token),
+                None => break,
             }
         }
         Ok(ids)
@@ -945,6 +977,31 @@ pub(crate) fn urlencode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn rule_listing_rejects_invalid_or_repeated_page_tokens() {
+        for pages in [
+            vec![serde_json::json!({"messages":[], "nextPageToken":false})],
+            vec![serde_json::json!({"messages":[], "nextPageToken":""})],
+            vec![serde_json::json!({"messages":{}, "nextPageToken":null})],
+            vec![serde_json::json!({"resultSizeEstimate":5})],
+            vec![
+                serde_json::json!({"messages":[], "nextPageToken":"again"}),
+                serde_json::json!({"messages":[], "nextPageToken":"again"}),
+            ],
+        ] {
+            let mut provider = GmailProvider::new("fixture-token".into());
+            let count = pages.len();
+            provider.scripted_reads =
+                Some(std::sync::Arc::new(std::sync::Mutex::new(pages.into())));
+            let result = provider.rule_thread_ids(500).await;
+            assert!(
+                matches!(result, Err(MailError::ParseError(_))),
+                "incomplete enumeration became success: {result:?}"
+            );
+            assert_eq!(provider.read_urls.lock().unwrap().len(), count);
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

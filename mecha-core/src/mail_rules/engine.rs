@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
@@ -382,21 +382,47 @@ pub fn brake_evidence(rule: &str, rows: &[LedgerRow]) -> BrakeEvidence {
     evidence
 }
 
+struct CachedModes {
+    approvals: Vec<ApprovalRow>,
+    gate: GateStatus,
+    modes: BTreeMap<ActionGroup, ResolvedMode>,
+}
+
 struct Run<'a> {
     store: &'a RuleStore,
     mailbox: &'a dyn Mailbox,
     sink: Option<&'a dyn TaskSink>,
     options: &'a EngineOptions,
     rows: Vec<LedgerRow>,
+    row_ids: HashSet<String>,
+    report_row_ids: HashSet<String>,
+    ledger_cursor: store::LedgerCursor,
+    mode_cache: BTreeMap<String, CachedModes>,
+    checked_inputs: BTreeMap<String, ApprovalDigest>,
     report: ApplyReport,
 }
 impl Run<'_> {
+    fn remember_row(&mut self, row: LedgerRow) {
+        if self.row_ids.insert(row.id.clone()) {
+            self.mode_cache.remove(&row.rule);
+            self.rows.push(row);
+        }
+    }
+
+    fn report_row(&mut self, row: LedgerRow) {
+        if self.report_row_ids.insert(row.id.clone()) {
+            self.report.rows.push(row);
+        }
+    }
+
     fn write(&mut self, row: LedgerRow) -> Result<()> {
         if !self.options.dry_run {
             self.store.append_ledger(&row)?;
+            self.sync_ledger()?;
+        } else {
+            self.remember_row(row.clone());
         }
-        self.rows.push(row.clone());
-        self.report.rows.push(row);
+        self.report_row(row);
         Ok(())
     }
     fn hold_unread_thread(
@@ -415,17 +441,67 @@ impl Run<'_> {
             row.closes = false;
             row.reason = reason.into();
             row.failure_kind = failure_kind;
-            self.report.rows.push(row);
+            self.report_row(row);
         }
     }
-    fn modes(&mut self, rule: &LoadedRule) -> Result<BTreeMap<ActionGroup, ResolvedMode>> {
-        if !self.options.dry_run {
-            self.rows = self.store.ledger()?;
+    fn sync_ledger(&mut self) -> Result<()> {
+        // Concurrent owner corrections matter even while provider I/O awaits.
+        // Own writes also enter through this cursor, preserving append order.
+        for row in self.store.ledger_updates(&mut self.ledger_cursor)? {
+            self.remember_row(row);
         }
+        Ok(())
+    }
+
+    fn check_inputs(&mut self, rule: &LoadedRule) -> Result<bool> {
+        let loaded = self.store.get(&rule.name);
+        let changed = loaded
+            .as_ref()
+            .map_or(true, |fresh| fresh.approval_digest != rule.approval_digest);
+        let unseen = loaded.as_ref().map_or(true, |fresh| {
+            self.checked_inputs.get(&rule.name) != Some(&fresh.approval_digest)
+        });
+        if unseen {
+            // Keep the edit/revert protection fresh. Only actual input changes
+            // need another lapse transaction, never every ordinary dispatch.
+            if !self.options.dry_run {
+                let lapses = self.store.detect_lapses(
+                    &rule.name,
+                    &P1Holds {
+                        origin_gate: self.mailbox.origin_gate(rule),
+                    },
+                    self.options.clock.now(),
+                )?;
+                if !lapses.is_empty() {
+                    self.report
+                        .notices
+                        .push(format!("{}: approval lapsed: files changed", rule.name));
+                }
+            }
+            if let Ok(fresh) = loaded {
+                self.checked_inputs
+                    .insert(rule.name.clone(), fresh.approval_digest);
+            }
+            self.mode_cache.remove(&rule.name);
+        }
+        Ok(changed)
+    }
+
+    fn refresh_mode_cache(&mut self, rule: &LoadedRule) -> Result<()> {
+        self.sync_ledger()?;
         let holds = P1Holds {
             origin_gate: self.mailbox.origin_gate(rule),
         };
-        let approvals = self.store.approvals()?;
+        // Always fresh: an owner may pause/reactivate or acknowledge a brake
+        // during the preceding provider call. This read takes no writer lock.
+        let mut approvals = self.store.approvals()?;
+        if self
+            .mode_cache
+            .get(&rule.name)
+            .is_some_and(|cached| cached.approvals == approvals && cached.gate == holds.origin_gate)
+        {
+            return Ok(());
+        }
         let mut targets = brake_targets(
             rule.definition.groups(),
             &brake_evidence(&rule.name, &self.rows),
@@ -452,15 +528,12 @@ impl Run<'_> {
                     && acknowledged.is_none_or(|at| r.at.is_none_or(|event| event > at))
             })
         });
-        if !self.options.dry_run {
-            let lapses = self
-                .store
-                .detect_lapses(&rule.name, &holds, self.options.clock.now())?;
-            if !lapses.is_empty() {
-                self.report
-                    .notices
-                    .push(format!("{}: approval lapsed: files changed", rule.name));
-            }
+        if !self.options.dry_run
+            && targets.iter().any(|(group, target)| {
+                let mode = resolve_mode(rule, *group, &approvals, &holds);
+                mode.recorded.rank() > mode.effective.lower(*target).rank()
+            })
+        {
             if self
                 .store
                 .lower_modes(&rule.name, &targets, None, &holds, ApprovalReason::Brake)?
@@ -471,9 +544,10 @@ impl Run<'_> {
                     .notices
                     .push(format!("{}: automatic brake", rule.name));
             }
+            approvals = self.store.approvals()?;
+            self.sync_ledger()?;
         }
-        let approvals = self.store.approvals()?;
-        Ok(rule
+        let modes = rule
             .definition
             .groups()
             .into_iter()
@@ -484,7 +558,21 @@ impl Run<'_> {
                 }
                 (g, mode)
             })
-            .collect())
+            .collect();
+        self.mode_cache.insert(
+            rule.name.clone(),
+            CachedModes {
+                approvals,
+                gate: holds.origin_gate,
+                modes,
+            },
+        );
+        Ok(())
+    }
+
+    fn modes(&mut self, rule: &LoadedRule) -> Result<BTreeMap<ActionGroup, ResolvedMode>> {
+        self.refresh_mode_cache(rule)?;
+        Ok(self.mode_cache[&rule.name].modes.clone())
     }
     fn cap(
         &self,
@@ -584,6 +672,7 @@ impl Run<'_> {
     async fn apply_thread(&mut self, rules: &[LoadedRule], c: &Candidate) -> Result<()> {
         let mut modes = BTreeMap::new();
         for rule in rules {
+            self.check_inputs(rule)?;
             modes.insert(rule.name.clone(), self.modes(rule)?);
         }
         let held = list_cap(rules, &modes);
@@ -715,7 +804,7 @@ impl Run<'_> {
                         "matching or deferral facts unknown"
                     }
                     .into();
-                    self.report.rows.push(row);
+                    self.report_row(row);
                     rule_handled = false;
                     continue;
                 }
@@ -762,7 +851,7 @@ impl Run<'_> {
                     row.closes = false;
                     row.reason = "task sink unavailable".into();
                     row.failure_kind = FailureKind::Environment;
-                    self.report.rows.push(row);
+                    self.report_row(row);
                     rule_handled = false;
                     continue;
                 }
@@ -798,6 +887,9 @@ impl Run<'_> {
                 } else {
                     self.store.claim_actions(&pending)?
                 };
+                if !self.options.dry_run {
+                    self.sync_ledger()?;
+                }
                 let mut provisional: BTreeSet<_> = pending.iter().map(|r| r.id.clone()).collect();
                 for ((row, claim), (index, reserved_cap)) in
                     pending.into_iter().zip(claims).zip(planned)
@@ -831,16 +923,13 @@ impl Run<'_> {
                         self.write(skipped)?;
                         continue;
                     }
-                    self.rows.push(row.clone());
+                    self.remember_row(row.clone());
                     let action = &rule.definition.actions[index];
                     // A preceding sibling can await I/O while the owner pauses
                     // and reactivates a group, or can trip its failure brake.
                     let resolved = self.modes(rule)?[&action.group()].clone();
                     let mode = resolved.effective;
-                    let inputs_changed = self
-                        .store
-                        .get(&rule.name)
-                        .map_or(true, |fresh| fresh.approval_digest != rule.approval_digest);
+                    let inputs_changed = self.check_inputs(rule)?;
                     // Recheck at dispatch: provider reads and earlier actions
                     // can cross the local day boundary after reservation.
                     let attempted_at = self.options.clock.now();
@@ -963,23 +1052,33 @@ impl Run<'_> {
                     provisional.remove(&row.id);
                     settled.mode = mode;
                     settled.failure_kind = failure;
+                    let evidence_before_write = self.rows.len();
                     if not_dispatched {
                         // A persisted Held closes by outcome even with closes=false.
                         // Settle the unused claim as Skipped and report the hold
                         // separately, so caps and deferred occasions remain open.
                         if !self.options.dry_run {
                             self.store.append_ledger(&settled)?;
+                            self.sync_ledger()?;
+                        } else {
+                            self.remember_row(settled.clone());
                         }
-                        self.rows.push(settled.clone());
                         settled.id = uuid::Uuid::new_v4().to_string();
                         settled.settlement = None;
                         settled.outcome = Outcome::Held;
-                        self.report.rows.push(settled);
+                        self.report_row(settled);
                     } else {
                         self.write(settled)?;
                     }
+                    if self.rows[evidence_before_write..].iter().any(|r| {
+                        r.rule == rule.name
+                            && (r.is_action_failure()
+                                || r.wrong_match
+                                || r.outcome == Outcome::Undone)
+                    }) {
+                        self.refresh_mode_cache(rule)?;
+                    }
                 }
-                self.modes(rule)?;
             }
             handled |= rule_handled;
         }
@@ -1086,12 +1185,21 @@ pub async fn apply(
         }
     }
     let rules = store.list()?;
+    let (rows, ledger_cursor) = store.ledger_snapshot()?;
     let mut run = Run {
         store,
         mailbox,
         sink,
         options,
-        rows: store.ledger()?,
+        row_ids: rows.iter().map(|row| row.id.clone()).collect(),
+        rows,
+        report_row_ids: HashSet::new(),
+        ledger_cursor,
+        mode_cache: BTreeMap::new(),
+        checked_inputs: rules
+            .iter()
+            .map(|rule| (rule.name.clone(), rule.approval_digest.clone()))
+            .collect(),
         report: ApplyReport::default(),
     };
     for row in run.rows.clone() {
@@ -1110,7 +1218,7 @@ pub async fn apply(
                 .notices
                 .push(format!("{}: deferred work expired", expired.thread_id));
         }
-        run.rows = store.ledger()?;
+        run.sync_ledger()?;
     }
     // Also resolve brakes and capacity when no mail is returned.
     let mut modes = BTreeMap::new();
@@ -1221,12 +1329,11 @@ pub async fn apply(
                 }
                 if !options.dry_run && !outcomes.is_empty() {
                     store.settle_deferred(&entry.id, &outcomes)?;
+                    run.sync_ledger()?;
                 }
                 for row in outcomes {
-                    if !run.rows.iter().any(|r| r.id == row.id) {
-                        run.report.rows.push(row.clone());
-                        run.rows.push(row);
-                    }
+                    run.report_row(row.clone());
+                    run.remember_row(row);
                 }
             }
         }

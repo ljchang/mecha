@@ -225,9 +225,13 @@ impl OutlookProvider {
             max_results.clamp(1, 100)
         );
         let mut pages = std::collections::BTreeSet::new();
-        while seen < max_results && pages.insert(url.clone()) {
+        while seen < max_results {
+            validate_page_url(&url, &mut pages)?;
             let page = self.get_json(&url).await?;
-            if let Some(messages) = page["value"].as_array() {
+            let messages = page["value"].as_array().ok_or_else(|| {
+                MailError::ParseError("Graph message page has no value array".into())
+            })?;
+            {
                 for message in messages.iter().take((max_results - seen) as usize) {
                     seen += 1;
                     let arrival = message["receivedDateTime"]
@@ -243,8 +247,8 @@ impl OutlookProvider {
                     }
                 }
             }
-            match page["@odata.nextLink"].as_str() {
-                Some(next) => url = next.to_owned(),
+            match next_page(&page)? {
+                Some(next) => url = next,
                 None => break,
             }
         }
@@ -789,6 +793,8 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Value, MailError>>,
 {
+    let cutoff = chrono::DateTime::parse_from_rfc3339(since)
+        .map_err(|_| MailError::InvalidInput("invalid corpus cutoff timestamp".into()))?;
     const CORPUS_SELECT: &str = "id,conversationId,subject,bodyPreview,from,toRecipients,\
 ccRecipients,receivedDateTime,isRead,isDraft,parentFolderId,hasAttachments,internetMessageHeaders";
     let mut url = format!(
@@ -809,7 +815,7 @@ ccRecipients,receivedDateTime,isRead,isDraft,parentFolderId,hasAttachments,inter
         // the walk — everything after it is older still.
         let keep: Vec<Email> = page
             .iter()
-            .take_while(|e| e.date_received.as_str() >= since)
+            .take_while(|e| e.received_instant().is_some_and(|at| at >= cutoff))
             .cloned()
             .collect();
         let reached_cutoff = keep.len() < page.len();
@@ -1018,6 +1024,91 @@ pub(crate) fn urlencode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn rule_listing_refuses_unsafe_links_before_authenticated_fetch() {
+        let bad = "https://example.com/steal-token";
+        let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: [
+                Ok(json!({"value":[], "@odata.nextLink":bad})),
+                Ok(json!({"value":[]})),
+            ]
+            .into(),
+        })));
+        let result = provider
+            .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+            .await;
+        let script = provider.scripted_reads.as_ref().unwrap().lock().unwrap();
+        assert!(
+            !script.urls.iter().any(|url| url == bad),
+            "credential-bearing fetch reached untrusted origin"
+        );
+        assert_eq!(script.urls.len(), 1);
+        assert!(matches!(result, Err(MailError::ParseError(_))));
+    }
+
+    #[tokio::test]
+    async fn rule_listing_rejects_malformed_pages_and_repeated_links() {
+        let initial = format!("{GRAPH}/me/mailFolders/inbox/messages?$top=100&$select=id,conversationId,receivedDateTime&$orderby=receivedDateTime%20desc");
+        for page in [
+            json!({}),
+            json!({"value":null}),
+            json!({"value":[], "@odata.nextLink":false}),
+            json!({"value":[], "@odata.nextLink":initial}),
+        ] {
+            let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
+            provider.scripted_reads =
+                Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+                    urls: Vec::new(),
+                    pages: [Ok(page.clone())].into(),
+                })));
+            let result = provider
+                .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+                .await;
+            assert!(
+                matches!(result, Err(MailError::ParseError(_))),
+                "incomplete enumeration became success: {page}: {result:?}"
+            );
+            assert_eq!(
+                provider
+                    .scripted_reads
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .urls
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn corpus_cutoff_compares_fractional_and_offset_instants() {
+        for since in ["2026-11-01T12:00:00Z", "2026-11-01T13:00:00+01:00"] {
+            let mut kept = Vec::new();
+            let total = corpus_since(
+                since,
+                |batch| {
+                    kept.extend(batch.iter().map(|e| e.provider_id.clone()));
+                    Ok(())
+                },
+                |_| async {
+                    Ok(json!({"value":[
+                        {"id":"fractional", "receivedDateTime":"2026-11-01T12:00:00.123Z"},
+                        {"id":"boundary", "receivedDateTime":"2026-11-01T12:00:00Z"},
+                        {"id":"old", "receivedDateTime":"2026-11-01T11:59:59Z"}
+                    ]}))
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(total, 2);
+            assert_eq!(kept, ["fractional", "boundary"]);
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

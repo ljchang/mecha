@@ -2,14 +2,29 @@ use super::*;
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::{
+    fs::{MetadataExt, OpenOptionsExt},
+    io::AsRawFd,
+};
 use std::path::{Path, PathBuf};
 
 pub struct RuleStore {
     root: PathBuf,
+    #[cfg(test)]
+    pub(super) mode_transactions: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(super) ledger_rows_parsed: std::sync::atomic::AtomicUsize,
+}
+
+/// A pass-local cursor over the append-only ledger. Never a persisted cache.
+#[derive(Default)]
+pub(super) struct LedgerCursor {
+    identity: Option<(u64, u64)>,
+    offset: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,14 +89,26 @@ impl RuleStore {
         }
         crate::create_private_dir(&rules)?;
         contained(&root, &rules)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            #[cfg(test)]
+            mode_transactions: Default::default(),
+            #[cfg(test)]
+            ledger_rows_parsed: Default::default(),
+        })
     }
 
     /// Read an existing store without creating directories or changing modes.
     pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into().canonicalize()?;
         contained(&root, &root.join("rules"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            #[cfg(test)]
+            mode_transactions: Default::default(),
+            #[cfg(test)]
+            ledger_rows_parsed: Default::default(),
+        })
     }
 
     /// Separate from the short writer lock: serialize engine effects and cap
@@ -361,11 +388,92 @@ impl RuleStore {
     }
     pub fn ledger(&self) -> Result<Vec<LedgerRow>> {
         let rows: Vec<LedgerRow> = self.read_rows("ledger.jsonl")?;
+        #[cfg(test)]
+        self.ledger_rows_parsed
+            .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
         for row in &rows {
             row.validate_key()?;
         }
         Ok(rows)
     }
+    /// Capture history and its exact byte boundary from the same descriptor.
+    /// An append after that boundary belongs to the next incremental read.
+    pub(super) fn ledger_snapshot(&self) -> Result<(Vec<LedgerRow>, LedgerCursor)> {
+        let mut cursor = LedgerCursor::default();
+        // Initial history must be readable in full, including a legacy final
+        // object without a newline. Only incremental reads can await a writer's
+        // unfinished append; never silently discard corrupt initial history.
+        let rows = self.read_ledger(&mut cursor, false)?;
+        Ok((rows, cursor))
+    }
+
+    /// Read newly appended evidence without reparsing the whole history at
+    /// every dispatch. Replacement/truncation/editing is not an append and
+    /// refuses this pass rather than dropping previously seen closure evidence.
+    pub(super) fn ledger_updates(&self, cursor: &mut LedgerCursor) -> Result<Vec<LedgerRow>> {
+        self.read_ledger(cursor, true)
+    }
+
+    fn read_ledger(
+        &self,
+        cursor: &mut LedgerCursor,
+        complete_lines_only: bool,
+    ) -> Result<Vec<LedgerRow>> {
+        let mut file = match File::open(self.path("ledger.jsonl")?) {
+            Ok(file) => file,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && cursor.identity.is_none() =>
+            {
+                return Ok(Vec::new())
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        let identity = (metadata.dev(), metadata.ino());
+        let modified = metadata.modified()?;
+        ensure!(
+            cursor.identity.is_none_or(|old| old == identity) && metadata.len() >= cursor.offset,
+            "ledger replaced or truncated during apply"
+        );
+        if cursor.identity.is_some() && metadata.len() == cursor.offset {
+            ensure!(
+                cursor.modified == Some(modified),
+                "ledger edited during apply"
+            );
+            return Ok(Vec::new());
+        }
+        file.seek(SeekFrom::Start(cursor.offset))?;
+        let mut bytes = Vec::new();
+        file.take(metadata.len() - cursor.offset)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 == metadata.len() - cursor.offset,
+            "ledger truncated during read"
+        );
+        if complete_lines_only {
+            // append() writes without holding this reader's lock. A trailing
+            // fragment is not committed evidence yet: retry it from the same
+            // offset next time, even if it is already syntactically valid JSON.
+            let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            bytes.truncate(complete);
+        }
+        let rows: Vec<LedgerRow> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+            .map(|line| serde_json::from_slice(line).context("unreadable ledger.jsonl row"))
+            .collect::<Result<_>>()?;
+        for row in &rows {
+            row.validate_key()?;
+        }
+        #[cfg(test)]
+        self.ledger_rows_parsed
+            .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
+        cursor.identity = Some(identity);
+        cursor.offset += bytes.len() as u64;
+        cursor.modified = Some(modified);
+        Ok(rows)
+    }
+
     pub fn deferred(&self) -> Result<Vec<DeferredEntry>> {
         let entries: Vec<DeferredEntry> = self.read_rows("deferred.jsonl")?;
         for entry in &entries {
@@ -425,8 +533,9 @@ impl RuleStore {
         crate::persona::validate_name(&row.rule)?;
         ensure!(!row.id.trim().is_empty(), "approval row needs an id");
         let rows = self.approvals()?;
+        let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
         ensure!(
-            !rows.iter().any(|old| old.id == row.id),
+            !row_ids.contains(row.id.as_str()),
             "duplicate approval row id"
         );
         let preceding = approvals::approval_state(&row.rule, row.group, &rows);
@@ -622,6 +731,9 @@ impl RuleStore {
         holds: &dyn HoldProvider,
         now: DateTime<Utc>,
     ) -> Result<Vec<ActionGroup>> {
+        #[cfg(test)]
+        self.mode_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::persona::validate_name(name)?;
         let _lock = self.lock()?;
         let mut rows = self.approvals()?;
@@ -710,6 +822,9 @@ impl RuleStore {
         holds: &dyn HoldProvider,
         reason: ApprovalReason,
     ) -> Result<Vec<ModeDecision>> {
+        #[cfg(test)]
+        self.mode_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::persona::validate_name(name)?;
         let _lock = self.lock()?;
         let mut rows = self.approvals()?;
@@ -789,9 +904,10 @@ impl RuleStore {
         }
         let _lock = self.lock()?;
         let rows = self.ledger()?;
+        let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
         for row in pending {
             ensure!(
-                !rows.iter().any(|old| old.id == row.id),
+                !row_ids.contains(row.id.as_str()),
                 "duplicate ledger row id"
             );
         }
@@ -839,8 +955,9 @@ impl RuleStore {
     fn append_ledger_locked(&self, row: &LedgerRow) -> Result<()> {
         row.validate_key()?;
         let rows = self.ledger()?;
+        let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
         ensure!(
-            !rows.iter().any(|r| r.id == row.id),
+            !row_ids.contains(row.id.as_str()),
             "duplicate ledger row id"
         );
         if let Some(id) = &row.settlement {
