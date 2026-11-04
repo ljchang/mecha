@@ -51,6 +51,18 @@ pub struct Task {
     pub due: Option<NaiveDate>,
 }
 
+/// An observation hold has no authorized message and must consume no occasion.
+#[derive(Debug, Clone)]
+pub enum ThreadRead {
+    Ready(Box<Candidate>),
+    Held { reason: String },
+}
+impl From<Candidate> for ThreadRead {
+    fn from(candidate: Candidate) -> Self {
+        Self::Ready(Box::new(candidate))
+    }
+}
+
 /// An acknowledgement is distinct from partial completion or an unknown fate.
 #[derive(Debug, Clone)]
 pub enum ActionResult {
@@ -68,7 +80,7 @@ pub enum ActionResult {
 #[async_trait]
 pub trait Mailbox: Send + Sync {
     async fn candidates(&self, account: &str, pass: Pass) -> Result<Vec<String>>;
-    async fn read_thread(&self, account: &str, thread: &str) -> Result<Candidate>;
+    async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead>;
     /// Mutate only `candidate.message.provider_message_id`. Thread-only hosts
     /// must hold unless every affected message independently passed all guards.
     async fn mailbox_action(&self, candidate: &Candidate, action: ActionVerb) -> ActionResult;
@@ -1101,7 +1113,28 @@ pub async fn apply(
                     e.account == *account && e.thread_id == id && !e.expired(options.clock.now())
                 })
                 .collect();
-            let read = mailbox.read_thread(account, &id).await.and_then(|c| {
+            let read = match mailbox.read_thread(account, &id).await {
+                Ok(ThreadRead::Ready(c)) => Ok(*c),
+                Ok(ThreadRead::Held { reason }) => {
+                    run.report
+                        .notices
+                        .push(format!("{account}/{id}: held: {reason}"));
+                    // No message was authorized. Keep every deferred occasion
+                    // and cap slot open; the report is an observation only.
+                    for snapshot in entries.iter().flat_map(|entry| &entry.actions) {
+                        let mut row = snapshot.clone();
+                        row.id = uuid::Uuid::new_v4().to_string();
+                        row.at = Some(options.clock.now());
+                        row.outcome = Outcome::Held;
+                        row.closes = false;
+                        row.reason = reason.clone();
+                        run.report.rows.push(row);
+                    }
+                    continue;
+                }
+                Err(error) => Err(error),
+            }
+            .and_then(|c| {
                 ensure!(
                     c.message.account == *account
                         && c.message.thread_id == id

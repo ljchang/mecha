@@ -659,13 +659,14 @@ impl Mailbox for FixtureMailbox {
     async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
         Ok(self.0.iter().map(|c| c.message.thread_id.clone()).collect())
     }
-    async fn read_thread(&self, _: &str, thread: &str) -> Result<Candidate> {
+    async fn read_thread(&self, _: &str, thread: &str) -> Result<ThreadRead> {
         Ok(self
             .0
             .iter()
             .find(|c| c.message.thread_id == thread)
             .unwrap()
-            .clone())
+            .clone()
+            .into())
     }
     async fn mailbox_action(&self, _: &Candidate, _: ActionVerb) -> ActionResult {
         panic!("fixture must never mutate mail")
@@ -1299,4 +1300,165 @@ fn display_recipient_fallback_cannot_supply_rule_matching_facts() {
         ),
         engine::HeaderMatch::Unknown
     );
+}
+
+#[tokio::test]
+async fn disabled_graph_is_not_configured_for_live_or_dry_runs() {
+    let mut config = mecha_core::config::Config::default();
+    config.mcp.push(mecha_core::config::McpServerConfig {
+        name: "graph".into(),
+        disabled: true,
+        command: "must-not-run-disabled-graph".into(),
+        ..Default::default()
+    });
+    assert!(
+        graph_entry(&config).is_none(),
+        "dry run must not offer a planned sink"
+    );
+    let error = GraphSink::connect(&config)
+        .await
+        .err()
+        .expect("disabled graph cannot connect");
+    assert_eq!(error.to_string(), "graph MCP is not configured");
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let rule = store.install("task", "description = 'Review notice'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'task'", &Default::default()).unwrap();
+    store
+        .change_mode(
+            &rule.name,
+            mecha_core::mail_rules::ActionGroup::Board,
+            mecha_core::mail_rules::Mode::Auto,
+            Some(mecha_core::closure::Actor::Owner),
+            &rule.approval_digest,
+            &mecha_core::mail_rules::P1Holds {
+                origin_gate: GateStatus::Passing,
+            },
+        )
+        .unwrap();
+    let now = Utc::now() + chrono::Duration::hours(1);
+    let mut c = candidate(
+        "campus",
+        "thread",
+        &[email("message", "sender@example.com", &now.to_rfc3339())],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    c.classified = Some(Classified {
+        at: now,
+        deadline: None,
+    });
+    let mail = FixtureMailbox(vec![c]);
+    let planned = PlannedSink;
+    for disabled in [true, false] {
+        config.mcp[0].disabled = disabled;
+        let sink = graph_entry(&config).map(|_| &planned as &dyn TaskSink);
+        let report = engine::apply(
+            &store,
+            &mail,
+            sink,
+            &["campus".into()],
+            &engine::EngineOptions {
+                pass: Pass::AfterClassify,
+                dry_run: true,
+                clock: Arc::new(mecha_core::clock::FixedClock(now)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(
+            report.rows[0].outcome,
+            if disabled {
+                mecha_core::mail_rules::Outcome::Held
+            } else {
+                mecha_core::mail_rules::Outcome::Done
+            }
+        );
+        assert_eq!(
+            report.rows[0].reason,
+            if disabled {
+                "task sink unavailable"
+            } else {
+                "dry run: planned"
+            }
+        );
+        assert!(store.ledger().unwrap().is_empty());
+        assert!(store.deferred().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn every_configured_account_address_is_required_for_owner_direction() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    for missing in [None, Some(String::new()), Some("  ".into())] {
+        assert!(
+            owner_addresses(
+                &[Some("primary@example.edu".into()), missing],
+                Some("primary@example.edu"),
+                &store
+            )
+            .is_err(),
+            "a configured account cannot disappear from owner evidence"
+        );
+    }
+}
+
+#[tokio::test]
+async fn disabled_graph_live_connection_is_refused_before_startup() {
+    let mut config = mecha_core::config::Config::default();
+    config.mcp.push(mecha_core::config::McpServerConfig {
+        name: "graph".into(),
+        disabled: true,
+        command: "must-not-run-disabled-graph".into(),
+        ..Default::default()
+    });
+    let error = GraphSink::connect(&config)
+        .await
+        .err()
+        .expect("disabled graph cannot connect");
+    assert_eq!(error.to_string(), "graph MCP is not configured");
+}
+
+#[test]
+fn missing_second_account_address_holds_instead_of_selecting_its_outlook_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let incoming = crate::microsoft::graph_mail::parse_outlook_message(&json!({
+        "id":"inbound", "isDraft":false, "receivedDateTime":"2026-11-03T10:00:00Z",
+        "from":{"emailAddress":{"address":"sender@example.com"}}
+    }));
+    let reply = crate::microsoft::graph_mail::parse_outlook_message(&json!({
+        "id":"owner-reply", "isDraft":false, "receivedDateTime":"2026-11-03T12:00:00Z",
+        "from":{"emailAddress":{"address":"secondary@example.edu"}}
+    }));
+    let emails = [incoming, reply];
+    for second in [None, Some(String::new()), Some(" ".into())] {
+        let owners = owner_addresses(
+            &[Some("primary@example.edu".into()), second],
+            Some("primary@example.edu"),
+            &store,
+        );
+        let read = candidate_with_owners("campus", "thread", &emails, owners, None).unwrap();
+        assert!(
+            matches!(read, ThreadRead::Held { .. }),
+            "unknown ownership authorized {read:?}"
+        );
+    }
+    let owners = owner_addresses(
+        &[
+            Some("primary@example.edu".into()),
+            Some("secondary@example.edu".into()),
+        ],
+        Some("primary@example.edu"),
+        &store,
+    );
+    let ThreadRead::Ready(c) =
+        candidate_with_owners("campus", "thread", &emails, owners, None).unwrap()
+    else {
+        panic!("repaired owner set must allow a read")
+    };
+    assert_eq!(c.message.provider_message_id, "inbound");
 }

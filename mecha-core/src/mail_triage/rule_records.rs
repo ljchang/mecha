@@ -73,11 +73,19 @@ pub fn update(
     Ok(())
 }
 
+/// These fields are read-side projections, never part of the base verdict.
+pub(super) fn clear_overlay(record: &mut super::Record) {
+    for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+        record.rest.remove(key);
+    }
+}
+
 pub(super) fn overlay(root: &Path, record: &mut super::Record) {
     overlay_with_warning(root, record, |warning| eprintln!("{warning}"));
 }
 
 fn overlay_with_warning(root: &Path, record: &mut super::Record, warn: impl FnOnce(String)) {
+    clear_overlay(record);
     if let Err(error) = apply_overlay(root, record) {
         let path = root
             .join("rule-records")

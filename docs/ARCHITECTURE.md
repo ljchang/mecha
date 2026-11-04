@@ -4589,6 +4589,8 @@ Inbound selection uses provider direction evidence and all configured account
 addresses plus the rule store's aliases. SENT/DRAFT labels and Graph draft/sent
 facts cannot be overridden by a different sender address; missing direction
 holds instead of promoting an alias reply to the newest inbound message.
+Every configured account must have an address before the owner set is used;
+unknown ownership holds the read and leaves deferred Board occasions open.
 Every dispatch rechecks the fresh mode's activation against provider arrival;
 an owner can pause and reactivate while an earlier sibling awaits I/O.
 
@@ -4630,11 +4632,14 @@ action key and leave deferred snapshots queued. Sender Date never establishes
 activation eligibility. Timer-only handling writes a marker for
 the provider message, never a fabricated classification. Rule annotations live
 beside triage and overlay its read: rewriting a classifier verdict must not
-erase a rule's tag or digest flag.
+erase a rule's tag or digest flag. The derived overlay keys are stripped before
+reading a sidecar and before writing a base verdict, so a broken sidecar cannot
+resurrect annotations cached by an older writer.
 
 **Automatic task names contain no mail prose.** The owner's rule description
 plus a validated address, arrival date and typed deadline supply the name;
-context is a thread pointer. Missing graph configuration or a failed connection
+context is a thread pointer. Disabled graph entries count as unconfigured in
+both live and dry runs. Missing graph configuration or a failed connection
 holds tasks without consuming action keys, once-per-thread occasions or cap
 capacity; the next pass retries once the sink is available. Cap holds still
 close their occasions, and an uncertain dispatched task remains closed.

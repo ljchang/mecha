@@ -67,6 +67,7 @@ struct Fake {
     calls: Mutex<Vec<String>>,
     results: Mutex<Vec<ActionResult>>,
     unreadable: bool,
+    hold_read: bool,
     in_window: bool,
     gate: GateStatus,
     on_effect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -103,6 +104,7 @@ impl Fake {
             calls: Mutex::new(Vec::new()),
             results: Mutex::new(Vec::new()),
             unreadable: false,
+            hold_read: false,
             in_window: true,
             gate: GateStatus::Passing,
             on_effect: Mutex::new(None),
@@ -140,7 +142,12 @@ impl Mailbox for Fake {
             .map(|c| c.message.thread_id.clone())
             .collect())
     }
-    async fn read_thread(&self, _: &str, id: &str) -> Result<Candidate> {
+    async fn read_thread(&self, _: &str, id: &str) -> Result<ThreadRead> {
+        if self.hold_read {
+            return Ok(ThreadRead::Held {
+                reason: "owner addresses unknown".into(),
+            });
+        }
         ensure!(!self.unreadable, "unreadable");
         self.candidates
             .lock()
@@ -148,6 +155,7 @@ impl Mailbox for Fake {
             .iter()
             .find(|c| c.message.thread_id == id)
             .cloned()
+            .map(ThreadRead::from)
             .ok_or_else(|| anyhow::anyhow!("missing thread"))
     }
     async fn mailbox_action(&self, _: &Candidate, action: ActionVerb) -> ActionResult {
@@ -1403,4 +1411,32 @@ async fn dry_run_expiry_closes_the_planned_occasion_without_writing() {
         queue
     );
     assert_eq!(f.store.ledger().unwrap().len(), rows.len());
+}
+
+#[tokio::test]
+async fn unknown_owner_read_holds_without_closing_deferred_board_occasions() {
+    let mut f = Fixture::new();
+    let rule = f.rule("task", TASK);
+    f.mode(&rule, ActionGroup::Board, Mode::Auto);
+    f.run(None).await;
+    assert_eq!(f.store.deferred().unwrap().len(), 1);
+    let before = f.store.ledger().unwrap().len();
+    f.options.pass = Pass::AfterClassify;
+    f.mail.hold_read = true;
+    let sink = Sink::default();
+    let report = f.run(Some(&sink)).await;
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(report.rows[0].outcome, Outcome::Held);
+    assert!(!report.rows[0].closes);
+    assert_eq!(report.rows[0].reason, "owner addresses unknown");
+    assert!(!report
+        .notices
+        .iter()
+        .any(|n| n.contains("thread unreadable")));
+    assert_eq!(f.store.ledger().unwrap().len(), before);
+    assert_eq!(f.store.deferred().unwrap().len(), 1);
+    assert!(sink.0.lock().unwrap().is_empty());
+    f.mail.hold_read = false;
+    assert_eq!(f.run(Some(&sink)).await.rows[0].outcome, Outcome::Done);
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
 }

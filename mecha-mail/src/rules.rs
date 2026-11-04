@@ -12,7 +12,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use mecha_core::{
     mail_rules::{
-        engine::{self, ActionResult, Candidate, Classified, Mailbox, Pass, Task, TaskSink},
+        engine::{
+            self, ActionResult, Candidate, Classified, Mailbox, Pass, Task, TaskSink, ThreadRead,
+        },
         Action, ActionVerb, FailureKind, GateStatus, LoadedRule, RuleStore,
     },
     mail_triage::{self, rule_records},
@@ -101,6 +103,12 @@ fn owner_addresses(
         selected.is_some_and(|a| !a.trim().is_empty()),
         "account address unknown"
     );
+    ensure!(
+        accounts
+            .iter()
+            .all(|a| a.as_deref().is_some_and(|a| !a.trim().is_empty())),
+        "configured account address unknown"
+    );
     let mut owners = store.aliases()?.aliases;
     owners.extend(accounts.iter().flatten().cloned());
     Ok(owners
@@ -110,6 +118,21 @@ fn owner_addresses(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect())
+}
+
+fn candidate_with_owners(
+    account: &str,
+    thread: &str,
+    emails: &[Email],
+    owners: Result<Vec<String>>,
+    record: Option<&mail_triage::Record>,
+) -> Result<ThreadRead> {
+    let Ok(owners) = owners else {
+        return Ok(ThreadRead::Held {
+            reason: "owner addresses unknown".into(),
+        });
+    };
+    candidate(account, thread, emails, &owners, record).map(ThreadRead::from)
 }
 
 fn candidate(
@@ -338,8 +361,23 @@ impl Mailbox for RuleMailbox {
             .into_iter()
             .collect())
     }
-    async fn read_thread(&self, account: &str, thread: &str) -> Result<Candidate> {
+    async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead> {
         let a = self.account(account)?;
+        let owners = owner_addresses(
+            &self
+                .tools
+                .accounts()
+                .iter()
+                .map(|a| a.address.clone())
+                .collect::<Vec<_>>(),
+            a.address.as_deref(),
+            &RuleStore::open_existing(&self.rule_root)?,
+        );
+        if owners.is_err() {
+            // Ownership uncertainty is an observation, before credential or
+            // provider I/O and before reading any classifier record.
+            return candidate_with_owners(account, thread, &[], owners, None);
+        }
         let emails = self
             .with_token(a, |t| async move {
                 match a.provider {
@@ -353,20 +391,11 @@ impl Mailbox for RuleMailbox {
                 }
             })
             .await?;
-        candidate(
+        candidate_with_owners(
             account,
             thread,
             &emails,
-            &owner_addresses(
-                &self
-                    .tools
-                    .accounts()
-                    .iter()
-                    .map(|a| a.address.clone())
-                    .collect::<Vec<_>>(),
-                a.address.as_deref(),
-                &RuleStore::open_existing(&self.rule_root)?,
-            )?,
+            owners,
             self.record(account, thread)?.as_ref(),
         )
     }
@@ -442,6 +471,20 @@ impl Mailbox for RuleMailbox {
     }
 }
 
+struct PlannedSink;
+#[async_trait]
+impl TaskSink for PlannedSink {
+    async fn create(&self, _: &Task) -> ActionResult {
+        unreachable!("dry runs never create tasks")
+    }
+}
+
+fn graph_entry(
+    config: &mecha_core::config::Config,
+) -> Option<&mecha_core::config::McpServerConfig> {
+    config.mcp.iter().find(|m| m.name == "graph" && !m.disabled)
+}
+
 struct GraphSink {
     client: Arc<McpClient>,
     create: Arc<dyn Tool>,
@@ -449,11 +492,7 @@ struct GraphSink {
 }
 impl GraphSink {
     async fn connect(config: &mecha_core::config::Config) -> Result<Self> {
-        let entry = config
-            .mcp
-            .iter()
-            .find(|m| m.name == "graph")
-            .context("graph MCP is not configured")?;
+        let entry = graph_entry(config).context("graph MCP is not configured")?;
         let workspace = mecha_core::work::ensure("mail-rules")?;
         Self::connect_at(config, entry, workspace).await
     }
@@ -593,15 +632,8 @@ pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -
     } else {
         None
     };
-    struct PlannedSink;
-    #[async_trait]
-    impl TaskSink for PlannedSink {
-        async fn create(&self, _: &Task) -> ActionResult {
-            unreachable!("dry runs never create tasks")
-        }
-    }
     let planned = PlannedSink;
-    let sink: Option<&dyn TaskSink> = if dry_run && config.mcp.iter().any(|m| m.name == "graph") {
+    let sink: Option<&dyn TaskSink> = if dry_run && graph_entry(&config).is_some() {
         Some(&planned)
     } else {
         graph.as_ref().map(|g| g as &dyn TaskSink)
