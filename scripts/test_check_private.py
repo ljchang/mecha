@@ -961,9 +961,9 @@ class Guard(unittest.TestCase):
         self.assertEqual(self.run_guard("--staged").returncode, 0)
 
     def test_a_removed_personas_people_stay_refused(self):
-        gone = os.path.join(self.home, "personas", "removed", "ferrow-20991231-abcd")
+        gone = os.path.join(self.home, "personas", "removed", "ferrow-20991231T235959Z-0a1b2c3d")
         os.makedirs(gone)
-        open(os.path.join(gone, "persona.toml"), "w").write('name = "ferrow"\n')
+        open(os.path.join(gone, "persona.toml"), "w").write('display = "Ferrow"\n')
         db = sqlite3.connect(os.path.join(gone, "world.db"))
         db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
         db.execute("INSERT INTO people VALUES ('u1', 'Thessaly', '[]')")
@@ -971,6 +971,12 @@ class Guard(unittest.TestCase):
         db.close()
         self.stage("a.py", "X = 'Thessaly waved.'\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
+        git(self.repo, "rm", "-q", "--cached", "a.py")
+        # The removed persona's own name, from its folder's front.
+        self.stage("b.py", "X = load('ferrow')\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("the name of one of the owner's personas", r.stdout)
 
     def test_a_name_stored_with_odd_capitals_refuses_its_plain_capital(self):
         pdir = os.path.join(self.home, "personas", "quillon")
