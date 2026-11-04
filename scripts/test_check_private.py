@@ -982,6 +982,15 @@ class Guard(unittest.TestCase):
         self.stage("a.py", "X = 'Devantry waved.'\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_a_multi_part_character_id_is_excused_only_by_itself(self):
+        toml = os.path.join(self.home, "personas", "quillon", "persona.toml")
+        with open(toml, "w") as f:
+            f.write('name = "quillon"\ndisplay = "Quillon Marsh"\ncharacter = "brine-ledger"\n')
+        self.stage("prose.py", "X = 'the brine and the ledger'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "words")
+        self.stage("a.py", "X = 'draw brine-ledger here'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
