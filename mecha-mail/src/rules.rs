@@ -602,6 +602,12 @@ impl TaskSink for GraphSink {
                     ),
                 }
             }
+            Ok(output) if output.not_dispatched => ActionResult::Held {
+                // MCP validates this claim only for an operator-trusted server.
+                // Nothing ran: release the unused claim and allow a later retry.
+                kind: FailureKind::Environment,
+                reason: mecha_core::mail_rules::HeldReason::NotDispatched(output.content),
+            },
             Ok(output)
                 if !output.is_error
                     && output.deferred.is_none()
@@ -749,6 +755,9 @@ async fn finish_apply(
 fn report_status(report: &engine::ApplyReport) -> Result<()> {
     if report.read_failures > 0 {
         bail!("some rule threads could not be read; see report");
+    }
+    if report.handled_failures > 0 {
+        bail!("some rule threads could not be marked handled; see report");
     }
     Ok(())
 }

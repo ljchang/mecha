@@ -4499,7 +4499,9 @@ particular archive moved. That receipt belongs to P1's ledger, not this fix.
 fractional precision; a whole-second stamp sorts after a later fraction as text.
 Thread replies select the last message, so this affects who receives a reply,
 not just presentation. Provider threads, merged mail, triage lists and corpus
-reply evidence all compare instants.
+reply evidence all compare instants. A corpus thread with an unknown arrival
+is excluded from reply evidence; one stderr notice names the skipped threads
+and their count while valid threads remain usable.
 
 **Bulk reading is an operator verb, never a tool.** `mecha-mail corpus`
 downloads a span of mail for analysis, and it is absent from the MCP surface on
@@ -4650,7 +4652,10 @@ Possible
 matches hold removals and classification skips; observation holds consume no
 action key and leave deferred snapshots queued. Sender Date never establishes
 activation eligibility. Timer-only handling writes a marker for
-the provider message, never a fabricated classification. Rule annotations live
+the provider message, never a fabricated classification. A failed marker write
+leaves the thread out of the handled list and increments the report's typed
+`handled_failures` count for a non-zero exit; completed effects and later
+accounts remain in the report. Rule annotations live
 beside triage and overlay its read: rewriting a classifier verdict must not
 erase a rule's tag or digest flag. The derived overlay keys are stripped before
 reading a sidecar and before writing a base verdict, so a broken sidecar cannot
@@ -4668,6 +4673,9 @@ closed. Graph task tools that advertise background execution are refused at
 connection. A defensive deferred result is cancelled without starting its job;
 its unused claim settles as skipped and its report shows a non-closing hold.
 Only a typed guarantee of no dispatch releases a claim, never an outage alone.
+This includes MCP's `not_dispatched` result, which is accepted only from an
+operator-trusted server: it retries without consuming the Board occasion,
+capacity or brake budget.
 Graph shutdown errors become report notices; they cannot discard completed
 effects or override the typed apply exit status.
 Description matching and all sends remain unsupported in P1b;

@@ -1743,6 +1743,9 @@ for line in sys.stdin:
     elif method == 'tools/list':
         result = {'tools':[{'name':'kg_task_create','inputSchema':{'type':'object'},
             '_meta':{'mecha-factory.ai/background':sys.argv[1] == 'background'}}]}
+    elif method == 'tools/call' and sys.argv[1] == 'refused':
+        result = {'isError':True,'_meta':{'mecha-factory.ai/dispatched':False},
+            'content':[{'type':'text','text':'fixture refused before dispatch'}]}
     elif method == 'tools/call':
         with open('dispatched', 'a') as stream:
             stream.write('task\n')
@@ -1778,9 +1781,22 @@ async fn background_graph_is_refused_before_dispatch() {
 
 #[tokio::test]
 async fn unexpected_deferred_graph_output_keeps_occasion_and_capacity_open() {
+    assert_graph_undispatched_retries(false).await;
+}
+
+#[tokio::test]
+async fn trusted_graph_refusal_keeps_occasion_capacity_and_brake_open() {
+    assert_graph_undispatched_retries(true).await;
+}
+
+async fn assert_graph_undispatched_retries(typed_refusal: bool) {
     use mecha_core::mail_rules::{ActionGroup, Mode, Outcome, P1Holds};
     let dir = tempfile::tempdir().unwrap();
     let mut entry = background_graph_fixture(dir.path());
+    if typed_refusal {
+        entry.args[1] = "refused".into();
+        entry.trust_result_claims = true;
+    }
     // Bypass connection validation to exercise the defensive output boundary.
     let client = McpClient::connect(
         &entry,
@@ -1790,7 +1806,7 @@ async fn unexpected_deferred_graph_output_keeps_occasion_and_capacity_open() {
     .await
     .unwrap();
     let create = client.list_tools().await.unwrap().remove(0);
-    assert!(create.defers());
+    assert_eq!(create.defers(), !typed_refusal);
     let graph = GraphSink {
         client,
         create,
@@ -1805,7 +1821,7 @@ async fn unexpected_deferred_graph_output_keeps_occasion_and_capacity_open() {
             result,
             ActionResult::Held {
                 kind: FailureKind::Environment,
-                ..
+                reason: mecha_core::mail_rules::HeldReason::NotDispatched(_),
             }
         ),
         "{result:?}"
@@ -1975,4 +1991,38 @@ async fn graph_close_failure_preserves_report_and_typed_exit_status() {
             .any(|n| n.contains("close") && n.contains("fixture close failure")));
         assert_eq!(report_status(&report).is_err(), read_failures != 0);
     }
+}
+
+#[test]
+fn handled_write_failures_set_exit_status_without_matching_notices() {
+    let report = engine::ApplyReport {
+        handled_failures: 1,
+        ..Default::default()
+    };
+    assert!(report_status(&report).is_err());
+    let report = engine::ApplyReport {
+        notices: vec!["downstream says handled marker failed".into()],
+        ..Default::default()
+    };
+    assert!(report_status(&report).is_ok());
+}
+
+#[tokio::test]
+async fn untrusted_graph_dispatch_claim_remains_an_action_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut entry = background_graph_fixture(dir.path());
+    entry.args[1] = "refused".into();
+    assert!(!entry.trust_result_claims);
+    let graph = GraphSink::connect_at(&Default::default(), &entry, dir.path().into())
+        .await
+        .unwrap();
+    let result = graph.create(&graph_test_task()).await;
+    graph.client.close().await.unwrap();
+    assert!(matches!(
+        result,
+        ActionResult::Failed {
+            kind: FailureKind::Unknown,
+            ..
+        }
+    ));
 }

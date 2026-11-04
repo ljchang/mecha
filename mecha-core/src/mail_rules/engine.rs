@@ -128,6 +128,8 @@ pub struct ApplyReport {
     /// Thread read failures, independent of diagnostic prose. Hosts use this
     /// for a non-zero exit even though no action was dispatched or settled.
     pub read_failures: usize,
+    /// Failed classification-skip marker writes; effects remain in the report.
+    pub handled_failures: usize,
     pub rows: Vec<LedgerRow>,
     pub notices: Vec<String>,
     pub deferred: Vec<String>,
@@ -1084,7 +1086,17 @@ impl Run<'_> {
         }
         if handled && self.options.pass == Pass::Headers {
             if !self.options.dry_run {
-                self.mailbox.handled(c).await?;
+                if let Err(error) = self.mailbox.handled(c).await {
+                    // Effects have already landed. Preserve their report and
+                    // continue other threads/accounts, but do not advertise a
+                    // classification skip without a successful marker write.
+                    self.report.handled_failures += 1;
+                    self.report.notices.push(format!(
+                        "{}/{}: handled marker failed; leave for classification: {error:#}",
+                        c.message.account, c.message.thread_id,
+                    ));
+                    return Ok(());
+                }
             }
             self.report.handled.push(c.message.thread_id.clone());
         }

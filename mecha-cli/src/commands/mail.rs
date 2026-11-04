@@ -1839,6 +1839,14 @@ struct CorpusThread {
 /// message would include threads the user started and somebody replied to,
 /// which is not an answer to anything and inflates the baseline.
 fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>> {
+    corpus_threads_with_warning(path, me, |warning| eprintln!("{warning}"))
+}
+
+fn corpus_threads_with_warning(
+    path: &std::path::Path,
+    me: &str,
+    warn: impl FnOnce(String),
+) -> Result<Vec<CorpusThread>> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {} — run `mecha-mail corpus` first", path.display()))?;
     let mut by: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
@@ -1850,6 +1858,7 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
         by.entry(t.to_string()).or_default().push(v);
     }
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for (thread_id, mut msgs) in by {
         let arrival = |message: &Value| {
             message["date"]
@@ -1859,7 +1868,8 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
         // Reply evidence requires known instants. Variable-width fractional
         // stamps do not sort as text, and a missing date cannot prove order.
         if msgs.iter().any(|message| arrival(message).is_none()) {
-            bail!("corpus thread {thread_id} contains a missing or invalid arrival date");
+            skipped.push(thread_id);
+            continue;
         }
         msgs.sort_by_key(&arrival);
         let is_me = |m: &Value| {
@@ -1909,6 +1919,14 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
     // different samples, while the flag documented itself as making a
     // scorecard reproducible.
     out.sort_by(|a: &CorpusThread, b: &CorpusThread| a.input.thread_id.cmp(&b.input.thread_id));
+    if !skipped.is_empty() {
+        skipped.sort();
+        warn(format!(
+            "warning: skipped {} corpus thread(s) with missing or invalid arrival dates: {}",
+            skipped.len(),
+            skipped.join(", "),
+        ));
+    }
     Ok(out)
 }
 
@@ -4184,5 +4202,39 @@ mod mail_rules_ordering_tests {
         assert_eq!(threads.len(), 1);
         assert!(threads[0].replied);
         assert_eq!(threads[0].input.from, "sender@example.edu");
+    }
+}
+
+#[cfg(test)]
+mod mail_corpus_date_tests {
+    #[test]
+    fn invalid_arrivals_skip_only_their_thread_with_a_counted_warning() {
+        let root = std::env::temp_dir().join(format!("corpus-dates-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("mail.jsonl");
+        let rows = [
+            serde_json::json!({"thread_id":"thread-bad", "from":"sender@example.edu", "date":"invalid"}),
+            serde_json::json!({"thread_id":"thread-bad", "from":"owner@example.com"}),
+            serde_json::json!({"thread_id":"thread-good", "from":"sender@example.edu", "date":"2026-11-03T12:00:00Z"}),
+            serde_json::json!({"thread_id":"thread-good", "from":"owner@example.com", "date":"2026-11-03T12:00:00.100Z"}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(|row| row.to_string() + "\n")
+                .collect::<String>(),
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let result = super::corpus_threads_with_warning(&path, "owner@example.com", |warning| {
+            warnings.push(warning)
+        });
+        std::fs::remove_dir_all(root).unwrap();
+        let threads = result.expect("one unknown date must not discard the valid corpus");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].input.thread_id, "thread-good");
+        assert!(threads[0].replied);
+        assert_eq!(warnings.len(), 1, "count threads, not bad messages");
+        assert!(warnings[0].contains("skipped 1") && warnings[0].contains("thread-bad"));
     }
 }

@@ -68,6 +68,7 @@ struct Fake {
     results: Mutex<Vec<ActionResult>>,
     unreadable: bool,
     hold_read: bool,
+    handled_root: Option<std::path::PathBuf>,
     in_window: bool,
     gate: GateStatus,
     on_effect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -105,6 +106,7 @@ impl Fake {
             results: Mutex::new(Vec::new()),
             unreadable: false,
             hold_read: false,
+            handled_root: None,
             in_window: true,
             gate: GateStatus::Passing,
             on_effect: Mutex::new(None),
@@ -130,7 +132,7 @@ impl Fake {
 }
 #[async_trait]
 impl Mailbox for Fake {
-    async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+    async fn candidates(&self, account: &str, _: Pass) -> Result<Vec<String>> {
         if !self.in_window {
             return Ok(Vec::new());
         }
@@ -139,6 +141,7 @@ impl Mailbox for Fake {
             .lock()
             .unwrap()
             .iter()
+            .filter(|c| c.message.account == account)
             .map(|c| c.message.thread_id.clone())
             .collect())
     }
@@ -164,8 +167,16 @@ impl Mailbox for Fake {
     async fn private_record(&self, _: &Candidate, _: &str, action: &Action) -> ActionResult {
         self.effect(format!("{:?}", action.verb))
     }
-    async fn handled(&self, _: &Candidate) -> Result<()> {
+    async fn handled(&self, c: &Candidate) -> Result<()> {
         self.calls.lock().unwrap().push("Handled".into());
+        if let Some(root) = &self.handled_root {
+            crate::mail_triage::rule_records::update(
+                &root.join(&c.message.account),
+                &c.message.account,
+                &c.message.thread_id,
+                |flags| flags.handled_message = Some(c.message.provider_message_id.clone()),
+            )?;
+        }
         Ok(())
     }
     fn origin_gate(&self, _: &LoadedRule) -> GateStatus {
@@ -1905,5 +1916,77 @@ async fn changed_off_rule_emits_no_lapse_notice() {
             .all(|notice| !notice.contains("approval lapsed")),
         "an Off rule cannot lapse: {:?}",
         report.notices
+    );
+}
+
+#[tokio::test]
+async fn handled_write_failure_preserves_effects_and_continues_other_accounts() {
+    use crate::mail_triage::rule_records;
+    let mut f = Fixture::new();
+    let rule = f.rule("archive", ARCHIVE);
+    f.mode(&rule, ActionGroup::Mailbox, Mode::Auto);
+    let annotations = f.root.join("annotations");
+    let broken = annotations.join("campus");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("rule-records"), "not a directory").unwrap();
+    f.mail.handled_root = Some(annotations.clone());
+    let mut next = f.mail.candidates.lock().unwrap()[0].clone();
+    next.message.account = "project".into();
+    next.message.thread_id = "thread-beta".into();
+    next.message.provider_message_id = "message-beta".into();
+    f.mail.candidates.lock().unwrap().push(next);
+    let accounts = ["campus".into(), "project".into()];
+    let report = apply(&f.store, &f.mail, None, &accounts, &f.options)
+        .await
+        .expect("marker failure must not discard effects or abort the other account");
+    assert_eq!(
+        report
+            .rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Done)
+            .count(),
+        2
+    );
+    assert_eq!(report.handled_failures, 1);
+    assert_eq!(report.handled, ["thread-beta"]);
+    assert!(report
+        .notices
+        .iter()
+        .any(|notice| notice.contains("campus") && notice.contains("thread-alpha")));
+    assert!(f
+        .store
+        .ledger()
+        .unwrap()
+        .iter()
+        .all(|row| !row.is_action_failure()));
+    assert!(rule_records::read(&broken, "campus", "thread-alpha").is_err());
+    // Restoring the annotation store exposes no skip marker for the failed write.
+    std::fs::remove_file(broken.join("rule-records")).unwrap();
+    assert!(rule_records::read(&broken, "campus", "thread-alpha")
+        .unwrap()
+        .handled_message
+        .is_none());
+    let report = apply(&f.store, &f.mail, None, &accounts, &f.options)
+        .await
+        .unwrap();
+    assert_eq!(report.handled_failures, 0);
+    assert!(report.handled.contains(&"thread-alpha".into()));
+    assert_eq!(
+        rule_records::read(&broken, "campus", "thread-alpha")
+            .unwrap()
+            .handled_message
+            .as_deref(),
+        Some("message-alpha")
+    );
+    assert_eq!(
+        f.mail
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| *call == "Archive")
+            .count(),
+        2,
+        "recovering the marker must not repeat mailbox effects"
     );
 }
