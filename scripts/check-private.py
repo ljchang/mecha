@@ -584,8 +584,14 @@ def persona_prose():
     ruling, 2026-11-03: no persona data; review of #841). A store that
     exists and does not read refuses."""
     out = []
-    for name in ("identity.md", "motivation.md"):
-        for f in glob.glob(f"{MECHA}/personas/*/{name}"):
+    # The live files and every saved version of them: a version keeps the
+    # profile and the rendered people section after a person is forgotten
+    # (review of #841).
+    patterns = [f"{MECHA}/personas/*/{name}" for name in ("identity.md", "motivation.md")]
+    patterns += [f"{MECHA}/personas/*/versions/*/{name}"
+                 for name in ("identity.md", "motivation.md", "people.md")]
+    for pattern in patterns:
+        for f in glob.glob(pattern):
             try:
                 with open(f, errors="replace") as fh:
                     out.append(fh.read())
@@ -609,6 +615,18 @@ def persona_prose():
         except sqlite3.Error as e:
             print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
+    # A proposal's prose, waiting on the owner, as its names are.
+    for f in glob.glob(f"{MECHA}/personas/*/people.draft.json"):
+        try:
+            with open(f, errors="replace") as fh:
+                draft = json.load(fh)
+        except (OSError, ValueError) as e:
+            print(f"check-private: the people draft {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+        for p in (draft.get("people") if isinstance(draft, dict) else None) or []:
+            if isinstance(p, dict):
+                out.extend(v for k in ("role", "description", "label")
+                           if isinstance(v := p.get(k), str))
     return out
 
 
@@ -1012,12 +1030,10 @@ def main(args):
                 pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
                 if not any(m.group(0)[:1].isupper() for m in re.finditer(pattern, t, re.I)):
                     continue
-                if in_head_cased(name[:1].upper() + name[1:]):
-                    # Excused, since the repository already spells it (its
-                    # made-up cast holds ordinary first names): said, never
-                    # silent, so a real person sharing one is looked at.
-                    excused.setdefault(name, []).append(f"{p}:{n}")
-                    continue
+                # Never excused by the repository already using the word: an
+                # ordinary first name (Max, Grace, May) is in its prose, and
+                # an excuse would pass exactly the names this exists for. A
+                # made-up name that collides is renamed (review of #841).
                 hit = "the name of someone in a persona's life"
                 break
         if hit:
