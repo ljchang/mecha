@@ -997,6 +997,22 @@ class Guard(unittest.TestCase):
         self.stage("a.py", "X = 'draw brine-ledger here'\n")
         self.assertEqual(self.run_guard("--staged").returncode, 1)
 
+    def test_every_text_in_the_world_store_and_the_week_files_is_read(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE state (key TEXT, value TEXT)")
+        db.execute("INSERT INTO state VALUES ('job', 'Runs the night ferry between the two islands every winter.')")
+        db.commit()
+        db.close()
+        with open(os.path.join(pdir, "routine.notes.md"), "w") as f:
+            f.write("- choir practice in the old granary on Thursday evenings\n")
+        for name, text in [("a.py", "X = 'runs the night ferry between the two islands'\n"),
+                           ("b.py", "X = 'choir practice in the old granary on Thursday'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
