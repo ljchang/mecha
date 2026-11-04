@@ -897,7 +897,7 @@ class Guard(unittest.TestCase):
         self.stage("start.py", "X = 'Marsh grass bends in the wind.'\n")
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("already used in the repository", r.stdout)
+        self.assertIn("the repository already uses", r.stdout)
 
     def test_a_saved_version_and_a_drafts_prose_are_read(self):
         pdir = os.path.join(self.home, "personas", "quillon")
@@ -955,6 +955,28 @@ class Guard(unittest.TestCase):
         with open(os.path.join(self.home, "check-private.allow"), "w") as f:
             f.write("# words that may stay\nGrove\n")
         self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_removed_personas_people_stay_refused(self):
+        gone = os.path.join(self.home, "personas", "removed", "ferrow-20991231-abcd")
+        os.makedirs(gone)
+        open(os.path.join(gone, "persona.toml"), "w").write('name = "ferrow"\n')
+        db = sqlite3.connect(os.path.join(gone, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Thessaly', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = 'Thessaly waved.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_a_name_stored_with_odd_capitals_refuses_its_plain_capital(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'DeVantry', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = 'Devantry waved.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
 
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")

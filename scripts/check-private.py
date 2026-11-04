@@ -35,7 +35,10 @@ commit message (`--message FILE`, the commit-msg hook) — for:
    persona's life: a person on its People tab (`world.db`'s `people`, with
    their aliases) or in its household (`life.toml`), matched as a whole
    word with its capital, since these are ordinary first names (the owner's
-   ruling, 2026-11-03: no persona data in a public repository);
+   ruling, 2026-11-03: no persona data in a public repository). An ordinary
+   word that is also someone's name can be allowed knowingly in
+   `~/.mecha/check-private.allow`, one per line, kept beside the store and
+   never in a repository;
 5. text from the owner's LoRA registry (`~/.mecha/loras.toml`, and while it is
    still read the old file `[video] loras` names): every file stem, and every
    `name` or `trigger` that is specific (more than one word, or holding `_`,
@@ -210,7 +213,6 @@ def read_memory(db):
     which need not appear verbatim in any transcript (review of #557).
     `recall_fts` indexes all of them; an older store without it is read
     column by column. A store that exists and cannot be read is refused."""
-    import sqlite3
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
@@ -464,15 +466,24 @@ def spoken_turns(records):
         yield from header
 
 
+def persona_glob(rel):
+    """`rel` under every persona folder, the live ones and the ones the owner
+    removed: `persona::remove` moves a whole folder to
+    `personas/removed/<name>-<stamp>-<id>/`, and its chats, profile and people
+    are no less persona data there (review of #841)."""
+    return glob.glob(f"{MECHA}/personas/*/{rel}") + glob.glob(f"{MECHA}/personas/removed/*/{rel}")
+
+
 def corpus():
     """(shingles, short phrases, session ids, persona names) from ~/.mecha."""
     said = []
     ids = set()
     names = set()
-    for d in glob.glob(f"{MECHA}/personas/*/"):
-        toml = f"{d}persona.toml"
-        if os.path.exists(toml):
-            names.add(os.path.basename(d.rstrip("/")).lower())
+    for toml in persona_glob("persona.toml"):
+        d = os.path.dirname(toml) + "/"
+        if True:
+            if "/personas/removed/" not in toml:
+                names.add(os.path.basename(d.rstrip("/")).lower())
             # How the persona is addressed and drawn, which is what a fixture
             # or a doc would spell (review of #557): `display` and its words,
             # and `character`.
@@ -480,14 +491,14 @@ def corpus():
                 text = open(toml, errors="replace").read()
             except OSError:
                 text = ""
-            for key in ("display", "character"):
+            for key in ("name", "display", "character"):
                 m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
                 if m and m.group(1).strip():
                     value = m.group(1).strip().lower()
                     names.add(value)
                     names.update(w for w in words(value) if len(w) >= 4)
     # Read whole: every persona chat, and every session that is a call.
-    whole = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
+    whole = persona_glob("sessions/*.jsonl")
     # Read for their spoken turns only: any other session a call spoke into
     # (a web chat, a test session, one from before `kind` existed). The rest
     # of such a chat is the owner typing — often mecha's own development —
@@ -540,7 +551,7 @@ def corpus():
             said.extend(spoken_turns(records))
     # The owner's saved picture prompts: only their chat-derived `words`, never
     # the compiler's own sentences, which the repository holds by design.
-    for f in glob.glob(f"{MECHA}/personas/*/sessions/*.prompts.log") + glob.glob(f"{MECHA}/sessions/*.prompts.log"):
+    for f in persona_glob("sessions/*.prompts.log") + glob.glob(f"{MECHA}/sessions/*.prompts.log"):
         try:
             with open(f, errors="replace") as fh:
                 for line in fh:
@@ -553,7 +564,7 @@ def corpus():
         except OSError as e:
             print(f"check-private: the prompt log {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
-    for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
+    for db in persona_glob("memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
     said.extend(persona_prose())
     # The worker journal is this machine's; a test of the check itself sets
@@ -587,18 +598,17 @@ def persona_prose():
     # The live files and every saved version of them: a version keeps the
     # profile and the rendered people section after a person is forgotten
     # (review of #841).
-    patterns = [f"{MECHA}/personas/*/{name}" for name in ("identity.md", "motivation.md")]
-    patterns += [f"{MECHA}/personas/*/versions/*/{name}"
-                 for name in ("identity.md", "motivation.md", "people.md")]
+    patterns = list(("identity.md", "motivation.md"))
+    patterns += [f"versions/*/{name}" for name in ("identity.md", "motivation.md", "people.md")]
     for pattern in patterns:
-        for f in glob.glob(pattern):
+        for f in persona_glob(pattern):
             try:
                 with open(f, errors="replace") as fh:
                     out.append(fh.read())
             except OSError as e:
                 print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
                 sys.exit(2)
-    for db in glob.glob(f"{MECHA}/personas/*/world.db"):
+    for db in persona_glob("world.db"):
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             try:
@@ -616,7 +626,7 @@ def persona_prose():
             print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
     # A proposal's prose, waiting on the owner, as its names are.
-    for f in glob.glob(f"{MECHA}/personas/*/people.draft.json"):
+    for f in persona_glob("people.draft.json"):
         try:
             with open(f, errors="replace") as fh:
                 draft = json.load(fh)
@@ -637,7 +647,7 @@ def people_names():
     people are exactly what a fixture would borrow (the owner's ruling,
     2026-11-03)."""
     out = set()
-    for db in glob.glob(f"{MECHA}/personas/*/world.db"):
+    for db in persona_glob("world.db"):
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             try:
@@ -665,7 +675,7 @@ def people_names():
     # in a persona's life before approval and after removal too (review of
     # #841).
     for pattern in ("life.toml", "life.draft.toml", "life.previous.toml"):
-        for f in glob.glob(f"{MECHA}/personas/*/{pattern}"):
+        for f in persona_glob(pattern):
             try:
                 with open(f, "rb") as fh:
                     life = tomllib.load(fh)
@@ -676,7 +686,7 @@ def people_names():
                 if isinstance(h, dict) and isinstance(h.get("person"), str) and h["person"].strip():
                     out.add(h["person"].strip())
     # People a model proposed from identity.md, waiting on the owner.
-    for f in glob.glob(f"{MECHA}/personas/*/people.draft.json"):
+    for f in persona_glob("people.draft.json"):
         try:
             with open(f, errors="replace") as fh:
                 draft = json.load(fh)
@@ -693,7 +703,7 @@ def people_names():
     # leaves world.db but stays in each snapshot of the rendered section
     # (`network::prompt_section`), so the name stays refused (review of
     # #841).
-    for f in glob.glob(f"{MECHA}/personas/*/versions/*/people.md"):
+    for f in persona_glob("versions/*/people.md"):
         try:
             with open(f, errors="replace") as fh:
                 out.update(section_names(fh.read()))
@@ -725,7 +735,7 @@ def section_names(text):
         line = line.strip()
         if line.startswith("- "):
             body = line[2:]
-            out.add(re.split(r" \(|,|\.", body, maxsplit=1)[0].strip())
+            out.add(re.split(r" \(|,|\. ", body, maxsplit=1)[0].strip().rstrip("."))
             m = re.search(r"also called ([^.]*)", body)
             if m:
                 out.update(a.strip() for a in m.group(1).split(",") if a.strip())
@@ -1051,8 +1061,7 @@ def main(args):
                 break
         if not hit:
             for name in names:
-                found_names = [m.group(0) for m in re.finditer(rf"\b{re.escape(name)}\b", t, re.I)]
-                if not found_names:
+                if not re.search(rf"\b{re.escape(name)}\b", t, re.I):
                     continue
                 # Excused when the repository already holds the word in any
                 # case, since a display's longer words are often ordinary
@@ -1076,11 +1085,14 @@ def main(args):
                 # A name in a script with case is a person only when
                 # capitalised; one without case (Hebrew, Arabic, CJK) has no
                 # capital to test, so any use is the name, never passed.
-                # Cased: title case only, so a name is not its shout
-                # (u32::MAX for a person named Max) or its lowercase word.
-                title = name[:1].upper() + name[1:]
+                # Cased: any capitalised spelling (DeShawn stored, Deshawn
+                # written) except a shout (u32::MAX for a person named Max),
+                # unless the name was stored in capitals; never the
+                # lowercase word.
+                shout_ok = name.isupper()
                 spots = [m for m in re.finditer(pattern, t, re.I)
-                         if not cased or m.group(0) in (name, title)]
+                         if not cased or (m.group(0)[:1].isupper()
+                                          and (shout_ok or len(m.group(0)) < 2 or not m.group(0).isupper()))]
                 if not spots:
                     continue
                 person_col = spots[0].start() + 1
@@ -1101,7 +1113,7 @@ def main(args):
                     break
     for name, where in sorted(excused.items()):
         shown = ", ".join(where[:3]) + (f" and {len(where) - 3} more" if len(where) > 3 else "")
-        print(f"check-private: warning: a name from a persona or its life, already used in the repository, appears at {shown}; check each is the made-up one.")
+        print(f"check-private: warning: `{name}`, a persona's name the repository already uses, appears at {shown}; check each is the made-up one.")
     if not findings:
         return 0
     print("check-private: refusing — this change carries conversation text, persona data or LoRA")
@@ -1110,6 +1122,7 @@ def main(args):
     for path, num, hit in findings[:40]:
         print(f"  {path}:{num}: {hit}")
     print("Replace it with made-up text of the same shape. The words are not printed here.")
+    print(f"An ordinary word that is also someone's name may be allowed in {MECHA}/check-private.allow (one per line).")
     return 1
 
 
