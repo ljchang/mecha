@@ -44,6 +44,9 @@ pub fn update(
     thread: &str,
     edit: impl FnOnce(&mut RuleRecord),
 ) -> Result<()> {
+    // The root first: a rule pass can create it before the classifier ever
+    // has, and verdicts written there later rely on its mode alone.
+    crate::create_private_dir(root)?;
     let directory = root.join("rule-records");
     crate::create_private_dir(&directory)?;
     let lock = OpenOptions::new()
@@ -138,5 +141,22 @@ mod tests {
         });
         assert_eq!(record.rest["rule_tags"], serde_json::json!([]));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A rule pass can run before anything has classified mail, and the
+    /// verdicts written later rely on the root's mode alone.
+    #[test]
+    fn the_first_annotation_creates_a_private_triage_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = std::env::temp_dir().join(format!("rule-root-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let root = parent.join("mail-triage");
+        update(&root, "campus", "notice", |_| {}).unwrap();
+        for dir in [root.clone(), root.join("rule-records")] {
+            let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", dir.display());
+        }
+        fs::remove_dir_all(parent).unwrap();
     }
 }
