@@ -689,8 +689,63 @@ def people_names():
             for n in [p.get("name")] + (p.get("aliases") if isinstance(p.get("aliases"), list) else []):
                 if isinstance(n, str) and n.strip():
                     out.add(n.strip())
+    # Everyone a saved version named: a person removed from the People tab
+    # leaves world.db but stays in each snapshot of the rendered section
+    # (`network::prompt_section`), so the name stays refused (review of
+    # #841).
+    for f in glob.glob(f"{MECHA}/personas/*/versions/*/people.md"):
+        try:
+            with open(f, errors="replace") as fh:
+                out.update(section_names(fh.read()))
+        except OSError as e:
+            print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    # The owner's own list of words that may stay, kept beside the store and
+    # never in a repository: an ordinary word that is also someone's name
+    # ("Max"), allowed knowingly rather than by --no-verify.
+    allowed = set()
+    allow = f"{MECHA}/check-private.allow"
+    if os.path.exists(allow):
+        try:
+            with open(allow, errors="replace") as fh:
+                allowed = {l.strip() for l in fh if l.strip() and not l.startswith("#")}
+        except OSError as e:
+            print(f"check-private: {allow} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
     # A one-letter name would refuse every line holding that letter alone.
-    return {n for n in out if len(n) >= 2}
+    return {n for n in out if len(n) >= 2 and n not in allowed}
+
+
+def section_names(text):
+    """The people a rendered people section names: a close person's line
+    (`- Name (role), also called A, B. ...`) and the comma lists after a
+    heading's colon (`Name (role), Name (role).`)."""
+    out = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            body = line[2:]
+            out.add(re.split(r" \(|,|\.", body, maxsplit=1)[0].strip())
+            m = re.search(r"also called ([^.]*)", body)
+            if m:
+                out.update(a.strip() for a in m.group(1).split(",") if a.strip())
+        elif ": " in line:
+            rest = line.split(": ", 1)[1].rstrip(".")
+            depth, part, parts = 0, "", []
+            for ch in rest:
+                depth += ch == "("
+                depth -= ch == ")"
+                if ch == "," and depth == 0:
+                    parts.append(part)
+                    part = ""
+                else:
+                    part += ch
+            parts.append(part)
+            for part in parts:
+                part = part.strip()
+                if part and not part.startswith("ended "):
+                    out.add(part.split(" (", 1)[0].strip())
+    return {n for n in out if n and len(n.split()) <= 4}
 
 
 def lora_registry():
@@ -1021,8 +1076,11 @@ def main(args):
                 # A name in a script with case is a person only when
                 # capitalised; one without case (Hebrew, Arabic, CJK) has no
                 # capital to test, so any use is the name, never passed.
+                # Cased: title case only, so a name is not its shout
+                # (u32::MAX for a person named Max) or its lowercase word.
+                title = name[:1].upper() + name[1:]
                 spots = [m for m in re.finditer(pattern, t, re.I)
-                         if not cased or m.group(0)[:1].isupper()]
+                         if not cased or m.group(0) in (name, title)]
                 if not spots:
                     continue
                 person_col = spots[0].start() + 1
