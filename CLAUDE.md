@@ -493,10 +493,12 @@ re-deriving the rule. Each has at least one named incident in
   `rows.clamp(1, terminal_height.saturating_sub(4))` is a *panic* on a
   four-row terminal, and eight sites had their own copy; grep for `.clamp(`
   near `saturating_sub(4)`, never either literal.
-- **No persona chat or voice call text anywhere in this repository** — not
-  in tests, docs, comments or commit messages; fixtures and examples are
-  made up, and a measurement keeps its numbers, never the words. Real chat
-  lines once became test fixtures and a call's transcript a research doc.
+- **No persona chat or voice call text, and no persona data, anywhere in this
+  repository** — not in tests, docs, comments or commit messages: no persona's
+  name, and no name from a persona's People tab or household; fixtures and
+  examples are made up, and a measurement keeps its numbers, never the words.
+  Real chat lines once became test fixtures, a call's transcript a research
+  doc, and a persona's child's name a fixture (2026-11-03).
   `scripts/check-private.py` (pre-commit, commit-msg and pre-push) compares
   added text against the conversations in `~/.mecha` and refuses a match;
   `CHECK_PRIVATE_REQUIRE=1` makes a missing store a refusal.

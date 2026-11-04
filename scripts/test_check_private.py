@@ -802,6 +802,225 @@ class Guard(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("first.py:1:", r.stdout)
 
+    def people_store(self):
+        """quillon's People tab with one person and an alias, and a household
+        in life.toml."""
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Orrin', '[\"Rinny\"]')")
+        db.commit()
+        db.close()
+        with open(os.path.join(pdir, "life.toml"), "w") as f:
+            f.write('[[household]]\nperson = "Brisa"\nrelation = "housemate"\n')
+
+    def test_a_name_from_a_personas_life_is_refused(self):
+        self.people_store()
+        for name, text in [("people.py", "X = 'Orrin came by.'\n"),
+                           ("alias.py", "X = 'Rinny says hi.'\n"),
+                           ("house.py", "X = 'Brisa cooked.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("the name of someone in a persona's life", r.stdout)
+            self.assertNotIn(text.split("'")[1].split()[0], r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+        # Case kept: a lowercase word is not the person.
+        self.stage("word.py", "X = 'the orrin and the brisa'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_common_name_is_not_excused_by_its_lowercase_word(self):
+        # The word is already in the repository; the person is not.
+        self.stage("prose.py", "X = 'a larkin of rain'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Larkin', 5)")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = 'Larkin came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("the name of someone in a persona's life", r.stdout)
+        # Even spelled so already in the repository: a person's name is never
+        # excused, since ordinary first names are in any repository's prose.
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "the name")
+        self.stage("again.py", "Y = 'Larkin again.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_a_name_stored_in_lowercase_still_refuses_its_capital(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'corwin', '[]')")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = 'Corwin came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_a_name_waiting_in_a_draft_is_refused_too(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        with open(os.path.join(pdir, "people.draft.json"), "w") as f:
+            json.dump({"people": [{"name": "Tamsin", "aliases": ["Tam"]}]}, f)
+        with open(os.path.join(pdir, "life.previous.toml"), "w") as f:
+            f.write('[[household]]\nperson = "Ferrand"\nrelation = "partner"\n')
+        for name, text in [("a.py", "X = 'Tamsin waved.'\n"), ("b.py", "X = 'Ferrand left.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_what_the_owner_wrote_of_a_persona_and_its_people_is_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        with open(os.path.join(pdir, "identity.md"), "w") as f:
+            f.write("## Core\nShe keeps bees on a rooftop above the old cannery by the harbour.\n")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT, role TEXT, description TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Orrin', '[]', 'cousin', 'Repairs clocks in a shop that smells of lamp oil and cedar.')")
+        db.commit()
+        db.close()
+        for name, text in [("a.py", "X = 'keeps bees on a rooftop above the old cannery'\n"),
+                           ("b.py", "X = 'repairs clocks in a shop that smells of lamp oil'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("words said in a conversation", r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_a_display_word_already_in_the_repository_is_excused_and_said(self):
+        # "marsh" (from quillon's display "Quillon Marsh") is an ordinary word.
+        self.stage("prose.py", "X = 'the tide over the marsh'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
+        self.stage("start.py", "X = 'Marsh grass bends in the wind.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("the repository already uses", r.stdout)
+
+    def test_a_saved_version_and_a_drafts_prose_are_read(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        os.makedirs(os.path.join(pdir, "versions", "abc"))
+        with open(os.path.join(pdir, "versions", "abc", "people.md"), "w") as f:
+            f.write("Orla mends fishing nets on the jetty every Sunday at dawn.\n")
+        with open(os.path.join(pdir, "people.draft.json"), "w") as f:
+            json.dump({"people": [{"name": "Petra", "aliases": [],
+                       "description": "Teaches the fiddle in a barn near the river crossing."}]}, f)
+        for name, text in [("a.py", "X = 'mends fishing nets on the jetty every Sunday'\n"),
+                           ("b.py", "X = 'teaches the fiddle in a barn near the river'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_a_name_in_a_script_without_case_is_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', '\u05e0\u05d5\u05e2\u05d4', '[]')")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = '\u05e0\u05d5\u05e2\u05d4 came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("(column 6)", r.stdout)
+
+    def test_a_removed_person_named_in_a_saved_version_stays_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        os.makedirs(os.path.join(pdir, "versions", "v1"))
+        with open(os.path.join(pdir, "versions", "v1", "people.md"), "w") as f:
+            f.write("Closest to you:\n- Oswin (your brother), also called Oz. Builds kites.\n"
+                    "Others in your life: Pelham (your neighbour), Quenby.\n"
+                    "Between them: Oswin and Pelham: friend, tense; Oswin and Quenby: friend, no longer.\n")
+        for name, text in [("a.py", "X = 'Oswin waved.'\n"), ("b.py", "X = 'Oz waved.'\n"),
+                           ("c.py", "X = 'Pelham waved.'\n"), ("d.py", "X = 'Quenby waved.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, (text, r.stdout))
+            git(self.repo, "rm", "-q", "--cached", name)
+        # A tie's notes are words, not people.
+        self.stage("e.py", "X = 'Tense, and No longer friends.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_shout_is_not_the_name_and_the_owner_may_allow_a_word(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Maxim', '[]')")
+        db.execute("INSERT INTO people VALUES ('u2', 'Grove', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = MAXIM_LIMIT  # MAXIM\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+        git(self.repo, "rm", "-q", "--cached", "a.py")
+        self.stage("b.py", "X = 'Grove of oaks'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+        with open(os.path.join(self.home, "check-private.allow"), "w") as f:
+            f.write("# words that may stay\nGrove\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_removed_personas_people_stay_refused(self):
+        gone = os.path.join(self.home, "personas", "removed", "ferrow-20991231T235959Z-0a1b2c3d")
+        os.makedirs(gone)
+        open(os.path.join(gone, "persona.toml"), "w").write('display = "Ferrow"\n')
+        db = sqlite3.connect(os.path.join(gone, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Thessaly', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = 'Thessaly waved.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+        git(self.repo, "rm", "-q", "--cached", "a.py")
+        # The removed persona's own name, from its folder's front.
+        self.stage("b.py", "X = load('ferrow')\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("the name of one of the owner's personas", r.stdout)
+
+    def test_a_name_stored_with_odd_capitals_refuses_its_plain_capital(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'DeVantry', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = 'Devantry waved.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_a_multi_part_character_id_is_excused_only_by_itself(self):
+        toml = os.path.join(self.home, "personas", "quillon", "persona.toml")
+        with open(toml, "w") as f:
+            f.write('name = "quillon"\ndisplay = "Quillon Marsh"\ncharacter = "brine-ledger"\n')
+        self.stage("prose.py", "X = 'the brine and the ledger'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "words")
+        self.stage("a.py", "X = 'draw brine-ledger here'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_every_text_in_the_world_store_and_the_week_files_is_read(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE state (key TEXT, value TEXT)")
+        db.execute("INSERT INTO state VALUES ('job', 'Runs the night ferry between the two islands every winter.')")
+        db.commit()
+        db.close()
+        with open(os.path.join(pdir, "routine.notes.md"), "w") as f:
+            f.write("- choir practice in the old granary on Thursday evenings\n")
+        for name, text in [("a.py", "X = 'runs the night ferry between the two islands'\n"),
+                           ("b.py", "X = 'choir practice in the old granary on Thursday'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_an_unreadable_people_store_refuses(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        open(os.path.join(pdir, "world.db"), "w").write("not a database")
+        self.stage("ok.py", "X = 'The ferry leaves at noon.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("people store", r.stdout)
+
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
         self.assertEqual(self.run_guard("--staged").returncode, 0)
