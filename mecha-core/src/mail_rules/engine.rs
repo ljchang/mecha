@@ -125,6 +125,9 @@ impl Default for EngineOptions {
 
 #[derive(Debug, Default, Serialize)]
 pub struct ApplyReport {
+    /// Thread read failures, independent of diagnostic prose. Hosts use this
+    /// for a non-zero exit even though no action was dispatched or settled.
+    pub read_failures: usize,
     pub rows: Vec<LedgerRow>,
     pub notices: Vec<String>,
     pub deferred: Vec<String>,
@@ -395,6 +398,25 @@ impl Run<'_> {
         self.rows.push(row.clone());
         self.report.rows.push(row);
         Ok(())
+    }
+    fn hold_unread_thread(
+        &mut self,
+        entries: &[&DeferredEntry],
+        reason: &str,
+        failure_kind: FailureKind,
+    ) {
+        // No message was authorized. These rows are observations only: never
+        // persist them or settle a deferred snapshot, since Held closes keys.
+        for snapshot in entries.iter().flat_map(|entry| &entry.actions) {
+            let mut row = snapshot.clone();
+            row.id = uuid::Uuid::new_v4().to_string();
+            row.at = Some(self.options.clock.now());
+            row.outcome = Outcome::Held;
+            row.closes = false;
+            row.reason = reason.into();
+            row.failure_kind = failure_kind;
+            self.report.rows.push(row);
+        }
     }
     fn modes(&mut self, rule: &LoadedRule) -> Result<BTreeMap<ActionGroup, ResolvedMode>> {
         if !self.options.dry_run {
@@ -1143,17 +1165,7 @@ pub async fn apply(
                     run.report
                         .notices
                         .push(format!("{account}/{id}: held: {reason}"));
-                    // No message was authorized. Keep every deferred occasion
-                    // and cap slot open; the report is an observation only.
-                    for snapshot in entries.iter().flat_map(|entry| &entry.actions) {
-                        let mut row = snapshot.clone();
-                        row.id = uuid::Uuid::new_v4().to_string();
-                        row.at = Some(options.clock.now());
-                        row.outcome = Outcome::Held;
-                        row.closes = false;
-                        row.reason = reason.clone();
-                        run.report.rows.push(row);
-                    }
+                    run.hold_unread_thread(&entries, &reason, FailureKind::Unknown);
                     continue;
                 }
                 Err(error) => Err(error),
@@ -1167,23 +1179,27 @@ pub async fn apply(
                 );
                 Ok(c)
             });
-            let classified = read.as_ref().is_ok_and(classified);
-            if let Ok(c) = &read {
-                run.apply_thread(&rules, c).await?;
-            } else {
-                run.report
-                    .notices
-                    .push(format!("{account}/{id}: thread unreadable"));
-            }
-            if options.pass != Pass::AfterClassify || (read.is_ok() && !classified) {
+            let c = match read {
+                Ok(c) => c,
+                Err(_) => {
+                    run.report.read_failures += 1;
+                    run.report
+                        .notices
+                        .push(format!("{account}/{id}: thread unreadable"));
+                    run.hold_unread_thread(&entries, "thread unreadable", FailureKind::Environment);
+                    continue;
+                }
+            };
+            let classified = classified(&c);
+            run.apply_thread(&rules, &c).await?;
+            if options.pass != Pass::AfterClassify || !classified {
                 continue;
             }
             for entry in entries {
                 let mut outcomes = Vec::new();
                 for snapshot in &entry.actions {
                     if let Some(row) = run.report.rows.iter().rev().find(|r| {
-                        read.is_ok()
-                            && r.same_key(snapshot)
+                        r.same_key(snapshot)
                             && !matches!(r.outcome, Outcome::Pending | Outcome::ApprovalLapsed)
                     }) {
                         if row.outcome == Outcome::Held && !row.closes {
@@ -1194,18 +1210,10 @@ pub async fn apply(
                         let mut row = snapshot.clone();
                         row.id = uuid::Uuid::new_v4().to_string();
                         row.at = Some(options.clock.now());
-                        row.outcome = if read.is_err() {
-                            Outcome::Failed
-                        } else {
-                            Outcome::Skipped
-                        };
+                        row.outcome = Outcome::Skipped;
                         row.closes = row.outcome.closes(row.group);
-                        row.reason = if read.is_err() {
-                            "thread unreadable"
-                        } else {
-                            "deferred action no longer matches the current rule/message"
-                        }
-                        .into();
+                        row.reason =
+                            "deferred action no longer matches the current rule/message".into();
                         row.failure_kind = FailureKind::Environment;
                         // No unknown fate: this snapshot was never dispatched.
                         outcomes.push(row);

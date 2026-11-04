@@ -725,11 +725,11 @@ pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -
         report.notices.push(notice);
     }
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if report
-        .notices
-        .iter()
-        .any(|n| n.contains("thread unreadable"))
-    {
+    report_status(&report)
+}
+
+fn report_status(report: &engine::ApplyReport) -> Result<()> {
+    if report.read_failures > 0 {
         bail!("some rule threads could not be read; see report");
     }
     Ok(())

@@ -345,8 +345,12 @@ key sees an outbound settlement and a second message in the thread never
 forwards again — or offered to the owner (`offered` — a `propose`-mode
 mailbox, record or Board action now waiting in the mail desk or the digest,
 which carries it from there and counts in `backlog.rs`), staged, skipped, or
-failed. A thread that cannot be read is a `failed: thread unreadable` row,
-never a silent drop. An entry older than seven days settles as `expired`
+failed. **P1b review correction (2026-11-04): an unreadable thread is
+never dispatched.** It produces a notice, a non-closing `held: thread unreadable`
+report row for each deferred action, and a non-zero apply exit. No ledger
+settlement is written: no action key, once-per-thread occasion, cap capacity
+or brake count is consumed. The deferred entry stays queued and retries until
+expiry. An entry older than seven days settles as `expired`
 with a notice, so the queue cannot grow without bound behind a broken
 classifier — and `expired` is not a failure: it does not count toward §6.4's
 consecutive-failure brake, which owner inattention must never be able to
@@ -787,7 +791,9 @@ retried (a failure after a provider accepted a send cannot be told from one
 before), and for `task`, where a retry after a create that succeeded but went
 unrecorded would put a second task on the board; it leaves the key open for
 the Mailbox and Private record groups, which are idempotent and safe to retry
-after a transient error.
+after a transient error. These failure closures concern dispatched actions;
+a thread read failure never reaches dispatch and remains queued under §4.1's
+P1b review correction (2026-11-04).
 
 **A `pending` row does not stay pending forever.** It exists to survive a
 crash, and a crash is the one way to strand one. A `pending` row older than
@@ -1463,7 +1469,7 @@ brake against that rule.
 - **Three consecutive action failures** in one group → **that group** to
   `shadow`. *Action* failures only —
   the rule's own action refused or erroring. A failure of the environment
-  (`failed: thread unreadable`, a provider unreachable, a token needing
+  (`held: thread unreadable`, a provider unreachable, a token needing
   re-auth) does not count, nor does `failed: interrupted` (§4.4), since a
   crash is the harness's failure and not the rule's, on `expired`'s reasoning: an outage would
   otherwise demote every matching rule to `shadow` and end its activation

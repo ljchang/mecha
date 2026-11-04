@@ -1893,3 +1893,59 @@ async fn unexpected_deferred_graph_output_keeps_occasion_and_capacity_open() {
     );
     repaired.client.close().await.unwrap();
 }
+
+#[test]
+fn rule_exit_status_ignores_downstream_notice_text() {
+    let report = engine::ApplyReport {
+        notices: vec!["task sink unavailable: downstream says thread unreadable".into()],
+        ..Default::default()
+    };
+    assert!(
+        report_status(&report).is_ok(),
+        "downstream prose must not become a read failure"
+    );
+}
+
+#[tokio::test]
+async fn rule_exit_status_uses_read_failures_without_notices() {
+    struct UnavailableMailbox;
+    #[async_trait]
+    impl Mailbox for UnavailableMailbox {
+        async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+            Ok(vec!["thread-alpha".into()])
+        }
+        async fn read_thread(&self, _: &str, _: &str) -> Result<ThreadRead> {
+            Err(MailError::ApiError {
+                status: 503,
+                message: "temporarily unavailable".into(),
+            }
+            .into())
+        }
+        async fn mailbox_action(&self, _: &Candidate, _: ActionVerb) -> ActionResult {
+            panic!("no authorized message")
+        }
+        async fn private_record(&self, _: &Candidate, _: &str, _: &Action) -> ActionResult {
+            panic!("no authorized record")
+        }
+        async fn handled(&self, _: &Candidate) -> Result<()> {
+            panic!("no authorized skip")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path()).unwrap();
+    let mut report = engine::apply(
+        &store,
+        &UnavailableMailbox,
+        None,
+        &["campus".into()],
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(!report.notices.is_empty());
+    report.notices.clear();
+    assert!(
+        report_status(&report).is_err(),
+        "read failure must survive reworded or missing notices"
+    );
+}

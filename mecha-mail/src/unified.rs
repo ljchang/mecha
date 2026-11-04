@@ -915,15 +915,6 @@ async fn triage_one(
     thread_id: &str,
     action: TriageAction,
 ) -> Result<TriageResult, MailError> {
-    triage_with_ids(a, thread_id, action, false).await
-}
-
-pub(crate) async fn triage_with_ids(
-    a: &Account,
-    thread_id: &str,
-    action: TriageAction,
-    immutable: bool,
-) -> Result<TriageResult, MailError> {
     with_token(&a.manager, |t| async move {
         match a.provider {
             Provider::Google => {
@@ -941,7 +932,6 @@ pub(crate) async fn triage_with_ids(
             }
             Provider::Outlook => {
                 let o = OutlookProvider::new(t);
-                let o = if immutable { o.with_immutable_ids() } else { o };
                 match action {
                     TriageAction::Archive => o.archive_thread(thread_id).await,
                     TriageAction::Read => o.set_thread_read(thread_id, true).await,
@@ -2242,6 +2232,32 @@ impl crate::mcp::ToolProvider for MailTools {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thread_triage_has_no_alternate_id_mode() {
+        // This is a structural regression: removing an unused flag cannot
+        // change runtime behavior. Rules have their own message-ID boundary.
+        let source = include_str!("unified.rs");
+        let triage = source
+            .split_once("async fn triage_one(")
+            .unwrap()
+            .1
+            .split_once("async fn calendars_one(")
+            .unwrap()
+            .0;
+        assert!(
+            !triage.contains("triage_with_ids"),
+            "obsolete ID-mode adapter remains"
+        );
+        assert!(
+            !triage.contains("with_immutable_ids"),
+            "interactive triage must use its existing ID format"
+        );
+        assert!(
+            triage.contains("with_token"),
+            "triage retains token refresh routing"
+        );
+    }
+
     use crate::types::ThreadMetadata;
     /// Found on #258's review: a failed account arrived as a prose note
     /// after the JSON, which a reader of the rows drops, so the outbox's

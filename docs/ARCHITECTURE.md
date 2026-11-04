@@ -4617,8 +4617,12 @@ brake; positively identified outages and interruptions do not.
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound
 action defer removals regardless of priority. Owed actions enter the store's
-deferred queue before the pass finishes. Provider/transport read failures fail
-visibly; uncertain facts hold the read and a stale verdict keeps its queue entry.
+deferred queue before the pass finishes. Provider/transport read failures keep
+the queue and consume no keys or capacity: nothing was dispatched. They emit
+non-closing report holds and increment `ApplyReport::read_failures`, which the
+mail binary uses for a non-zero exit without parsing downstream prose. Unknown
+facts also hold the read; seven-day expiry remains terminal for both paths.
+A stale verdict keeps its queue entry.
 Verdict freshness compares envelope timestamps at whole-second precision for
 both providers: deployed classifiers discarded fractions. A prior-second
 verdict remains stale; activation eligibility keeps precise provider arrival.

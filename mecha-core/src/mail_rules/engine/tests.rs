@@ -148,7 +148,7 @@ impl Mailbox for Fake {
                 reason: "owner addresses unknown".into(),
             });
         }
-        ensure!(!self.unreadable, "unreadable");
+        ensure!(!self.unreadable, "provider HTTP 503 unavailable");
         self.candidates
             .lock()
             .unwrap()
@@ -524,10 +524,11 @@ async fn unreadable_deferred_threads_fail_visibly_and_expiry_does_not_brake() {
     f.mail.unreadable = true;
     f.options.pass = Pass::AfterClassify;
     let report = f.run(None).await;
-    assert!(report.rows.iter().any(|r| r.outcome == Outcome::Failed
+    assert!(report.rows.iter().any(|r| r.outcome == Outcome::Held
+        && !r.closes
         && r.reason == "thread unreadable"
         && r.failure_kind == FailureKind::Environment));
-    assert!(f.store.deferred().unwrap().is_empty());
+    assert_eq!(f.store.deferred().unwrap().len(), 1);
     f.mail.unreadable = false;
     f.options.pass = Pass::Headers;
     f.run(None).await;
@@ -1501,4 +1502,84 @@ async fn missing_sink_stays_nonclosing_when_caps_reset_at_local_midnight() {
         1,
         "new-day capacity and occasion remain available"
     );
+}
+
+#[tokio::test]
+async fn provider_read_failures_preserve_board_retry_and_terminal_expiry() {
+    for recover in [true, false] {
+        let mut f = Fixture::new();
+        std::fs::write(f.store.root().join("limits.toml"), "daily_cap = 1").unwrap();
+        let rule = f.store.install("task", &format!("description = 'Review notice'\ndaily_cap = 1\n[match]\nfrom_domain = ['example.com']\n{TASK}"), &BTreeMap::new()).unwrap();
+        f.mode(&rule, ActionGroup::Board, Mode::Auto);
+        f.run(None).await;
+        let queued = f.store.deferred().unwrap().remove(0);
+        let ledger_before = f.store.ledger().unwrap().len();
+        f.options.pass = Pass::AfterClassify;
+        f.mail.unreadable = true;
+        let sink = Sink::default();
+        for _ in 0..3 {
+            let report = f.run(Some(&sink)).await;
+            assert_eq!(report.rows.len(), 1);
+            assert_eq!(report.rows[0].outcome, Outcome::Held);
+            assert!(!report.rows[0].closes);
+            assert_eq!(report.rows[0].failure_kind, FailureKind::Environment);
+            assert!(report
+                .notices
+                .iter()
+                .any(|n| n.contains("thread unreadable")));
+            assert_eq!(serde_json::to_value(&report).unwrap()["read_failures"], 1);
+            assert_eq!(f.store.ledger().unwrap().len(), ledger_before);
+            assert_eq!(f.store.deferred().unwrap()[0].id, queued.id);
+            assert!(sink.0.lock().unwrap().is_empty());
+        }
+        if recover {
+            f.mail.unreadable = false;
+            let report = f.run(Some(&sink)).await;
+            assert_eq!(report.rows[0].outcome, Outcome::Done);
+            assert!(f.store.deferred().unwrap().is_empty());
+            f.run(Some(&sink)).await;
+            assert_eq!(
+                sink.0.lock().unwrap().len(),
+                1,
+                "recovery creates exactly once"
+            );
+        } else {
+            f.clock.set(queued.queued_at + Duration::days(7));
+            f.run(Some(&sink)).await;
+            assert_eq!(f.store.deferred().unwrap().len(), 1);
+            f.clock.advance(Duration::seconds(1));
+            f.run(Some(&sink)).await;
+            assert!(f.store.deferred().unwrap().is_empty());
+            assert!(f
+                .store
+                .ledger()
+                .unwrap()
+                .iter()
+                .any(|r| r.outcome == Outcome::Expired && r.closes));
+            f.mail.unreadable = false;
+            f.run(Some(&sink)).await;
+            assert!(
+                sink.0.lock().unwrap().is_empty(),
+                "expiry cannot be revived by recovery"
+            );
+            assert!(f.store.enqueue(&queued).is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn read_failure_count_distinguishes_errors_from_observation_holds() {
+    let mut f = Fixture::new();
+    f.rule("task", TASK);
+    f.mail.unreadable = true;
+    let failed = f.run(None).await;
+    assert_eq!(serde_json::to_value(&failed).unwrap()["read_failures"], 1);
+    assert!(
+        f.store.deferred().unwrap().is_empty(),
+        "header read failure cannot authorize a snapshot"
+    );
+    f.mail.unreadable = false;
+    f.mail.hold_read = true;
+    let held = f.run(None).await;
+    assert_eq!(serde_json::to_value(&held).unwrap()["read_failures"], 0);
 }
