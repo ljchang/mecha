@@ -609,7 +609,8 @@ def persona_prose():
     # The live files and every saved version of them: a version keeps the
     # profile and the rendered people section after a person is forgotten
     # (review of #841).
-    patterns = list(("identity.md", "motivation.md"))
+    patterns = ["identity.md", "motivation.md", "story.toml", "routine.toml",
+                "routine.notes.md", "life.toml", "routine.draft.toml", "life.draft.toml"]
     patterns += [f"versions/*/{name}" for name in ("identity.md", "motivation.md", "people.md")]
     patterns += ["versions/*/relationships/*.md"]
     files = [f for pattern in patterns for f in persona_glob(pattern)]
@@ -629,14 +630,15 @@ def persona_prose():
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             try:
-                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-                for table, cols in (("people", ("role", "description")), ("edge_events", ("label", "context"))):
-                    if table not in tables:
-                        continue
-                    have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-                    for col in cols:
-                        if col in have:
-                            out.extend(v for (v,) in conn.execute(f"SELECT {col} FROM {table}") if isinstance(v, str))
+                # Every text value of every table, as memory.db is read: a
+                # column added by a later migration (a fact, an event's
+                # title, a plan) is read without this list growing (review
+                # of #841). Ids and closed words make no run of six.
+                tables = [r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+                for table in tables:
+                    for row in conn.execute(f'SELECT * FROM "{table}"'):
+                        out.extend(v for v in row if isinstance(v, str))
             finally:
                 conn.close()
         except sqlite3.Error as e:
