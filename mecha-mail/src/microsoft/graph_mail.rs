@@ -211,6 +211,46 @@ impl OutlookProvider {
             .unwrap_or_default())
     }
 
+    /// Recent inbox conversation IDs only. Filter dates locally so missing
+    /// or malformed arrivals remain visible to read_thread's fail-closed check.
+    pub async fn rule_thread_ids(
+        &self,
+        max_results: u32,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, MailError> {
+        let mut ids = Vec::new();
+        let mut seen = 0;
+        let mut url = format!(
+            "{GRAPH}/me/mailFolders/inbox/messages?$top={}&$select=id,conversationId,receivedDateTime&$orderby=receivedDateTime%20desc",
+            max_results.clamp(1, 100)
+        );
+        let mut pages = std::collections::BTreeSet::new();
+        while seen < max_results && pages.insert(url.clone()) {
+            let page = self.get_json(&url).await?;
+            if let Some(messages) = page["value"].as_array() {
+                for message in messages.iter().take((max_results - seen) as usize) {
+                    seen += 1;
+                    let arrival = message["receivedDateTime"]
+                        .as_str()
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+                    if arrival.is_none_or(|at| at >= since) {
+                        if let Some(id) = message["conversationId"]
+                            .as_str()
+                            .filter(|id| !id.is_empty())
+                        {
+                            ids.push(id.to_owned());
+                        }
+                    }
+                }
+            }
+            match page["@odata.nextLink"].as_str() {
+                Some(next) => url = next.to_owned(),
+                None => break,
+            }
+        }
+        Ok(ids)
+    }
+
     /// Walk the whole mailbox backwards in time, newest first, stopping once
     /// messages are older than `since` (RFC 3339).
     ///
@@ -876,6 +916,9 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
             .as_str()
             .unwrap_or_default()
             .to_string(),
+        sender_known: msg["from"]["emailAddress"]["address"]
+            .as_str()
+            .map(|s| !s.is_empty()),
         from_name: msg["from"]["emailAddress"]["name"]
             .as_str()
             .unwrap_or_default()
@@ -915,7 +958,23 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         // truncation marker we can rely on. A nonempty array is not proof
         // that a second provider-claiming instance was not dropped.
         headers_complete: None,
-        subject_complete: msg["subject"].as_str().map(|_| true),
+        // Observed duplicates invalidate the dedicated field too, even when
+        // Graph does not guarantee completeness of the raw collection.
+        subject_complete: if headers.is_some_and(|headers| {
+            headers
+                .iter()
+                .filter(|h| {
+                    h["name"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("subject"))
+                })
+                .count()
+                > 1
+        }) {
+            Some(false)
+        } else {
+            msg["subject"].as_str().map(|_| true)
+        },
         recipients_complete: ["toRecipients", "ccRecipients", "bccRecipients"]
             .iter()
             .try_fold(true, |complete, field| {
@@ -1495,6 +1554,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn rule_thread_listing_paginates_and_keeps_unknown_arrivals_within_bound() {
+        let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: [Ok(json!({"value":[
+                {"id":"boundary", "conversationId":"thread-boundary", "receivedDateTime":"2026-11-01T00:00:00Z"},
+                {"id":"old", "conversationId":"thread-old", "receivedDateTime":"2026-10-01T00:00:00Z"}
+            ], "@odata.nextLink":format!("{GRAPH}/me/mailFolders/inbox/messages?$skiptoken=next&$select=id,conversationId,receivedDateTime")})),
+            Ok(json!({"value":[
+                {"id":"unknown", "conversationId":"thread-unknown", "receivedDateTime":"invalid"},
+                {"id":"missing", "conversationId":"thread-missing"},
+                {"id":"excess", "conversationId":"thread-excess"}
+            ], "@odata.nextLink":"never-requested"}))].into(),
+        })));
+        let ids = provider
+            .rule_thread_ids(4, "2026-11-01T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ids, ["thread-boundary", "thread-unknown", "thread-missing"]);
+        let script = provider.scripted_reads.as_ref().unwrap().lock().unwrap();
+        assert_eq!(script.urls.len(), 2);
+        assert!(script.pages.is_empty());
+        for url in &script.urls {
+            let request = provider.request(reqwest::Method::GET, url).build().unwrap();
+            assert_eq!(request.headers()["Prefer"], "IdType=\"ImmutableId\"");
+            assert!(request
+                .url()
+                .query_pairs()
+                .any(|(k, v)| k == "$select" && v == "id,conversationId,receivedDateTime"));
+        }
+    }
+
+    #[tokio::test]
+    async fn rule_thread_listing_never_requests_bodies() {
+        let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: [Ok(json!({"value":[
+                {"id":"recent", "conversationId":"thread-recent", "receivedDateTime":"2026-11-03T00:00:00Z"},
+                {"id":"unknown", "conversationId":"thread-unknown"},
+                {"id":"old", "conversationId":"thread-old", "receivedDateTime":"2026-10-01T00:00:00Z"}
+            ]}))].into(),
+        })));
+        let ids = provider
+            .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ids, ["thread-recent", "thread-unknown"]);
+        let script = provider.scripted_reads.as_ref().unwrap().lock().unwrap();
+        assert_eq!(script.urls.len(), 1);
+        let url = reqwest::Url::parse(&script.urls[0]).unwrap();
+        assert!(url.path().ends_with("/mailFolders/inbox/messages"));
+        assert_eq!(
+            url.query_pairs().find(|(k, _)| k == "$select").unwrap().1,
+            "id,conversationId,receivedDateTime"
+        );
+        let request = provider
+            .request(reqwest::Method::GET, url.as_str())
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["Prefer"], "IdType=\"ImmutableId\"");
     }
 
     fn paginated_provider() -> OutlookProvider {

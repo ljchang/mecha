@@ -87,6 +87,7 @@ mod tests {
             subject: "s".into(),
             subject_is_raw: false,
             from_address: "a@b".into(),
+            sender_known: Some(true),
             from_name: String::new(),
             to_addresses: vec![],
             cc_addresses: vec![],

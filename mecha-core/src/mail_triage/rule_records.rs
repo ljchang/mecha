@@ -73,7 +73,23 @@ pub fn update(
     Ok(())
 }
 
-pub(super) fn overlay(root: &Path, record: &mut super::Record) -> Result<()> {
+pub(super) fn overlay(root: &Path, record: &mut super::Record) {
+    overlay_with_warning(root, record, |warning| eprintln!("{warning}"));
+}
+
+fn overlay_with_warning(root: &Path, record: &mut super::Record, warn: impl FnOnce(String)) {
+    if let Err(error) = apply_overlay(root, record) {
+        let path = root
+            .join("rule-records")
+            .join(key(&record.account, &record.thread_id));
+        warn(format!(
+            "warning: unreadable rule annotations {}: {error}",
+            path.display()
+        ));
+    }
+}
+
+fn apply_overlay(root: &Path, record: &mut super::Record) -> Result<()> {
     let flags = read(root, &record.account, &record.thread_id)?;
     record
         .rest
@@ -87,4 +103,32 @@ pub(super) fn overlay(root: &Path, record: &mut super::Record) -> Result<()> {
         serde_json::to_value(flags.handled_message)?,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreadable_overlay_warns_once_with_its_file_name() {
+        let root = std::env::temp_dir().join(format!("rule-overlay-{}", uuid::Uuid::new_v4()));
+        let mut record: crate::mail_triage::Record = serde_json::from_value(serde_json::json!({
+            "account":"campus", "thread_id":"notice", "state":"classified"
+        }))
+        .unwrap();
+        update(&root, "campus", "notice", |_| {}).unwrap();
+        let path = root.join("rule-records").join(key("campus", "notice"));
+        fs::write(&path, "corrupt").unwrap();
+        let mut warnings = Vec::new();
+        overlay_with_warning(&root, &mut record, |warning| warnings.push(warning));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains(&path.display().to_string()));
+        assert!(record.rest.is_empty());
+        fs::remove_file(&path).unwrap();
+        overlay_with_warning(&root, &mut record, |_| {
+            panic!("missing annotations are normal")
+        });
+        assert_eq!(record.rest["rule_tags"], serde_json::json!([]));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

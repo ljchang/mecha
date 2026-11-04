@@ -1843,7 +1843,10 @@ classify hook, feature registry, doctor and backlog). The engine's `Mailbox`
 and `TaskSink` interfaces contain no provider clients or credentials. The mail
 binary implements them for Gmail and Outlook and connects to the globally
 configured `[[mcp]]` entry named `graph` for tasks. An absent or unavailable
-task sink holds the task. `mecha` gains no runtime dependency on `mecha-mail`.
+task sink holds the task without consuming its action key, once-per-thread
+occasion or cap capacity; the next pass retries once the sink is available.
+This does not reopen cap holds or tasks with uncertain dispatch fate. `mecha`
+gains no runtime dependency on `mecha-mail`.
 The following describes P1 as a whole:
 
  `rule.toml`, approvals,

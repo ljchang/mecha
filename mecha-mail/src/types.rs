@@ -38,7 +38,11 @@ pub struct Email {
     /// Gmail preserves its raw Subject; Graph supplies already decoded text.
     #[serde(default)]
     pub subject_is_raw: bool,
+    /// Display/reply address; a fallback is never sender evidence for rules.
     pub from_address: String,
+    /// A single unambiguous mailbox was established independently of display.
+    #[serde(default)]
+    pub sender_known: Option<bool>,
     pub from_name: String,
     pub to_addresses: Vec<String>,
     pub cc_addresses: Vec<String>,
@@ -108,7 +112,10 @@ impl Email {
             DirectionEvidence::Draft => Some(MailDirection::Draft),
             DirectionEvidence::Sent => Some(MailDirection::Sent),
             DirectionEvidence::NotSent | DirectionEvidence::NotDraft => {
-                if self.from_address.is_empty() || owners.is_empty() {
+                if self.from_address.is_empty()
+                    || self.sender_known == Some(false)
+                    || owners.is_empty()
+                {
                     return None;
                 }
                 Some(

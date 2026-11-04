@@ -55,8 +55,14 @@ pub struct Task {
 #[derive(Debug, Clone)]
 pub enum ActionResult {
     Done,
-    Failed { kind: FailureKind, reason: String },
-    Held { kind: FailureKind, reason: String },
+    Failed {
+        kind: FailureKind,
+        reason: String,
+    },
+    Held {
+        kind: FailureKind,
+        reason: HeldReason,
+    },
 }
 
 #[async_trait]
@@ -170,11 +176,19 @@ pub fn header_match(m: &Matcher, c: &Candidate) -> HeaderMatch {
         .filter(|_| list_unique)
         .and_then(headers::list_id);
     let list_known = list_unique && (c.list_id.is_none() || list.is_some());
+    let subject_unique = c
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("subject"))
+        .map(|(_, values)| values.len())
+        .sum::<usize>()
+        <= 1;
     let subject = if c.subject_is_raw {
         headers::decode(&c.message.subject)
     } else {
         headers::unfold(&c.message.subject)
-    };
+    }
+    .filter(|_| subject_unique && c.subject_complete != Some(false));
     let mut keys = vec![
         compare(
             &m.from,
@@ -223,6 +237,10 @@ pub fn header_match(m: &Matcher, c: &Candidate) -> HeaderMatch {
             .collect();
         keys.push(if wanted.is_empty() {
             HeaderMatch::NoMatch
+        } else if key.eq_ignore_ascii_case("subject")
+            && (!subject_unique || c.subject_complete == Some(false))
+        {
+            HeaderMatch::Unknown
         } else if let Some(values) = values {
             compare(
                 wanted,
@@ -455,7 +473,8 @@ impl Run<'_> {
             let attempted = matches!(
                 r.outcome,
                 Outcome::Done | Outcome::Sent | Outcome::Failed | Outcome::Unknown
-            ) || (r.outcome == Outcome::Held && r.reason == "fate unknown");
+            ) || (r.outcome == Outcome::Held
+                && HeldReason::from_ledger(&r.reason) == HeldReason::FateUnknown);
             if !in_flight
                 && !(attempted
                     && r.at.is_some_and(|at| {
@@ -581,7 +600,10 @@ impl Run<'_> {
                     || (self.options.pass == Pass::AfterClassify
                         && classified
                         && header_match(&rule.definition.matcher, c) == HeaderMatch::Match
-                        && !unknown_deferral)
+                        && !unknown_deferral
+                        && !(mode.effective == Mode::Auto
+                            && action.verb == ActionVerb::Task
+                            && self.sink.is_none()))
                     || (mode.effective.rank() >= Mode::Propose.rank()
                         && mode
                             .activated_at
@@ -712,6 +734,21 @@ impl Run<'_> {
                 } else {
                     None
                 };
+                if cap.is_none()
+                    && mode == Mode::Auto
+                    && action.verb == ActionVerb::Task
+                    && self.sink.is_none()
+                {
+                    // No dispatch was possible: this environmental observation
+                    // consumes neither a claim nor capacity. Keep the queue.
+                    row.outcome = Outcome::Held;
+                    row.closes = false;
+                    row.reason = "task sink unavailable".into();
+                    row.failure_kind = FailureKind::Environment;
+                    self.report.rows.push(row);
+                    rule_handled = false;
+                    continue;
+                }
                 if cap.is_none() && mode == Mode::Auto && action.group().once_per_thread() {
                     reservations.push(row.clone());
                 }
@@ -822,12 +859,6 @@ impl Run<'_> {
                     } else if let Some(cap) = cap {
                         self.report.notices.push(cap.into());
                         (Outcome::Held, cap.into(), FailureKind::Unknown)
-                    } else if action.verb == ActionVerb::Task && self.sink.is_none() {
-                        (
-                            Outcome::Held,
-                            "task sink unavailable".into(),
-                            FailureKind::Environment,
-                        )
                     } else if self.options.dry_run {
                         (
                             Outcome::Done,
@@ -862,7 +893,7 @@ impl Run<'_> {
                                     if action.group().once_per_thread() {
                                         ActionResult::Held {
                                             kind: FailureKind::Interrupted,
-                                            reason: "fate unknown".into(),
+                                            reason: HeldReason::FateUnknown,
                                         }
                                     } else {
                                         ActionResult::Failed {
@@ -878,7 +909,9 @@ impl Run<'_> {
                             ActionResult::Failed { kind, reason } => {
                                 (Outcome::Failed, reason, kind)
                             }
-                            ActionResult::Held { kind, reason } => (Outcome::Held, reason, kind),
+                            ActionResult::Held { kind, reason } => {
+                                (Outcome::Held, reason.to_string(), kind)
+                            }
                         }
                     };
                     rule_handled &= outcome == Outcome::Done;

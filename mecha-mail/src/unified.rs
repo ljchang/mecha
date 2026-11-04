@@ -3076,6 +3076,7 @@ mod tests {
             subject: subject.into(),
             subject_is_raw: false,
             from_address: from.into(),
+            sender_known: Some(true),
             from_name: "Someone".into(),
             to_addresses: to.iter().map(|s| s.to_string()).collect(),
             cc_addresses: cc.iter().map(|s| s.to_string()).collect(),
@@ -3288,6 +3289,25 @@ mod tests {
             ThreadMetadata::from_emails(&[unknown_draft], Some("owner@example.com"))
                 .owner_participated,
             None
+        );
+    }
+
+    #[test]
+    fn quoted_local_thread_text_preserves_main_display_bytes() {
+        let email = crate::google::gmail::parse_gmail_message(
+            crate::google::gmail::HeaderRead::Full,
+            &json!({"id":"fixture", "internalDate":"1785931200000", "payload":{"headers":[
+                {"name":"From", "value":"Fixture <\"quoted.local\"@example.com>"},
+                {"name":"Subject", "value":"Notice"},
+                {"name":"Message-ID", "value":"<fixture@example.com>"}
+            ]}}),
+        );
+        let date = crate::time::calendar_date(&email.date_received, crate::time::configured_zone())
+            .unwrap();
+        let expected = format!("--- [fixture] From: Fixture <\"quoted.local\"@example.com> · 2026-08-05T12:00:00Z\nCalendar date: {date}\nSubject: Notice\nMessage id (for mail_reply): <fixture@example.com>\n\n\n\n--- end of thread · 1 message");
+        assert_eq!(
+            render_thread(Provider::Google, "fixture", &[email]).as_bytes(),
+            expected.as_bytes()
         );
     }
 

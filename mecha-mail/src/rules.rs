@@ -74,9 +74,22 @@ impl RuleMailbox {
             .find(|a| a.name == name)
             .context("unknown account")
     }
-    fn record(&self, account: &str, thread: &str) -> Option<mail_triage::Record> {
-        mail_triage::TriageStore::open_existing_default()?.get(account, thread)
+    fn record(&self, account: &str, thread: &str) -> Result<Option<mail_triage::Record>> {
+        classified_record(&self.triage_root, account, thread)
     }
+}
+
+fn classified_record(
+    root: &std::path::Path,
+    account: &str,
+    thread: &str,
+) -> Result<Option<mail_triage::Record>> {
+    let record =
+        mail_triage::TriageStore::open_existing(root).and_then(|store| store.get(account, thread));
+    // Inbox views tolerate a broken overlay; authorization cannot. Check even
+    // without a classifier record, since rules may already have annotations.
+    rule_records::read(root, account, thread).context("rule annotations unreadable")?;
+    Ok(record)
 }
 
 fn owner_addresses(
@@ -108,7 +121,8 @@ fn candidate(
 ) -> Result<Candidate> {
     ensure!(!owners.is_empty(), "account address unknown");
     ensure!(
-        emails.iter().all(|e| !e.from_address.is_empty()
+        emails.iter().all(|e| e.sender_known == Some(true)
+            && !e.from_address.is_empty()
             && e.direction(owners).is_some()
             && !e.provider_id.is_empty()),
         "message direction unknown"
@@ -172,6 +186,7 @@ fn candidate(
             .iter()
             .chain(&email.cc_addresses)
             .chain(&email.bcc_addresses)
+            .filter(|_| email.recipients_complete != Some(false))
             .cloned()
             .collect(),
         list_id: email.list_id.clone(),
@@ -304,31 +319,21 @@ impl Mailbox for RuleMailbox {
             );
         }
         let a = self.account(account)?;
-        let emails = self
+        let ids = self
             .with_token(a, |t| async move {
                 match a.provider {
-                    Provider::Google => {
-                        GmailProvider::new(t)
-                            .search("in:inbox newer_than:7d", 500)
-                            .await
-                    }
+                    Provider::Google => GmailProvider::new(t).rule_thread_ids(500).await,
                     Provider::Outlook => {
                         OutlookProvider::new(t)
                             .with_immutable_ids()
-                            .recent(500)
+                            .rule_thread_ids(500, now - RECENT_WINDOW)
                             .await
                     }
                 }
             })
             .await?;
-        Ok(emails
+        Ok(ids
             .into_iter()
-            // Keep unknown arrivals visible so read_thread can hold them.
-            .filter(|e| {
-                e.provider_arrival_at
-                    .is_none_or(|at| at >= now - RECENT_WINDOW)
-            })
-            .filter_map(|e| e.thread_id)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect())
@@ -362,7 +367,7 @@ impl Mailbox for RuleMailbox {
                 a.address.as_deref(),
                 &RuleStore::open_existing(&self.rule_root)?,
             )?,
-            self.record(account, thread).as_ref(),
+            self.record(account, thread)?.as_ref(),
         )
     }
     async fn mailbox_action(&self, c: &Candidate, action: ActionVerb) -> ActionResult {
@@ -511,7 +516,7 @@ impl TaskSink for GraphSink {
                 // cap reservation. An outage says nothing about task fate.
                 ActionResult::Held {
                     kind: FailureKind::Environment,
-                    reason: "fate unknown".into(),
+                    reason: mecha_core::mail_rules::HeldReason::FateUnknown,
                 }
             }
             Ok(output) => ActionResult::Failed {

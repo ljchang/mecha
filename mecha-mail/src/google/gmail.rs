@@ -11,6 +11,8 @@ use crate::types::{authentication_results, first_header, Email, MailError};
 
 #[derive(Clone)]
 pub struct GmailProvider {
+    #[cfg(test)]
+    read_urls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     access_token: String,
     client: reqwest::Client,
     #[cfg(test)]
@@ -22,6 +24,8 @@ pub struct GmailProvider {
 impl GmailProvider {
     pub fn new(access_token: String) -> Self {
         Self {
+            #[cfg(test)]
+            read_urls: Default::default(),
             access_token,
             client: crate::http::client(),
             #[cfg(test)]
@@ -38,6 +42,7 @@ impl GmailProvider {
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
         #[cfg(test)]
         if let Some(reads) = &self.scripted_reads {
+            self.read_urls.lock().unwrap().push(url.into());
             return Ok(reads
                 .lock()
                 .unwrap()
@@ -137,6 +142,41 @@ impl GmailProvider {
         }
 
         Ok(self.get_messages_concurrently(&message_ids).await)
+    }
+
+    /// Recent inbox conversation IDs, without fetching message bodies. The
+    /// provider applies the seven-day window; read_thread verifies arrival.
+    pub async fn rule_thread_ids(&self, max_results: u32) -> Result<Vec<String>, MailError> {
+        let mut ids = Vec::new();
+        let mut seen = 0;
+        let mut page_token: Option<String> = None;
+        let mut tokens = std::collections::BTreeSet::new();
+        while seen < max_results {
+            let size = (max_results - seen).min(100);
+            let mut url = format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={size}&q={}",
+                urlencode("in:inbox newer_than:7d")
+            );
+            if let Some(token) = &page_token {
+                url.push_str(&format!("&pageToken={}", urlencode(token)));
+            }
+            let page = self.get_json(&url).await?;
+            if let Some(messages) = page["messages"].as_array() {
+                for message in messages.iter().take((max_results - seen) as usize) {
+                    seen += 1;
+                    if let Some(id) = message["threadId"].as_str().filter(|id| !id.is_empty()) {
+                        ids.push(id.to_owned());
+                    }
+                }
+            }
+            match page["nextPageToken"].as_str() {
+                Some(token) if tokens.insert(token.to_owned()) => {
+                    page_token = Some(token.to_owned())
+                }
+                _ => break,
+            }
+        }
+        Ok(ids)
     }
 
     /// Fetch a whole conversation in one round trip, rather than
@@ -467,6 +507,7 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
     let mut subject = String::new();
     let mut from_raw = String::new();
     let mut from_count = 0;
+    let mut subject_count = 0;
     let mut to_raw = String::new();
     let mut cc_raw = String::new();
     let mut bcc_raw = String::new();
@@ -478,7 +519,10 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
             let name = h["name"].as_str().unwrap_or_default().to_lowercase();
             let value = h["value"].as_str().unwrap_or_default();
             match name.as_str() {
-                "subject" => subject = value.to_string(),
+                "subject" => {
+                    subject_count += 1;
+                    subject = value.to_string();
+                }
                 "from" => {
                     from_count += 1;
                     from_raw = value.to_string();
@@ -500,13 +544,26 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
         Default::default()
     };
 
+    let sender_known = Some(!from_address.is_empty());
+    let (from_name, from_address) = if sender_known == Some(true) {
+        (from_name, from_address)
+    } else {
+        display_email_address(&from_raw)
+    };
+
     let to = parse_address_list(&to_raw);
     let cc = parse_address_list(&cc_raw);
     let bcc = parse_address_list(&bcc_raw);
     let recipients_parsed = to.is_some() && cc.is_some() && bcc.is_some();
-    let to_addresses = to.unwrap_or_default();
-    let cc_addresses = cc.unwrap_or_default();
-    let bcc_addresses = bcc.unwrap_or_default();
+    let display_list = |raw: &str| {
+        raw.split(',')
+            .map(|part| display_email_address(part).1)
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let to_addresses = to.unwrap_or_else(|| display_list(&to_raw));
+    let cc_addresses = cc.unwrap_or_else(|| display_list(&cc_raw));
+    let bcc_addresses = bcc.unwrap_or_else(|| display_list(&bcc_raw));
 
     // Prefer internalDate (epoch millis) over the header, which lies more.
     let provider_arrival_at = msg["internalDate"]
@@ -556,6 +613,7 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
         subject,
         subject_is_raw: true,
         from_address,
+        sender_known,
         from_name,
         to_addresses,
         cc_addresses,
@@ -580,8 +638,16 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
         // The assign-every-time loop above must never handle this header.
         headers: crate::types::header_values(headers.map(Vec::as_slice)),
         authentication_results: authentication_results(headers.map(Vec::as_slice)),
-        subject_complete: headers_complete,
-        recipients_complete: headers_complete.filter(|_| recipients_parsed),
+        subject_complete: if subject_count > 1 {
+            Some(false)
+        } else {
+            headers_complete
+        },
+        recipients_complete: if recipients_parsed {
+            headers_complete
+        } else {
+            Some(false)
+        },
         headers_complete,
         is_draft: msg["labelIds"]
             .as_array()
@@ -616,6 +682,20 @@ fn parse_email_address(raw: &str) -> (String, String) {
         return Default::default();
     };
     (address.display_name.unwrap_or_default(), address.addr)
+}
+
+/// Legacy display/reply fallback only. These strings are not rule evidence.
+fn display_email_address(raw: &str) -> (String, String) {
+    let raw = raw.trim();
+    if let Some(start) = raw.find('<') {
+        if let Some(end) = raw.find('>').filter(|end| *end > start) {
+            return (
+                raw[..start].trim().trim_matches('"').to_owned(),
+                raw[start + 1..end].trim().to_owned(),
+            );
+        }
+    }
+    (String::new(), raw.to_owned())
 }
 
 fn parse_address_list(raw: &str) -> Option<Vec<String>> {
@@ -895,6 +975,61 @@ mod tests {
                 .path()
                 .starts_with("/gmail/v1/users/me/messages/authorized-message/"));
         }
+    }
+
+    #[tokio::test]
+    async fn rule_thread_listing_paginates_and_bounds_message_hits() {
+        let mut provider = GmailProvider::new("fixture-token".into());
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new([
+            serde_json::json!({"messages":[{"id":"alpha","threadId":"thread-alpha"}], "nextPageToken":"page+next"}),
+            serde_json::json!({"messages":[{"id":"beta","threadId":"thread-alpha"},
+                {"id":"gamma","threadId":"thread-gamma"}, {"id":"excess","threadId":"thread-excess"}],
+                "nextPageToken":"never-requested"})].into())));
+        assert_eq!(
+            provider.rule_thread_ids(3).await.unwrap(),
+            ["thread-alpha", "thread-alpha", "thread-gamma"]
+        );
+        let urls = provider.read_urls.lock().unwrap();
+        assert_eq!(urls.len(), 2);
+        for url in urls.iter() {
+            assert!(reqwest::Url::parse(url)
+                .unwrap()
+                .path()
+                .ends_with("/messages"));
+            assert!(!url.contains("format="));
+        }
+        let second = reqwest::Url::parse(&urls[1]).unwrap();
+        assert!(second
+            .query_pairs()
+            .any(|(k, v)| k == "pageToken" && v == "page+next"));
+        assert!(second
+            .query_pairs()
+            .any(|(k, v)| k == "maxResults" && v == "2"));
+    }
+
+    #[tokio::test]
+    async fn rule_thread_listing_never_fetches_full_messages() {
+        let mut provider = GmailProvider::new("fixture-token".into());
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            [
+                serde_json::json!({"messages":[{"id":"message-alpha","threadId":"thread-alpha"}]}),
+                serde_json::json!({"id":"message-alpha","threadId":"thread-alpha"}),
+            ]
+            .into(),
+        )));
+        let ids = provider.rule_thread_ids(500).await.unwrap();
+        assert_eq!(ids, ["thread-alpha"]);
+        let urls = provider.read_urls.lock().unwrap();
+        assert_eq!(
+            urls.len(),
+            1,
+            "listing must not fetch each full message: {urls:?}"
+        );
+        assert!(!urls[0].contains("format=full"));
+        assert!(reqwest::Url::parse(&urls[0])
+            .unwrap()
+            .query_pairs()
+            .any(|(k, v)| k == "q" && v.contains("in:inbox") && v.contains("newer_than:7d")));
     }
 
     #[tokio::test]

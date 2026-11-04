@@ -221,7 +221,11 @@ impl LedgerRow {
         );
         let mut row = self.settled(
             if safe { Outcome::Failed } else { Outcome::Held },
-            if safe { "interrupted" } else { "fate unknown" },
+            if safe {
+                "interrupted"
+            } else {
+                super::FATE_UNKNOWN_REASON
+            },
             now,
         )?;
         row.failure_kind = FailureKind::Interrupted;

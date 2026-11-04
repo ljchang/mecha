@@ -4581,8 +4581,10 @@ binary.** `mail_rules::engine::apply` takes `Mailbox` and `TaskSink` interfaces;
 `with_immutable_ids`; a folder move must not manufacture a new ledger key.
 Mailbox effects address the authorized provider message ID. A thread-wide
 mutation would also touch pre-activation or newly arrived, unmatched messages.
-Gmail's From is parsed as a mailbox, never by selecting angle-bracket text:
-a quoted display name may contain a different address. Ambiguous senders hold.
+Gmail's rule sender evidence is parsed as a mailbox, never by selecting
+angle-bracket text: a quoted display name may contain a different address.
+Display and reply fields retain the legacy fallback for unsupported addresses;
+that fallback is not sender or recipient evidence. Ambiguous senders hold.
 Inbound selection uses provider direction evidence and all configured account
 addresses plus the rule store's aliases. SENT/DRAFT labels and Graph draft/sent
 facts cannot be overridden by a different sender address; missing direction
@@ -4633,7 +4635,10 @@ erase a rule's tag or digest flag.
 **Automatic task names contain no mail prose.** The owner's rule description
 plus a validated address, arrival date and typed deadline supply the name;
 context is a thread pointer. Missing graph configuration or a failed connection
-holds tasks. Description matching and all sends remain unsupported in P1b;
+holds tasks without consuming action keys, once-per-thread occasions or cap
+capacity; the next pass retries once the sink is available. Cap holds still
+close their occasions, and an uncertain dispatched task remains closed.
+Description matching and all sends remain unsupported in P1b;
 `resolve_mode` supplies their permanent ceilings, including spam's propose-only
 ceiling and the Board origin gate.
 

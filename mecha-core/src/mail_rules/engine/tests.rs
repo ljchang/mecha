@@ -363,15 +363,23 @@ async fn activation_cutoff_and_lapse_do_not_replay_a_backlog() {
 }
 
 #[tokio::test]
-async fn tasks_are_once_per_thread_and_missing_sink_is_held() {
+async fn missing_sink_retries_without_consuming_keys_caps_or_brakes() {
     let mut f = Fixture::new();
     let r = f.rule("task", TASK);
     f.mode(&r, ActionGroup::Board, Mode::Auto);
     f.options.pass = Pass::AfterClassify;
-    let report = f.run(None).await;
-    assert_eq!(report.rows[0].outcome, Outcome::Held);
-    assert_eq!(report.rows[0].reason, "task sink unavailable");
+    for _ in 0..4 {
+        let report = f.run(None).await;
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].outcome, Outcome::Held);
+        assert_eq!(report.rows[0].reason, "task sink unavailable");
+        assert!(!report.rows[0].closes);
+        assert!(f.store.ledger().unwrap().is_empty());
+        assert_eq!(f.store.deferred().unwrap().len(), 1);
+    }
     let sink = Sink::default();
+    assert_eq!(f.run(Some(&sink)).await.rows[0].outcome, Outcome::Done);
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
     f.mail.candidates.lock().unwrap()[0]
         .message
         .provider_message_id = "new-message".into();
@@ -379,9 +387,6 @@ async fn tasks_are_once_per_thread_and_missing_sink_is_held() {
         f.run(Some(&sink)).await.rows[0].reason,
         "thread already handled"
     );
-    assert!(sink.0.lock().unwrap().is_empty());
-    f.mail.next("beta");
-    f.run(Some(&sink)).await;
     assert_eq!(sink.0.lock().unwrap().len(), 1);
 }
 
@@ -433,7 +438,7 @@ async fn pending_sweep_reopens_mailbox_and_holds_task_fate() {
         .rows
         .iter()
         .any(|r| r.reason == "interrupted" && r.failure_kind == FailureKind::Interrupted));
-    assert!(report.rows.iter().any(|r| r.reason == "fate unknown"));
+    assert!(report.rows.iter().any(|r| r.reason == FATE_UNKNOWN_REASON));
     assert_eq!(*f.mail.calls.lock().unwrap(), vec!["Archive"]);
     assert!(sink.0.lock().unwrap().is_empty());
 }

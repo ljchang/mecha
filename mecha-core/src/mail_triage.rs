@@ -1323,7 +1323,8 @@ impl TriageStore {
     }
 
     /// Every record, newest first. Unreadable rows are skipped rather than
-    /// fatal: one torn file must not hide the rest of the inbox.
+    /// fatal: one torn file must not hide the rest of the inbox. An unreadable
+    /// rule overlay warns once and leaves its base record available.
     pub fn list(&self) -> Result<Vec<Record>> {
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.root) else {
@@ -1336,7 +1337,7 @@ impl TriageStore {
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
                 if let Ok(mut rec) = serde_json::from_str::<Record>(&text) {
-                    rule_records::overlay(&self.root, &mut rec)?;
+                    rule_records::overlay(&self.root, &mut rec);
                     out.push(rec);
                 }
             }
@@ -1371,7 +1372,7 @@ impl TriageStore {
         };
         let text = std::fs::read_to_string(self.root.join(probe.file_name())).ok()?;
         let mut record = serde_json::from_str(&text).ok()?;
-        rule_records::overlay(&self.root, &mut record).ok()?;
+        rule_records::overlay(&self.root, &mut record);
         Some(record)
     }
 
@@ -1588,6 +1589,43 @@ mod tests {
         let got = store.get("campus", "abc").unwrap();
         assert_eq!(got.verdict.unwrap().bucket, Bucket::Notify);
         assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn unreadable_rule_overlay_preserves_list_and_get_records() {
+        let store = temp_store("unreadable-overlay");
+        let broken = rec("campus", "broken", Bucket::Notify);
+        let healthy = rec("campus", "healthy", Bucket::Respond);
+        store.put(&broken).unwrap();
+        store.put(&healthy).unwrap();
+        rule_records::update(store.root(), "campus", "broken", |r| {
+            r.tags.insert("notice".into());
+        })
+        .unwrap();
+        let path = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        for as_directory in [false, true] {
+            if as_directory {
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+            } else {
+                std::fs::write(&path, "not json").unwrap();
+            }
+            let records = store
+                .list()
+                .expect("one unreadable overlay cannot hide the inbox");
+            assert_eq!(records.len(), 2);
+            let got = store.get("campus", "broken").expect("base record survives");
+            assert_eq!(got.subject, broken.subject);
+            assert_eq!(got.verdict.unwrap().bucket, Bucket::Notify);
+            assert!(!got.rest.contains_key("rule_tags"));
+            assert!(rule_records::read(store.root(), "campus", "broken").is_err());
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
     }
 
     /// A provider is free to put anything in a thread id; a store that cannot
