@@ -843,12 +843,12 @@ class Guard(unittest.TestCase):
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("the name of someone in a persona's life", r.stdout)
-        # Spelled as written already in the repository: excused, but said.
+        # Even spelled so already in the repository: a person's name is never
+        # excused, since ordinary first names are in any repository's prose.
         git(self.repo, "commit", "-q", "--no-verify", "-m", "the name")
         self.stage("again.py", "Y = 'Larkin again.'\n")
         r = self.run_guard("--staged")
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("already used in the repository", r.stdout)
+        self.assertEqual(r.returncode, 1, r.stdout)
 
     def test_a_name_stored_in_lowercase_still_refuses_its_capital(self):
         pdir = os.path.join(self.home, "personas", "quillon")
@@ -898,6 +898,21 @@ class Guard(unittest.TestCase):
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("already used in the repository", r.stdout)
+
+    def test_a_saved_version_and_a_drafts_prose_are_read(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        os.makedirs(os.path.join(pdir, "versions", "abc"))
+        with open(os.path.join(pdir, "versions", "abc", "people.md"), "w") as f:
+            f.write("Orla mends fishing nets on the jetty every Sunday at dawn.\n")
+        with open(os.path.join(pdir, "people.draft.json"), "w") as f:
+            json.dump({"people": [{"name": "Petra", "aliases": [],
+                       "description": "Teaches the fiddle in a barn near the river crossing."}]}, f)
+        for name, text in [("a.py", "X = 'mends fishing nets on the jetty every Sunday'\n"),
+                           ("b.py", "X = 'teaches the fiddle in a barn near the river'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
 
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
