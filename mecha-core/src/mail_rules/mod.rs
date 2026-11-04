@@ -25,6 +25,9 @@ pub const FATE_UNKNOWN_REASON: &str = "fate unknown";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeldReason {
     FateUnknown,
+    /// The host guarantees no effect ran and no background job was started.
+    /// Release the pending claim; report a non-closing observation hold.
+    NotDispatched(String),
     Other(String),
 }
 impl HeldReason {
@@ -50,7 +53,7 @@ impl std::fmt::Display for HeldReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::FateUnknown => FATE_UNKNOWN_REASON,
-            Self::Other(reason) => reason,
+            Self::NotDispatched(reason) | Self::Other(reason) => reason,
         })
     }
 }

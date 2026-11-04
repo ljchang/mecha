@@ -4619,6 +4619,9 @@ rules, even shadow ones, and any matching non-off header digest/task/outbound
 action defer removals regardless of priority. Owed actions enter the store's
 deferred queue before the pass finishes. Provider/transport read failures fail
 visibly; uncertain facts hold the read and a stale verdict keeps its queue entry.
+Verdict freshness compares envelope timestamps at whole-second precision for
+both providers: deployed classifiers discarded fractions. A prior-second
+verdict remains stale; activation eligibility keeps precise provider arrival.
 Unknown header completeness, attachment presence and provider arrival remain
 unknown through the adapter. Dedicated
 Graph subject and To/Cc/Bcc fields carry their own completeness: raw-header
@@ -4648,7 +4651,10 @@ holds tasks without consuming action keys, once-per-thread occasions or cap
 capacity; the next pass retries once the sink is available. Sink availability
 is checked before caps, since a local midnight can free capacity before dispatch.
 Cap holds still close their occasions, and an uncertain dispatched task remains
-closed.
+closed. Graph task tools that advertise background execution are refused at
+connection. A defensive deferred result is cancelled without starting its job;
+its unused claim settles as skipped and its report shows a non-closing hold.
+Only a typed guarantee of no dispatch releases a claim, never an outage alone.
 Description matching and all sends remain unsupported in P1b;
 `resolve_mode` supplies their permanent ceilings, including spam's propose-only
 ceiling and the Board origin gate.

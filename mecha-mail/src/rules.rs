@@ -203,12 +203,13 @@ fn candidate(
     let arrival_at = email.provider_arrival_at;
     let classified = record
         .filter(|r| r.state != mail_triage::FAILED && r.verdict.is_some())
-        // The record's envelope stamp must cover this inbound message. A newer
-        // classified_at alone could be a reclassification of stale input.
+        // Deployed classifiers stored envelope stamps at whole-second precision.
+        // Compare at that precision for both providers, while retaining precise
+        // arrival for activation. A later classified_at cannot certify stale input.
         .filter(|r| {
             arrival_at.is_some_and(|arrival| {
                 DateTime::parse_from_rfc3339(&r.date)
-                    .is_ok_and(|d| d.with_timezone(&Utc) >= arrival)
+                    .is_ok_and(|d| d.timestamp() >= arrival.timestamp())
             })
         })
         .and_then(|r| {
@@ -516,7 +517,10 @@ struct PlannedSink;
 #[async_trait]
 impl TaskSink for PlannedSink {
     async fn create(&self, _: &Task) -> ActionResult {
-        unreachable!("dry runs never create tasks")
+        ActionResult::Held {
+            kind: FailureKind::Environment,
+            reason: "dry run: sink not called".into(),
+        }
     }
 }
 
@@ -557,6 +561,10 @@ impl GraphSink {
                 name == "kg_task_create" || name.ends_with("__kg_task_create")
             })
             .context("graph MCP has no kg_task_create")?;
+        if create.defers() {
+            let _ = client.close().await;
+            bail!("graph kg_task_create requires background execution; mail rules require an inline task sink");
+        }
         let ctx = ToolCtx {
             workspace,
             security: config.security.clone(),
@@ -581,6 +589,19 @@ impl TaskSink for GraphSink {
             args["due"] = serde_json::json!(due.to_string());
         }
         match self.create.call(args, &self.ctx).await {
+            Ok(output) if output.deferred.is_some() => {
+                // The MCP job is lazy: it has not been submitted to a job sink
+                // or dispatched. Cancel and drop it; a later pass can retry.
+                if let Some(job) = output.deferred {
+                    job.cancel_token().cancel();
+                }
+                ActionResult::Held {
+                    kind: FailureKind::Environment,
+                    reason: mecha_core::mail_rules::HeldReason::NotDispatched(
+                        "graph task tool requires background execution".into(),
+                    ),
+                }
+            }
             Ok(output)
                 if !output.is_error
                     && output.deferred.is_none()

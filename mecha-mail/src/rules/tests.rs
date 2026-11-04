@@ -1660,3 +1660,236 @@ fn uncertain_read_inputs_hold_but_provider_failures_remain_errors() {
     )
     .is_err());
 }
+
+#[test]
+fn legacy_whole_second_verdicts_cover_fractional_provider_arrivals() {
+    let arrival: DateTime<Utc> = "2026-11-03T12:00:00.123Z".parse().unwrap();
+    let gmail = crate::google::gmail::parse_gmail_message(
+        crate::google::gmail::HeaderRead::Full,
+        &json!({"id":"message-alpha", "internalDate":arrival.timestamp_millis().to_string(),
+            "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":"sender@example.com"}]}}),
+    );
+    let outlook = crate::microsoft::graph_mail::parse_outlook_message(
+        &json!({"id":"message-alpha", "receivedDateTime":arrival.to_rfc3339(),
+            "isDraft":false, "from":{"emailAddress":{"address":"sender@example.com"}}}),
+    );
+    for email in [gmail, outlook] {
+        let mut record: mail_triage::Record = serde_json::from_value(json!({
+            "account":"campus", "thread_id":"thread-alpha", "state":"classified",
+            "date":"2026-11-03T12:00:00Z", "classified_at":"2026-11-03T12:00:05Z",
+            "verdict":{"bucket":"notify", "urgency":"none", "proposed":"none"}
+        }))
+        .unwrap();
+        let read = |record: &mail_triage::Record| {
+            candidate(
+                "campus",
+                "thread-alpha",
+                std::slice::from_ref(&email),
+                &["owner@example.edu".into()],
+                Some(record),
+            )
+            .unwrap()
+        };
+        let fresh = read(&record);
+        assert_eq!(
+            fresh.arrival_at,
+            Some(arrival),
+            "eligibility must retain precision"
+        );
+        assert!(
+            fresh.classified.is_some(),
+            "legacy {} verdict was rejected",
+            email.provider
+        );
+        record.date = "2026-11-03T11:59:59Z".into();
+        assert!(
+            read(&record).classified.is_none(),
+            "a later classified_at must not certify stale input"
+        );
+    }
+}
+
+fn graph_test_task() -> Task {
+    Task {
+        name: "Review notice".into(),
+        account: "campus".into(),
+        thread_id: "thread-alpha".into(),
+        received_at: Utc::now(),
+        due: None,
+    }
+}
+
+#[tokio::test]
+async fn planned_sink_returns_environment_hold() {
+    let result = PlannedSink.create(&graph_test_task()).await;
+    assert!(
+        matches!(&result, ActionResult::Held {kind: FailureKind::Environment, reason}
+        if reason.to_string() == "dry run: sink not called"),
+        "{result:?}"
+    );
+}
+
+fn background_graph_fixture(dir: &std::path::Path) -> mecha_core::config::McpServerConfig {
+    let script = dir.join("background_graph.py");
+    std::fs::write(&script, r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion':'2024-11-05','capabilities':{},'serverInfo':{'name':'fixture','version':'test'}}
+    elif method == 'tools/list':
+        result = {'tools':[{'name':'kg_task_create','inputSchema':{'type':'object'},
+            '_meta':{'mecha-factory.ai/background':sys.argv[1] == 'background'}}]}
+    elif method == 'tools/call':
+        with open('dispatched', 'a') as stream:
+            stream.write('task\n')
+        result = {'content':[{'type':'text','text':'created fictional task'}]}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
+"#).unwrap();
+    mecha_core::config::McpServerConfig {
+        name: "graph".into(),
+        command: "python3".into(),
+        args: vec![script.display().to_string(), "background".into()],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn background_graph_is_refused_before_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let entry = background_graph_fixture(dir.path());
+    let result = GraphSink::connect_at(&Default::default(), &entry, dir.path().into()).await;
+    if let Ok(graph) = &result {
+        graph.client.close().await.unwrap();
+    }
+    assert!(result.is_err(), "background task tool must not be admitted");
+    let notice = result.err().unwrap().to_string();
+    assert!(
+        notice.contains("kg_task_create") && notice.contains("background"),
+        "{notice}"
+    );
+    assert!(!dir.path().join("dispatched").exists());
+}
+
+#[tokio::test]
+async fn unexpected_deferred_graph_output_keeps_occasion_and_capacity_open() {
+    use mecha_core::mail_rules::{ActionGroup, Mode, Outcome, P1Holds};
+    let dir = tempfile::tempdir().unwrap();
+    let mut entry = background_graph_fixture(dir.path());
+    // Bypass connection validation to exercise the defensive output boundary.
+    let client = McpClient::connect(
+        &entry,
+        &mecha_core::sandbox::Sandbox::new(Default::default()),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    let create = client.list_tools().await.unwrap().remove(0);
+    assert!(create.defers());
+    let graph = GraphSink {
+        client,
+        create,
+        ctx: ToolCtx {
+            workspace: dir.path().into(),
+            ..Default::default()
+        },
+    };
+    let result = graph.create(&graph_test_task()).await;
+    assert!(
+        matches!(
+            result,
+            ActionResult::Held {
+                kind: FailureKind::Environment,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(!dir.path().join("dispatched").exists());
+
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    std::fs::write(store.root().join("limits.toml"), "daily_cap = 1").unwrap();
+    let rule = store.install("task", "description = 'Review notice'\ndaily_cap = 1\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'task'", &Default::default()).unwrap();
+    store
+        .change_mode(
+            &rule.name,
+            ActionGroup::Board,
+            Mode::Auto,
+            Some(mecha_core::closure::Actor::Owner),
+            &rule.approval_digest,
+            &P1Holds {
+                origin_gate: GateStatus::Passing,
+            },
+        )
+        .unwrap();
+    let now = Utc::now() + chrono::Duration::hours(1);
+    let mut c = candidate(
+        "campus",
+        "thread-alpha",
+        &[email(
+            "message-alpha",
+            "sender@example.com",
+            &now.to_rfc3339(),
+        )],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    c.classified = Some(Classified {
+        at: now,
+        deadline: None,
+    });
+    let mail = FixtureMailbox(vec![c]);
+    let mut options = engine::EngineOptions {
+        clock: Arc::new(mecha_core::clock::TestClock::new(now)),
+        ..Default::default()
+    };
+    engine::apply(&store, &mail, None, &["campus".into()], &options)
+        .await
+        .unwrap();
+    options.pass = Pass::AfterClassify;
+    for _ in 0..3 {
+        let report = engine::apply(&store, &mail, Some(&graph), &["campus".into()], &options)
+            .await
+            .unwrap();
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].outcome, Outcome::Held);
+        assert!(
+            !report.rows[0].closes,
+            "deferred is undispatched, not unknown fate"
+        );
+        assert_eq!(report.rows[0].failure_kind, FailureKind::Environment);
+        assert_eq!(store.deferred().unwrap().len(), 1);
+        assert!(!store
+            .ledger()
+            .unwrap()
+            .iter()
+            .any(|r| r.is_action_failure()));
+    }
+    assert!(!dir.path().join("dispatched").exists());
+    graph.client.close().await.unwrap();
+    entry.args[1] = "inline".into();
+    let repaired = GraphSink::connect_at(&Default::default(), &entry, dir.path().into())
+        .await
+        .unwrap();
+    let report = engine::apply(&store, &mail, Some(&repaired), &["campus".into()], &options)
+        .await
+        .unwrap();
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Done,
+        "claim, both caps, and auto mode remain available"
+    );
+    assert!(store.deferred().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("dispatched")).unwrap(),
+        "task\n"
+    );
+    repaired.client.close().await.unwrap();
+}

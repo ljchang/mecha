@@ -834,6 +834,7 @@ impl Run<'_> {
                     } else {
                         None
                     };
+                    let mut not_dispatched = false;
                     let (outcome, reason, failure) = if inputs_changed {
                         (
                             Outcome::Skipped,
@@ -889,7 +890,9 @@ impl Run<'_> {
                                     Some(sink) => sink.create(&task(rule, c)).await,
                                     None => ActionResult::Held {
                                         kind: FailureKind::Environment,
-                                        reason: "task sink unavailable".into(),
+                                        reason: HeldReason::NotDispatched(
+                                            "task sink unavailable".into(),
+                                        ),
                                     },
                                 },
                                 _ => ActionResult::Held {
@@ -921,6 +924,13 @@ impl Run<'_> {
                             ActionResult::Failed { kind, reason } => {
                                 (Outcome::Failed, reason, kind)
                             }
+                            ActionResult::Held {
+                                kind,
+                                reason: HeldReason::NotDispatched(reason),
+                            } => {
+                                not_dispatched = true;
+                                (Outcome::Skipped, reason, kind)
+                            }
                             ActionResult::Held { kind, reason } => {
                                 (Outcome::Held, reason.to_string(), kind)
                             }
@@ -931,7 +941,21 @@ impl Run<'_> {
                     provisional.remove(&row.id);
                     settled.mode = mode;
                     settled.failure_kind = failure;
-                    self.write(settled)?;
+                    if not_dispatched {
+                        // A persisted Held closes by outcome even with closes=false.
+                        // Settle the unused claim as Skipped and report the hold
+                        // separately, so caps and deferred occasions remain open.
+                        if !self.options.dry_run {
+                            self.store.append_ledger(&settled)?;
+                        }
+                        self.rows.push(settled.clone());
+                        settled.id = uuid::Uuid::new_v4().to_string();
+                        settled.settlement = None;
+                        settled.outcome = Outcome::Held;
+                        self.report.rows.push(settled);
+                    } else {
+                        self.write(settled)?;
+                    }
                 }
                 self.modes(rule)?;
             }
