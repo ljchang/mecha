@@ -930,14 +930,18 @@ class Guard(unittest.TestCase):
         pdir = os.path.join(self.home, "personas", "quillon")
         os.makedirs(os.path.join(pdir, "versions", "v1"))
         with open(os.path.join(pdir, "versions", "v1", "people.md"), "w") as f:
-            f.write("- Oswin (your brother), also called Oz. Builds kites.\n"
-                    "Also in your life: Pelham (your neighbour), Quenby.\n")
+            f.write("Closest to you:\n- Oswin (your brother), also called Oz. Builds kites.\n"
+                    "Others in your life: Pelham (your neighbour), Quenby.\n"
+                    "Between them: Oswin and Pelham: friend, tense; Oswin and Quenby: friend, no longer.\n")
         for name, text in [("a.py", "X = 'Oswin waved.'\n"), ("b.py", "X = 'Oz waved.'\n"),
                            ("c.py", "X = 'Pelham waved.'\n"), ("d.py", "X = 'Quenby waved.'\n")]:
             self.stage(name, text)
             r = self.run_guard("--staged")
             self.assertEqual(r.returncode, 1, (text, r.stdout))
             git(self.repo, "rm", "-q", "--cached", name)
+        # A tie's notes are words, not people.
+        self.stage("e.py", "X = 'Tense, and No longer friends.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
 
     def test_a_shout_is_not_the_name_and_the_owner_may_allow_a_word(self):
         pdir = os.path.join(self.home, "personas", "quillon")

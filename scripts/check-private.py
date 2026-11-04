@@ -731,9 +731,29 @@ def people_names():
 
 
 def section_names(text):
-    """The people a rendered people section names: a close person's line
-    (`- Name (role), also called A, B. ...`) and the comma lists after a
-    heading's colon (`Name (role), Name (role).`)."""
+    """The people a rendered people section names, read by its own headings
+    (`network::prompt_section`): a close person's line (`- Name (role),
+    also called A, B. ...`), the comma lists after "Others in your life:"
+    and "No longer in your life:" (`Name (role)`, an `ended ...` note
+    skipped), and the pairs after "Between them:" (`A and B: tie, tense`,
+    names only: a tie's notes are words, not people; review of #841)."""
+    def top_level(rest, sep):
+        depth, part, parts = 0, "", []
+        i = 0
+        while i < len(rest):
+            ch = rest[i]
+            depth += ch == "("
+            depth -= ch == ")"
+            if depth == 0 and rest.startswith(sep, i):
+                parts.append(part)
+                part = ""
+                i += len(sep)
+                continue
+            part += ch
+            i += 1
+        parts.append(part)
+        return [p.strip() for p in parts if p.strip()]
+
     out = set()
     for line in text.splitlines():
         line = line.strip()
@@ -743,22 +763,15 @@ def section_names(text):
             m = re.search(r"also called ([^.]*)", body)
             if m:
                 out.update(a.strip() for a in m.group(1).split(",") if a.strip())
-        elif ": " in line:
+        elif line.startswith(("Others in your life: ", "No longer in your life: ")):
             rest = line.split(": ", 1)[1].rstrip(".")
-            depth, part, parts = 0, "", []
-            for ch in rest:
-                depth += ch == "("
-                depth -= ch == ")"
-                if ch == "," and depth == 0:
-                    parts.append(part)
-                    part = ""
-                else:
-                    part += ch
-            parts.append(part)
-            for part in parts:
-                part = part.strip()
-                if part and not part.startswith("ended "):
+            for part in top_level(rest, ", "):
+                if not part.startswith("ended "):
                     out.add(part.split(" (", 1)[0].strip())
+        elif line.startswith("Between them: "):
+            rest = line.split(": ", 1)[1].rstrip(".")
+            for pair in top_level(rest, "; "):
+                out.update(n.strip() for n in pair.split(":", 1)[0].split(" and ") if n.strip())
     return {n for n in out if n and len(n.split()) <= 4}
 
 
