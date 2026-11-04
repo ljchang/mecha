@@ -481,8 +481,16 @@ def corpus():
     names = set()
     for toml in persona_glob("persona.toml"):
         d = os.path.dirname(toml) + "/"
-        if "/personas/removed/" not in toml:
-            names.add(os.path.basename(d.rstrip("/")).lower())
+        base = os.path.basename(d.rstrip("/"))
+        if "/personas/removed/" in toml:
+            # `persona::remove` names the folder `{name}-{stamp}-{id8}`, and
+            # persona.toml carries no name, so the name is the folder's
+            # front (review of #841).
+            m = re.fullmatch(r"(.+)-\d{8}T\d{6}Z-[0-9a-f]{8}", base)
+            if m:
+                names.add(m.group(1).lower())
+        else:
+            names.add(base.lower())
         # How the persona is addressed and drawn, which is what a fixture
         # or a doc would spell (review of #557): `display` and its words,
         # and `character`.
@@ -490,7 +498,7 @@ def corpus():
             text = open(toml, errors="replace").read()
         except OSError:
             text = ""
-        for key in ("name", "display", "character"):
+        for key in ("display", "character"):
             m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
             if m and m.group(1).strip():
                 value = m.group(1).strip().lower()
