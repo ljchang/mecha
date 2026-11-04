@@ -890,6 +890,15 @@ class Guard(unittest.TestCase):
             self.assertIn("words said in a conversation", r.stdout)
             git(self.repo, "rm", "-q", "--cached", name)
 
+    def test_a_display_word_already_in_the_repository_is_excused_and_said(self):
+        # "marsh" (from quillon's display "Quillon Marsh") is an ordinary word.
+        self.stage("prose.py", "X = 'the tide over the marsh'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
+        self.stage("start.py", "X = 'Marsh grass bends in the wind.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("already used in the repository", r.stdout)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
