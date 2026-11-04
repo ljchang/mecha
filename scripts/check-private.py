@@ -994,10 +994,12 @@ def main(args):
                 found_names = [m.group(0) for m in re.finditer(rf"\b{re.escape(name)}\b", t, re.I)]
                 if not found_names:
                     continue
-                # Excused only by the same spelling already in the
-                # repository, never by a lowercase word it shares, and said
-                # when excused (review of #841).
-                if all(in_head_cased(f) for f in found_names):
+                # Excused when the repository already holds the word in any
+                # case, since a display's longer words are often ordinary
+                # English ("Marsh"), and a refusal that cannot name its word
+                # cannot be acted on; but said when excused, so a real use
+                # is looked at, never passed silently (review of #841).
+                if in_head(" ".join(words(name))) or all(in_head_cased(f) for f in found_names):
                     excused.setdefault(name, []).append(f"{p}:{n}")
                     continue
                 hit = "the name of one of the owner's personas"
