@@ -496,7 +496,11 @@ def corpus():
                 if m and m.group(1).strip():
                     value = m.group(1).strip().lower()
                     names.add(value)
-                    names.update(w for w in words(value) if len(w) >= 4)
+                    # A display's words are how a persona is addressed; a
+                    # character is a library id, matched whole, since its
+                    # parts are this project's own words ("library-id").
+                    if key == "display":
+                        names.update(w for w in words(value) if len(w) >= 4)
     # Read whole: every persona chat, and every session that is a call.
     whole = persona_glob("sessions/*.jsonl")
     # Read for their spoken turns only: any other session a call spoke into
