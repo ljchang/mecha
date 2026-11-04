@@ -753,6 +753,9 @@ async fn finish_apply(
 }
 
 fn report_status(report: &engine::ApplyReport) -> Result<()> {
+    if report.candidate_failures > 0 {
+        bail!("some rule accounts could not be listed; see report");
+    }
     if report.read_failures > 0 {
         bail!("some rule threads could not be read; see report");
     }

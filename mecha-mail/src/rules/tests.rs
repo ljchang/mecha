@@ -2026,3 +2026,17 @@ async fn untrusted_graph_dispatch_claim_remains_an_action_failure() {
         }
     ));
 }
+
+#[test]
+fn candidate_listing_failures_set_exit_status_without_matching_notices() {
+    let report = engine::ApplyReport {
+        candidate_failures: 1,
+        ..Default::default()
+    };
+    assert!(report_status(&report).is_err());
+    let report = engine::ApplyReport {
+        notices: vec!["downstream says candidate listing failed".into()],
+        ..Default::default()
+    };
+    assert!(report_status(&report).is_ok());
+}

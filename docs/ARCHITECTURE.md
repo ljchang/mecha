@@ -4633,6 +4633,11 @@ the queue and consume no keys or capacity: nothing was dispatched. They emit
 non-closing report holds and increment `ApplyReport::read_failures`, which the
 mail binary uses for a non-zero exit without parsing downstream prose. Unknown
 facts also hold the read; seven-day expiry remains terminal for both paths.
+Account listing failures increment `ApplyReport::candidate_failures`, name the
+account in a notice and leave other accounts' effects in the report. They also
+produce a non-zero exit without interpreting prose. Deferred work for that
+account is neither expired nor settled, including in a dry-run plan; expiry
+resumes after a successful listing, even one returning no threads.
 A stale verdict keeps its queue entry.
 Verdict freshness compares envelope timestamps at whole-second precision for
 both providers: deployed classifiers discarded fractions. A prior-second

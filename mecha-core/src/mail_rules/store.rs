@@ -1107,9 +1107,29 @@ impl RuleStore {
     }
 
     pub fn expire_deferred(&self, now: DateTime<Utc>) -> Result<Vec<DeferredEntry>> {
+        self.expire_deferred_matching(now, None)
+    }
+
+    /// An engine pass expires only accounts whose listing completed successfully.
+    pub(super) fn expire_deferred_for_account(
+        &self,
+        account: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<DeferredEntry>> {
+        self.expire_deferred_matching(now, Some(account))
+    }
+
+    fn expire_deferred_matching(
+        &self,
+        now: DateTime<Utc>,
+        account: Option<&str>,
+    ) -> Result<Vec<DeferredEntry>> {
         let _lock = self.lock()?;
         let mut queue = self.deferred()?;
-        let expired: Vec<_> = queue.iter().filter(|q| q.expired(now)).cloned().collect();
+        let expires = |entry: &DeferredEntry| {
+            account.is_none_or(|account| entry.account == account) && entry.expired(now)
+        };
+        let expired: Vec<_> = queue.iter().filter(|q| expires(q)).cloned().collect();
         let mut ledger = self.ledger()?;
         for entry in &expired {
             for action in &entry.actions {
@@ -1128,7 +1148,7 @@ impl RuleStore {
                 ledger.push(row);
             }
         }
-        queue.retain(|q| !q.expired(now));
+        queue.retain(|q| !expires(q));
         if !expired.is_empty() {
             self.rewrite("deferred.jsonl", &queue)?;
         }

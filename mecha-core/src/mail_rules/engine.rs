@@ -77,6 +77,13 @@ pub enum ActionResult {
     },
 }
 
+fn unsupported_action() -> ActionResult {
+    ActionResult::Held {
+        kind: FailureKind::Environment,
+        reason: HeldReason::NotDispatched("unsupported action".into()),
+    }
+}
+
 #[async_trait]
 pub trait Mailbox: Send + Sync {
     async fn candidates(&self, account: &str, pass: Pass) -> Result<Vec<String>>;
@@ -128,6 +135,8 @@ pub struct ApplyReport {
     /// Thread read failures, independent of diagnostic prose. Hosts use this
     /// for a non-zero exit even though no action was dispatched or settled.
     pub read_failures: usize,
+    /// Account candidate-list failures; other accounts still run.
+    pub candidate_failures: usize,
     /// Failed classification-skip marker writes; effects remain in the report.
     pub handled_failures: usize,
     pub rows: Vec<LedgerRow>,
@@ -1008,10 +1017,11 @@ impl Run<'_> {
                                         ),
                                     },
                                 },
-                                _ => ActionResult::Held {
-                                    kind: FailureKind::Unknown,
-                                    reason: "unsupported action".into(),
-                                },
+                                // Report (spam) cannot reach dispatch:
+                                // built_in_holds caps it at Propose. If a new
+                                // unsupported group reaches this guard, nothing
+                                // was dispatched: report a hold, release its key.
+                                _ => unsupported_action(),
                             }
                         };
                         let result =
@@ -1224,14 +1234,6 @@ pub async fn apply(
             }
         }
     }
-    if !options.dry_run {
-        for expired in store.expire_deferred(options.clock.now())? {
-            run.report
-                .notices
-                .push(format!("{}: deferred work expired", expired.thread_id));
-        }
-        run.sync_ledger()?;
-    }
     // Also resolve brakes and capacity when no mail is returned.
     let mut modes = BTreeMap::new();
     for rule in &rules {
@@ -1239,31 +1241,46 @@ pub async fn apply(
     }
     run.report.list_cap.extend(list_cap(&rules, &modes));
     let queue = store.deferred()?;
-    if options.dry_run {
-        for entry in queue
-            .iter()
-            .filter(|entry| entry.expired(options.clock.now()))
-        {
-            run.report
-                .notices
-                .push(format!("{}: deferred work expired", entry.thread_id));
-            for snapshot in &entry.actions {
-                let mut row = snapshot.clone();
-                row.id = format!("expired:{}:{}", entry.id, snapshot.id);
-                row.at = Some(options.clock.now());
-                row.outcome = Outcome::Expired;
-                row.closes = true;
-                row.reason = "deferred for more than seven days".into();
-                run.write(row)?;
-            }
-        }
-    }
     for account in accounts {
-        let mut ids: BTreeSet<_> = mailbox
-            .candidates(account, options.pass)
-            .await?
-            .into_iter()
-            .collect();
+        let mut ids: BTreeSet<_> = match mailbox.candidates(account, options.pass).await {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(error) => {
+                run.report.candidate_failures += 1;
+                run.report
+                    .notices
+                    .push(format!("{account}: candidate listing failed: {error:#}"));
+                // A failed listing is not an empty successful enumeration. Do
+                // not expire or settle this account's deferred work, even in
+                // the dry-run plan; preserve effects from the other accounts.
+                continue;
+            }
+        };
+        if options.dry_run {
+            for entry in queue
+                .iter()
+                .filter(|entry| entry.account == *account && entry.expired(options.clock.now()))
+            {
+                run.report
+                    .notices
+                    .push(format!("{}: deferred work expired", entry.thread_id));
+                for snapshot in &entry.actions {
+                    let mut row = snapshot.clone();
+                    row.id = format!("expired:{}:{}", entry.id, snapshot.id);
+                    row.at = Some(options.clock.now());
+                    row.outcome = Outcome::Expired;
+                    row.closes = true;
+                    row.reason = "deferred for more than seven days".into();
+                    run.write(row)?;
+                }
+            }
+        } else {
+            for expired in store.expire_deferred_for_account(account, options.clock.now())? {
+                run.report
+                    .notices
+                    .push(format!("{}: deferred work expired", expired.thread_id));
+            }
+            run.sync_ledger()?;
+        }
         if options.pass == Pass::AfterClassify {
             ids.extend(
                 queue

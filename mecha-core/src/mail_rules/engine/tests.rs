@@ -67,6 +67,7 @@ struct Fake {
     calls: Mutex<Vec<String>>,
     results: Mutex<Vec<ActionResult>>,
     unreadable: bool,
+    listing_failure: Option<String>,
     hold_read: bool,
     handled_root: Option<std::path::PathBuf>,
     in_window: bool,
@@ -105,6 +106,7 @@ impl Fake {
             calls: Mutex::new(Vec::new()),
             results: Mutex::new(Vec::new()),
             unreadable: false,
+            listing_failure: None,
             hold_read: false,
             handled_root: None,
             in_window: true,
@@ -133,6 +135,10 @@ impl Fake {
 #[async_trait]
 impl Mailbox for Fake {
     async fn candidates(&self, account: &str, _: Pass) -> Result<Vec<String>> {
+        ensure!(
+            self.listing_failure.as_deref() != Some(account),
+            "provider listing HTTP 503 unavailable"
+        );
         if !self.in_window {
             return Ok(Vec::new());
         }
@@ -1988,5 +1994,129 @@ async fn handled_write_failure_preserves_effects_and_continues_other_accounts() 
             .count(),
         2,
         "recovering the marker must not repeat mailbox effects"
+    );
+}
+
+async fn assert_listing_failure_isolated(reverse: bool, expired: bool, dry_run: bool, pass: Pass) {
+    let mut f = Fixture::new();
+    let task_rule = f.store.install("task", "description = 'Review notice'\n[match]\naccount = ['campus']\nfrom_domain = ['example.com']\n[[action]]\ndo = 'task'", &BTreeMap::new()).unwrap();
+    f.mode(&task_rule, ActionGroup::Board, Mode::Auto);
+    f.run(None).await;
+    let deferred_path = f.store.root().join("deferred.jsonl");
+    let before = std::fs::read(&deferred_path).unwrap();
+    assert_eq!(f.store.deferred().unwrap().len(), 1);
+    if expired {
+        f.clock.advance(Duration::days(8));
+    }
+    let read_rule = f.store.install("notice", "description = 'Review notice'\n[match]\naccount = ['project']\nfrom_domain = ['example.com']\n[[action]]\ndo = 'read'", &BTreeMap::new()).unwrap();
+    f.mode(&read_rule, ActionGroup::Mailbox, Mode::Auto);
+    let mut next = f.mail.candidates.lock().unwrap()[0].clone();
+    next.message.account = "project".into();
+    next.message.thread_id = "thread-beta".into();
+    next.message.provider_message_id = "message-beta".into();
+    next.arrival_at = Some(f.options.clock.now() - Duration::minutes(1));
+    next.classified.as_mut().unwrap().at = f.options.clock.now();
+    f.mail.candidates.lock().unwrap().push(next);
+    f.mail.listing_failure = Some("campus".into());
+    f.options.pass = pass;
+    f.options.dry_run = dry_run;
+    let mut accounts = ["project".into(), "campus".into()];
+    if reverse {
+        accounts.reverse();
+    }
+    let result = apply(&f.store, &f.mail, None, &accounts, &f.options).await;
+    assert_eq!(
+        std::fs::read(&deferred_path).unwrap(),
+        before,
+        "a failed account listing must not expire or settle its deferred entries"
+    );
+    let report =
+        result.expect("a listing failure must preserve effects and continue other accounts");
+    assert_eq!(report.candidate_failures, 1);
+    assert_eq!(report.read_failures, 0);
+    assert_eq!(report.handled_failures, 0);
+    assert!(report
+        .notices
+        .iter()
+        .any(|notice| notice.contains("campus") && notice.contains("listing")));
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(report.rows[0].outcome, Outcome::Done);
+    assert_eq!(report.rows[0].message.account, "project");
+    assert_eq!(
+        f.mail
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| *call == "Read")
+            .count(),
+        usize::from(!dry_run)
+    );
+    assert!(f
+        .store
+        .ledger()
+        .unwrap()
+        .iter()
+        .all(|r| r.message.account != "campus" || r.outcome != Outcome::Expired));
+    if expired {
+        // A later successful listing, even empty, allows terminal expiry again.
+        f.options.dry_run = false;
+        f.mail.listing_failure = None;
+        f.mail.candidates.lock().unwrap().clear();
+        apply(&f.store, &f.mail, None, &accounts, &f.options)
+            .await
+            .unwrap();
+        assert!(f.store.deferred().unwrap().is_empty());
+        assert!(f
+            .store
+            .ledger()
+            .unwrap()
+            .iter()
+            .any(|r| r.message.account == "campus" && r.outcome == Outcome::Expired && r.closes));
+    }
+}
+
+#[tokio::test]
+async fn candidate_listing_failure_preserves_effects_in_both_account_orders() {
+    for reverse in [false, true] {
+        for pass in [Pass::Headers, Pass::AfterClassify] {
+            assert_listing_failure_isolated(reverse, false, false, pass).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn candidate_listing_failure_preserves_expired_queue_in_live_and_dry_runs() {
+    for reverse in [false, true] {
+        for dry_run in [false, true] {
+            for pass in [Pass::Headers, Pass::AfterClassify] {
+                assert_listing_failure_isolated(reverse, true, dry_run, pass).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn unsupported_dispatch_reports_a_hold_without_closing_the_action() {
+    let f = Fixture::new();
+    let rule = f.rule("archive", ARCHIVE);
+    f.mode(&rule, ActionGroup::Mailbox, Mode::Auto);
+    f.mail.results.lock().unwrap().push(unsupported_action());
+    let report = f.run(None).await;
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(report.rows[0].outcome, Outcome::Held);
+    assert!(!report.rows[0].closes);
+    assert!(report.handled.is_empty());
+    assert!(f
+        .store
+        .ledger()
+        .unwrap()
+        .iter()
+        .all(|row| row.outcome != Outcome::Held && !row.is_action_failure()));
+    let report = f.run(None).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Done,
+        "the unused key stays available"
     );
 }
