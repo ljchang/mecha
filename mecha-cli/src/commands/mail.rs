@@ -1851,7 +1851,17 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
     }
     let mut out = Vec::new();
     for (thread_id, mut msgs) in by {
-        msgs.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
+        let arrival = |message: &Value| {
+            message["date"]
+                .as_str()
+                .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        };
+        // Reply evidence requires known instants. Variable-width fractional
+        // stamps do not sort as text, and a missing date cannot prove order.
+        if msgs.iter().any(|message| arrival(message).is_none()) {
+            bail!("corpus thread {thread_id} contains a missing or invalid arrival date");
+        }
+        msgs.sort_by_key(&arrival);
         let is_me = |m: &Value| {
             m["from"]
                 .as_str()
@@ -1868,17 +1878,14 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
         // request. Counting those inflated the answered stratum by ~1% of the
         // graded pool and put at least one bogus "false ignore" in the first
         // scorecard — an auto-reply from an office they had emailed first.
-        if msgs.iter().any(|m| {
-            is_me(m)
-                && m["date"].as_str().unwrap_or_default()
-                    < first_in["date"].as_str().unwrap_or_default()
-        }) {
+        if msgs
+            .iter()
+            .any(|m| is_me(m) && arrival(m) < arrival(first_in))
+        {
             continue;
         }
-        let after = first_in["date"].as_str().unwrap_or_default().to_string();
-        let replied = msgs
-            .iter()
-            .any(|m| is_me(m) && m["date"].as_str().unwrap_or_default() >= after.as_str());
+        let after = arrival(first_in);
+        let replied = msgs.iter().any(|m| is_me(m) && arrival(m) >= after);
         let g = |k: &str| first_in[k].as_str().unwrap_or_default().to_string();
         out.push(CorpusThread {
             input: ThreadInput {
@@ -3073,6 +3080,7 @@ mod triage_result_tests {
             let result = TriageResult::Count(MutationOutcome {
                 moved: 1,
                 failed: 1,
+                ..Default::default()
             });
             assert!(wire_output(action, result).is_error);
             let error = fixture.finish(action, result).unwrap_err().to_string();
@@ -3115,7 +3123,11 @@ mod triage_result_tests {
                                 left_in_place,
                             })
                         } else {
-                            TriageResult::Count(MutationOutcome { moved, failed })
+                            TriageResult::Count(MutationOutcome {
+                                moved,
+                                failed,
+                                ..Default::default()
+                            })
                         };
                         let fixture = Fixture::for_thread(&thread_id);
                         let result = fixture.finish(action, outcome);
@@ -3154,6 +3166,7 @@ mod triage_result_tests {
                 TriageResult::Count(MutationOutcome {
                     moved: 2,
                     failed: 0,
+                    ..Default::default()
                 }),
                 TriageResult::Uncounted,
             ] {
@@ -3212,6 +3225,7 @@ mod triage_result_tests {
             TriageResult::Count(MutationOutcome {
                 moved: 1,
                 failed: 0,
+                ..Default::default()
             }),
         );
         let valid: Value = serde_json::from_str(&success.content).unwrap();
@@ -4144,5 +4158,31 @@ mod measured_account_tests {
         assert!(missing.unwrap_err().contains("does not exist"));
         assert_eq!(read.as_deref(), Ok("campus"));
         assert!(broken.unwrap_err().contains("cannot parse"));
+    }
+}
+
+#[cfg(test)]
+mod mail_rules_ordering_tests {
+    #[test]
+    fn corpus_thread_arrivals_keep_fractional_reply_order() {
+        let root = std::env::temp_dir().join(format!("corpus-order-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("mail.jsonl");
+        let rows = [
+            serde_json::json!({"thread_id":"thread-alpha", "account":"campus", "from":"sender@example.edu", "date":"2026-11-03T12:00:00Z"}),
+            serde_json::json!({"thread_id":"thread-alpha", "account":"campus", "from":"owner@example.com", "date":"2026-11-03T12:00:00.100Z"}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(|r| r.to_string() + "\n")
+                .collect::<String>(),
+        )
+        .unwrap();
+        let threads = super::corpus_threads(&path, "owner@example.com").unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(threads[0].replied);
+        assert_eq!(threads[0].input.from, "sender@example.edu");
     }
 }

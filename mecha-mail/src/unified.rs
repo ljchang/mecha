@@ -496,7 +496,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
 
 /// Run one provider call with a live token; on a 401, one forced refresh and
 /// retry — the same `refreshOrReconnect` shape the per-provider servers use.
-async fn with_token<T, F, Fut>(manager: &TokenManager, f: F) -> Result<T, MailError>
+pub(crate) async fn with_token<T, F, Fut>(manager: &TokenManager, f: F) -> Result<T, MailError>
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = Result<T, MailError>>,
@@ -798,6 +798,7 @@ fn render_triage_result(
         TriageResult::Count(MutationOutcome {
             moved: 0,
             failed: 0,
+            ..
         }) if matches!(action, TriageAction::Archive | TriageAction::Spam) => {
             let verb = if matches!(action, TriageAction::Archive) {
                 "archive"
@@ -914,6 +915,15 @@ async fn triage_one(
     thread_id: &str,
     action: TriageAction,
 ) -> Result<TriageResult, MailError> {
+    triage_with_ids(a, thread_id, action, false).await
+}
+
+pub(crate) async fn triage_with_ids(
+    a: &Account,
+    thread_id: &str,
+    action: TriageAction,
+    immutable: bool,
+) -> Result<TriageResult, MailError> {
     with_token(&a.manager, |t| async move {
         match a.provider {
             Provider::Google => {
@@ -931,6 +941,7 @@ async fn triage_one(
             }
             Provider::Outlook => {
                 let o = OutlookProvider::new(t);
+                let o = if immutable { o.with_immutable_ids() } else { o };
                 match action {
                     TriageAction::Archive => o.archive_thread(thread_id).await,
                     TriageAction::Read => o.set_thread_read(thread_id, true).await,
@@ -1100,7 +1111,7 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
     if rows.is_empty() {
         return "no matching messages".into();
     }
-    rows.sort_by_key(|(_, _, e)| std::cmp::Reverse(date_key(&e.date_received)));
+    rows.sort_by_key(|(_, _, e)| std::cmp::Reverse(e.received_instant()));
     let rows: Vec<Value> = rows
         .into_iter()
         .map(|(provider, account, e)| {
@@ -1215,6 +1226,17 @@ fn with_notes(body: String, failures: &[String]) -> String {
 }
 
 // ------------------------------------------------------------ gmail replies
+
+/// Select the explicitly requested message, or the newest in a chronologically
+/// ordered provider thread. Shared by mail_reply and its provider-path tests.
+pub(crate) fn reply_target<'a>(emails: &'a [Email], wanted: Option<&str>) -> Option<&'a Email> {
+    match wanted {
+        Some(mid) => emails
+            .iter()
+            .find(|e| e.provider_id == mid || e.message_id.as_deref() == Some(mid)),
+        None => emails.last(),
+    }
+}
 
 /// Synthesize the addressing of a Gmail reply from the message being
 /// answered. Outlook gets this from Graph's reply endpoint; Gmail threads by
@@ -1737,12 +1759,7 @@ impl MailTools {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let wanted = str_arg("message_id");
-                let target = match &wanted {
-                    Some(mid) => emails
-                        .iter()
-                        .find(|e| e.provider_id == *mid || e.message_id.as_deref() == Some(mid)),
-                    None => emails.last(),
-                };
+                let target = reply_target(&emails, wanted.as_deref());
                 let Some(target) = target else {
                     return refuse(match wanted {
                         Some(mid) => format!("no message `{mid}` in thread {thread_id}"),
@@ -3057,6 +3074,7 @@ mod tests {
             thread_id: Some("t1".into()),
             message_id: Some("<m1@x>".into()),
             subject: subject.into(),
+            subject_is_raw: false,
             from_address: from.into(),
             from_name: "Someone".into(),
             to_addresses: to.iter().map(|s| s.to_string()).collect(),
@@ -3064,6 +3082,8 @@ mod tests {
             bcc_addresses: vec![],
             date_received: "2026-08-05T12:00:00Z".into(),
             date_known: Some(true),
+            provider_arrival_at: None,
+            attachment_presence: None,
             body_text: "hi".into(),
             body_html: String::new(),
             snippet: "hi".into(),
@@ -3077,8 +3097,12 @@ mod tests {
             list_id: None,
             reply_to: None,
             authentication_results: None,
+            headers: Default::default(),
             headers_complete: None,
+            subject_complete: None,
+            recipients_complete: None,
             is_draft: Some(false),
+            direction_evidence: Some(crate::types::DirectionEvidence::NotDraft),
         }
     }
 
@@ -3186,7 +3210,7 @@ mod tests {
         let mut older = email("a@x.com", &[], &[], "old");
         older.date_received = "2026-08-01T00:00:00Z".into();
         let mut newer = email("b@y.com", &[], &[], "new");
-        newer.date_received = "2026-08-04T00:00:00Z".into();
+        newer.date_received = "2026-08-01T00:00:00.100Z".into();
         let out = render_rows(vec![
             (Provider::Google, "personal".into(), older),
             (Provider::Outlook, "campus".into(), newer),
@@ -3235,6 +3259,7 @@ mod tests {
         draft.provider_id = "draft-id".into();
         draft.date_received = "2026-08-07T12:00:00Z".into();
         draft.is_draft = Some(true);
+        draft.direction_evidence = Some(crate::types::DirectionEvidence::Draft);
         let thread = vec![draft.clone(), sent, inbound.clone()];
         let metadata = ThreadMetadata::from_emails(&thread, Some("owner@example.com"));
         assert_eq!(metadata.owner_participated, Some(true));
@@ -3258,6 +3283,7 @@ mod tests {
         assert_eq!(unknown.newest_inbound_provider_id, None);
         let mut unknown_draft = email("owner@example.com", &[], &[], "Fixture");
         unknown_draft.is_draft = None;
+        unknown_draft.direction_evidence = None;
         assert_eq!(
             ThreadMetadata::from_emails(&[unknown_draft], Some("owner@example.com"))
                 .owner_participated,
@@ -3365,7 +3391,11 @@ mod tests {
                         "fixture",
                         "thread-1",
                         action,
-                        TriageResult::Count(MutationOutcome { moved, failed }),
+                        TriageResult::Count(MutationOutcome {
+                            moved,
+                            failed,
+                            ..Default::default()
+                        }),
                     );
                     let scope = if matches!(action, TriageAction::Archive | TriageAction::Spam) {
                         "Inbox "
@@ -3396,7 +3426,11 @@ mod tests {
                     "fixture",
                     "thread-1",
                     action,
-                    TriageResult::Count(MutationOutcome { moved, failed }),
+                    TriageResult::Count(MutationOutcome {
+                        moved,
+                        failed,
+                        ..Default::default()
+                    }),
                 );
                 let wire = crate::mcp::result_json(&reply);
                 let text: Value =
@@ -3444,7 +3478,8 @@ mod tests {
                         action,
                         TriageResult::Count(MutationOutcome {
                             moved: count,
-                            failed: 0
+                            failed: 0,
+                            ..Default::default()
                         })
                     ),
                     format!(

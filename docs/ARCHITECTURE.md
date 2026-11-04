@@ -4495,6 +4495,12 @@ Items and inbound mail to Inbox; unknown destinations stay in place.
 Unarchive is not an exact inverse: it has no receipt of which messages a
 particular archive moved. That receipt belongs to P1's ledger, not this fix.
 
+**Mail timestamps are compared as parsed instants.** Provider stamps preserve
+fractional precision; a whole-second stamp sorts after a later fraction as text.
+Thread replies select the last message, so this affects who receives a reply,
+not just presentation. Provider threads, merged mail, triage lists and corpus
+reply evidence all compare instants.
+
 **Bulk reading is an operator verb, never a tool.** `mecha-mail corpus`
 downloads a span of mail for analysis, and it is absent from the MCP surface on
 purpose: the model has no business reading a year of mail, and a corpus verb on
@@ -4564,6 +4570,72 @@ wrong org, unrecognised tenant, the public-client-flows switch and a sent
 description kept in parentheses. Google's loopback PKCE flow sends
 `access_type=offline&prompt=consent` because Google needs both to reliably
 return a refresh token every time.
+
+## Mail rules
+
+**The engine belongs to core; mailbox clients and OAuth stay in the mail
+binary.** `mail_rules::engine::apply` takes `Mailbox` and `TaskSink` interfaces;
+`mecha-mail rules apply` supplies them. The `mecha` CLI keeps mail as a
+**dev-dependency only**, and P1c will invoke the mail binary as a child
+(`MAIL-RULES-DESIGN.md` R10). Every engine Outlook read and mutation uses
+`with_immutable_ids`; a folder move must not manufacture a new ledger key.
+Mailbox effects address the authorized provider message ID. A thread-wide
+mutation would also touch pre-activation or newly arrived, unmatched messages.
+Gmail's From is parsed as a mailbox, never by selecting angle-bracket text:
+a quoted display name may contain a different address. Ambiguous senders hold.
+Inbound selection uses provider direction evidence and all configured account
+addresses plus the rule store's aliases. SENT/DRAFT labels and Graph draft/sent
+facts cannot be overridden by a different sender address; missing direction
+holds instead of promoting an alias reply to the newest inbound message.
+Every dispatch rechecks the fresh mode's activation against provider arrival;
+an owner can pause and reactivate while an earlier sibling awaits I/O.
+
+**Claims and caps need different locks.** `RuleStore::claim_actions` remains
+the atomic per-action decision, including partial successes and once-per-thread
+Board occasions. The separate engine lease spans effects across all selected
+accounts, so two runs cannot independently spend the last global cap slot.
+Sibling reservations share capacity; explicit defaults cannot disguise duplicate
+actions at load. Each reservation and dispatch reads the injected clock. Attempt
+dates, including failures, drive cap accounting; an unsettled attempt reserves
+capacity across midnight until its fate is known. Network I/O never holds the
+short store writer lock. Lock guards explicitly unlock before closing: a
+parallel fork can inherit the same open file description and retain its flock
+until exec, even though the original run has finished and every test uses a
+unique store root. Closing the parent's descriptor alone is not release.
+Pending sweeps name the
+exact attempt; uncertain task creation stays held, while an interrupted
+mailbox/record action reopens. Unknown action failure kinds count toward the
+brake; positively identified outages and interruptions do not.
+
+**An inbox removal cannot hide work owed to classify.** Enabled description
+rules, even shadow ones, and any matching non-off header digest/task/outbound
+action defer removals regardless of priority. Owed actions enter the store's
+deferred queue before the pass finishes. An unreadable thread fails visibly;
+a stale verdict keeps its queue entry. Unknown header completeness, attachment
+presence and provider arrival remain unknown through the adapter. Dedicated
+Graph subject and To/Cc/Bcc fields carry their own completeness: raw-header
+uncertainty must not turn a known envelope negative into an indefinite hold.
+Semantic comparisons unfold raw headers and strictly decode RFC 2047 words;
+Graph subjects are already decoded. Malformed words and List-Id syntax remain
+unknown. Display and ledger fields retain the original strings.
+After-classify reads outstanding deferred entries and verdicts recorded within
+the headers path's seven-day window. Expiry closes an occasion even though it
+is not a failure: historical verdicts must not recreate an expired queue entry
+with a fresh timestamp. Both claims and enqueue enforce that closure.
+Possible
+matches hold removals and classification skips; observation holds consume no
+action key and leave deferred snapshots queued. Sender Date never establishes
+activation eligibility. Timer-only handling writes a marker for
+the provider message, never a fabricated classification. Rule annotations live
+beside triage and overlay its read: rewriting a classifier verdict must not
+erase a rule's tag or digest flag.
+
+**Automatic task names contain no mail prose.** The owner's rule description
+plus a validated address, arrival date and typed deadline supply the name;
+context is a thread pointer. Missing graph configuration or a failed connection
+holds tasks. Description matching and all sends remain unsupported in P1b;
+`resolve_mode` supplies their permanent ceilings, including spam's propose-only
+ceiling and the Board origin gate.
 
 ## Documents
 
@@ -6078,7 +6150,11 @@ silent failure before it was a rule:
 - **A transport failure is `ToolOutput::err`** (`MCP call failed: ...`), never
   an `Err` that ends the run; `connect_all` reports and skips a server that
   fails to start, except under `mecha eval --mcp-file`, where a partial surface
-  would grade nothing and a failure is fatal.
+  would grade nothing and a failure is fatal. Local I/O, EOF and timeout
+  evidence survives as `ToolFailureKind::Transport`; server error text and
+  metadata cannot set it. Mail-rule Board actions hold unknown task fate on
+  transport loss without counting an action failure. A tool refusal still
+  counts toward the brake.
 - **`Registry::insert` replaces by name, but config cannot reach that.**
   Prefixed MCP names cannot collide with a built-in, and an unprefixed
   (`prefix_tools = false`) collision fails startup in `setup`. The

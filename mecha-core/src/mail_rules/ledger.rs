@@ -57,9 +57,10 @@ impl Outcome {
             | Self::Edited
             | Self::Rejected
             | Self::Undone
+            | Self::Expired
             | Self::Unknown => true,
             Self::Failed => !matches!(group, ActionGroup::Mailbox | ActionGroup::PrivateRecord),
-            Self::WouldHave | Self::Expired | Self::Skipped | Self::ApprovalLapsed => false,
+            Self::WouldHave | Self::Skipped | Self::ApprovalLapsed => false,
         }
     }
 }

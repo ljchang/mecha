@@ -85,6 +85,7 @@ mod tests {
             thread_id: None,
             message_id: None,
             subject: "s".into(),
+            subject_is_raw: false,
             from_address: "a@b".into(),
             from_name: String::new(),
             to_addresses: vec![],
@@ -92,6 +93,8 @@ mod tests {
             bcc_addresses: vec![],
             date_received: String::new(),
             date_known: None,
+            provider_arrival_at: None,
+            attachment_presence: None,
             body_text: text.into(),
             body_html: html.into(),
             snippet: "snippet".into(),
@@ -105,8 +108,12 @@ mod tests {
             list_id: None,
             reply_to: None,
             authentication_results: None,
+            headers: Default::default(),
             headers_complete: None,
+            subject_complete: None,
+            recipients_complete: None,
             is_draft: Some(false),
+            direction_evidence: Some(crate::types::DirectionEvidence::NotDraft),
         }
     }
 

@@ -34,7 +34,7 @@ const GRAPH: &str = "https://graph.microsoft.com/v1.0";
 /// actually runs on. A rule that is inert on the mailbox it was written for is
 /// worse than no rule, because the config reads as though it were working.
 const SELECT: &str = "id,conversationId,internetMessageId,subject,bodyPreview,body,from,\
-toRecipients,ccRecipients,bccRecipients,receivedDateTime,isRead,isDraft,hasAttachments,flag,\
+toRecipients,ccRecipients,bccRecipients,receivedDateTime,isRead,isDraft,parentFolderId,hasAttachments,flag,\
 internetMessageHeaders";
 
 /// Successful and failed message mutations. For read-state verbs, `moved`
@@ -43,6 +43,42 @@ internetMessageHeaders";
 pub struct MutationOutcome {
     pub moved: usize,
     pub failed: usize,
+    pub failure_kind: Option<MutationFailureKind>,
+}
+
+/// Failure categories retained across partial mutations. Only an entirely
+/// environmental failure set is exempt from the rule failure brake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationFailureKind {
+    Environment,
+    Action,
+    Unknown,
+}
+impl MutationFailureKind {
+    pub(crate) fn of(error: &MailError) -> Self {
+        match error {
+            MailError::HttpError(_)
+            | MailError::AuthError(_)
+            | MailError::AuthRevoked(_)
+            | MailError::GmailQuota { .. } => Self::Environment,
+            MailError::ApiError { status, .. }
+                if *status == 401 || *status == 429 || *status >= 500 =>
+            {
+                Self::Environment
+            }
+            MailError::InvalidInput(_) | MailError::ApiError { .. } => Self::Action,
+            MailError::ParseError(_) => Self::Unknown,
+        }
+    }
+    fn combine(self, other: Self) -> Self {
+        if self == Self::Unknown || other == Self::Unknown {
+            Self::Unknown
+        } else if self == Self::Action || other == Self::Action {
+            Self::Action
+        } else {
+            Self::Environment
+        }
+    }
 }
 
 /// Result of a folder-scoped restore. Messages with an unknown destination
@@ -153,7 +189,7 @@ impl OutlookProvider {
             .as_array()
             .map(|arr| arr.iter().map(parse_outlook_message).collect())
             .unwrap_or_default();
-        emails.sort_by(|a, b| b.date_received.cmp(&a.date_received));
+        emails.sort_by_key(|e| std::cmp::Reverse(e.received_instant()));
         Ok(emails)
     }
 
@@ -233,7 +269,7 @@ impl OutlookProvider {
         let messages = message_pages(url, |url| async move { self.get_json(&url).await }).await?;
         let mut emails: Vec<Email> = messages.iter().map(parse_outlook_message).collect();
         // Oldest first, so a thread reads top to bottom.
-        emails.sort_by(|a, b| a.date_received.cmp(&b.date_received));
+        emails.sort_by_key(Email::received_instant);
         Ok(emails)
     }
 
@@ -422,14 +458,18 @@ impl OutlookProvider {
             .await?;
         let total = ids.len();
         let mut first_err = None;
+        let mut failure_kind: Option<MutationFailureKind> = None;
         let mut ok = 0usize;
         for id in ids {
             match op(self, id).await {
                 Ok(()) => ok += 1,
                 Err(e) => {
-                    if first_err.is_none() {
+                    let kind = MutationFailureKind::of(&e);
+                    let combined = failure_kind.map_or(kind, |previous| previous.combine(kind));
+                    if first_err.is_none() || failure_kind != Some(combined) {
                         first_err = Some(e);
                     }
+                    failure_kind = Some(combined);
                 }
             }
         }
@@ -447,15 +487,28 @@ impl OutlookProvider {
                 Ok(MutationOutcome {
                     moved: ok,
                     failed: total - ok,
+                    failure_kind,
                 })
             }
         }
     }
 
     /// Move one message to a well-known folder.
-    async fn move_message(&self, message_id: &str, folder: &str) -> Result<(), MailError> {
+    pub async fn move_message(&self, message_id: &str, folder: &str) -> Result<(), MailError> {
         self.mutate_message(self.move_message_request(message_id, folder))
             .await
+    }
+
+    /// Patch exactly the authorized message, retaining immutable-ID preference.
+    pub async fn set_message_read(&self, id: &str, read: bool) -> Result<(), MailError> {
+        self.mutate_message(
+            self.request(
+                reqwest::Method::PATCH,
+                &format!("{GRAPH}/me/messages/{}", urlencode(id)),
+            )
+            .json(&json!({"isRead":read})),
+        )
+        .await
     }
 
     async fn mutate_message(&self, request: reqwest::RequestBuilder) -> Result<(), MailError> {
@@ -697,7 +750,7 @@ where
     Fut: std::future::Future<Output = Result<Value, MailError>>,
 {
     const CORPUS_SELECT: &str = "id,conversationId,subject,bodyPreview,from,toRecipients,\
-ccRecipients,receivedDateTime,isRead,isDraft,hasAttachments,internetMessageHeaders";
+ccRecipients,receivedDateTime,isRead,isDraft,parentFolderId,hasAttachments,internetMessageHeaders";
     let mut url = format!(
         "{GRAPH}/me/messages?$top=100&$select={CORPUS_SELECT}&$orderby=receivedDateTime%20desc"
     );
@@ -803,8 +856,7 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| {
             dt.with_timezone(&chrono::Utc)
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string()
+                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
         });
     let date_known = Some(parsed_date.is_some());
     let date_received =
@@ -819,6 +871,7 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         thread_id: msg["conversationId"].as_str().map(|s| s.to_string()),
         message_id: msg["internetMessageId"].as_str().map(|s| s.to_string()),
         subject: msg["subject"].as_str().unwrap_or_default().to_string(),
+        subject_is_raw: false,
         from_address: msg["from"]["emailAddress"]["address"]
             .as_str()
             .unwrap_or_default()
@@ -832,6 +885,11 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         bcc_addresses: addr_list("bccRecipients"),
         date_received,
         date_known,
+        provider_arrival_at: msg["receivedDateTime"]
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|at| at.with_timezone(&chrono::Utc)),
+        attachment_presence: msg["hasAttachments"].as_bool(),
         body_text,
         body_html,
         snippet: msg["bodyPreview"].as_str().unwrap_or_default().to_string(),
@@ -851,12 +909,47 @@ pub(crate) fn parse_outlook_message(msg: &Value) -> Email {
         precedence: first_header(headers, "precedence"),
         list_id: first_header(headers, "list-id"),
         reply_to: first_header(headers, "reply-to"),
+        headers: crate::types::header_values(headers),
         authentication_results: authentication_results(headers),
         // internetMessageHeaders exposes no completeness guarantee or
         // truncation marker we can rely on. A nonempty array is not proof
         // that a second provider-claiming instance was not dropped.
         headers_complete: None,
+        subject_complete: msg["subject"].as_str().map(|_| true),
+        recipients_complete: ["toRecipients", "ccRecipients", "bccRecipients"]
+            .iter()
+            .try_fold(true, |complete, field| {
+                Some(
+                    complete
+                        && msg[field].as_array()?.iter().all(|recipient| {
+                            recipient["emailAddress"]["address"]
+                                .as_str()
+                                .is_some_and(|address| !address.is_empty())
+                        }),
+                )
+            }),
         is_draft: msg["isDraft"].as_bool(),
+        direction_evidence: {
+            use crate::types::DirectionEvidence;
+            // Graph normally returns opaque folder IDs. Only a recognized
+            // well-known name proves a folder here; otherwise use isDraft and
+            // the owner's address set, never guess from an opaque ID.
+            match msg["parentFolderId"]
+                .as_str()
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("drafts") => Some(DirectionEvidence::Draft),
+                Some("sentitems") => Some(DirectionEvidence::Sent),
+                _ => msg["isDraft"].as_bool().map(|draft| {
+                    if draft {
+                        DirectionEvidence::Draft
+                    } else {
+                        DirectionEvidence::NotDraft
+                    }
+                }),
+            }
+        },
     }
 }
 
@@ -878,6 +971,7 @@ mod tests {
         writes: Vec<reqwest::Request>,
         fail_moves: std::collections::BTreeSet<String>,
         fail_later_page: bool,
+        failure_status: Option<u16>,
     }
 
     impl Mailbox {
@@ -958,7 +1052,13 @@ mod tests {
             }
             self.writes.push(request);
             if failed {
-                Err(MailError::InvalidInput("fixture move failed".into()))
+                Err(self.failure_status.map_or_else(
+                    || MailError::InvalidInput("fixture move failed".into()),
+                    |status| MailError::ApiError {
+                        status,
+                        message: "fixture outage".into(),
+                    },
+                ))
             } else {
                 Ok(())
             }
@@ -1023,6 +1123,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mail_reply_and_search_order_mixed_timestamp_precision_chronologically() {
+        let newer = json!({"id":"newer", "subject":"Meeting agenda", "from":{"emailAddress":{"address":"newer@example.edu"}}, "receivedDateTime":"2026-11-03T12:00:00.100Z"});
+        let older = json!({"id":"older", "from":{"emailAddress":{"address":"older@example.edu"}}, "receivedDateTime":"2026-11-03T12:00:00Z"});
+        let mut provider = OutlookProvider::new("fixture-token".into());
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: [
+                Ok(json!({"value":[newer.clone(), older.clone()]})),
+                Ok(json!({"value":[older, newer]})),
+            ]
+            .into(),
+        })));
+        let thread = provider.get_thread("thread-alpha").await.unwrap();
+        let target = crate::unified::reply_target(&thread, None).unwrap();
+        assert_eq!(target.provider_id, "newer");
+        assert_eq!(target.from_address, "newer@example.edu");
+        let found = provider.search("meeting", 10).await.unwrap();
+        assert_eq!(found[0].provider_id, "newer");
+    }
+
+    #[tokio::test]
+    async fn rule_actions_touch_only_the_authorized_immutable_message() {
+        use mecha_core::mail_rules::{ActionVerb, MessageRef};
+        for action in [
+            ActionVerb::Archive,
+            ActionVerb::Trash,
+            ActionVerb::Read,
+            ActionVerb::Unread,
+        ] {
+            let provider = mailbox_provider().with_immutable_ids();
+            let message = MessageRef {
+                thread_id: "thread'1".into(),
+                provider_message_id: "incoming".into(),
+                ..Default::default()
+            };
+            crate::rules::outlook_action(&provider, &message, action)
+                .await
+                .unwrap();
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            // Older, pre-activation messages and a newly arrived nonmatch
+            // share the conversation. Neither is authorized by this candidate.
+            assert_eq!(mailbox.writes.len(), 1);
+            assert!(mailbox.reads.is_empty());
+            let request = &mailbox.writes[0];
+            assert!(request
+                .url()
+                .path()
+                .starts_with("/v1.0/me/messages/incoming"));
+            assert_eq!(request.headers()["Prefer"], "IdType=\"ImmutableId\"");
+            mailbox.assert_folder("sent", "sentitems");
+            mailbox.assert_folder("incoming2", "inbox");
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_environment_failures_keep_their_kind() {
+        for status in [
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let provider = mailbox_provider();
+            {
+                let mut mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+                mailbox.fail_moves.insert("incoming2".into());
+                mailbox.failure_status = Some(status.as_u16());
+            }
+            let outcome = provider.archive_thread("thread'1").await.unwrap();
+            assert_eq!(outcome.moved, 1);
+            assert_eq!(outcome.failed, 1);
+            assert!(matches!(
+                crate::rules::triage_result(crate::unified::TriageResult::Count(outcome)),
+                mecha_core::mail_rules::engine::ActionResult::Failed {
+                    kind: mecha_core::mail_rules::FailureKind::Environment,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn archive_and_spam_only_move_inbox_mail_across_all_pages() {
         for destination in ["archive", "junkemail"] {
             let provider = mailbox_provider();
@@ -1036,7 +1216,8 @@ mod tests {
                 count,
                 MutationOutcome {
                     moved: 2,
-                    failed: 0
+                    failed: 0,
+                    ..Default::default()
                 }
             );
             let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
@@ -1056,7 +1237,8 @@ mod tests {
             provider.archive_thread("thread'1").await.unwrap(),
             MutationOutcome {
                 moved: 2,
-                failed: 0
+                failed: 0,
+                ..Default::default()
             }
         );
         {
@@ -1096,7 +1278,8 @@ mod tests {
             provider.trash_thread("thread'1").await.unwrap(),
             MutationOutcome {
                 moved: 5,
-                failed: 0
+                failed: 0,
+                ..Default::default()
             }
         );
         {
@@ -1136,7 +1319,8 @@ mod tests {
                 provider.set_thread_read("thread'1", read).await.unwrap(),
                 MutationOutcome {
                     moved: 5,
-                    failed: 0
+                    failed: 0,
+                    ..Default::default()
                 }
             );
             let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
@@ -1295,7 +1479,8 @@ mod tests {
                         result.unwrap(),
                         MutationOutcome {
                             moved: 1,
-                            failed: 1
+                            failed: 1,
+                            failure_kind: Some(MutationFailureKind::Action)
                         }
                     );
                 }

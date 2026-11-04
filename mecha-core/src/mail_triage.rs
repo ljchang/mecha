@@ -39,6 +39,8 @@
 //! here, so the retention question stays the provider's and there is no second
 //! place for mail to leak from.
 
+pub mod rule_records;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -1307,7 +1309,12 @@ impl TriageStore {
     /// Open the default location only if it exists — read paths must not
     /// create state as a side effect, the rule `doctor` leans on.
     pub fn open_existing_default() -> Option<Self> {
-        let root = Self::default_root().ok()?;
+        Self::open_existing(Self::default_root().ok()?)
+    }
+
+    /// Read an explicit store without creating directories or changing modes.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Option<Self> {
+        let root = root.into();
         root.is_dir().then_some(TriageStore { root })
     }
 
@@ -1328,12 +1335,15 @@ impl TriageStore {
                 continue;
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(rec) = serde_json::from_str::<Record>(&text) {
+                if let Ok(mut rec) = serde_json::from_str::<Record>(&text) {
+                    rule_records::overlay(&self.root, &mut rec)?;
                     out.push(rec);
                 }
             }
         }
-        out.sort_by(|a, b| b.date.cmp(&a.date));
+        out.sort_by_key(|record| {
+            std::cmp::Reverse(chrono::DateTime::parse_from_rfc3339(&record.date).ok())
+        });
         Ok(out)
     }
 
@@ -1360,7 +1370,9 @@ impl TriageStore {
             rest: Default::default(),
         };
         let text = std::fs::read_to_string(self.root.join(probe.file_name())).ok()?;
-        serde_json::from_str(&text).ok()
+        let mut record = serde_json::from_str(&text).ok()?;
+        rule_records::overlay(&self.root, &mut record).ok()?;
+        Some(record)
     }
 
     /// Has this thread already been classified? The question a sweep asks

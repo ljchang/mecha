@@ -27,8 +27,25 @@ pub struct ActionClaim {
     pub status: ClaimStatus,
 }
 
-struct StoreLock {
+pub(super) struct StoreLock {
     _file: File,
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        // Closing alone releases flock only when the last descriptor sharing
+        // its open file description closes. Parallel fork/exec can retain a
+        // copy until exec, spuriously blocking the next run of this same store.
+        // Explicit unlock ends this guard's ownership regardless of such copies.
+        loop {
+            // SAFETY: this guard still owns an open descriptor.
+            if unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) } == 0
+                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break;
+            }
+        }
+    }
 }
 
 impl RuleStore {
@@ -58,6 +75,33 @@ impl RuleStore {
         crate::create_private_dir(&rules)?;
         contained(&root, &rules)?;
         Ok(Self { root })
+    }
+
+    /// Read an existing store without creating directories or changing modes.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into().canonicalize()?;
+        contained(&root, &root.join("rules"))?;
+        Ok(Self { root })
+    }
+
+    /// Separate from the short writer lock: serialize engine effects and cap
+    /// reservations without holding a store transaction across network I/O.
+    pub(super) fn engine_lease(&self) -> Result<StoreLock> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(self.path(".engine.lock")?)?;
+        // SAFETY: the descriptor stays owned until the run completes.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                bail!("another mail rules apply is running");
+            }
+            return Err(error).context("locking mail rule engine");
+        }
+        Ok(StoreLock { _file: file })
     }
 
     pub fn root(&self) -> &Path {
@@ -839,6 +883,33 @@ impl RuleStore {
             "deferred actions must belong to the queued thread"
         );
         let _lock = self.lock()?;
+        // Pending producers may still add snapshots while a consumer settles
+        // another message. Expiry, however, must never renew an occasion.
+        let rows: Vec<_> = self
+            .ledger()?
+            .into_iter()
+            .filter(|row| row.outcome == Outcome::Expired)
+            .collect();
+        for action in &entry.actions {
+            let closed = message_closed(
+                &rows,
+                &MessageKey {
+                    rule: action.rule.clone(),
+                    account: action.message.account.clone(),
+                    provider_message_id: action.message.provider_message_id.clone(),
+                    action: action.action.clone(),
+                },
+            ) || (action.group.once_per_thread()
+                && thread_closed(
+                    &rows,
+                    &ThreadKey {
+                        rule: action.rule.clone(),
+                        account: action.message.account.clone(),
+                        thread_id: action.message.thread_id.clone(),
+                    },
+                ));
+            ensure!(!closed, "deferred occasion already expired");
+        }
         let mut queue = self.deferred()?;
         let effective_id = if let Some(existing) = queue
             .iter_mut()
@@ -932,7 +1003,7 @@ impl RuleStore {
                 }
                 row.at = Some(now);
                 row.outcome = Outcome::Expired;
-                row.closes = false;
+                row.closes = true;
                 row.settlement = None;
                 row.reason = "deferred for more than seven days".into();
                 row.failure_kind = FailureKind::Unknown;
@@ -1029,4 +1100,27 @@ fn digest_inputs(inputs: &BTreeMap<String, Vec<u8>>) -> Result<String> {
 
 fn directory_digest(root: &Path) -> Result<String> {
     digest_inputs(&directory_inputs(root)?)
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn an_inherited_descriptor_cannot_retain_a_completed_engine_lease() {
+        let root = std::env::temp_dir().join(format!("rule-lease-{}", uuid::Uuid::new_v4()));
+        let store = RuleStore::open(&root).unwrap();
+        let lease = store.engine_lease().unwrap();
+        // dup and fork share the same open file description. No real child or
+        // process-global test state is needed to reproduce that shared lifetime.
+        let inherited = lease._file.try_clone().unwrap();
+        assert!(store.engine_lease().is_err());
+        drop(lease);
+        let next = store.engine_lease().expect(
+            "completed run must release the lease even while a forked child retains its descriptor",
+        );
+        drop(next);
+        drop(inherited);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

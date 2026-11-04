@@ -6,6 +6,25 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Facts returned by the provider, never inferred from a sender header alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectionEvidence {
+    Sent,
+    Draft,
+    /// Gmail returned a complete label collection without SENT or DRAFT.
+    NotSent,
+    /// Graph returned isDraft=false; owner addresses must still be checked.
+    NotDraft,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailDirection {
+    Inbound,
+    Sent,
+    Draft,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Email {
     /// Deterministic local id: `gmail-{provider_id}`.
@@ -16,6 +35,9 @@ pub struct Email {
     /// The RFC 5322 Message-ID, for reply threading.
     pub message_id: Option<String>,
     pub subject: String,
+    /// Gmail preserves its raw Subject; Graph supplies already decoded text.
+    #[serde(default)]
+    pub subject_is_raw: bool,
     pub from_address: String,
     pub from_name: String,
     pub to_addresses: Vec<String>,
@@ -28,6 +50,12 @@ pub struct Email {
     /// records whose date certainty was not recorded. Only Some(true) ranks.
     #[serde(default)]
     pub date_known: Option<bool>,
+    /// Provider arrival timestamp only. Header Date remains display data.
+    #[serde(default)]
+    pub provider_arrival_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Unknown when the provider omitted attachment metadata or MIME structure.
+    #[serde(default)]
+    pub attachment_presence: Option<bool>,
     pub body_text: String,
     pub body_html: String,
     pub snippet: String,
@@ -55,10 +83,70 @@ pub struct Email {
     /// known truncation, None when completeness cannot be established.
     #[serde(default)]
     pub headers_complete: Option<bool>,
+    /// A complete dedicated subject or a complete source header collection.
+    #[serde(default)]
+    pub subject_complete: Option<bool>,
+    /// All To/Cc/Bcc collections were returned and parsed completely.
+    #[serde(default)]
+    pub recipients_complete: Option<bool>,
     /// Drafts are not owner participation. None means the provider did not
     /// return the information needed to distinguish a draft from sent mail.
     #[serde(default)]
     pub is_draft: Option<bool>,
+    #[serde(default)]
+    pub direction_evidence: Option<DirectionEvidence>,
+    /// Raw header instances for deterministic header rules; no trust decision.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl Email {
+    /// An owner address (including aliases) cannot be an inbound sender.
+    /// Unknown provider direction or sender data never becomes incoming mail.
+    pub fn direction(&self, owners: &[String]) -> Option<MailDirection> {
+        match self.direction_evidence? {
+            DirectionEvidence::Draft => Some(MailDirection::Draft),
+            DirectionEvidence::Sent => Some(MailDirection::Sent),
+            DirectionEvidence::NotSent | DirectionEvidence::NotDraft => {
+                if self.from_address.is_empty() || owners.is_empty() {
+                    return None;
+                }
+                Some(
+                    if owners
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&self.from_address))
+                    {
+                        MailDirection::Sent
+                    } else {
+                        MailDirection::Inbound
+                    },
+                )
+            }
+        }
+    }
+
+    /// Variable-width fractional seconds and timezone offsets must be compared
+    /// as instants, never lexicographically or at whole-second precision.
+    pub(crate) fn received_instant(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        chrono::DateTime::parse_from_rfc3339(&self.date_received)
+            .ok()
+            .map(|at| at.with_timezone(&chrono::Utc))
+    }
+}
+
+pub(crate) fn header_values(
+    headers: Option<&[serde_json::Value]>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut values: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for header in headers.into_iter().flatten() {
+        if let (Some(name), Some(value)) = (header["name"].as_str(), header["value"].as_str()) {
+            values
+                .entry(name.to_ascii_lowercase())
+                .or_default()
+                .push(value.into());
+        }
+    }
+    values
 }
 
 /// One Authentication-Results field, without a trust decision. Instances must
@@ -212,12 +300,11 @@ impl ThreadMetadata {
         let Some(address) = address else {
             return result;
         };
+        let owners = [address.to_owned()];
         let sent = emails
             .iter()
-            .any(|e| e.from_address.eq_ignore_ascii_case(address) && e.is_draft == Some(false));
-        let unknown = emails
-            .iter()
-            .any(|e| e.from_address.is_empty() || e.is_draft.is_none());
+            .any(|e| e.direction(&owners) == Some(MailDirection::Sent));
+        let unknown = emails.iter().any(|e| e.direction(&owners).is_none());
         result.owner_participated = if sent {
             Some(true)
         } else if unknown {
@@ -227,14 +314,16 @@ impl ThreadMetadata {
         };
         let inbound = emails
             .iter()
-            .filter(|e| e.is_draft == Some(false) && !e.from_address.eq_ignore_ascii_case(address));
+            .filter(|e| e.direction(&owners) == Some(MailDirection::Inbound));
         if !unknown
-            && inbound
-                .clone()
-                .all(|e| e.date_known == Some(true) && !e.provider_id.is_empty())
+            && inbound.clone().all(|e| {
+                e.date_known == Some(true)
+                    && !e.provider_id.is_empty()
+                    && chrono::DateTime::parse_from_rfc3339(&e.date_received).is_ok()
+            })
         {
             result.newest_inbound_provider_id = inbound
-                .max_by(|a, b| a.date_received.cmp(&b.date_received))
+                .max_by_key(|e| chrono::DateTime::parse_from_rfc3339(&e.date_received).ok())
                 .map(|e| e.provider_id.clone());
         }
         result
@@ -255,6 +344,14 @@ pub enum MailError {
     #[error("API error ({status}): {message}")]
     ApiError { status: u16, message: String },
 
+    /// A Gmail 403 whose structured reasons are all documented quota failures.
+    /// Other providers' 403 responses never acquire this exemption.
+    #[error("Gmail quota exceeded (403, {reasons:?}): {message}")]
+    GmailQuota {
+        reasons: Vec<String>,
+        message: String,
+    },
+
     #[error("Parse error: {0}")]
     ParseError(String),
 
@@ -274,6 +371,35 @@ pub enum MailError {
 }
 
 impl MailError {
+    pub(crate) fn gmail_api_error(status: u16, message: String) -> Self {
+        // https://developers.google.com/workspace/gmail/api/guides/handle-errors#403_errors
+        // Neither status alone nor a substring in human-readable prose proves
+        // a quota failure. Mixed/unknown/malformed reason sets remain actions.
+        if status == 403 {
+            let reasons = serde_json::from_str::<serde_json::Value>(&message)
+                .ok()
+                .and_then(|body| {
+                    body["error"]["errors"]
+                        .as_array()?
+                        .iter()
+                        .map(|error| error["reason"].as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                });
+            if let Some(reasons) = reasons.filter(|reasons| {
+                !reasons.is_empty()
+                    && reasons.iter().all(|reason| {
+                        matches!(
+                            reason.as_str(),
+                            "rateLimitExceeded" | "userRateLimitExceeded" | "dailyLimitExceeded"
+                        )
+                    })
+            }) {
+                return Self::GmailQuota { reasons, message };
+            }
+        }
+        Self::ApiError { status, message }
+    }
+
     /// True when a forced token refresh and one retry is the right response.
     pub fn is_auth_expiry(&self) -> bool {
         matches!(self, MailError::ApiError { status: 401, .. })

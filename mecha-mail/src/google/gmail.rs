@@ -13,6 +13,10 @@ use crate::types::{authentication_results, first_header, Email, MailError};
 pub struct GmailProvider {
     access_token: String,
     client: reqwest::Client,
+    #[cfg(test)]
+    scripted_mutations: Option<std::sync::Arc<std::sync::Mutex<Vec<reqwest::Request>>>>,
+    #[cfg(test)]
+    scripted_reads: Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Value>>>>,
 }
 
 impl GmailProvider {
@@ -20,6 +24,10 @@ impl GmailProvider {
         Self {
             access_token,
             client: crate::http::client(),
+            #[cfg(test)]
+            scripted_mutations: None,
+            #[cfg(test)]
+            scripted_reads: None,
         }
     }
 
@@ -28,6 +36,14 @@ impl GmailProvider {
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, MailError> {
+        #[cfg(test)]
+        if let Some(reads) = &self.scripted_reads {
+            return Ok(reads
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected Gmail request"));
+        }
         let resp = send_with_retry(
             self.client
                 .get(url)
@@ -37,10 +53,7 @@ impl GmailProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError {
-                status,
-                message: body,
-            });
+            return Err(MailError::gmail_api_error(status, body));
         }
         resp.json::<Value>().await.map_err(MailError::from)
     }
@@ -144,9 +157,8 @@ impl GmailProvider {
             .collect();
         // Oldest first is a promise callers build on — the unified reply
         // tool answers `last()` as "the newest message" — and the API's
-        // array order is observed, not documented. The stamps are
-        // fixed-width ISO, so the string sort is chronological.
-        emails.sort_by(|a, b| a.date_received.cmp(&b.date_received));
+        // array order is observed, not documented. Fractional precision varies.
+        emails.sort_by_key(Email::received_instant);
         Ok(emails)
     }
 
@@ -182,10 +194,7 @@ impl GmailProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(MailError::ApiError {
-                status,
-                message: body,
-            });
+            return Err(MailError::gmail_api_error(status, body));
         }
         let json: Value = resp.json().await?;
         Ok(json["id"].as_str().unwrap_or_default().to_string())
@@ -210,8 +219,8 @@ impl GmailProvider {
         add: &[&str],
         remove: &[&str],
     ) -> Result<(), MailError> {
-        let resp = send_with_retry(self.modify_thread_request(thread_id, add, remove)).await?;
-        Self::ok_or_err(resp).await
+        self.mutate(self.modify_thread_request(thread_id, add, remove))
+            .await
     }
 
     fn modify_thread_request(
@@ -227,6 +236,47 @@ impl GmailProvider {
             ))
             .header("Authorization", self.auth_header())
             .json(&serde_json::json!({"addLabelIds": add, "removeLabelIds": remove}))
+    }
+
+    /// Rule execution always addresses its authorized message, never a thread.
+    pub async fn archive_message(&self, id: &str) -> Result<(), MailError> {
+        self.mutate(self.modify_message_request(id, &[], &["INBOX"]))
+            .await
+    }
+    pub async fn set_message_read(&self, id: &str, read: bool) -> Result<(), MailError> {
+        let (add, remove): (&[&str], &[&str]) = if read {
+            (&[], &["UNREAD"])
+        } else {
+            (&["UNREAD"], &[])
+        };
+        self.mutate(self.modify_message_request(id, add, remove))
+            .await
+    }
+    pub async fn trash_message(&self, id: &str) -> Result<(), MailError> {
+        self.mutate(
+            self.client
+                .post(format!(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/trash",
+                    urlencode(id)
+                ))
+                .header("Authorization", self.auth_header())
+                .header("Content-Length", "0"),
+        )
+        .await
+    }
+    fn modify_message_request(
+        &self,
+        id: &str,
+        add: &[&str],
+        remove: &[&str],
+    ) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/modify",
+                urlencode(id)
+            ))
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({"addLabelIds":add, "removeLabelIds":remove}))
     }
 
     fn restore_thread_request(&self, thread_id: &str, from_trash: bool) -> reqwest::RequestBuilder {
@@ -286,7 +336,7 @@ impl GmailProvider {
     /// deliberate choice of scope, so the destructive verb the model can
     /// reach is the reversible one.
     pub async fn trash_thread(&self, thread_id: &str) -> Result<(), MailError> {
-        let resp = send_with_retry(
+        self.mutate(
             self.client
                 .post(format!(
                     "https://gmail.googleapis.com/gmail/v1/users/me/threads/{}/trash",
@@ -295,8 +345,15 @@ impl GmailProvider {
                 .header("Authorization", self.auth_header())
                 .header("Content-Length", "0"),
         )
-        .await?;
-        Self::ok_or_err(resp).await
+        .await
+    }
+    async fn mutate(&self, request: reqwest::RequestBuilder) -> Result<(), MailError> {
+        #[cfg(test)]
+        if let Some(requests) = &self.scripted_mutations {
+            requests.lock().unwrap().push(request.build()?);
+            return Ok(());
+        }
+        Self::ok_or_err(send_with_retry(request).await?).await
     }
 
     /// Collapse a response into unit-or-error. Triage verbs return nothing
@@ -307,10 +364,7 @@ impl GmailProvider {
         }
         let status = resp.status().as_u16();
         let body = resp.text().await.unwrap_or_default();
-        Err(MailError::ApiError {
-            status,
-            message: body,
-        })
+        Err(MailError::gmail_api_error(status, body))
     }
 
     /// The authenticated account's address — doubles as the auth smoke test.
@@ -412,6 +466,7 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
     let headers = msg["payload"]["headers"].as_array();
     let mut subject = String::new();
     let mut from_raw = String::new();
+    let mut from_count = 0;
     let mut to_raw = String::new();
     let mut cc_raw = String::new();
     let mut bcc_raw = String::new();
@@ -424,10 +479,13 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
             let value = h["value"].as_str().unwrap_or_default();
             match name.as_str() {
                 "subject" => subject = value.to_string(),
-                "from" => from_raw = value.to_string(),
-                "to" => to_raw = value.to_string(),
-                "cc" => cc_raw = value.to_string(),
-                "bcc" => bcc_raw = value.to_string(),
+                "from" => {
+                    from_count += 1;
+                    from_raw = value.to_string();
+                }
+                "to" => append_address_header(&mut to_raw, value),
+                "cc" => append_address_header(&mut cc_raw, value),
+                "bcc" => append_address_header(&mut bcc_raw, value),
                 "date" => date_str = value.to_string(),
                 "list-unsubscribe" => list_unsubscribe = Some(value.to_string()),
                 _ => {}
@@ -436,24 +494,27 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
     }
     let message_id = headers.and_then(|h| extract_message_id(h));
 
-    let (from_name, from_address) = parse_email_address(&from_raw);
-
-    let parse_addr_list = |raw: &str| -> Vec<String> {
-        raw.split(',')
-            .map(|s| parse_email_address(s.trim()).1)
-            .filter(|s| !s.is_empty())
-            .collect()
+    let (from_name, from_address) = if from_count == 1 {
+        parse_email_address(&from_raw)
+    } else {
+        Default::default()
     };
-    let to_addresses = parse_addr_list(&to_raw);
-    let cc_addresses = parse_addr_list(&cc_raw);
-    let bcc_addresses = parse_addr_list(&bcc_raw);
+
+    let to = parse_address_list(&to_raw);
+    let cc = parse_address_list(&cc_raw);
+    let bcc = parse_address_list(&bcc_raw);
+    let recipients_parsed = to.is_some() && cc.is_some() && bcc.is_some();
+    let to_addresses = to.unwrap_or_default();
+    let cc_addresses = cc.unwrap_or_default();
+    let bcc_addresses = bcc.unwrap_or_default();
 
     // Prefer internalDate (epoch millis) over the header, which lies more.
-    let parsed_date = msg["internalDate"]
+    let provider_arrival_at = msg["internalDate"]
         .as_str()
         .and_then(|s| s.parse::<i64>().ok())
-        .and_then(|millis| chrono::DateTime::from_timestamp(millis / 1000, 0))
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .and_then(chrono::DateTime::from_timestamp_millis);
+    let parsed_date = provider_arrival_at
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
         .or_else(|| parse_date_to_iso(&date_str));
     let date_known = Some(parsed_date.is_some());
     let date_received =
@@ -476,6 +537,16 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
     let is_starred = labels.contains(&"STARRED".to_string());
     let has_attachments = check_has_attachments(&msg["payload"]);
 
+    let headers_complete = headers
+        .filter(|hs| {
+            header_read == HeaderRead::Full
+                && !hs.is_empty()
+                && hs
+                    .iter()
+                    .all(|h| h["name"].is_string() && h["value"].is_string())
+        })
+        .map(|_| true);
+
     Email {
         id: format!("gmail-{provider_id}"),
         provider: "gmail".to_string(),
@@ -483,6 +554,7 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
         thread_id,
         message_id,
         subject,
+        subject_is_raw: true,
         from_address,
         from_name,
         to_addresses,
@@ -490,6 +562,8 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
         bcc_addresses,
         date_received,
         date_known,
+        provider_arrival_at,
+        attachment_presence: attachment_presence(&msg["payload"]),
         body_text,
         body_html,
         snippet,
@@ -504,33 +578,159 @@ pub(crate) fn parse_gmail_message(header_read: HeaderRead, msg: &Value) -> Email
         reply_to: first_header(headers.map(Vec::as_slice), "reply-to"),
         // A separate pass preserves EVERY instance, including duplicates.
         // The assign-every-time loop above must never handle this header.
+        headers: crate::types::header_values(headers.map(Vec::as_slice)),
         authentication_results: authentication_results(headers.map(Vec::as_slice)),
-        headers_complete: headers
-            .filter(|hs| {
-                header_read == HeaderRead::Full
-                    && !hs.is_empty()
-                    && hs
-                        .iter()
-                        .all(|h| h["name"].is_string() && h["value"].is_string())
-            })
-            .map(|_| true),
+        subject_complete: headers_complete,
+        recipients_complete: headers_complete.filter(|_| recipients_parsed),
+        headers_complete,
         is_draft: msg["labelIds"]
             .as_array()
+            .filter(|labels| labels.iter().all(Value::is_string))
             .map(|labels| labels.iter().any(|label| label == "DRAFT")),
+        direction_evidence: msg["labelIds"]
+            .as_array()
+            .filter(|labels| labels.iter().all(Value::is_string))
+            .map(|labels| {
+                if labels.iter().any(|label| label == "DRAFT") {
+                    crate::types::DirectionEvidence::Draft
+                } else if labels.iter().any(|label| label == "SENT") {
+                    crate::types::DirectionEvidence::Sent
+                } else {
+                    crate::types::DirectionEvidence::NotSent
+                }
+            }),
     }
 }
 
-/// Parse "Name <email@addr.com>" into (name, email).
+fn append_address_header(target: &mut String, value: &str) {
+    if !target.is_empty() {
+        target.push_str(", ");
+    }
+    target.push_str(value);
+}
+
+/// A From is exactly one mailbox. A list, group, duplicate field or syntax
+/// error is unknown (empty address), never a best-effort identity.
 fn parse_email_address(raw: &str) -> (String, String) {
-    let raw = raw.trim();
-    if let Some(start) = raw.find('<') {
-        if let Some(end) = raw.find('>') {
-            let name = raw[..start].trim().trim_matches('"').to_string();
-            let email = raw[start + 1..end].trim().to_string();
-            return (name, email);
+    let Some(address) = mailboxes(raw).and_then(|list| list.extract_single_info()) else {
+        return Default::default();
+    };
+    (address.display_name.unwrap_or_default(), address.addr)
+}
+
+fn parse_address_list(raw: &str) -> Option<Vec<String>> {
+    Some(
+        mailboxes(raw)?
+            .into_inner()
+            .into_iter()
+            .flat_map(|entry| match entry {
+                mailparse::MailAddr::Single(address) => vec![address.addr],
+                mailparse::MailAddr::Group(group) => group
+                    .addrs
+                    .into_iter()
+                    .map(|address| address.addr)
+                    .collect(),
+            })
+            .collect(),
+    )
+}
+
+fn mailboxes(raw: &str) -> Option<mailparse::MailAddrList> {
+    // mailparse handles mailbox/list grammar and encoded display names. Its
+    // comment parser is deliberately permissive; remove balanced RFC comments
+    // first, including nesting and quoted pairs, without touching quoted names.
+    let raw = without_comments(raw)?;
+    if raw.trim().starts_with(',') || raw.trim().ends_with(',') {
+        return None;
+    }
+    let bytes = format!("From: {raw}");
+    let (header, consumed) = mailparse::parse_header(bytes.as_bytes()).ok()?;
+    if consumed != bytes.len() {
+        return None;
+    }
+    let list = mailparse::addrparse_header(&header).ok()?;
+    let valid = |address: &mailparse::SingleInfo| valid_mailbox(&address.addr);
+    list.iter()
+        .all(|entry| match entry {
+            mailparse::MailAddr::Single(address) => valid(address),
+            mailparse::MailAddr::Group(group) => group.addrs.iter().all(valid),
+        })
+        .then_some(list)
+}
+
+/// Conservative routing-address validation: mailparse accepts any token with
+/// an @. Reject malformed tokens instead of exporting them as sender facts.
+fn valid_mailbox(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && local
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".!#$%&'*+-/=?^_`{|}~".contains(&b))
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && domain.split('.').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+fn without_comments(raw: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut group = false;
+    for c in raw.chars() {
+        if c.is_control() && !matches!(c, '\t' | '\r' | '\n') {
+            return None;
+        }
+        if escaped {
+            if depth == 0 {
+                result.push(c);
+            }
+            escaped = false;
+        } else if c == '\\' && (quoted || depth > 0) {
+            escaped = true;
+            if depth == 0 {
+                result.push(c);
+            }
+        } else if depth > 0 {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+        } else if c == '"' {
+            quoted = !quoted;
+            result.push(c);
+        } else if c == '(' && !quoted {
+            depth = 1;
+            result.push(' ');
+        } else if c == ':' && !quoted {
+            if group {
+                return None;
+            }
+            group = true;
+            result.push(c);
+        } else if c == ';' && !quoted {
+            if !group {
+                return None;
+            }
+            group = false;
+            result.push(c);
+        } else if c == ')' && !quoted {
+            return None;
+        } else {
+            result.push(c);
         }
     }
-    (String::new(), raw.to_string())
+    (depth == 0 && !quoted && !escaped && !group).then_some(result)
 }
 
 /// Extract text and HTML body parts from a Gmail payload, recursively.
@@ -564,6 +764,25 @@ fn extract_body_parts(payload: &Value) -> (String, String) {
     }
 
     (body_text, body_html)
+}
+
+// Only a complete MIME tree can prove the absence of attachments. A positive
+// attachment anywhere is sufficient even if a different part is incomplete.
+fn attachment_presence(payload: &Value) -> Option<bool> {
+    if check_has_attachments(payload) {
+        return Some(true);
+    }
+    let mime = payload["mimeType"].as_str()?;
+    payload["filename"].as_str()?;
+    if mime.starts_with("multipart/") {
+        let parts = payload["parts"].as_array()?;
+        if parts.is_empty() || parts.iter().any(|p| attachment_presence(p).is_none()) {
+            return None;
+        }
+    } else if !payload["body"].is_object() {
+        return None;
+    }
+    Some(false)
 }
 
 fn check_has_attachments(payload: &Value) -> bool {
@@ -648,6 +867,83 @@ pub(crate) fn urlencode(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn rule_actions_address_one_message_never_the_thread() {
+        use mecha_core::mail_rules::{ActionVerb, MessageRef};
+        for action in [
+            ActionVerb::Archive,
+            ActionVerb::Trash,
+            ActionVerb::Read,
+            ActionVerb::Unread,
+        ] {
+            let mut provider = GmailProvider::new("fixture-token".into());
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            provider.scripted_mutations = Some(requests.clone());
+            let message = MessageRef {
+                thread_id: "conversation-alpha".into(),
+                provider_message_id: "authorized-message".into(),
+                ..Default::default()
+            };
+            crate::rules::gmail_action(&provider, &message, action)
+                .await
+                .unwrap();
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0]
+                .url()
+                .path()
+                .starts_with("/gmail/v1/users/me/messages/authorized-message/"));
+        }
+    }
+
+    #[tokio::test]
+    async fn mail_reply_uses_newest_message_with_mixed_timestamp_precision() {
+        let whole: chrono::DateTime<chrono::Utc> = "2026-11-03T12:00:00Z".parse().unwrap();
+        let fraction = whole + chrono::Duration::milliseconds(100);
+        let make = |id: &str, sender: &str, at: chrono::DateTime<chrono::Utc>| serde_json::json!({"id":id, "threadId":"thread-alpha", "internalDate":at.timestamp_millis().to_string(), "payload":{"headers":[{"name":"From","value":sender},{"name":"Message-ID","value":format!("<{id}@example.com>")}]}});
+        let mut provider = GmailProvider::new("fixture-token".into());
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::from([
+                serde_json::json!({"messages":[make("newer", "newer@example.edu", fraction), make("older", "older@example.edu", whole)]}),
+            ]),
+        )));
+        let emails = provider.get_thread("thread-alpha").await.unwrap();
+        let target = crate::unified::reply_target(&emails, None).unwrap();
+        assert_eq!(target.provider_id, "newer");
+        let (to, _, _) =
+            crate::unified::gmail_reply_fields(target, Some("owner@example.com"), false);
+        assert_eq!(to, "newer@example.edu");
+        assert_eq!(
+            crate::unified::reply_target(&emails, Some("older"))
+                .unwrap()
+                .provider_id,
+            "older"
+        );
+    }
+
+    #[test]
+    fn structured_quota_forbidden_errors_are_environment_failures() {
+        use mecha_core::mail_rules::{engine::ActionResult, FailureKind};
+        for reason in [
+            "rateLimitExceeded",
+            "userRateLimitExceeded",
+            "dailyLimitExceeded",
+        ] {
+            let body = serde_json::json!({"error":{"code":403,"errors":[{"reason":reason}],"message":"fixture quota"}}).to_string();
+            let error = MailError::gmail_api_error(403, body);
+            assert!(matches!(
+                crate::rules::failure(error),
+                ActionResult::Failed {
+                    kind: FailureKind::Environment,
+                    ..
+                }
+            ));
+        }
+        for body in ["rateLimitExceeded".into(), serde_json::json!({"error":{"errors":[{"reason":"domainPolicy"}]}}).to_string(), serde_json::json!({"error":{"errors":[{"reason":"rateLimitExceeded"},{"reason":"forbidden"}]}}).to_string()] {
+            assert!(matches!(crate::rules::failure(MailError::gmail_api_error(403, body)), ActionResult::Failed {kind: FailureKind::Action, ..}));
+        }
+    }
 
     #[test]
     fn extracts_message_id_case_insensitively() {

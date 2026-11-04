@@ -515,6 +515,7 @@ impl Tool for ReplayTool {
                 program: None,
                 content,
                 is_error,
+                failure_kind: None,
                 external: external.unwrap_or(true),
                 refusal: false,
                 not_dispatched: false,

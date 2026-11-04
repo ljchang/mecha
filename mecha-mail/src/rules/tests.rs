@@ -1,0 +1,1026 @@
+use super::*;
+use crate::microsoft::graph_mail::MutationOutcome;
+use serde_json::json;
+
+fn email(id: &str, sender: &str, date: &str) -> Email {
+    serde_json::from_value(json!({"id":id,"provider":"fixture","provider_id":id,"thread_id":"thread-alpha","message_id":null,"subject":"Untrusted subject","from_address":sender,"from_name":"Untrusted display name","to_addresses":["owner@example.edu"],"cc_addresses":[],"bcc_addresses":[],"date_received":date,"date_known":true,"provider_arrival_at":date,"attachment_presence":false,"body_text":"","body_html":"","snippet":"","labels":[],"is_read":false,"is_starred":false,"has_attachments":false,"list_unsubscribe":null,"is_draft":false,"direction_evidence":"not_draft"})).unwrap()
+}
+
+#[test]
+fn candidate_uses_newest_inbound_and_refuses_missing_direction_or_dates() {
+    let inbound = email("inbound", "sender@example.com", "2026-11-03T12:00:00Z");
+    let sent = email("outbound", "owner@example.edu", "2026-11-03T13:00:00Z");
+    let emails = vec![inbound.clone(), sent];
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        &emails,
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(c.message.provider_message_id, "inbound");
+    assert!(c.classified.is_none());
+    assert!(candidate("campus", "thread-alpha", &emails, &[], None).is_err());
+    let mut unknown = inbound;
+    unknown.is_draft = None;
+    unknown.direction_evidence = None;
+    assert!(candidate(
+        "campus",
+        "thread-alpha",
+        &[unknown],
+        &["owner@example.edu".into()],
+        None
+    )
+    .is_err());
+}
+
+#[test]
+fn partial_mutations_are_failures_and_outages_do_not_indict_a_rule() {
+    assert!(matches!(
+        triage_result(TriageResult::Count(MutationOutcome {
+            moved: 1,
+            failed: 1,
+            ..Default::default()
+        })),
+        ActionResult::Failed {
+            kind: FailureKind::Unknown,
+            ..
+        }
+    ));
+    assert!(matches!(
+        triage_result(TriageResult::Count(MutationOutcome {
+            moved: 0,
+            failed: 0,
+            ..Default::default()
+        })),
+        ActionResult::Done
+    ));
+    assert!(matches!(
+        triage_result(TriageResult::Uncounted),
+        ActionResult::Done
+    ));
+    for error in [
+        MailError::AuthError("reauth".into()),
+        MailError::ApiError {
+            status: 503,
+            message: "offline".into(),
+        },
+        MailError::ApiError {
+            status: 429,
+            message: "wait".into(),
+        },
+    ] {
+        assert!(matches!(
+            failure(error),
+            ActionResult::Failed {
+                kind: FailureKind::Environment,
+                ..
+            }
+        ));
+    }
+    assert!(matches!(
+        failure(MailError::ApiError {
+            status: 400,
+            message: "refused action".into()
+        }),
+        ActionResult::Failed {
+            kind: FailureKind::Action,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn header_instances_are_preserved_by_both_provider_parsers() {
+    let headers = json!([{"name":"X-Notice","value":"first"},{"name":"x-notice","value":"second"}]);
+    let gmail = crate::google::gmail::parse_gmail_message(
+        crate::google::gmail::HeaderRead::Full,
+        &json!({"payload":{"headers":headers}}),
+    );
+    let outlook = crate::microsoft::graph_mail::parse_outlook_message(
+        &json!({"internetMessageHeaders":headers}),
+    );
+    assert_eq!(gmail.headers["x-notice"], vec!["first", "second"]);
+    assert_eq!(outlook.headers, gmail.headers);
+}
+
+#[test]
+fn private_annotations_survive_classification_and_never_invent_a_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    rule_records::update(root, "campus", "thread-alpha", |r| {
+        r.tags.insert("notice".into());
+        r.digest_rules.insert("archive-notice".into());
+        r.handled_message = Some("message-alpha".into());
+    })
+    .unwrap();
+    let store = mail_triage::TriageStore::open(root).unwrap();
+    assert!(store.get("campus", "thread-alpha").is_none());
+    let r: mail_triage::Record = serde_json::from_value(json!({"account":"campus","thread_id":"thread-alpha","state":"classified","classified_at":"2026-11-03T12:00:00Z"})).unwrap();
+    store.put(&r).unwrap();
+    assert_eq!(
+        store.get("campus", "thread-alpha").unwrap().rest["rule_tags"],
+        json!(["notice"])
+    );
+    store.put(&r).unwrap();
+    assert_eq!(
+        store.list().unwrap()[0].rest["digest_rules"],
+        json!(["archive-notice"])
+    );
+}
+
+#[tokio::test]
+async fn absent_graph_is_refused_before_any_server_or_workspace_is_created() {
+    assert!(GraphSink::connect(&mecha_core::config::Config::default())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn graph_sink_uses_mcp_with_typed_name_and_pointer_and_checks_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("graph.py");
+    std::fs::write(&script, r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion':'2024-11-05','capabilities':{},'serverInfo':{'name':'fixture','version':'test'}}
+    elif method == 'tools/list':
+        result = {'tools':[{'name':'kg_task_create','description':'Create a fictional task','inputSchema':{'type':'object'}}]}
+    elif method == 'tools/call':
+        args = request['params']['arguments']
+        with open('captured.json', 'w') as stream:
+            json.dump(args, stream)
+        result = {'content':[] if args['name'] == 'empty' else [{'type':'text','text':'fixture response'}], 'isError':args['name'].startswith('refused')}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
+"#).unwrap();
+    for prefix in [false, true] {
+        let entry = mecha_core::config::McpServerConfig {
+            name: "graph".into(),
+            command: "python3".into(),
+            args: vec![script.display().to_string()],
+            prefix_tools: Some(prefix),
+            ..Default::default()
+        };
+        let graph = GraphSink::connect_at(
+            &mecha_core::config::Config::default(),
+            &entry,
+            dir.path().into(),
+        )
+        .await
+        .unwrap();
+        let mut task = Task {
+            name: "Review notice — sender@example.com".into(),
+            account: "campus".into(),
+            thread_id: "thread-alpha".into(),
+            received_at: Utc::now(),
+            due: NaiveDate::from_ymd_opt(2026, 12, 1),
+        };
+        assert!(matches!(graph.create(&task).await, ActionResult::Done));
+        let captured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("captured.json")).unwrap())
+                .unwrap();
+        assert_eq!(captured["name"], task.name);
+        assert_eq!(captured["captured_from"]["id"], "thread-alpha");
+        assert_eq!(captured["due"], "2026-12-01");
+        assert!(captured["captured_from"].get("label").is_none());
+        task.name = "refused".into();
+        assert!(matches!(
+            graph.create(&task).await,
+            ActionResult::Failed { .. }
+        ));
+        task.name = "empty".into();
+        assert!(matches!(
+            graph.create(&task).await,
+            ActionResult::Failed { .. }
+        ));
+        check_graph_brake(&graph, "refused", false).await;
+        graph.client.close().await.unwrap();
+    }
+}
+
+#[test]
+fn gmail_sender_date_is_display_only_for_rule_eligibility() {
+    for internal in [serde_json::Value::Null, json!("invalid")] {
+        let email = crate::google::gmail::parse_gmail_message(
+            crate::google::gmail::HeaderRead::Full,
+            &json!({"id":"message-alpha", "threadId":"thread-alpha", "internalDate":internal, "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":"sender@example.com"},{"name":"Date","value":"Tue, 03 Nov 2026 12:00:00 +0000"}]}}),
+        );
+        let candidate = candidate(
+            "campus",
+            "thread-alpha",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        assert!(candidate.arrival_at.is_none());
+    }
+}
+
+#[test]
+fn missing_outlook_attachment_metadata_stays_unknown() {
+    let email = crate::microsoft::graph_mail::parse_outlook_message(
+        &json!({"id":"message-alpha", "conversationId":"thread-alpha", "from":{"emailAddress":{"address":"sender@example.com"}}, "receivedDateTime":"2026-11-03T12:00:00Z", "isDraft":false}),
+    );
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        &[email],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(c.attachment_presence, None);
+    assert_eq!(c.headers_complete, None);
+}
+
+#[test]
+fn provider_arrival_precision_survives_the_classification_envelope() {
+    let arrival: DateTime<Utc> = "2026-11-03T12:00:00.123Z".parse().unwrap();
+    let gmail = crate::google::gmail::parse_gmail_message(
+        crate::google::gmail::HeaderRead::Full,
+        &json!({"id":"message-alpha", "threadId":"thread-alpha", "internalDate":arrival.timestamp_millis().to_string(), "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":"sender@example.com"}]}}),
+    );
+    let outlook = crate::microsoft::graph_mail::parse_outlook_message(
+        &json!({"id":"message-alpha", "conversationId":"thread-alpha", "receivedDateTime":arrival.to_rfc3339(), "isDraft":false, "from":{"emailAddress":{"address":"sender@example.com"}}}),
+    );
+    for email in [gmail, outlook] {
+        assert_eq!(email.provider_arrival_at, Some(arrival));
+        assert_eq!(
+            email.date_received.parse::<DateTime<Utc>>().unwrap(),
+            arrival
+        );
+        let c = candidate(
+            "campus",
+            "thread-alpha",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(c.arrival_at, Some(arrival));
+    }
+}
+
+#[test]
+fn graph_dedicated_envelope_fields_prove_negative_matches() {
+    let email = crate::microsoft::graph_mail::parse_outlook_message(
+        &json!({"id":"message-alpha", "isDraft":false, "subject":"Meeting agenda", "from":{"emailAddress":{"address":"sender@example.com"}}, "toRecipients":[{"emailAddress":{"address":"owner@example.edu"}}], "ccRecipients":[], "bccRecipients":[], "receivedDateTime":"2026-11-03T12:00:00Z"}),
+    );
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        &[email],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(c.headers_complete, None);
+    for matcher in [
+        mecha_core::mail_rules::Matcher {
+            subject_contains: vec!["invoice".into()],
+            ..Default::default()
+        },
+        mecha_core::mail_rules::Matcher {
+            to: vec!["other@example.edu".into()],
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            engine::header_match(&matcher, &c),
+            engine::HeaderMatch::NoMatch
+        );
+    }
+}
+
+#[test]
+fn graph_missing_envelope_fields_and_raw_headers_remain_unknown() {
+    use mecha_core::mail_rules::Matcher;
+    let base = json!({"id":"message-alpha", "isDraft":false, "subject":"Meeting agenda", "from":{"emailAddress":{"address":"sender@example.com"}}, "toRecipients":[], "ccRecipients":[], "bccRecipients":[], "receivedDateTime":"2026-11-03T12:00:00Z"});
+    for field in ["subject", "toRecipients", "ccRecipients", "bccRecipients"] {
+        let mut raw = base.clone();
+        raw.as_object_mut().unwrap().remove(field);
+        let email = crate::microsoft::graph_mail::parse_outlook_message(&raw);
+        let c = candidate(
+            "campus",
+            "thread-alpha",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        let matcher = if field == "subject" {
+            Matcher {
+                subject_contains: vec!["invoice".into()],
+                ..Default::default()
+            }
+        } else {
+            Matcher {
+                to: vec!["other@example.edu".into()],
+                ..Default::default()
+            }
+        };
+        assert_eq!(
+            engine::header_match(&matcher, &c),
+            engine::HeaderMatch::Unknown
+        );
+    }
+    let email = crate::microsoft::graph_mail::parse_outlook_message(&base);
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        &[email],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    for matcher in [
+        Matcher {
+            list_id: vec!["notice.example.com".into()],
+            ..Default::default()
+        },
+        Matcher {
+            header: std::collections::BTreeMap::from([("x-notice".into(), vec!["invoice".into()])]),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            engine::header_match(&matcher, &c),
+            engine::HeaderMatch::Unknown
+        );
+    }
+}
+
+#[test]
+fn quoted_display_mailbox_never_authorizes_a_sender_rule() {
+    let email = crate::google::gmail::parse_gmail_message(
+        crate::google::gmail::HeaderRead::Full,
+        &json!({"id":"inbound", "labelIds":["INBOX"], "payload":{"headers":[
+            {"name":"From","value":"\"Accounts <billing@vendor.example>\" <person@other.example>"}
+        ]}}),
+    );
+    assert_eq!(email.from_address, "person@other.example");
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        &[email],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    let rule = mecha_core::mail_rules::RuleDefinition::parse("description = 'Review notice'\n[match]\nfrom = ['billing@vendor.example']\n[[action]]\ndo = 'trash'").unwrap();
+    assert_eq!(
+        engine::header_match(&rule.matcher, &c),
+        engine::HeaderMatch::NoMatch
+    );
+}
+
+#[test]
+fn ambiguous_or_malformed_from_is_unknown_to_every_caller() {
+    for from in [
+        "first@example.com, second@example.com",
+        "Broken <person@example.com",
+        "person@example.com (unterminated",
+        "Group: person@example.com;",
+        "not a mailbox",
+        "person@example.com;",
+        "person@example.com,",
+        "person@example.com second@example.com",
+    ] {
+        let email = crate::google::gmail::parse_gmail_message(
+            crate::google::gmail::HeaderRead::Full,
+            &json!({"id":"inbound", "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":from}]}}),
+        );
+        assert!(
+            email.from_address.is_empty(),
+            "guessed sender for {from}: {}",
+            email.from_address
+        );
+        assert!(candidate(
+            "campus",
+            "thread-alpha",
+            &[email],
+            &["owner@example.edu".into()],
+            None
+        )
+        .is_err());
+    }
+}
+
+#[tokio::test]
+async fn sent_alias_reply_cannot_replace_pre_activation_inbound() {
+    use mecha_core::mail_rules::{ActionGroup, Mode, Outcome, P1Holds};
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let rule = store.install("subject", "description = 'Review notice'\n[match]\nsubject_contains = ['untrusted']\n[[action]]\ndo = 'trash'", &Default::default()).unwrap();
+    let holds = P1Holds {
+        origin_gate: GateStatus::Passing,
+    };
+    store
+        .change_mode(
+            &rule.name,
+            ActionGroup::Mailbox,
+            Mode::Auto,
+            Some(mecha_core::closure::Actor::Owner),
+            &rule.approval_digest,
+            &holds,
+        )
+        .unwrap();
+    let activation = mecha_core::mail_rules::resolve_mode(
+        &rule,
+        ActionGroup::Mailbox,
+        &store.approvals().unwrap(),
+        &holds,
+    )
+    .activated_at
+    .unwrap();
+    let old = email(
+        "inbound",
+        "sender@example.com",
+        &(activation - chrono::Duration::hours(1)).to_rfc3339(),
+    );
+    let sent_at = activation + chrono::Duration::hours(1);
+    let reply = crate::google::gmail::parse_gmail_message(
+        crate::google::gmail::HeaderRead::Full,
+        &json!({"id":"reply", "labelIds":["SENT"], "internalDate":sent_at.timestamp_millis().to_string(), "payload":{"headers":[{"name":"From","value":"alias@example.edu"}, {"name":"Subject","value":"Untrusted subject"}]}}),
+    );
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        &[old, reply],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(c.message.provider_message_id, "inbound");
+    assert!(c.arrival_at.unwrap() < activation);
+    let report = engine::apply(
+        &store,
+        &FixtureMailbox(vec![c]),
+        None,
+        &["campus".into()],
+        &engine::EngineOptions {
+            clock: Arc::new(mecha_core::clock::FixedClock(sent_at)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(report.rows[0].outcome, Outcome::Skipped);
+    assert_eq!(report.rows[0].reason, "before the rule was active");
+}
+
+#[tokio::test]
+async fn graph_exit_after_discovery_holds_task_fate() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("exiting_graph.py");
+    std::fs::write(&script, r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion':'2024-11-05','capabilities':{},'serverInfo':{'name':'fixture','version':'test'}}
+    elif method == 'tools/list':
+        result = {'tools':[{'name':'kg_task_create','inputSchema':{'type':'object'}}]}
+    else:
+        sys.exit()
+    print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}), flush=True)
+    if method == 'tools/list':
+        sys.exit()
+"#).unwrap();
+    let entry = mecha_core::config::McpServerConfig {
+        name: "graph".into(),
+        command: "python3".into(),
+        args: vec![script.display().to_string()],
+        ..Default::default()
+    };
+    let graph = GraphSink::connect_at(
+        &mecha_core::config::Config::default(),
+        &entry,
+        dir.path().into(),
+    )
+    .await
+    .unwrap();
+    for thread in ["alpha", "beta", "gamma"] {
+        let result = graph
+            .create(&Task {
+                name: "Review notice".into(),
+                account: "campus".into(),
+                thread_id: thread.into(),
+                received_at: Utc::now(),
+                due: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                result,
+                ActionResult::Held {
+                    kind: FailureKind::Environment,
+                    ..
+                }
+            ),
+            "{result:?}"
+        );
+    }
+    check_graph_brake(&graph, "Review notice", true).await;
+    graph.client.close().await.unwrap();
+}
+
+#[test]
+fn mailbox_parser_handles_comments_lists_and_duplicate_from_fields() {
+    use crate::google::gmail::{parse_gmail_message, HeaderRead};
+    let parsed = parse_gmail_message(
+        HeaderRead::Full,
+        &json!({"payload":{"headers":[
+            {"name":"From","value":"(outer (nested)) \"Accounts, Europe\" <person@example.com> (office)"},
+            {"name":"To","value":"\"Surname, Given\" <first@example.edu>, Team: second@example.edu, third@example.edu;"},
+            {"name":"Cc","value":"fourth@example.edu (office)"}
+        ]}}),
+    );
+    assert_eq!(parsed.from_address, "person@example.com");
+    assert_eq!(parsed.from_name, "Accounts, Europe");
+    assert_eq!(
+        parsed.to_addresses,
+        [
+            "first@example.edu",
+            "second@example.edu",
+            "third@example.edu"
+        ]
+    );
+    assert_eq!(parsed.cc_addresses, ["fourth@example.edu"]);
+    assert_eq!(parsed.recipients_complete, Some(true));
+    let duplicate = parse_gmail_message(
+        HeaderRead::Full,
+        &json!({"payload":{"headers":[
+            {"name":"From","value":"first@example.com"}, {"name":"From","value":"second@example.com"}
+        ]}}),
+    );
+    assert!(duplicate.from_address.is_empty());
+    let broken = parse_gmail_message(
+        HeaderRead::Full,
+        &json!({"payload":{"headers":[
+            {"name":"To","value":"Broken <person@example.edu"}
+        ]}}),
+    );
+    assert_ne!(broken.recipients_complete, Some(true));
+}
+
+#[test]
+fn provider_direction_and_all_owner_addresses_bound_candidate_selection() {
+    use crate::google::gmail::{parse_gmail_message, HeaderRead};
+    use crate::microsoft::graph_mail::parse_outlook_message;
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    std::fs::write(
+        store.root().join("aliases.toml"),
+        "aliases = ['Alias@Example.edu']",
+    )
+    .unwrap();
+    let accounts = [
+        Some("owner@example.edu".into()),
+        Some("other@example.com".into()),
+    ];
+    let owners = owner_addresses(&accounts, Some("owner@example.edu"), &store).unwrap();
+    assert!(owners.contains(&"alias@example.edu".into()));
+    assert!(owners.contains(&"other@example.com".into()));
+    assert!(owner_addresses(&accounts, None, &store).is_err());
+    let inbound = email("inbound", "sender@example.com", "2026-11-03T10:00:00Z");
+    for sender in ["alias@example.edu", "other@example.com"] {
+        let gmail = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({"id":"reply", "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":sender}]}}),
+        );
+        let outlook = parse_outlook_message(
+            &json!({"id":"reply", "isDraft":false, "from":{"emailAddress":{"address":sender}}}),
+        );
+        for reply in [gmail, outlook] {
+            let c = candidate(
+                "campus",
+                "thread-alpha",
+                &[inbound.clone(), reply],
+                &owners,
+                None,
+            )
+            .unwrap();
+            assert_eq!(c.message.provider_message_id, "inbound");
+        }
+    }
+    for folder in ["sentitems", "drafts"] {
+        let reply = parse_outlook_message(
+            &json!({"id":"reply", "parentFolderId":folder, "from":{"emailAddress":{"address":"unlisted-alias@example.edu"}}}),
+        );
+        let c = candidate(
+            "campus",
+            "thread-alpha",
+            &[inbound.clone(), reply],
+            &owners,
+            None,
+        )
+        .unwrap();
+        assert_eq!(c.message.provider_message_id, "inbound");
+    }
+    let unknown_gmail = parse_gmail_message(
+        HeaderRead::Full,
+        &json!({"id":"unknown", "payload":{"headers":[{"name":"From","value":"sender@example.com"}]}}),
+    );
+    let unknown_outlook = parse_outlook_message(
+        &json!({"id":"unknown", "parentFolderId":"opaque-folder", "from":{"emailAddress":{"address":"sender@example.com"}}}),
+    );
+    for unknown in [unknown_gmail, unknown_outlook] {
+        assert!(candidate(
+            "campus",
+            "thread-alpha",
+            &[inbound.clone(), unknown],
+            &owners,
+            None
+        )
+        .is_err());
+    }
+    std::fs::write(store.root().join("aliases.toml"), "aliases = false").unwrap();
+    assert!(owner_addresses(&accounts, Some("owner@example.edu"), &store).is_err());
+}
+
+struct FixtureMailbox(Vec<Candidate>);
+#[async_trait]
+impl Mailbox for FixtureMailbox {
+    async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+        Ok(self.0.iter().map(|c| c.message.thread_id.clone()).collect())
+    }
+    async fn read_thread(&self, _: &str, thread: &str) -> Result<Candidate> {
+        Ok(self
+            .0
+            .iter()
+            .find(|c| c.message.thread_id == thread)
+            .unwrap()
+            .clone())
+    }
+    async fn mailbox_action(&self, _: &Candidate, _: ActionVerb) -> ActionResult {
+        panic!("fixture must never mutate mail")
+    }
+    async fn private_record(&self, _: &Candidate, _: &str, _: &Action) -> ActionResult {
+        panic!("fixture must never write annotations")
+    }
+    async fn handled(&self, _: &Candidate) -> Result<()> {
+        panic!("fixture must never skip classification")
+    }
+    fn origin_gate(&self, _: &LoadedRule) -> GateStatus {
+        GateStatus::Passing
+    }
+}
+
+async fn check_graph_brake(sink: &GraphSink, description: &str, outage: bool) {
+    use mecha_core::mail_rules::{ActionGroup, Mode, Outcome, P1Holds};
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let rule = store.install("task", &format!("description = '{description}'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'task'"), &Default::default()).unwrap();
+    let holds = P1Holds {
+        origin_gate: GateStatus::Passing,
+    };
+    store
+        .change_mode(
+            &rule.name,
+            ActionGroup::Board,
+            Mode::Auto,
+            Some(mecha_core::closure::Actor::Owner),
+            &rule.approval_digest,
+            &holds,
+        )
+        .unwrap();
+    let now = Utc::now() + chrono::Duration::hours(1);
+    let mail = FixtureMailbox(
+        ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|thread| {
+                let mut c = candidate(
+                    "campus",
+                    thread,
+                    &[email(thread, "sender@example.com", &now.to_rfc3339())],
+                    &["owner@example.edu".into()],
+                    None,
+                )
+                .unwrap();
+                c.classified = Some(Classified {
+                    at: now,
+                    deadline: None,
+                });
+                c
+            })
+            .collect(),
+    );
+    let report = engine::apply(
+        &store,
+        &mail,
+        Some(sink),
+        &["campus".into()],
+        &engine::EngineOptions {
+            pass: Pass::AfterClassify,
+            clock: Arc::new(mecha_core::clock::FixedClock(now)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.rows.len(), 3);
+    assert!(report.rows.iter().all(|row| row.outcome
+        == if outage {
+            Outcome::Held
+        } else {
+            Outcome::Failed
+        }));
+    assert!(report
+        .rows
+        .iter()
+        .all(|row| row.is_action_failure() != outage));
+    if outage {
+        assert!(report.rows.iter().all(|row| row.reason == "fate unknown"
+            && row.closes
+            && row.failure_kind == FailureKind::Environment));
+    }
+    let mode = mecha_core::mail_rules::resolve_mode(
+        &rule,
+        ActionGroup::Board,
+        &store.approvals().unwrap(),
+        &holds,
+    );
+    assert_eq!(
+        mode.effective,
+        if outage { Mode::Auto } else { Mode::Shadow }
+    );
+}
+
+#[test]
+fn raw_encoded_and_folded_headers_match_semantic_text() {
+    use crate::google::gmail::{parse_gmail_message, HeaderRead};
+    use mecha_core::mail_rules::Matcher;
+    for raw in [
+        "=?UTF-8?B?aW52b2ljZQ==?=",
+        "=?us-ascii?Q?invoice?=",
+        "=?ISO-8859-1?Q?invoice?=",
+    ] {
+        let email = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({"id":"notice", "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":"sender@example.com"},{"name":"Subject","value":raw},{"name":"X-Notice","value":raw}]}}),
+        );
+        let c = candidate(
+            "campus",
+            "thread",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(c.message.subject, raw, "stored display text stays raw");
+        assert_eq!(
+            engine::header_match(
+                &Matcher {
+                    subject_contains: vec!["invoice".into()],
+                    ..Default::default()
+                },
+                &c
+            ),
+            engine::HeaderMatch::Match
+        );
+        assert_eq!(
+            engine::header_match(
+                &Matcher {
+                    subject_contains: vec!["utf".into()],
+                    ..Default::default()
+                },
+                &c
+            ),
+            engine::HeaderMatch::NoMatch
+        );
+        assert_eq!(
+            engine::header_match(
+                &Matcher {
+                    header: [("X-Notice".into(), vec!["invoice".into()])].into(),
+                    ..Default::default()
+                },
+                &c
+            ),
+            engine::HeaderMatch::Match
+        );
+    }
+    for provider in ["gmail", "outlook"] {
+        let headers = json!([{"name":"From","value":"sender@example.com"},{"name":"Subject","value":"invoice\r\n\t ready"},{"name":"X-Notice","value":"invoice\r\n\t ready"}]);
+        let email = if provider == "gmail" {
+            parse_gmail_message(
+                HeaderRead::Full,
+                &json!({"id":"notice", "labelIds":["INBOX"], "payload":{"headers":headers}}),
+            )
+        } else {
+            crate::microsoft::graph_mail::parse_outlook_message(
+                &json!({"id":"notice", "isDraft":false,"from":{"emailAddress":{"address":"sender@example.com"}},"subject":"invoice ready", "internetMessageHeaders":headers}),
+            )
+        };
+        let c = candidate(
+            "campus",
+            "thread",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            engine::header_match(
+                &Matcher {
+                    subject_contains: vec!["invoice ready".into()],
+                    header: [("X-Notice".into(), vec!["invoice ready".into()])].into(),
+                    ..Default::default()
+                },
+                &c
+            ),
+            engine::HeaderMatch::Match
+        );
+    }
+}
+
+#[test]
+fn undecodable_header_words_are_unknown_not_negative() {
+    use crate::google::gmail::{parse_gmail_message, HeaderRead};
+    use mecha_core::mail_rules::Matcher;
+    for raw in [
+        "=?UTF-8?B?invalid!?=",
+        "=?utf-8?Q?=ZZ?=",
+        "=?unknown-charset?Q?invoice?=",
+        "=?utf-8?Q?=FF?=",
+    ] {
+        let email = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({"id":"notice", "labelIds":["INBOX"], "payload":{"headers":[{"name":"From","value":"sender@example.com"},{"name":"Subject","value":raw},{"name":"X-Notice","value":raw}]}}),
+        );
+        let c = candidate(
+            "campus",
+            "thread",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        for matcher in [
+            Matcher {
+                subject_contains: vec!["invoice".into()],
+                ..Default::default()
+            },
+            Matcher {
+                header: [("X-Notice".into(), vec!["invoice".into()])].into(),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(
+                engine::header_match(&matcher, &c),
+                engine::HeaderMatch::Unknown,
+                "{raw}"
+            );
+        }
+    }
+}
+
+#[test]
+fn historical_verdicts_are_not_after_classify_candidates() {
+    let now = Utc::now();
+    let record = |thread: &str, at: DateTime<Utc>| -> mail_triage::Record {
+        serde_json::from_value(json!({"thread_id":thread,"account":"campus","state":"classified", "classified_at":at.to_rfc3339(), "verdict":{"bucket":"notify","urgency":"none","proposed":"none","one_line":"Fictional notice"}})).unwrap()
+    };
+    let records = [
+        record("old", now - chrono::Duration::days(8)),
+        record("recent", now - chrono::Duration::minutes(1)),
+    ];
+    assert_eq!(
+        classified_candidates(&records, "campus", now),
+        vec!["recent"]
+    );
+}
+
+#[test]
+fn graph_decoded_subject_is_not_decoded_twice_but_raw_headers_are() {
+    let raw = "=?UTF-8?B?aW52b2ljZQ==?=";
+    let email = crate::microsoft::graph_mail::parse_outlook_message(
+        &json!({"id":"notice","isDraft":false,"from":{"emailAddress":{"address":"sender@example.com"}}, "subject":raw, "internetMessageHeaders":[{"name":"X-Notice","value":raw}]}),
+    );
+    let c = candidate(
+        "campus",
+        "thread",
+        &[email],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    use mecha_core::mail_rules::Matcher;
+    assert_eq!(
+        engine::header_match(
+            &Matcher {
+                subject_contains: vec!["invoice".into()],
+                ..Default::default()
+            },
+            &c
+        ),
+        engine::HeaderMatch::NoMatch
+    );
+    assert_eq!(
+        engine::header_match(
+            &Matcher {
+                subject_contains: vec!["utf".into()],
+                header: [("X-Notice".into(), vec!["invoice".into()])].into(),
+                ..Default::default()
+            },
+            &c
+        ),
+        engine::HeaderMatch::Match
+    );
+    assert_eq!(c.headers["x-notice"], [raw]);
+}
+
+#[test]
+fn after_classify_enumerates_recent_verdicts_and_outstanding_queue_without_writes() {
+    use mecha_core::mail_rules::{DeferredEntry, LedgerRow, Mode, Outcome};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("triage");
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let now = Utc::now();
+    assert!(after_classify_candidates(&root, &store, "campus", now)
+        .unwrap()
+        .is_empty());
+    assert!(!root.exists());
+    let triage = mail_triage::TriageStore::open(&root).unwrap();
+    let record = |id: &str, at: &str| -> mail_triage::Record {
+        serde_json::from_value(json!({"thread_id":id,"account":"campus","state":"classified", "classified_at":at, "verdict":{"bucket":"notify","urgency":"none","proposed":"none"}})).unwrap()
+    };
+    for r in [
+        record("recent", &(now - chrono::Duration::minutes(1)).to_rfc3339()),
+        record("boundary", &(now - RECENT_WINDOW).to_rfc3339()),
+        record(
+            "old",
+            &(now - RECENT_WINDOW - chrono::Duration::seconds(1)).to_rfc3339(),
+        ),
+        record("unknown", "invalid"),
+        record("future", &(now + chrono::Duration::days(1)).to_rfc3339()),
+    ] {
+        triage.put(&r).unwrap();
+    }
+    let rule = store.install("digest", "description = 'Review notice'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'digest'", &Default::default()).unwrap();
+    for account in ["campus", "personal"] {
+        let c = candidate(
+            account,
+            "queued",
+            &[email(
+                "queued",
+                "sender@example.com",
+                &(now - chrono::Duration::days(30)).to_rfc3339(),
+            )],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        let row = LedgerRow::header(
+            &rule,
+            0,
+            c.message,
+            Mode::Shadow,
+            GateStatus::Passing,
+            Outcome::WouldHave,
+            now,
+        )
+        .unwrap();
+        store
+            .enqueue(&DeferredEntry {
+                id: account.into(),
+                account: account.into(),
+                thread_id: "queued".into(),
+                queued_at: now - chrono::Duration::days(1),
+                actions: vec![row],
+            })
+            .unwrap();
+    }
+    let queue_before = std::fs::read(store.root().join("deferred.jsonl")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o750)).unwrap();
+    assert_eq!(
+        after_classify_candidates(&root, &store, "campus", now).unwrap(),
+        ["boundary", "queued", "recent"]
+    );
+    assert_eq!(
+        after_classify_candidates(&root, &store, "personal", now).unwrap(),
+        ["queued"]
+    );
+    assert_eq!(
+        std::fs::read(store.root().join("deferred.jsonl")).unwrap(),
+        queue_before
+    );
+    assert_eq!(
+        std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
+}

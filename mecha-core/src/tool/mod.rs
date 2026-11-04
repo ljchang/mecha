@@ -36,6 +36,9 @@ pub struct ToolOutput {
     /// Returned to the model as `is_error: true` so it can recover rather than
     /// treating the failure as a result.
     pub is_error: bool,
+    /// Trusted local failure classification. Never populated from an MCP
+    /// server's content or metadata; a transport loss leaves effect fate unknown.
+    pub failure_kind: Option<ToolFailureKind>,
     /// True when this content actually came from outside the machine.
     ///
     /// Distinct from the tool's declared `untrusted_input` capability, which
@@ -95,11 +98,18 @@ pub struct ToolOutput {
     pub reads: Vec<code::record::ProgramCall>,
 }
 
+/// Failure evidence produced by an in-process tool adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolFailureKind {
+    Transport,
+}
+
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> Self {
         ToolOutput {
             content: content.into(),
             is_error: false,
+            failure_kind: None,
             external: false,
             refusal: false,
             not_dispatched: false,
@@ -114,6 +124,7 @@ impl ToolOutput {
         ToolOutput {
             content: content.into(),
             is_error: true,
+            failure_kind: None,
             external: false,
             refusal: false,
             not_dispatched: false,
@@ -130,6 +141,7 @@ impl ToolOutput {
         ToolOutput {
             content: content.into(),
             is_error: true,
+            failure_kind: None,
             external: false,
             refusal: true,
             not_dispatched: false,
