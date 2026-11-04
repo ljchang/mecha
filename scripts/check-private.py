@@ -899,19 +899,6 @@ def in_head(normalised, head_cache={}):
     return False
 
 
-def in_head_cased(name, cache={}):
-    """Whether the repository already spells `name` as written, capital and
-    all, as a whole word: a person's name is excused only by itself, never
-    by the lowercase word it shares (review of #841: `in_head` folds case,
-    so "Will" was excused by every "will")."""
-    if name not in cache:
-        cache[name] = any(
-            subprocess.run(["git", "grep", "-q", "-I", "-w", "-F", "-e", name, rev, "--"],
-                           capture_output=True).returncode == 0
-            for rev in BASE + PUBLIC)
-    return cache[name]
-
-
 def tree_words(rev):
     """Every file of `rev` as one run of words, files apart."""
     # Per file: `git grep -h` gives no file boundaries, so ask with them.
@@ -1017,7 +1004,7 @@ def main(args):
                 # English ("Marsh"), and a refusal that cannot name its word
                 # cannot be acted on; but said when excused, so a real use
                 # is looked at, never passed silently (review of #841).
-                if in_head(" ".join(words(name))) or all(in_head_cased(f) for f in found_names):
+                if in_head(" ".join(words(name))):
                     excused.setdefault(name, []).append(f"{p}:{n}")
                     continue
                 hit = "the name of one of the owner's personas"
@@ -1027,14 +1014,25 @@ def main(args):
             # whatever case the store happened to spell the name in (review
             # of #841).
             for name in people:
-                pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
-                if not any(m.group(0)[:1].isupper() for m in re.finditer(pattern, t, re.I)):
+                # Unicode word edges, so a name inside a longer word is not
+                # it, in any script (review of #841).
+                pattern = rf"(?<!\w){re.escape(name)}(?!\w)"
+                cased = name.upper() != name.lower()
+                # A name in a script with case is a person only when
+                # capitalised; one without case (Hebrew, Arabic, CJK) has no
+                # capital to test, so any use is the name, never passed.
+                spots = [m for m in re.finditer(pattern, t, re.I)
+                         if not cased or m.group(0)[:1].isupper()]
+                if not spots:
                     continue
+                person_col = spots[0].start() + 1
                 # Never excused by the repository already using the word: an
                 # ordinary first name (Max, Grace, May) is in its prose, and
                 # an excuse would pass exactly the names this exists for. A
                 # made-up name that collides is renamed (review of #841).
-                hit = "the name of someone in a persona's life"
+                # The column, so a sentence-initial ordinary word that is also
+                # someone's name can be told from a real use (review of #841).
+                hit = f"the name of someone in a persona's life (column {person_col})"
                 break
         if hit:
             findings.append((p, n, hit))
