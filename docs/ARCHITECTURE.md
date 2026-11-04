@@ -4646,6 +4646,13 @@ Unknown header completeness, attachment presence and provider arrival remain
 unknown through the adapter. Dedicated
 Graph subject and To/Cc/Bcc fields carry their own completeness: raw-header
 uncertainty must not turn a known envelope negative into an indefinite hold.
+`Mailbox::proves_header_absence` distinguishes a standing provider limitation
+from incomplete data in one message. Graph cannot prove absence: rules with
+`list_id` or `header.<Name>` matchers are excluded for that account even on
+positive matches, with one notice per rule/account/pass and no per-message
+rows. They do not defer other rules, suppress handled markers, or consume keys
+or caps; old pending/deferred snapshots remain untouched while held. Gmail's
+full reader opts in, while individual incomplete messages still hold normally.
 Semantic comparisons unfold raw headers and strictly decode RFC 2047 words;
 Graph subjects are already decoded. Malformed words and List-Id syntax remain
 unknown. Display and ledger fields retain the original strings.

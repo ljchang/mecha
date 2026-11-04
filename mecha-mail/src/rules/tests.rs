@@ -656,6 +656,9 @@ fn provider_direction_and_all_owner_addresses_bound_candidate_selection() {
 struct FixtureMailbox(Vec<Candidate>);
 #[async_trait]
 impl Mailbox for FixtureMailbox {
+    fn proves_header_absence(&self, _: &str) -> bool {
+        true
+    }
     async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
         Ok(self.0.iter().map(|c| c.message.thread_id.clone()).collect())
     }
@@ -2039,4 +2042,19 @@ fn candidate_listing_failures_set_exit_status_without_matching_notices() {
         ..Default::default()
     };
     assert!(report_status(&report).is_ok());
+}
+
+#[test]
+fn header_absence_capability_requires_full_gmail_reads() {
+    assert!(provider_proves_header_absence(
+        Provider::Google,
+        HeaderRead::Full
+    ));
+    assert!(!provider_proves_header_absence(
+        Provider::Google,
+        HeaderRead::Partial
+    ));
+    for read in [HeaderRead::Full, HeaderRead::Partial] {
+        assert!(!provider_proves_header_absence(Provider::Outlook, read));
+    }
 }

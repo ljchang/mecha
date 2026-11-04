@@ -68,6 +68,7 @@ struct Fake {
     results: Mutex<Vec<ActionResult>>,
     unreadable: bool,
     listing_failure: Option<String>,
+    partial_header_accounts: BTreeSet<String>,
     hold_read: bool,
     handled_root: Option<std::path::PathBuf>,
     in_window: bool,
@@ -107,6 +108,7 @@ impl Fake {
             results: Mutex::new(Vec::new()),
             unreadable: false,
             listing_failure: None,
+            partial_header_accounts: BTreeSet::new(),
             hold_read: false,
             handled_root: None,
             in_window: true,
@@ -134,6 +136,9 @@ impl Fake {
 }
 #[async_trait]
 impl Mailbox for Fake {
+    fn proves_header_absence(&self, account: &str) -> bool {
+        !self.partial_header_accounts.contains(account)
+    }
     async fn candidates(&self, account: &str, _: Pass) -> Result<Vec<String>> {
         ensure!(
             self.listing_failure.as_deref() != Some(account),
@@ -2119,4 +2124,173 @@ async fn unsupported_dispatch_reports_a_hold_without_closing_the_action() {
         Outcome::Done,
         "the unused key stays available"
     );
+}
+
+fn header_capability_fixture(header_key: &str, positive: bool, proves_absence: bool) -> Fixture {
+    let mut f = Fixture::new();
+    let key = if header_key == "list_id" {
+        "list_id = ['news.example.com']"
+    } else {
+        "header.X-Notice = ['invoice']"
+    };
+    let raw = f.store.install("raw", &format!("description = 'Review notice'\n[match]\nfrom = ['sender@example.com']\n{key}\n[[action]]\ndo = 'digest'"), &BTreeMap::new()).unwrap();
+    f.mode(&raw, ActionGroup::PrivateRecord, Mode::Auto);
+    let archive = f.rule("archive", ARCHIVE);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    if !proves_absence {
+        f.mail.partial_header_accounts.insert("campus".into());
+    }
+    let mut message = f.mail.candidates.lock().unwrap()[0].clone();
+    message.headers_complete = proves_absence.then_some(true);
+    message.list_id = positive.then(|| "News <news.example.com>".into());
+    message.headers.clear();
+    if positive {
+        message
+            .headers
+            .insert("x-notice".into(), vec!["invoice".into()]);
+    }
+    *f.mail.candidates.lock().unwrap() = ["alpha", "beta"]
+        .into_iter()
+        .map(|suffix| {
+            let mut c = message.clone();
+            c.message.thread_id = format!("thread-{suffix}");
+            c.message.provider_message_id = format!("message-{suffix}");
+            c
+        })
+        .collect();
+    f
+}
+
+#[tokio::test]
+async fn truncated_header_provider_holds_the_rule_without_blocking_other_rules() {
+    for key in ["list_id", "header"] {
+        for positive in [false, true] {
+            let f = header_capability_fixture(key, positive, false);
+            for _ in 0..2 {
+                let report = f.run(None).await;
+                assert_eq!(report.rows.len(), 2);
+                assert!(report.rows.iter().all(|row| row.rule == "archive"
+                    && matches!(row.outcome, Outcome::Done | Outcome::Skipped)));
+                assert_eq!(report.handled.len(), 2);
+                assert_eq!(report.notices.len(), 1);
+                assert!(
+                    report.notices[0].contains("campus")
+                        && report.notices[0].contains("raw")
+                        && report.notices[0].contains("header absence")
+                );
+                assert!(f.store.deferred().unwrap().is_empty());
+                assert!(f
+                    .store
+                    .ledger()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.rule != "raw"));
+            }
+            assert_eq!(
+                f.mail
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|call| *call == "Archive")
+                    .count(),
+                2
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn complete_header_provider_retains_matching_deferral_and_known_negatives() {
+    for key in ["list_id", "header"] {
+        for positive in [false, true] {
+            let mut f = header_capability_fixture(key, positive, true);
+            let report = f.run(None).await;
+            assert!(report.notices.is_empty());
+            if positive {
+                assert!(report.rows.is_empty());
+                assert!(report.handled.is_empty());
+                assert_eq!(f.store.deferred().unwrap().len(), 2);
+                f.options.pass = Pass::AfterClassify;
+                let report = f.run(None).await;
+                assert_eq!(report.rows.len(), 4);
+                assert!(report.rows.iter().all(|row| row.outcome == Outcome::Done));
+            } else {
+                assert_eq!(report.handled.len(), 2);
+                assert_eq!(report.rows.len(), 2);
+                assert!(report
+                    .rows
+                    .iter()
+                    .all(|row| row.rule == "archive" && row.outcome == Outcome::Done));
+            }
+            assert!(f.store.deferred().unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn header_capability_hold_is_account_scoped_and_preserves_old_deferred_work() {
+    let mut f = header_capability_fixture("list_id", true, true);
+    f.run(None).await; // Older pass queued both the digest and removal.
+    f.mail.partial_header_accounts.insert("campus".into());
+    f.options.pass = Pass::AfterClassify;
+    let report = f.run(None).await;
+    assert_eq!(report.rows.len(), 2);
+    assert!(report
+        .rows
+        .iter()
+        .all(|row| row.rule == "archive" && row.outcome == Outcome::Done));
+    let queued = f.store.deferred().unwrap();
+    assert_eq!(queued.len(), 2);
+    assert!(queued
+        .iter()
+        .all(|entry| entry.actions.len() == 1 && entry.actions[0].rule == "raw"));
+    let before = std::fs::read(f.store.root().join("deferred.jsonl")).unwrap();
+    f.clock.advance(Duration::days(8));
+    f.mail.candidates.lock().unwrap().clear();
+    let report = f.run(None).await;
+    assert!(report.rows.is_empty());
+    assert_eq!(report.notices.len(), 1);
+    assert_eq!(
+        std::fs::read(f.store.root().join("deferred.jsonl")).unwrap(),
+        before
+    );
+
+    let f = header_capability_fixture("list_id", true, false);
+    let mut other = f.mail.candidates.lock().unwrap()[0].clone();
+    other.message.account = "project".into();
+    other.message.thread_id = "other-thread".into();
+    other.headers_complete = Some(true);
+    f.mail.candidates.lock().unwrap().push(other);
+    let report = apply(
+        &f.store,
+        &f.mail,
+        None,
+        &["campus".into(), "project".into()],
+        &f.options,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.handled.len(), 2);
+    assert_eq!(report.notices.len(), 1);
+    let queued = f.store.deferred().unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].account, "project");
+}
+
+#[tokio::test]
+async fn incomplete_message_on_capable_provider_still_holds_per_message() {
+    let f = header_capability_fixture("list_id", false, true);
+    for c in f.mail.candidates.lock().unwrap().iter_mut() {
+        c.headers_complete = None;
+    }
+    let report = f.run(None).await;
+    assert!(report.handled.is_empty());
+    assert!(!report.rows.is_empty());
+    assert!(report
+        .rows
+        .iter()
+        .all(|row| row.outcome == Outcome::Held && !row.closes));
+    assert_eq!(f.store.deferred().unwrap().len(), 2);
+    assert!(report.notices.is_empty());
 }

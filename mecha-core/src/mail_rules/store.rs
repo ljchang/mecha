@@ -1107,7 +1107,7 @@ impl RuleStore {
     }
 
     pub fn expire_deferred(&self, now: DateTime<Utc>) -> Result<Vec<DeferredEntry>> {
-        self.expire_deferred_matching(now, None)
+        self.expire_deferred_matching(now, None, &BTreeSet::new())
     }
 
     /// An engine pass expires only accounts whose listing completed successfully.
@@ -1115,21 +1115,31 @@ impl RuleStore {
         &self,
         account: &str,
         now: DateTime<Utc>,
+        held_rules: &BTreeSet<String>,
     ) -> Result<Vec<DeferredEntry>> {
-        self.expire_deferred_matching(now, Some(account))
+        self.expire_deferred_matching(now, Some(account), held_rules)
     }
 
     fn expire_deferred_matching(
         &self,
         now: DateTime<Utc>,
         account: Option<&str>,
+        held_rules: &BTreeSet<String>,
     ) -> Result<Vec<DeferredEntry>> {
         let _lock = self.lock()?;
         let mut queue = self.deferred()?;
         let expires = |entry: &DeferredEntry| {
             account.is_none_or(|account| entry.account == account) && entry.expired(now)
         };
-        let expired: Vec<_> = queue.iter().filter(|q| expires(q)).cloned().collect();
+        let expired: Vec<_> = queue
+            .iter()
+            .filter(|q| expires(q))
+            .cloned()
+            .filter_map(|mut entry| {
+                entry.actions.retain(|row| !held_rules.contains(&row.rule));
+                (!entry.actions.is_empty()).then_some(entry)
+            })
+            .collect();
         let mut ledger = self.ledger()?;
         for entry in &expired {
             for action in &entry.actions {
@@ -1148,7 +1158,14 @@ impl RuleStore {
                 ledger.push(row);
             }
         }
-        queue.retain(|q| !expires(q));
+        // A standing hold is not a closing occasion. Expire only eligible
+        // snapshots, retaining held siblings in the same queue entry.
+        for entry in &mut queue {
+            if expires(entry) {
+                entry.actions.retain(|row| held_rules.contains(&row.rule));
+            }
+        }
+        queue.retain(|q| !expires(q) || !q.actions.is_empty());
         if !expired.is_empty() {
             self.rewrite("deferred.jsonl", &queue)?;
         }

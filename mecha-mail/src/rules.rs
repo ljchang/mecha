@@ -2,7 +2,7 @@
 //! engine Graph client opts into immutable IDs, including mutation clients.
 use crate::{
     accounts::Provider,
-    google::gmail::GmailProvider,
+    google::gmail::{GmailProvider, HeaderRead},
     microsoft::graph_mail::OutlookProvider,
     types::{Email, MailDirection, MailError},
     unified::{self, MailTools, TriageResult},
@@ -365,8 +365,19 @@ fn after_classify_candidates(
     Ok(ids.into_iter().collect())
 }
 
+fn provider_proves_header_absence(provider: Provider, read: HeaderRead) -> bool {
+    matches!(provider, Provider::Google) && read == HeaderRead::Full
+}
+
 #[async_trait]
 impl Mailbox for RuleMailbox {
+    fn proves_header_absence(&self, account: &str) -> bool {
+        // The Gmail get_thread path requests full messages without a header
+        // mask. Graph's internetMessageHeaders can never prove absence.
+        self.account(account)
+            .is_ok_and(|a| provider_proves_header_absence(a.provider, HeaderRead::Full))
+    }
+
     async fn candidates(&self, account: &str, pass: Pass) -> Result<Vec<String>> {
         let now = Utc::now();
         if pass == Pass::AfterClassify {

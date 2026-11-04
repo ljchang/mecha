@@ -77,6 +77,10 @@ pub enum ActionResult {
     },
 }
 
+fn needs_raw_header_absence(rule: &LoadedRule) -> bool {
+    !rule.definition.matcher.list_id.is_empty() || !rule.definition.matcher.header.is_empty()
+}
+
 fn unsupported_action() -> ActionResult {
     ActionResult::Held {
         kind: FailureKind::Environment,
@@ -86,6 +90,11 @@ fn unsupported_action() -> ActionResult {
 
 #[async_trait]
 pub trait Mailbox: Send + Sync {
+    /// Whether this account's reader can prove raw-header absence. Unknown
+    /// capabilities fail closed; individual messages still need complete data.
+    fn proves_header_absence(&self, _account: &str) -> bool {
+        false
+    }
     async fn candidates(&self, account: &str, pass: Pass) -> Result<Vec<String>>;
     async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead>;
     /// Mutate only `candidate.message.provider_message_id`. Thread-only hosts
@@ -1225,6 +1234,14 @@ pub async fn apply(
         report: ApplyReport::default(),
     };
     for row in run.rows.clone() {
+        if row.outcome == Outcome::Pending
+            && !mailbox.proves_header_absence(&row.message.account)
+            && rules
+                .iter()
+                .any(|rule| rule.name == row.rule && needs_raw_header_absence(rule))
+        {
+            continue; // A standing hold generates no per-message settlements.
+        }
         if !run.rows.iter().any(|s| s.settles(&row)) {
             if let Some(settled) = row.interrupted(options.clock.now(), options.pending_timeout)? {
                 run.report
@@ -1239,9 +1256,38 @@ pub async fn apply(
     for rule in &rules {
         modes.insert(rule.name.clone(), run.modes(rule)?);
     }
-    run.report.list_cap.extend(list_cap(&rules, &modes));
     let queue = store.deferred()?;
     for account in accounts {
+        let held_rules: BTreeSet<_> = rules
+            .iter()
+            .filter(|rule| {
+                !mailbox.proves_header_absence(account) && needs_raw_header_absence(rule)
+            })
+            .map(|rule| rule.name.clone())
+            .collect();
+        for name in &held_rules {
+            run.report.notices.push(format!(
+                "{account}/{name}: held: provider cannot prove header absence for list_id/header matchers"
+            ));
+        }
+        // Standing conditions remove the whole rule before descriptions,
+        // deferral, outbound priority, list caps or handled-marker decisions.
+        // Even a positive raw-header match cannot override this account hold.
+        let account_rules: Vec<_> = rules
+            .iter()
+            .filter(|rule| !held_rules.contains(&rule.name))
+            .cloned()
+            .collect();
+        run.report.list_cap.extend(list_cap(&account_rules, &modes));
+        let account_queue: Vec<_> = queue
+            .iter()
+            .filter(|entry| entry.account == *account)
+            .cloned()
+            .filter_map(|mut entry| {
+                entry.actions.retain(|row| !held_rules.contains(&row.rule));
+                (!entry.actions.is_empty()).then_some(entry)
+            })
+            .collect();
         let mut ids: BTreeSet<_> = match mailbox.candidates(account, options.pass).await {
             Ok(ids) => ids.into_iter().collect(),
             Err(error) => {
@@ -1256,7 +1302,7 @@ pub async fn apply(
             }
         };
         if options.dry_run {
-            for entry in queue
+            for entry in account_queue
                 .iter()
                 .filter(|entry| entry.account == *account && entry.expired(options.clock.now()))
             {
@@ -1274,7 +1320,9 @@ pub async fn apply(
                 }
             }
         } else {
-            for expired in store.expire_deferred_for_account(account, options.clock.now())? {
+            for expired in
+                store.expire_deferred_for_account(account, options.clock.now(), &held_rules)?
+            {
                 run.report
                     .notices
                     .push(format!("{}: deferred work expired", expired.thread_id));
@@ -1283,14 +1331,14 @@ pub async fn apply(
         }
         if options.pass == Pass::AfterClassify {
             ids.extend(
-                queue
+                account_queue
                     .iter()
                     .filter(|e| e.account == *account && !e.expired(options.clock.now()))
                     .map(|e| e.thread_id.clone()),
             );
         }
         for id in ids {
-            let entries: Vec<_> = queue
+            let entries: Vec<_> = account_queue
                 .iter()
                 .filter(|e| {
                     e.account == *account && e.thread_id == id && !e.expired(options.clock.now())
@@ -1328,7 +1376,7 @@ pub async fn apply(
                 }
             };
             let classified = classified(&c);
-            run.apply_thread(&rules, &c).await?;
+            run.apply_thread(&account_rules, &c).await?;
             if options.pass != Pass::AfterClassify || !classified {
                 continue;
             }

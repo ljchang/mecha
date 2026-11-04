@@ -389,6 +389,19 @@ sender set narrows who can trigger it but not what the description
 generalises to, and an owner who wants an automatic trash on a sender alone
 writes a header rule for it.
 
+**P1b review correction (2026-11-04): raw-header preconditions have an
+account-level standing hold.** The engine asks the mailbox capability whether
+its reader can prove header absence. If it cannot (currently Graph), a rule
+using `list_id` or any `header.<Name>` matcher is excluded for that account,
+even on a positive match. Emit one notice per rule/account/pass, with no
+per-message rows, claims, keys or cap consumption. The held rule contributes
+nothing to deferral, description-list admission, outbound priority or handled
+marker suppression: other rules behave as if it were absent. Existing pending
+and deferred snapshots for the held rule remain untouched, including expiry.
+Gmail's full-header reader keeps its existing matching and per-message
+completeness checks. This applies §5.4's standing-condition shape to matcher
+preconditions; it does not promote missing headers to known negatives.
+
 `match.describe` is a sentence the owner writes, distinct from the top-level
 `description` label. The classifier — already one isolated, tool-less call
 per thread — is given the admitted enabled rules' `match.describe` texts as
