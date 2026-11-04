@@ -914,6 +914,18 @@ class Guard(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             git(self.repo, "rm", "-q", "--cached", name)
 
+    def test_a_name_in_a_script_without_case_is_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', '\u05e0\u05d5\u05e2\u05d4', '[]')")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = '\u05e0\u05d5\u05e2\u05d4 came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("(column 6)", r.stdout)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
