@@ -481,26 +481,25 @@ def corpus():
     names = set()
     for toml in persona_glob("persona.toml"):
         d = os.path.dirname(toml) + "/"
-        if True:
-            if "/personas/removed/" not in toml:
-                names.add(os.path.basename(d.rstrip("/")).lower())
-            # How the persona is addressed and drawn, which is what a fixture
-            # or a doc would spell (review of #557): `display` and its words,
-            # and `character`.
-            try:
-                text = open(toml, errors="replace").read()
-            except OSError:
-                text = ""
-            for key in ("name", "display", "character"):
-                m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
-                if m and m.group(1).strip():
-                    value = m.group(1).strip().lower()
-                    names.add(value)
-                    # A display's words are how a persona is addressed; a
-                    # character is a library id, matched whole, since its
-                    # parts are this project's own words ("mecha-notebook").
-                    if key == "display":
-                        names.update(w for w in words(value) if len(w) >= 4)
+        if "/personas/removed/" not in toml:
+            names.add(os.path.basename(d.rstrip("/")).lower())
+        # How the persona is addressed and drawn, which is what a fixture
+        # or a doc would spell (review of #557): `display` and its words,
+        # and `character`.
+        try:
+            text = open(toml, errors="replace").read()
+        except OSError:
+            text = ""
+        for key in ("name", "display", "character"):
+            m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
+            if m and m.group(1).strip():
+                value = m.group(1).strip().lower()
+                names.add(value)
+                # A display's words are how a persona is addressed; a
+                # character is a library id, matched whole, since its
+                # parts are often this project's own words.
+                if key == "display":
+                    names.update(w for w in words(value) if len(w) >= 4)
     # Read whole: every persona chat, and every session that is a call.
     whole = persona_glob("sessions/*.jsonl")
     # Read for their spoken turns only: any other session a call spoke into
@@ -604,14 +603,20 @@ def persona_prose():
     # (review of #841).
     patterns = list(("identity.md", "motivation.md"))
     patterns += [f"versions/*/{name}" for name in ("identity.md", "motivation.md", "people.md")]
-    for pattern in patterns:
-        for f in persona_glob(pattern):
-            try:
-                with open(f, errors="replace") as fh:
-                    out.append(fh.read())
-            except OSError as e:
-                print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
-                sys.exit(2)
+    patterns += ["versions/*/relationships/*.md"]
+    files = [f for pattern in patterns for f in persona_glob(pattern)]
+    # The owner's notes about themselves (the store's and each group's) and
+    # the relationship templates a persona names; a starter template is the
+    # repository's own text and in_head excuses it (review of #841).
+    files += glob.glob(f"{MECHA}/personas/about-me.md") + glob.glob(f"{MECHA}/personas/groups/*/about-me.md")
+    files += glob.glob(f"{MECHA}/personas/relationships/*.md")
+    for f in files:
+        try:
+            with open(f, errors="replace") as fh:
+                out.append(fh.read())
+        except OSError as e:
+            print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
     for db in persona_glob("world.db"):
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -760,7 +765,7 @@ def section_names(text):
         if line.startswith("- "):
             body = line[2:]
             out.add(re.split(r" \(|,|\. ", body, maxsplit=1)[0].strip().rstrip("."))
-            m = re.search(r"also called ([^.]*)", body)
+            m = re.search(r"also called ([^.(]*)", body)
             if m:
                 out.update(a.strip() for a in m.group(1).split(",") if a.strip())
         elif line.startswith(("Others in your life: ", "No longer in your life: ")):
@@ -981,6 +986,18 @@ def in_head(normalised, head_cache={}):
     return False
 
 
+def in_head_exact(text, cache={}):
+    """Whether the repository already holds `text` exactly (any case): a
+    multi-part id ("brine-ledger") is excused only by itself, never by its
+    parts appearing apart (review of #841)."""
+    if text not in cache:
+        cache[text] = any(
+            subprocess.run(["git", "grep", "-q", "-I", "-i", "-F", "-e", text, rev, "--"],
+                           capture_output=True).returncode == 0
+            for rev in BASE + PUBLIC)
+    return cache[text]
+
+
 def tree_words(rev):
     """Every file of `rev` as one run of words, files apart."""
     # Per file: `git grep -h` gives no file boundaries, so ask with them.
@@ -1085,7 +1102,8 @@ def main(args):
                 # English ("Marsh"), and a refusal that cannot name its word
                 # cannot be acted on; but said when excused, so a real use
                 # is looked at, never passed silently (review of #841).
-                if in_head(" ".join(words(name))):
+                single = re.fullmatch(r"\w+", name) is not None
+                if in_head(name) if single else in_head_exact(name):
                     excused.setdefault(name, []).append(f"{p}:{n}")
                     continue
                 hit = "the name of one of the owner's personas"
