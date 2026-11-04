@@ -926,6 +926,36 @@ class Guard(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("(column 6)", r.stdout)
 
+    def test_a_removed_person_named_in_a_saved_version_stays_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        os.makedirs(os.path.join(pdir, "versions", "v1"))
+        with open(os.path.join(pdir, "versions", "v1", "people.md"), "w") as f:
+            f.write("- Oswin (your brother), also called Oz. Builds kites.\n"
+                    "Also in your life: Pelham (your neighbour), Quenby.\n")
+        for name, text in [("a.py", "X = 'Oswin waved.'\n"), ("b.py", "X = 'Oz waved.'\n"),
+                           ("c.py", "X = 'Pelham waved.'\n"), ("d.py", "X = 'Quenby waved.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, (text, r.stdout))
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_a_shout_is_not_the_name_and_the_owner_may_allow_a_word(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Maxim', '[]')")
+        db.execute("INSERT INTO people VALUES ('u2', 'Grove', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = MAXIM_LIMIT  # MAXIM\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+        git(self.repo, "rm", "-q", "--cached", "a.py")
+        self.stage("b.py", "X = 'Grove of oaks'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+        with open(os.path.join(self.home, "check-private.allow"), "w") as f:
+            f.write("# words that may stay\nGrove\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
     def test_an_unreadable_people_store_refuses(self):
         pdir = os.path.join(self.home, "personas", "quillon")
         open(os.path.join(pdir, "world.db"), "w").write("not a database")
