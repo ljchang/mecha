@@ -8004,11 +8004,16 @@ The design decisions, each of which is a bug if undone:
   on `list`, `health` and `appraise`); `--kind driven` admits it. Unlike an
   experiment, no home admits it by default, and admitting the other marks
   never admits it. The rule is fitness: fitness is the owner's usage, and a
-  driver pushing the harness to fail is not usage. Because `reflect`,
-  `distill`, the contrast pool and the persona writer all admit through
-  `Scan::admits`, nothing is learned from a driven session until
-  `DRIVER-DESIGN.md` D2 builds a pool for it on purpose. `Driven` is in
-  `Situation::MARK_KINDS` until then.
+  driver pushing the harness to fail is not usage. Nothing is learned from
+  a driven session: `reflect`'s transcript pass, `distill`, the contrast
+  pool and the persona writer all admit through `Scan::admits`, and
+  `reflect`'s outbox pass, which selects by the owner's verdict on a draft
+  rather than by session, passes over a draft whose staging session the
+  admission refuses (`refused_sessions`). That second half was found on
+  review: a draft a driven run staged and the owner then edited would have
+  been mined into the owner's store. `DRIVER-DESIGN.md` D2 gives driven runs
+  a learning store of their own (R6), never a scope, so `Driven` stays in
+  `Situation::MARK_KINDS`.
 - **The owner can mark a session an experiment after the fact**
   (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
   ordinary chat is not the owner's work, and the appraiser read two such

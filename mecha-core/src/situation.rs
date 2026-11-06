@@ -313,11 +313,14 @@ impl Situation {
     /// left it, would otherwise have scoped a rule to a surface nothing
     /// matches, dark with nothing warning (found on review).
     ///
-    /// `Driven` is a mark here for now and is meant to leave this list:
-    /// `DRIVER-DESIGN.md` D2 gives driven runs a rule pool of their own,
-    /// scoped `surface = driven`, which needs the mark to reach the match.
-    /// Until that lands, a driven run renders the owner's rules and nothing
-    /// is learned from it (it is hidden from `reflect` like any mark).
+    /// `Driven` is a mark and stays one. `DRIVER-DESIGN.md` D2 keeps driven
+    /// runs' rules in a learning store of their own (R6), never in a scope:
+    /// every way a `surface = driven` scope could be lost widens the rule
+    /// onto the owner's runs, and the mark must not reach the match anyway
+    /// (`setup.rs`: applying `MECHA_SESSION_KIND` to the matched key took
+    /// every surface-scoped rule out of each `mecha exp` trial). A driven
+    /// run renders the owner's rules, and nothing is learned from it until
+    /// D2 builds that store.
     pub const MARK_KINDS: &[SessionKind] = &[
         SessionKind::Test,
         SessionKind::Experiment,

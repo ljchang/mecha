@@ -200,7 +200,7 @@ pub fn corpus_slice(
             // set the mark). After the unreadable finding, never ahead of
             // it: a rotting store must not read as a filter working
             // (found on the next review pass).
-            if sessions_read == 0 && (corpus.hidden_tests > 0 || corpus.hidden_driven > 0) {
+            if sessions_read == 0 && !excluded_marks(&corpus).is_empty() {
                 anyhow::bail!(
                     "the only sessions rooted under {} are {}, which the diagnosis excludes — a \
                      candidate is measured against real use, and there is none here yet.",
@@ -235,7 +235,7 @@ pub fn corpus_slice(
                 corpus.unreadable
             );
         }
-        if (corpus.hidden_tests > 0 || corpus.hidden_driven > 0) && sessions_read == 0 {
+        if !excluded_marks(&corpus).is_empty() && sessions_read == 0 {
             anyhow::bail!(
                 "the store holds only {}, which the diagnosis excludes — nothing recorded as \
                  real use yet.",
@@ -257,6 +257,12 @@ fn excluded_marks(corpus: &Corpus) -> String {
         parts.push(format!(
             "{} smoke-test session(s) (`MECHA_SESSION_KIND=test`)",
             corpus.hidden_tests
+        ));
+    }
+    if corpus.hidden_experiments > 0 {
+        parts.push(format!(
+            "{} experiment session(s) (trial runs, or ones marked with `sessions mark`)",
+            corpus.hidden_experiments
         ));
     }
     if corpus.hidden_driven > 0 {
@@ -1130,10 +1136,18 @@ mod tests {
         assert!(said.contains("3 driven session(s)"), "{said}");
         assert!(!said.contains("smoke-test"), "{said}");
         c.hidden_tests = 2;
-        let both = excluded_marks(&c);
+        c.hidden_experiments = 1;
+        let all = excluded_marks(&c);
         assert!(
-            both.contains("2 smoke-test session(s)") && both.contains("3 driven session(s)"),
-            "{both}"
+            all.contains("2 smoke-test session(s)")
+                && all.contains("1 experiment session(s)")
+                && all.contains("3 driven session(s)"),
+            "{all}"
+        );
+        assert_eq!(
+            excluded_marks(&corpus(Vec::new())),
+            "",
+            "nothing excluded, nothing said"
         );
     }
 

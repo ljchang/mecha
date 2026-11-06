@@ -2191,6 +2191,36 @@ fn check_runs(sessions: &Path, charter: Option<&crate::charter::Charter>) -> Vec
             }),
         });
     }
+    // The same guard for driven runs (`DRIVER-DESIGN.md` D1), its own
+    // finding because its remedy differs: `--include-tests` does not show a
+    // driven row, and `--kind driven` is the only way in (review of #848).
+    if corpus.hidden_driven > corpus.sessions_read {
+        out.push(Finding {
+            component: "runs".into(),
+            severity: Severity::Attention,
+            summary: format!(
+                "the run check is reading {} real session(s) beside {} driven session(s) it hid",
+                corpus.sessions_read, corpus.hidden_driven
+            ),
+            detail: format!(
+                "{}: sessions recorded with MECHA_SESSION_KIND=driven are another agent's runs \
+                 on real work, excluded from every corpus readout by default, so the rates \
+                 below describe the few owner runs, not the store; `--kind driven` reads the rest",
+                sessions.display()
+            ),
+            remedy: Some(Remedy {
+                description: "read the run-quality summary of the driven runs".into(),
+                argv: vec![
+                    "mecha".into(),
+                    "sessions".into(),
+                    "health".into(),
+                    "--kind".into(),
+                    "driven".into(),
+                ],
+                needs_terminal: false,
+            }),
+        });
+    }
 
     if let Some(charter) = charter {
         out.extend(check_sensor_saturation(&corpus, charter));
