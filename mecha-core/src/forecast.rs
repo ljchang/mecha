@@ -379,8 +379,9 @@ pub fn load(outbox_root: &Path) -> Result<(Vec<Forecast>, usize)> {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Summary {
     pub forecasts: usize,
-    /// Recorded for smoke runs' drafts, and set aside: not scored, not a
-    /// basis, not unforecast.
+    /// Recorded for smoke runs' and driven runs' drafts (`Forecast::test`),
+    /// and set aside: not scored, not a basis, not unforecast. One counter
+    /// for both, because the record carries one bit; the readout names both.
     pub tests_set_aside: usize,
     /// Made with no stamped history on a similar draft: nothing to score.
     pub no_basis: usize,

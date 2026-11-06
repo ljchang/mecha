@@ -1733,7 +1733,7 @@ fn forecasts_line(
     );
     for (n, what) in [
         (s.pending, "waiting for the owner or the window"),
-        (s.tests_set_aside, "from smoke runs set aside"),
+        (s.tests_set_aside, "from smoke or driven runs set aside"),
         (
             s.window_unreadable,
             "unscored: the outbox's patience window could not be read (check the charter)",
@@ -2716,18 +2716,18 @@ fn enum_key<T: serde::Serialize>(v: T) -> String {
     mecha_core::appraisal::enum_name(&v)
 }
 
-/// `sessions health` — the run-quality corpus, summarised.
-///
-/// Deliberately separate from `stats`, which answers what runs *cost*. This
-/// answers whether they *worked*, and the two have different audiences and
-/// different units. Every rate here prints `—` where its denominator is zero,
-/// because no evidence is not a clean record.
 /// How a readout names the driven sessions it hid, after the count: one
 /// spelling for `list` and `health`, so the two never word the same filter
 /// differently (`DRIVER-DESIGN.md` D1).
 const DRIVEN_HIDDEN: &str =
     "driven session(s) hidden — another agent's runs on real work; `--kind driven` shows them";
 
+/// `sessions health` — the run-quality corpus, summarised.
+///
+/// Deliberately separate from `stats`, which answers what runs *cost*. This
+/// answers whether they *worked*, and the two have different audiences and
+/// different units. Every rate here prints `—` where its denominator is zero,
+/// because no evidence is not a clean record.
 fn health(
     dir: &std::path::Path,
     days: Option<i64>,
