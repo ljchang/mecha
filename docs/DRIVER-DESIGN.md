@@ -223,6 +223,17 @@ driver wrote alone has its prompt and its grade from the same hand, so it
 can show that the harness improved but never that it improved *for the
 owner's work*. Only `history` and `co-written` carry that claim.
 
+**D3a. A task is admitted only when its grade discriminates.** Before a
+task enters the bank, its hidden tests are run *k* times (k=5 by default)
+on the pin, where they must fail every time, and *k* times on the merge,
+where they must pass every time. The failure on the pin must also be the
+one the test asserts, not a build error or an unrelated panic. A grade that
+passes on the pin cannot tell a fix from no fix. A grade that is flaky on
+the merge would charge its noise to the model. A race test needs *k*
+because it fails only sometimes. The first prototype, #525 (one write per
+record, a concurrent-writer test), failed 5/5 on the pin with "a merged or
+torn line" and passed 5/5 on the merge.
+
 All sources are served through §21.1's contract as
 `eval/fixtures/mecha_history.py`: `setup` makes a worktree at the pin, and
 `grade` applies the hidden tests and runs them.
@@ -347,8 +358,10 @@ from it is v2's design.
 **D1b. A driven run drops the surfaces the owner's config attaches.** A
 driven run is in the real home under the real config, and the global layer
 is where the private surfaces live: `[[mcp]]` (the knowledge graph's `kg_*`
-tools, mail and calendar), `[[hook]]`, and `[[grant]]`, which is
-global-file-only because it is the jail's way out. Project layers are
+tools, mail and calendar), `[[hook]]`, `[[grant]]`, which is
+global-file-only because it is the jail's way out, and `[messages]`, the
+owner's mailbox between live sessions, where taint travels with a message
+in both directions. Project layers are
 narrowing-only, so the worktree's own `mecha.toml` is not the exposure; the
 owner's own file is. An outside agent, driving prompts written from PR and
 issue text, should not hold the owner's graph or run the owner's hooks.
@@ -357,7 +370,12 @@ So the driven mark forces those three off **structurally**, from the same
 `harness::Lever` definitions `mecha eval` uses (`RunConfig::levers_off`),
 rather than trusting each run to be configured right:
 
-- **Off**: MCP servers, hooks, and the owner's grants.
+- **Off**: MCP servers, hooks, the owner's grants, and the mailbox
+  (`Lever::Messages`). A driven run must not post into the owner's live
+  sessions: a peer message is an influence channel, which is why a peer
+  cannot grant escalation, and here the peer would be the driver. A model
+  batch is announced to peers (below) by the driver, from outside the run,
+  never by the run.
 - **Kept**: builtins (under the interlock as always), the owner's learned
   rules, skills and charter. The harness is measured as the owner runs it,
   minus the private surfaces.
@@ -395,6 +413,20 @@ and never falls through.
   OPERATIONS need checking first.
 - **Cargo inside the jail**: whether an offline registry plus one read grant
   is enough, or whether the toolchain under `~/.rustup` needs one too.
+- **Old trees and the 2026-11-04 history rewrite.** Commits from 2026-09-09
+  to 2026-10-04 no longer build `mecha-core`'s tests. The rewrite's
+  `--replace-text` changed `include_str!` paths in `mismatch.rs` to the
+  post-10-04 fixture names, but replace-text renames no files, so those
+  trees still hold the fixtures under the old path. Setup copies the two
+  files from `origin/main:mecha-core/tests/fixtures/mismatch/` into the
+  pin's tree and records the copy on the task. The check for any other
+  case like it is an `include_str!` or `include_bytes!` to a missing file.
+- **Grafting tests that live in the file they test.** Rust tests here sit
+  in `mod tests` beside the code, so the hidden grade is the PR's *added*
+  items inside a test module, copied into the run's copy of that file. A
+  test that calls a new API needs that API named in the prompt, or a
+  different but correct design fails the grade. That is the interface rule
+  SWE-bench-style banks use, and the prompt writer applies it per task.
 - **Prompt leakage from PR descriptions.** A description often names the fix.
   Prompts are written from the issue or the "why" paragraph, and the rule for
   what to strip is fixed before the first run.
