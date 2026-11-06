@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6; R7–R8 owed). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R7 owed). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -380,16 +380,15 @@ rather than trusting each run to be configured right:
   batch is announced to peers (below) by the driver, from outside the run,
   never by the run.
 - **Kept**: builtins (under the interlock as always), the owner's learned
-  rules and skills. The harness is measured as the owner runs it, minus the
-  private surfaces.
-- **Owed, R8: the charter.** Whatever rides in the system prompt leaves the
-  machine on every ceiling rerun (§4's `claude-opus-5`), and §4 requires the
-  same harness on every arm, so a block cannot be dropped for the ceiling
-  alone without confounding D4. The learned rules and skills are the
-  harness behaviour under test and are kept. The charter is the owner's
-  standing priorities, the most personal block in the prefix, and it says
-  nothing to a code task. The recommendation is the charter off on *every*
-  arm of a driven run. The ruling is the owner's.
+  rules, skills and charter. The harness is measured as the owner runs it,
+  minus the private surfaces.
+- **The charter stays on, and that is a stated cost (R8, the owner's).**
+  Whatever rides in the system prompt leaves the machine on every ceiling
+  rerun (§4's `claude-opus-5`), the charter included. §4 requires the same
+  harness on every arm, so no block is dropped for the ceiling alone, which
+  would confound D4. The owner ruled to keep the charter on every arm, so
+  the harness is measured as the owner runs it, and accepted that it reaches
+  the ceiling's provider.
 - **Kept on purpose: the outbox.** With the outbox on, a routed call stages
   rather than executes. Turning it off would make a routed call run
   directly, and staging is the safer of the two. A driven draft is set
@@ -489,8 +488,10 @@ passes vacuously.
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
 - **R7, owed.** If the shell sandbox cannot read the Rust toolchain, how a
   driven run builds: the owner's call, never a driver-named grant (§7).
-- **R8, owed.** The charter off on every arm of a driven run, so it never
-  leaves the machine on a ceiling rerun (D1b). Recommended.
+- **R8. The charter stays on** on every arm of a driven run (owner,
+  2026-11-06), including the ceiling's, where it leaves the machine. The
+  recommendation had been off; the owner kept it, so driven runs measure the
+  harness as the owner runs it (D1b).
 
 ## 10. Deliberately out of scope
 
