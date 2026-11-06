@@ -3223,8 +3223,8 @@ fn mail_rules_doctor_does_not_create_stores_and_reports_an_unreadable_store() {
 #[test]
 fn mail_rules_doctor_timer_is_checked_only_when_enabled_and_oneshot_idle_is_healthy() {
     use crate::doctor::check_mail_rules_timer;
-    assert!(check_mail_rules_timer(false, None, None).is_empty());
-    assert!(!check_mail_rules_timer(true, None, None).is_empty());
+    assert!(check_mail_rules_timer(false, Some("LoadState=not-found\n"), None).is_empty());
+    assert!(check_mail_rules_timer(true, None, None).is_empty());
     let timer = "LoadState=loaded\nActiveState=active\n";
     let service = "LoadState=loaded\nActiveState=inactive\nResult=success\n";
     assert!(check_mail_rules_timer(true, Some(timer), Some(service)).is_empty());
@@ -3288,6 +3288,55 @@ fn mail_rules_backlog_counts_proposals_and_lapsed_groups_and_clears_reapproval()
     assert_eq!(waiting(store.root()).unwrap().len(), 1);
     fs::remove_dir_all(proposal).unwrap();
     assert!(waiting(store.root()).unwrap().is_empty());
+}
+
+#[test]
+fn mail_rules_backlog_keeps_lapses_and_proposals_when_a_definition_is_unreadable() {
+    let home = Home::new();
+    let store = home.store();
+    let broken = install(&store, &archive());
+    let healthy = store
+        .install("healthy", &archive(), &BTreeMap::new())
+        .unwrap();
+    for rule in [&broken, &healthy] {
+        approve(&store, rule, ActionGroup::Mailbox, Mode::Auto);
+    }
+    fs::write(broken.directory.join("rule.toml"), "invalid = [").unwrap();
+    assert!(store
+        .detect_lapses(&broken.name, &owner_holds(), Utc::now())
+        .is_err());
+    fs::write(
+        healthy.directory.join("rule.toml"),
+        archive().replace("Fictional notice", "Fictional revision"),
+    )
+    .unwrap();
+    let proposal = store.root().join("proposals/fictional-proposal");
+    fs::create_dir_all(&proposal).unwrap();
+    fs::write(proposal.join("rule.toml"), archive()).unwrap();
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    for deleted in [false, true] {
+        if deleted {
+            fs::remove_dir_all(&broken.directory).unwrap();
+        }
+        let items = waiting(store.root()).unwrap();
+        assert_eq!(items.len(), 3);
+        for id in [
+            "approval:notices:Mailbox",
+            "approval:healthy:Mailbox",
+            "proposal:fictional-proposal",
+        ] {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.id == id && !item.since.is_empty()),
+                "missing {id}"
+            );
+        }
+        assert_eq!(
+            before,
+            fs::read(store.root().join("approvals.jsonl")).unwrap()
+        );
+    }
 }
 
 #[test]

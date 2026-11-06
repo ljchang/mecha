@@ -308,6 +308,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Mail-rule review queues and timer diagnostics.** A broken or deleted rule
+  definition no longer hides other lapses or proposal counts. Doctor skips
+  unavailable systemd queries while still reporting missing or failed units.
+  The mail-rules queue follows the existing queues, preserving their order.
+
 - **Mail-rule entrypoints and deadlines.** Direct mail-binary undo and
   retrospective testing require both global feature switches before opening
   stores or providers. Doctor detects writable sandbox mounts reaching the

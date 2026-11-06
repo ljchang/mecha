@@ -412,7 +412,7 @@ fn views(store: &RuleStore) -> Result<Vec<rules::RuleView>> {
 
 fn child(executable: &std::path::Path, args: &[String]) -> Result<tokio::process::Command> {
     let sibling = rules::child_path(executable)?;
-    if !rules::executable(&sibling) {
+    if !rules::is_executable_file(&sibling) {
         bail!("mecha-mail binary is missing or not executable; install it with `cargo install --path mecha-mail`");
     }
     let mut command = tokio::process::Command::new(sibling);

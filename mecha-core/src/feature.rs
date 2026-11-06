@@ -664,8 +664,8 @@ impl Facts {
             has_mail_rules_binary: std::env::current_exe()
                 .ok()
                 .and_then(|exe| crate::mail_rules::child_path(&exe).ok())
-                .is_some_and(|path| crate::mail_rules::executable(&path)),
-            mail_rules_stored: crate::mail_rules::stored(home),
+                .is_some_and(|path| crate::mail_rules::is_executable_file(&path)),
+            mail_rules_stored: crate::mail_rules::store_has_rules(home),
             has_docs_binary: current_on_path("mecha-docs") || crate::mail_mcp::installed(home),
             has_graph_binary: current_on_path("mecha-graph-mcp")
                 || crate::graph_mcp::installed(home),

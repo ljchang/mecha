@@ -718,17 +718,8 @@ struct Queue {
 
 fn collect_queues() -> Vec<Queue> {
     let mut out = Vec::new();
-    let rules = mecha_core::backlog::Backlog::mail_rules_depth();
-    out.push(Queue {
-        name: "mail rules",
-        depth: rules.as_ref().map(|d| d.waiting),
-        detail: if rules.is_some() { "proposals awaiting install and lapsed group approvals; proposal age is file modification time".into() } else { "rule store unreadable".into() },
-        opens: "mecha mail rule list",
-        oldest: rules.and_then(|d| d.oldest),
-    });
-
     // The graph's merge queue, via the binary. Unreachable is a reported
-    // state, never a reason to drop the other four.
+    // state, never a reason to drop the other five.
     let (depth, detail, oldest) = match graph_json(&["review", "--proposers", "--json"]) {
         Ok(v) => {
             let rows = v.as_array().cloned().unwrap_or_default();
@@ -1081,6 +1072,15 @@ fn collect_queues() -> Vec<Queue> {
         // Candidates and staged reference changes each have their own list.
         opens: "mecha imagelib list --all; mecha imagelib pending",
         oldest,
+    });
+
+    let rules = mecha_core::backlog::Backlog::mail_rules_depth();
+    out.push(Queue {
+        name: "mail rules",
+        depth: rules.as_ref().map(|d| d.waiting),
+        detail: if rules.is_some() { "proposals awaiting install and lapsed group approvals; proposal age is file modification time".into() } else { "rule store unreadable".into() },
+        opens: "mecha mail rule list",
+        oldest: rules.and_then(|d| d.oldest),
     });
 
     out

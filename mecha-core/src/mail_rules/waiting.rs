@@ -12,20 +12,24 @@ pub fn waiting(root: &Path) -> Result<Vec<Waiter>> {
     let approvals = store.approvals()?;
     let mut items = Vec::new();
     for name in store.rule_names()? {
-        let rule = store.get(&name)?;
+        // Append-only history retains names whose definitions were damaged or
+        // deleted. Their persisted lapses still wait on the owner; one bad
+        // definition must not hide the other rules or the proposals below.
+        let rule = store.get(&name).ok();
         let groups: BTreeSet<_> = rule
-            .definition
-            .groups()
-            .into_iter()
+            .iter()
+            .flat_map(|rule| rule.definition.groups())
             .chain(approvals.iter().filter(|r| r.rule == name).map(|r| r.group))
             .collect();
         for group in groups {
-            let state = resolve_mode(&rule, group, &approvals, &owner_file_holds());
+            let lapsed = rule.as_ref().is_some_and(|rule| {
+                resolve_mode(rule, group, &approvals, &owner_file_holds()).lapsed
+            });
             let latest = approvals
                 .iter()
                 .rev()
                 .find(|r| r.rule == name && r.group == group);
-            if state.lapsed
+            if lapsed
                 || latest
                     .is_some_and(|r| r.reason == ApprovalReason::Lapse && r.to_mode != Mode::Off)
             {

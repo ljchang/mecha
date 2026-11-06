@@ -91,6 +91,38 @@ fn success(out: &Output) {
 }
 
 #[test]
+fn mail_rules_review_queue_follows_the_existing_queues() {
+    let f = Fixture::new();
+    let output = f
+        .command()
+        .env("MECHA_GRAPH_BIN", f.root.join("unavailable-graph"))
+        .args(["review", "queues", "--json"])
+        .output()
+        .unwrap();
+    success(&output);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<_> = rows
+        .iter()
+        .map(|row| row["queue"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "graph candidates",
+            "graph entities",
+            "graph shadow",
+            "outbox drafts",
+            "blocked questions",
+            "front-door requests",
+            "rule proposals",
+            "harness changes",
+            "image candidates",
+            "mail rules",
+        ]
+    );
+}
+
+#[test]
 fn mail_rule_review_registry_uses_the_shared_non_utf8_override_fallback() {
     use std::os::unix::ffi::OsStringExt;
     let f = Fixture::new();

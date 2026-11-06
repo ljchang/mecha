@@ -212,6 +212,8 @@ pub fn check_mail_rule_shell(home: &Path, config: &crate::config::Config) -> Vec
 }
 
 /// Pure reading of systemd's properties, supplied by the CLI (no network).
+/// None means the query was unavailable, not that the unit is missing.
+/// A missing unit is an explicit LoadState=not-found response.
 pub fn check_mail_rules_timer(
     enabled: bool,
     timer: Option<&str>,
@@ -226,7 +228,7 @@ pub fn check_mail_rules_timer(
         ("mecha-mail-rules.service", service, false),
     ] {
         let problem = match properties {
-            None => Some("status unavailable"),
+            None => None,
             Some(text)
                 if text.lines().any(|l| {
                     l == "LoadState=not-found"

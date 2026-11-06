@@ -1939,8 +1939,10 @@ overlays once per list pass, and share the conservative 254-byte mailbox grammar
 **P1c-2 implemented (2026-11-06).** `mail_rules` has its own global switch,
 off by default, and requires `mail`. `mecha-mail rules apply` checks both before
 opening any store or provider; a disabled timer or classify hook says so once
-per invocation. Active owner verbs require the feature; list, show, ledger and
-revocation remain available with either switch off. The hand-installed
+per invocation. Active owner verbs require the feature. `mecha mail rule list`,
+`show`, `ledger`, `pause-all` and lowering modes deliberately remain available
+with `mail` or `mail_rules` off: inspection and revocation must not depend on the
+switch. The hand-installed
 `mecha-mail-rules.service` / `.timer` runs headers every five minutes, with
 `~/.cargo/bin` on PATH and no model-idle gate. Packaged unit copies are held
 byte-equal to `scripts/`; the classify timers have no launchd twin to mirror.
@@ -1983,12 +1985,16 @@ approvals and the resulting inability to write `off`, missing stored addresses
 (which hold the whole install), standing provider/list-cap holds, stranded
 pending actions and interruption settlements. Global-config checks report every
 automatic group under unconfined shell and missing, inactive or failing timer
-units while enabled. No provider or model is called.
+units while enabled. An unavailable systemd query (no binary or user bus) is
+skipped, matching doctor's other unit checks; returned missing/failed unit
+states remain findings. No provider or model is called.
 
 The sixth backlog store counts lapsed group approvals and remaining proposal
 directories under `proposals/`, with proposal age taken from `rule.toml`'s file
 modification time until P7 supplies proposal metadata and lifecycle. It creates
-nothing; unreadable remains unknown. `mecha review` and `/queues` show the count.
+nothing. An unreadable or deleted definition falls back to its approval history,
+so persisted lapses, other rules and proposal counts remain visible; unreadable
+shared history remains unknown. `mecha review` and `/queues` show the count.
 P3 has feature-owned list/show/ledger API routes, a `mail/rules` PANE_FEATURE
 entry and a `mail rules` QUEUE_FEATURE entry; VIEW_FEATURE keeps the Mail view
 under `mail`. No rules tab or page is added early. Model slots, a new sidecar,

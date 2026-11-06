@@ -4577,8 +4577,10 @@ return a refresh token every time.
 
 **Unattended passes share the owner's gates.** P1c-2's `mail_rules` switch
 is global, off by default and requires `mail`; both the header timer and the
-post-classify child check it before opening stores or providers. CLI store reads
-and revocation remain available while disabled. `mail_rules::child_path` is the
+post-classify child check it before opening stores or providers. `mecha mail rule`
+`list`, `show`, `ledger`, `pause-all` and lowering modes deliberately work with
+`mail` or `mail_rules` off: inspection and revocation must not depend on the
+switch. `mail_rules::child_path` is the
 canonical executable sibling used by the launcher and feature facts, never PATH.
 The header service has no model-idle gate. Its copies in `scripts/` and
 `mecha-core/units/` are byte-equal; installation follows the existing mail timers'
@@ -4619,8 +4621,12 @@ path resolve existing aliases before comparing ancestors or descendants.
 Doctor reads global confinement only and does not probe backend readiness.
 A failed configured sandbox is stopped by `Sandbox::preflight` before shell
 executes; the residual requires no sandbox or a writable mount exposing the store.
+Timer checks skip when systemd cannot be queried (including no binary or user
+bus); a returned missing-unit or failed-unit state is a finding.
 The sixth backlog store counts pending proposal directories and lapsed group
-approvals; a failed read stays unknown. P7 owns proposal creation/lifecycle;
+approvals. An unreadable or deleted definition falls back to its approval rows,
+so its persisted lapse cannot hide the other rules or proposals; unreadable
+shared history still makes the count unknown. P7 owns proposal creation/lifecycle;
 for now proposal age is the definition's file modification time. P3's read API
 is feature-owned and its pane mapping is reserved, while the Mail view keeps
 its existing `mail` feature.

@@ -28,12 +28,12 @@ pub fn child_path(executable: &Path) -> Result<PathBuf> {
         .join("mecha-mail"))
 }
 
-pub fn executable(path: &Path) -> bool {
+pub fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-pub fn stored(home: &Path) -> Option<bool> {
+pub fn store_has_rules(home: &Path) -> Option<bool> {
     let root = super::RuleStore::root_under(home);
     match root.try_exists() {
         Ok(false) => Some(false),
