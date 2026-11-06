@@ -407,7 +407,7 @@ fn mail_rule_child_prefers_sibling_and_preserves_argv_streams_and_exit_status() 
     assert_eq!(out.status.code(), Some(17));
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        "sibling\nrules\ntest\n--account\ncampus with spaces\n--\nnotice;touch forbidden\n"
+        "sibling\nrules\ntest\n--account=campus with spaces\n--\nnotice;touch forbidden\n"
     );
     assert_eq!(String::from_utf8(out.stderr).unwrap(), "fixture stderr\n");
     assert!(!f.root.join("forbidden").exists());
@@ -787,6 +787,6 @@ printf '%s\n' '{"dry_run":true,"window_days":30,"all_folders":true,"accounts":[{
     assert!(json_output(&output)["accounts"][0]["matched_rows"].is_null());
     assert_eq!(
         std::fs::read_to_string(f.root.join("home/test-argv")).unwrap(),
-        "rules\ntest\n--json\n--account\ncampus\n--\nnotice;literal\n"
+        "rules\ntest\n--json\n--account=campus\n--\nnotice;literal\n"
     );
 }

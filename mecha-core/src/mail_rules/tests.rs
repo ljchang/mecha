@@ -3617,6 +3617,37 @@ async fn mail_rules_p3_wrong_match_is_idempotent_closing_and_independent_of_undo
 }
 
 #[test]
+fn mail_rules_p3_wrong_match_is_one_correction_per_action_and_never_on_an_attempt() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let mut pending = row(&rule, Outcome::Pending);
+    pending.matched_because = "from".into();
+    store.append_ledger(&pending).unwrap();
+    // The attempt is not the action: its settlement row is what gets corrected.
+    assert!(store.wrong_match(&pending.id, Actor::Owner).is_err());
+    let mut done = row(&rule, Outcome::Done);
+    done.matched_because = "from".into();
+    store.append_ledger(&done).unwrap();
+    assert!(store.wrong_match(&done.id, Actor::Owner).unwrap().changed);
+    // Another row of the same action key is the same wrong match.
+    let mut again = row(&rule, Outcome::Done);
+    again.matched_because = "from".into();
+    store.append_ledger(&again).unwrap();
+    assert!(!store.wrong_match(&again.id, Actor::Owner).unwrap().changed);
+    let corrections = store
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.outcome == Outcome::WrongMatch)
+        .count();
+    assert_eq!(corrections, 1);
+    for view in ledger_views(&store, None, 50).unwrap() {
+        assert_eq!(view["wrong_match_allowed"], false, "{}", view["id"]);
+    }
+}
+
+#[test]
 fn mail_rules_p3_wrong_match_refuses_description_and_brakes_once_per_thread() {
     let home = Home::new();
     let store = home.store();

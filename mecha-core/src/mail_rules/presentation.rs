@@ -142,10 +142,9 @@ pub fn ledger_views(
         .map(|row| {
             let undoable = prepare_undo(store, &row.id).is_ok();
             let wrong_match_allowed = wrong_match_original(store, &all, &row.id).is_ok()
-                && !all.iter().any(|other| {
-                    other.outcome == Outcome::WrongMatch
-                        && other.correction_of.as_deref() == Some(&row.id)
-                });
+                && !all
+                    .iter()
+                    .any(|other| other.outcome == Outcome::WrongMatch && other.same_key(&row));
             let mut value = serde_json::to_value(&row)?;
             for field in ["sender", "subject"] {
                 if value[field].as_str().is_none_or(str::is_empty) {

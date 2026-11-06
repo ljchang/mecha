@@ -658,9 +658,12 @@ impl RuleStore {
             let _lock = self.lock()?;
             let rows = self.ledger()?;
             let original = wrong_match_original(self, &rows, row_id)?;
-            if rows.iter().any(|row| {
-                row.outcome == Outcome::WrongMatch && row.correction_of.as_deref() == Some(row_id)
-            }) {
+            // One correction per action key: a second row of the same action
+            // (an expired re-offer, a retry) is the same wrong match.
+            if rows
+                .iter()
+                .any(|row| row.outcome == Outcome::WrongMatch && row.same_key(original))
+            {
                 (
                     original.rule.clone(),
                     CorrectionReport {

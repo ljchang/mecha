@@ -394,7 +394,8 @@ async fn run_inner(cmd: Cmd) -> Result<()> {
                 args.push("--json".into());
             }
             if let Some(account) = account {
-                args.extend(["--account".into(), account]);
+                // `=` binds a value that begins with a hyphen.
+                args.push(format!("--account={account}"));
             }
             args.extend(["--".into(), rule]);
             launch(&args).await?;

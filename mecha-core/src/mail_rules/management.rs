@@ -399,11 +399,14 @@ pub(super) fn wrong_match_original<'a>(
         row.verdict_input == VerdictInput::NotApplicable,
         "description rules arrive in P4"
     );
+    // A `pending` row is an attempt, not an action: its settlement row is the
+    // one to correct, and accepting both would give one action two corrections.
     ensure!(
         row.correction_of.is_none()
             && !matches!(
                 row.outcome,
-                Outcome::ApprovalLapsed
+                Outcome::Pending
+                    | Outcome::ApprovalLapsed
                     | Outcome::Unknown
                     | Outcome::UndoPending
                     | Outcome::Undone

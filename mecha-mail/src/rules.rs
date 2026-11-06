@@ -952,6 +952,18 @@ pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
     let mut accounts = Vec::new();
     let mut report = engine::ApplyReport::default();
     for name in mailbox.accounts(account)? {
+        // An account the rule's own `account` matcher excludes is not read,
+        // so it has no result to report — never "complete, 0 matches".
+        if !rule.definition.matcher.account.is_empty()
+            && !rule
+                .definition
+                .matcher
+                .account
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
         let account_report = test_recent(&mailbox, &store, &rule, Some(&name), now).await?;
         accounts.push(test_account_report(&name, &account_report));
         report.read_failures += account_report.read_failures;
