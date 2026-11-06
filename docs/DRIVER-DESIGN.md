@@ -1,7 +1,7 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6). D1 is in build;
-nothing else is built.**
+**Status: 2026-11-06, designed and ruled (§9, R1–R6; R7–R8 owed). D1 is
+built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
 the owner's desk) gives mecha real work, mostly changes to mecha itself,
@@ -122,7 +122,7 @@ The shape:
   and nothing reaches the owner's prefix. `Driven` stays in
   `Situation::MARK_KINDS`, because nothing needs it as a scope key.
 - **Mining is its own pass.** `reflect` keeps hiding driven sessions from
-  the owner's store (D1, already built). A separate pass reads only driven
+  the owner's store (D1, #848), its outbox pass included: a draft a driven run staged is passed over even after the owner acts on it. A separate pass reads only driven
   sessions and writes only the driven store. The two passes share code and
   never share a destination.
 - **The driver's interventions are labelled as the driver's, never as the
@@ -144,7 +144,10 @@ The shape:
     `"origin":"driven"` *drops the reflection* (one corrupt line, one lost
     reflection). The variant needs a lenient read first, parked as
     `Untrusted` (the shape `surface_unread` and `de_lenient_kind` use).
-  - `Reflexion::learnable()` is clean-only. A driven store needs a
+  - `Reflexion::learnable()` admits `Clean`, and `Untrusted` only for
+    `TRIAGE_DOMAIN` while that domain stays out of `RUN_DOMAINS`: an
+    exemption already keyed on the *consumer* rather than on a setting,
+    which is the shape this arm wants. A driven store needs a
     deliberate `Driven => true` arm, **and that arm must be true only when
     learning into the driven store.** This is the one place the design
     loosens a structurally fail-closed gate. What replaces the gate is the
@@ -366,7 +369,7 @@ narrowing-only, so the worktree's own `mecha.toml` is not the exposure; the
 owner's own file is. An outside agent, driving prompts written from PR and
 issue text, should not hold the owner's graph or run the owner's hooks.
 
-So the driven mark forces those three off **structurally**, from the same
+So the driven mark forces those four off **structurally**, from the same
 `harness::Lever` definitions `mecha eval` uses (`RunConfig::levers_off`),
 rather than trusting each run to be configured right:
 
@@ -377,8 +380,16 @@ rather than trusting each run to be configured right:
   batch is announced to peers (below) by the driver, from outside the run,
   never by the run.
 - **Kept**: builtins (under the interlock as always), the owner's learned
-  rules, skills and charter. The harness is measured as the owner runs it,
-  minus the private surfaces.
+  rules and skills. The harness is measured as the owner runs it, minus the
+  private surfaces.
+- **Owed, R8: the charter.** Whatever rides in the system prompt leaves the
+  machine on every ceiling rerun (§4's `claude-opus-5`), and §4 requires the
+  same harness on every arm, so a block cannot be dropped for the ceiling
+  alone without confounding D4. The learned rules and skills are the
+  harness behaviour under test and are kept. The charter is the owner's
+  standing priorities, the most personal block in the prefix, and it says
+  nothing to a code task. The recommendation is the charter off on *every*
+  arm of a driven run. The ruling is the owner's.
 - **Kept on purpose: the outbox.** With the outbox on, a routed call stages
   rather than executes. Turning it off would make a routed call run
   directly, and staging is the safer of the two. A driven draft is set
@@ -387,15 +398,27 @@ rather than trusting each run to be configured right:
 D1b lands before the first driven run, not with D1: the mark alone gives a
 run nothing new. A run marked driven is refused at start if any forced-off
 surface is still attached, because a guard that cannot apply stops the run
-and never falls through.
+and never falls through. **A build trap for its tests:**
+`SessionKind::test_override()` returns `None` under `cfg(test)` unless
+`MECHA_KIND_PROBE_EXPECT` is set, and `ignore_kind_env_for_tests` latches
+it off for a whole test binary. A test pinning "the driven mark forces these
+off" must opt back in the way the kind probe does (a child process), or it
+passes vacuously.
 
 - **The jail stays the jail.** The run is jailed to its worktree. A worktree
   never contains the mecha home, so `setup`'s refusal does not fire. Shell
   runs under bwrap, with no network. `cargo` therefore runs `--offline`
-  against a registry fetched once outside the run. Its read access is the one
-  grant a driven run carries: named by the driver at start and recorded on
-  the run, never inherited from the owner's `[[grant]]`s, which D1b drops
-  (§8, open).
+  inside the jail, with **no grant**. `Lever::Grants` off means a run reaches
+  no grant (standing or the conversation's) and can add none, and
+  `grant::Source` has no run-scoped variant. A grant the driver named would
+  also make a peer the author of a jail exception, the rule D1b invokes to
+  drop the mailbox. So task setup, which is the harness and not the model or
+  the driver, vendors the dependencies into the worktree before the run
+  (`cargo vendor` plus a source replacement in the worktree's
+  `.cargo/config.toml`), and the run builds offline from inside its own
+  jail. Whether the toolchain under `~/.rustup` is readable under the shell
+  sandbox is open (§8). If it is not, the answer is an owner ruling (R7),
+  never a driver-named grant.
 - **No push, ever.** A driven run has no git remote credentials. Its output
   is a diff in a worktree.
 - **No persona data and no mail.** The task bank is code. Fixture-based
@@ -411,8 +434,10 @@ and never falls through.
   disk cost is large. The likely answer is a shared `CARGO_TARGET_DIR` per
   pin with trials run sequentially within a pin, but the cargo caps in
   OPERATIONS need checking first.
-- **Cargo inside the jail**: whether an offline registry plus one read grant
-  is enough, or whether the toolchain under `~/.rustup` needs one too.
+- **Cargo inside the jail**: the dependencies are vendored into the worktree
+  by setup (§7). Open is whether the shell sandbox can read the toolchain
+  under `~/.rustup`, measured by running `cargo build --offline` in a
+  confined shell. If it cannot, R7 is owed.
 - **Old trees and the 2026-11-04 history rewrite.** Commits from 2026-09-09
   to 2026-10-04 no longer build `mecha-core`'s tests. The rewrite's
   `--replace-text` changed `include_str!` paths in `mismatch.rs` to the
@@ -462,6 +487,10 @@ and never falls through.
   rules live in their own learning store, which owner runs never open, so
   every failure leaves a driven rule dark rather than applying it to the
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
+- **R7, owed.** If the shell sandbox cannot read the Rust toolchain, how a
+  driven run builds: the owner's call, never a driver-named grant (§7).
+- **R8, owed.** The charter off on every arm of a driven run, so it never
+  leaves the machine on a ceiling rerun (D1b). Recommended.
 
 ## 10. Deliberately out of scope
 
