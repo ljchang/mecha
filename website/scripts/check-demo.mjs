@@ -61,6 +61,8 @@ for (const path of voiceEndpoints) paths.add(path);
 // Settings → LoRAs', which `loras.js` builds the same way.
 const {LORA_ENDPOINTS: loraEndpoints} = await import(join(web, 'src/lib/loras.js'));
 for (const path of loraEndpoints) paths.add(path);
+const {RULES_ENDPOINTS: rulesEndpoints} = await import(join(web, 'src/lib/mail-rules.js'));
+for (const path of rulesEndpoints) paths.add(path);
 
 const answered = (path) => ROUTES.some(([, pattern]) => pattern.test(path));
 const missing = [...paths].filter((p) => !answered(p)).sort();

@@ -2163,6 +2163,7 @@ export const features = {
     on('incognito', 'Incognito chat', 'provider `local`', { part_of: 'web' }),
     on('slack', 'Slack remote control', 'tokens stored'),
     on('mail', 'Mail and calendar', '[[mcp]] `mail`, 2 account(s)'),
+    on('mail_rules', 'Mail rules', '2 rules', { part_of: null, requires: ['mail'] }),
     on('docs', 'Google Docs, Sheets and Slides', '[[mcp]] `docs`, 1 account(s)'),
     on('graph', 'Knowledge graph', '[[mcp]] `graph`'),
     on('tasks', 'Task board', "rides the graph's kg_task_* tools", { part_of: 'graph' }),
@@ -2321,5 +2322,117 @@ export const lorasVideo = {
   unused: [
     { file: 'spin_ref.safetensors', family: 'h3', note: null },
     { file: 'styles/watercolor_qi.safetensors', family: 'qwen-image', note: null },
+  ],
+};
+
+// --- mail rules (#mail/rules) --------------------------------------------
+//
+// The shapes `mecha mail rule list|show|ledger --json` print
+// (`mail_rules::RuleView`, `presentation::ledger_views`), read off P3-1's
+// structs. Two rules over the cast's own mail: Fairhaven's IT notices are
+// archived on their own, and the library's hold notices are tagged in shadow.
+const ruleStats = (matched, automatic, undoRate) => [
+  {
+    verdict_input: 'not_applicable',
+    matched_actions: matched,
+    matching_threads: matched,
+    automatic_mailbox_actions: automatic,
+    owner_undos: undoRate ? 1 : 0,
+    owner_wrong_matches: 0,
+    owner_corrected_actions: undoRate ? 1 : 0,
+    undo_rate: automatic ? undoRate : null,
+    wrong_match_rate: matched ? 0 : null,
+    correction_rate: matched ? undoRate : null,
+    shadow_upper_bound: false,
+  },
+];
+const itToml =
+  'description = "Fairhaven IT notices"\npriority = 20\n\n[match]\nfrom = ["it-notices@fairhaven.example.edu"]\n\n[[action]]\ndo = "archive"\n';
+const holdsToml =
+  'description = "Library hold notices"\n\n[match]\nfrom_domain = ["fairhaven-library.example.org"]\n\n[[action]]\ndo = "tag"\ntag = "library"\n';
+const itDigest = { directory: 'demo-it-notices' };
+const holdsDigest = { directory: 'demo-library-holds' };
+const itRule = {
+  name: 'it-notices',
+  description: 'Fairhaven IT notices',
+  approval_digest: itDigest,
+  holds: [],
+  last_activity: '2026-03-12T14:05:00Z',
+  load_error: null,
+  fires_7d: 6,
+  last_fired: '2026-03-12T14:05:00Z',
+  failures: 0,
+  groups: [
+    {
+      group: 'mailbox',
+      recorded_mode: 'auto',
+      effective_mode: 'auto',
+      activated_at: '2026-03-02T09:00:00Z',
+      holds: [],
+      match_digest: { matcher: 'demo-it' },
+      statistics: ruleStats(14, 12, 1 / 12),
+    },
+  ],
+};
+const holdsRule = {
+  name: 'library-holds',
+  description: 'Library hold notices',
+  approval_digest: holdsDigest,
+  holds: [],
+  last_activity: null,
+  load_error: null,
+  fires_7d: 0,
+  last_fired: null,
+  failures: 0,
+  groups: [
+    {
+      group: 'private_record',
+      recorded_mode: 'shadow',
+      effective_mode: 'shadow',
+      activated_at: null,
+      holds: [],
+      match_digest: { matcher: 'demo-holds' },
+      statistics: ruleStats(2, 0, null),
+    },
+  ],
+};
+export const mailRules = [itRule, holdsRule];
+export const mailRule = {
+  'it-notices': { ...itRule, rule_toml: itToml, inputs: { digest: itDigest, files: { 'rule/rule.toml': itToml } } },
+  'library-holds': { ...holdsRule, rule_toml: holdsToml, inputs: { digest: holdsDigest, files: { 'rule/rule.toml': holdsToml } } },
+};
+const ledgerRow = (id, rule, at, subject, outcome, extra = {}) => ({
+  id,
+  rule,
+  account: 'work',
+  thread_id: `thr-${id}`,
+  provider_message_id: `msg-${id}`,
+  sender: rule === 'it-notices' ? 'it-notices@fairhaven.example.edu' : 'holds@fairhaven-library.example.org',
+  subject,
+  action: { verb: rule === 'it-notices' ? 'archive' : 'tag', digest: 'demo' },
+  group: rule === 'it-notices' ? 'mailbox' : 'private_record',
+  mode: rule === 'it-notices' ? 'auto' : 'shadow',
+  match_digest: { matcher: rule === 'it-notices' ? 'demo-it' : 'demo-holds' },
+  verdict_input: 'not_applicable',
+  outcome,
+  closes: outcome !== 'would_have',
+  matched_because: JSON.stringify(
+    rule === 'it-notices' ? { from: ['it-notices@fairhaven.example.edu'] } : { from_domain: ['fairhaven-library.example.org'] },
+  ),
+  reason: '',
+  at,
+  headers_partial: false,
+  undoable: outcome === 'done',
+  wrong_match_allowed: outcome === 'done' || outcome === 'would_have',
+  ...extra,
+});
+export const mailRulesLedger = {
+  'it-notices': [
+    ledgerRow('r7101', 'it-notices', '2026-03-12T14:05:00Z', 'Scheduled maintenance: VPN, Saturday 06:00', 'done'),
+    ledgerRow('r7100', 'it-notices', '2026-03-11T09:40:00Z', 'Password expiry reminder', 'done'),
+    ledgerRow('r7099', 'it-notices', '2026-03-10T16:12:00Z', 'Printer queue migration complete', 'undone', { undoable: false, wrong_match_allowed: false }),
+  ],
+  'library-holds': [
+    ledgerRow('r7098', 'library-holds', '2026-03-11T08:00:00Z', 'Your hold is ready: Memory and the Brain', 'would_have'),
   ],
 };

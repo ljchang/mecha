@@ -2281,6 +2281,19 @@ implementation and not owner rulings:
   no longer in the triage queue the mail readers walk.
 - The test result shows each account's status; a held or failed account
   shows no match count, and partial rows stay visible beside a failure.
+- Not on the page yet, all deferred to the phase that produces them rather
+  than shown empty: *pending in the outbox* and *the share of staged rows by
+  reason* (§5.4) arrive with sends in P4, and `held: list cap` with its cap
+  and entry count arrives with description rules in P4 — P1–P3 rules are
+  header rules, which the cap never counts, so no rule can be held by it
+  yet. Description-rule testing (re-run over classified threads, with its
+  cost shown) is P4 too; the Test button surfaces the store's refusal.
+- The approval screen's counts are the store's statistics under the current
+  match digest, per `verdict_input`, never a count of the ledger window it
+  loaded (the newest 200 rows, said so when full). Its route list is
+  exported as `RULES_ENDPOINTS` for the docs demo's `check-demo.mjs`, which
+  cannot see calls made through the page's fetch wrappers; the demo answers
+  reads from fictional fixtures and declines every change.
 
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.

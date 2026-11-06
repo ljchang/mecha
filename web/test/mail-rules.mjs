@@ -26,7 +26,9 @@ import {
   draftProblem,
   errorOf,
   when,
+  RULES_ENDPOINTS,
 } from '../src/lib/mail-rules.js';
+import { readFileSync } from 'node:fs';
 
 let pass = 0;
 let fail = 0;
@@ -133,6 +135,21 @@ const stale = errorOf(409, JSON.stringify({ ok: false, error: { code: 'stale_dig
 t('a typed refusal keeps its code', stale.code === 'stale_digest' && /reload/.test(stale.message));
 t('a plain stderr line is the message', errorOf(502, 'unknown rule\n').message === 'unknown rule');
 t('an empty body is the status', errorOf(500, '').message === 'HTTP 500');
+
+// ---- the page names only the paths the docs demo is checked for ----
+// MailRules.svelte calls through wrappers check-demo.mjs cannot scan, so it
+// reads RULES_ENDPOINTS instead; a path missing from that list would make the
+// guard's pass vacuous again (review of #850).
+const page = readFileSync(new URL('../src/lib/MailRules.svelte', import.meta.url), 'utf8');
+const used = [...page.matchAll(/[`'"](\/api\/mail\/rules[^`'"]*)/g)].map(([, p]) => p.split('?')[0].replace(/\$\{[^}]*\}/g, 'X'));
+t('the page reaches rules paths at all (the scan is not vacuous)', used.length >= 10);
+t('every rules path the page reaches is in RULES_ENDPOINTS', used.every((p) => RULES_ENDPOINTS.includes(p)));
+
+// ---- review of #850 ----
+t('an empty subject from a test row is "(no subject)", not a blank', messageLine({ sender: 'a@example.com', subject: '' }).what === '(no subject)');
+t('an empty sender is never shown blank', messageLine({ sender: '', subject: 'Hi' }).who === 'unknown sender');
+const unreadable = digestSections([{ id: 'x', group: 'mailbox', match_digest: { keys: 'any' }, outcome: 'done' }], [{ group: 'mailbox', match_digest: null }]);
+t('a group with no current digest files nothing under "before the matcher changed"', unreadable.current.length === 1 && unreadable.earlier.length === 0);
 
 // ---- when ----
 const now = new Date('2026-11-06T15:00:00');

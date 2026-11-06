@@ -11,6 +11,27 @@
 
 export const GROUPS = ['mailbox', 'private_record', 'report', 'board'];
 
+/**
+ * Every `/api/mail/rules…` path the page reaches, `X` for a segment it fills
+ * in. MailRules.svelte calls through `get`/`call` wrappers, which the docs'
+ * `check-demo.mjs` literal scan cannot see, so the guard imports this list
+ * instead — as it does persona.js's — and `web/test/mail-rules.mjs` checks
+ * the component names no path outside it.
+ */
+export const RULES_ENDPOINTS = [
+  '/api/mail/rules',
+  '/api/mail/rules/ledger',
+  '/api/mail/rules/X',
+  '/api/mail/rules/add',
+  '/api/mail/rules/X/edit',
+  '/api/mail/rules/X/mode',
+  '/api/mail/rules/X/pause',
+  '/api/mail/rules/pause-all',
+  '/api/mail/rules/undo',
+  '/api/mail/rules/wrong-match',
+  '/api/mail/rules/X/test',
+];
+
 const GROUP_LABEL = {
   mailbox: 'Mailbox',
   private_record: 'Private record',
@@ -115,7 +136,9 @@ const key = (d) => JSON.stringify(d ?? null);
  * change they report is read.
  */
 export function digestSections(rows, groups) {
-  const current = new Map((groups ?? []).map((g) => [g.group, key(g.match_digest)]));
+  // A group with no current digest (its definition does not load) has no
+  // "before": every row of it stays current rather than being misfiled.
+  const current = new Map((groups ?? []).filter((g) => g.match_digest != null).map((g) => [g.group, key(g.match_digest)]));
   const now = [];
   const earlier = new Map();
   for (const row of rows ?? []) {
@@ -133,8 +156,10 @@ export function digestSections(rows, groups) {
 
 /** Message line for a ledger row: sender and subject when held, else the pointer. */
 export function messageLine(row) {
-  const who = row?.sender ?? null;
-  const what = row?.subject ?? null;
+  // `||`, not `??`: the ledger view nulls empty strings, a test report's rows
+  // (straight from ApplyReport) do not, and a blank line is no subject at all.
+  const who = row?.sender || null;
+  const what = row?.subject || null;
   if (who || what) return { who: who ?? 'unknown sender', what: what ?? '(no subject)' };
   return { who: row?.account ?? 'unknown account', what: row?.thread_id ? `thread ${row.thread_id}` : 'message unknown' };
 }

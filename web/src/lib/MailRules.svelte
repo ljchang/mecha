@@ -39,6 +39,10 @@
 
   let { navigate = () => {} } = $props();
 
+  // The ledger list is a window; the counts the approval screen shows are
+  // not — they are the store's statistics over every row (review of #850).
+  const LEDGER_LIMIT = 200;
+
   let screen = $state('list'); // list | rule | new
   let rules = $state(null);
   let listError = $state(null);
@@ -109,7 +113,7 @@
     try {
       const [d, l] = await Promise.all([
         get(`/api/mail/rules/${enc(n)}`),
-        get(`/api/mail/rules/ledger?rule=${enc(n)}&limit=200`),
+        get(`/api/mail/rules/ledger?rule=${enc(n)}&limit=${LEDGER_LIMIT}`),
       ]);
       detail = d;
       ledger = l;
@@ -319,11 +323,17 @@
   const groups = $derived((detail?.groups ?? []).filter((g) => g));
   const sections = $derived(digestSections(ledger ?? [], groups));
   const anyActive = (r) => (r.groups ?? []).some((g) => ['propose', 'auto'].includes(modeOf(g.effective_mode)) || ['propose', 'auto'].includes(modeOf(g.recorded_mode)));
-  const shadowRows = $derived(
-    approval ? sections.current.filter((row) => row.group === approval.group && row.outcome === 'would_have').length : 0,
-  );
+  // The store's own counts under the current match digest, per evidence
+  // kind (§6.2) — never a count of the rows the ledger window happens to hold.
+  const approvalBuckets = $derived(approval ? measuredBuckets(groups.find((g) => g.group === approval.group)) : []);
   const parsedPeek = $derived(peek?.status === 'ok' ? parseThread(peek.text) : null);
 </script>
+
+<svelte:window onkeydown={(e) => {
+  if (e.key !== 'Escape') return;
+  if (peek) peek = null;
+  else if (approval && !busy) approval = null;
+}} />
 
 {#snippet modeChips(g)}
   {@const rec = modeOf(g.recorded_mode)}
@@ -387,7 +397,7 @@
                 <span>last {when(r.last_fired)}</span>
                 {#if r.failures}<span class="bad">{r.failures} failed</span>{/if}
                 {#each (r.groups ?? []).filter((g) => g.group === 'mailbox') as g}
-                  {#each measuredBuckets(g) as b}<span>undone {pct(b.undo_rate)}</span>{/each}
+                  {#each measuredBuckets(g) as b}<span>undone {pct(b.undo_rate)} · {verdictLabel(b.verdict_input)}</span>{/each}
                 {/each}
               </div>
             </button>
@@ -540,6 +550,9 @@
 
       <section class="block">
         <h2>Ledger</h2>
+        {#if ledger?.length >= LEDGER_LIMIT}
+          <p class="help">The newest {LEDGER_LIMIT} rows. The counts above cover every row; <code>mecha mail rule ledger {name} --limit N</code> reads further back.</p>
+        {/if}
         {#if !ledger?.length}
           <p class="help">Nothing yet. The rules timer runs every five minutes once the rules feature and its timer are on.</p>
         {:else}
@@ -607,7 +620,11 @@
       {/if}
       {#if approval.error}<div class="warnline">{approval.error}</div>{/if}
       <div class="facts">
-        <span>{shadowRows} shadow row{shadowRows === 1 ? '' : 's'} so far under the current matcher</span>
+        {#each approvalBuckets as b}
+          <span>{b.matched_actions} matched action{b.matched_actions === 1 ? '' : 's'} on {b.matching_threads} thread{b.matching_threads === 1 ? '' : 's'} under the current matcher ({verdictLabel(b.verdict_input)}){#if b.shadow_upper_bound} — shadow counts are an upper bound{/if}</span>
+        {:else}
+          <span>Nothing has matched under the current matcher yet.</span>
+        {/each}
         <button class="linkish accent" onclick={() => (approval = null)}>close and read the ledger first</button>
       </div>
       {#if !approval.inputs}
