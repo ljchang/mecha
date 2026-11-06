@@ -853,10 +853,7 @@ impl Scratch {
         let root = std::env::temp_dir().join(format!(
             "mecha-hud-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            uuid::Uuid::new_v4()
         ));
         let dir = root.join(id);
         std::fs::create_dir_all(dir.join("loaders")).unwrap();

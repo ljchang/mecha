@@ -89,3 +89,4 @@ toml_edit = "0.25"
 # that it cannot run it (`feature::unbuilt`).
 default = ["monty"]
 monty = ["mecha-core/monty"]
+memory-prototype = ["mecha-core/memory-prototype"]

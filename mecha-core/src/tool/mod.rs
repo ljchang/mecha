@@ -10,6 +10,8 @@ pub mod code;
 pub mod document;
 pub mod effect;
 pub mod goal_context;
+#[cfg(feature = "memory-prototype")]
+pub mod goal_memory;
 pub mod hud;
 pub mod image_library;
 pub mod image_view;
@@ -3304,3 +3306,6 @@ mod jail_tests {
         assert_eq!((writes, drifted, unnamed), (1, 1, 0));
     }
 }
+
+#[cfg(all(test, feature = "memory-prototype"))]
+mod goal_memory_tests;

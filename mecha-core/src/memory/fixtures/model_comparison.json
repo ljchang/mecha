@@ -1,0 +1,381 @@
+{
+  "version": 1,
+  "sessions": [
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"juniper\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Juniper needs a parcel transported. The available services are Kestrel and Morrow.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The hallway was repainted blue.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Kestrel delivery takes 2 hours and costs 90 credits; it is available today.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The loading dock closes at midnight.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Morrow freight takes 2 days and costs 15 credits; it is available today.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"No discount vouchers are available.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Juniper has no fragile or restricted contents.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The stationery order is complete.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"topaz\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Topaz can run with Sol or Neri. Both produce valid estimates.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The keyboard was replaced.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Sol uses 80 battery units and has absolute error 1; completion takes 10 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The laptop has no charger available.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Neri uses 12 battery units and has absolute error 4; completion takes 10 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The display brightness was reduced.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Topaz input validation passed.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The mouse is wireless.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"marlin\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Marlin repairs can use Vela or Pavo kits.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The inventory labels are yellow.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Vela arrives today and lasts 3 months. Installation takes one hour.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The paint is dry.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Pavo arrives in 4 days and lasts 36 months. Installation takes one hour.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Both kits cost 40 credits and fit the damaged part.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Marlin needs a repair decision.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The ladder was returned.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"cobalt\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cobalt can use Ibis or Tern to move a dataset.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The cable drawer is organized.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Ibis is an encrypted channel taking 30 minutes; it is available now.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The storage checksum passed.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Tern is an unencrypted channel taking 2 minutes; it is available now.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The screen is clean.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cobalt has a 60-minute transfer window.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The desk chair was repaired.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"saffron\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Saffron rehearsal is in room R7.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The Saffron access code is 4826.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Lunch is at noon.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The projector has an HDMI adapter.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"willow\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Willow booking reference W2: pickup is Tuesday at gate 3.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The receipt is in the folder.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Willow correction for W2: pickup is Thursday, replacing Tuesday.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The driver has a blue uniform.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Willow correction for W2: use gate 8, replacing gate 3.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The gate sign was cleaned.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"opal\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Opal trial sample temperature was 18 C.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The cabinet was cleaned.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Opal trial sample temperature was 24 C.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The thermometer was returned.\"}]}\n"
+    },
+    {
+      "account": "synthetic-lab",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"umber\", \"created_at\": \"2026-01-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Umber restaurant inquiry: the booking request was sent, and no reply has been received.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The Umber menu includes lentils.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Umber shipping inquiry: the parcel is packed, but no carrier service was chosen.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-01-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The carton is brown.\"}]}\n"
+    }
+  ],
+  "cases": [
+    {
+      "id": "juniper-kestrel",
+      "category": "changed_goal",
+      "question": "Which service should Juniper use?",
+      "account": "synthetic-lab",
+      "session_id": "juniper",
+      "goal": "Minimize delivery time.",
+      "homeostatic_context": "Budget 100 credits; both arrival dates are acceptable.",
+      "choices": {
+        "kestrel": "Use Kestrel",
+        "morrow": "Use Morrow",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "kestrel",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "juniper-morrow",
+      "category": "changed_goal",
+      "question": "Which service should Juniper use?",
+      "account": "synthetic-lab",
+      "session_id": "juniper",
+      "goal": "Minimize shipping expenditure.",
+      "homeostatic_context": "Budget 100 credits; both arrival dates are acceptable.",
+      "choices": {
+        "kestrel": "Use Kestrel",
+        "morrow": "Use Morrow",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "morrow",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "topaz-sol",
+      "category": "changed_goal",
+      "question": "Which method should Topaz run?",
+      "account": "synthetic-lab",
+      "session_id": "topaz",
+      "goal": "Minimize estimation error.",
+      "homeostatic_context": "Battery 100 units.",
+      "choices": {
+        "sol": "Run Sol",
+        "neri": "Run Neri",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "sol",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "topaz-neri",
+      "category": "changed_goal",
+      "question": "Which method should Topaz run?",
+      "account": "synthetic-lab",
+      "session_id": "topaz",
+      "goal": "Preserve enough battery for an upcoming 30-unit task.",
+      "homeostatic_context": "Battery 45 units.",
+      "choices": {
+        "sol": "Run Sol",
+        "neri": "Run Neri",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "neri",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "marlin-vela",
+      "category": "changed_goal",
+      "question": "Which kit should Marlin choose?",
+      "account": "synthetic-lab",
+      "session_id": "marlin",
+      "goal": "Restore operation before tomorrow.",
+      "homeostatic_context": "Installation capacity 2 hours; budget 50 credits.",
+      "choices": {
+        "vela": "Choose Vela",
+        "pavo": "Choose Pavo",
+        "none": "Choose neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "vela",
+      "expected_lines": [
+        4,
+        6,
+        7
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "marlin-pavo",
+      "category": "changed_goal",
+      "question": "Which kit should Marlin choose?",
+      "account": "synthetic-lab",
+      "session_id": "marlin",
+      "goal": "Maximize service life; waiting one week is acceptable.",
+      "homeostatic_context": "Installation capacity 2 hours; budget 50 credits.",
+      "choices": {
+        "vela": "Choose Vela",
+        "pavo": "Choose Pavo",
+        "none": "Choose neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "pavo",
+      "expected_lines": [
+        4,
+        6,
+        7
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "cobalt-ibis",
+      "category": "changed_goal",
+      "question": "Which channel should Cobalt use?",
+      "account": "synthetic-lab",
+      "session_id": "cobalt",
+      "goal": "Keep the confidential dataset encrypted in transit.",
+      "homeostatic_context": "Dataset classified confidential.",
+      "choices": {
+        "ibis": "Use Ibis",
+        "tern": "Use Tern",
+        "none": "Use neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "ibis",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "cobalt-tern",
+      "category": "changed_goal",
+      "question": "Which channel should Cobalt use?",
+      "account": "synthetic-lab",
+      "session_id": "cobalt",
+      "goal": "Finish the transfer as quickly as possible.",
+      "homeostatic_context": "Dataset is public test data with no confidentiality restriction.",
+      "choices": {
+        "ibis": "Use Ibis",
+        "tern": "Use Tern",
+        "none": "Use neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "tern",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "saffron-room",
+      "category": "direct",
+      "question": "Which room is the Saffron rehearsal in?",
+      "account": "synthetic-lab",
+      "session_id": "saffron",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "r7": "R7",
+        "r8": "R8",
+        "r9": "R9",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "r7",
+      "expected_lines": [
+        2
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "saffron-code",
+      "category": "direct",
+      "question": "What is the Saffron access code?",
+      "account": "synthetic-lab",
+      "session_id": "saffron",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "4826": "4826",
+        "4862": "4862",
+        "4286": "4286",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "4826",
+      "expected_lines": [
+        3
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "willow-day",
+      "category": "correction",
+      "question": "What is the current Willow pickup day?",
+      "account": "synthetic-lab",
+      "session_id": "willow",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "tuesday": "Tuesday",
+        "thursday": "Thursday",
+        "friday": "Friday",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "thursday",
+      "expected_lines": [
+        4
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "willow-gate",
+      "category": "correction",
+      "question": "What is the current Willow pickup gate?",
+      "account": "synthetic-lab",
+      "session_id": "willow",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "3": "Gate 3",
+        "8": "Gate 8",
+        "9": "Gate 9",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "8",
+      "expected_lines": [
+        6
+      ],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "opal-early",
+      "category": "temporal",
+      "question": "What was the Opal sample temperature during the requested interval?",
+      "account": "synthetic-lab",
+      "session_id": "opal",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "18": "18 C",
+        "24": "24 C",
+        "30": "30 C",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "18",
+      "expected_lines": [
+        2
+      ],
+      "occurred_after": null,
+      "occurred_before": "2026-01-02T00:00:00Z"
+    },
+    {
+      "id": "opal-late",
+      "category": "temporal",
+      "question": "What was the Opal sample temperature during the requested interval?",
+      "account": "synthetic-lab",
+      "session_id": "opal",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "18": "18 C",
+        "24": "24 C",
+        "30": "30 C",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "24",
+      "expected_lines": [
+        4
+      ],
+      "occurred_after": "2026-01-03T00:00:00Z",
+      "occurred_before": null
+    },
+    {
+      "id": "umber-booking",
+      "category": "abstention",
+      "question": "What time did Umber confirm the restaurant reservation?",
+      "account": "synthetic-lab",
+      "session_id": "umber",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "18": "18:00",
+        "19": "19:00",
+        "20": "20:00",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "insufficient_evidence",
+      "expected_lines": [],
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "umber-arrival",
+      "category": "abstention",
+      "question": "On which day will the Umber parcel arrive?",
+      "account": "synthetic-lab",
+      "session_id": "umber",
+      "goal": "",
+      "homeostatic_context": "",
+      "choices": {
+        "monday": "Monday",
+        "tuesday": "Tuesday",
+        "wednesday": "Wednesday",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "insufficient_evidence",
+      "expected_lines": [],
+      "occurred_after": null,
+      "occurred_before": null
+    }
+  ]
+}

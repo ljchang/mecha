@@ -123,6 +123,10 @@ pub mod mail_triage;
 pub mod mailbox;
 pub mod mcp;
 pub mod mdform;
+#[cfg(feature = "memory-prototype")]
+pub mod memory;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_runtime;
 pub mod message;
 pub mod on_demand;
 pub mod onboarding;

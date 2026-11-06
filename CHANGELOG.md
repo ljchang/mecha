@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Experimental memory adds a separate v3 durable-read store and explicit
+  start/resume/status/cancel/finish commands. One host-bound synthetic file read
+  uses ordinary Mecha guards; reservations survive crashes, settled results are
+  reused, and unresolved reads are never silently repeated. Cancellation and
+  forgetting invalidate later commits. Supplied final proposals remain untrusted;
+  this does not activate automatic chat memory or model reasoning.
+
+- Experimental `workflow-trial --observe --reconsider` reuses the bounded
+  source-only reconsideration step after acquisition. Original drafts, failed
+  attempts and checks remain recorded; the same evidence receipt is rechecked
+  at commit. Earlier protocols remain available; synthetic development only.
+
+- Experimental memory adds `workflow-trial --observe`: one bounded missing
+  measurement request, a persisted observed/unavailable result, and a fresh
+  checked decision. Paired control cases retain missing evidence; corrected
+  observations preserve history. Query citations are enumerated; final decisions
+  receive a source-only missing-evidence/feasibility check. Synthetic source-selected
+  evaluation only.
+
+- Experimental memory adds `workflow-trial --checked`: paired initial decisions,
+  source-grounded constraint/evidence checks and at most one reconsideration on
+  fresh synthetic cases. Unsupported final proposals are recorded as host-withheld
+  no-action outcomes, separately from model abstention and task success. No live
+  data, schema migration or production action authority.
+
+- Experimental memory adds `workflow-trial --recall-views` for deterministic
+  measurement/scoped-appraisal comparisons and `--unseen` for a fixed follow-up
+  with new synthetic values, missing evidence and a corrected source. Original
+  source records and the baseline protocol remain intact; no production actions.
+
+- Experimental memory adds a synthetic `workflow-trial`: persisted event,
+  proposed decision and host-observed outcome traces, then a matched
+  no-memory/retrieved/oracle decision comparison after reopening SQLite.
+  All consulted sources are rechecked before an atomic trace write; partial
+  JSONL progress survives failed model calls. No production actions or data.
+
+- Experimental memory plan diagnostic adds opt-in direct coverage judgments and
+  reasoning-enabled comparisons, with source receipts and count-only reasoning
+  audit. No actions execute; source membership is not semantic validation.
+
+- Experimental memory: add tool-free, source-linked extraction of synthetic plan actions, conditions and branches, with provenance checks and separate semantic/guard-coverage diagnostics. No actions execute.
+
+
+- Experimental memory: pure typed action/branch guard coverage with separate rule applicability and met/unmet/unknown arms; synthetic qualification only, no action execution or authority.
+
 ### Added
 
 - **Automatic mail-rule passes, opt-in.** Enable `mail_rules` with `mail` for
@@ -43,6 +88,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from outside content. It becomes active with owner origin, so recalling it
   no longer marks the new chat untrusted; memories approved the old way can
   be vouched later, and `--chat <id> --clean` handles a whole source chat.
+- Experimental plan repair now selects bounded keep/gate/defer edits over existing
+  steps instead of generating replacement procedures. The host preserves every
+  step's requirement IDs, condition scope and withholding behavior, and marks
+  all-deferred plans as abstention. Routing goal IDs and storage metadata stay out
+  of model evidence; conditional output schemas require questions for unknowns.
+  Reports use `bound-repair-v5`; judgments remain advisory, never action authority.
+
+- Experimental plan evaluation now records source-linked requirements, their
+  scope/state and exact per-step guards. Host aggregation withholds consideration
+  for unmet or unresolved unguarded requirements. Outcome uncertainty is assessed
+  separately from action validity; reports include the requirement states.
+  This remains advisory and does not authorize actions.
+
+- Experimental plan evaluation now supplies no-concept applicability in the host,
+  separates original evidence from concept citations, and preserves an existing
+  recommended plan instead of always rewriting it. Repair prompts prioritize
+  known blockers and explicit guards; reports identify skipped versus reassessed
+  revisions. These remain advisory synthetic evaluations.
+
+- Experimental plan assessments now select host-issued passage IDs; Mecha
+  constructs exact quotations and source byte ranges. Invalid or repeated IDs
+  fail closed. A six-case development calibration separates prerequisite
+  judgments and independent revision review from citation-format validity.
+
+- An opt-in synthetic memory prototype with isolated SQLite storage, evidence
+  provenance, temporal queries, revision history and source forgetting. Its
+  `mecha memory --experimental --db PATH` command is available when built with
+  `--features memory-prototype`; it and the standalone harness share the same
+  fixture. Live graph stores and nightly jobs are unchanged;
+  see `prototypes/memory/README.md` for usage and current limitations.
+  It also supports explicit synthetic JSONL session import, BM25 evidence recall
+  with source citations and context windows, and a 32-case retrieval/oracle
+  evaluation report without model calls. An explicit `evaluate-model` command
+  compares lexical, bounded goal-aware and oracle evidence with a resident
+  local model on 16 new synthetic cases, reporting structured decisions,
+  source citations, abstention, latency and token usage. The optional
+  `--follow-evidence` comparison adds one bounded search hop based on initial
+  episodes and schema-constrained citation selection across all conditions;
+  `--development` keeps debugging separate from its new synthetic case set.
+
+- Experimental memory adds `evaluate-mentions`, a no-model replay of saved
+  synthetic searches with disclosed manual name bindings. Core `recall_mention`
+  requires a literal name/phrase in anchors before ranking limits, preserving
+  access/time filters and bounded evidence. This is a retrieval diagnostic,
+  not automatic entity resolution or a production memory migration.
+  `evaluate-model --auto-bindings` adds a source-grounded planner whose identical
+  queries/names are compared with and without name enforcement, plus oracle
+  evidence. Shared planner costs and per-arm answers are recorded separately;
+  the prior12 cases are development data and14 new cases form the fresh split.
+
+- Experimental `mecha run --memory-context PATH` can serve read-only synthetic
+  memory through the existing `goal_context` tool. Explicit goal/account/domain/
+  scopes and `--memory-synthetic` are required. Packets preserve source revisions,
+  temporal relations and dependency provenance, with exact-source-quote follow-up
+  searches and private/untrusted taint. Normal runs are unchanged; this does not
+  enable private-data ingestion, concept learning or nightly processing.
+
+- Experimental `memory distill-concept` generates a provisional concept from
+  explicit synthetic source episodes using a resident local model. Exact quote
+  provenance, distinct supporting episodes, current source scopes and revisions
+  are host-validated; all consulted sources remain dependencies. Context can
+  retrieve concept/source bundles without promoting them to trusted rules.
+  Recall budget omissions and strict nested source-selection decoding are fixed;
+  automatic-binding reports now include a nullable `grounded_binding_count`.
+
+- Experimental `memory evaluate-plans` assesses synthetic candidate plans against
+  prerequisites, source evidence and concept applicability. `--revise` adds one
+  revision and reassessment. Reports preserve unknowns, source provenance and
+  model fallibility; no action or trusted-rule authority is granted. The opt-in
+  memory goal-context schema now exposes its exact confirmed goal and provides
+  an actionable repair hint for mismatched IDs.
 
 - **A persona's life profile, and a draft of it from what you wrote.**
   `life.toml` says who a persona lives with (people on their People tab),

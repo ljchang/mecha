@@ -12682,3 +12682,349 @@ and RFC2822 are parsed; unknown formats stay unknown. This covers old message
 dates outside the prompt's near-term calendar reference. Manual review found a
 wrong incoming-message weekday that the initial grounded rubric missed, so the
 live controls include both a correct and an incorrect incoming weekday.
+
+## Experimental memory prototype
+
+`memory` is default-off and qualified for synthetic data only. The core owns
+capture/retrieval/evaluation; CLI adapters discover no live stores. The explicit
+`evaluate-model`, `distill-concept`, and `evaluate-plans` commands use an
+already-resident local model; other memory commands make no model calls. The explicit `run --memory-context` adapter uses
+ordinary run setup and replaces only its already-available `goal_context`.
+See `MECHA-MEMORY-DESIGN.md` for the production design and
+`../prototypes/memory/README.md` for this implemented subset.
+
+- **A JSONL record is source evidence, not reconstructed conversation state.**
+  The session adapter preserves exact lines and unknown record types; only
+  original known message text is indexed. Indexing a rewrite as another
+  utterance would turn a model's compaction summary into apparent new evidence.
+- **Line identities require an append-only prefix.** A retry matches existing
+  raw bytes; edits/truncations fail the whole import. Otherwise inserting one
+  line could reassign every later source citation. Source corrections are new
+  records; a rewritten export requires a distinct source identity.
+- **Unknown message time stays unknown.** A session can span days. Using its
+  creation timestamp for every message would create false temporal precision.
+- **Eligibility governs ranking statistics as well as returned rows.** Review
+  showed a frozen query switch from beta to alpha after thirty inaccessible
+  future beta records changed global BM25 frequencies. The prototype scores
+  an eligible-only RAM index; replacing that implementation must preserve the
+  historical/scope/source contract, not just filter the final top-k.
+- **Each expanded neighbor is independently authorized.** Proximity to a
+  visible anchor cannot grant access to a restricted record. Current source
+  restrictions and forgetting override historical snapshots.
+- **Oracle coverage is not a reasoning score.** Evaluation gold IDs are used
+  after baseline recall and cannot inform the retrieval request. The oracle
+  establishes available evidence, while the original `evaluation` module measures no model reasoning.
+- **A comparison cannot grade its own answer.** `model_evaluation` checks
+  fixture-defined choices and source citations deterministically; gold never
+  enters the query planner. The oracle receives supporting records only. All
+  arms share one evidence budget and answering prompt; extra search compute
+  is reported, not hidden as a free improvement.
+- **Synthetic inference has no tool surface or implicit provider.** The
+  comparison uses explicit local-only quarantined calls and the resident
+  router model. Explicit holds coordinate with switches; no production
+  config/store is loaded and a failed call remains a failed row.
+  `OpenAiCompatible::from_local_config` and `router::local_models` opt into
+  numeric loopback HTTP with proxies/redirects disabled: validating only the
+  first URL still allowed a 307 to forward the evidence elsewhere. General
+  provider transport remains unchanged.
+
+- **Evidence-informed search is an information intervention.** The follow-up
+  comparison gives both search conditions the same initial recall, one planning
+  call, <=2 extra searches, filters and anchor-first fusion. Only one planner
+  sees the initial records; input-token costs therefore differ and are recorded.
+  Reusing the initial search avoids a hidden fourth search. Legacy protocol
+  behavior stays separate so the first measurement is not silently redefined.
+- **Citation constraints enumerate visible IDs, not correct IDs.** Follow-up
+  schemas list every returned source ID and public choice; expected support is
+  used only by host grading. Filtering the schema to gold would leak the answer.
+  Empty evidence permits only empty citations; schema membership alone cannot
+  establish semantic support or make source content trusted.
+
+- **A required mention constrains anchors before top-k, not after it.**
+  `Memory::recall_mention` shares eligibility, BM25 statistics and neighbor checks
+  with ordinary recall. A separate eligible-only unicode61 index avoids stemming
+  distinct names together; its quoted phrase is literal, never executable FTS.
+  Descriptive terms cannot exclude every record mentioning the name. Missing or
+  invalid names never silently fall back to broad search. Context neighbors may
+  omit the mention, but never their independent authorization check.
+- **A supplied entity binding is additional information.** The mention replay
+  uses explicit manual annotations from saved queries and initial visible text;
+  it measures retrieval given those bindings, not an automatic entity extractor.
+  Already-viewed cases are development data even when their source report used
+  the word holdout. Gold support only grades returned evidence.
+
+- **To measure binding enforcement, share the generated plan.** The automatic
+  binding comparison calls its source-grounded planner once per case, then
+  feeds the identical validated plan to both retrieval arms. Names require a
+  cited initially visible original text field, checked using recall's tokenizer;
+  neither a metadata match nor an invented entity is sufficient. Invalid plans
+  fail both search arms rather than quietly falling back. Planner compute is
+  recorded once, separate from per-arm answers; authored target names are
+  diagnostic labels, never planner inputs.
+
+- **Runtime context is evidence, not a new trusted lesson channel.**
+  `Memory::context` reads all stages in one transaction, with host-owned scope,
+  snapshot/source/time filters and a serialized packet budget. Relation bundles
+  include their authorized, fresh dependencies atomically; every evidence
+  dependency must also match source/time filters. Unknown times stay unknown.
+  `GoalMemory` holds a read-only connection and marks returned records external;
+  a local validation error never acquires external provenance. Agent dispatch
+  tests verify that the resulting private/untrusted taint blocks chosen egress.
+- **Select original text instead of composing an entity name.** Runtime source
+  selections name a revision, original field and exact contiguous quote from the
+  initial bounded packet. The host derives byte offsets and the mention before
+  required-mention recall. This avoids accepting a plausible but absent phrase
+  such as `Ilex pipeline` from `Ilex or Quill pipeline`; invalid selections fail,
+  never silently broaden. Older experiments remain frozen under their original
+  name-validation protocol.
+- **The runtime reader is a run-local opt-in.** Its CLI flags require a confirmed
+  goal, explicit account/domain/scopes and synthetic-data acknowledgement. It
+  cannot re-enable a withheld tool. `RegistryMut` rebuilds code mode after the
+  replacement; existing subagents retain their original tool. With no opt-in,
+  the original schema/description/results are unchanged. Internal homeostat and
+  charter sensors remain harness-only; this increment does not wire those to
+  the model or promote source-derived claims into learned rules.
+
+- **A concept is a provisional hypothesis, not a trusted lesson.**
+  `prepare_concept` exposes original fields from 2–8 explicit source revisions;
+  `retain_concept` verifies exact quotes and at least two independent supporting
+  episodes. Every consulted input remains a dependency, including uncited inputs
+  and counterexamples. After inference, source freshness and unchanged scopes
+  are rechecked atomically. Otherwise omitting a citation could launder private
+  input into a less restricted abstraction. No transaction spans inference.
+- **Concept retrieval carries its evidence with it.** `knowledge_bundle` checks
+  the complete closure against current restrictions, historical freshness and
+  source/time filters before adding it atomically under the packet budget.
+  Concepts can supply new search vocabulary, but remain untrusted/provisional.
+  Recency ordering avoids global FTS statistics leaking inaccessible/future
+  corpus changes. This bounded route makes no semantic ranking claim.
+- **New payload vocabulary needs an explicit version boundary.** The first
+  retained concept atomically advances `user_version` to 2. Existing readers
+  without the new record variant must reject the file instead of silently
+  processing an incomplete store. Ordinary version-1 fixtures remain readable.
+
+- **Plan assessment validates provenance and structure, not model entailment.**
+  `plan_assessment` requires every candidate to receive exactly one prerequisite,
+  factual-support, outcome and concept-applicability judgment. Missing prerequisites stay
+  unknown with information needs; unknown non-outcome or contradicted checks cannot produce a
+  host recommendation. Supported checks cannot simultaneously list unresolved
+  questions. Exact visible quotes and original evidence are required; a provisional
+  concept cannot alone support a fact. All semantic judgments and rankings remain
+  explicitly fallible, private and untrusted, never action authority or clean rules.
+- **Revision is another hypothesis, not evidence of improvement.** `evaluate_plans`
+  preserves an existing recommended candidate; otherwise it permits one revision
+  call and requires another full assessment, preserving the
+  original bounded source packet. Every supplied source is rechecked for current
+  authorization, revision freshness and unchanged scopes after inference and at
+  final return. No read transaction spans a model call. Exported reports are point-
+  in-time artifacts, not revocable receipts or a new persistent learning store.
+- **A run-bound tool should advertise its actual goal, not invite an invented ID.**
+  The opt-in `GoalMemory` schema enumerates the one host-confirmed `serves` value
+  and explains omission/defaulting. The guard still refuses mismatches, with a
+  host-generated repair hint. Two real-model trials previously invented goal IDs
+  and failed before retrieval; silently accepting those IDs would hide the error
+  and weaken the invocation binding. Ordinary `GoalContext` remains unchanged.
+
+- **Citation fields are a closed vocabulary of the visible packet.** Concept
+  generation enumerates the exact field pointers in its
+  response schemas. Real local-model runs dropped the leading slash when the
+  field was an unconstrained string; validation correctly refused them. Field
+  membership still does not establish source/quote binding: the host separately
+  verifies the source, field and exact quote, and does not silently repair a
+  quote borrowed from another episode.
+
+- **Assessment citations select host passages, never regenerate provenance.**
+  `passage_sources` exposes every original field byte in bounded UTF-8 passages;
+  `finish_plan_assessment` accepts only issued IDs and constructs quotes, source
+  revisions and byte ranges itself. IDs are scoped to the opaque receipt, not a
+  global citation namespace. Adjacent passages remain visible together so a split
+  does not conceal a qualification. The 2026-11-05 model trial produced an exact
+  quote under the wrong source despite enumerated fields; ID selection removes
+  that transcription failure, not the need to judge relevance and entailment.
+
+- **The host decides whether a concept check exists.** `model_dimensions` requests
+  prerequisite, factual-support and outcome checks without a retrieved concept;
+  the host appends a labelled
+  `not_applicable` result. A model cannot invent a concept from the task vocabulary
+  or author host judgments. `citations` admits original episode/situation passages;
+  `concept_citations` admits provisional concept passages. Both categories are
+  checked in code, not just enumerated in schemas. The first calibration otherwise
+  called ordinary words concepts and used concepts as sole factual support.
+- **An adequate candidate is preserved, not automatically rewritten.**
+  `RevisionStatus` distinguishes not requested, kept existing and reassessed.
+  A `consider` candidate suppresses revision even if another candidate is blocked;
+  the final all-source recheck still runs. The first calibration added redundant
+  steps to a permitted plan. Preservation follows a fallible model assessment,
+  never grants execution authority and does not itself prove that the plan is good.
+
+
+- **Requirements are source-linked interpretations; guards belong to a step.**
+  `plan_requirements::validate` rejects missing/foreign step references, invented
+  guard quotes and non-original requirement citations. Unmet unguarded conditions
+  dominate unknowns in `requirement_status`; unknown scope stays unresolved even
+  with a guard. A requirement list is model-authored and may omit a constraint;
+  host aggregation certifies neither completeness nor semantic entailment.
+- **Action validity and outcome uncertainty are different questions.**
+  `Dimension::Outcome` unknown does not by itself withhold consideration of valid
+  next steps, while a contradicted outcome still requests revision. Missing
+  permissions/resources remain prerequisite/factual unknowns, not outcome-only
+  uncertainty. The prior replay rejected a permitted question because an answer
+  was not guaranteed, while endorsing a hypothetical carrier's feasibility.
+
+- **Repair edits existing steps; it does not author new procedures.**
+  `plan_repair::apply` accepts one ordered keep/gate/defer choice per original
+  step. Host-generated gates retain every original requirement ID, condition and
+  scope description; one gate encloses the whole step, including later actions.
+  Unknown scope or excessive rendered size offers defer, never a truncated gate.
+  Requirement IDs are local to the original assessed candidate; `RepairPlan`
+  retains that identity. Reassessment can disagree but cannot rewrite the gate.
+  All-deferred repairs have no recommended revision, even if a model approves them:
+  abstention is not demonstrated goal progress. Requirement semantics remain
+  model-authored, so binding does not prove a condition is appropriate or complete.
+- **Operational identifiers are not task evidence.** Assessment excludes routing
+  goal references; the event describes task meaning. Repair consumes projected
+  original passages, steps, requirements and checks instead of serializing the
+  entire context packet. Storage scopes are access controls, not communication
+  methods; a V4 repair previously invented a channel from `fixture-mail`.
+
+- **Guard coverage is path-local, not inherited from a previous step.**
+  `guard_coverage::check` walks every feasible arm of a fixture-authored typed
+  plan, including unmet/unknown arms and paths not selected by the current
+  observation. Only a met assumption for the exact required condition covers
+  an action. Assumptions leave scope at the end of the branch; an unconditional
+  later action remains uncovered. V5 prose assessment incorrectly preserved
+  such a publication tail. Unknown rule applicability stays unresolved.
+- **A coverage contract is supplied information, not extracted truth.**
+  Action requirements live in `guard_coverage::Contract`, separately from the
+  plan's action references. Empty requirements and explicit non-applicability
+  mean only what this supplied contract states. The pure checker does not verify
+  source entailment, contract completeness, freshness or action permissions.
+  Its conditions are immutable within a plan; no action effects or live refresh
+  occur. Conflicting nested branches are unreachable under that assumption and
+  never counted as successes. Real execution will require a separate observation
+  lifecycle; no current runtime caller can use this report to authorize a tool.
+
+- **Source-linked extraction preserves the plan rather than repairing it.**
+  `plan_extraction::Prepared` owns bounded original evidence/plan passages; the
+  model selects inline host passage IDs for every condition, observation, action,
+  requirement binding and plan node. Action/node links require plan text;
+  requirements and known observations require evidence. Host citations restore
+  original text and hashes, never model-generated quotations or target pointers.
+  Duplicate JSON members fail before conversion can erase earlier content. Membership proves
+  neither entailment nor completeness: dropping an unsafe tail or a prerequisite
+  can produce a covered but false translation. The one-shot synthetic diagnostic
+  grades semantic fidelity separately; no runtime or storage authority is added.
+
+The direct coverage comparison (`Prepared::direct_request`, `finish_direct`)
+shares the same receipt projection with V2 extraction, but its `DirectReport` is
+an untrusted model judgment, not a `CoverageReport`. Preserve that distinction:
+matching a label and binding real citations do not prove source support or guard
+coverage. Both questions use immutable conditions and snapshots are not guards.
+`extraction_comparison.py` freezes the resident server's configured reasoning
+budget/settings, uses no-autoload props, rotates four arms, and records incomplete
+matrices explicitly. It forces `MECHA_LOG=warn`: inherited provider debug logging
+can include a reasoning-only reply even when JSON audit output reports only a
+character count. Never infer that reasoning was honored from the request flag;
+measure the returned channel separately and retain failed calls.
+
+**Synthetic experience observations come from the host, never the model.**
+`memory::experience` is a finite fixture simulator, not an action runtime.
+`World::prepare` seals world/store identity, state revision and the exact source
+revisions supplied to inference. `World::finish` accepts only a method/citations/
+reason response; cost, quality and feasibility are calculated by the fixture.
+`record_trace` saves event, proposal and observation in one transaction and
+inherits dependencies from **all** consulted evidence, including uncited options.
+Freshness and authorization are checked recursively inside that transaction.
+Removing a source therefore invalidates pending and persisted dependent work.
+Keeping model predictions and observed consequences distinct is what prevents
+self-confirmation when an outcome is recalled later. Frozen pre-evaluation
+snapshots prevent one comparison arm from benefiting from another's new results.
+This sealed host path does not qualify arbitrary Evidence records as observations.
+
+**Recall projections do not replace source evidence.** `experience::views` keeps
+original observation bytes/hashes while rendering measurements separately from
+historical feasibility. Scoped views read the original event from SQLite, require
+it to be an observation dependency, and add its reference to the sealed decision
+receipt and stored bindings. The model sees a view; original and view hashes are
+separate. Context changes or restrictions invalidate pending use through the same
+recursive dependency checks. Historical feasibility is not current permission.
+The unseen fixture corrects a source before its snapshot; it does not demonstrate
+online adaptation by a model that previously acted on the superseded value.
+
+
+**Evidence checks advise and withhold; they never consult hidden outcomes.**
+`experience::checks::assess` uses original supplied observations and current state,
+not `World::best` or the simulator effect table. Missing alternatives/citations
+and current infeasibility prevent this fixture's action; suboptimality only requests
+one reconsideration. A feasible suboptimal final proposal can execute and fail the
+score. `finish_with_review` retains proposed and executed choices separately and
+rechecks the sealed source receipt at commit. Host-withheld no-action is never
+counted as model abstention. The checked protocol shares one initial draft across
+policies and freezes recall before either writes outcomes; usage totals deduplicate
+that draft. These finite-fixture checks neither certify free-text explanations nor
+supply a production completeness contract or action authority.
+
+
+**Observation acquisition consumes a separate, one-use allowance.**
+`experience::observations::acquire` accepts only a missing fixture method or
+abstention, rechecks the sealed world/store/state receipt and all source dependencies,
+and consumes the allowance only after the trace commits. Unavailability consumes
+one diagnostic unit, not a task action's energy. A final decision depends on the
+acquisition outcome even when it contains no measurement. Corrections supersede
+old evidence with a host notice; new measurements depend on that fresh notice,
+never on the superseded value. The paired protocol selects explicit per-case
+sources and does not measure search ranking or detect unannounced world changes.
+
+
+**Reconsideration reuses a receipt; it cannot refresh away a changed source.**
+`experience::checks::reconsider` is shared by the checked and observation protocols.
+It returns at most one revised draft plus its before/after checks, never writes an
+outcome, and retains failed attempts in the caller's review record. The observation
+caller holds the original Prepared receipt through the await and rechecks every
+source at final commit. No second acquisition or retry loop is introduced; failed
+revisions stay errors rather than silently falling back to the original proposal.
+
+
+**Durable synthetic reads reserve before dispatch, never after an effect.**
+`memory::durable` owns a v3 operational ledger, while `memory_runtime::acquire`
+uses the existing guarded dispatcher with a host-bound `FsRead` wrapper. A live
+opaque permit may settle once; reopening an unresolved reservation cannot recover
+that permit. It remains indeterminate and spent. Settled observations are reused
+without a second read, with current evidence access and taint restoration.
+A successful read is not a semantic success verdict, and `durable_commit` stores
+an untrusted supplied proposal without granting action authority.
+
+**Lifecycle bookkeeping cannot become a second content store.** Task bindings,
+observations, proposals and decisions are revision-backed and dependency-linked.
+The operational table retains only opaque identities, access digest, phase and
+spent allowances. Forgetting invalidates the lifecycle in the same write
+transaction and suppresses its erased source keys, preventing late settlement or
+same-key recapture. Cancellation retains actual observations but prevents later
+commit; forgetting removes them. Original JSONL and exported reports are outside
+this local erasure boundary. Older stores are not silently migrated, and concept
+retention must never downgrade v3 to v2.
+
+**A stored read binding does not grant a new action surface.** The runtime builds
+one bounded read tool, preserves existing guards, and narrows grants/spill access.
+It checks the current workspace against the host-bound root and refuses live-store
+paths. No tool or path comes from model text. Saved-result reuse does not execute
+hooks or the tool again; its access checks concern the recorded evidence. Unknown
+unsettled provenance restores conservative private/untrusted taint. The adapter
+inherits the existing filesystem implementation's checks; it is not a new
+file-descriptor-based filesystem sandbox.
+
+
+**Persisted cancellation is checked again at the read boundary.** A cancellation
+from another process does not cancel the in-memory RunContext token. The bound
+read therefore checks its opaque dispatch guard after awaited hooks/approval and
+before delegating to FsRead. The guard reopens the bound store and rechecks original
+sources and lifecycle phase in a short read transaction. No transaction spans file
+I/O; cancellation racing after that final safe point can still yield an observation,
+which is retained as cancelled and cannot support a later commit. The byte limit is
+bound on the read wrapper itself because ordinary dispatch resets inherited
+`program_room` when constructing a call context.
+
+Original observation payloads are historical records: a later cancellation does
+not rewrite their embedded cancellation-at-capture field. Use `durable_status` or
+`durable_observation` for current lifecycle state; generic recall is not a current
+cancellation join or action permission check.

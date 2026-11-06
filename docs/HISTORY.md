@@ -14,6 +14,861 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-06 — durable synthetic reads through the existing guarded dispatcher.**
+`59ee1882b` implements design §§23–24 through parallel store, runtime and independent
+qualification lanes, with parent-owned CLI/integration/publication. Explicit
+`Memory::create_durable` creates schema v3; ordinary creation and v1/v2 experiments
+remain unchanged. `memory::durable` reserves an acquisition before awaiting tools,
+retains actual observations as source-linked revisions and keeps interrupted calls
+indeterminate/spent across restart. It permits one untrusted supplied proposal,
+rechecking all original sources and ancestors, including uncited alternatives.
+`memory_runtime::acquire` binds one synthetic file through `Agent::dispatch_one`;
+it inherits guard/approval/provenance behavior and restores taint on reuse. The
+adapter lives outside `memory` to preserve the standalone store harness. No model
+calls, second executor, production capture or semantic-success claim were added.
+
+`DispatchGuard::check` rechecks persisted authority immediately before the read,
+after awaited hooks/approval. Cancellation retains observations but blocks later
+commit; forgetting erases dependent content and suppresses lifecycle-owned source
+keys so late settlement and same-key capture cannot resurrect it. Generic capture
+behavior is unchanged. Opaque receipts/permits cannot be reconstructed from model
+JSON. Cooperative cancellation after the final safe point and filesystem open races
+remain explicit limits; this is not exactly-once physical execution. Current
+cancellation is available through the task accessor; generic recall is historical.
+
+Exact Spark source passed all-target/all-feature build, strict Clippy, release build
+and **6100 all-feature tests /0 failed /26 ignored**. Local standalone store checks
+passed 158 unit +4 integration; runtime checks passed 14/14 and CLI integration 2/2.
+Independent review found no remaining major/medium issues. Subprocess tests kill a
+real worker after dispatch and before settlement, and prove no repeated read. The
+separately installed prototype passed 19 CLI invocations: stored bytes survive file
+rewrite/deletion, taint restores, only one proposal commits, cancellation blocks
+commit, forgetting blocks resume and removes raw-database canaries; integrity/FKs
+pass. Binary SHA256 `eb7173525fc67f048923f244548ec3fc6a7fb6e34363605955d4d1dac562d6a7`;
+installation `~/.local/share/mecha-prototypes/memory-durable-20261106/bin/mecha`.
+Artifacts: `results/memory-durable-runtime-20261106/`. No new model calls or production
+changes. The next slice is bounded model integration into this durable lifecycle.
+
+Research Site v0.16 published source `4baec9a829d2c25e1ce7b05abbe59b2460255625`,
+deployment `appgdep_6aee3c033460819184530c95185d8ded`, owner-private. All 56 prior
+anchors retained (58 total), original SVG unchanged. Fixed stale version labels and
+revision-table rendering; local browser verified computation expansion/architecture
+switching, and deployed content visibly showed the new qualification. The earlier
+Mac loopback timeout did not recur this session; no OS settings changed.
+
+
+**2026-11-06 — one reconsideration after observation acquisition.**
+`d3cacdcfe` factors the existing `checks::reconsider` helper for reuse by
+`observations::run_with_reconsideration`. V2 remains intact; opt-in v3 uses the same
+prepared receipt across the initial draft and at most one source-only retry. The
+final trace rechecks all original dependencies atomically, preserving draft/retry
+calls and assessments. No retry expands acquisition or resets freshness authority.
+CLI/runner accounting includes every retry and deduplicates shared queries.
+
+The isolated fixed development run completed 51 calls/24 rows with no errors.
+Within-run structured justified decisions improved 9/24 to 24/24; independent rationale
+plus contract judgments improved 8/24 to 23/24. Control abstained 12/12 times; observe
+made six supported optimal choices and six required abstentions. All 15 retries
+repaired typed failures (14 abstentions, one missing citation). One unchanged control
+rationale and one acquisition query retain unsupported claims. All 240 revisions,
+24 outcomes, exact retry bindings, current sources, correction history and cost totals
+passed independent audit. The extra 15 calls used 9708 input/1685 output tokens and
+22.637 seconds; overall 22620 input/6088 output and 84.6 seconds wall time. Reused
+fixtures and additional compute do not establish independent generalization.
+
+Exact-source qualification: 6057 all-feature Spark tests passed, 25 ignored; 143
+standalone and 40 Python checks locally; strict Clippy/build/fmt passed. The unchanged
+baseline's worker-spawn ETXTBSY failed once; exact and full unchanged retries passed.
+No unrelated interpreter fix is claimed. The separate prototype release left main
+Mecha and mecha-graph untouched. Results live under `results/memory-reconsider-20261106/`.
+
+Source investigation found that the next durable read can reuse
+`Agent::dispatch_one`, but cannot copy the simulator's post-result allowance ordering.
+Reserve before external work; interrupted reservations remain indeterminate/spent.
+Design §23 records the proposed lifecycle, forgetting/taint obligations and parallel
+work packets. That runtime adapter is not yet implemented. Research Site v0.15
+published owner-private with these results and proposed work, source
+`22c2e580d383741a43a9b246335a081d7f6220e6`. All 54 previous anchors, figure and scripts
+were preserved/checked; Mac loopback timeout prevented a new browser preview.
+
+
+**2026-11-06 — bounded observation acquisition and a separate development refinement.**
+`8b7adf0b3` introduced `experience::observations` and `workflow-trial --observe`:
+one missing-method request, explicit host outcomes, source-correction history,
+per-case source selection and fresh checked final decisions. The initial run had
+12 correct query methods but six shared queries invented the citation ID
+`Correction notice`, producing 12 error rows. Nine incomplete final proposals were
+withheld. Supported optimal decisions were 0/12 control and 3/12 observe; independent
+strict final decisions were 0/12 and 2/12 because Elm-3 invented a duration and
+contradicted feasibility. The independent audit verified 168 retained revisions,
+including failures; correction recovery did not reach acquisition in this run.
+
+`ed6d0e887` enumerated valid query citation IDs and supplied a source-only missingness/
+feasibility check before final decisions without narrowing their choice enum.
+Its separately recorded v2 development rerun completed 36 calls/24 rows without
+format/transport errors. Observation enabled 5/6 supported optimal decisions where
+measurements were available; Elm-3 chose correctly but omitted one ruled-out
+alternative's citation and was withheld. Only 2/6 unavailable cases abstained;
+the other four were withheld. Control abstained 5/12 times and had 7 proposals
+withheld. Independent strict supported final decisions were 4/12 control and 7/12
+observe; a correct abstention with a false rationale failed this stricter criterion.
+All 240 revisions, source/projection hashes, correction history, dependencies
+and computed outcomes were independently audited. Same authored fixtures and added
+host guidance mean this is refinement evidence, not independent generalization.
+
+Qualification on the exact v2 source: 6054 all-feature Spark workspace tests passed,
+25 ignored; 140 standalone and 38 Python tests; strict Clippy on both hosts. Local
+network tests were limited by a localhost connect timeout independently reproduced
+with Python. Spark's unchanged baseline and changed suite passed; no OS networking
+settings were altered. Each run used a separate pinned prototype binary, leaving
+production Mecha and mecha-graph unchanged. Artifacts are local under
+`results/memory-observe-20261106/` and `results/memory-observe-v2-20261106/`.
+
+
+Research Site v0.14 was published owner-private with both observation runs and the
+remaining failures: source `21af89fbe5f0db8a5b3244e01d19ee8810896b96`, successful
+deployment `appgdep_6aee1d9d335c8191bcf1d47cf909347a`. All 53 previous anchors,
+the existing diagram and inline scripts were preserved and checked; a new local
+browser preview was blocked by the independently reproduced Mac loopback issue.
+
+**2026-11-06 — source-grounded checks and bounded reconsideration (`c75a65310`).**
+`experience::checks::assess` validates the original supplied observations, requires
+this fixture's complete comparison evidence/citations, and recalculates energy and
+quality feasibility under current state. Suboptimality is advisory; feasible but
+suboptimal final choices remain executable and can lose. `Trial::Checked` shares
+12 initial calls between 24 policy rows and permits one reconsideration per case.
+`World::finish_with_review` persists both attempts/checks, preserves proposed versus
+executed choices, withholds inadmissible actions, and keeps atomic source freshness
+and dependency checks. Failed/malformed/model-mismatched calls remain errors.
+No schema, production authority or personal-data changes. Independent review found
+one reporting error: raw host withholding was counted as model abstention even
+though Python compensated. A failing regression reproduced it; the core metric now
+uses the model's proposed choice. Final review found no major/medium findings.
+Qualification: 6039 all-feature workspace tests passed, 25 ignored; 130 standalone
+unit plus 4 CLI tests; 36 Python tests; strict workspace/standalone Clippy and fmt.
+The restricted first workspace run failed at loopback binds (Operation not permitted);
+the full rerun with local-network access passed. No application fix was needed.
+
+
+**2026-11-06 — bounded reconsideration measured on Spark (`c75a65310`).**
+The fixed 24-row paired protocol completed 16 calls: 12 shared initial drafts and 4
+reconsiderations, no transport/format failures. Resident qwen3.6-35b-a3b-uncensored,
+seed 7, temperature 0.6, fast, max 2048, no transport retries. Supported optimal
+choices improved 8/9→9/9 and required abstentions 0/3→3/3. All four revisions came
+from the model; no host withholding was needed. Raw optimality fell 10/12→9/12
+because two incomplete-evidence guesses were accidentally optimal. Dahlia-1's
+structured choice was repaired to match its correct explanation. Aster-3 and
+Bramble-3 still contradict their valid choices with all-feasible opening claims.
+Independent semantic review scored strict justified decisions 6/12→10/12, while
+supported prose alone stayed 10/12; all original artifacts remained unchanged.
+The checker handles source arithmetic, not explanation semantics. Actual usage
+5839/1878 input/output tokens; reconsideration added 2207/434 and 5.99 seconds.
+The paired policy has more compute; no equal-cost unguided second-call control
+was run. Read-only audit verified 105 revisions/all 24 rows, exact source/projection
+hashes, dependencies, durable citation bindings and both attempts/checks. These
+are synthetic one-seed development results, not online learning or generalization.
+Living Site v0.13 published owner-private with these results and remaining milestones;
+source `80f0da0bf13e86d2720b486bbe6e30f2c6e41d2f`, successful deployment
+`appgdep_6aedec1a525c819184f2499d9e3c26ec`. All 52 prior anchors were retained;
+local preview verified controls, results and rendered computation.
+
+**2026-11-06 — recall-view and fixed unseen-case measurements (`4a9365995`).**
+After Tailscale authentication, the isolated Spark binary completed 72/72 calls
+on qwen3.6-35b-a3b-uncensored (seed7, temperature0.6, fast, max2048, no retries).
+Legacy/measurements/scoped all scored 11/12 optimal; feasible choices were
+12/12, 12/12, 11/12. Strict prose passes 8/10/10 become 8/9/10 when requiring
+matching justified choice. All legacy inputs/replies matched the prior baseline.
+The separately fixed measurements-view unseen protocol yielded 12/12 appropriate
+no-memory abstentions. Retrieved/oracle each scored 9/12 optimal, including one
+unsupported lucky choice: 8/9 complete-evidence decisions were optimal and all
+3 incomplete cases violated required abstention. Each has two choice/reason
+mismatches; all 12 retrieved/oracle requests/replies are identical. Source correction
+was retrieved correctly, but occurred before evaluation, so no online adaptation
+claim follows. Independent SQLite audits verified 72 rows/286 revisions, exact
+source/projection/context hashes, bindings and outcomes. The simpler view reduces
+some prose defects in this one-seed run but does not improve optimality. The next
+qualification target is source-grounded decision admissibility and bounded
+reconsideration; prose validity and successful action remain separate scores.
+
+
+**2026-11-06 — context-scoped recall comparison implemented locally (`58be2b450`).**
+`experience::run_trial`, `World::prepare_view` and the shared workflow runner add
+legacy/measurements/scoped projections with original source bytes and hashes
+preserved, dependency-bound historical context and stale-context rejection.
+Baseline inference remains available unchanged. A separately fixed unseen protocol
+covers four new workloads, missing evidence and a pre-snapshot source correction.
+Local tests verify projection isolation, persisted source bindings and fixed call
+matrices. Model quality is unmeasured for these variants: Spark SSH authentication
+prevented the new build/trials. Final local qualification: 6032 all-feature
+workspace tests passed, 25 ignored; 127 standalone and 35 Python tests passed;
+strict Clippy and formatting passed. Site v0.11 reports this pending-model status.
+The system-monitor test scratch helper also uses
+UUIDs now: timestamp-derived names could collide (confirmed by a local clock
+probe), letting one parallel test delete another's SQLite directory and causing
+SQLITE_READONLY_DBMOVED. This is test isolation, not a production database change.
+
+
+
+**2026-11-05 — synthetic experience workflow, first memory-benefit measurement
+(`4fc8e14da`, isolated prototype).** `memory::experience` adds host exploration,
+separate event/proposal/observed-outcome captures, durable source bindings and
+atomic provenance edges through the existing SQLite schema. `World::prepare`
+seals state/store identity and source revisions; `World::finish` accepts only
+choice/citations/reason, computes fixture outcomes on the host, and rechecks all
+consulted ancestors before committing. The CLI `memory workflow-trial` uses
+existing resident-model holds and quarantined inference, emitting each row as
+JSONL. `experience_trial.py` preserves partial output, failures and missingness.
+Restart-before-recall and final reopened readback are explicit, not inferred.
+
+The frozen run used four workloads × three goal/resource contexts × three arms
+(36 calls), resident qwen3.6-35b-a3b-uncensored, seed7, temperature0.6, fast inference,
+max2048 output, no retries. No-memory abstained appropriately 12/12. Retrieved and
+oracle memory each made 12 feasible and 11 optimal choices; all source sets and
+citations were complete. Retrieved/oracle request and reply pairs were identical
+for all 12 cases. Their equality diagnoses no retrieval gap in this easy exact-name
+fixture; it is not two independent replications. All-context adaptation passed in
+3/4 workloads. Output tokens none/retrieved/oracle: 698/1500/1500; summed call seconds
+41.4/79.8/74.6. Shared-server timing is descriptive. All 36 calls completed without
+host or transport failures, and the resident model was unchanged after the run.
+
+Independent semantic review accepted 12/12 no-memory reasons and 8/12 reasons per
+memory arm. Sable-3 chose Arden (10 minutes) although the reason concluded Nori
+(6 minutes). Kestrel-3, Juniper-3 and Sable-3 falsely claimed every method was
+feasible before excluding an over-budget alternative; Marlin-3 used "infeasible"
+for a slower feasible choice, separately classified as terminology. Historical
+`feasible=true` is mixed with raw outcome metrics while the original state is
+only in a linked event, omitted from recalled text. This may contribute; no causal
+ablation has established it. The next step is scoping those appraisals and checking
+current feasibility/choice consistency, then unseen and changed-evidence cases.
+
+Independent read-only SQLite audit verified all 36 observed outcomes, source
+hashes, saved citation maps and dependencies across 144 records. Artifacts live
+in `results/memory-experience-20261105/`: manifest, streamed progress, rows/report,
+summary, semantic review with hashes, outcome audit/script and qualification.
+These are seeded observations reused in authored development fixtures; model
+outcomes are stored but excluded from recall, so online learning is untested.
+No production executable, services, personal data or mecha-graph changed.
+
+Living Site v0.10 published owner-private at the existing Mecha URL, source
+`5daed5061dc7c6aacb2a3fed55837c87a22f6ee2`, deployment
+`appgdep_6aed5cd1423881919b9d8ba6fbc6bf4e`. The preview retained every old anchor,
+figure and control and rendered the expanded computation; 50 unique IDs now.
+
+Final checks: 6029 all-feature workspace passed/0 failed/25 ignored; 120 standalone
+unit +4 CLI tests; 34 Python tests; strict workspace/standalone Clippy and fmt/diff
+checks passed. A baseline HUD test collision showed another test's bytes in its
+scratch directory; the timestamp-based test name now uses UUIDs. The repaired
+default baseline passed 5892/0/25. One overlapping workspace run lost a doc-test
+rlib during rebuilding; the sequential final test→Clippy run passed. Independent
+review caught whole-file UTF-8 decoding losing all preceding rows on a truncated
+final character; a failing-then-passing test and actual mocked timeout exercise
+now verify line-by-line recovery. Another regression proves source-label bindings
+are persisted in SQLite, not only in the artifact report. No merge or release.
+
+
+**2026-11-05 — direct-versus-extraction comparison and request-local reasoning budget.**
+`a7c2db727` added a bounded direct coverage judgment over the same host-owned source
+receipt as V2 extraction, opt-in reasoning, and a rotated four-arm diagnostic.
+`2b612c175` exposes the existing provider reasoning-budget field for these explicit
+requests. The command opens no DB and has no action tools; the server/model settings
+are not mutated. `DirectReport` stays distinct from the deterministic checker.
+Review caught inherited debug logging that could retain reasoning-only content and
+incomplete preflight accounting: the harness forces warn logging, verifies the
+configured process budget plus no-autoload props, and records aborted matrices.
+The V2 extraction prompt literal/schema source were verified byte-identical.
+
+The inherited 4096 pilot completed only case 1's four arms before an operator stop
+during case 2 extraction/thinking. Extraction/thinking timed out after 180 s; direct/thinking
+returned a source-supported answer in 144.1 s versus 12.8 s direct/fast. The aborted
+progress and interrupted attempt remain recorded; they are not a 12-case result.
+A fresh matrix requested 512 reasoning tokens, with the same resident model
+(qwen3.6-35b-a3b-uncensored), seed 7, temperature 0.6, 8192 total output cap and no
+retries. All 48 calls returned across 12 reused synthetic development cases.
+Extraction fast had 0/12 host-valid/faithful outputs; extraction thinking had 1/12
+(case 10). Direct fast and thinking each had 12/12 host-valid and 10/12 correct labels,
+but strict source review gave 4/12 and 5/12 grounded judgments. Fast had 6 unsupported
+and 2 ambiguous explanations; thinking had 7 supported explanations but 2 omitted
+required returned citations. Both direct modes failed nested guards. Fast also
+confused current approval with a future guard; thinking missed unknown rule scope.
+Correct labels sometimes accompanied invented prerequisites, invented actions,
+contradictory reasoning or no explanation. The simpler format is easier to produce;
+neither path qualified as a reliable validator or action authority.
+
+Fast/thinking extraction used 5,734/11,678 output tokens and 293.7/582.2 summed seconds;
+direct fast/thinking used 2,370/7,664 and 144.6/390.3 seconds. Input tokens respectively
+6,722/6,698/4,886/4,862; all usage known. Reasoning content observed in all 24 enabled
+calls and none of 24 fast calls; only character counts, not that content, were saved.
+Timings reflect a shared server, not controlled throughput. All 48 per-artifact
+reviews verified input/output hashes. Frozen data is reused, unblinded development,
+not a holdout, memory-retrieval measurement or evidence of generalization. Artifacts
+are `results/memory-mode-capped-20261105/`; pilot remains in
+`results/memory-mode-comparison-20261105/`. The source review distinguishes citation
+completeness, substantive extraction, semantic support and ambiguous wording.
+
+Qualification: 6,019 all-feature workspace passed/0 failed/25 ignored; 111 standalone
+unit +4 CLI integration tests; 28 Python tests; strict Clippy/fmt/diff passed. Socket
+permission failures in the restricted workspace run were rerun with local fixture
+access and passed; existing Mach-O linker warning remains. Site v0.9 published
+owner-private from 06c6cb103bd8f08e40d7969abdc259ff0beb1f34, deployment
+appgdep_6aed53357534819193c51da57b6ee819. Preview checked results, retained all prior
+anchors, figures, interactive controls and rendered computation. The next design
+is a small host-observed episode/decision/outcome/retrieval workflow (§18), with
+more automatic action-tree extraction deferred. No production or mecha-graph change.
+
+
+**2026-11-05 — source-linked extraction, with failed model qualification.**
+Core V1 `39b745d7f` and runner `b35260d1a` added a bounded synthetic translation
+receipt and `memory extract-plan`; V2 `eb405ff1f` puts citations inline and derives
+report paths in the host. The model supplies conditions, observations, actions,
+requirements and branch trees; exact source text/hashes come from the receipt.
+The command uses existing local-only, resident-model, tool-free transport and
+opens no database. Production and mecha-graph were not modified.
+
+The frozen 12-case V1 run completed all model calls but only 2/12 outputs passed host
+checks, and independent raw-artifact review found 1/12 faithful. Seven invented
+citation target paths. A host-valid case 12 reported covered after dropping Birch's
+Mira-approval requirement and unknown fallback. The interface change retained V1
+and reran the same 12 development cases separately: V2 had 1/12 host-valid and 1/12
+faithful (case 10 in both versions). First failures were 6 unknown actions, 1 unknown
+condition and 4 wrong-kind citations; deeper review found wrong-kind citations in8
+cases, including 4 masked by reference failures. V2 case 1 preserved the unsafe tail
+but omitted declarations/requirements; case 6 preserved nested guards and both
+requirements but cited plan text as evidence. No format repair was counted as
+semantic improvement or action authorization.
+
+Both used qwen3.6-35b-a3b-uncensored, seed 7,temperature 0.6,thinking disabled,
+max 8192,no retries,one call/case. V1 cost 7,310 input/10,070 output tokens and 104.4s
+summed case time; V2 cost 6,722/5,828 and 67.1s. These are unblinded reused synthetic
+diagnostics, not held-out performance or a reasoning-enabled comparison. Artifacts
+and per-case reviews live under results/memory-source-extraction-20261105 and
+results/memory-source-extraction-v2-20261105; every saved input hash was verified.
+
+Independent code review caught a V2 parser regression: serde_json::Value silently
+keeps the last duplicate field, so ambiguous raw plans could lose content before
+validation. A duplicate-rejecting deserializer now runs before inline conversion;
+plan/requirements/kind/citation duplicates have RED→GREEN tests. Empty branch arms
+no longer consume a depth level. Final qualification: 6,017 all-feature workspace
+passed/25 ignored;109 standalone unit+4 CLI integration;19 Python;strict workspace
+and standalone Clippy,fmt and diff checks. The next experiment is staged declarations
+and constrained branch references, plus a bounded reasoning-mode comparison;
+semantic completeness remains independent of reference validity.
+
+Living Site content v0.8 was published with owner-private audience retained, source
+`f233128d544dd8fd9c5efc064b9081eb8a3cc207`, deployment
+`appgdep_6aed43c73f0c8191a0c6cf647e0065cd`. Local content/anchor checks and real
+browser goal/architecture/notation controls passed; the original diagrams remain.
+
+
+**2026-11-05 — explicit actions and guard coverage (`33f4f68be`).**
+`memory::guard_coverage` adds a pure checker over a separate fixture-authored
+contract and typed action/branch tree. Conditions have met/unmet/unknown states;
+requirements separately have applicable/not-applicable/unknown scope applicability.
+Only a met path assumption for the exact condition covers its action. Branch
+assumptions cannot escape into later steps; every feasible arm is checked regardless
+of the supplied snapshot. Contradictory paths are retained as unreachable, and a
+plan without reachable actions is not called covered. Hidden malformed arms and
+bounded-size/depth violations fail. There is no action executor, model call or
+runtime authority change; V5 prose assessment remains untouched.
+
+Seven core behavior tests first failed against the unimplemented checker; the
+standalone adapter likewise failed the request/guard fixture before implementation.
+6,008 all-feature workspace tests passed /25 ignored; 101 standalone unit +4 CLI integration tests, 15 Python tests, strict workspace/standalone Clippy. The 16 frozen structural cases all matched: 4 covered, 7 uncovered,
+1 unresolved, 2 no reachable actions and 2 invalid references. Independent review
+found no major/medium issues and verified the frozen labels. An independent oracle
+then checked 150 generated plans against all 27 assignments of three immutable
+conditions (one contract, seed 6032), agreeing on every occurrence's status and
+snapshot match. Aggregate report status is separately covered by frozen fixtures.
+The minor missing per-input hashes were added to satisfy the written qualification
+contract; the unchanged checker still matched 16/16. Outputs and oracle script/log
+remain under `results/memory-guard-coverage-final-20261105/`.
+
+These supplied structures are additional information, not automatic source
+extraction or proof of semantic improvement over V5. Empty requirements and explicit
+non-applicability mean only what the supplied contract says. Real effects and
+observation refresh are absent; they must precede execution integration. No Spark
+installation or production restart was needed for this deterministic experiment.
+The first all-feature workspace run failed existing HUD tests
+`a_read_returns_typed_rows_and_column_names` (table already exists) and
+`a_pragma_a_write_and_a_second_statement_are_refused` (database disappeared).
+`hud::runtime_tests::Scratch::new` used PID plus wall-clock ticks and
+`create_dir_all`, allowing concurrent tests to share and remove one directory.
+It now uses UUID names and exclusive `create_dir`; focused HUD tests passed.
+Production HUD code is unchanged.
+Living Site content v0.7 published successfully with owner-private audience retained:
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#implementation-roadmap
+Source `d6d4bf5a95898e9a2e6bca3dca608f919bbf0917`, deployment
+`appgdep_6aecf76cb7d88191a75cfca687ea4714`. Local HTTP/content/anchor checks passed;
+browser preview verified branch example layout, goal/architecture controls and
+expanded computational notation. Existing figure retained.
+
+**2026-11-05 — bounded step repair V5 (`56ef98ea3`, citation schema `26bf2a38b`).**
+`plan_repair::request/apply` replaces free-text replacement plans with keep/gate/defer
+selections. Host-rendered gates preserve the original step and all its requirement
+conditions/scopes; strict exact-count/order/identity checks reject omissions,
+new actions and no-op edits. Unknown scope or oversized gates permit deferral.
+`EvaluationReport.repair` records original/rendered mappings; `evaluate_plans`
+prevents all-deferred plans from being recommended. Source freshness checks and
+three-call bound remain. Routing IDs are audit-only; task evidence is projected
+into prompts without operational storage metadata. Source `26bf2a38b` aligns
+status-specific response schemas with the existing combined six-citation limit.
+
+Independent code review caught scope descriptions lost during gate rendering;
+a red-to-green regression covers preservation. Tests: 5,999 all-feature workspace
+passed /25 ignored, 92 standalone unit +2 CLI, 15 Python, strict workspace and
+standalone Clippy. An unchanged baseline SQLite disk-I/O test failure did not
+reproduce in isolated or full unchanged reruns; underlying cause remains unknown.
+
+The neutral eleven-case V5 replay completed 11/11 but matched only 4/11 initial
+prerequisite labels and preserved 2/4 adequate originals. It used 27 calls,
+23,855 input/8,154 output tokens and 126.5s summed time. Four gates, four full
+deferrals, no repaired recommendation. All 128 assessment quotations were exact.
+Independent unblinded artifact review nevertheless found an unsafe unguarded
+publication tail recommended unchanged, a gate conditioned on absent confirmation,
+and a valid approval request blocked until approval. V2's higher 10/11 label score
+also coexists with an unsafe repair. The V5 reused six-case replay completed 4/6
+with 2/6 correct labels, 12 calls, 12,801/4,394 tokens and 67.2s; two failures were
+the combined citation budget mismatch. The separate two-case schema rerun completed 1/2; one deferred, the other failed
+on a duplicate passage citation. Neither hit the count-limit error. Preserve
+this as a targeted regression, not a replacement six-case cohort. Duplicate
+citation output remains an open format failure.
+
+Resident model `qwen3.6-35b-a3b-uncensored`, seed 7, temperature 0.6, no retries or
+actions. Source/schema/prompt/compute differ across versions; reused development
+cases do not establish generalization or causal performance improvement. Original
+failures remain under `results/memory-bound-repair-20261105/` alongside summaries,
+model calls and artifact review; earlier V2/V3/V4 runs remain intact. The prototype
+remains synthetic/default-off, with production `fec8d55c7` unchanged and active.
+Living Site content v0.6 published successfully, owner-private audience retained:
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#implementation-roadmap
+Site source `50f8957c5d79de9bc15b038ec17681e79e0cd536`; deployment
+`appgdep_6aecf014401c8191afbcf55e96a52591`. Local HTTP/content/anchor checks passed;
+browser preview verified goal switching, architecture selection and expanded
+computational notation. Diagram retained. Prior V4 publication record remains in
+HISTORY; this is a dated update, not an automatically synchronized dashboard.
+
+**2026-11-05 — explicit requirements, guarded steps and uncertain outcomes (`fb598d189`).**
+`plan_requirements::validate` checks original citations and indexed candidate steps,
+and combines unmet/unknown requirements with the existing assessment checklist.
+`Dimension::Outcome` unknown alone does not prohibit consideration of a permitted
+next action; contradicted outcomes still require revision. Requirement interpretation,
+coverage and guard adequacy remain model judgments. No action authority changed.
+
+The first implementation (`d17d72d50`, V3) passed deterministic tests but completed
+only 3/9 cross-domain and 2/6 reused logistics workflows on the resident model.
+The model invented sub-step numbers, paraphrased guard quotes and omitted required
+citations. V4 constrains assessment schema branches to each candidate's actual step
+count, selects whole existing steps as guards, and requires original citations for
+all requirements. Independent review found no major/medium code defect. A minor
+format risk remains: the schema permits another step of the same candidate as guard,
+although the host rejects it. V4 tests cover candidate-specific vocabularies,
+cross-candidate guards and uncited unknown requirements.
+
+Qualification at runtime source: 5,991 all-feature workspace tests passed /25 ignored,
+84 standalone unit +2 CLI, strict workspace/standalone Clippy. Fourteen Python tests
+passed after the subsequent neutral-goal fixture correction. The grader now fails
+malformed protocol, checklist, revision/recommendation and call-audit rows rather
+than crashing or treating them as current reports. Both raw model prerequisite and
+host-combined requirement status remain available.
+
+The original nine-case comparison used diagnostic goal names: V2 completed 9/9
+with 8 matching initial labels; V3 3/9 with 3; V4 9/9 with 5. An independent artifact
+review caught models using those names as evidence. Preserve those runs as
+confounded diagnostics. The corrected fixture uses a neutral `task:memory-calibration`
+identifier and adds timeout-bypass and unguarded-publication-tail cases. A regression
+test failed on the leaked names before the correction and passes afterward.
+
+The neutral eleven-case replay completed **V2 11/11 versus V4 7/11**, with **10/11
+versus 3/11 completed workflows having correct initial prerequisite labels**.
+Failed workflows remain in that denominator; these are not eleven observed action
+outcomes. V2 preserved four adequate plans, V4 one. Both made 25 calls, but V2 used
+23,222 input/5,927 output tokens and 81.7s summed case time; V4 used 36,279/17,271 and
+199.9s. All usage fields were present. V4's 142 returned assessment quote occurrences
+matched original byte ranges; V2's 47 did too. Exact citations did not prevent
+wrong prerequisite states, irrelevant constraints or unnecessary revisions. V4's
+four workflow failures were duplicate requirements or unknown checks without a
+question. The V4 reused-logistics replay completed 5/6, with four correct initial
+labels and 111/111 exact returned quote occurrences. The analogous V3 replay
+completed 2/6. No revision-success aggregate is claimed.
+
+Artifact review found a V4 timeout-then-export repair whose extracted condition
+was the timeout itself, instead of required consent. Its recommendation was
+withheld for unrelated unknowns, not a correct diagnosis of the bypass. Another
+repair promoted storage scope `fixture-mail` into a communication method. Permitted
+questions were still blocked by uncertainty about replies. The neutral V4 approval repair even published after 24 hours while its host
+requirement status was supported; generic unknowns still withheld the recommendation.
+A neutral routing goal ID also remained a distraction when treated as substantive
+goal evidence. Keep identifiers separate from plain-language task meaning.
+The simpler V2 is not
+validated either: its neutral approval repair recommends an unguarded later
+publication, and an export repair wrongly forbids the no-consent-required branch.
+The V4 increment **did not pass its quality gate**; more fields did not establish
+better reasoning. Next work is action-to-requirement binding and constrained repair
+inputs, not action selection or broader feature migration.
+
+All runs used resident `qwen3.6-35b-a3b-uncensored`, seed 7, temperature 0.6, one pass
+per version, no retries or action execution. These are synthetic development cases,
+with changed prompts/schema/compute and unblinded artifact review; no causal,
+generalization or real-world policy claim. Raw manifests/calls plus summaries and
+separate artifact review remain under `results/memory-requirements-20261105/`.
+Original failed runs were retained. Spark used isolated installs; production did
+not receive the new evaluator. The independent mecha-graph boundary is unchanged. Living Site content v0.5 was
+published from source `7fcac45c456ccb6a11bbfd0d838342780b7d7196`, preserving its
+owner-private audience, figures, math and interaction logic. HTTP/content/anchor
+checks passed; browser visual QA was unavailable due the browser-control session.
+Native deployment succeeded.
+
+**2026-11-05 — constrained evaluator and conservative revision, source `ea16b5304`.**
+`model_dimensions` makes concept-check presence a host decision: without a retrieved
+concept, models supply only prerequisites and factual support, and the host adds
+`not_applicable` labelled `judgment_source: host`. Model-authored host judgments,
+extra dimensions and original/concept citation category mismatches fail closed.
+Known-status judgments still require original evidence, and concept applicability
+also requires provisional-concept evidence. Protocol `constraint-assessment-v2`
+keeps host passage construction and the original all-source authorization checks.
+`evaluate_plans` now preserves any already-recommended candidate; only absence of
+one triggers a minimal repair and reassessment. `RevisionStatus` distinguishes
+this from not requesting revision. The final source check runs even on preservation.
+
+Regression tests reproduced unnecessary rewrites and model-owned absent-concept
+judgments before the change. Final qualification: 5,985 all-feature workspace tests
+passed /25 ignored; 78 standalone unit +2 CLI; 7 Python grading tests; strict workspace
+and standalone clippy. Actual CLI mock confirmed one-call preservation/three-call repair and
+rejection of invented concept checks. Final code review found no blocking defect;
+a minor arbitrary-binary grader protocol-validation gap remains documented in
+HANDOFF. New `assessment_calibration_v2.py` imports the unchanged six cases, supports
+null revisions and preserves failed rows/nullable usage. Original runner untouched.
+
+A separate Spark installation under `memory-constraints-20261105` replayed the six
+cases once with resident `qwen3.6-35b-a3b-uncensored`, seed 7, temperature 0.6. All 6
+workflows completed; 5 initial prerequisite judgments matched gold. The previous
+passage run completed 5/6 with 4/6 correct. Both adequate plans were preserved in one
+call each, and all 59 returned quotes matched their source byte ranges. Total 14
+recorded calls, 20,633 input/3,966 output tokens,56.3s summed case runtime; previous
+run 16 calls, 17,248 input/4,231 output tokens, 60.2s. Input tokens increased despite
+fewer calls. These are descriptive reused-case results with changed prompts,
+schema and compute, not a matched causal comparison or fresh generalization test.
+
+Assistant artifact review found better explicit guards and preservation of the
+no-clearance-needed branch, alongside unresolved problems. A notification-based wait
+introduced an unsupported capability, appropriately left unresolved. A conditional
+information request was judged unknown because a successful answer was not assured.
+The universal-clearance analogy remained wrong: a shared requirement was treated
+as carrier-specific, an alternative's existence/feasibility was inferred from a
+universal statement and unrelated episodes, and the revised plan was recommended.
+That last endorsement worsened relative to the prior withheld recommendation;
+completion and initial-label gains are not uniformly better reasoning. No aggregate
+revision-success rate or executed-plan benefit is asserted.
+
+Artifacts: `results/memory-evaluator-constraints-20261105/calibration-seed7/`, raw
+manifest/calls/report plus separate `summary.json` and `review.json`, also copied
+beside the Spark prototype. Production stayed `fec8d55c7` with `mecha-serve` active;
+no restart, personal-store import, migration, model switch or proposed action.
+The user's independent owner-knowledge/agent-memory boundary remains in force.
+
+
+**2026-11-05 — passage evaluator Spark calibration completed (source `687eaa7ea`).**
+After renewed Tailscale authentication, the clean isolated checkout was advanced
+and a separate `memory-passages-20261105/bin/mecha` plus deterministic fixture
+writer built/installed. The six-case frozen `assessment_calibration.py` run used
+resident `qwen3.6-35b-a3b-uncensored`, seed 7, temperature 0.6, no retries, no tools
+or proposed-action execution. Production remained `fec8d55c7` with `mecha-serve`
+active; no restart, model switch or private-data import. The earlier pending-run
+note below describes the preceding authentication block, now resolved.
+
+Five of six workflows completed all 3 calls. Initial prerequisite status was correct
+in 4/6 complete-case-denominator trials (4/5 completed workflows); the fifth labelled
+a known shared clearance contradiction unknown. The sixth failed after one call
+because its factual-support check cited only a provisional concept. Its raw
+prerequisite judgment was plausible, but the full invalid response is not a success.
+All 54 returned quotation occurrences independently matched source UTF-8 byte ranges.
+There were 16 recorded calls with complete usage: 17,248 input and 4,231 output tokens;
+60.2s summed case runtime. Correct quotation binding did not establish entailment.
+
+Assistant artifact review against the predeclared rubrics (not blinded, no real
+outcomes) found mixed revision quality: a permitted one-step plan gained redundant
+checks; a forbidden immediate dispatch gained a verification step but left failure
+handling implicit; an unknown-requirement plan became safer yet overrequired
+clearance even if it were unnecessary; an already guarded plan stayed equivalent;
+the failed case had no revision; and the shared-requirement analogy kept an
+unnecessary carrier-change/waiver search despite source evidence. No aggregate
+revision-success claim or matched old/new protocol improvement is asserted.
+The evaluator also called ordinary words concepts when none was retrieved, claimed
+pending clearance was obtainable, and interpreted a contradicted dispatch as an
+analogy test. These remain semantic failures, not citation-format failures.
+
+Artifacts: `results/memory-passages-20261105/calibration-seed7/`, including immutable
+raw calls/manifest/report and separate `summary.json` / `review.json`. Remote raw
+artifacts remain beside the installed prototype. This supersedes only the pending
+calibration status, not the earlier three-case results or their protocols.
+
+**2026-11-05 — host passage citations and frozen evaluator calibration (feature branch).**
+`plan_assessment::passage_sources` divides original fields into contiguous UTF-8
+passages (at most 1024 bytes, every byte retained) and issues receipt-local IDs.
+The model selects IDs only; `finish_plan_assessment` constructs exact source,
+field, quote and byte range. Unknown/repeated IDs, old citation objects and empty
+passage catalogs fail closed. Complete candidate/check coverage, original evidence
+requirements and all-source authorization/freshness checks remain. Tests now cover
+Unicode boundaries, host locations and source forgetting during revision and final
+assessment. The protocol is `host-passages-v1`; concept generation keeps its prior
+independent source-field quotation protocol.
+
+Six fixed synthetic cases in `assessment_calibration.py` distinguish satisfied,
+contradicted, unknown and guarded prerequisites, including misleading alternate-
+route analogies. A deterministic fixture writer supplies one provisional concept
+and its counterexample. Labels and review rubrics never enter evaluator input;
+revision self-recommendation is not scored as improvement. Review found nullable
+usage being coerced to zero; the fix retains null totals plus explicit known
+subtotals and recorded-call coverage. Four Python grading tests, 74 standalone
+unit +2 CLI tests and **5,981 all-feature workspace tests /25 ignored** pass.
+Strict all-feature clippy and the actual CLI mock passed;
+the mock constructs exact quotations across all3 calls and rejects legacy objects.
+Spark calibration is pending renewed Tailscale authentication: no real-model
+quality result is attributed to this increment yet.
+
+The initial clean baseline hit an unrelated persona-call ENOENT; isolated and full
+reruns passed without persona edits. During passage testing an intended empty
+query accidentally matched the token “no”; replacing it with a nonsense token
+made the empty-catalog regression discriminate the old/new behavior. No earlier
+measurement was changed to match these later results.
+
+
+**2026-11-05 — bounded memory plan evaluator (isolated feature branch).**
+`plan_assessment::{prepare_plan_assessment, finish_plan_assessment, evaluate_plans}`
+added an advisory model evaluator over the existing scoped memory packet. Each
+candidate must receive prerequisite, factual-support and concept-applicability
+checks; host validation enforces complete/unique coverage, visible exact quotes,
+original evidence for facts, and explicit unresolved questions. Unknown or
+contradicted checks cannot yield a host recommendation. One optional revision
+uses the same evidence and must be assessed again. All consulted revisions and
+scopes are rechecked across inference; reports retain private/untrusted labels.
+`memory evaluate-plans --revise` is the thin synthetic-only local-model entry
+point, with at most three calls and no action/approval/trusted-rule path. Rejected
+model output exits nonzero with an audit of recorded calls. `GoalMemory` now
+advertises its one confirmed goal and gives a repair hint while preserving the
+mismatch guard. Ordinary GoalContext behavior stays unchanged.
+
+A fresh code review of `641e4ca78..a55ec6b75` found no blocking or minor correction
+requests. A manual loopback CLI test exercised all three calls without tools or
+live config and verified failure/audit on a malformed response. Targeted tests
+observed RED before the goal/schema/validation changes. Final source `8583fad8f`
+passed strict all-feature clippy, 5,977 all-feature workspace tests /25 ignored,
+and 70 standalone unit +2 CLI tests. The default workspace suite passed 5,892
+/25 ignored before the final feature-only field-schema adjustment; no default-
+feature source changed in that adjustment.
+
+On Spark, a55ec6b75's first three development cases completed the supported-route
+loop but rejected the concept draft on an invalid field and the contradiction
+case on slashless field pointers. Host validation was correct; open-ended field
+strings made the protocol fragile. Both concept and evaluator response schemas
+now enumerate actual visible fields, without enumerating correct evidence or
+relaxing cross-source/quote checks. The prerequisite prompt also clarifies that
+conditions must be met or guarded, not merely documented. Those changes have
+RED/GREEN regressions, and the original failures remain in the artifacts.
+
+The disclosed rerun at 8583fad8f used the same resident
+qwen3.6-35b-a3b-uncensored, seed7, temperature .6 and three development cases.
+Supported-route and universal-clearance cases completed three calls and initially
+recommended Bridge and waiting, respectively. Neither recommended the unsafe
+candidate. Bridge's revision received no recommendation on reassessment; the
+waiting revision did, but introduced an arbitrary 24-hour polling interval.
+The concept-conditioned case generated its concept successfully, then failed
+closed on a quote attached to the wrong source. The model also omitted a required
+concept citation and sometimes called known contradictory conditions unknown.
+These are concrete remaining quality limits, not evidence of a fully reliable
+judge. Model ranking, analogy applicability and semantic entailment are not
+proved by the host's structural checks. No actions were executed. Artifacts:
+`results/memory-evaluator-20261105/` (both attempts preserved).
+
+A final replay of the two previous runtime goal-ID failures, Cobalt budget and
+Vesper current rule, used the repaired GoalMemory schema on the same resident
+model. Both memory-on runs chose correctly and cited all required evidence;
+both off-arm choices failed. These were reused development cases. The isolated
+installed artifact was exercised as `8583fad8f`; production still reported
+`fec8d55c7` with an active web service. No production restart/private import or
+model switch occurred, and the branch remained unmerged.
+
+**2026-11-05 — provisional concepts and runtime planning trial (isolated feature branch).**
+`Memory::prepare_concept`, `retain_concept` and provider-neutral `learn_concept`
+added bounded semantic generation with exact source quotations, distinct episode
+support, explicit applicability and counterexamples. All consulted evidence,
+even uncited input, remains a dependency. Retention rechecks source revision and
+scope state after inference; concepts stay provisional and never become trusted
+rules. First retention advances the disposable store vocabulary version to 2.
+`knowledge_bundle` retrieves concepts with their authorized, fresh source closure
+atomically under the existing context budget, including concept vocabulary absent
+from episodes. CLI `distill-concept` uses the existing resident-only loopback
+transport/holds with no tools. The earlier context budget/nested-reference review
+findings and additive `grounded_binding_count` reporting were also completed.
+
+Source `b48e1e84c` passed all-feature lint and workspace tests (5,968 passed,
+25 ignored), standalone 62 unit/2 CLI tests, and the new trial isolation regression
+passed 2/2 after RED. The first full attempt failed an unrelated persona-chat
+fixture with a missing file; isolated and full reruns passed unchanged. Independent
+review found one Important issue: inherited MECHA_PROVIDER/MODEL/EFFORT could
+change trial settings. The script now strips them and rejects returned model
+mismatches before scoring. All 12 original session config records were checked
+and used the intended trial provider/model/seed/temperature/budgets.
+
+The six synthetic cases in `planning_trial.py`, source `34a123b5a`, ran both arms
+on Spark's resident qwen3.6-35b-a3b-uncensored with seed7, temperature .6,
+7 turns and 8192 output tokens, alternating order and fresh homes. Correct choice:
+3/6 off, 5/6 on. Choice plus visible and complete required citations: 1/6 off,
+4/6 on, including one correct abstention each. Median wall time: 26.5s off,
+15.2s on. Two on-arm calls supplied invented goal IDs, so the tool refused before
+retrieval; one model guessed the right choice with invented costs/durations and
+citations. These are availability/adapter diagnostics, not matched-information or
+matched-compute efficacy results. Free-form plan quality was not graded.
+
+The separately installed concept binary generated a provisional principle from
+two supporting episodes and one counterexample in 4.5 seconds. A new-situation
+planning smoke retrieved it and all three sources with private/untrusted taint.
+Retrieval by its supplied generated name tested wiring, not unprompted discovery.
+The plan overgeneralized backup routing to customs release and invented a
+deadline: successful provenance does not establish a valid policy. Artifacts:
+`results/memory-planning-20261105/`. Production stayed `fec8d55c7` with active
+web service, no restart/private import/nightly migration. Next work is bounded
+applicability/evidence evaluation, not automatic rule promotion.
+
+**2026-11-05 — read-only situated memory context (local feature branch).**
+`Memory::context` assembles a bounded packet from eligible source episodes,
+up to two source-selected follow-ups and directly supported temporal relations.
+The host owns access, snapshot and source/time restrictions; one read transaction
+covers every stage, and relation dependency bundles enter together or not at all.
+Exact contiguous quotes from original fields replace model-composed names in
+this new runtime path. `Memory::open_read_only` rejects writes structurally.
+`GoalMemory` adds packets to `goal_context` only for explicit `mecha run` flags,
+with a confirmed goal and synthetic account/domain/scopes. It preserves default
+tool behavior and arms private/untrusted taint on actual evidence. It does not
+expose internal sensor values or write learned concepts/rules. Source `864c1ece5`
+passed strict all-feature lint and a full workspace rerun (5,957 passed, 25 ignored),
+plus 51 standalone unit/2 CLI tests and a three-request scripted-provider smoke
+through the real CLI. The suite first caught its missing pure-read inventory
+entry, which was added after source audit; a later unrelated server-lifecycle
+fixture mix-up passed focused and complete reruns. Independent review found no
+blocking issues; recall-stage omission reporting and nested reference input
+strictness remain minor follow-ups. The existing model-comparison protocol stayed
+unchanged and gained the previously missing valid non-null binding routing test.
+Artifacts are in `results/memory-context-20261105/`. No Spark deployment, live
+model efficacy claim, private-data migration, or nightly activity change belongs
+to this increment.
+
+**2026-11-05 — automatic source-grounded name comparison (isolated Spark).**
+`binding_evaluation::run` and `evaluate-model --auto-bindings` plan once per case
+and compare ignoring versus enforcing the same names under shared filters and
+budgets. Names are grounded in cited initial original fields via recall's
+unicode61 semantics; invalid plans fail both search arms. Source `83753f9ea`
+ran old 12 development and fresh 14 cases without prompt/fixture tuning. Fresh
+choices improved 9/14→13/14, complete support 7/12→11/12; oracle 14/14 choices.
+One invalid phrase prevented both search answers. Strict support scores 4/14,
+7/14,13/14 retain citation-completeness/format failures; one choice improvement
+also involved packet order despite equal support. Research §10 records limits,
+100 actual calls across both splits and full costs. Verification: 5,950 workspace
+passed/25 ignored, 50 standalone, 10 CLI and strict lint/fmt. Fresh review found
+no blocking issues; a scripted non-null binding routing regression and explicit
+binding-count field remain Minor follow-ups. Installed only under Spark's
+`~/.local/share/mecha-prototypes/memory-bindings-20261105/`; production
+`fec8d55c7` and active service verified afterward. No private import, nightly
+migration or runtime appraisal integration.
+
+
+**2026-11-05 — required-name retrieval diagnostic (local feature branch).**
+`Memory::recall_mention` adds a bounded literal phrase gate before top-k selection,
+using a non-stemming eligible-only index and the shared access/time/context path.
+CLI `evaluate-mentions` replays 12 frozen searches with disclosed manual name
+bindings, with no model/config/network setup. The original arm reproduced all 12
+prior evidence packets exactly. Complete support increased 6/10→10/10 answerable
+cases (changed-goal cases 2/6→6/6), with the same three searches and four-record/
+8,000-byte cap. These are already-seen development cases and supplied bindings;
+no new reasoning score or automatic entity-resolution claim. Review caught a
+Unicode combining-mark mismatch, regraded as a contract defect and repaired with
+a failing-then-passing regression; raw phrases are now safely quoted before FTS
+normalization. The earlier duplicate-valid-citation test gap is also closed.
+All-feature workspace 5,944 passed/25 ignored, standalone 45, main CLI 9, strict
+Clippy and both format checks passed. Research §9 records costs and limitations. No Spark install, production
+service, private store, nightly job or runtime appraisal changed.
+
+
+**2026-11-05 — evidence-informed memory search and citation binding (isolated
+Spark prototype).** `memory::model_evaluation::followup::run` and
+`evaluate-model --follow-evidence [--development]` add matched bounded planners,
+shared anchor-first fusion and visible-ID response schemas; legacy behavior
+remains selectable. Development uses the old 16 cases; the frozen holdout adds
+12 cases in six fresh session families. Source `27e15d8a2` completed both runs
+without transport/parse failures or invented/duplicate citation IDs. Held-out
+question-only/evidence-informed/oracle choices were 8/12, 8/12, 12/12; strict
+grounding 3/12, 5/12, 10/12. Named-alternative searches still missed property
+records, and strict support/abstention formatting explains some score losses.
+Research §8 retains full conditions, costs and limitations; no prompts or gold
+were tuned after inference. All-feature workspace 5,937 passed/25 ignored,
+standalone 39, CLI 8 and strict lint/format checks passed. Fresh review had no
+Critical/Important findings; a dedicated duplicate-valid-citation regression is
+a deferred Minor (the host already rejects duplicates). The separate installed
+binary is under `~/.local/share/mecha-prototypes/memory-hop-20261105/`.
+Production `fec8d55c7` and active web service were checked after the run; no live
+store, nightly job or production deployment changed.
+
+**2026-11-04 — synthetic local-model memory comparison (isolated Spark
+prototype).** `memory::model_evaluation::run` and CLI `evaluate-model` add
+lexical, bounded goal-aware and oracle conditions, explicit local inference,
+shared evidence budgets, revision citations, deterministic choice/support
+checks and per-call usage/latency/error records. Fresh review corrected two gold
+fixture premises, rejected extra irrelevant citations and closed a redirect/
+proxy escape with opt-in strict local provider/probe clients; all Important
+findings have regression coverage. The 16-case first run selected 7/16 correct
+choices in both retrieval arms, 16/16 with oracle evidence; strict grounding
+was 5/16, 5/16, 11/16 respectively. Citation-format errors explain all five oracle
+failures. Expanded searches spent 32 calls versus 16 without increasing complete
+support retrieval. Research §7 records the frozen results and next experiment;
+no prompt or fixture was tuned after viewing model answers. All-feature workspace
+verification passed 5,930 tests (25 ignored), standalone 33, CLI 7 and strict
+Clippy/format checks. Initial pre-change default-workspace web lifecycle timing
+failures passed serially; the full default baseline passed 5,891/25 ignored.
+Source `d3ca03b82` was installed only in Spark's new prototype path. Production
+`fec8d55c7` and active web service were rechecked after inference; no production
+stores or nightly jobs changed. One review minor remains: partial usage fields
+can inherit a zero from the existing provider decoder; this limitation is
+explicit in the report and README.
+
+
+**2026-11-04 — synthetic episode capture and retrieval baseline (local feature
+branch, not production).** `Memory::import_session_jsonl` captures exact native
+session records atomically with stable source identities, no-op retries and
+append-only prefix checks. Missing message timestamps remain unknown; raw
+compaction/future records survive without being indexed as original speech.
+`Memory::recall` returns eligible revision-backed anchors and bounded neighbors.
+The main CLI adds init, import-session, recall, forget-session-record and
+evaluate; the latter runs 32 synthetic evidence cases with baseline and oracle
+bundles, explicitly without a reasoning score. A fresh review reproduced an
+important ranking defect: global FTS statistics changed an old snapshot's
+top-k after inaccessible future data arrived. The regression failed before
+the fix and passed with eligible-corpus scoring in a disposable in-memory FTS
+index. That correctness choice carries corpus-sized query work; large-corpus
+performance remains unqualified. Source JSONL, prior outputs and backups remain
+outside local forgetting. No live ingestion, nightlies or Spark service changed. Final verification: 5,920
+all-feature workspace tests passed (25 ignored), default workspace 5,891
+passed (25 ignored), standalone harness 26 passed, and formatting/Clippy
+checks passed. Intermediate reruns hit existing port-binding and watchdog
+startup races; isolated retries and the final full run passed.
+
+**2026-11-04 — synthetic memory operations in the main CLI (feature branch
+and isolated Spark test install, not a production rollout).** `commands::memory::execute` now exposes
+demo, inspect, query and forget through the default-off `memory-prototype`
+Cargo feature. Both frontends use `memory::fixture`; the real-binary tests
+exercise historical/valid-time queries, transitive forgetting, explicit opt-in,
+foreign-file refusal and independence from malformed global/project config.
+`Command::is_one_run` and `runs_a_model` explicitly exclude memory operations.
+Fetching the existing lockfile resolved the missing Monty dependency without
+version changes. The pre-change full workspace build and permission-enabled
+tests passed; sandbox-only tests had failed on denied local sockets. The final
+all-feature workspace suite, default-build command-absence test,
+all-feature Clippy (`-D warnings`), standalone harness and format checks also
+passed (5,907 workspace tests passed, 25 ignored). Spark built `2b00d5f62` with
+four jobs and dev-profile debug info disabled: three main-CLI and 15 standalone
+harness tests passed on Linux. The separately installed binary's checksum
+matched the tested build, and its temporal query probes returned zero current
+July matches versus one at knowledge sequence 4. The live web service remained
+active. Nightly migration and private-data qualification remain open in HANDOFF.
+
 **2026-10-03 — a persona on a call: no dangling last word, and thinking
 capped at one draft (#538, #541; mecha-1e).** After an afternoon of persona
 calls the owner reported replies "ending on 'I' or talking too long or too
@@ -8099,6 +8954,17 @@ matters is the general shape.
 
 ### Measuring
 
+The requirements evaluator passed scripted tests but its first real-model replay
+completed only 3/9 workflows: a schema with broad step bounds and free-text guards
+permitted responses the host rejected. Constrain generated references to the actual
+candidate vocabulary, and test the real provider path as well as host contracts.
+Separately, diagnostic fixture names leaked through citable goal identifiers; a
+model used “approval-blocked” as evidence and interpreted “schedule-universal” as a
+universal meeting. Expected-label fields being hidden is insufficient: inspect the
+entire model-visible input for diagnostic metadata, use neutral identifiers, and
+preserve contaminated runs with an explicit limitation rather than replacing them.
+
+
 **A scripted provider cannot see a deadline set below the real cost.** The
 director shipped its first push with a 1.5 s per-sentence deadline. Every
 Rust test answered through a provider that returns instantly, so all of
@@ -10515,6 +11381,16 @@ check the timestamp before re-running anything.**
   skips, which is how they were caught rather than written into the docs.
 
 ### Environment
+
+**Durable dispatch checks belong after awaited authorization too (2026-11-06).**
+A reservation-time cancellation check could miss a second process cancelling while
+approval was pending. Recheck the persisted receipt and complete source closure at
+the final tool boundary, without holding a SQLite transaction across I/O. Separately,
+`Agent::call_ctx` resets an inherited `program_room`: the first adapter's configured
+byte bound did not reach the actual read. A giant-line regression failed until
+`BoundRead` applied the bound inside dispatch. Verify constraints where the shared
+executor actually consumes them, not only where the caller configures them.
+
 
 **A sweep pattern proves nothing about what it cannot express** (mecha-5d,
 2026-10-03). A grep for first names came back empty over a tree that still

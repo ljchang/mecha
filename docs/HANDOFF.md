@@ -22,6 +22,86 @@ maps which document holds what.
 
 ## Where the work is
 
+**Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
+mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's
+experience and learning memory. Keep their lifecycles independent while reusing
+architectural patterns and preserving future integration options. A merger or
+replacement is deferred until v2 is solid. See the current-scope addendum in
+`MECHA-MEMORY-DESIGN.md`; older migration proposals are not an approved cutover.
+
+**Publication branch (2026-11-06):** `codex/mecha-memory-v2-prototype` is a clean
+snapshot on current GitHub main `6b709e08b`. The former private prototype branch
+predated main's history rewrite and must not be pushed wholesale. Only its memory
+patch was transferred; current-main mail-rule work and privacy protections remain.
+Original build SHAs below identify historical isolated qualification, not commits
+published in this branch. Current-main qualification is recorded separately.
+
+**2026-11-06 — durable guarded-read prototype qualified (`59ee1882b`).**
+`Memory::create_durable` explicitly creates schema v3; existing v1/v2 databases are
+not migrated. `memory::durable` owns task identity, one-use reservations, observations,
+proposal commits, cancellation and forgetting. `memory_runtime::acquire` calls the
+existing `Agent::dispatch_one` through a host-bound synthetic file reader. The thin
+CLI exposes `init-durable` and `durable-read start/resume/status/cancel/finish`.
+This is default-off and synthetic-only. No model calls, automatic chat capture,
+semantic-success verdict or general action authority are added.
+
+The store/adapter/independent-test subagents completed their separate work packets;
+independent integrated review found no remaining major/medium issues. Parent integrated
+the CLI, Spark qualification and Site. Source-linked content stays in revisions;
+only opaque operational identity/state lives in the lifecycle table. A spent,
+unsettled reservation stays indeterminate across restart, never automatically
+replayed. `DispatchGuard::check` rechecks persisted cancellation and original source
+closure after awaited hooks/approval. Cooperative cancellation after that safe point
+and the existing filesystem canonicalize/open race remain documented limits.
+Current cancellation is projected by `durable_observation`; generic recall retains
+historical observations, not a current-state join.
+
+**Next:** connect one bounded model decision to the durable observation lifecycle,
+retaining the original/revised attempts, source-only evaluation and actual outcome.
+The current `finish` path only commits supplied untrusted JSON, and `NoInference`
+explicitly prevents model use in acquisition. Reuse existing `checks::reconsider`
+and appraisal/step-feedback interfaces rather than introducing a second planner,
+executor or appraisal system. Keep authority/current-source checks at final commit.
+Design §§23–24 record the implemented slice and parallel work packets. Earlier v3
+model findings remain in HISTORY and `results/memory-reconsider-20261106/`; they are
+not new measurements of this runtime adapter.
+
+Still open: reliable semantic evaluation, live appraisal/action/outcome integration,
+internal sensors, concept discovery/revision, rumination, production encryption/
+source fidelity, retention/recovery, corpus-scale/identity/vector retrieval, and an
+authorized personal-knowledge bridge. Nightly migration and merging mecha-graph
+remain deferred. Generic provider per-field usage missingness remains open.
+
+Current qualification (2026-11-06): **6100 all-feature workspace tests passed on
+Spark /0 failed /26 ignored**, strict workspace Clippy, all-target build and release
+build passed on exact source `59ee1882b`. The ignored subprocess helper is explicitly
+spawned by its crash test. Local standalone checks: 158 unit +4 integration; runtime
+14/14 and installed-CLI integration 2/2 passed. Installed Spark binary passed all
+19 CLI checks, including rewrite/delete reuse, restored taint, one-use commit,
+cancellation, forgetting and raw-database canary erasure. SQLite integrity/FKs passed.
+Evidence: `results/memory-durable-runtime-20261106/`. Eval inventory: 36 cases/15 tags.
+Software checks are not memory-quality scores. No new model benchmark was run.
+
+Verified isolated Spark binary:
+`~/.local/share/mecha-prototypes/memory-durable-20261106/bin/mecha`, source
+`59ee1882bb05372dc583296fd87e9389cebe43e8`; SHA256
+`eb7173525fc67f048923f244548ec3fc6a7fb6e34363605955d4d1dac562d6a7`.
+No main binary, service, model configuration, personal store or mecha-graph deployment
+changed. Production/model runtime state and other subsystem work below were not
+requalified. Branch remains unmerged; documentation commits advance HEAD beyond the
+qualified code. The previous Mac loopback timeout is no longer reproducible this
+session: independent local HTTP and real browser preview succeeded without OS changes.
+
+Living Site remains owner-private at:
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#implementation-roadmap
+Research v0.16 published on 2026-11-06, source
+`4baec9a829d2c25e1ce7b05abbe59b2460255625`, deployment
+`appgdep_6aee3c033460819184530c95185d8ded` succeeded. All 56 prior anchors remain
+(58 current), learning-loop SVG unchanged, internal links/inline scripts/dist checks
+passed. Actual browser preview verified the expandable computation and architecture
+switching; the published page visibly shows v0.16 and 6100 qualification results.
+Corrected stale hero/footer versions and revision-table rendering.
+
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live
 with `ed72a382`. `docs/VOICE-BREEZE-DESIGN.md` §5 records each gate's

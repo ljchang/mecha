@@ -1032,7 +1032,35 @@ mecha polls pick POLL_ID 1
 outcomes into poll records; repeating it is safe. Review the chosen action in
 the outbox. See [Polls](/docs/features/public-surface/polls).
 
+## `memory` (experimental build only)
+
+Synthetic memory-store qualification through the main Mecha binary. Build with
+`cargo build -p mecha-cli --features memory-prototype --locked`; normal builds
+omit this command. Both acknowledgement and database path are required:
+
+```sh
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite demo
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite inspect
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite query works --valid-at 2026-07-01T00:00:00Z
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite query works --known-at 4 --valid-at 2026-07-01T00:00:00Z
+mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite forget employment
+```
+
+`demo` creates a new synthetic fixture; existing files are never overwritten.
+The required suffix is `.memory-prototype.sqlite`, and live `.mecha` and
+`.mecha-graph` directories are refused. Commands return JSON. `query` defaults
+to current knowledge and definite temporal matches; `--include-possible` admits
+unknown bounds, and `--limit N` changes the default cap of 20. `forget` removes
+the source and dependent revisions from historical queries too.
+
+This uses unencrypted SQLite and is **synthetic-data only**. It does not load
+Mecha configuration, call a model, or migrate graph data or nightly jobs. The
+production memory design and private-data qualification remain separate work.
+
 ## `kg`
+
+The experimental replacement memory store has a separate command (above).
+`kg` continues to use the existing graph.
 
 Read and maintain the graph through the configured `kg_*` MCP tools.
 
