@@ -210,45 +210,61 @@ fn feedback_resumes_after_restart_without_another_reservation() {
 }
 #[test]
 fn forgotten_action_sibling_erases_all_model_and_read_content_and_suppresses_recapture() {
-    let mut f = Fixture::new();
-    let r = action(&mut f);
-    let p = f.db.reserve_action(&r, &f.access).unwrap();
-    f.db.settle_action(p, json!({"actual_minutes":17}), &f.access)
+    for kind in ["spec", "observation", "feedback"] {
+        let mut f = Fixture::new();
+        let r = action(&mut f);
+        let p = f.db.reserve_action(&r, &f.access).unwrap();
+        f.db.settle_action(
+            p,
+            json!({"actual_minutes":17,"marker":"synthetic-action-erasure-marker"}),
+            &f.access,
+        )
         .unwrap();
-    f.db.finalize_action(&r, json!({"feedback":"passed"}), &f.access)
-        .unwrap();
-    let s = f.db.durable_action_status(&r, &f.access).unwrap();
-    let obs = s.observation.unwrap();
-    let Record::Evidence(capture) = super::sql::lookup(&f.db.conn, &obs).unwrap().unwrap() else {
-        panic!("observation must be evidence")
-    };
-    let lifecycle_captures = {
-        let mut stmt = f.db.conn.prepare("SELECT payload FROM revision").unwrap();
-        stmt.query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .map(|r| serde_json::from_str::<Record>(&r.unwrap()).unwrap())
-            .filter_map(|r| match r {
-                Record::Evidence(c) if c.source.connector == "durable-read" => Some(c),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    f.db.forget(&capture.source).unwrap();
-    assert_eq!(
-        f.db.durable_action_status(&r, &f.access).unwrap().phase,
-        ActionPhase::Forgotten
-    );
-    assert!(f.db.durable_action_spec(&r, &f.access).is_err());
-    assert!(f.db.durable_action_observation(&r, &f.access).is_err());
-    assert!(f.db.durable_observation(&f.read, &f.access).is_err());
-    let count: i64 =
-        f.db.conn
-            .query_row("SELECT count(*) FROM revision", [], |r| r.get(0))
+        f.db.finalize_action(&r, json!({"feedback":"passed"}), &f.access)
             .unwrap();
-    assert_eq!(count, 1, "only the independent original input remains");
-    assert!(lifecycle_captures.len() >= 8);
-    for capture in lifecycle_captures {
-        assert!(f.db.capture(capture).is_err());
+        let s = f.db.durable_action_status(&r, &f.access).unwrap();
+        let obs = match kind {
+            "spec" => s.spec.unwrap(),
+            "observation" => s.observation.unwrap(),
+            "feedback" => s.feedback.unwrap(),
+            _ => unreachable!(),
+        };
+        let Record::Evidence(capture) = super::sql::lookup(&f.db.conn, &obs).unwrap().unwrap()
+        else {
+            panic!("observation must be evidence")
+        };
+        let lifecycle_captures = {
+            let mut stmt = f.db.conn.prepare("SELECT payload FROM revision").unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| serde_json::from_str::<Record>(&r.unwrap()).unwrap())
+                .filter_map(|r| match r {
+                    Record::Evidence(c) if c.source.connector == "durable-read" => Some(c),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        f.db.forget(&capture.source).unwrap();
+        assert_eq!(
+            f.db.durable_action_status(&r, &f.access).unwrap().phase,
+            ActionPhase::Forgotten
+        );
+        assert!(f.db.durable_action_spec(&r, &f.access).is_err());
+        assert!(f.db.durable_action_observation(&r, &f.access).is_err());
+        assert!(f.db.durable_observation(&f.read, &f.access).is_err());
+        let count: i64 =
+            f.db.conn
+                .query_row("SELECT count(*) FROM revision", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(count, 1, "only the independent original input remains");
+        assert!(lifecycle_captures.len() >= 8);
+        for capture in lifecycle_captures {
+            assert!(f.db.capture(capture).is_err());
+        }
+        let bytes = std::fs::read(f.path()).unwrap();
+        assert!(!bytes
+            .windows(b"synthetic-action-erasure-marker".len())
+            .any(|w| w == b"synthetic-action-erasure-marker"));
     }
 }
 #[test]
@@ -319,4 +335,48 @@ fn v4_remains_usable_and_is_never_implicitly_upgraded() {
         4
     );
     assert!(Memory::create_durable_action(&path, "synthetic").is_err());
+}
+
+#[test]
+fn oversized_action_payloads_cannot_spend_binding_or_finalize_allowance() {
+    let mut f = Fixture::new();
+    let model = finalized(&mut f);
+    let oversized = json!({"value":"x".repeat(24_000)});
+    assert!(f
+        .db
+        .bind_action(&model, oversized.clone(), &f.access)
+        .is_err());
+    let r =
+        f.db.bind_action(&model, json!({"fixture":"synthetic"}), &f.access)
+            .unwrap();
+    let p = f.db.reserve_action(&r, &f.access).unwrap();
+    f.db.settle_action(p, json!({"actual_minutes":17}), &f.access)
+        .unwrap();
+    assert!(f.db.finalize_action(&r, oversized, &f.access).is_err());
+    assert_eq!(
+        f.db.durable_action_status(&r, &f.access).unwrap().phase,
+        ActionPhase::Observed
+    );
+    f.db.finalize_action(&r, json!({"feedback":"passed"}), &f.access)
+        .unwrap();
+}
+#[test]
+fn oversized_outcome_leaves_reservation_indeterminate_and_unreplayable() {
+    let mut f = Fixture::new();
+    let r = action(&mut f);
+    let p = f.db.reserve_action(&r, &f.access).unwrap();
+    assert!(f
+        .db
+        .settle_action(p, json!({"value":"x".repeat(24_000)}), &f.access)
+        .is_err());
+    assert_eq!(
+        f.db.durable_action_status(&r, &f.access).unwrap().phase,
+        ActionPhase::Indeterminate
+    );
+    assert!(f
+        .db
+        .durable_action_observation(&r, &f.access)
+        .unwrap()
+        .is_none());
+    assert!(f.db.reserve_action(&r, &f.access).is_err());
 }
