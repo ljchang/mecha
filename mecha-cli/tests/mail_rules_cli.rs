@@ -122,6 +122,9 @@ fn mail_rules_review_queue_follows_the_existing_queues() {
     );
 }
 
+// APFS refuses a non-UTF-8 file name ("Illegal byte sequence"), so the
+// directory this override would name cannot exist on macOS.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn mail_rule_review_registry_uses_the_shared_non_utf8_override_fallback() {
     use std::os::unix::ffi::OsStringExt;
