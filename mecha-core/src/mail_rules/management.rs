@@ -18,6 +18,8 @@ pub struct GroupView {
     pub recorded_mode: Mode,
     pub effective_mode: Mode,
     pub activated_at: Option<DateTime<Utc>>,
+    pub match_digest: Option<MatchDigest>,
+    pub statistics: Vec<RuleStatistics>,
     pub holds: Vec<String>,
 }
 
@@ -29,6 +31,9 @@ pub struct RuleView {
     pub groups: Vec<GroupView>,
     pub holds: Vec<String>,
     pub last_activity: Option<DateTime<Utc>>,
+    pub fires_7d: usize,
+    pub last_fired: Option<DateTime<Utc>>,
+    pub failures: usize,
     pub load_error: Option<String>,
 }
 
@@ -57,7 +62,12 @@ pub fn rule_views(store: &RuleStore) -> Result<Vec<RuleView>> {
     let mut all_modes = BTreeMap::new();
     for name in store.rule_names()? {
         let loaded = store.get(&name);
+        let (fires_7d, last_fired, failures) =
+            super::presentation::activity(&name, &ledger, Utc::now());
         let mut view = RuleView {
+            fires_7d,
+            last_fired,
+            failures,
             name: name.clone(),
             description: None,
             approval_digest: None,
@@ -110,6 +120,8 @@ pub fn rule_views(store: &RuleStore) -> Result<Vec<RuleView>> {
                         recorded_mode: recorded,
                         effective_mode: mode.effective,
                         activated_at: mode.activated_at,
+                        match_digest: Some(rule.match_digest(group, GateStatus::Passing)?),
+                        statistics: super::presentation::statistics(&rule, group, &ledger)?,
                         holds,
                     });
                     modes.insert(group, mode);
@@ -132,6 +144,8 @@ pub fn rule_views(store: &RuleStore) -> Result<Vec<RuleView>> {
                         recorded_mode: state.mode,
                         effective_mode: state.mode.lower(Mode::Shadow),
                         activated_at: state.activated_at,
+                        match_digest: None,
+                        statistics: Vec::new(),
                         holds: vec!["rule definition unreadable".into()],
                     });
                 }
@@ -189,7 +203,7 @@ pub fn install_path(store: &RuleStore, source: &Path, name: Option<&str>) -> Res
     store.install(name, &text.context("rule.toml is missing")?, &files)
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct PauseReport {
     pub groups: usize,
     pub notices: Vec<String>,
@@ -263,11 +277,8 @@ pub fn account_holds(
         {
             continue;
         }
-        if rule.definition.matcher.list_id.is_empty() && rule.definition.matcher.header.is_empty() {
-            continue;
-        }
         for account in accounts {
-            if !account.proves_header_absence
+            if engine::header_provider_hold(&rule, account.proves_header_absence)
                 && (rule.definition.matcher.account.is_empty()
                     || rule
                         .definition
@@ -291,11 +302,26 @@ pub fn test_match(
     in_inbox: Option<bool>,
     now: DateTime<Utc>,
 ) -> Result<Vec<LedgerRow>> {
+    test_match_with_header_capability(rule, candidate, in_inbox, now, true)
+}
+
+/// The provider-aware retrospective path shares live partial-header exclusion.
+/// Hosts report account-level holds before calling this per-message helper.
+pub fn test_match_with_header_capability(
+    rule: &LoadedRule,
+    candidate: &engine::Candidate,
+    in_inbox: Option<bool>,
+    now: DateTime<Utc>,
+    proves_absence: bool,
+) -> Result<Vec<LedgerRow>> {
     ensure!(
         !rule.definition.is_description(),
         "description rule testing requires P4; only header rules can be tested"
     );
-    if engine::header_match(&rule.definition.matcher, candidate) == engine::HeaderMatch::NoMatch {
+    if engine::header_provider_hold(rule, proves_absence)
+        || engine::absent_on_partial_headers(rule, candidate, proves_absence)
+        || engine::header_match(&rule.definition.matcher, candidate) == engine::HeaderMatch::NoMatch
+    {
         return Ok(Vec::new());
     }
     let unknown =
@@ -320,6 +346,8 @@ pub fn test_match(
             )?;
             row.closes = false;
             row.in_inbox = in_inbox;
+            row.received_at = candidate.arrival_at;
+            row.headers_partial = engine::partial_header_rule(rule, proves_absence);
             row.matched_because = serde_json::to_string(&rule.definition.matcher)?;
             row.reason = format!(
                 "{}; {}",
@@ -337,4 +365,110 @@ pub fn test_match(
             Ok(row)
         })
         .collect()
+}
+
+#[derive(Debug, Serialize)]
+pub struct EditReport {
+    pub name: String,
+    pub changed_files: Vec<String>,
+    pub approval_digest: ApprovalDigest,
+    pub lapsed_groups: Vec<ActionGroup>,
+    pub notices: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CorrectionReport {
+    pub changed: bool,
+    pub row: Option<LedgerRow>,
+    pub message: String,
+}
+
+pub(super) fn wrong_match_original<'a>(
+    store: &RuleStore,
+    rows: &'a [LedgerRow],
+    id: &str,
+) -> Result<&'a LedgerRow> {
+    let mut found = rows.iter().filter(|row| row.id == id);
+    let row = found.next().context("unknown ledger row id")?;
+    ensure!(found.next().is_none(), "ledger row id is ambiguous");
+    ensure!(
+        !store.get(&row.rule)?.definition.is_description(),
+        "description rules arrive in P4"
+    );
+    ensure!(
+        row.verdict_input == VerdictInput::NotApplicable,
+        "description rules arrive in P4"
+    );
+    ensure!(
+        row.correction_of.is_none()
+            && !matches!(
+                row.outcome,
+                Outcome::ApprovalLapsed
+                    | Outcome::Unknown
+                    | Outcome::UndoPending
+                    | Outcome::Undone
+                    | Outcome::WrongMatch
+            ),
+        "wrong-match requires an original header action row"
+    );
+    row.validate_key()?;
+    Ok(row)
+}
+
+pub fn pause_rule(
+    store: &RuleStore,
+    name: &str,
+    actor: crate::closure::Actor,
+) -> Result<PauseReport> {
+    let (names, _) = store.pause_names()?;
+    ensure!(names.iter().any(|n| n == name), "unknown rule: {name}");
+    let targets = [
+        ActionGroup::Mailbox,
+        ActionGroup::PrivateRecord,
+        ActionGroup::Report,
+        ActionGroup::Board,
+        ActionGroup::FixedWords,
+        ActionGroup::VerbatimForward,
+        ActionGroup::TypedFields,
+        ActionGroup::DraftedProse,
+    ]
+    .into_iter()
+    .map(|group| (group, Mode::Shadow))
+    .collect();
+    let decisions = store.lower_modes(
+        name,
+        &targets,
+        Some(actor),
+        &owner_file_holds(),
+        ApprovalReason::StepDown,
+    )?;
+    Ok(PauseReport {
+        groups: decisions.iter().filter(|d| d.write).count(),
+        notices: Vec::new(),
+    })
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModeError {
+    #[error("the rule changed since it was shown; reload")]
+    StaleDigest,
+    #[error("raising a mail rule requires Actor::Owner")]
+    OwnerRequired,
+    #[error("mode refused by the store's permanent ceiling")]
+    Ceiling,
+    #[error("auto requires --yes or an interactive yes after reviewing the files")]
+    ConfirmationRequired,
+    #[error("a raise from the page requires the approval digest shown; reload")]
+    DigestRequired,
+}
+impl ModeError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::StaleDigest => "stale_digest",
+            Self::OwnerRequired => "owner_required",
+            Self::Ceiling => "mode_ceiling",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::DigestRequired => "digest_required",
+        }
+    }
 }

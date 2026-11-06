@@ -9,21 +9,5 @@ pub(crate) fn acting_actor() -> Actor {
 /// reject whose reason will not be read as the owner's says so rather than
 /// demoting it silently (review of #343).
 pub(crate) fn acting_actor_explained() -> (Actor, Option<String>) {
-    let ancestor = match crate::commands::tasks::live_run_pids() {
-        Ok(pids) => closure::run_ancestor(&pids),
-        Err(e) => {
-            return (
-                Actor::Unknown,
-                Some(format!(
-                    "the run markers could not be read ({e:#}), so whether a run did this \
-                     cannot be told"
-                )),
-            )
-        }
-    };
-    closure::attribute_explained(
-        &closure::posture_from_env(),
-        &closure::ShellReading::from_registry(),
-        ancestor,
-    )
+    closure::acting_actor_explained()
 }

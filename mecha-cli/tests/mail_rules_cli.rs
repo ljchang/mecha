@@ -407,7 +407,7 @@ fn mail_rule_child_prefers_sibling_and_preserves_argv_streams_and_exit_status() 
     assert_eq!(out.status.code(), Some(17));
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        "sibling\nrules\ntest\nnotice;touch forbidden\n--account\ncampus with spaces\n"
+        "sibling\nrules\ntest\n--account\ncampus with spaces\n--\nnotice;touch forbidden\n"
     );
     assert_eq!(String::from_utf8(out.stderr).unwrap(), "fixture stderr\n");
     assert!(!f.root.join("forbidden").exists());
@@ -586,5 +586,207 @@ sys.exit(29)
     assert_eq!(
         store.get("fictional", "fictional-thread").unwrap().state,
         "classified"
+    );
+}
+
+fn mail_rule_stdin(f: &Fixture, args: &[&str], text: &str) -> Output {
+    use std::io::Write;
+    let mut child = f
+        .command()
+        .args(["mail", "rule"])
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+fn json_output(out: &Output) -> serde_json::Value {
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn mail_rule_p3_content_edit_pause_and_json_review_are_cli_operations() {
+    let f = Fixture::new();
+    let text = "description='Fictional notices'\n[match]\nfrom=['robot@example.com']\n[[action]]\ndo='archive'\n";
+    let added = mail_rule_stdin(&f, &["add", "--stdin", "--json", "--name=notice"], text);
+    success(&added);
+    assert_eq!(json_output(&added)["mode"], "shadow");
+    let shown = f.run(&["show", "--json", "--", "notice"]);
+    success(&shown);
+    let value = json_output(&shown);
+    assert_eq!(value["rule_toml"], text);
+    let digest = value["approval_digest"].to_string();
+    let auto = f.run(&[
+        "mode",
+        "--json",
+        "--yes",
+        "--digest",
+        &digest,
+        "--require-digest",
+        "--",
+        "notice",
+        "mailbox",
+        "auto",
+    ]);
+    success(&auto);
+    assert_eq!(json_output(&auto)["recorded_mode"], "auto");
+    let edit = mail_rule_stdin(
+        &f,
+        &["edit", "--stdin", "--json", "--", "notice"],
+        &text.replace("Fictional notices", "Changed label"),
+    );
+    success(&edit);
+    assert_eq!(json_output(&edit)["lapsed_groups"][0], "mailbox");
+    let stale = f.run(&[
+        "mode", "--json", "--yes", "--digest", &digest, "--", "notice", "mailbox", "auto",
+    ]);
+    assert!(!stale.status.success());
+    assert_eq!(json_output(&stale)["error"]["code"], "stale_digest");
+    let pause = f.run(&["pause", "--json", "--", "notice"]);
+    success(&pause);
+    assert_eq!(json_output(&pause)["groups"], 1);
+    assert_eq!(
+        json_output(&f.run(&["show", "--json", "notice"]))["groups"][0]["recorded_mode"],
+        "shadow"
+    );
+    let no_digest = f.run(&[
+        "mode",
+        "--json",
+        "--require-digest",
+        "--",
+        "notice",
+        "mailbox",
+        "propose",
+    ]);
+    assert!(!no_digest.status.success());
+    assert_eq!(json_output(&no_digest)["error"]["code"], "digest_required");
+}
+
+#[test]
+fn mail_rule_p3_refusals_leave_inputs_and_permissions_intact() {
+    let f = Fixture::new();
+    let rule = f.rule();
+    let original = std::fs::read(rule.directory.join("rule.toml")).unwrap();
+    let invalid = mail_rule_stdin(&f, &["edit", "notice", "--stdin", "--json"], "[broken");
+    assert!(!invalid.status.success());
+    assert_eq!(json_output(&invalid)["error"]["code"], "invalid_request");
+    assert_eq!(
+        std::fs::read(rule.directory.join("rule.toml")).unwrap(),
+        original
+    );
+    let absent = mail_rule_stdin(
+        &f,
+        &["edit", "absent", "--stdin", "--json"],
+        std::str::from_utf8(&original).unwrap(),
+    );
+    assert!(!absent.status.success());
+    let unnamed = mail_rule_stdin(
+        &f,
+        &["add", "--stdin"],
+        std::str::from_utf8(&original).unwrap(),
+    );
+    assert!(!unnamed.status.success());
+    let nonowner = f
+        .command()
+        .env(mecha_core::closure::POSTURE_ENV, "unattended")
+        .args([
+            "mail", "rule", "mode", "notice", "mailbox", "propose", "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!nonowner.status.success());
+    assert_eq!(json_output(&nonowner)["error"]["code"], "owner_required");
+    let off = f
+        .command()
+        .env(mecha_core::closure::POSTURE_ENV, "unattended")
+        .args(["mail", "rule", "mode", "notice", "mailbox", "off", "--json"])
+        .output()
+        .unwrap();
+    success(&off);
+    assert_eq!(json_output(&off)["clamped"], true);
+    assert_eq!(json_output(&off)["effective_mode"], "shadow");
+    assert!(!f.run(&["pause", "missing"]).status.success());
+}
+
+#[test]
+fn mail_rule_p3_wrong_match_cli_records_correction_and_refuses_description() {
+    let f = Fixture::new();
+    let store = f.store();
+    let rule = f.rule();
+    let mut row = LedgerRow::header(
+        &rule,
+        0,
+        MessageRef {
+            account: "campus".into(),
+            provider_message_id: "message-a".into(),
+            thread_id: "thread-a".into(),
+            sender: "robot@example.com".into(),
+            subject: "Fictional notice".into(),
+            ..Default::default()
+        },
+        Mode::Auto,
+        GateStatus::Passing,
+        Outcome::Done,
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    row.matched_because = "from_domain".into();
+    store.append_ledger(&row).unwrap();
+    let output = f.run(&["wrong-match", "--json", "--", &row.id]);
+    success(&output);
+    assert_eq!(json_output(&output)["row"]["correction_of"], row.id);
+    let again = f.run(&["wrong-match", "--json", "--", &row.id]);
+    success(&again);
+    assert_eq!(json_output(&again)["changed"], false);
+    let ledger = json_output(&f.run(&["ledger", "--json"]));
+    assert_eq!(ledger[1]["undoable"], true);
+    assert_eq!(ledger[1]["wrong_match_allowed"], false);
+    assert!(!f
+        .run(&["wrong-match", "--json", "unknown-row"])
+        .status
+        .success());
+    store.edit(&rule.name, "description='Fictional description'\n[match]\ndescribe='Fictional notices'\n[[action]]\ndo='archive'\n").unwrap();
+    let description = f.run(&["wrong-match", "--json", &row.id]);
+    assert!(!description.status.success());
+    assert!(String::from_utf8_lossy(&description.stderr).contains("description rules arrive in P4"));
+}
+
+#[test]
+fn mail_rule_p3_test_json_uses_the_retrospective_sibling_and_preserves_holds() {
+    let f = Fixture::new();
+    let executable = f.isolated_binary();
+    let path = f.root.join("bin/mecha-mail");
+    std::fs::write(&path, r#"#!/bin/sh
+printf '%s\n' "$@" > "$MECHA_HOME/test-argv"
+printf '%s\n' '{"dry_run":true,"window_days":30,"all_folders":true,"accounts":[{"account":"campus","status":"held","matched_rows":null,"holds":["provider cannot prove header absence"]}]}'
+"#).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = f
+        .isolated_command(&executable)
+        .args([
+            "mail",
+            "rule",
+            "test",
+            "--json",
+            "--account",
+            "campus",
+            "--",
+            "notice;literal",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    assert!(json_output(&output)["accounts"][0]["matched_rows"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("home/test-argv")).unwrap(),
+        "rules\ntest\n--json\n--account\ncampus\n--\nnotice;literal\n"
     );
 }

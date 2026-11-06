@@ -70,6 +70,10 @@ impl Drop for StoreLock {
     }
 }
 
+/// Fixed segments of `/api/mail/rules/…`, which take precedence over a rule's
+/// name there: a rule so named could be installed but never opened on the page.
+pub const RESERVED_RULE_NAMES: &[&str] = &["add", "ledger", "pause-all", "undo", "wrong-match"];
+
 impl RuleStore {
     pub fn root_under(home: &Path) -> PathBuf {
         home.join("mail-rules")
@@ -331,6 +335,20 @@ impl RuleStore {
         }
     }
 
+    /// Definition text remains editable even when its TOML cannot be loaded.
+    pub fn rule_text(&self, name: &str) -> Result<String> {
+        crate::persona::validate_name(name)?;
+        let rules = contained(&self.root, &self.root.join("rules"))?;
+        let directory = rules.join(name);
+        ensure!(
+            !fs::symlink_metadata(&directory)?.file_type().is_symlink(),
+            "rule directory may not be a symlink"
+        );
+        let directory = contained(&rules, &directory)?;
+        let file = contained(&directory, &directory.join("rule.toml"))?;
+        Ok(fs::read_to_string(file)?)
+    }
+
     pub fn get(&self, name: &str) -> Result<LoadedRule> {
         crate::persona::validate_name(name)?;
         let rules = contained(&self.root, &self.root.join("rules"))?;
@@ -476,6 +494,10 @@ impl RuleStore {
         files: &BTreeMap<String, String>,
     ) -> Result<LoadedRule> {
         crate::persona::validate_name(name)?;
+        ensure!(
+            !RESERVED_RULE_NAMES.contains(&name),
+            "`{name}` is reserved by the rules page's routes; choose another name"
+        );
         RuleDefinition::parse(text)?;
         for file in files.keys() {
             let stem = file
@@ -528,6 +550,152 @@ impl RuleStore {
             let _ = fs::remove_dir_all(temp);
         }
         result
+    }
+
+    /// Replace only rule.toml. Preserve bundled files; validate the entire new
+    /// snapshot and persist lapses before publishing bytes, so a failed write or
+    /// a subsequent revert can never revive the old approval.
+    pub fn edit(&self, name: &str, text: &str) -> Result<EditReport> {
+        RuleDefinition::parse(text)?;
+        crate::persona::validate_name(name)?;
+        let _lock = self.lock()?;
+        let rules = contained(&self.root, &self.root.join("rules"))?;
+        let directory = rules.join(name);
+        ensure!(directory.is_dir(), "unknown rule: {name}");
+        ensure!(
+            !fs::symlink_metadata(&directory)?.file_type().is_symlink(),
+            "rule directory may not be a symlink"
+        );
+        let mut inputs = directory_inputs(&directory)?;
+        let changed = inputs
+            .get("rule.toml")
+            .is_none_or(|bytes| bytes != text.as_bytes());
+        inputs.insert("rule.toml".into(), text.as_bytes().to_vec());
+        let temp = rules.join(format!(".{name}-{}.tmp", uuid::Uuid::new_v4()));
+        crate::create_private_dir(&temp)?;
+        let result: Result<EditReport> = (|| {
+            for (file, bytes) in &inputs {
+                let path = temp.join(file);
+                crate::create_private_dir(path.parent().context("missing file parent")?)?;
+                write_new(&path, bytes)?;
+            }
+            let candidate = self.load_directory(name, &temp)?;
+            let mut approvals = self.approvals()?;
+            let ledger = self.ledger()?;
+            let old = self.get(name);
+            let targets = old
+                .as_ref()
+                .ok()
+                .map(|old| engine::unacknowledged_brakes(old, &ledger, &approvals))
+                .unwrap_or_default();
+            struct EditHolds(BTreeMap<ActionGroup, Mode>);
+            impl HoldProvider for EditHolds {
+                fn holds(&self, rule: &LoadedRule, group: ActionGroup) -> Vec<ModeHold> {
+                    let mut holds = owner_file_holds().holds(rule, group);
+                    if let Some(ceiling) = self.0.get(&group) {
+                        holds.push(ModeHold {
+                            ceiling: *ceiling,
+                            reason: "automatic brake".into(),
+                        });
+                    }
+                    holds
+                }
+            }
+            let holds = EditHolds(targets);
+            let before = approvals.len();
+            // A read-only observer may have seen an external edit but never
+            // persisted its lapse. Restoring approved bytes must not bypass that
+            // observation, nor recover auto from an unreadable definition.
+            match &old {
+                Ok(old) => {
+                    self.lapse_locked(old, &mut approvals, &holds, Utc::now())?;
+                }
+                Err(_) => self.lapse_unreadable_locked(name, &mut approvals, Utc::now())?,
+            }
+            self.lapse_locked(&candidate, &mut approvals, &holds, Utc::now())?;
+            let lapsed_groups: Vec<_> = approvals[before..]
+                .iter()
+                .filter(|row| row.reason == ApprovalReason::Lapse)
+                .map(|row| row.group)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if changed {
+                fs::rename(temp.join("rule.toml"), directory.join("rule.toml"))?;
+                File::open(&directory)?.sync_all()?;
+            }
+            Ok(EditReport {
+                name: name.into(),
+                changed_files: if changed {
+                    vec!["rule.toml".into()]
+                } else {
+                    Vec::new()
+                },
+                approval_digest: candidate.approval_digest,
+                notices: if lapsed_groups.is_empty() {
+                    Vec::new()
+                } else {
+                    vec!["approval lapsed: files changed".into()]
+                },
+                lapsed_groups,
+            })
+        })();
+        let cleanup = fs::remove_dir_all(&temp);
+        let report = result?;
+        cleanup?;
+        Ok(report)
+    }
+
+    /// A correction closes its original action key even on an older reader.
+    /// It never settles a pending attempt and never performs a restore.
+    pub fn wrong_match(
+        &self,
+        row_id: &str,
+        actor: crate::closure::Actor,
+    ) -> Result<CorrectionReport> {
+        let _lease = self.engine_lease()?;
+        let (rule_name, report) = {
+            let _lock = self.lock()?;
+            let rows = self.ledger()?;
+            let original = wrong_match_original(self, &rows, row_id)?;
+            if rows.iter().any(|row| {
+                row.outcome == Outcome::WrongMatch && row.correction_of.as_deref() == Some(row_id)
+            }) {
+                (
+                    original.rule.clone(),
+                    CorrectionReport {
+                        changed: false,
+                        row: None,
+                        message: "already marked wrong match; the matcher needs an edit".into(),
+                    },
+                )
+            } else {
+                let mut correction = original.clone();
+                correction.id = uuid::Uuid::new_v4().to_string();
+                correction.at = Some(Utc::now());
+                correction.outcome = Outcome::WrongMatch;
+                correction.closes = true;
+                correction.settlement = None;
+                correction.correction_of = Some(original.id.clone());
+                correction.actor = Some(actor);
+                correction.wrong_match = true;
+                correction.reason =
+                    "wrong match: the matcher is wrong; edit rule.toml (action not undone)".into();
+                self.append_ledger_locked(&correction)?;
+                (
+                    original.rule.clone(),
+                    CorrectionReport {
+                        changed: true,
+                        message: correction.reason.clone(),
+                        row: Some(correction),
+                    },
+                )
+            }
+        };
+        // Retry also applies the brake if the prior append succeeded but lowering
+        // failed. Same engine lease as undo/apply; no second correction is written.
+        super::undo::apply_correction_brake(self, &rule_name)?;
+        Ok(report)
     }
 
     pub fn approvals(&self) -> Result<Vec<ApprovalRow>> {
@@ -729,11 +897,36 @@ impl RuleStore {
         shown: &ApprovalDigest,
         holds: &dyn HoldProvider,
     ) -> Result<ModeDecision> {
+        self.change_mode_checked(name, group, requested, actor, shown, holds, None, false)
+    }
+
+    /// Optional web review guards are checked under the same lock as the write.
+    #[allow(clippy::too_many_arguments)]
+    pub fn change_mode_checked(
+        &self,
+        name: &str,
+        group: ActionGroup,
+        requested: Mode,
+        actor: Option<crate::closure::Actor>,
+        shown: &ApprovalDigest,
+        holds: &dyn HoldProvider,
+        expected: Option<&ApprovalDigest>,
+        require_digest: bool,
+    ) -> Result<ModeDecision> {
         crate::persona::validate_name(name)?;
         let _lock = self.lock()?;
         let mut rows = self.approvals()?;
         let preceding_mode = approvals::approval_state(name, group, &rows).mode;
         let loaded = self.get(name);
+        if let Some(expected) = expected {
+            ensure!(
+                loaded
+                    .as_ref()
+                    .is_ok_and(|rule| &rule.approval_digest == expected),
+                ModeError::StaleDigest
+            );
+        }
+
         match &loaded {
             Ok(rule) => {
                 self.lapse_locked(rule, &mut rows, holds, Utc::now())?;
@@ -763,15 +956,16 @@ impl RuleStore {
         // Revocation never depends on loadable files or a fresh review. Only
         // raises may bind a reviewed definition, including clearing a hold.
         if decision.target.rank() > current.rank() {
+            ensure!(
+                !require_digest || expected.is_some(),
+                ModeError::DigestRequired
+            );
             let rule = loaded?;
             ensure!(
                 rule.definition.groups().contains(&group),
                 "cannot raise a group absent from the current rule"
             );
-            ensure!(
-                &rule.approval_digest == shown,
-                "rule inputs changed since review"
-            );
+            ensure!(&rule.approval_digest == shown, ModeError::StaleDigest);
             // Use the same permanent ceilings as resolution. Standing holds
             // remain computed, but an unsupported permission must never be
             // recorded as if it had been granted.
@@ -956,11 +1150,14 @@ impl RuleStore {
                 settlement: None,
                 correction_of: None,
                 in_inbox: None,
+                received_at: None,
+                headers_partial: false,
                 matched_because: String::new(),
                 reason: reason.into(),
                 failure_kind: FailureKind::Unknown,
                 wrong_match: false,
                 affected_groups: affected.to_vec(),
+                actor: None,
             };
             self.append("ledger.jsonl", &row)?;
         }
@@ -1122,6 +1319,29 @@ impl RuleStore {
             !row_ids.contains(row.id.as_str()),
             "duplicate ledger row id"
         );
+        if row.outcome == Outcome::WrongMatch {
+            let id = row
+                .correction_of
+                .as_deref()
+                .context("wrong-match must name its original row")?;
+            let original = wrong_match_original(self, &rows, id)?;
+            ensure!(
+                row.same_key(original)
+                    && row.match_digest == original.match_digest
+                    && row.verdict_input == original.verdict_input
+                    && row.mode == original.mode,
+                "wrong-match must retain the original measurement and action key"
+            );
+            ensure!(
+                row.closes && row.wrong_match && row.settlement.is_none(),
+                "wrong-match must close its key without settling an attempt"
+            );
+            ensure!(
+                !rows.iter().any(|prior| prior.outcome == Outcome::WrongMatch
+                    && prior.correction_of.as_deref() == Some(id)),
+                "this row already has a wrong-match correction"
+            );
+        }
         if row.outcome == Outcome::UndoPending {
             let original = rows
                 .iter()
@@ -1139,6 +1359,7 @@ impl RuleStore {
             );
             ensure!(
                 !rows.iter().any(|prior| prior.same_key(original)
+                    && prior.outcome != Outcome::WrongMatch
                     && (prior.correction_of.is_some() || prior.outcome == Outcome::Undone)),
                 "this mailbox action already has an undo correction"
             );

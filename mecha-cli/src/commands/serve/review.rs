@@ -780,20 +780,105 @@ pub(super) async fn self_json_within(
     args: &[&str],
     secs: u64,
 ) -> anyhow::Result<serde_json::Value> {
+    self_json_input_within(state, args, secs, None).await
+}
+
+#[derive(Debug)]
+pub(super) struct JsonChildFailure {
+    pub message: String,
+    pub output: Option<serde_json::Value>,
+}
+
+impl std::fmt::Display for JsonChildFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for JsonChildFailure {}
+
+#[cfg(test)]
+tokio::task_local! { pub(super) static JSON_CHILD_EXE: std::path::PathBuf; }
+
+/// The same CLI boundary, with private text on stdin rather than a disk draft.
+pub(super) async fn self_json_input_within(
+    state: &super::WebState,
+    args: &[&str],
+    secs: u64,
+    input: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
     let _ = state;
-    let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
+    #[cfg(test)]
+    let executable = JSON_CHILD_EXE
+        .try_with(Clone::clone)
+        .unwrap_or_else(|_| crate::exe::self_exe());
+    #[cfg(not(test))]
+    let executable = crate::exe::self_exe();
+    let mut cmd = tokio::process::Command::new(executable);
     if let Some(dir) = super::child_cwd() {
         cmd.current_dir(dir);
     }
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(secs),
-        cmd.args(args).output(),
-    )
+    cmd.args(args);
+    json_child_within(cmd, secs, input).await
+}
+
+async fn json_child_within(
+    mut cmd: tokio::process::Command,
+    secs: u64,
+    input: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    use tokio::io::AsyncWriteExt;
+    cmd.stdin(if input.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    })
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true)
+    .process_group(0);
+    let mut child = cmd.spawn()?;
+    struct Group(Option<u32>);
+    impl Drop for Group {
+        fn drop(&mut self) {
+            // SAFETY: only the group started for this child and its descendants.
+            if let Some(pid) = self.0 {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let mut group = Group(Some(
+        child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("child pid unavailable"))?,
+    ));
+    let stdin = child.stdin.take();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(secs), async {
+        let write = async move {
+            if let (Some(mut stdin), Some(text)) = (stdin, input) {
+                stdin.write_all(text.as_bytes()).await?;
+                stdin.shutdown().await?;
+            }
+            Ok::<_, std::io::Error>(())
+        };
+        let (written, output) = tokio::join!(write, child.wait_with_output());
+        let output = output?;
+        if output.status.success() {
+            written?;
+        }
+        Ok::<_, std::io::Error>(output)
+    })
     .await
     .map_err(|_| anyhow::anyhow!("timed out"))??;
+    group.0 = None;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("{}", stderr.lines().last().unwrap_or("failed"));
+        return Err(JsonChildFailure {
+            message: stderr.lines().last().unwrap_or("failed").into(),
+            output: serde_json::from_slice(&output.stdout).ok(),
+        }
+        .into());
     }
     Ok(serde_json::from_slice(&output.stdout)?)
 }
@@ -1720,5 +1805,48 @@ mod tests {
         assert_eq!(by("posts")["changed_since_staged"], true);
         assert_eq!(by("posts")["query"], "SELECT n FROM t");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod mail_rule_child_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mail_rule_stdin_is_private_data_not_shell_code_and_errors_keep_reports() {
+        let mut command = tokio::process::Command::new("python3");
+        command.args([
+            "-c",
+            "import json,sys; print(json.dumps({'text':sys.stdin.read(),'argv':sys.argv[1:]}))",
+            "--",
+            "literal;name",
+        ]);
+        let draft = "description='$(must stay literal)'\n";
+        let result = json_child_within(command, 5, Some(draft)).await.unwrap();
+        assert_eq!(result["text"], draft);
+        assert_eq!(result["argv"][1], "literal;name");
+        let mut failed = tokio::process::Command::new("sh");
+        failed.args(["-c", "printf '%s\\n' '{\"accounts\":[{\"status\":\"held\"}]}'; printf '%s\\n' 'earlier' 'last diagnostic' >&2; exit 17"]);
+        let error = json_child_within(failed, 5, None).await.unwrap_err();
+        let error = error.downcast_ref::<JsonChildFailure>().unwrap();
+        assert_eq!(error.message, "last diagnostic");
+        assert_eq!(
+            error.output.as_ref().unwrap()["accounts"][0]["status"],
+            "held"
+        );
+    }
+
+    #[tokio::test]
+    async fn mail_rule_child_timeout_covers_a_blocked_stdin_write() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        let input = "x".repeat(1024 * 1024);
+        assert_eq!(
+            json_child_within(command, 1, Some(&input))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "timed out"
+        );
     }
 }

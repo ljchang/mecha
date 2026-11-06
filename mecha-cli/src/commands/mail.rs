@@ -392,7 +392,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         surface: false,
         json: false,
     }) {
-        Cmd::Rule { command } => super::mail_rule::run(command).await,
+        Cmd::Rule { .. } => unreachable!("rule commands return before the mail gate"),
         Cmd::List {
             all,
             aged,

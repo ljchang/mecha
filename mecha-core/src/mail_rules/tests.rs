@@ -2956,7 +2956,7 @@ fn rule_view_explains_lapse_unknown_modes_and_account_holds_without_writes() {
     let view = rule_views(&store).unwrap();
     assert_eq!(view[0].groups[0].recorded_mode, Mode::Unknown);
     assert_eq!(view[0].groups[0].effective_mode, Mode::Shadow);
-    store.install("headers", "description = 'Fictional list'\n[match]\nlist_id = ['notice.example.com']\n[[action]]\ndo = 'archive'\n", &BTreeMap::new()).unwrap();
+    store.install("headers", "description = 'Fictional list'\n[match]\nlist_id = ['notice.example.com']\n[[action]]\ndo = 'forward'\nto = ['finance@example.edu']\n", &BTreeMap::new()).unwrap();
     let mut views = rule_views(&store).unwrap();
     account_holds(
         &store,
@@ -3196,15 +3196,49 @@ fn mail_rules_doctor_reads_owner_registry_addresses_and_outlook_standing_holds()
         .iter()
         .any(|f| f.summary.contains("no stored mailbox address")
             && f.detail.contains("every mail rule")));
-    assert!(findings
+    assert!(!findings
         .iter()
         .any(|f| f.summary.contains("provider cannot prove header absence")));
+    let outbound = store.install("outbound", "description='Fictional outbound list'\n[match]\nlist_id=['news.example.com']\n[[action]]\ndo='forward'\nto=['finance@example.edu']\n", &BTreeMap::new()).unwrap();
+    let findings = crate::doctor::check_mail_rules(&home.0, &mail, Utc::now());
+    let provider_holds: Vec<_> = findings
+        .iter()
+        .filter(|f| f.summary.contains("provider cannot prove header absence"))
+        .collect();
+    assert_eq!(provider_holds.len(), 1);
+    assert!(provider_holds[0].summary.contains("outbound"));
+    let mut views = rule_views(&store).unwrap();
+    account_holds(
+        &store,
+        &mut views,
+        &[RuleAccount {
+            name: "fictional".into(),
+            proves_header_absence: false,
+        }],
+    )
+    .unwrap();
+    assert!(views
+        .iter()
+        .find(|v| v.name == rule.name)
+        .unwrap()
+        .holds
+        .is_empty());
+    assert_eq!(
+        views
+            .iter()
+            .find(|v| v.name == "outbound")
+            .unwrap()
+            .holds
+            .len(),
+        1
+    );
     fs::write(
         registry.join("fictional/oauth.json"),
         r#"{"account":"owner@example.edu"}"#,
     )
     .unwrap();
     approve(&store, &rule, ActionGroup::Mailbox, Mode::Off);
+    approve(&store, &outbound, ActionGroup::VerbatimForward, Mode::Off);
     assert!(crate::doctor::check_mail_rules(&home.0, &mail, Utc::now()).is_empty());
 }
 
@@ -3360,4 +3394,475 @@ fn mail_rules_engine_lease_contention_has_a_typed_skip() {
     assert!(error.is::<ApplyRunning>());
     drop(lease);
     assert!(store.engine_lease().is_ok());
+}
+
+#[test]
+fn mail_rules_p3_edit_is_validated_atomic_and_persists_every_lapse() {
+    let home = Home::new();
+    let store = home.store();
+    let original =
+        text("[[action]]\ndo='archive'\n[[action]]\ndo='digest'\n[[action]]\ndo='spam'\n");
+    let rule = store
+        .install(
+            "notices",
+            &original,
+            &BTreeMap::from([("extra.md".into(), "Fictional template".into())]),
+        )
+        .unwrap();
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    approve(&store, &rule, ActionGroup::Report, Mode::Off);
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    assert!(store.edit("notices", "invalid = [").is_err());
+    assert_eq!(
+        fs::read(store.root().join("approvals.jsonl")).unwrap(),
+        before
+    );
+    assert_eq!(
+        fs::read_to_string(rule.directory.join("rule.toml")).unwrap(),
+        original
+    );
+    assert!(store
+        .edit("missing", &original)
+        .unwrap_err()
+        .to_string()
+        .contains("unknown rule"));
+    let edited = original.replace("Fictional notice", "Changed fictional label");
+    let report = store.edit("notices", &edited).unwrap();
+    assert_eq!(report.changed_files, ["rule.toml"]);
+    assert_eq!(report.lapsed_groups.len(), 2);
+    assert!(!report.lapsed_groups.contains(&ActionGroup::Report));
+    assert_ne!(report.approval_digest, rule.approval_digest);
+    assert_eq!(
+        fs::read_to_string(rule.directory.join("extra.md")).unwrap(),
+        "Fictional template"
+    );
+    let view = rule_views(&store).unwrap().remove(0);
+    assert_eq!(
+        view.groups
+            .iter()
+            .find(|g| g.group == ActionGroup::Mailbox)
+            .unwrap()
+            .recorded_mode,
+        Mode::Propose
+    );
+    assert_eq!(
+        view.groups
+            .iter()
+            .find(|g| g.group == ActionGroup::PrivateRecord)
+            .unwrap()
+            .recorded_mode,
+        Mode::Shadow
+    );
+    assert_eq!(
+        store
+            .ledger()
+            .unwrap()
+            .iter()
+            .filter(|r| r.outcome == Outcome::ApprovalLapsed)
+            .count(),
+        1
+    );
+    assert!(store
+        .edit("notices", &edited)
+        .unwrap()
+        .lapsed_groups
+        .is_empty());
+    store.edit("notices", &original).unwrap();
+    assert_eq!(
+        rule_views(&store).unwrap()[0]
+            .groups
+            .iter()
+            .find(|g| g.group == ActionGroup::Mailbox)
+            .unwrap()
+            .recorded_mode,
+        Mode::Propose
+    );
+}
+
+#[test]
+fn mail_rules_p3_stale_and_missing_web_digest_refuse_even_without_auto() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let missing = store
+        .change_mode_checked(
+            &rule.name,
+            ActionGroup::Mailbox,
+            Mode::Propose,
+            Some(Actor::Owner),
+            &rule.approval_digest,
+            &owner_holds(),
+            None,
+            true,
+        )
+        .unwrap_err();
+    assert!(missing
+        .downcast_ref::<ModeError>()
+        .is_some_and(|e| matches!(e, ModeError::DigestRequired)));
+    store
+        .edit(
+            &rule.name,
+            &archive().replace("Fictional notice", "Changed label"),
+        )
+        .unwrap();
+    for mode in [Mode::Propose, Mode::Off] {
+        let error = store
+            .change_mode_checked(
+                &rule.name,
+                ActionGroup::Mailbox,
+                mode,
+                Some(Actor::Owner),
+                &rule.approval_digest,
+                &owner_holds(),
+                Some(&rule.approval_digest),
+                true,
+            )
+            .unwrap_err();
+        assert!(error
+            .downcast_ref::<ModeError>()
+            .is_some_and(|e| matches!(e, ModeError::StaleDigest)));
+    }
+}
+
+#[test]
+fn mail_rules_p3_pause_is_per_rule_preserves_off_and_records_actor() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(
+        &store,
+        &text("[[action]]\ndo='archive'\n[[action]]\ndo='digest'"),
+    );
+    let other = store
+        .install("other", &archive(), &BTreeMap::new())
+        .unwrap();
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    approve(&store, &rule, ActionGroup::PrivateRecord, Mode::Off);
+    approve(&store, &other, ActionGroup::Mailbox, Mode::Auto);
+    let report = pause_rule(&store, &rule.name, Actor::Unknown).unwrap();
+    assert_eq!(report.groups, 1);
+    let rows = store.approvals().unwrap();
+    assert_eq!(rows.last().unwrap().actor, Actor::Unknown);
+    assert_eq!(rows.last().unwrap().to_mode, Mode::Shadow);
+    assert_eq!(
+        resolve_mode(&other, ActionGroup::Mailbox, &rows, &owner_holds()).recorded,
+        Mode::Auto
+    );
+    assert_eq!(
+        resolve_mode(&rule, ActionGroup::PrivateRecord, &rows, &owner_holds()).recorded,
+        Mode::Off
+    );
+    assert!(pause_rule(&store, "missing", Actor::Owner).is_err());
+}
+
+#[tokio::test]
+async fn mail_rules_p3_wrong_match_is_idempotent_closing_and_independent_of_undo() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let mut original = row(&rule, Outcome::Done);
+    original.matched_because = "from".into();
+    store.append_ledger(&original).unwrap();
+    let correction = store.wrong_match(&original.id, Actor::Owner).unwrap();
+    let wrong = correction.row.unwrap();
+    assert_eq!(wrong.correction_of.as_deref(), Some(original.id.as_str()));
+    assert_eq!(wrong.outcome, Outcome::WrongMatch);
+    assert!(wrong.closes && wrong.settlement.is_none());
+    assert!(message_closed(&store.ledger().unwrap(), &key(&original)));
+    assert!(
+        !store
+            .wrong_match(&original.id, Actor::Owner)
+            .unwrap()
+            .changed
+    );
+    assert_eq!(store.ledger().unwrap().len(), 2);
+    // The old wire reader's unknown default tightens even without closes.
+    let mut old = wrong.clone();
+    old.outcome = Outcome::Unknown;
+    old.closes = false;
+    assert!(message_closed(&[old], &key(&original)));
+    assert!(prepare_undo(&store, &original.id).is_ok());
+    let restore = RestoreFixture::default();
+    undo_with_actor(
+        &store,
+        &original.id,
+        &restore,
+        Utc::now(),
+        Some(Actor::Owner),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !store
+            .wrong_match(&original.id, Actor::Owner)
+            .unwrap()
+            .changed
+    );
+    let evidence = engine::brake_evidence(&rule.name, &store.ledger().unwrap());
+    assert_eq!(evidence.wrong_matches, 1);
+    assert_eq!(evidence.undone_mailbox, 1);
+    let stats = rule_views(&store)
+        .unwrap()
+        .remove(0)
+        .groups
+        .remove(0)
+        .statistics
+        .remove(0);
+    assert_eq!(stats.owner_corrected_actions, 1);
+    assert_eq!(stats.owner_undos, 1);
+    assert_eq!(stats.owner_wrong_matches, 1);
+    let views = ledger_views(&store, None, 50).unwrap();
+    let original_view = views.iter().find(|r| r["id"] == original.id).unwrap();
+    assert_eq!(original_view["undoable"], false);
+    assert_eq!(original_view["wrong_match_allowed"], false);
+}
+
+#[test]
+fn mail_rules_p3_wrong_match_refuses_description_and_brakes_once_per_thread() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    let mut ids = Vec::new();
+    for index in 0..10 {
+        let mut original = row(&rule, Outcome::Done);
+        original.message.provider_message_id = format!("message-{index}");
+        original.message.thread_id = format!("thread-{index}");
+        original.matched_because = "from".into();
+        ids.push(original.id.clone());
+        store.append_ledger(&original).unwrap();
+    }
+    for id in ids.iter().take(3) {
+        store.wrong_match(id, Actor::Owner).unwrap();
+        store.wrong_match(id, Actor::Owner).unwrap();
+    }
+    assert_eq!(
+        engine::brake_evidence(&rule.name, &store.ledger().unwrap()).wrong_matches,
+        3
+    );
+    assert_eq!(
+        rule_views(&store).unwrap()[0].groups[0].recorded_mode,
+        Mode::Propose
+    );
+    let description = archive().replace(
+        "from = ['robot@example.com']",
+        "describe = 'Fictional notices'",
+    );
+    store.edit(&rule.name, &description).unwrap();
+    assert!(store
+        .wrong_match(&ids[4], Actor::Owner)
+        .unwrap_err()
+        .to_string()
+        .contains("description rules arrive in P4"));
+    assert!(store.wrong_match("missing", Actor::Owner).is_err());
+}
+
+#[test]
+fn mail_rules_p3_statistics_keep_inputs_digests_and_unknown_envelopes_apart() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let empty = rule_views(&store).unwrap();
+    assert!(empty[0].groups[0]
+        .statistics
+        .iter()
+        .all(|s| s.correction_rate.is_none()));
+    let mut original = row(&rule, Outcome::Done);
+    original.matched_because = "from".into();
+    original.message.sender.clear();
+    original.message.subject.clear();
+    store.append_ledger(&original).unwrap();
+    store.wrong_match(&original.id, Actor::Unknown).unwrap();
+    let stats = rule_views(&store)
+        .unwrap()
+        .remove(0)
+        .groups
+        .remove(0)
+        .statistics;
+    assert_eq!(stats[0].owner_wrong_matches, 0);
+    assert_eq!(stats[0].correction_rate, Some(0.0));
+    assert!(stats[1].correction_rate.is_none());
+    let view = ledger_views(&store, None, 50).unwrap();
+    assert!(view[0]["sender"].is_null() && view[0]["subject"].is_null());
+    store
+        .edit(
+            &rule.name,
+            &archive().replace("robot@example.com", "notices@example.edu"),
+        )
+        .unwrap();
+    assert!(rule_views(&store).unwrap()[0].groups[0].statistics[0]
+        .correction_rate
+        .is_none());
+}
+
+#[test]
+fn mail_rules_p3_doctor_names_all_write_and_network_routes_once_per_group() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    let mut config = crate::config::Config::default();
+    config.sandbox.kind = crate::sandbox::Backend::Bwrap;
+    config.sandbox.network = true;
+    let network = crate::doctor::check_mail_rule_shell(&home.0, &config);
+    assert_eq!(network.len(), 1);
+    assert!(network[0].detail.contains("serve's loopback port"));
+    assert!(network[0].detail.contains("network off"));
+    assert!(!network[0].detail.contains("shell can write"));
+    config.sandbox.writable.push(store.root().into());
+    let both = crate::doctor::check_mail_rule_shell(&home.0, &config);
+    assert_eq!(both.len(), 1);
+    assert!(
+        both[0].detail.contains("shell can write")
+            && both[0].detail.contains("serve's loopback port")
+    );
+    config.sandbox.network = false;
+    assert!(!crate::doctor::check_mail_rule_shell(&home.0, &config)[0]
+        .detail
+        .contains("serve's loopback port"));
+    config.sandbox.writable.clear();
+    assert!(crate::doctor::check_mail_rule_shell(&home.0, &config).is_empty());
+    config.sandbox.kind = crate::sandbox::Backend::Landlock;
+    assert!(crate::doctor::check_mail_rule_shell(&home.0, &config)[0]
+        .detail
+        .contains("serve's loopback port"));
+    config.tools.disabled.push("shell".into());
+    assert!(crate::doctor::check_mail_rule_shell(&home.0, &config).is_empty());
+}
+
+#[test]
+fn mail_rules_p3_retrospective_rows_include_envelope_and_provider_arrival_without_writes() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let now = Utc::now();
+    let received = now - Duration::days(20);
+    let candidate = engine::Candidate {
+        message: message(),
+        arrival_at: Some(received),
+        headers_complete: Some(true),
+        subject_complete: Some(true),
+        subject_is_raw: false,
+        recipients_complete: Some(true),
+        attachment_presence: Some(false),
+        to: Vec::new(),
+        list_id: None,
+        headers: BTreeMap::new(),
+        classified: None,
+    };
+    let rows = test_match(&rule, &candidate, Some(false), now).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome, Outcome::WouldHave);
+    assert_eq!(rows[0].received_at, Some(received));
+    assert_eq!(rows[0].in_inbox, Some(false));
+    assert_eq!(rows[0].message.sender, "robot@example.com");
+    assert!(!rows[0].matched_because.is_empty());
+    assert!(rows[0].reason.contains("no longer in the inbox"));
+    assert!(store.ledger().unwrap().is_empty());
+    let json = serde_json::to_value(&rows[0]).unwrap();
+    assert!(json.get("body").is_none());
+}
+
+#[test]
+fn mail_rules_p3_wrong_match_append_guard_retains_key_and_cannot_settle() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let original = row(&rule, Outcome::WouldHave);
+    store.append_ledger(&original).unwrap();
+    let mut correction = original.clone();
+    correction.id = "wrong-fixture".into();
+    correction.correction_of = Some(original.id.clone());
+    correction.outcome = Outcome::WrongMatch;
+    correction.wrong_match = true;
+    assert!(
+        store.append_ledger(&correction).is_err(),
+        "closes:false must refuse"
+    );
+    correction.closes = true;
+    correction.match_digest.matcher = "different".into();
+    assert!(
+        store.append_ledger(&correction).is_err(),
+        "changed measurement must refuse"
+    );
+    correction.match_digest = original.match_digest.clone();
+    store.append_ledger(&correction).unwrap();
+    assert!(message_closed(&store.ledger().unwrap(), &key(&original)));
+    correction.id = "duplicate-fixture".into();
+    assert!(store.append_ledger(&correction).is_err());
+    let pending = row(&rule, Outcome::Pending);
+    assert!(pending
+        .settled(Outcome::WrongMatch, "not a settlement", Utc::now())
+        .is_err());
+}
+
+#[test]
+fn mail_rules_p3_edit_cannot_restore_auto_after_an_unpersisted_external_lapse() {
+    for broken in [false, true] {
+        let home = Home::new();
+        let store = home.store();
+        let original = archive();
+        let rule = install(&store, &original);
+        approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+        let external = if broken {
+            "[broken".to_owned()
+        } else {
+            original.replace("Fictional notice", "External edit")
+        };
+        fs::write(rule.directory.join("rule.toml"), external).unwrap();
+        let before = rule_views(&store).unwrap()[0].groups[0].effective_mode;
+        assert!(before.rank() < Mode::Auto.rank());
+        let report = store.edit(&rule.name, &original).unwrap();
+        assert_eq!(report.approval_digest, rule.approval_digest);
+        assert_eq!(report.lapsed_groups, [ActionGroup::Mailbox]);
+        let after = &rule_views(&store).unwrap()[0].groups[0];
+        assert!(after.effective_mode.rank() <= before.rank());
+        assert!(after.recorded_mode.rank() < Mode::Auto.rank());
+    }
+}
+
+#[test]
+fn mail_rules_partial_header_marker_defaults_false_for_historical_and_unknown_wire_values() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let mut value = serde_json::to_value(row(&rule, Outcome::Done)).unwrap();
+    value.as_object_mut().unwrap().remove("headers_partial");
+    assert!(
+        !serde_json::from_value::<LedgerRow>(value.clone())
+            .unwrap()
+            .headers_partial
+    );
+    for unknown in [
+        serde_json::Value::Null,
+        serde_json::json!("true"),
+        serde_json::json!({"future":true}),
+    ] {
+        value["headers_partial"] = unknown;
+        assert!(
+            !serde_json::from_value::<LedgerRow>(value.clone())
+                .unwrap()
+                .headers_partial
+        );
+    }
+    value["headers_partial"] = serde_json::json!(true);
+    let row: LedgerRow = serde_json::from_value(value).unwrap();
+    assert!(row.headers_partial);
+    store.append_ledger(&row).unwrap();
+    assert_eq!(
+        ledger_views(&store, None, 10).unwrap()[0]["headers_partial"],
+        true
+    );
+}
+
+#[test]
+fn route_segment_names_are_refused_at_install() {
+    let home = Home::new();
+    let store = home.store();
+    for name in RESERVED_RULE_NAMES {
+        let error = store
+            .install(name, &archive(), &BTreeMap::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("reserved"), "{name}: {error:#}");
+        assert!(store.get(name).is_err(), "{name} must not be installed");
+    }
 }

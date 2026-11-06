@@ -393,9 +393,22 @@ writes a header rule for it.
 
 **P1b review correction (2026-11-04): raw-header preconditions have an
 account-level standing hold.** The engine asks the mailbox capability whether
-its reader can prove header absence. If it cannot (currently Graph), a rule
-using `list_id` or any `header.<Name>` matcher is excluded for that account,
-even on a positive match. Emit one notice per rule/account/pass, with no
+its reader can prove header absence. **Owner ruling (2026-11-06): narrow this
+hold; for a header rule whose actions are all non-outbound, a positive match
+is real evidence even on a partial header set, while Unknown means absent for
+this message, never a known negative.** A description rule (one with
+`match.describe`) keeps the account hold whatever its actions — an
+implementation choice in P3-1, not part of the ruling: its list admission and
+§4.2's entry cap are decided before any message is read, so a per-message
+exclusion would let it bypass the cap; P4 decides it with description rules.
+On a provider that cannot prove absence (currently Graph), non-outbound
+header rules using `list_id` / `header.<Name>` act normally on Match, recording
+`headers_partial: true`; Unknown contributes no row, key, cap, deferral,
+matched-set membership, outbound priority, description-list admission or
+handled-marker suppression. Retrospective tests follow the same rule.
+An outbound or description raw-header rule remains excluded for that account
+even on a positive match: send guards need absence evidence that truncation cannot
+supply. For that standing hold, emit one notice per rule/account/pass, with no
 per-message rows, claims, keys or cap consumption. The held rule contributes
 nothing to deferral, description-list admission, outbound priority or handled
 marker suppression: other rules behave as if it were absent. Existing pending
@@ -1263,6 +1276,10 @@ for each group and the sandbox as the remedy. This includes Mailbox and Board:
 tasks reach a task run's prompt, and the self-grant residual applies to every
 group. Outbound auto is held in P1, so an outbound-only check would never fire.
 The attribution implementation is unchanged.
+The orchestrating session keeps serve's loopback CLI-child route within this
+existing residual (including a chat live in serve); doctor now also flags
+every automatic group when registered shell has `Sandbox::can_reach_network`,
+naming the loopback route and a sandbox with network off alongside any write exposure.
 
 **P1c-2 adversarial review correction (2026-11-06):** a configured sandbox
 with a writable mount covering the rules store is also exposed. Compare both
@@ -2157,6 +2174,76 @@ skill's territory and carries a trap `HANDOFF.md` already records for
 line names it, or the briefing pastes a usage error into itself. Install
 first, then swap, then confirm by running the `notify` line, not by reading
 it.
+
+**P3-1 implemented (2026-11-06).** The backend for the P3 page now has
+stdin installation, atomic `edit`, digest-bound JSON `mode`, per-rule `pause`,
+header `wrong-match`, retrospective JSON testing, enriched list/show/ledger
+JSON, and eight feature-owned POST routes. Every mutation is a CLI child;
+no rule-store writes occur in serve. Svelte and the mail-desk button remain
+P3-2. The JSON field and route contract is in ARCHITECTURE §Mail rules.
+
+Implementation choices where the plan did not specify details:
+
+- Keep P1c's separate `mecha-mail rules test NAME`, adding `--json` as an
+  explicit spelling of its existing JSON output and adding per-account
+  status/counts/holds/rows. It still searches 30 days across all folders,
+  without token refresh or writes. A held or incomplete account has a null
+  match count, with partial rows retained. The serve budget is 600 seconds,
+  selected conservatively for pagination plus per-message reads (30-second
+  HTTP deadlines); no live mailbox timing measurement was made.
+- Add accepts `--stdin --name NAME`; serve passes `--stdin --name=NAME`, which
+  binds the value whatever it begins with. Rule names `add`, `ledger`,
+  `pause-all`, `undo` and `wrong-match` are refused at install, since those
+  fixed route segments would shadow a rule's page. Edit
+  accepts `--stdin` or `--file PATH` (`--file -` also reads stdin). Drafts
+  stay on a bounded 1 MiB stdin pipe; serve creates no draft file. Editing
+  changes only rule.toml and preserves bundled files. The full candidate is
+  validated before durable changes. Lapses are persisted before publication:
+  a failed rename may leave permission lowered, never recoverably automatic.
+  An unpersisted lapse of the old files is recorded first, so restoring approved
+  bytes after an external edit or invalid TOML cannot revive auto. If both
+  old and replacement snapshots lapse approval, history retains both
+  transitions while the edit report deduplicates affected groups.
+- The mode digest is the complete existing ApprovalDigest JSON object,
+  checked under the store lock. A stale supplied digest refuses even a
+  lowering; a lowering without one still works. Serve requires a digest
+  for any raise via the CLI's `--require-digest` guard, including shadow
+  from off and propose from shadow. Auto still requires `--yes` or an
+  interactive confirmation. Refusals carry typed JSON codes.
+- Wrong-match writes `wrong_match` with `closes:true`, copying the original
+  action key and naming `correction_of`; it never settles a pending attempt.
+  This intentionally closes even a previously non-closing shadow key: the
+  owner marked that matcher wrong, and neither this build nor an older
+  reader (which sees unknown) may re-run that action. It records no triage
+  correction and performs no undo. Existing undo remains available, and a
+  duplicate wrong-match is a no-op. The engine lease serializes it with
+  apply/undo; retries also retry a failed brake write.
+- Retain the existing brake units: wrong matches deduplicate per thread,
+  undo per automatic mailbox action. A row both undone and marked wrong
+  contributes once to each distinct brake, never twice to either. Page
+  combined corrections deduplicate action keys; owner rates require a
+  recorded owner actor. New undo and wrong-match rows record attribution;
+  historical missing attribution remains unknown. The shared CLI actor
+  reader moved into core for the provider binary to use the identical
+  posture/registry/run-marker reading; no authentication or request-causality
+  scheme was added. Safety brakes remain conservative for non-owner
+  corrections, which may lower but never raise permission.
+- Rates are partitioned by group, current match digest and verdict_input;
+  they never pool, and empty denominators are null. Fires count completed
+  actions in seven days; failures count failed ledger rows. The ledger
+  already holds sender and subject; missing text is null and the page does
+  not fetch mail. Show includes rule.toml text even when parsing is broken,
+  provided the contained file remains readable. Send/description fields
+  remain extensible; their execution and approval screens remain P4+.
+- Under the orchestrating session's choice within the existing closure
+  residual, serve-child attribution is unchanged. Ordinary live chats do
+  not mark serve itself as a run ancestor; a model reaching loopback with
+  the expected headers can cause an Owner-attributed CLI child. Doctor now
+  emits one finding per automatic rule/group for registered shell, stating
+  every applicable write and network route and its remedy, including
+  backends whose `can_reach_network()` stays true with network disabled.
+- The redundant mail-rule dispatch after the early return is now an explicit
+  unreachable exhaustiveness arm. Other carried minors remain untouched.
 
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.

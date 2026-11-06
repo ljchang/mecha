@@ -88,6 +88,35 @@ fn needs_raw_header_absence(rule: &LoadedRule) -> bool {
     !rule.definition.matcher.list_id.is_empty() || !rule.definition.matcher.header.is_empty()
 }
 
+/// Outbound guards still require absence evidence; visible positive headers
+/// suffice only for a header rule whose every action is non-outbound (owner
+/// ruling 2026-11-06). A description rule keeps the account hold: its list
+/// admission and entry cap are decided before any message is read, so a
+/// per-message exclusion would let it bypass the cap.
+pub fn header_provider_hold(rule: &LoadedRule, proves_absence: bool) -> bool {
+    !proves_absence
+        && needs_raw_header_absence(rule)
+        && (rule.definition.is_description()
+            || rule
+                .definition
+                .actions
+                .iter()
+                .any(|a| a.group().is_outbound()))
+}
+
+pub(super) fn partial_header_rule(rule: &LoadedRule, proves_absence: bool) -> bool {
+    !proves_absence && needs_raw_header_absence(rule) && !header_provider_hold(rule, proves_absence)
+}
+
+pub(super) fn absent_on_partial_headers(
+    rule: &LoadedRule,
+    candidate: &Candidate,
+    proves_absence: bool,
+) -> bool {
+    partial_header_rule(rule, proves_absence)
+        && header_match(&rule.definition.matcher, candidate) == HeaderMatch::Unknown
+}
+
 fn unsupported_action() -> ActionResult {
     ActionResult::Held {
         kind: FailureKind::Environment,
@@ -718,9 +747,26 @@ impl Run<'_> {
             self.options.clock.now(),
         )?;
         row.matched_because = serde_json::to_string(&rule.definition.matcher)?;
+        row.headers_partial =
+            partial_header_rule(rule, self.mailbox.proves_header_absence(&c.message.account));
         Ok(row)
     }
     async fn apply_thread(&mut self, rules: &[LoadedRule], c: &Candidate) -> Result<()> {
+        // Exclude before list admission, description obligations, matched-set
+        // construction and every deferral/precedence/handled decision. Unknown
+        // remains unknown; it is not converted into a proven negative.
+        let applicable: Vec<_> = rules
+            .iter()
+            .filter(|rule| {
+                !absent_on_partial_headers(
+                    rule,
+                    c,
+                    self.mailbox.proves_header_absence(&c.message.account),
+                )
+            })
+            .cloned()
+            .collect();
+        let rules = applicable.as_slice();
         let mut modes = BTreeMap::new();
         for rule in rules {
             self.check_inputs(rule)?;
@@ -1316,10 +1362,13 @@ pub async fn apply(
             }
         }
         if row.outcome == Outcome::Pending
-            && !mailbox.proves_header_absence(&row.message.account)
-            && rules
-                .iter()
-                .any(|rule| rule.name == row.rule && needs_raw_header_absence(rule))
+            && rules.iter().any(|rule| {
+                rule.name == row.rule
+                    && header_provider_hold(
+                        rule,
+                        mailbox.proves_header_absence(&row.message.account),
+                    )
+            })
         {
             continue; // A standing hold generates no per-message settlements.
         }
@@ -1361,9 +1410,7 @@ pub async fn apply(
     for account in accounts {
         let mut held_rules: BTreeSet<_> = rules
             .iter()
-            .filter(|rule| {
-                !mailbox.proves_header_absence(account) && needs_raw_header_absence(rule)
-            })
+            .filter(|rule| header_provider_hold(rule, mailbox.proves_header_absence(account)))
             .map(|rule| rule.name.clone())
             .collect();
         for name in &held_rules {
@@ -1374,12 +1421,13 @@ pub async fn apply(
         held_rules.extend(excluded.iter().cloned());
         // Standing conditions remove the whole rule before descriptions,
         // deferral, outbound priority, list caps or handled-marker decisions.
-        // Even a positive raw-header match cannot override this account hold.
+        // Even a positive raw-header match cannot override an outbound hold.
         let account_rules: Vec<_> = rules
             .iter()
             .filter(|rule| !held_rules.contains(&rule.name))
             .cloned()
             .collect();
+        // Partial-header rules are header rules, which the list cap never counts.
         run.report.list_cap.extend(list_cap(&account_rules, &modes));
         let account_queue: Vec<_> = queue
             .iter()
@@ -1522,6 +1570,18 @@ pub async fn apply(
             for entry in entries {
                 let mut outcomes = Vec::new();
                 for snapshot in &entry.actions {
+                    if account_rules.iter().any(|rule| {
+                        rule.name == snapshot.rule
+                            && absent_on_partial_headers(
+                                rule,
+                                &c,
+                                mailbox.proves_header_absence(account),
+                            )
+                    }) {
+                        // A previously queued positive match is still unknown,
+                        // not a negative that can settle its occasion.
+                        continue;
+                    }
                     if let Some(row) = run.report.rows.iter().rev().find(|r| {
                         r.same_key(snapshot)
                             && !matches!(r.outcome, Outcome::Pending | Outcome::ApprovalLapsed)

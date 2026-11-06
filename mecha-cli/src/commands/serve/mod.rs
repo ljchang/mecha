@@ -1021,6 +1021,46 @@ fn api() -> gate::Owned {
             Owner::Of(Feature::MailRules),
             get(mail_rules::show),
         )
+        .at(
+            "/api/mail/rules/add",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::add),
+        )
+        .at(
+            "/api/mail/rules/{name}/edit",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::edit),
+        )
+        .at(
+            "/api/mail/rules/{name}/mode",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::mode),
+        )
+        .at(
+            "/api/mail/rules/{name}/pause",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::pause),
+        )
+        .at(
+            "/api/mail/rules/pause-all",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::pause_all),
+        )
+        .at(
+            "/api/mail/rules/undo",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::undo),
+        )
+        .at(
+            "/api/mail/rules/wrong-match",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::wrong_match),
+        )
+        .at(
+            "/api/mail/rules/{name}/test",
+            Owner::Of(Feature::MailRules),
+            axum::routing::post(mail_rules::test),
+        )
         .at("/api/mail", Owner::Of(Feature::Mail), get(mail::list))
         .at(
             "/api/mail/inbox",
@@ -2389,6 +2429,14 @@ mod tests {
         for (method, uri, id) in [
             ("POST", "/api/mail/compose", "mail"),
             ("GET", "/api/mail/rules", "mail_rules"),
+            ("POST", "/api/mail/rules/add", "mail_rules"),
+            ("POST", "/api/mail/rules/notice/edit", "mail_rules"),
+            ("POST", "/api/mail/rules/notice/mode", "mail_rules"),
+            ("POST", "/api/mail/rules/notice/pause", "mail_rules"),
+            ("POST", "/api/mail/rules/pause-all", "mail_rules"),
+            ("POST", "/api/mail/rules/undo", "mail_rules"),
+            ("POST", "/api/mail/rules/wrong-match", "mail_rules"),
+            ("POST", "/api/mail/rules/notice/test", "mail_rules"),
             ("POST", "/api/entity/create", "graph"),
             ("GET", "/api/personas", "personas"),
             ("POST", "/api/proposals/entities/x/accept", "graph"),
