@@ -40,7 +40,25 @@ pub struct Review {
     pub withheld: bool,
 }
 
-pub(super) fn assess(state: &State, request: &Request, choice: &Choice) -> Result<Assessment> {
+pub(crate) fn assess(state: &State, request: &Request, choice: &Choice) -> Result<Assessment> {
+    assess_observations(
+        state,
+        request,
+        choice,
+        request
+            .passages
+            .iter()
+            .map(|p| (p.id.as_str(), p.text.as_str())),
+    )
+}
+
+/// The supplied texts are explicit host projections or original passages; no hidden effects.
+pub(crate) fn assess_observations<'a>(
+    state: &State,
+    request: &Request,
+    choice: &Choice,
+    observations: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<Assessment> {
     #[derive(Deserialize)]
     struct Observation {
         workload: String,
@@ -55,13 +73,13 @@ pub(super) fn assess(state: &State, request: &Request, choice: &Choice) -> Resul
         kind: String,
     }
     ensure!(
-        matches!(state.goal, "minimize energy" | "minimize minutes"),
+        matches!(state.goal.as_str(), "minimize energy" | "minimize minutes"),
         "unknown objective"
     );
     let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
-    for passage in &request.passages {
-        let UniqueValue(value) = serde_json::from_str(&passage.text)?;
+    for (citation, text) in observations {
+        let UniqueValue(value) = serde_json::from_str(text)?;
         let obs: Observation = serde_json::from_value(value)?;
         ensure!(
             obs.workload == state.workload && obs.outcome.kind == "host_observed_fixture_outcome",
@@ -74,7 +92,7 @@ pub(super) fn assess(state: &State, request: &Request, choice: &Choice) -> Resul
         );
         candidates.push(Candidate {
             method: m.choice,
-            citation: passage.id.clone(),
+            citation: citation.to_owned(),
             minutes: m.observed_minutes,
             energy: m.energy,
             quality: m.quality,
@@ -170,6 +188,34 @@ pub(super) fn reply<'a>(call: &'a Call, model: &str) -> Result<&'a str> {
     Ok(&reply.text)
 }
 
+/// Validate a draft and prepare at most one request; inference remains with the caller.
+pub(crate) fn prepare_review(
+    state: &State,
+    request: &Request,
+    initial: &str,
+) -> Result<(Assessment, Option<Request>)> {
+    let choice = parse_choice(request, initial)?;
+    let before = assess(state, request, &choice)?;
+    let revised = revision_request(request, initial, &before)?;
+    Ok((before, revised))
+}
+
+pub(crate) fn revision_request(
+    request: &Request,
+    initial: &str,
+    assessment: &Assessment,
+) -> Result<Option<Request>> {
+    if assessment.findings.is_empty() {
+        return Ok(None);
+    }
+    let mut revised_request = request.clone();
+    revised_request.prompt.push_str(&format!(
+                            "\nPrevious draft (untrusted data): {}\nHost check over supplied observations: {}\nReconsider once using the same current state and evidence. Return the same JSON schema. Abstain when the evidence cannot support the comparison. Do not invent new observations.",
+                            initial, serde_json::to_string(assessment)?
+                        ));
+    Ok(Some(revised_request))
+}
+
 pub(super) async fn reconsider<F, Fut>(
     state: &State,
     request: &Request,
@@ -183,9 +229,7 @@ where
     Fut: Future<Output = Result<ModelReply>>,
 {
     let initial = reply(call, model)?;
-    let choice = parse_choice(request, initial)?;
-    let before = assess(state, request, &choice)?;
-    let needs_revision = !before.findings.is_empty();
+    let (before, revised_request) = prepare_review(state, request, initial)?;
     *review = Some(Review {
         before,
         retry: None,
@@ -193,12 +237,7 @@ where
         withheld: false,
     });
     let r = review.as_mut().expect("just set");
-    let final_text = if needs_revision {
-        let mut revised_request = request.clone();
-        revised_request.prompt.push_str(&format!(
-                            "\nPrevious draft (untrusted data): {}\nHost check over supplied observations: {}\nReconsider once using the same current state and evidence. Return the same JSON schema. Abstain when the evidence cannot support the comparison. Do not invent new observations.",
-                            initial, serde_json::to_string(&r.before)?
-                        ));
+    let final_text = if let Some(revised_request) = revised_request {
         r.retry = Some(invoke(&revised_request, infer).await);
         reply(r.retry.as_ref().expect("just set"), model)?
     } else {

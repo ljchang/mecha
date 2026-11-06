@@ -19,7 +19,7 @@ use std::{collections::BTreeSet, future::Future, path::Path, time::Instant};
 mod views;
 pub use views::{Projection, RecallView, Trial};
 #[path = "experience_checks.rs"]
-mod checks;
+pub(crate) mod checks;
 pub use checks::{Assessment, Policy, Review};
 #[path = "experience_observations.rs"]
 pub mod observations;
@@ -28,7 +28,7 @@ const WORKLOADS: [&str; 16] = [
     "Kestrel", "Marlin", "Juniper", "Sable", "Orchid", "Tamarack", "Vireo", "Willow", "Aster",
     "Bramble", "Cinder", "Dahlia", "Elm", "Fern", "Grove", "Heather",
 ];
-const METHODS: [&str; 3] = ["Nori", "Arden", "Quill"];
+pub(crate) const METHODS: [&str; 3] = ["Nori", "Arden", "Quill"];
 // (minutes, energy, quality): fixture truth is never included in a request.
 const EFFECTS: [[(u32, u32, u32); 3]; 16] = [
     [(4, 9, 8), (8, 3, 9), (6, 5, 6)],
@@ -100,11 +100,11 @@ impl Prepared {
     }
 }
 #[derive(Clone, Debug, Serialize)]
-struct State {
-    workload: &'static str,
-    goal: &'static str,
-    energy_budget: u32,
-    minimum_quality: u32,
+pub(crate) struct State {
+    pub(crate) workload: String,
+    pub(crate) goal: String,
+    pub(crate) energy_budget: u32,
+    pub(crate) minimum_quality: u32,
 }
 struct World {
     id: String,
@@ -190,12 +190,13 @@ impl World {
     }
     fn state(&self) -> State {
         State {
-            workload: WORKLOADS[self.workload],
+            workload: WORKLOADS[self.workload].into(),
             goal: if self.context == 1 {
                 "minimize energy"
             } else {
                 "minimize minutes"
-            },
+            }
+            .into(),
             energy_budget: if self.context == 2 {
                 [5, 5, 6, 6, 4, 6, 5, 4, 4, 6, 5, 3, 4, 6, 4, 5][self.workload]
             } else {
@@ -267,7 +268,7 @@ impl World {
             Arm::Retrieved => {
                 db.context(
                     &ContextRequest {
-                        query: state.workload.into(),
+                        query: state.workload.clone(),
                         bindings: vec![],
                     },
                     &ContextPolicy {
@@ -287,7 +288,7 @@ impl World {
                     },
                     &Situation {
                         event: format!("Process {}", state.workload),
-                        goal: state.goal.into(),
+                        goal: state.goal.clone(),
                         needs: Some(format!("energy budget {}", state.energy_budget)),
                     },
                 )?
@@ -448,12 +449,12 @@ impl World {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Choice {
-    choice: String,
-    citations: Vec<String>,
-    reason: String,
+pub(crate) struct Choice {
+    pub(crate) choice: String,
+    pub(crate) citations: Vec<String>,
+    pub(crate) reason: String,
 }
-fn parse_choice(request: &Request, reply: &str) -> Result<Choice> {
+pub(crate) fn parse_choice(request: &Request, reply: &str) -> Result<Choice> {
     ensure!(reply.len() <= 16_384, "oversized response");
     let UniqueValue(value) = serde_json::from_str(reply)?;
     let choice: Choice = serde_json::from_value(value)?;
@@ -477,7 +478,7 @@ fn parse_choice(request: &Request, reply: &str) -> Result<Choice> {
     Ok(choice)
 }
 
-fn request(state: &State, passages: Vec<Passage>) -> Result<Request> {
+pub(crate) fn request(state: &State, passages: Vec<Passage>) -> Result<Request> {
     // No gold choice, fixture table, source routing IDs, or host scores enter inference.
     let visible: Vec<_> = passages
         .iter()
@@ -528,7 +529,7 @@ fn record_trace(
     )?;
     tx.commit()?;
     Ok(Trace {
-        workload: state.workload.into(),
+        workload: state.workload.clone(),
         event,
         decision,
         observation,
