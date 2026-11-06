@@ -13028,3 +13028,32 @@ Original observation payloads are historical records: a later cancellation does
 not rewrite their embedded cancellation-at-capture field. Use `durable_status` or
 `durable_observation` for current lifecycle state; generic recall is not a current
 cancellation join or action permission check.
+
+
+**Durable model responses settle before evaluation.** Explicit v4 adds
+`memory::durable_decision` with one initial and one optional revision slot per
+successful read. The operational rows store references and spent allowances;
+source-linked revisions hold sealed contracts, exact requests, responses, checks
+and final advisory decisions. `memory_decision_runtime::advance` performs a single
+resumable step; `decide` drives the same five-step maximum. Separating raw response
+settlement from deterministic assessment prevents a crash during checking from
+requiring another model call. A reserved call with no result remains indeterminate,
+never reconstructed as a live permit.
+
+**The final preflight guard follows provider awaits.** `ModelGuard::check` runs
+again in the CLI after resident-model discovery and immediately before inference.
+No transaction spans inference. Cancellation can retain an already-started response,
+but cannot authorize assessment, retry or finalization; changed/forgotten sources
+refuse late content. Operational status remains readable when current source access
+forbids audit content. Source revocation must not reset a spent allowance.
+
+**Checking a synthetic choice does not certify source truth or execute it.**
+`memory::decision` seals a strict host-authored measurement envelope, read hash,
+contract and projection separately. Its arithmetic checker is shared with existing
+experience trials; old prompt/schema bytes are preserved. A format terminator is
+not whole-file completeness, since the guarded read may return a bounded prefix.
+Only a valid draft with reproducible findings permits the second slot. Invalid,
+refused, wrong-model and oversized results terminate without a repair call. The
+stored final decision is always private/untrusted and advisory; the next real
+outcome requires a separate host observation. Generic v3 JSON finish cannot bypass
+v4 evaluation. Earlier stores are never implicitly migrated or downgraded.

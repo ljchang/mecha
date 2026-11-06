@@ -9,7 +9,10 @@ structured decisions 9/24 to 24/24 and independently supported rationale plus de
 8/24 to 23/24, with 15 additional calls. Query and final prose defects remain.
 §23 and §24's durable guarded-read slice is now implemented and qualified at
 `59ee1882b`: explicit v3 lifecycle, guarded synthetic acquisition and restart/crash
-checks. It makes no model calls; bounded model integration is next. See `HANDOFF.md` for current
+checks. That read adapter makes no model calls. §25 now adds an explicit v4 durable
+model-decision runtime at `3ed543a17`, with raw responses saved before source-only
+assessment and one optional revision. Actual action/outcome and appraisal feedback
+remain next. See `HANDOFF.md` for current
 state and `HISTORY.md` for verified work; earlier proposals/results remain below.
 
 **Owner decision — independent systems for now (2026-11-05):** mecha-graph

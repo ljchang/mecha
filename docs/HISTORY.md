@@ -14,6 +14,51 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-06 — durable synthetic model decisions (prototype branch).**
+`3ed543a17` integrates explicit v4 model attempts with the guarded-read lifecycle:
+separate original/revision request, raw result and assessment, sealed source/task
+binding, one optional source-checked reconsideration, and advisory final output.
+`memory_decision_runtime::advance` can stop after response settlement, so a fresh
+process rechecks that response without a model call. `decide` drives up to five
+steps; interrupted calls without results stay spent. Cancellation retains a started
+response while blocking further processing; source revision/restriction denies audit
+content, and forgetting erases/suppresses the full read/model dependency closure.
+The CLI returns content-free lifecycle status even when source access is gone.
+
+Parallel store/decision/qualification lanes and parent runtime/CLI integration were
+followed by independent review. Two medium findings were fixed with regressions:
+status/cancel must not depend on content access; invalid model citation shapes must
+produce failed pilot scores rather than crash summary generation. Existing trial
+prompt/schema output stayed byte-identical across 153 scripted requests. The pinned
+Ubuntu CI arm now runs the memory feature tests, closing the draft PR review gap.
+
+Exact implementation `3ed543a17` passed 6500 all-feature workspace tests (zero
+failures, 27 ignored), strict Clippy, workspace/release builds and the current
+privacy gate on Spark. Local runtime 2/2, process/lifecycle 6/6, CLI 4/4 and Python
+pilot 8/8 passed. The local loopback listener test first hit sandbox denial, then
+passed with that test's network access allowed. The installed isolated binary's
+SHA256 is `a8e1f700fd886fbc7767ecb336ee902c2a08786a5cc46a08a4f6471fc1f81cea`.
+No production install, service restart, model switch or owner-data use occurred.
+
+Eight frozen paired tasks completed 16 workflows/19 calls using resident
+qwen3.6-35b-a3b-uncensored, seed 7, temperature 0.6, no thinking, 8192 output-token cap,
+zero transport retries. No-memory abstained 8/8. With retained observations,
+source-supported optimal choices improved 5/6 to 6/6; the other two cases still
+proposed actions with missing comparison evidence or no feasible method and were
+host-withheld. The three revisions repaired the fresh-value choice but did not
+induce the two required abstentions. One final recommended choice had a contradictory
+constraint explanation. Usage: 6009 input/2283 output tokens, including 2064/451 for
+revisions; 32.2s summed call time and 37.9s CLI workflow time. This shows conditional
+use of explicit stored measurements, not retrieval ranking, executed outcomes,
+generalization or an equal-cost advantage. Artifacts remain local under
+`results/memory-durable-model-pilot-20261106/`; qualification logs under
+`results/memory-durable-model-20261106/`. Independent audit verified all 16 databases, 153 revision hashes, 24 frozen
+source-file hashes, exact request/result/assessment/final payloads, source closures
+and source-only oracles. All 16 final explanations were reviewed: 13 supported;
+the two withheld proposals and the self-contradictory energy-bound rationale were
+not. Complete citation arrays therefore did not establish explanation correctness.
+
+
 **2026-11-06 — publishable memory prototype snapshot on current main.**
 The original private prototype branched before GitHub main's history rewrite.
 Only its 116-file memory patch was transplanted onto `6b709e08b` as
@@ -188,7 +233,7 @@ local preview verified controls, results and rendered computation.
 
 **2026-11-06 — recall-view and fixed unseen-case measurements (`4a9365995`).**
 After Tailscale authentication, the isolated Spark binary completed 72/72 calls
-on qwen3.6-35b-a3b-uncensored (seed7, temperature0.6, fast, max2048, no retries).
+on qwen3.6-35b-a3b-uncensored (seed 7, temperature 0.6, fast, max2048, no retries).
 Legacy/measurements/scoped all scored 11/12 optimal; feasible choices were
 12/12, 12/12, 11/12. Strict prose passes 8/10/10 become 8/9/10 when requiring
 matching justified choice. All legacy inputs/replies matched the prior baseline.
@@ -235,7 +280,7 @@ JSONL. `experience_trial.py` preserves partial output, failures and missingness.
 Restart-before-recall and final reopened readback are explicit, not inferred.
 
 The frozen run used four workloads × three goal/resource contexts × three arms
-(36 calls), resident qwen3.6-35b-a3b-uncensored, seed7, temperature0.6, fast inference,
+(36 calls), resident qwen3.6-35b-a3b-uncensored, seed 7, temperature 0.6, fast inference,
 max2048 output, no retries. No-memory abstained appropriately 12/12. Retrieved and
 oracle memory each made 12 feasible and 11 optimal choices; all source sets and
 citations were complete. Retrieved/oracle request and reply pairs were identical
@@ -573,7 +618,7 @@ That last endorsement worsened relative to the prior withheld recommendation;
 completion and initial-label gains are not uniformly better reasoning. No aggregate
 revision-success rate or executed-plan benefit is asserted.
 
-Artifacts: `results/memory-evaluator-constraints-20261105/calibration-seed7/`, raw
+Artifacts: `results/memory-evaluator-constraints-20261105/calibration-seed 7/`, raw
 manifest/calls/report plus separate `summary.json` and `review.json`, also copied
 beside the Spark prototype. Production stayed `fec8d55c7` with `mecha-serve` active;
 no restart, personal-store import, migration, model switch or proposed action.
@@ -610,7 +655,7 @@ The evaluator also called ordinary words concepts when none was retrieved, claim
 pending clearance was obtainable, and interpreted a contradicted dispatch as an
 analogy test. These remain semantic failures, not citation-format failures.
 
-Artifacts: `results/memory-passages-20261105/calibration-seed7/`, including immutable
+Artifacts: `results/memory-passages-20261105/calibration-seed 7/`, including immutable
 raw calls/manifest/report and separate `summary.json` / `review.json`. Remote raw
 artifacts remain beside the installed prototype. This supersedes only the pending
 calibration status, not the earlier three-case results or their protocols.
@@ -680,7 +725,7 @@ conditions must be met or guarded, not merely documented. Those changes have
 RED/GREEN regressions, and the original failures remain in the artifacts.
 
 The disclosed rerun at 8583fad8f used the same resident
-qwen3.6-35b-a3b-uncensored, seed7, temperature .6 and three development cases.
+qwen3.6-35b-a3b-uncensored, seed 7, temperature .6 and three development cases.
 Supported-route and universal-clearance cases completed three calls and initially
 recommended Bridge and waiting, respectively. Neither recommended the unsafe
 candidate. Bridge's revision received no recommendation on reassessment; the
@@ -724,7 +769,7 @@ mismatches before scoring. All 12 original session config records were checked
 and used the intended trial provider/model/seed/temperature/budgets.
 
 The six synthetic cases in `planning_trial.py`, source `34a123b5a`, ran both arms
-on Spark's resident qwen3.6-35b-a3b-uncensored with seed7, temperature .6,
+on Spark's resident qwen3.6-35b-a3b-uncensored with seed 7, temperature .6,
 7 turns and 8192 output tokens, alternating order and fresh homes. Correct choice:
 3/6 off, 5/6 on. Choice plus visible and complete required citations: 1/6 off,
 4/6 on, including one correct abstention each. Median wall time: 26.5s off,

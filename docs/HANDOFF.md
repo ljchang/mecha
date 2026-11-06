@@ -29,85 +29,91 @@ architectural patterns and preserving future integration options. A merger or
 replacement is deferred until v2 is solid. See the current-scope addendum in
 `MECHA-MEMORY-DESIGN.md`; older migration proposals are not an approved cutover.
 
-**Publication branch (2026-11-06):** `codex/mecha-memory-v2-prototype` is a clean
-snapshot on current GitHub main `6b709e08b`. The former private prototype branch
-predated main's history rewrite and must not be pushed wholesale. Only its memory
-patch was transferred; current-main mail-rule work and privacy protections remain.
-Original build SHAs below identify historical isolated qualification, not commits
-published in this branch. Current-main candidate `a4de9bb2f` passed **6463
-all-feature workspace tests /0 failed /26 ignored**, all-target build, strict Clippy,
-formatting and the current privacy checker on Spark (2026-11-06). Its memory code
-matches the previously installed prototype; the combined current-main tree has not
-replaced the production binary. Spark checkout:
-`/home/ljchang/Github/mecha-memory-pr-20261106`; logs in
-`results/memory-pr-20261106/`. Subsequent documentation-only commits do not change
-that qualified code.
+**Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
+`codex/mecha-memory-v2-prototype`. This is the clean prototype snapshot on GitHub
+main `6b709e08b`; do not push the older private prototype branch, whose history
+predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
-**2026-11-06 — durable guarded-read prototype qualified (`59ee1882b`).**
-`Memory::create_durable` explicitly creates schema v3; existing v1/v2 databases are
-not migrated. `memory::durable` owns task identity, one-use reservations, observations,
-proposal commits, cancellation and forgetting. `memory_runtime::acquire` calls the
-existing `Agent::dispatch_one` through a host-bound synthetic file reader. The thin
-CLI exposes `init-durable` and `durable-read start/resume/status/cancel/finish`.
-This is default-off and synthetic-only. No model calls, automatic chat capture,
-semantic-success verdict or general action authority are added.
+**2026-11-06 — durable model decision runtime implemented (`3ed543a17`).**
+Explicit `Memory::create_durable_model` creates schema v4 without migrating earlier
+stores. `memory::durable_decision` holds separate initial/revision reservations and
+revision-backed requests, raw responses, host checks and advisory final decisions.
+`memory_decision_runtime::bind/advance/decide` seals an already successful guarded
+synthetic read and typed contract; the shared `memory::decision` arithmetic checker
+can request one reconsideration. A settled response resumes without inference;
+an unresolved reserved call stays spent/indeterminate. The thin CLI exposes
+`init-model` and `durable-decide bind/run/status/cancel`, with resident-local model
+preflight and an opaque current-source/cancellation guard after the await.
 
-The store/adapter/independent-test subagents completed their separate work packets;
-independent integrated review found no remaining major/medium issues. Parent integrated
-the CLI, Spark qualification and Site. Source-linked content stays in revisions;
-only opaque operational identity/state lives in the lifecycle table. A spent,
-unsettled reservation stays indeterminate across restart, never automatically
-replayed. `DispatchGuard::check` rechecks persisted cancellation and original source
-closure after awaited hooks/approval. Cooperative cancellation after that safe point
-and the existing filesystem canonicalize/open race remain documented limits.
-Current cancellation is projected by `durable_observation`; generic recall retains
-historical observations, not a current-state join.
+Cancellation may retain a started response, but cannot permit further evaluation,
+retry or finalization. Revised/restricted sources deny content while status and
+cancellation remain usable; forgetting cascades through the read/model closure and
+suppresses same-key recapture. Malformed/refused/wrong-model/oversized replies are
+terminal failures. No recommendation executes a method or becomes an observed
+outcome. The v3 supplied-JSON `finish` surface is unavailable in v4. Generic recall
+still returns historical records rather than current-state permission joins.
 
-**Next:** connect one bounded model decision to the durable observation lifecycle,
-retaining the original/revised attempts, source-only evaluation and actual outcome.
-The current `finish` path only commits supplied untrusted JSON, and `NoInference`
-explicitly prevents model use in acquisition. Reuse existing `checks::reconsider`
-and appraisal/step-feedback interfaces rather than introducing a second planner,
-executor or appraisal system. Keep authority/current-source checks at final commit.
-Design §§23–24 record the implemented slice and parallel work packets. Earlier v3
-model findings remain in HISTORY and `results/memory-reconsider-20261106/`; they are
-not new measurements of this runtime adapter.
+Three isolated subagents implemented store, pure decisions and independent
+qualification. Parent integrated runtime/CLI/CI and owns publication. Independent
+final review found no outstanding major/medium issues after regression fixes for
+status after source revocation and malformed pilot reply reporting. Pinned Ubuntu
+CI now executes `cargo test --workspace --locked --features memory-prototype`;
+the previous PR review correctly noted all-feature lint alone did not run these tests.
+
+Qualification at exact source `3ed543a17`: **6500 all-feature workspace tests
+passed /0 failed /27 ignored**, strict all-target/all-feature Clippy, all-target
+workspace and release builds, fmt and the current privacy gate passed on Spark.
+Local integrated runtime 2/2, public process/lifecycle 6/6 (plus one parent-spawned
+ignored helper), CLI 4/4 and Python pilot 8/8 passed. Mac CLI loopback qualification
+needed a sandbox exception for its temporary listener; its rerun passed. Eval
+inventory remains 36 cases /15 tags. These counts measure software, not reasoning.
+
+The paired synthetic pilot completed all 16 workflows and 19 calls: no-memory
+abstained 8/8; observed initial supported optimum 5/6 became 6/6 after one allowed
+reconsideration. Missing-alternative/no-feasible cases still failed model abstention
+(0/2) and were both host-withheld. Three revisions total; no call/format failures.
+The energy-bound explanation contradicts itself despite its correct structured
+choice. No equal-cost, generalization or actual-action-success claim. Usage:
+6009 input /2283 output tokens; summed call time 32.2s, CLI workflow time 37.9s.
+Artifacts: `results/memory-durable-model-pilot-20261106/`; build/test/privacy logs:
+`results/memory-durable-model-20261106/`. Independent read-only audit verified all 16 databases, 153 revisions, 24 frozen
+source/contract/provenance files, exact requests/results, bindings and source-only
+assessments. Final rationale review: 13/16 supported, including 5/6 emitted
+recommendations; two withheld proposals and one contradictory rationale failed.
+
+Isolated installed Spark binary:
+`~/.local/share/mecha-prototypes/memory-model-20261106/bin/mecha`, source
+`3ed543a17a6b4d80bb24d4fb6a82f39f448ea7bb`; SHA256
+`a8e1f700fd886fbc7767ecb336ee902c2a08786a5cc46a08a4f6471fc1f81cea`.
+Verified by its version, new CLI surface, digest and actual paired workflow run.
+The shared main binary, service/configuration, owner store and nightly jobs were
+not changed. Subsequent documentation-only commits advance HEAD without changing
+these qualified implementation bytes.
+
+**Next:** specify the smallest host-executed synthetic action that consumes a
+currently valid recommendation, uses normal runtime guards, and retains a separate
+actual outcome. Project the result into existing appraisal/step feedback, then test
+later recall under changed goals. Do not build a second planner/executor or grade
+success from model prose. This slice remains a fixed three-method arithmetic
+contract, not a general semantic validator or a completed memory MVP.
 
 Still open: reliable semantic evaluation, live appraisal/action/outcome integration,
-internal sensors, concept discovery/revision, rumination, production encryption/
-source fidelity, retention/recovery, corpus-scale/identity/vector retrieval, and an
-authorized personal-knowledge bridge. Nightly migration and merging mecha-graph
-remain deferred. Generic provider per-field usage missingness remains open.
+internal sensors, useful concept discovery/revision and rumination, production
+encryption/source fidelity, retention/recovery, corpus-scale/identity/vector retrieval,
+and an authorized personal-knowledge bridge. Nightly migration and merging
+mecha-graph remain deferred. Generic provider per-field usage missingness remains
+open. Prior model comparisons and isolated binaries are recorded in HISTORY, not
+new measurements of this runtime. Other subsystem deployment claims below were not
+requalified by this memory-only session.
 
-Current qualification (2026-11-06): **6100 all-feature workspace tests passed on
-Spark /0 failed /26 ignored**, strict workspace Clippy, all-target build and release
-build passed on exact source `59ee1882b`. The ignored subprocess helper is explicitly
-spawned by its crash test. Local standalone checks: 158 unit +4 integration; runtime
-14/14 and installed-CLI integration 2/2 passed. Installed Spark binary passed all
-19 CLI checks, including rewrite/delete reuse, restored taint, one-use commit,
-cancellation, forgetting and raw-database canary erasure. SQLite integrity/FKs passed.
-Evidence: `results/memory-durable-runtime-20261106/`. Eval inventory: 36 cases/15 tags.
-Software checks are not memory-quality scores. No new model benchmark was run.
-
-Verified isolated Spark binary:
-`~/.local/share/mecha-prototypes/memory-durable-20261106/bin/mecha`, source
-`59ee1882bb05372dc583296fd87e9389cebe43e8`; SHA256
-`eb7173525fc67f048923f244548ec3fc6a7fb6e34363605955d4d1dac562d6a7`.
-No main binary, service, model configuration, personal store or mecha-graph deployment
-changed. Production/model runtime state and other subsystem work below were not
-requalified. Branch remains unmerged; documentation commits advance HEAD beyond the
-qualified code. The previous Mac loopback timeout is no longer reproducible this
-session: independent local HTTP and real browser preview succeeded without OS changes.
-
-Living Site remains owner-private at:
+Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#implementation-roadmap
-Research v0.16 published on 2026-11-06, source
-`4baec9a829d2c25e1ce7b05abbe59b2460255625`, deployment
-`appgdep_6aee3c033460819184530c95185d8ded` succeeded. All 56 prior anchors remain
-(58 current), learning-loop SVG unchanged, internal links/inline scripts/dist checks
-passed. Actual browser preview verified the expandable computation and architecture
-switching; the published page visibly shows v0.16 and 6100 qualification results.
-Corrected stale hero/footer versions and revision-table rendering.
+Research v0.17 published 2026-11-06, source
+`55945a2a9539583fb5516a70cfc9972ff8e1d4f0`, deployment
+`appgdep_6aee51ee3ff48191b146d84aba30097d` succeeded. All 58 prior IDs retained
+(59 current), learning-loop SVG unchanged, internal links/revision table/inline
+scripts/dist checked. Browser preview verified the recovery table; native Site
+publication confirms the final results and limits are deployed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live
