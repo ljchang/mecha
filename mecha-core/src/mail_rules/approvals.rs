@@ -312,6 +312,12 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
     holds
 }
 
+pub(super) fn mode_ceiling(rule: &LoadedRule, group: ActionGroup) -> Mode {
+    built_in_holds(rule, group)
+        .iter()
+        .fold(Mode::Auto, |mode, hold| mode.lower(hold.ceiling))
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedMode {
     pub recorded: Mode,

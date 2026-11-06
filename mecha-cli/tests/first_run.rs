@@ -1285,6 +1285,7 @@ fn the_closing_note_names_each_way_back() {
         "web",
         "slack",
         "mail",
+        "mail_rules",
         "docs",
         "graph",
         "search",

@@ -51,6 +51,10 @@ pub async fn execute(args: Args) -> Result<()> {
     match mecha_core::config::Config::load_global() {
         Ok(cfg) => {
             findings.extend(doctor::check_shell_confinement(&cfg.sandbox, &home));
+            findings.extend(doctor::check_mail_rule_shell(&home, &cfg));
+            if mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::MailRules) {
+                findings.extend(mail_rules_timer());
+            }
             // The LoRA registry's files are checked against the folders
             // `[image]` and `[video]` name, so it reads the same config.
             findings.extend(doctor::check_loras(
@@ -410,6 +414,25 @@ fn legacy_learning_git_note() {
             git.display()
         );
     }
+}
+
+fn mail_rules_timer() -> Vec<Finding> {
+    let read = |unit: &str| {
+        std::process::Command::new("systemctl")
+            .args([
+                "--user",
+                "show",
+                unit,
+                "--property=LoadState,ActiveState,Result",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let timer = read("mecha-mail-rules.timer");
+    let service = read("mecha-mail-rules.service");
+    doctor::check_mail_rules_timer(true, timer.as_deref(), service.as_deref())
 }
 
 #[cfg(test)]

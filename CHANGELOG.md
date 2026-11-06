@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automatic mail-rule passes, opt-in.** Enable `mail_rules` with `mail` for
+  five-minute header passes and an isolated post-classify hook. Timer overlap
+  skips safely; typed failures fail the timer, and hook failures never fail
+  classification. Doctor reports approval/store/provider/address and pending
+  action problems, every automatic group under unconfined shell, and timer
+  health. Pending rule proposals and lapsed approvals appear in review queues.
+
 - **Owner mail-rule CLI.** `mecha mail rule add | list | show | mode | test |
   ledger | undo | pause-all` installs in shadow, requires owner approval for
   per-group raises, and exposes read-only JSON. Testing searches 30 days across
@@ -17,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sibling `mecha-mail` binary without searching PATH. Filtered apply requires a
   dry run so live passes retain sibling rules' safeguards. Undo records a durable
   intent before restoring mail and recovers interrupted corrections on retry.
-  Timer and classify integration remain pending.
+  Timer and classify integration ship behind the separate `mail_rules` switch.
 
 - **Mail-rule pre-timer safeguards.** Bounded pagination, injected-clock windows,
   visible expiry rows, unknown-activation holds, complete failure counts, one
@@ -28,8 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account selection and a dry run. The engine records per-action outcomes,
   defers classification-dependent work, recovers interrupted attempts, and
   applies failure brakes and task caps. Tasks use the configured graph MCP
-  server and stay held when it is unavailable. Automatic scheduling remains
-  for the next phase.
+  server and stay held when it is unavailable. Automatic scheduling is opt-in
+  through `mail_rules`.
 
 - **Approve persona memories as clean.** `mecha persona memory approve` and
   the Memories tab can now record the owner's vouch for a memory that came
@@ -300,6 +307,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- **Mail-rule entrypoints and deadlines.** Direct mail-binary undo and
+  retrospective testing require both global feature switches before opening
+  stores or providers. Doctor detects writable sandbox mounts reaching the
+  rules store through ancestors or aliases without probing backend readiness:
+  failed sandbox preflight prevents shell from running. Classify gives its rule
+  hook ten minutes including SIGTERM grace and forced reaping, reports timeouts,
+  and keeps its own result; daytime/nightly service budgets are 40/55 minutes.
+  Re-copy both classify services and reload systemd when deploying.
+
+- **Mail-rule review fixes.** Emergency pause skips stray rule entries with a
+  named notice while revoking valid rules. Unsupported automatic modes refuse
+  before showing an approval screen. Undo of an unreadable definition durably
+  lowers its historical groups before restoring mail. Rule views use the shared
+  mail-directory resolver, and empty text lists and ledgers say they are empty.
 
 - **Outlook archive and spam leave Sent Items and Drafts alone.** Both now
   move only the conversation's Inbox messages, following every page of that

@@ -127,6 +127,7 @@
     'graph shadow': 'Shadow verdicts',
     'graph entities': 'Graph entities',
     'rule proposals': 'Rule proposals',
+    'mail rules': 'Mail rules',
     'harness changes': 'Harness',
     'image candidates': 'Image library',
   };

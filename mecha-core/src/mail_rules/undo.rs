@@ -69,20 +69,31 @@ pub async fn undo(
 }
 
 fn apply_undo_brake(store: &RuleStore, rule_name: &str) -> Result<()> {
-    if let Ok(rule) = store.get(rule_name) {
-        let targets = engine::unacknowledged_brakes(&rule, &store.ledger()?, &store.approvals()?);
-        store
-            .lower_modes(
-                &rule.name,
-                &targets,
-                None,
-                &owner_file_holds(),
-                ApprovalReason::Brake,
-            )
-            .context(
-                "undo intent recorded, but applying its safety brake failed; restore not attempted",
-            )?;
-    }
+    let targets = match store.get(rule_name) {
+        Ok(rule) => engine::unacknowledged_brakes(&rule, &store.ledger()?, &store.approvals()?),
+        // lower_modes invokes lapse_unreadable_locked: by the time it returns,
+        // every historical group is durably clamped to shadow (off stays off).
+        // Explicit targets retain that clamp if the files are restored between
+        // this failed read and the writer transaction. A failed clamp must stop
+        // the restore, never silently leave the old permission in place.
+        Err(_) => store
+            .approvals()?
+            .into_iter()
+            .filter(|row| row.rule == rule_name && row.group != ActionGroup::Unknown)
+            .map(|row| (row.group, Mode::Shadow))
+            .collect(),
+    };
+    store
+        .lower_modes(
+            rule_name,
+            &targets,
+            None,
+            &owner_file_holds(),
+            ApprovalReason::Brake,
+        )
+        .context(
+            "undo intent recorded, but applying its safety brake failed; restore not attempted",
+        )?;
     Ok(())
 }
 

@@ -279,7 +279,7 @@ impl LedgerRow {
             && self.group == other.group
     }
 
-    pub(super) fn settles(&self, pending: &Self) -> bool {
+    pub(crate) fn settles(&self, pending: &Self) -> bool {
         // An ambiguous action cannot identify an attempt precisely enough to
         // discard its pending closure evidence.
         self.action.verb != ActionVerb::Unknown

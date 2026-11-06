@@ -1,6 +1,6 @@
 //! What is waiting on the owner, across every store that accumulates.
 //!
-//! Five stores collect work for a person and each grew its own verb, which is
+//! Six stores collect work for a person and each grew its own verb, which is
 //! how the knowledge graph's merge queue reached 6,434 items without anybody
 //! deciding to let it. `mecha review` answers "what is waiting" for a human;
 //! `doctor` answers "what is silently wrong"; and the goal system needs a
@@ -110,6 +110,8 @@ pub struct Backlog {
     pub frontdoor: Option<Depth>,
     pub proposals: Option<Depth>,
     pub candidates: Option<Depth>,
+    #[serde(default)]
+    pub mail_rules: Option<Depth>,
 }
 
 /// A total, and how much of it is missing.
@@ -161,6 +163,7 @@ pub struct Inventory {
     pub requests_on_owner: Option<Vec<Waiter>>,
     pub proposals: Option<Vec<Waiter>>,
     pub candidates: Option<Vec<Waiter>>,
+    pub mail_rules: Option<Vec<Waiter>>,
 }
 
 /// One read of every store: the depths, the owner-facing request depth, and
@@ -233,6 +236,8 @@ pub struct Flows {
     pub proposals: Option<Flow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Flow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_rules: Option<Flow>,
 }
 
 impl Flows {
@@ -243,6 +248,7 @@ impl Flows {
             frontdoor: Flow::plus(self.frontdoor, other.frontdoor),
             proposals: Flow::plus(self.proposals, other.proposals),
             candidates: Flow::plus(self.candidates, other.candidates),
+            mail_rules: Flow::plus(self.mail_rules, other.mail_rules),
         }
     }
 }
@@ -259,13 +265,14 @@ impl Inventory {
             frontdoor: f(&before.frontdoor, &after.frontdoor),
             proposals: f(&before.proposals, &after.proposals),
             candidates: f(&before.candidates, &after.candidates),
+            mail_rules: f(&before.mail_rules, &after.mail_rules),
         }
     }
 }
 
 impl Backlog {
     /// Read every mecha-owned store. Best-effort per store, like doctor: one
-    /// unreadable store never suppresses the other four.
+    /// unreadable store never suppresses the other five.
     pub fn read() -> Backlog {
         Self::read_with_owner_requests().0
     }
@@ -310,6 +317,7 @@ impl Backlog {
         let (questions, questions_items) = split(Self::read_questions());
         let (proposals, proposals_items) = split(Self::read_proposals());
         let (candidates, candidates_items) = split(Self::read_candidates());
+        let (mail_rules, mail_rules_items) = split(Self::read_mail_rules());
         Survey {
             backlog: Backlog {
                 outbox,
@@ -317,6 +325,7 @@ impl Backlog {
                 frontdoor,
                 proposals,
                 candidates,
+                mail_rules,
             },
             requests_on_owner,
             items: Inventory {
@@ -326,6 +335,7 @@ impl Backlog {
                 requests_on_owner: on_owner_items,
                 proposals: proposals_items,
                 candidates: candidates_items,
+                mail_rules: mail_rules_items,
             },
         }
     }
@@ -506,13 +516,32 @@ impl Backlog {
         ))
     }
 
-    fn depths(&self) -> [&Option<Depth>; 5] {
+    pub fn mail_rules_depth() -> Option<Depth> {
+        Self::read_mail_rules().map(|(depth, _)| depth)
+    }
+
+    fn read_mail_rules() -> Option<Counted> {
+        let home = crate::work::mecha_home().ok()?;
+        let items =
+            crate::mail_rules::waiting(&crate::mail_rules::RuleStore::root_under(&home)).ok()?;
+        let depth = Depth::of(
+            items.len(),
+            items
+                .iter()
+                .map(|w| w.since.as_str())
+                .filter(|s| !s.is_empty()),
+        );
+        Some((depth, items))
+    }
+
+    fn depths(&self) -> [&Option<Depth>; 6] {
         [
             &self.outbox,
             &self.questions,
             &self.frontdoor,
             &self.proposals,
             &self.candidates,
+            &self.mail_rules,
         ]
     }
 
@@ -571,6 +600,7 @@ impl Backlog {
             frontdoor: d(&before.frontdoor, &after.frontdoor),
             proposals: d(&before.proposals, &after.proposals),
             candidates: d(&before.candidates, &after.candidates),
+            mail_rules: d(&before.mail_rules, &after.mail_rules),
             given_up: (!given_up.is_empty()).then(|| given_up.iter().sum()),
             // Two depths cannot say which ids moved; a caller holding both
             // reads' items sets this from `Inventory::flows`.
@@ -598,6 +628,8 @@ pub struct BacklogDelta {
     pub proposals: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidates: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_rules: Option<i64>,
     /// How many more rows the owner had given up on at the end than at the
     /// start, over the three owner-facing stores (`Depth::given_up`).
     /// `None` on a row written before the counter, or where none of the
@@ -631,6 +663,7 @@ impl BacklogDelta {
             frontdoor: f(self.frontdoor, other.frontdoor),
             proposals: f(self.proposals, other.proposals),
             candidates: f(self.candidates, other.candidates),
+            mail_rules: f(self.mail_rules, other.mail_rules),
             given_up: f(self.given_up, other.given_up),
             flow: match (&self.flow, &other.flow) {
                 (Some(a), Some(b)) => Some(a.plus(b)),
@@ -682,6 +715,7 @@ impl BacklogDelta {
             self.frontdoor,
             self.proposals,
             self.candidates,
+            self.mail_rules,
         ]
         .into_iter()
         .flatten()
@@ -713,6 +747,7 @@ mod tests {
             frontdoor: depth(0, None),
             proposals: depth(1, Some("2026-08-25T09:00:00Z")),
             candidates: None, // could not read
+            mail_rules: depth(0, None),
         };
         assert_eq!(
             b.waiting(),
@@ -741,6 +776,7 @@ mod tests {
             frontdoor: depth(0, None),
             proposals: None,
             candidates: depth(1, Some("2026-08-26T09:00:00Z")),
+            mail_rules: depth(0, None),
         };
         assert_eq!(b.oldest(), Some("2026-08-17T09:00:00Z"));
         assert_eq!(Backlog::default().oldest(), None);
@@ -757,6 +793,7 @@ mod tests {
             frontdoor: depth(4, None),
             proposals: None,
             candidates: depth(0, None),
+            mail_rules: depth(0, None),
         };
         let after = Backlog {
             outbox: depth(11, None),   // the run staged nine
@@ -764,6 +801,7 @@ mod tests {
             frontdoor: depth(4, None),
             proposals: depth(2, None), // unreadable before, so unknown
             candidates: None,          // unreadable after, so unknown
+            mail_rules: depth(0, None),
         };
         let d = Backlog::delta(&before, &after);
         assert_eq!(d.outbox, Some(9));
@@ -798,6 +836,7 @@ mod tests {
             frontdoor: None,
             proposals: Some(-3),
             candidates: Some(-5),
+            mail_rules: None,
             given_up: None,
             flow: None,
         };
@@ -1103,7 +1142,8 @@ mod tests {
         assert_eq!(b.frontdoor, Some(Depth::default()));
         assert_eq!(b.proposals, Some(Depth::default()));
         assert_eq!(b.candidates, Some(Depth::default()));
-        // All five, not the three owner-facing ones: the first cut of this
+        assert_eq!(b.mail_rules, Some(Depth::default()));
+        // All six, not the three owner-facing ones: the first cut of this
         // test asserted three while `LearningStore::open` and
         // `HarnessStore::open` still created `learning/`
         // and `learning/harness/candidates` twice per run (found on
@@ -1122,5 +1162,49 @@ mod tests {
             std::fs::read_dir(home.dir()).unwrap().next().is_none(),
             "a read created something under the mecha home"
         );
+    }
+}
+
+#[cfg(test)]
+mod mail_rules_backlog_tests {
+    use super::*;
+    #[test]
+    fn the_sixth_store_reaches_depths_items_flows_and_totals_without_writing() {
+        let home = crate::work::tests::HomeGuard::new();
+        let before = Backlog::survey();
+        assert_eq!(before.backlog.mail_rules, Some(Depth::default()));
+        let root = crate::mail_rules::RuleStore::root_under(home.dir());
+        let store = crate::mail_rules::RuleStore::open(&root).unwrap();
+        let proposal = root.join("proposals/fictional");
+        std::fs::create_dir_all(&proposal).unwrap();
+        std::fs::write(proposal.join("rule.toml"), "description='Fictional notice'").unwrap();
+        let after = Backlog::survey();
+        assert_eq!(after.backlog.mail_rules.as_ref().unwrap().waiting, 1);
+        assert_eq!(
+            after.backlog.waiting().total,
+            before.backlog.waiting().total + 1
+        );
+        assert_eq!(after.items.mail_rules.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            Inventory::flows(&before.items, &after.items)
+                .mail_rules
+                .unwrap()
+                .added,
+            1
+        );
+        assert_eq!(
+            Backlog::delta(&before.backlog, &after.backlog).mail_rules,
+            Some(1)
+        );
+        assert_eq!(
+            Backlog::delta(&before.backlog, &after.backlog).net(),
+            Some(1)
+        );
+        assert!(!store.root().join("approvals.jsonl").exists());
+        std::fs::write(store.root().join("approvals.jsonl"), "not json").unwrap();
+        let broken = Backlog::read();
+        assert!(broken.mail_rules.is_none());
+        assert_eq!(broken.waiting().unreadable, 1);
+        assert!(broken.outbox.is_some());
     }
 }

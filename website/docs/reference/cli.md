@@ -861,6 +861,49 @@ mecha-mail corpus --since 2026-07-01 --account campus && mecha mail score --acco
 
 See [Mail and calendar](/docs/features/tools/mail#triage-the-queue-over-the-mailbox).
 
+## `mail rule`
+
+Owner-managed mail rules: `add`, `list`, `show`, `mode`, `test`, `ledger`,
+`undo`, and `pause-all`. New rules install in shadow. Mode changes name an
+action group; automatic permission requires owner approval of the current
+files. File changes lapse that permission. `list`, `show`, and `ledger` accept
+`--json` and remain readable with the feature off, as do revocation and pause-all.
+`test` reads 30 days of mail without writing; `undo` restores an exact mailbox
+message and records the correction.
+
+Enable unattended execution explicitly, then install the systemd user units
+as with the classify timers:
+
+```bash
+cargo install --path mecha-mail
+mecha features enable mail mail_rules
+mkdir -p ~/.config/systemd/user
+cp scripts/mecha-mail-rules.{service,timer} ~/.config/systemd/user/
+cp scripts/mecha-mail-classify.service scripts/mecha-mail-classify-day.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mecha-mail-rules.timer
+```
+
+The timer runs `mecha-mail rules apply --headers` every five minutes without a
+model. At the end of non-dry classification, `--after-classify` processes
+verdict-dependent and deferred work for the same accounts. Hook errors are
+reported and counted on stderr without changing classify's result. A hung
+hook has a ten-minute total allowance, reserving its last twelve seconds for
+SIGTERM, a ten-second grace, then SIGKILL and bounded reaping if needed.
+Re-copy both classify services when upgrading: their timeouts reserve ten
+minutes for the hook (40 minutes daytime, 55 nightly); replacing the binary
+alone is insufficient.
+An existing apply lease skips successfully; typed apply failures return non-zero, while
+held work does not. Install `mecha-mail` beside `mecha`: the child launcher does
+not search PATH. These timers currently have no launchd twin.
+
+`mecha doctor` reports unreadable stores, lapsed or corrupt approvals, unknown
+outcomes, stranded/recovered pending actions, missing account addresses,
+standing provider holds and enabled timer problems. Every automatic group
+under unconfined shell gets attention: configure the sandbox to protect the
+store. `mecha review` and `/queues` count rule proposals awaiting install and
+lapsed group approvals; proposal age currently uses file modification time.
+
 ## `tasks`
 
 The GTD board in the knowledge graph. `list` is the default subcommand.
@@ -1825,6 +1868,10 @@ mecha features disable <id>...
 |---|---|
 | `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`, its `switch` (`on`, `off`, `absent`, or null for a part), `in_use`, `shown` (whether the web app shows it) and `next` (the command or config change that brings it on, or null). |
 | `--probe` | Add up the memory of every model the shown features need — any not off or blocked, so one switched on but not yet set up counts too — against this machine: one pool on unified memory (a GB10, a Mac), or the card and system memory separately with a separate GPU. Each model is listed with what it holds and on what evidence — *measured* (machine and date), *arithmetic*, or *unmeasured*; a sum with an unmeasured figure in it is unknown, never zero, and what the figures leave out is named beneath. Reads `/proc/meminfo` (or `sysctl` on macOS) and runs `nvidia-smi`; asks no server, so nothing on demand is woken. With `--json`, the same as one object. The figures are the [hardware page's](/docs/getting-started/hardware#beside-the-chat-model). |
+
+| Feature | Requirement and next step |
+|---|---|
+| `mail_rules` | Requires `mail`; `mecha features enable mail mail_rules`. Install the sibling mail binary and [five-minute timer](#mail-rule). Defaults off. |
 
 Every optional feature has a switch in the global `config.toml`'s `[features]`
 table (see [Configuration](/docs/reference/configuration#features)), and the

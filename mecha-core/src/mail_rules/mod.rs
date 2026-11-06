@@ -9,15 +9,19 @@ pub mod engine;
 mod headers;
 mod ledger;
 mod management;
+mod runtime;
 mod store;
 mod undo;
+mod waiting;
 
 pub use approvals::*;
 pub use definition::*;
 pub use ledger::*;
 pub use management::*;
+pub use runtime::*;
 pub use store::*;
 pub use undo::*;
+pub use waiting::waiting;
 
 #[cfg(test)]
 mod tests;
@@ -60,4 +64,15 @@ impl std::fmt::Display for HeldReason {
             Self::NotDispatched(reason) | Self::Other(reason) => reason,
         })
     }
+}
+
+/// Validated recorded permissions, before provider or phase ceilings. A corrupt
+/// transition must not make an observer report a permission the engine rejected.
+pub(crate) fn recorded_auto_groups(rows: &[ApprovalRow]) -> Vec<(String, ActionGroup)> {
+    rows.iter()
+        .map(|row| (row.rule.clone(), row.group))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|(rule, group)| approvals::approval_state(rule, *group, rows).mode == Mode::Auto)
+        .collect()
 }

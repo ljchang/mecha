@@ -381,6 +381,9 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    if let Some(Cmd::Rule { command }) = args.cmd {
+        return super::mail_rule::run(command).await;
+    }
     super::features::require(mecha_core::feature::Feature::Mail)?;
     match args.cmd.unwrap_or(Cmd::List {
         all: false,
@@ -1181,6 +1184,9 @@ async fn classify(
                 r.thread_id, r.subject
             );
         }
+        if !dry_run {
+            super::mail_rule::after_classify(account).await;
+        }
         return Ok(());
     }
 
@@ -1590,6 +1596,7 @@ async fn classify(
     // train someone to ignore the alarm. What is reported here is the run
     // having done *nothing*: no classification and no pre-filter disposal,
     // with at least one failure to explain why.
+    super::mail_rule::after_classify(account).await;
     if run_accomplished_nothing(ok, prefiltered, failed) {
         bail!(
             "classified nothing: all {failed} thread(s) failed. \

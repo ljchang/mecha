@@ -53,6 +53,7 @@ mod library;
 mod listen;
 mod loras;
 mod mail;
+mod mail_rules;
 mod model;
 mod persona_chat;
 mod present;
@@ -1004,6 +1005,21 @@ fn api() -> gate::Owned {
             "/api/proposals/{store}/{id}/reject",
             Owner::ProposalStore,
             axum::routing::post(proposals::reject),
+        )
+        .at(
+            "/api/mail/rules",
+            Owner::Of(Feature::MailRules),
+            get(mail_rules::list),
+        )
+        .at(
+            "/api/mail/rules/ledger",
+            Owner::Of(Feature::MailRules),
+            get(mail_rules::ledger),
+        )
+        .at(
+            "/api/mail/rules/{name}",
+            Owner::Of(Feature::MailRules),
+            get(mail_rules::show),
         )
         .at("/api/mail", Owner::Of(Feature::Mail), get(mail::list))
         .at(
@@ -2372,6 +2388,7 @@ mod tests {
         // each refused before its handler runs.
         for (method, uri, id) in [
             ("POST", "/api/mail/compose", "mail"),
+            ("GET", "/api/mail/rules", "mail_rules"),
             ("POST", "/api/entity/create", "graph"),
             ("GET", "/api/personas", "personas"),
             ("POST", "/api/proposals/entities/x/accept", "graph"),

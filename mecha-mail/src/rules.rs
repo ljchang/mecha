@@ -688,6 +688,10 @@ pub async fn apply(
     rules: Vec<String>,
 ) -> Result<()> {
     let config = mecha_core::config::Config::load_global()?;
+    if let Some(reason) = mecha_core::mail_rules::disabled_reason(&config) {
+        eprintln!("{reason}; skipping mail rules apply");
+        return Ok(());
+    }
     let root = RuleStore::root_under(&mecha_core::work::mecha_home()?);
     if !root.exists() {
         ensure!(rules.is_empty(), "unknown rule: rule store does not exist");
@@ -777,7 +781,15 @@ pub async fn apply(
         }
         Ok(())
     })
-    .await?;
+    .await;
+    let report = match report {
+        Ok(report) => report,
+        Err(error) if error.is::<mecha_core::mail_rules::ApplyRunning>() => {
+            eprintln!("another mail rules apply is running; skipping this pass");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     println!("{}", serde_json::to_string_pretty(&report)?);
     report_status(&report)
 }
@@ -803,6 +815,7 @@ async fn finish_apply(
 fn report_status(report: &engine::ApplyReport) -> Result<()> {
     let failures: Vec<_> = [
         ("candidate_failures", report.candidate_failures),
+        ("action_failures", report.action_failures),
         ("read_failures", report.read_failures),
         ("handled_failures", report.handled_failures),
     ]
@@ -908,6 +921,7 @@ pub(crate) async fn outlook_restore(
 }
 
 pub async fn undo(row_id: &str) -> Result<()> {
+    require_rules_enabled()?;
     let store = RuleStore::open_existing(RuleStore::root_under(&mecha_core::work::mecha_home()?))?;
     mecha_core::mail_rules::prepare_undo(&store, row_id)?;
     let mailbox = RuleMailbox::load(false, &store)?;
@@ -919,6 +933,7 @@ pub async fn undo(row_id: &str) -> Result<()> {
 /// Dedicated retrospective path: no live/dry switch, engine apply, token refresh,
 /// lease, task sink, triage writes, approvals or ledger mutation can be reached.
 pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
+    require_rules_enabled()?;
     let store = RuleStore::open_existing(RuleStore::root_under(&mecha_core::work::mecha_home()?))?;
     let rule = store.get(name)?;
     ensure!(
@@ -935,6 +950,17 @@ pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
         )?
     );
     report_status(&report)
+}
+
+/// Explicit provider commands refuse when off; unattended apply instead skips.
+/// Even retrospective testing reads a mailbox, so it has the same global gates
+/// as the owner CLI. Configuration must load before any store or token is read.
+fn require_rules_enabled() -> Result<()> {
+    let config = mecha_core::config::Config::load_global()?;
+    if let Some(reason) = mecha_core::mail_rules::disabled_reason(&config) {
+        anyhow::bail!("{reason}");
+    }
+    Ok(())
 }
 
 async fn test_recent(

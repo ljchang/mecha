@@ -82,6 +82,18 @@ fn existing() -> Result<RuleStore> {
 }
 
 pub async fn run(cmd: Cmd) -> Result<()> {
+    if matches!(
+        &cmd,
+        Cmd::Add { .. }
+            | Cmd::Test { .. }
+            | Cmd::Undo { .. }
+            | Cmd::Mode {
+                mode: Mode::Propose | Mode::Auto,
+                ..
+            }
+    ) {
+        super::features::require(mecha_core::feature::Feature::MailRules)?;
+    }
     match cmd {
         Cmd::Add { path, name } => {
             let store = RuleStore::open_default()?;
@@ -111,6 +123,8 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&views)?);
+            } else if views.is_empty() {
+                println!("no mail rules installed");
             } else {
                 for view in &views {
                     print_view(view);
@@ -161,6 +175,10 @@ pub async fn run(cmd: Cmd) -> Result<()> {
                     why.clone()
                         .unwrap_or_else(|| format!("actor: {}", actor.as_str()))
                 })?;
+                ensure!(
+                    mode.rank() <= store.mode_ceiling(&rule, group)?.rank(),
+                    "mode refused by the store's permanent ceiling"
+                );
                 println!("Approve {} / {} in auto", rule, spelling(&group));
                 println!(
                     "Approval digest: {}",
@@ -253,6 +271,8 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else if rows.is_empty() {
+                println!("no mail rule ledger entries");
             } else {
                 for row in rows {
                     println!(
@@ -273,13 +293,17 @@ pub async fn run(cmd: Cmd) -> Result<()> {
         }
         Cmd::PauseAll => {
             let (actor, why) = acting_actor_explained();
-            let count = if root()?.exists() {
+            let report = if root()?.exists() {
                 rules::pause_all(&existing()?, actor)?
             } else {
-                0
+                rules::PauseReport::default()
             };
+            for notice in report.notices {
+                eprintln!("{notice}");
+            }
             println!(
-                "Paused {count} groups to shadow (actor: {})",
+                "Paused {} groups to shadow (actor: {})",
+                report.groups,
                 actor.as_str()
             );
             if let Some(why) = why {
@@ -333,27 +357,13 @@ fn print_view(view: &rules::RuleView) {
 
 async fn launch(args: &[String]) -> Result<()> {
     use std::os::unix::process::ExitStatusExt;
-    let executable = std::env::current_exe()?;
-    let sibling = executable
-        .parent()
-        .context("executable has no parent")?
-        .canonicalize()
-        .context("resolving the executable directory")?
-        .join("mecha-mail");
-    let status = match tokio::process::Command::new(&sibling)
-        .args(args)
+    let status = child(&std::env::current_exe()?, args)?
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
         .await
-    {
-        Ok(status) => status,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            bail!("mecha-mail binary is missing; install it with `cargo install --path mecha-mail`")
-        }
-        Err(error) => return Err(error).context("launching mecha-mail"),
-    };
+        .context("launching mecha-mail")?;
     if !status.success() {
         crate::exit_with(
             status
@@ -368,9 +378,7 @@ fn views(store: &RuleStore) -> Result<Vec<rules::RuleView>> {
     let mut views = rules::rule_views(store)?;
     // Registry metadata only. OAuth credentials and provider clients remain in
     // mecha-mail; the account file uses its established MECHA_MAIL_DIR override.
-    let directory = std::env::var_os("MECHA_MAIL_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".mecha/mail")));
+    let directory = mecha_core::onboarding::mail_store_dir();
     let registry = directory
         .map(|dir| std::fs::read_to_string(dir.join("accounts.toml")))
         .transpose()
@@ -400,4 +408,309 @@ fn views(store: &RuleStore) -> Result<Vec<rules::RuleView>> {
         }
     }
     Ok(views)
+}
+
+fn child(executable: &std::path::Path, args: &[String]) -> Result<tokio::process::Command> {
+    let sibling = rules::child_path(executable)?;
+    if !rules::executable(&sibling) {
+        bail!("mecha-mail binary is missing or not executable; install it with `cargo install --path mecha-mail`");
+    }
+    let mut command = tokio::process::Command::new(sibling);
+    command.args(args).kill_on_drop(true);
+    Ok(command)
+}
+
+#[derive(Debug, Default)]
+pub(super) struct HookReport {
+    pub attempted: usize,
+    pub failed: usize,
+    pub diagnostic: String,
+}
+
+/// Called only after classify has made its verdicts durable. Its result never
+/// decides classify's exit status, including a missing sibling or unreadable config.
+pub(super) async fn after_classify(account: Option<&str>) {
+    let result = match (
+        mecha_core::config::Config::load_global(),
+        std::env::current_exe(),
+    ) {
+        (Ok(config), Ok(executable)) => hook(&config, &executable, account).await,
+        (Err(error), _) => HookReport {
+            failed: 1,
+            diagnostic: format!("{error:#}"),
+            ..Default::default()
+        },
+        (_, Err(error)) => HookReport {
+            failed: 1,
+            diagnostic: error.to_string(),
+            ..Default::default()
+        },
+    };
+    if !result.diagnostic.is_empty() {
+        eprintln!("{}", result.diagnostic.trim_end());
+    }
+    if result.attempted > 0 || result.failed > 0 {
+        eprintln!(
+            "mail rules after classify: {} attempted, {} failed",
+            result.attempted, result.failed
+        );
+    }
+}
+
+async fn hook(
+    config: &mecha_core::config::Config,
+    executable: &std::path::Path,
+    account: Option<&str>,
+) -> HookReport {
+    hook_with_budget(
+        config,
+        executable,
+        account,
+        HookBudget {
+            total: rules::CLASSIFY_HOOK_TIMEOUT,
+            grace: rules::CLASSIFY_HOOK_GRACE,
+            reap: rules::CLASSIFY_HOOK_CLEANUP,
+        },
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct HookBudget {
+    total: std::time::Duration,
+    grace: std::time::Duration,
+    reap: std::time::Duration,
+}
+
+async fn hook_with_budget(
+    config: &mecha_core::config::Config,
+    executable: &std::path::Path,
+    account: Option<&str>,
+    budget: HookBudget,
+) -> HookReport {
+    if let Some(reason) = rules::disabled_reason(config) {
+        return HookReport {
+            diagnostic: format!("{reason}; skipping after-classify hook"),
+            ..Default::default()
+        };
+    }
+    let mut args = vec!["rules".into(), "apply".into(), "--after-classify".into()];
+    if let Some(account) = account {
+        args.extend(["--account".into(), account.into()]);
+    }
+    let result = async {
+        use tokio::io::AsyncReadExt;
+        let mut command = child(executable, &args)?;
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
+        let mut process = command.spawn().context("launching mail rules hook")?;
+        let group = process.id().context("hook process id unavailable")? as i32;
+        let mut stdout = process.stdout.take().context("hook stdout unavailable")?;
+        let mut stderr = process.stderr.take().context("hook stderr unavailable")?;
+        // The total allowance includes termination. Never spend the service's
+        // cleanup reserve on provider work or on descendants holding pipes open.
+        let running = budget.total.saturating_sub(budget.grace + budget.reap);
+        let needs_kill = {
+            let output = async {
+                let mut out = Vec::new();
+                let mut err = Vec::new();
+                let (status, _, _) = tokio::try_join!(
+                    process.wait(),
+                    stdout.read_to_end(&mut out),
+                    stderr.read_to_end(&mut err)
+                )?;
+                Ok::<_, std::io::Error>(std::process::Output {
+                    status,
+                    stdout: out,
+                    stderr: err,
+                })
+            };
+            tokio::pin!(output);
+            if let Ok(result) = tokio::time::timeout(running, &mut output).await {
+                return result.context("waiting for mail rules hook");
+            }
+            // SAFETY: the child starts its own process group; only this hook and
+            // its descendants receive the signal, never the classifier.
+            unsafe {
+                libc::kill(-group, libc::SIGTERM);
+            }
+            // Keep draining output during grace so a cooperative child can
+            // finish cleanup without blocking on a full pipe.
+            tokio::time::timeout(budget.grace, &mut output)
+                .await
+                .is_err()
+        };
+        if needs_kill {
+            // SAFETY: this is the same owned child process group as above.
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+            tokio::time::timeout(budget.reap, process.wait())
+                .await
+                .context("mail rules hook timed out; reap also timed out")?
+                .context("mail rules hook timed out; reaping failed")?;
+        }
+        // Even exit(0) in response to TERM is an incomplete, timed-out pass.
+        bail!(
+            "mail rules hook timed out within its {} second total allowance",
+            budget.total.as_secs()
+        );
+    }
+    .await;
+    match result {
+        Ok(output) => HookReport {
+            attempted: 1,
+            failed: usize::from(!output.status.success()),
+            diagnostic: format!(
+                "{}{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                if output.status.success() {
+                    String::new()
+                } else {
+                    format!("\nmail rules child: {}", output.status)
+                }
+            ),
+        },
+        Err(error) => HookReport {
+            attempted: 1,
+            failed: 1,
+            diagnostic: format!("mail rules hook failed: {error:#}"),
+        },
+    }
+}
+
+#[cfg(test)]
+mod classify_hook_tests {
+    use super::*;
+    use mecha_core::feature::{self, Feature};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn mail_rules_hung_hook_exits_within_the_reserved_service_budget_and_is_killed() {
+        use std::time::{Duration, Instant};
+        let dir = std::env::temp_dir().join(format!(
+            "rule-hook-timeout-{}",
+            mecha_core::session::Session::new_id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = dir.join("mecha-mail");
+        let mut config = mecha_core::config::Config::default();
+        feature::set_switch(&mut config, Feature::Mail, true);
+        feature::set_switch(&mut config, Feature::MailRules, true);
+        let budget = HookBudget {
+            total: Duration::from_secs(3),
+            grace: Duration::from_millis(500),
+            reap: Duration::from_millis(200),
+        };
+        // Both a cooperative child and one that ignores TERM must be reaped.
+        for cooperative in [true, false] {
+            std::fs::write(
+                &fixture,
+                format!(
+                    r#"#!/usr/bin/env python3
+import os, pathlib, signal, time
+root = pathlib.Path(__file__).parent
+(root / 'pid').write_text(str(os.getpid()))
+def terminate(signum, frame):
+    (root / 'term').write_text('received')
+    if {cooperative}:
+        time.sleep(0.2)
+        (root / 'cleaned').write_text('finished')
+        raise SystemExit(0)
+signal.signal(signal.SIGTERM, terminate)
+while True:
+    time.sleep(1)
+"#,
+                    cooperative = if cooperative { "True" } else { "False" }
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let started = Instant::now();
+            let report = hook_with_budget(&config, &dir.join("mecha"), None, budget).await;
+            assert!(
+                started.elapsed() < budget.total + Duration::from_millis(500),
+                "hook consumed the reserved service budget"
+            );
+            assert_eq!(report.attempted, 1);
+            assert_eq!(report.failed, 1);
+            assert!(
+                report.diagnostic.contains("timed out"),
+                "{}",
+                report.diagnostic
+            );
+            assert!(
+                dir.join("term").exists(),
+                "deadline must send SIGTERM before SIGKILL"
+            );
+            assert_eq!(dir.join("cleaned").exists(), cooperative);
+            if cooperative {
+                std::fs::remove_file(dir.join("cleaned")).unwrap();
+            } else {
+                assert!(started.elapsed() >= budget.total - budget.reap);
+            }
+            let pid: i32 = std::fs::read_to_string(dir.join("pid"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            // SAFETY: signal zero only checks the fixture process's existence.
+            assert_ne!(
+                unsafe { libc::kill(pid, 0) },
+                0,
+                "timed-out hook was not reaped"
+            );
+            std::fs::remove_file(dir.join("term")).unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mail_rules_classify_hook_uses_the_sibling_and_counts_failure_without_exiting() {
+        let dir = std::env::temp_dir().join(format!(
+            "rule-hook-{}",
+            mecha_core::session::Session::new_id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let fixture = dir.join("mecha-mail");
+        std::fs::write(
+            &fixture,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'fixture error' >&2\nexit 19\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = mecha_core::config::Config::default();
+        let skipped = hook(&config, &dir.join("mecha"), None).await;
+        assert_eq!(skipped.attempted, 0);
+        assert_eq!(skipped.failed, 0);
+        assert_eq!(skipped.diagnostic.lines().count(), 1);
+        feature::set_switch(&mut config, Feature::Mail, true);
+        feature::set_switch(&mut config, Feature::MailRules, true);
+        let report = hook(
+            &config,
+            &dir.join("mecha"),
+            Some("fictional account; echo unsafe"),
+        )
+        .await;
+        assert_eq!(report.attempted, 1);
+        assert_eq!(report.failed, 1);
+        assert!(report.diagnostic.starts_with(
+            "rules\napply\n--after-classify\n--account\nfictional account; echo unsafe\n"
+        ));
+        assert!(report.diagnostic.contains("fixture error"));
+        std::fs::write(&fixture, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        let all = hook(&config, &dir.join("mecha"), None).await;
+        assert_eq!(all.failed, 0);
+        assert_eq!(all.diagnostic, "rules\napply\n--after-classify\n");
+        std::fs::remove_file(&fixture).unwrap();
+        let missing = hook(&config, &dir.join("mecha"), None).await;
+        assert_eq!(missing.failed, 1);
+        assert!(missing
+            .diagnostic
+            .contains("cargo install --path mecha-mail"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

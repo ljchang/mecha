@@ -39,6 +39,7 @@ pub enum Feature {
     Incognito,
     Slack,
     Mail,
+    MailRules,
     Docs,
     Graph,
     Tasks,
@@ -77,6 +78,7 @@ impl Feature {
         Feature::Incognito,
         Feature::Slack,
         Feature::Mail,
+        Feature::MailRules,
         Feature::Docs,
         Feature::Graph,
         Feature::Tasks,
@@ -106,6 +108,7 @@ impl Feature {
             Feature::Web => "web",
             Feature::Slack => "slack",
             Feature::Mail => "mail",
+            Feature::MailRules => "mail_rules",
             Feature::Docs => "docs",
             Feature::Graph => "graph",
             Feature::Tasks => "tasks",
@@ -136,6 +139,7 @@ impl Feature {
             Feature::Web => "The web app",
             Feature::Slack => "Slack remote control",
             Feature::Mail => "Mail and calendar",
+            Feature::MailRules => "Automatic mail rules",
             Feature::Docs => "Google Docs, Sheets and Slides",
             Feature::Graph => "Knowledge graph",
             Feature::Tasks => "Task board",
@@ -190,6 +194,7 @@ impl Feature {
     /// What must be on for this to be on, beyond [`Feature::part_of`].
     pub fn requires(self) -> &'static [Feature] {
         match self {
+            Feature::MailRules => &[Feature::Mail],
             // Not the front door on mail: requests arrive by `factory-publish
             // drain` and publishing needs no mailbox; only booking settlement
             // reads the mail ledger, and that side fails closed on its own
@@ -230,6 +235,7 @@ impl Feature {
         match self {
             Feature::Web
             | Feature::Mail
+            | Feature::MailRules
             | Feature::Docs
             | Feature::Graph
             | Feature::Search
@@ -283,6 +289,7 @@ impl Feature {
             // The operator's credentials: the mail crate's stores live under
             // the real home whatever `$MECHA_HOME` says.
             | Feature::Mail
+            | Feature::MailRules
             | Feature::Docs
             // The operator's backends and keys (`MACHINE_TABLES`).
             | Feature::Search
@@ -603,6 +610,9 @@ pub fn unknown_switches(cfg: &Config) -> Vec<String> {
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub has_mail_binary: bool,
+    /// The same canonical executable sibling used by the rules child launcher.
+    pub has_mail_rules_binary: bool,
+    pub mail_rules_stored: Option<bool>,
     pub has_docs_binary: bool,
     pub has_graph_binary: bool,
     pub has_factory_binary: bool,
@@ -651,6 +661,11 @@ impl Facts {
             // the feature's server (§15; review of #699) — or mecha's own
             // build in its tree.
             has_mail_binary: current_on_path("mecha-mail") || crate::mail_mcp::installed(home),
+            has_mail_rules_binary: std::env::current_exe()
+                .ok()
+                .and_then(|exe| crate::mail_rules::child_path(&exe).ok())
+                .is_some_and(|path| crate::mail_rules::executable(&path)),
+            mail_rules_stored: crate::mail_rules::stored(home),
             has_docs_binary: current_on_path("mecha-docs") || crate::mail_mcp::installed(home),
             has_graph_binary: current_on_path("mecha-graph-mcp")
                 || crate::graph_mcp::installed(home),
@@ -908,6 +923,7 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
             .is_some_and(|l| !l.is_empty()),
         Feature::Slack => facts.slack_linked == Some(true),
         Feature::Mail => mcp_entry(facts, "mecha-mail").is_some_and(|m| !m.disabled),
+        Feature::MailRules => facts.mail_rules_stored == Some(true),
         Feature::Docs => mcp_entry(facts, "mecha-docs").is_some_and(|m| !m.disabled),
         Feature::Graph => mcp_entry(facts, "mecha-graph-mcp").is_some_and(|m| !m.disabled),
         Feature::Search => cfg.search.iter().any(|b| !b.disabled),
@@ -1022,8 +1038,7 @@ fn code_unmet(cfg: &Config) -> Option<(String, Option<String>)> {
 /// turns it on. A feature whose `requires` is not already on and not in the
 /// same request is refused with the chained command, as Claude Code refuses a
 /// disable that would break another plugin, rather than land in `Blocked`.
-/// (No feature with a switch has a `requires` edge since F15; the branch
-/// waits for the next one.)
+/// `mail_rules` has its own switch and requires `mail`.
 pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String> {
     let mut wanted = Vec::new();
     for id in ids {
@@ -1666,6 +1681,16 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 reason: "the Slack token store could not be read".into(),
             },
         },
+        Feature::MailRules => {
+            if !facts.has_mail_rules_binary {
+                off("the mecha-mail executable sibling is missing",
+                    "cargo install --path mecha-mail")
+            } else if facts.mail_rules_stored.is_none() {
+                State::Unknown { reason: "the mail rule store could not be read".into() }
+            } else {
+                on("owner-approved rules; headers every five minutes, deferred actions after classify")
+            }
+        }
         Feature::Mail => server_state(
             Feature::Mail,
             facts,
@@ -2451,6 +2476,7 @@ mod tests {
                 Feature::Web
                 | Feature::Slack
                 | Feature::Mail
+                | Feature::MailRules
                 | Feature::Docs
                 | Feature::Graph
                 | Feature::Tasks
@@ -2475,9 +2501,9 @@ mod tests {
                 | Feature::Code => {}
             }
         }
-        // The match above lists 25 — raise this with it, and a variant
+        // The match above lists 26 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 25);
+        assert_eq!(Feature::ALL.len(), 26);
     }
 
     #[test]
@@ -3252,5 +3278,39 @@ mod tests {
             serde_json::to_value(rows.iter().find(|r| r.id == Feature::Tasks).unwrap()).unwrap();
         assert_eq!(tasks["part_of"], "graph");
         assert_eq!(tasks["on"], "graph");
+    }
+}
+
+#[cfg(test)]
+mod mail_rules_feature_tests {
+    use super::*;
+    #[test]
+    fn mail_rules_has_its_own_default_off_switch_and_requires_mail() {
+        let mut facts = Facts::default();
+        assert_eq!(state(&facts, Feature::MailRules).word(), "off");
+        assert!(Feature::MailRules.has_switch());
+        assert!(!Feature::MailRules.switchable_from_environment());
+        set_switch(&mut facts.config, Feature::MailRules, true);
+        assert_eq!(state(&facts, Feature::MailRules).word(), "blocked");
+        set_switch(&mut facts.config, Feature::Mail, true);
+        assert!(matches!(
+            own_state(&facts, Feature::MailRules),
+            State::Off { .. }
+        ));
+        facts.has_mail_rules_binary = true;
+        assert!(matches!(
+            own_state(&facts, Feature::MailRules),
+            State::Unknown { .. }
+        ));
+        facts.mail_rules_stored = Some(false);
+        assert!(matches!(
+            own_state(&facts, Feature::MailRules),
+            State::On { .. }
+        ));
+        assert!(!evidence(&facts, Feature::MailRules));
+        facts.mail_rules_stored = Some(true);
+        assert!(evidence(&facts, Feature::MailRules));
+        assert_eq!(Feature::MailRules.part_of(), None);
+        assert_eq!(Feature::MailRules.requires(), &[Feature::Mail]);
     }
 }

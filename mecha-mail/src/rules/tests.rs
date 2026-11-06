@@ -2063,6 +2063,7 @@ fn header_absence_capability_requires_full_gmail_reads() {
 fn report_status_names_every_nonzero_counter() {
     let report = engine::ApplyReport {
         candidate_failures: 2,
+        action_failures: 1,
         read_failures: 3,
         handled_failures: 4,
         ..Default::default()
@@ -2070,6 +2071,7 @@ fn report_status_names_every_nonzero_counter() {
     let message = report_status(&report).unwrap_err().to_string();
     for counter in [
         "candidate_failures=2",
+        "action_failures=1",
         "read_failures=3",
         "handled_failures=4",
     ] {
@@ -2098,4 +2100,13 @@ async fn rule_mailbox_uses_the_engine_clock_for_recent_verdicts() {
             .unwrap(),
         ["recent"]
     );
+}
+
+#[test]
+fn held_mail_rule_passes_are_not_failures() {
+    let report = engine::ApplyReport {
+        notices: vec!["task sink unavailable; held".into()],
+        ..Default::default()
+    };
+    assert!(report_status(&report).is_ok());
 }
