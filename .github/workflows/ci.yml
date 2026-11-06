@@ -144,6 +144,12 @@ jobs:
           MECHA_SESSION_KIND: test
         run: cargo test --workspace --locked
 
+      # The default-off prototype has security/lifecycle tests of its own.
+      # Execute them on one pinned leg; all-feature clippy only type-checks them.
+      - name: Test experimental memory
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo test --workspace --locked --features memory-prototype
+
   no-logs:
     # No logs, recordings or run output in a public repository (owner's
     # ruling, 2026-10-04). The pre-commit and pre-push hooks compare added text

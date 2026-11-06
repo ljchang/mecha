@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Experimental memory adds an explicit v4 model-decision store and
+  `init-model` / `durable-decide bind/run/status/cancel`. A successful guarded
+  synthetic measurement read can support one initial model attempt and one
+  source-checked reconsideration. Responses are retained before assessment;
+  restart reuses settled responses and never replays unresolved calls. Decisions
+  remain advisory, and cancellation/forgetting/current-source checks apply.
+
 - Experimental memory adds a separate v3 durable-read store and explicit
   start/resume/status/cancel/finish commands. One host-bound synthetic file read
   uses ordinary Mecha guards; reservations survive crashes, settled results are

@@ -923,3 +923,52 @@ phase and spent allowances. Forgetting a supporting source erases dependent task
 content and prevents a late result from recreating it. Original source files and
 previously emitted CLI JSON remain separate artifacts; local forgetting cannot erase
 those exports. No production encryption or general action scheduler is claimed.
+
+
+## Durable model decisions (explicit schema v4)
+
+Create a new database with `memory --experimental --db NEW.memory-prototype.sqlite
+init-model --domain synthetic-demo`. This does not migrate any earlier database.
+Import synthetic provenance and use the existing `durable-read start/resume` to
+retain a successful read. The v3 supplied-JSON `finish` path is unavailable in v4.
+
+The file must be strict JSON with `kind: "host_authored_synthetic_measurements_v1"`,
+`workload`, `complete: true`, and `observations` containing zero to three unique
+Nori/Arden/Quill measurements (`choice`, `observed_minutes`, `energy`, `quality`).
+Numbers are unsigned integers. `complete` terminates the format; it does not prove
+that FsRead returned the whole original file. Provenance hashes the received bytes.
+
+```sh
+mecha memory --experimental --db /tmp/new.memory-prototype.sqlite durable-decide \
+  --synthetic-input --domain synthetic-demo --scope fixture-mail bind \
+  --read READ_ID --contract '{"workload":"Synthetic task","objective":"minimize_minutes","energy_budget":10,"minimum_quality":6}' \
+  --model RESIDENT_MODEL --seed 7 --view observed
+mecha memory --experimental --db /tmp/new.memory-prototype.sqlite durable-decide \
+  --synthetic-input --domain synthetic-demo --scope fixture-mail run \
+  --task MODEL_ID --endpoint http://127.0.0.1:8080 --holds-dir /explicit/shared/holds
+```
+
+`status --task MODEL_ID` and `cancel --task MODEL_ID` use the same explicit authority
+prefix. Status returns lifecycle metadata even when revised/restricted sources
+prevent content readback. `--view none` provides a paired evidence-free control;
+its sealed read is still validated, but no measurements enter the model prompt.
+The model/seed/contract/view are sealed at bind. The transport is resident-loopback
+only with zero HTTP retries, 8192 output tokens, no thinking, and a 180-second limit.
+
+`memory_decision_runtime::advance` performs one resumable step; `decide` drives up to
+five steps: initial call, pure assessment, optional revision, reassessment, final.
+Every call spends its own allowance before inference. A response is saved before
+checking it, permitting deterministic recovery after a crash. An interrupted call
+without a saved response stays spent/indeterminate; cancellation can retain a
+started response but cannot authorize more assessment or a recommendation.
+
+Malformed/refused/wrong-model/oversized responses are retained as failures with no
+repair call. Only a valid draft with source-check findings permits one revision.
+No recommendation executes a method or becomes an observed outcome. The checker
+covers the fixed synthetic arithmetic contract, not general semantic correctness.
+
+`durable_model_trial.py` freezes eight paired none/observed tasks before inference,
+with sixteen initial allowances and at most sixteen revisions. It independently
+scores source-supported optimum, appropriate abstention, host withholding, errors,
+citations and actual available usage separately. Results do not measure general
+retrieval quality, policy learning, or benefit on real tasks.

@@ -126,6 +126,8 @@ pub mod mdform;
 #[cfg(feature = "memory-prototype")]
 pub mod memory;
 #[cfg(feature = "memory-prototype")]
+pub mod memory_decision_runtime;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_runtime;
 pub mod message;
 pub mod on_demand;

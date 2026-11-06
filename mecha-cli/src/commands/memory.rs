@@ -26,6 +26,13 @@ pub enum Cmd {
         #[arg(long)]
         domain: String,
     },
+    /// Create a NEW synthetic database with separately budgeted model decisions.
+    InitModel {
+        #[arg(long)]
+        domain: String,
+    },
+    /// Bind, run or inspect a bounded model decision over a retained guarded read.
+    DurableDecide(DurableDecideArgs),
     /// Explicit synthetic guarded-read lifecycle; no model or live-store discovery.
     DurableRead(DurableReadArgs),
     /// Import an explicitly selected synthetic native Mecha JSONL session.
@@ -205,6 +212,57 @@ pub enum Cmd {
 }
 
 #[derive(ClapArgs)]
+pub struct DurableDecideArgs {
+    #[arg(long, required = true)]
+    synthetic_input: bool,
+    #[arg(long)]
+    domain: String,
+    #[arg(long, required = true)]
+    scope: Vec<String>,
+    #[command(subcommand)]
+    cmd: DurableDecideCommand,
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DecisionView {
+    None,
+    Observed,
+}
+#[derive(Subcommand)]
+pub enum DurableDecideCommand {
+    /// Seal a task contract and model settings; does not call a model.
+    Bind {
+        #[arg(long)]
+        read: String,
+        /// Inline strict JSON task contract; never an inferred goal.
+        #[arg(long)]
+        contract: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        #[arg(long, value_enum)]
+        view: DecisionView,
+    },
+    /// Resume without replaying any spent model attempt; never executes a recommendation.
+    Run {
+        #[arg(long)]
+        task: String,
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long)]
+        holds_dir: PathBuf,
+    },
+    Status {
+        #[arg(long)]
+        task: String,
+    },
+    Cancel {
+        #[arg(long)]
+        task: String,
+    },
+}
+
+#[derive(ClapArgs)]
 pub struct DurableReadArgs {
     #[arg(long, required = true)]
     synthetic_input: bool,
@@ -270,6 +328,11 @@ pub async fn execute(args: Args) -> Result<()> {
             let memory = Memory::create_durable(&args.db, &domain)?;
             json!({"snapshot":memory.snapshot()?,"fixture_only":true,"durable":true})
         }
+        Cmd::InitModel { domain } => {
+            let memory = Memory::create_durable_model(&args.db, &domain)?;
+            json!({"snapshot":memory.snapshot()?,"fixture_only":true,"durable_model":true})
+        }
+        Cmd::DurableDecide(decision) => execute_durable_decide(&args.db, decision).await?,
         Cmd::DurableRead(read) => execute_durable_read(&args.db, read).await?,
         Cmd::ImportSession {
             path,
@@ -755,6 +818,104 @@ async fn execute_durable_read(
     Ok(json!({"status": status, "fixture_only": true, "model_called": false}))
 }
 
+async fn execute_durable_decide(
+    db: &std::path::Path,
+    args: DurableDecideArgs,
+) -> Result<serde_json::Value> {
+    use mecha_core::{
+        memory::{
+            decision::{Contract, EvidenceView},
+            durable_decision::{AttemptKind, ModelPhase},
+            Access,
+        },
+        memory_decision_runtime::{self as runtime, ModelSpec},
+    };
+    ensure!(args.synthetic_input, "--synthetic-input is required");
+    let access = Access {
+        domain: args.domain,
+        scopes: args.scope.into_iter().collect(),
+    };
+    let mut memory = Memory::open(db)?;
+    let receipt = match args.cmd {
+        DurableDecideCommand::Bind {
+            read,
+            contract,
+            model,
+            seed,
+            view,
+        } => {
+            ensure!(contract.len() <= 16_384, "contract exceeds 16384 bytes");
+            // Deserialize directly into the strict struct: serde rejects duplicate fields.
+            let contract: Contract = serde_json::from_str(&contract)?;
+            let read = memory.durable_reopen(&read, &access)?;
+            let receipt = runtime::bind(
+                &mut memory,
+                &read,
+                ModelSpec {
+                    contract,
+                    model,
+                    seed,
+                    view: match view {
+                        DecisionView::None => EvidenceView::None,
+                        DecisionView::Observed => EvidenceView::Observed,
+                    },
+                },
+                &access,
+            )?;
+            return Ok(
+                json!({"status":memory.durable_model_status(&receipt,&access)?,"fixture_only":true}),
+            );
+        }
+        DurableDecideCommand::Run {
+            task,
+            endpoint,
+            holds_dir,
+        } => {
+            let receipt = memory.durable_model_reopen(&task, &access)?;
+            let status = memory.durable_model_status(&receipt, &access)?;
+            if status.phase == ModelPhase::Active {
+                let spec = runtime::spec(&memory, &receipt, &access)?;
+                let client =
+                    LocalMemoryModel::new(&endpoint, &spec.model, holds_dir, spec.seed, true)?;
+                runtime::decide(&mut memory, &receipt, &access, |prompt, schema, guard| {
+                    client.complete_guarded(prompt, schema, guard)
+                })
+                .await?;
+            }
+            receipt
+        }
+        DurableDecideCommand::Status { task } => memory.durable_model_reopen(&task, &access)?,
+        DurableDecideCommand::Cancel { task } => {
+            let receipt = memory.durable_model_reopen(&task, &access)?;
+            memory.durable_model_cancel(&receipt, &access)?;
+            receipt
+        }
+    };
+    let status = memory.durable_model_status(&receipt, &access)?;
+    if status.phase == ModelPhase::Forgotten {
+        return Ok(
+            json!({"status":status,"spec":null,"initial":null,"retry":null,"decision":null,"fixture_only":true}),
+        );
+    }
+    // Operational status survives loss of content authority. Confirm cancellation
+    // even when current sources forbid dereferencing its retained audit records.
+    let content = (|| -> Result<serde_json::Value> {
+        Ok(json!({"spec":runtime::spec(&memory,&receipt,&access)?,
+            "initial":memory.durable_model_attempt(&receipt,AttemptKind::Initial,&access)?,
+            "retry":memory.durable_model_attempt(&receipt,AttemptKind::Retry,&access)?,
+            "decision":memory.durable_model_decision(&receipt,&access)?}))
+    })();
+    let mut result = match content {
+        Ok(value) => value,
+        Err(_) => {
+            json!({"spec":null,"initial":null,"retry":null,"decision":null,"content_unavailable":true})
+        }
+    };
+    result["status"] = serde_json::to_value(status)?;
+    result["fixture_only"] = json!(true);
+    Ok(result)
+}
+
 /// Transport and router coordination only; experiment logic lives in core.
 async fn evaluate_model(
     db: &std::path::Path,
@@ -891,6 +1052,27 @@ impl LocalMemoryModel {
         schema: Option<serde_json::Value>,
         thinking_budget: Option<u32>,
     ) -> Result<(mecha_core::memory::model_evaluation::ModelReply, usize)> {
+        self.complete_with_guard(prompt, schema, thinking_budget, None)
+            .await
+    }
+    async fn complete_guarded(
+        &self,
+        prompt: String,
+        schema: Option<serde_json::Value>,
+        guard: mecha_core::memory::durable_decision::ModelGuard,
+    ) -> Result<mecha_core::memory::model_evaluation::ModelReply> {
+        Ok(self
+            .complete_with_guard(prompt, schema, None, Some(guard))
+            .await?
+            .0)
+    }
+    async fn complete_with_guard(
+        &self,
+        prompt: String,
+        schema: Option<serde_json::Value>,
+        thinking_budget: Option<u32>,
+        guard: Option<mecha_core::memory::durable_decision::ModelGuard>,
+    ) -> Result<(mecha_core::memory::model_evaluation::ModelReply, usize)> {
         use mecha_core::{
             memory::model_evaluation::ModelReply,
             message::StopReason,
@@ -916,6 +1098,10 @@ impl LocalMemoryModel {
             "reasoning budget requires thinking"
         );
         request.think_budget = thinking_budget;
+        // Provider discovery awaited above: recheck durable authority at the dispatch boundary.
+        if let Some(guard) = guard {
+            guard.check()?;
+        }
         let response = tokio::select! {
             _=cancel.cancelled()=>anyhow::bail!("evaluation cancelled for model switch"),
             response=tokio::time::timeout(std::time::Duration::from_secs(180),self.provider.complete(&request,None))=>response.context("model request exceeded 180 seconds")??,

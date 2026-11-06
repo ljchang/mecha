@@ -40,6 +40,15 @@ class FrozenPilotTests(unittest.TestCase):
         refused = dict(text=json.dumps(dict(choice='Nori', citations=['a'], reason='Synthetic.')), error='refusal')
         self.assertFalse(score(frozen_cases()[0], 'observed', refused, ['a'])['supported_optimal'])
 
+    def test_invalid_field_shapes_and_refusals_are_scores_not_exceptions(self):
+        answers = [dict(choice='Nori', citations=v, reason='Synthetic.') for v in (None, 5, {}, 'a', [None], [[]])]
+        answers.extend([{}, [], None])
+        for answer in answers:
+            for error in (None, 'refused'):
+                with self.subTest(answer=answer,error=error):
+                    result=score(frozen_cases()[0], 'observed', dict(text=json.dumps(answer),error=error), ['a'])
+                    self.assertFalse(any(result.values()))
+
     def rows(self):
         result = []
         for case in frozen_cases():

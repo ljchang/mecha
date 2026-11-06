@@ -88,6 +88,9 @@ def score(case, view, reply, allowed_citations):
     except (ValueError, KeyError, TypeError):
         return dict(valid=False, supported_optimal=False, appropriate_abstention=False,
                     citation_coverage=False)
+    if not valid:
+        return dict(valid=False, supported_optimal=False, appropriate_abstention=False,
+                    citation_coverage=False)
     cited = set(answer['citations'])
     complete = bool(allowed_citations) and cited == set(allowed_citations)
     return dict(valid=valid,
@@ -219,7 +222,7 @@ def main():
                       dict(record='message', role='user', content=[dict(type='text', text='Synthetic fixture provenance.')])]
         (directory/'provenance.jsonl').write_text(''.join(encode(r) for r in provenance))
     manifest = dict(protocol=PROTOCOL, model=args.model, endpoint=endpoint, seed=7, temperature=.6,
-                    thinking=False, max_tokens=2048, retries=0, planned_initial_calls=16, max_revision_calls=16,
+                    thinking=False, max_tokens=8192, retries=0, planned_initial_calls=16, max_revision_calls=16,
                     source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[2], text=True).strip(),
                     binary_sha256=sha(binary), runner_sha256=sha(Path(__file__)),
                     files={str(p.relative_to(root)):sha(p) for p in sorted(root.glob('*/*.json*'))},
