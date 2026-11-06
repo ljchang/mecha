@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R7 owed). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R7 and R9 owed). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -116,11 +116,20 @@ The shape:
 
 - **Its own directory.** Driven reflections and rules live in a learning
   store under its own path (`~/.mecha/learning-driven/` or similar; the
-  build names it). A driven run loads the owner's rules *and* the driven
-  store's. An owner run never opens the driven store. Every failure goes
-  dark: if the kind is not detected, a driven rule simply does not apply,
-  and nothing reaches the owner's prefix. `Driven` stays in
+  build names it). In the real home, a driven run loads the owner's rules
+  *and* the driven store's; that kind-gated load is the default for a
+  real-home run only. An owner run never opens the driven store. Every
+  failure goes dark: if the kind is not detected, a driven rule simply does
+  not apply, and nothing reaches the owner's prefix. `Driven` stays in
   `Situation::MARK_KINDS`, because nothing needs it as a scope key.
+- **The readers that notice a sick store must see it.** `doctor` walks
+  `<home>/learning` by name, and `backlog` iterates a literal list of
+  stores that includes `learning`. A driven store under its own path gets
+  neither, and then a wedged driven store looks exactly like the design's
+  chosen dark failure, while the ledger's attributions depend on driven
+  rules actually applying. So `doctor` reads the driven store in its one
+  pass. The driven store joins `backlog` only for what waits on the owner:
+  promotion candidates, once measured.
 - **Mining is its own pass.** `reflect` keeps hiding driven sessions from
   the owner's store (D1, #848), its outbox pass included: a draft a driven run staged is passed over even after the owner acts on it. A separate pass reads only driven
   sessions and writes only the driven store. The two passes share code and
@@ -144,17 +153,26 @@ The shape:
     `"origin":"driven"` *drops the reflection* (one corrupt line, one lost
     reflection). The variant needs a lenient read first, parked as
     `Untrusted` (the shape `surface_unread` and `de_lenient_kind` use).
-  - `Reflexion::learnable()` admits `Clean`, and `Untrusted` only for
-    `TRIAGE_DOMAIN` while that domain stays out of `RUN_DOMAINS`: an
-    exemption already keyed on the *consumer* rather than on a setting,
-    which is the shape this arm wants. A driven store needs a
-    deliberate `Driven => true` arm, **and that arm must be true only when
-    learning into the driven store.** This is the one place the design
-    loosens a structurally fail-closed gate. What replaces the gate is the
-    store boundary, and the test pins that an owner-store `learn` refuses a
-    driven reflection.
-  - A test that a driven intervention under untrusted taint classifies
-    `Untrusted` and is not learnable into either store.
+  - **The destination enters the type.** `Reflexion::learnable(&self)`
+    sees only the record, and "learnable only into the driven store" is a
+    fact about the destination, which nothing on a `Reflexion` carries. A
+    bare `Driven => true` arm would be true everywhere: three of its readers
+    have no store context at all (`lesson_source::backfill_targets`,
+    `doctor`, `probe`), and the `learn` gate is store-blind. So
+    `learnable()` stays closed to `Driven`, returning false as it does for
+    `Derived`, and a new `learnable_into(&self, store: StoreKind)` is the
+    only place `Driven` is admitted, for `StoreKind::Driven` alone. The
+    driven store's own consolidation path calls it, and the compiler finds
+    every call site. This is the one place the design loosens a
+    structurally fail-closed gate. The triage arm is not a precedent: its
+    own documentation calls `RUN_DOMAINS` membership "a *proxy* for the
+    consumer rather than the consumer itself" and names the residual it
+    does not catch.
+  - Three tests: an owner-store `learn` refuses a driven reflection; a
+    store-agnostic reader (`learnable()`) never reports a driven reflection
+    as learnable, which is the direction the triage residual shows actually
+    rots; and a driven intervention under untrusted taint classifies
+    `Untrusted` and is learnable into neither store.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
   own documentation calls it "one gate away from being usable the day
   something can grade it". A driven run's hidden test is that grade. A
@@ -163,14 +181,20 @@ The shape:
   owner's rules plus the driven store's**. Comparing the `learned_rules`
   lever on against off would not do: `Lever::LearnedRules` switches the
   whole block, so on-against-off measures owner plus driven against
-  nothing, and credits the owner's rules to the driven rule under test. The
-  control arm's trial home is therefore seeded *without* the driven store
-  and the treatment arm's *with* it. `trial_env` seeds one `learning/`
-  directory today, so a second seeded store is new work, named here rather
-  than discovered at measurement time. Because the trial home carries the
-  store itself, the `experiment` mark does not matter. This measures an
-  outcome, where `counterfactual.rs` can only ask whether a trajectory
-  changed.
+  nothing, and credits the owner's rules to the driven rule under test.
+  **The mechanism is a composed seed, not a second store.** A trial is
+  marked `experiment`, so the real home's kind-gated load would never open
+  the driven store, and the treatment arm would quietly equal the control.
+  Instead, the runner composes each arm's `learning/` before the trial:
+  the control's holds the owner's rules, and the treatment's holds the
+  owner's rules plus the driven rule or rules under test. `trial_env`
+  already seeds one `learning/`, so no loader learns a new path. **A
+  positive check guards against a vacuous null.** The treatment arm's run
+  records must show the rule under test carried in the prefix (the run
+  record's rules-carried set). A trial whose prefix lacks it is a failed
+  trial, never a measured zero, because a store that failed to load reads
+  exactly like an absence of lift. This measures an outcome, where
+  `counterfactual.rs` can only ask whether a trajectory changed.
 
 **Promotion crosses the owner.** A driven-store rule enters the owner's
 store only by the owner's act: a copy, with its measured lift attached and
@@ -201,10 +225,27 @@ SWE-bench's construction. For a merged PR with tests:
 - the grade is the PR's own new or changed tests applied over the run's
   diff, plus the touched crate's existing suite for regressions.
 
-The ground truth already exists, it is the owner's real distribution of
-work, and nothing in it is private: the repository is public, and
-`check-private.py` already gates it. That last point makes it the cleanest
-training data available (§5).
+The ground truth already exists, and it is the owner's real distribution of
+work. **Being public is not a privacy guarantee**, and neither is
+`check-private.py`. The 2026-08-07 and 2026-08-25 rewrites both found
+private data in this public repository, the second time real people used
+as fixtures, one in a published docs page. And `check-private.py` reads a
+staged diff, a commit range or a commit message, scoped to persona chat and
+call text, so it never saw a PR body or an issue. The prompt's source is
+exactly that text, it lives on GitHub where no `filter-repo` reaches, and a
+prompt has the longest reach in this design: it goes to the ceiling's
+provider on every rerun (§4), and it stays in the SFT bank (§5).
+
+**D3b. A prompt is written, never copied, and is scrubbed before it is
+admitted.** The driver writes each prompt fresh, from what the PR changed
+and why, and quotes no PR or issue text. Each prompt is then checked before
+the task is admitted: `check-private.py`'s matcher run over the prompt text
+itself, and a read against CLAUDE.md's conventions rule that fixtures and
+examples are made up, with no persona's name and no real person in them. A
+prompt that matches is rewritten, never admitted with an
+exception. The pins' trees were already scrubbed by the history rewrites;
+the prompt is the one new text. Whether prompts also need the owner's eye
+before a ceiling run is R9, owed.
 
 Task selection is stratified and seeded (`sample.rs`), by size (lines
 changed) and by subsystem. The driver does not hand-pick. Whatever the
@@ -266,9 +307,10 @@ panel's job is to tell harness from model, and a base peer says that most
 plainly. One consequence: a harness affordance (D4) that the default needs
 and `qwen3.8-27b` does not could be an effect of the uncensoring rather than
 of the family. Before such a result is called general, a measurement arm
-checks it against `qwen3.6-35b-a3b`, the default's own base. The abliterated
-variants are left out: their GGUFs drop the MTP head, so they also run at a
-different speed.
+checks it against `qwen3.6-35b-a3b`, the default's own base. The one
+abliterated build in the catalog, `qwen3.8-27b-abliterated`, is left out:
+it is a third flavour of the `qwen3.8-27b` family, and it tells the panel
+nothing that the base does not.
 
 **D4. Three harness-side verdicts, not one, and a residual.** "Harness or model" is not
 binary. The R12 `open()` shim was a harness change made because of a model
@@ -337,8 +379,12 @@ waits for that work.
    (a compaction that dropped the plan, a retry loop that `boredom` did not
    name) and that `eval/cases.jsonl` can hold deterministically.
 4. **The ledger.** One row per failure: the task, the panel's verdicts, the
-   D4 class, the fork turn, and what became of it. It lives in the
-   experiment store beside the trials it came from, not in a document.
+   D4 class, the fork turn, and what became of it. **There are two ledgers,
+   kept apart.** Measurement rows live in the experiment store beside the
+   trials they came from. Exploration rows (the pilot's) live in a ledger of
+   their own, every row marked `exploration`, because §1's caveat (an
+   exploration count is what the driver chose to look at, never a rate) is
+   exactly what gets lost when a row is filed among trials.
 
 ## 6. The principal, and the seam for appraisal
 
@@ -388,7 +434,8 @@ rather than trusting each run to be configured right:
   harness on every arm, so no block is dropped for the ceiling alone, which
   would confound D4. The owner ruled to keep the charter on every arm, so
   the harness is measured as the owner runs it, and accepted that it reaches
-  the ceiling's provider.
+  the ceiling's provider, along with the rest of the system prompt and any
+  transcript a D5 fork replays (§9, R8).
 - **Kept on purpose: the outbox.** With the outbox on, a routed call stages
   rather than executes. Turning it off would make a routed call run
   directly, and staging is the safer of the two. A driven draft is set
@@ -491,7 +538,13 @@ passes vacuously.
 - **R8. The charter stays on** on every arm of a driven run (owner,
   2026-11-06), including the ceiling's, where it leaves the machine. The
   recommendation had been off; the owner kept it, so driven runs measure the
-  harness as the owner runs it (D1b).
+  harness as the owner runs it (D1b). What reaches the ceiling's provider is
+  wider than the charter: the whole system prompt (the owner's learned
+  rules and the skills block too), and, for a D5 fork, the recorded
+  transcript up to turn *k*, whose tool results are mostly public repo
+  contents.
+- **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
+  owner's eye before its first ceiling run.
 
 ## 10. Deliberately out of scope
 
