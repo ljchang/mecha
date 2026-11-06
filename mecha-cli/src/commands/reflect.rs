@@ -111,10 +111,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // a driven run staged and the owner then edited or rejected was mined
     // into the owner's store, the longest-half-life path there is (review
     // of #848; `DRIVER-DESIGN.md` D1: nothing is learned from a driven
-    // session until D2's own store). A draft whose session is not in the
-    // listing is judged as before: this keys on a known mark, not on
-    // absence.
+    // session until D2's own store). A draft whose session cannot be
+    // resolved is refused too: `list_counting` drops a transcript whose
+    // header is torn, so a driven session can be refused and invisible at
+    // once, and unknown is never clean (review of #848, pass 3).
     let refused = refused_sessions(&sessions);
+    let listed: std::collections::HashSet<String> =
+        sessions.iter().map(|(meta, _)| meta.id.clone()).collect();
     // Test and stray experiment sessions are the harness measuring itself,
     // not the owner's work: never mined (`session::split_admitted`),
     // and counted aloud so a skip is not mistaken for an empty store.
@@ -181,7 +184,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     && !outbox_mined.contains(&i.id)
             })
             .filter(|i| {
-                let from_refused = staged_by_refused(i.session_id.as_deref(), &refused);
+                let from_refused = staged_by_refused(i.session_id.as_deref(), &refused, &listed);
                 outbox_refused += usize::from(from_refused);
                 !from_refused
             })
@@ -190,7 +193,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     if outbox_refused > 0 {
         println!(
-            "passing over {outbox_refused} outbox draft(s) staged by a test, experiment or driven session"
+            "passing over {outbox_refused} outbox draft(s) staged by a test, experiment or driven \
+             session, or by one the store cannot resolve"
         );
     }
 
@@ -1245,14 +1249,19 @@ fn refused_sessions(sessions: &[(SessionMeta, PathBuf)]) -> std::collections::Ha
         .collect()
 }
 
-/// Was this draft staged by a session the admission refuses? Keyed on a
-/// known mark: a draft with no session, or one whose session is not
-/// listed, is judged as it was before.
+/// Was this draft staged by a session the admission refuses, or by one the
+/// store cannot resolve? A draft with no session predates the field and is
+/// judged as it was before. One whose session is not listed is *unknown*,
+/// and unknown is never clean: `list_counting` drops a transcript whose
+/// header is torn, so a driven session can be refused and invisible at once.
+/// A draft whose session was deleted is passed over too, which costs a
+/// lesson rather than risking the owner's store.
 fn staged_by_refused(
     session_id: Option<&str>,
     refused: &std::collections::HashSet<String>,
+    listed: &std::collections::HashSet<String>,
 ) -> bool {
-    session_id.is_some_and(|s| refused.contains(s))
+    session_id.is_some_and(|s| refused.contains(s) || !listed.contains(s))
 }
 
 #[cfg(test)]
@@ -1261,10 +1270,11 @@ mod tests {
     use mecha_core::session::{Record, RunConfig, SessionKind, SessionMeta};
 
     /// A draft a driven run staged is never mined into the owner's store,
-    /// even after the owner edits or rejects it; nor one a smoke test staged
-    /// (review of #848). An ordinary session's draft, and a draft whose
-    /// session is not listed, are judged as before. Fails on the old
-    /// selection, which never looked at the staging session.
+    /// even after the owner edits or rejects it; nor one a smoke test staged,
+    /// nor one whose session the store cannot resolve (review of #848). An
+    /// ordinary session's draft, and one from before the field, are judged
+    /// as before. Fails on the old selection, which never looked at the
+    /// staging session.
     #[test]
     fn a_draft_staged_by_a_driven_session_is_passed_over() {
         let meta = |id: &str, kind: Option<SessionKind>| SessionMeta {
@@ -1291,14 +1301,19 @@ mod tests {
             ),
         ];
         let refused = refused_sessions(&listed);
-        assert!(staged_by_refused(Some("driven"), &refused));
-        assert!(staged_by_refused(Some("smoke"), &refused));
-        assert!(!staged_by_refused(Some("owner"), &refused));
+        let ids: std::collections::HashSet<String> =
+            listed.iter().map(|(m, _)| m.id.clone()).collect();
+        assert!(staged_by_refused(Some("driven"), &refused, &ids));
+        assert!(staged_by_refused(Some("smoke"), &refused, &ids));
+        assert!(!staged_by_refused(Some("owner"), &refused, &ids));
         assert!(
-            !staged_by_refused(Some("deleted"), &refused),
-            "absence is not a mark"
+            staged_by_refused(Some("torn-or-deleted"), &refused, &ids),
+            "a session the store cannot resolve is unknown, and unknown is never clean"
         );
-        assert!(!staged_by_refused(None, &refused));
+        assert!(
+            !staged_by_refused(None, &refused, &ids),
+            "a draft from before the field is judged as before"
+        );
     }
 
     fn scratch(tag: &str) -> PathBuf {

@@ -8009,7 +8009,8 @@ The design decisions, each of which is a bug if undone:
   pool and the persona writer all admit through `Scan::admits`, and
   `reflect`'s outbox pass, which selects by the owner's verdict on a draft
   rather than by session, passes over a draft whose staging session the
-  admission refuses (`refused_sessions`). That second half was found on
+  admission refuses or the store cannot resolve (`staged_by_refused`: a torn
+  header drops a transcript from the listing, and unknown is never clean). That second half was found on
   review: a draft a driven run staged and the owner then edited would have
   been mined into the owner's store. `DRIVER-DESIGN.md` D2 gives driven runs
   a learning store of their own (R6), never a scope, so `Driven` stays in
