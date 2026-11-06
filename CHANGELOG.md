@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The mail rules page.** *Mail → Rules* (`#mail/rules`) lists each rule's
+  modes, activity and holds; a rule's page raises a group to automatic only
+  through an approval screen showing its files, tests it against 30 days of
+  mail, shows the ledger with Undo and Wrong match, and edits rule.toml. A
+  thread's *Make a rule…* starts a rule from its sender, in shadow.
+
 - **Mail-rule web backend.** CLI children support stdin rule creation, atomic
   edits with immediate approval lapse, digest-bound mode changes, per-rule
   pause and idempotent wrong-match corrections. List, show, ledger and

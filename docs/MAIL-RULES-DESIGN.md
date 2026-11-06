@@ -2245,6 +2245,43 @@ Implementation choices where the plan did not specify details:
 - The redundant mail-rule dispatch after the early return is now an explicit
   unreachable exhaustiveness arm. Other carried minors remain untouched.
 
+**P3-2 implemented (2026-11-06).** `#mail/rules` is one responsive page
+(`web/src/lib/MailRules.svelte`) that App renders in place of either Mail
+build, so the phone and the desk show the same page; its display logic is
+`mail-rules.js`, tested as plain node. It calls only P3-1's routes and
+`/api/mail/read`. Choices where this document was silent, made in the
+implementation and not owner rulings:
+
+- The open rule is page state, not a third hash segment: App's router
+  carries one sub-view (`#mail/rules`), and changing routing for every view
+  was out of proportion. Back from a rule returns to the list in the page.
+- The definition is a plain TOML editor with the store's parse error shown,
+  not `TomlForm`: rule.toml has arrays of tables and a header map, which
+  the flat field schema does not express. A new rule has a guided form (one
+  matcher key, one action, name, description) that writes the TOML until
+  the owner types in it; the owner edits before installing.
+- *Make a rule from this thread* prefills the sender and the sender's
+  domain (matching on the domain), names the rule after the domain, and
+  suggests `archive`; the subject is the description only when no domain can
+  be read. It carries no list id: the mail views do not
+  hold `List-Id`, and §8 adds no provider fetch, so the form asks for it.
+- A mode change counts as a raise against the group's **effective** mode,
+  as the store measures it, so re-approving a braked or lapsed group (set
+  auto, running shadow) opens the approval screen. The screen shows every
+  file in the review inputs with the shadow-row count under the current
+  match digest, and sends that review's digest; a `stale_digest` refusal
+  reloads the files and says so rather than retrying.
+- Rates render a dash for a null rate and omit an empty `verdict_input`
+  bucket rather than showing zero. Rows under an earlier match digest are
+  grouped per group under a heading dated by their newest row; the
+  rule-level `approval lapsed` row stays with the current rows and names no
+  message. Outcomes, modes and groups this build cannot name read `unknown`.
+- A ledger row opens its thread read-only in a sheet over the page
+  (`mecha mail show` through `/api/mail/read`), since an archived thread is
+  no longer in the triage queue the mail readers walk.
+- The test result shows each account's status; a held or failed account
+  shows no match count, and partial rows stay visible beside a failure.
+
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
 
