@@ -391,12 +391,121 @@ fn finalize(
         json!({"disposition":"failed","error":checked.error,"executed":false})
     };
     let mut decision = decision;
+    decorate_final(&mut decision, kind)?;
+    db.finalize_model(receipt, decision, access)
+}
+/// Internal authenticated handoff to the separate host action runtime. Stored
+/// advisory JSON alone cannot supply this authority.
+pub(crate) struct AuthenticatedRecommendation {
+    pub contract: Contract,
+    pub choice: String,
+    pub expected_from_evidence: Option<Value>,
+}
+pub(crate) fn authenticated_recommendation(
+    db: &Memory,
+    receipt: &ModelReceipt,
+    access: &Access,
+) -> Result<AuthenticatedRecommendation> {
+    let status = db.durable_model_status(receipt, access)?;
+    ensure!(
+        status.phase == ModelPhase::Finalized && !status.cancelled,
+        "active finalized model workflow required"
+    );
+    let spec = spec(db, receipt, access)?;
+    let prepared = prepare(db, receipt, &spec, access)?;
+    ensure!(
+        status.initial.phase == AttemptPhase::Assessed,
+        "initial attempt must have a retained assessment"
+    );
+    let initial = db
+        .durable_model_attempt(receipt, AttemptKind::Initial, access)?
+        .context("missing initial attempt")?;
+    verify_request(&initial, &request_record(&spec, prepared.request()))?;
+    let text = response_text(&initial, &spec.model)?;
+    let assessment = prepared.assess(&text)?;
+    let retry_requested = !assessment.findings.is_empty();
+    verify_action_assessment(&initial, &assessment, retry_requested)?;
+    let (kind, text) = if retry_requested {
+        ensure!(
+            status.retry.phase == AttemptPhase::Assessed,
+            "requested retry must have a retained assessment"
+        );
+        let request = prepared
+            .reconsideration(&text)?
+            .context("retry finding no longer reproducible")?;
+        let retry = db
+            .durable_model_attempt(receipt, AttemptKind::Retry, access)?
+            .context("missing retry attempt")?;
+        verify_request(&retry, &request_record(&spec, &request))?;
+        let text = response_text(&retry, &spec.model)?;
+        let assessment = prepared.assess(&text)?;
+        verify_action_assessment(&retry, &assessment, false)?;
+        (AttemptKind::Retry, text)
+    } else {
+        ensure!(
+            status.retry.phase == AttemptPhase::Unused,
+            "unexpected retry attempt"
+        );
+        (AttemptKind::Initial, text)
+    };
+    let decision = prepared.finish(&text)?;
+    ensure!(
+        decision.disposition == decision::Disposition::Recommend,
+        "only an authenticated recommendation can bind an action"
+    );
+    let choice = decision.proposed_choice.clone();
+    let mut expected = serde_json::to_value(decision)?;
+    decorate_final(&mut expected, kind)?;
+    ensure!(
+        db.durable_model_decision(receipt, access)? == Some(expected),
+        "final advisory record differs from retained response and sealed evidence"
+    );
+    let expected_from_evidence = prepared
+        .request()
+        .passages
+        .iter()
+        .filter_map(|p| p.projection.as_ref())
+        .map(|p| serde_json::from_str::<Value>(&p.text))
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .find_map(|p| {
+            let m = &p["outcome"];
+            (m["choice"] == choice).then(|| {
+                json!({
+                "observed_minutes":m["observed_minutes"],
+                "energy":m["energy"],"quality":m["quality"]})
+            })
+        });
+    Ok(AuthenticatedRecommendation {
+        contract: spec.contract,
+        choice,
+        expected_from_evidence,
+    })
+}
+fn verify_action_assessment(
+    attempt: &AttemptData,
+    assessment: &crate::memory::experience::Assessment,
+    retry_requested: bool,
+) -> Result<()> {
+    let expected = Checked {
+        valid: true,
+        error: None,
+        evaluation: Some(serde_json::to_value(assessment)?),
+        retry_requested,
+    };
+    ensure!(
+        attempt.assessment.as_ref() == Some(&serde_json::to_value(expected)?),
+        "stored assessment differs from deterministic check"
+    );
+    Ok(())
+}
+fn decorate_final(decision: &mut Value, kind: AttemptKind) -> Result<()> {
     decision["attempt_kind"] = serde_json::to_value(kind)?;
     decision["checker_version"] = json!(CHECKER_VERSION);
     decision["executed"] = json!(false);
     decision["private_data"] = json!(true);
     decision["untrusted_input"] = json!(true);
-    db.finalize_model(receipt, decision, access)
+    Ok(())
 }
 fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)

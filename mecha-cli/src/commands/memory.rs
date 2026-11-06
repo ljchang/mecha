@@ -31,6 +31,15 @@ pub enum Cmd {
         #[arg(long)]
         domain: String,
     },
+    /// Create a NEW v5 synthetic database with one separately authorized action.
+    InitAction {
+        #[arg(long)]
+        domain: String,
+        #[arg(long, required = true)]
+        synthetic_input: bool,
+    },
+    /// Bind, run or inspect one closed host synthetic action; no model calls.
+    DurableAct(DurableActArgs),
     /// Bind, run or inspect a bounded model decision over a retained guarded read.
     DurableDecide(DurableDecideArgs),
     /// Explicit synthetic guarded-read lifecycle; no model or live-store discovery.
@@ -263,6 +272,42 @@ pub enum DurableDecideCommand {
 }
 
 #[derive(ClapArgs)]
+pub struct DurableActArgs {
+    #[arg(long, required = true)]
+    synthetic_input: bool,
+    #[arg(long)]
+    domain: String,
+    #[arg(long, required = true)]
+    scope: Vec<String>,
+    #[command(subcommand)]
+    cmd: DurableActCommand,
+}
+#[derive(Subcommand)]
+pub enum DurableActCommand {
+    /// Explicitly authorize a closed fixture for an authenticated recommendation.
+    Bind {
+        #[arg(long)]
+        model: String,
+        /// Strict JSON: closed fixture version and state; no path or choice.
+        #[arg(long)]
+        spec: String,
+    },
+    /// Resume one synthetic handler and feedback; never replay an unresolved action.
+    Run {
+        #[arg(long)]
+        task: String,
+    },
+    Status {
+        #[arg(long)]
+        task: String,
+    },
+    Cancel {
+        #[arg(long)]
+        task: String,
+    },
+}
+
+#[derive(ClapArgs)]
 pub struct DurableReadArgs {
     #[arg(long, required = true)]
     synthetic_input: bool,
@@ -332,6 +377,15 @@ pub async fn execute(args: Args) -> Result<()> {
             let memory = Memory::create_durable_model(&args.db, &domain)?;
             json!({"snapshot":memory.snapshot()?,"fixture_only":true,"durable_model":true})
         }
+        Cmd::InitAction {
+            domain,
+            synthetic_input,
+        } => {
+            ensure!(synthetic_input, "--synthetic-input is required");
+            let memory = Memory::create_durable_action(&args.db, &domain)?;
+            json!({"snapshot":memory.snapshot()?,"fixture_only":true,"durable_action":true,"model_called":false})
+        }
+        Cmd::DurableAct(action) => execute_durable_act(&args.db, action)?,
         Cmd::DurableDecide(decision) => execute_durable_decide(&args.db, decision).await?,
         Cmd::DurableRead(read) => execute_durable_read(&args.db, read).await?,
         Cmd::ImportSession {
@@ -816,6 +870,52 @@ async fn execute_durable_read(
         }
     };
     Ok(json!({"status": status, "fixture_only": true, "model_called": false}))
+}
+
+fn execute_durable_act(db: &std::path::Path, args: DurableActArgs) -> Result<serde_json::Value> {
+    use mecha_core::{
+        memory::{durable_action::ActionPhase, Access},
+        memory_action_runtime::{self as runtime, ActionSpec},
+    };
+    ensure!(args.synthetic_input, "--synthetic-input is required");
+    let access = Access {
+        domain: args.domain,
+        scopes: args.scope.into_iter().collect(),
+    };
+    let mut memory = Memory::open(db)?;
+    let receipt = match args.cmd {
+        DurableActCommand::Bind { model, spec } => {
+            ensure!(spec.len() <= 16_384, "action spec exceeds 16384 bytes");
+            let spec: ActionSpec = serde_json::from_str(&spec)?;
+            let model = memory.durable_model_reopen(&model, &access)?;
+            runtime::bind(&mut memory, &model, spec, &access)?
+        }
+        DurableActCommand::Run { task } => {
+            let receipt = memory.durable_action_reopen(&task, &access)?;
+            runtime::run(&mut memory, &receipt, &access)?;
+            receipt
+        }
+        DurableActCommand::Status { task } => memory.durable_action_reopen(&task, &access)?,
+        DurableActCommand::Cancel { task } => {
+            let receipt = memory.durable_action_reopen(&task, &access)?;
+            memory.durable_action_cancel(&receipt, &access)?;
+            receipt
+        }
+    };
+    let status = memory.durable_action_status(&receipt, &access)?;
+    let content = (|| -> Result<serde_json::Value> {
+        ensure!(status.phase != ActionPhase::Forgotten, "action forgotten");
+        Ok(json!({"spec":memory.durable_action_spec(&receipt,&access)?,
+            "observation":memory.durable_action_observation(&receipt,&access)?,
+            "feedback":memory.durable_action_feedback(&receipt,&access)?}))
+    })();
+    let mut result = content.unwrap_or_else(
+        |_| json!({"spec":null,"observation":null,"feedback":null,"content_unavailable":true}),
+    );
+    result["status"] = serde_json::to_value(status)?;
+    result["fixture_only"] = json!(true);
+    result["model_called"] = json!(false);
+    Ok(result)
 }
 
 async fn execute_durable_decide(
@@ -1320,5 +1420,50 @@ mod workflow_cli_tests {
             missing.drain(at..at + if flag == "--synthetic-input" { 1 } else { 2 });
             assert!(crate::Cli::try_parse_from(missing).is_err(), "{flag}");
         }
+    }
+}
+
+#[cfg(test)]
+mod action_cli_tests {
+    use clap::Parser;
+    #[test]
+    fn actions_require_explicit_synthetic_input_and_have_no_provider_arguments() {
+        let base = [
+            "mecha",
+            "memory",
+            "--experimental",
+            "--db",
+            "/tmp/action.memory-prototype.sqlite",
+            "durable-act",
+            "--synthetic-input",
+            "--domain",
+            "fixture",
+            "--scope",
+            "fixture",
+            "run",
+            "--task",
+            "action-id",
+        ];
+        assert!(crate::Cli::try_parse_from(base).is_ok());
+        let mut endpoint = base.to_vec();
+        endpoint.extend(["--endpoint", "http://127.0.0.1:8080"]);
+        assert!(crate::Cli::try_parse_from(endpoint).is_err());
+        let missing: Vec<_> = base
+            .into_iter()
+            .filter(|arg| *arg != "--synthetic-input")
+            .collect();
+        assert!(crate::Cli::try_parse_from(missing).is_err());
+        assert!(crate::Cli::try_parse_from([
+            "mecha",
+            "memory",
+            "--experimental",
+            "--db",
+            "/tmp/action.memory-prototype.sqlite",
+            "init-action",
+            "--domain",
+            "fixture",
+            "--synthetic-input"
+        ])
+        .is_ok());
     }
 }

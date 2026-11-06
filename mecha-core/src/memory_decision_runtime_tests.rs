@@ -178,3 +178,67 @@ async fn malformed_reply_is_a_retained_failure_without_hidden_retry() {
         "failed"
     );
 }
+
+#[tokio::test]
+async fn action_authentication_rejects_a_forged_advisory_final_record() {
+    let mut f = Fixture::new(EvidenceView::Observed).await;
+    advance(&mut f.db, &f.receipt, &f.access, |_, _, _| async {
+        Ok(reply(
+            r#"{"choice":"Nori","citations":["e1","e2","e3"],"reason":"Fastest feasible"}"#,
+        ))
+    })
+    .await
+    .unwrap();
+    advance(&mut f.db, &f.receipt, &f.access, |_, _, _| async {
+        panic!("assessment must not infer")
+    })
+    .await
+    .unwrap();
+    f.db.finalize_model(
+        &f.receipt,
+        json!({"disposition":"recommend","proposed_choice":"Arden"}),
+        &f.access,
+    )
+    .unwrap();
+    assert!(authenticated_recommendation(&f.db, &f.receipt, &f.access).is_err());
+}
+
+#[tokio::test]
+async fn action_authentication_rejects_a_valid_reply_to_a_foreign_request() {
+    let mut f = Fixture::new(EvidenceView::Observed).await;
+    let permit =
+        f.db.reserve_model_attempt(
+            &f.receipt,
+            AttemptKind::Initial,
+            json!({"prompt":"unrelated model request"}),
+            &f.access,
+        )
+        .unwrap();
+    let result = bounded_call(
+        Ok(reply(
+            r#"{"choice":"Nori","citations":["e1","e2","e3"],"reason":"Fastest feasible"}"#,
+        )),
+        0,
+    );
+    f.db.settle_model_attempt(
+        permit,
+        HostModelResult::new(serde_json::to_value(result).unwrap()),
+        &f.access,
+    )
+    .unwrap();
+    f.db.assess_model_attempt(
+        &f.receipt,
+        AttemptKind::Initial,
+        json!({"valid":true,"error":null,"evaluation":{},"retry_requested":false}),
+        false,
+        &f.access,
+    )
+    .unwrap();
+    f.db.finalize_model(
+        &f.receipt,
+        json!({"disposition":"recommend","proposed_choice":"Nori"}),
+        &f.access,
+    )
+    .unwrap();
+    assert!(authenticated_recommendation(&f.db, &f.receipt, &f.access).is_err());
+}
