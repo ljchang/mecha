@@ -7,6 +7,11 @@ its §8 said "auto-send of anything" and "an autonomy tier" were deliberately
 not being built, and R1–R3 below are the owner reversing that, inside the
 bounds this document sets.*
 
+*Implementation note, 2026-11-04: P0 prerequisites, P1a's store, and P1b's
+header engine with its mail-binary entrypoint are in the tree. P1c integration
+and P2–P7 remain; see §11. The original design below is retained, with P1b's
+review corrections marked where they change it.*
+
 **One word, two meanings, kept apart here:** *the digest* (§7) is the
 morning summary of what rules did; a rule's *digest* in §3 and §6.2 is a hash
 of its files, which an approval is bound to. `do = "digest"` is the action
@@ -38,6 +43,7 @@ and loses that permission the moment its files change.
 | **R7** | **Any edit to a rule's files lapses `auto`**, the owner's own included and for every action group, until the owner re-approves (§6.2). |
 | **R8** | **An automatic forward carries no "sent by a rule" line.** It reads as the owner's own; the control moves to what may trigger one (§5.2). |
 | **R9** | **The digest arrives in the morning, with the briefing** (§7). |
+| **R10 (2026-11-03)** | **The engine lives in `mecha-core` behind a small provider-neutral interface; `mecha-mail rules apply` runs it.** Mail providers and OAuth tokens stay in the mail binary. `mecha` keeps `mecha-mail` as a dev-dependency only; P1c's `mecha mail rule …` verbs manage the store and launch `mecha-mail rules apply` as a child. |
 
 One correction made while ruling R4, recorded so it is not re-assumed: **the
 harness cannot write a skill.** `ARCHITECTURE.md` §Skills makes that absence
@@ -339,14 +345,20 @@ key sees an outbound settlement and a second message in the thread never
 forwards again — or offered to the owner (`offered` — a `propose`-mode
 mailbox, record or Board action now waiting in the mail desk or the digest,
 which carries it from there and counts in `backlog.rs`), staged, skipped, or
-failed. A thread that cannot be read is a `failed: thread unreadable` row,
-never a silent drop. An entry older than seven days settles as `expired`
+failed. **P1b review correction (2026-11-04): an unreadable thread is
+never dispatched.** It produces a notice, a non-closing `held: thread unreadable`
+report row for each deferred action, and a non-zero apply exit. No ledger
+settlement is written: no action key, once-per-thread occasion, cap capacity
+or brake count is consumed. The deferred entry stays queued and retries until
+expiry. An entry older than seven days settles as `expired`
 with a notice, so the queue cannot grow without bound behind a broken
 classifier — and `expired` is not a failure: it does not count toward §6.4's
 consecutive-failure brake, which owner inattention must never be able to
-trip. An expired thread's keys stay open, which is harmless: it has left
-both the queue and the window, so nothing will evaluate it again unprompted,
-and the notice offers *apply to it now*, in `propose`. Whether any
+trip. **P1b review correction (2026-11-03): expiry closes that occasion's
+keys**, including the once-per-thread key for Board/outbound work. Historical
+verdicts or repeated sightings must not renew its queue timestamp or authorize
+it later. The notice offers manual review; any owner reset is a separate,
+explicit operation, outside the automatic apply path. Whether any
 description rule is enabled is known statically from the enabled set, and
 which other header rules match a given thread is known in the same timer
 pass, before anything executes. P1 builds this, though no description rule
@@ -376,6 +388,19 @@ counts as a description rule, so its `trash` and `spam` propose: a pinned
 sender set narrows who can trigger it but not what the description
 generalises to, and an owner who wants an automatic trash on a sender alone
 writes a header rule for it.
+
+**P1b review correction (2026-11-04): raw-header preconditions have an
+account-level standing hold.** The engine asks the mailbox capability whether
+its reader can prove header absence. If it cannot (currently Graph), a rule
+using `list_id` or any `header.<Name>` matcher is excluded for that account,
+even on a positive match. Emit one notice per rule/account/pass, with no
+per-message rows, claims, keys or cap consumption. The held rule contributes
+nothing to deferral, description-list admission, outbound priority or handled
+marker suppression: other rules behave as if it were absent. Existing pending
+and deferred snapshots for the held rule remain untouched, including expiry.
+Gmail's full-header reader keeps its existing matching and per-message
+completeness checks. This applies §5.4's standing-condition shape to matcher
+preconditions; it does not promote missing headers to known negatives.
 
 `match.describe` is a sentence the owner writes, distinct from the top-level
 `description` label. The classifier — already one isolated, tool-less call
@@ -718,7 +743,7 @@ siblings only record would-have rows, and off siblings do nothing.
 
 ### 4.4 When it runs
 
-- Header rules' **mailbox actions and `tag`**: `mecha mail rule apply
+- Header rules' **mailbox actions and `tag`**: `mecha-mail rules apply
   --headers`, on its own five-minute timer — `read`, `unread` and `tag`
   always, and the inbox-removing ones only when §4.1 does not defer them.
   `digest` and `task` run after `classify`, since they read the verdict. No model, so no `model-idle.sh` gate.
@@ -772,14 +797,16 @@ stays on the row as a display field only; a re-classification, a
 **Which outcomes close the key** is part of the key's definition, because
 several §8 outcomes are rows where nothing executed. `pending` (**while
 unsettled** — once its settlement row exists, that row's outcome decides,
-below), `done`, `sent`, `staged`, `offered` and `held` close it. `would have`, `skipped` and
-`expired` do not — nothing ran, and a thread readable again later may be
-evaluated again. `failed` closes it for outbound actions, which are never
+below), `done`, `sent`, `staged`, `offered`, `held` and `expired` close it.
+Expiry closes an abandoned occasion even though nothing ran, so enumeration
+cannot revive it. `would have` and `skipped` do not close it. `failed` closes it for outbound actions, which are never
 retried (a failure after a provider accepted a send cannot be told from one
 before), and for `task`, where a retry after a create that succeeded but went
 unrecorded would put a second task on the board; it leaves the key open for
 the Mailbox and Private record groups, which are idempotent and safe to retry
-after a transient error.
+after a transient error. These failure closures concern dispatched actions;
+a thread read failure never reaches dispatch and remains queued under §4.1's
+P1b review correction (2026-11-04).
 
 **A `pending` row does not stay pending forever.** It exists to survive a
 crash, and a crash is the one way to strand one. A `pending` row older than
@@ -843,9 +870,10 @@ lookup on `(rule, account, thread id)` over the outbound rows, a key of its
 own beside the per-message one, and it names its closing outcomes as the
 per-message key does: **`pending`, `sent`, `staged`, `held`, a Board `done`
 (a task created), `offered` (a proposed `task` waiting in the digest) and an
-outbound or Board `failed` close the thread** — a send that reached the
+outbound or Board `failed`, and `expired` close the thread** — a send that reached the
 provider, one queued and still owed, or one whose fate cannot be told — and
-**`would have`, `skipped` and `expired` leave it open**. Otherwise a rule
+**`would have` and `skipped` leave it open**. Expiry closes the abandoned
+occasion so a stored verdict cannot resurrect it. Otherwise a rule
 promoted out of `shadow` would find its own would-have rows and never send
 on the threads it was approved against, and a rule that lost the outbound
 slot to another on one message could never take it on the next. Outbound
@@ -1454,7 +1482,7 @@ brake against that rule.
 - **Three consecutive action failures** in one group → **that group** to
   `shadow`. *Action* failures only —
   the rule's own action refused or erroring. A failure of the environment
-  (`failed: thread unreadable`, a provider unreachable, a token needing
+  (`held: thread unreadable`, a provider unreachable, a token needing
   re-auth) does not count, nor does `failed: interrupted` (§4.4), since a
   crash is the harness's failure and not the rule's, on `expired`'s reasoning: an outage would
   otherwise demote every matching rule to `shadow` and end its activation
@@ -1826,7 +1854,21 @@ thread read for the ledger key (§4.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 
-**P1 — the store, header rules, mailbox actions.** `rule.toml`, approvals,
+**P1 — the store, header rules, mailbox actions.** R10 splits delivery into
+P1a (the merged store), P1b (the core engine and `mecha-mail rules apply
+[--headers | --after-classify] [--account NAME] [--dry-run]`), and P1c (the
+`mecha mail rule …` store-management verbs and child launcher, timer units,
+classify hook, feature registry, doctor and backlog). The engine's `Mailbox`
+and `TaskSink` interfaces contain no provider clients or credentials. The mail
+binary implements them for Gmail and Outlook and connects to the globally
+configured `[[mcp]]` entry named `graph` for tasks. An absent or unavailable
+task sink holds the task without consuming its action key, once-per-thread
+occasion or cap capacity; the next pass retries once the sink is available.
+This does not reopen cap holds or tasks with uncertain dispatch fate. `mecha`
+gains no runtime dependency on `mecha-mail`.
+The following describes P1 as a whole:
+
+ `rule.toml`, approvals,
 the ledger, `off`/`shadow`/`propose`/`auto` for the Mailbox, Private record,
 Report (`spam`, which never rises above `propose`) and Board groups — `task` on header rules, with its harness-written name
 (§7); the confirmation pass that description-matched tasks also need lands
@@ -1875,6 +1917,88 @@ positive reading and otherwise clamps the target to `shadow`, with the CLI
 saying so and already-off groups left untouched. Rules already act in P1, so
 a run must neither raise its own permission nor erase the would-have record
 by switching it off.
+
+**P1b implementation choices (2026-11-03).** With neither pass flag,
+`rules apply` runs `--headers`; the two flags are mutually exclusive. Header
+address, domain and account keys are exact ignoring ASCII case; domains do
+not include subdomains implicitly. `list_id` compares the identifier inside
+required angle brackets (with an optional phrase and trailing comments), and
+`subject_contains` and `header.<Name>` search semantic text case-insensitively,
+OR within each list and AND across keys. Raw-header comparisons unfold
+continuations and decode RFC 2047 B/Q words in UTF-8, US-ASCII and Latin-1;
+unsupported charsets or malformed words are unknown, not negative matches.
+Graph's already decoded subject is unfolded but never decoded a second time.
+Stored/displayed values remain raw. Malformed or duplicate List-Id fields also
+remain unknown, even with a complete header collection. An absent field is a
+nonmatch only when its absence is known; truncated or unknown header collections and omitted attachment flags yield unknown matches.
+Completeness is per field: Graph's dedicated subject and To/Cc/Bcc collections
+can prove known negatives even when `internetMessageHeaders` is incomplete.
+A potentially matching digest/task/outbound rule defers removal and prevents a
+classification skip. Unknown-fact holds are visible in the apply report without
+claiming action keys, and queued work remains queued until the facts resolve.
+No body is matched. Gmail sender extraction uses mailbox grammar, including
+quoted display names, comments and address lists; ambiguous or malformed From
+fields remain unknown and hold actions. Newest-inbound selection uses provider
+direction evidence (Gmail SENT/DRAFT; Graph sent/draft folder facts or isDraft
+with an owner-address check), all account addresses and `aliases.toml`.
+Unknown direction holds; a sent alias reply cannot replace an older inbound.
+MCP transport failures preserve their local type through ToolOutput. Graph
+process exit or broken pipe holds task fate and reserves its occasion/cap without
+tripping the Board failure brake; a tool refusal still counts.
+
+**P1b review corrections (2026-11-03).** A mailbox mutation addresses exactly the
+authorized provider message ID, never the thread ID. Both Gmail and Outlook
+support this; Outlook keeps immutable IDs on every request. Arrival eligibility
+uses only Gmail `internalDate` or Outlook `receivedDateTime`; a sender-written
+Date is display data. Unknown arrival holds eligibility. A provider that only
+supports thread mutations must hold unless every affected message independently
+passes matching, activation and deferral. Each dispatch rechecks the fresh
+ResolvedMode activation; reactivation during a sibling's I/O settles an
+ineligible pending attempt as skipped.
+
+A separate engine lease serializes apply runs across accounts, preserving
+atomic cap reservations while the store's existing short lock protects
+per-action claims. Stranded pending attempts older than fifteen minutes are
+swept; an individual effect times out after two minutes, with a task held
+as fate unknown. A fresh owner approval acknowledges earlier brake events;
+new adverse evidence can brake it again. The cap day uses the global agent timezone (UTC when absent); dispatched
+attempts of uncertain fate consume capacity conservatively. Sibling reservations
+allocate capacity cumulatively; semantically duplicate actions, including tables
+that merely spell out defaults, are rejected at load. The injected clock is read
+for each reservation and dispatch; cap checks and attempt timestamps use the
+same dispatch reading. Settled attempts are charged to that local day; unsettled
+attempts retain capacity conservatively across midnight. Typed provider failure
+kinds survive partial mutation results: only entirely environmental failures are
+exempt from the failure brake. Gmail's structured 403 reasons
+`rateLimitExceeded`, `userRateLimitExceeded` and `dailyLimitExceeded` are
+environment failures; other, mixed or malformed 403 reason sets remain action
+failures. A dry run simulates
+settlements and brakes but writes no rule or triage state and starts no graph
+server; provider reads use cached credentials and refuse when refreshing
+would be required.
+
+The P1b headers path retains its newest-500 inbox bound and limits provider
+arrivals to the last seven days (unknown arrivals remain visible for holds).
+After-classify enumerates outstanding deferred entries for the account plus
+verdicts recorded within the same seven-day interval; missing, malformed or
+future verdict timestamps do not establish recency. Expired occasions close
+in the ledger and are refused by both claims and enqueue, independently of
+candidate enumeration, including dry-run planning and legacy expiry rows.
+
+**Known minor, deliberately unfixed (review four):** raw downstream diagnostic
+text still flows into ledger `reason` and apply-report notices. The owner will
+track this on the PR; this change does not sanitize or otherwise alter it.
+
+An after-classify candidate needs a usable verdict whose envelope date covers
+the newest inbound message and whose classification timestamp is no earlier
+than that message. Task names use the provider's UTC arrival date; daily
+caps use the owner timezone described above. A missing/stale verdict keeps owed work queued. Rules'
+private tags, digest flags and message-specific handled markers are stored in
+`mail-triage/rule-records/`, overlaid on triage reads, so classification neither
+loses them nor mistakes a pre-classification tag for a verdict. P1c consumes
+the handled marker and deferred queue in its classify hook. P1 has only
+owner-authored live rule files; the proposal provenance reader must replace
+that assumption when P7 adds installation from conversations.
 
 **P2 — the digest.** `mecha mail digest` and `digest ack`. Then the briefing
 swap, which is **an edit on the owner's machine, not in this repository**:

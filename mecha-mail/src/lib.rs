@@ -20,6 +20,7 @@ pub mod http;
 pub mod mcp;
 pub mod microsoft;
 pub mod polls;
+pub mod rules;
 pub mod text;
 pub mod time;
 pub mod token;

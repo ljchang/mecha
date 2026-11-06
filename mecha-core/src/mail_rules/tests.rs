@@ -622,6 +622,7 @@ fn closing_union_honors_every_signal_and_presence_not_latest() {
         Outcome::Undone,
         Outcome::Edited,
         Outcome::ReleasedUnchanged,
+        Outcome::Expired,
         Outcome::Unknown,
     ] {
         let mut closing = row(&rule, outcome);
@@ -632,12 +633,7 @@ fn closing_union_honors_every_signal_and_presence_not_latest() {
             &key
         ));
     }
-    for outcome in [
-        Outcome::WouldHave,
-        Outcome::Skipped,
-        Outcome::Expired,
-        Outcome::Failed,
-    ] {
+    for outcome in [Outcome::WouldHave, Outcome::Skipped, Outcome::Failed] {
         let mut open = row(&rule, outcome);
         let key = key(&open);
         assert!(!message_closed(std::slice::from_ref(&open), &key));
@@ -697,6 +693,7 @@ fn thread_keys_only_read_outbound_and_board_across_messages() {
             Outcome::Held,
             Outcome::Offered,
             Outcome::Failed,
+            Outcome::Expired,
         ] {
             let mut action = row(&rule, outcome);
             action.group = group;
@@ -706,7 +703,7 @@ fn thread_keys_only_read_outbound_and_board_across_messages() {
             other_message.provider_message_id = "new-message".into();
             assert!(!message_closed(&[action], &other_message));
         }
-        for outcome in [Outcome::WouldHave, Outcome::Skipped, Outcome::Expired] {
+        for outcome in [Outcome::WouldHave, Outcome::Skipped] {
             let mut action = row(&rule, outcome);
             action.group = group;
             assert!(!thread_closed(&[action], &thread_key));
@@ -792,16 +789,19 @@ fn deferred_rewrites_removes_settled_and_expires_as_expired_not_failure() {
     let rows = store.ledger().unwrap();
     assert_eq!(rows[0].outcome, Outcome::Expired);
     assert!(!rows[0].is_action_failure());
-    assert!(!message_closed(&rows, &key(&action)));
+    assert!(message_closed(&rows, &key(&action)));
     assert!(store
         .expire_deferred(now + Duration::days(1))
         .unwrap()
         .is_empty());
+    assert!(store.enqueue(&entry).is_err());
+    // A different provider message is a new mailbox occasion.
+    entry.actions[0].message.provider_message_id = "provider-beta".into();
     store.enqueue(&entry).unwrap();
     assert!(store.settle_deferred(&entry.id, &[]).is_err());
-    store
-        .settle_deferred(&entry.id, &[row(&rule, Outcome::Done)])
-        .unwrap();
+    let mut done = row(&rule, Outcome::Done);
+    done.message.provider_message_id = "provider-beta".into();
+    store.settle_deferred(&entry.id, &[done]).unwrap();
     assert!(store.deferred().unwrap().is_empty());
     assert_eq!(
         fs::read(store.root().join("deferred.jsonl")).unwrap(),
@@ -2438,7 +2438,7 @@ fn enqueue_refuses_execution_rows_without_changing_the_queue() {
     let rows = store.ledger().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].outcome, Outcome::Expired);
-    assert!(!message_closed(&rows, &key(&snapshot)));
+    assert!(message_closed(&rows, &key(&snapshot)));
 }
 
 #[test]

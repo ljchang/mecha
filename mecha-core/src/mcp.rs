@@ -7,7 +7,7 @@
 
 use crate::config::McpServerConfig;
 use crate::sandbox::{Backend, DockerContainer, Sandbox};
-use crate::tool::{Capabilities, Egress, Tool, ToolCtx, ToolOutput};
+use crate::tool::{Capabilities, Egress, Tool, ToolCtx, ToolFailureKind, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -21,6 +21,28 @@ use tokio::sync::oneshot;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Only locally observed transport failures carry this type. A JSON-RPC
+/// error or tool refusal is not evidence of an outage.
+#[derive(Debug, thiserror::Error)]
+enum TransportFailure {
+    #[error("MCP client is closed")]
+    Closed,
+    #[error("MCP transport: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("MCP server `{server}` exited during {method}")]
+    Exited { server: String, method: String },
+    #[error("MCP server `{server}` did not answer {method} in time")]
+    Timeout { server: String, method: String },
+}
+
+fn failed_output(prefix: &str, error: anyhow::Error) -> ToolOutput {
+    let mut output = ToolOutput::err(format!("{prefix}{error}")).from_outside();
+    if error.downcast_ref::<TransportFailure>().is_some() {
+        output.failure_kind = Some(ToolFailureKind::Transport);
+    }
+    output
+}
 
 /// The id of a response, however the server spelled it. We always send
 /// numeric ids, but JSON-RPC allows string ids and real servers echo numbers
@@ -369,9 +391,12 @@ impl McpClient {
         let mut line = serde_json::to_string(msg)?;
         line.push('\n');
         let mut pipe = self.stdin.lock().await;
-        let stdin = pipe.as_mut().context("MCP client is closed")?;
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.flush().await?;
+        let stdin = pipe.as_mut().ok_or(TransportFailure::Closed)?;
+        stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(TransportFailure::Io)?;
+        stdin.flush().await.map_err(TransportFailure::Io)?;
         Ok(())
     }
 
@@ -406,13 +431,18 @@ impl McpClient {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
 
-        self.send_line(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        }))
-        .await?;
+        if let Err(error) = self
+            .send_line(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params,
+            }))
+            .await
+        {
+            self.pending.lock().unwrap().remove(&id);
+            return Err(error);
+        }
 
         let stopped = async {
             match cancel {
@@ -424,9 +454,9 @@ impl McpClient {
             answer = tokio::time::timeout(deadline, rx) => match answer {
                 Err(_) => {
                     self.pending.lock().unwrap().remove(&id);
-                    bail!("MCP server `{}` did not answer {method} in time", self.name);
+                    return Err(TransportFailure::Timeout { server: self.name.clone(), method: method.into() }.into());
                 }
-                Ok(Err(_)) => bail!("MCP server `{}` exited during {method}", self.name),
+                Ok(Err(_)) => return Err(TransportFailure::Exited { server: self.name.clone(), method: method.into() }.into()),
                 Ok(Ok(v)) => v,
             },
             () = stopped => {
@@ -643,6 +673,7 @@ impl McpClient {
                 text.join("\n")
             },
             is_error,
+            failure_kind: None,
             external: true,
             refusal: false,
             not_dispatched: result_claims_not_dispatched(
@@ -792,7 +823,7 @@ impl Tool for McpTool {
             // `request` bails with the server's own `error.message` verbatim,
             // and an error built clean let that text — a third party's — enter
             // the conversation untainted.
-            Err(e) => Ok(ToolOutput::err(format!("MCP call failed: {e}")).from_outside()),
+            Err(e) => Ok(failed_output("MCP call failed: ", e)),
         }
     }
 }
@@ -883,7 +914,7 @@ impl McpTool {
                 }
                 // The server's own `error.message` can be in here, so it is
                 // marked as from outside, as the inline path marks it.
-                Err(e) => ToolOutput::err(format!("not made: {e}")).from_outside(),
+                Err(e) => failed_output("not made: ", e),
             }
         };
         // The refusal a second job gets is said by the harness: a refusal
@@ -960,6 +991,27 @@ fn result_claims_not_dispatched(result: &Value, trusted: bool, is_error: bool) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_transport_evidence_survives_without_trusting_error_text() {
+        let pipe =
+            super::TransportFailure::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        let output = super::failed_output(
+            "MCP call failed: ",
+            anyhow::Error::new(pipe).context("sending task"),
+        );
+        assert!(output.is_error && output.external);
+        assert_eq!(
+            output.failure_kind,
+            Some(crate::tool::ToolFailureKind::Transport)
+        );
+        let refusal = super::failed_output(
+            "MCP call failed: ",
+            anyhow::anyhow!("MCP transport: broken pipe"),
+        );
+        assert!(refusal.is_error && refusal.external);
+        assert_eq!(refusal.failure_kind, None);
+    }
+
     use super::*;
     use crate::sandbox::SandboxConfig;
 

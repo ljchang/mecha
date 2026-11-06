@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mail rule execution.** `mecha-mail rules apply` runs header rules in shadow,
+  propose or approved automatic mode, with `--headers`, `--after-classify`,
+  account selection and a dry run. The engine records per-action outcomes,
+  defers classification-dependent work, recovers interrupted attempts, and
+  applies failure brakes and task caps. Tasks use the configured graph MCP
+  server and stay held when it is unavailable. Rule management and automatic
+  scheduling remain for the next phase.
+
 - **Approve persona memories as clean.** `mecha persona memory approve` and
   the Memories tab can now record the owner's vouch for a memory that came
   from outside content. It becomes active with owner origin, so recalling it

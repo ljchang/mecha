@@ -39,6 +39,8 @@
 //! here, so the retention question stays the provider's and there is no second
 //! place for mail to leak from.
 
+pub mod rule_records;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -1307,7 +1309,12 @@ impl TriageStore {
     /// Open the default location only if it exists — read paths must not
     /// create state as a side effect, the rule `doctor` leans on.
     pub fn open_existing_default() -> Option<Self> {
-        let root = Self::default_root().ok()?;
+        Self::open_existing(Self::default_root().ok()?)
+    }
+
+    /// Read an explicit store without creating directories or changing modes.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Option<Self> {
+        let root = root.into();
         root.is_dir().then_some(TriageStore { root })
     }
 
@@ -1316,7 +1323,8 @@ impl TriageStore {
     }
 
     /// Every record, newest first. Unreadable rows are skipped rather than
-    /// fatal: one torn file must not hide the rest of the inbox.
+    /// fatal: one torn file must not hide the rest of the inbox. An unreadable
+    /// rule overlay warns once and leaves its base record available.
     pub fn list(&self) -> Result<Vec<Record>> {
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.root) else {
@@ -1328,12 +1336,15 @@ impl TriageStore {
                 continue;
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(rec) = serde_json::from_str::<Record>(&text) {
+                if let Ok(mut rec) = serde_json::from_str::<Record>(&text) {
+                    rule_records::overlay(&self.root, &mut rec);
                     out.push(rec);
                 }
             }
         }
-        out.sort_by(|a, b| b.date.cmp(&a.date));
+        out.sort_by_key(|record| {
+            std::cmp::Reverse(chrono::DateTime::parse_from_rfc3339(&record.date).ok())
+        });
         Ok(out)
     }
 
@@ -1360,7 +1371,9 @@ impl TriageStore {
             rest: Default::default(),
         };
         let text = std::fs::read_to_string(self.root.join(probe.file_name())).ok()?;
-        serde_json::from_str(&text).ok()
+        let mut record = serde_json::from_str(&text).ok()?;
+        rule_records::overlay(&self.root, &mut record);
+        Some(record)
     }
 
     /// Has this thread already been classified? The question a sweep asks
@@ -1405,7 +1418,9 @@ impl TriageStore {
     pub fn put(&self, rec: &Record) -> Result<()> {
         let path = self.root.join(rec.file_name());
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(rec)?)?;
+        let mut stored = rec.clone();
+        rule_records::clear_overlay(&mut stored);
+        std::fs::write(&tmp, serde_json::to_string_pretty(&stored)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
@@ -1576,6 +1591,136 @@ mod tests {
         let got = store.get("campus", "abc").unwrap();
         assert_eq!(got.verdict.unwrap().bucket, Bucket::Notify);
         assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rule_overlays_are_never_persisted_by_mark_or_correct() {
+        let store = temp_store("overlay-write-projection");
+        let base = rec("campus", "notice", Bucket::Notify);
+        store.put(&base).unwrap();
+        rule_records::update(store.root(), "campus", "notice", |flags| {
+            flags.tags.insert("notice".into());
+            flags.digest_rules.insert("digest".into());
+            flags.handled_message = Some("message".into());
+        })
+        .unwrap();
+        assert_eq!(
+            store.get("campus", "notice").unwrap().rest["rule_tags"],
+            serde_json::json!(["notice"])
+        );
+        store.mark("campus", "notice", "read", ACTED).unwrap();
+        let path = store.root().join(base.file_name());
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            assert!(disk.get(key).is_none(), "derived {key} persisted by mark");
+        }
+        store
+            .correct(
+                "campus",
+                "notice",
+                &Correcting {
+                    bucket: Some(Bucket::Respond),
+                    ..Default::default()
+                },
+                "2026-11-03T12:00:00Z",
+            )
+            .unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            assert!(
+                disk.get(key).is_none(),
+                "derived {key} persisted by correct"
+            );
+        }
+        let sidecar = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        std::fs::write(sidecar, "corrupt").unwrap();
+        let got = store.get("campus", "notice").unwrap();
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            assert!(!got.rest.contains_key(key));
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
+    }
+
+    #[test]
+    fn corrupt_overlay_cannot_expose_legacy_baked_annotations() {
+        let store = temp_store("overlay-stale-projection");
+        let mut base = rec("campus", "notice", Bucket::Notify);
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            base.rest.insert(key.into(), serde_json::json!("stale"));
+        }
+        base.rest
+            .insert("unrelated_future_field".into(), serde_json::json!("keep"));
+        // Bypass put to reproduce rows written by the old implementation.
+        std::fs::write(
+            store.root().join(base.file_name()),
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        rule_records::update(store.root(), "campus", "notice", |_| {}).unwrap();
+        let sidecar = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        std::fs::write(sidecar, "corrupt").unwrap();
+        for got in [
+            store.get("campus", "notice").unwrap(),
+            store.list().unwrap().remove(0),
+        ] {
+            for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+                assert!(
+                    !got.rest.contains_key(key),
+                    "stale {key} survived a failed overlay"
+                );
+            }
+            assert_eq!(got.rest["unrelated_future_field"], "keep");
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
+    }
+
+    #[test]
+    fn unreadable_rule_overlay_preserves_list_and_get_records() {
+        let store = temp_store("unreadable-overlay");
+        let broken = rec("campus", "broken", Bucket::Notify);
+        let healthy = rec("campus", "healthy", Bucket::Respond);
+        store.put(&broken).unwrap();
+        store.put(&healthy).unwrap();
+        rule_records::update(store.root(), "campus", "broken", |r| {
+            r.tags.insert("notice".into());
+        })
+        .unwrap();
+        let path = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        for as_directory in [false, true] {
+            if as_directory {
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+            } else {
+                std::fs::write(&path, "not json").unwrap();
+            }
+            let records = store
+                .list()
+                .expect("one unreadable overlay cannot hide the inbox");
+            assert_eq!(records.len(), 2);
+            let got = store.get("campus", "broken").expect("base record survives");
+            assert_eq!(got.subject, broken.subject);
+            assert_eq!(got.verdict.unwrap().bucket, Bucket::Notify);
+            assert!(!got.rest.contains_key("rule_tags"));
+            assert!(rule_records::read(store.root(), "campus", "broken").is_err());
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
     }
 
     /// A provider is free to put anything in a thread id; a store that cannot

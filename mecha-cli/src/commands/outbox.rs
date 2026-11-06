@@ -2203,6 +2203,7 @@ mod tests {
                     reads: Vec::new(),
                     content: "unknown account `work`".into(),
                     is_error: true,
+                    failure_kind: None,
                     external: true,
                     refusal: false,
                     not_dispatched: self.0,

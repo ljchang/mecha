@@ -2,14 +2,29 @@ use super::*;
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::{
+    fs::{MetadataExt, OpenOptionsExt},
+    io::AsRawFd,
+};
 use std::path::{Path, PathBuf};
 
 pub struct RuleStore {
     root: PathBuf,
+    #[cfg(test)]
+    pub(super) mode_transactions: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(super) ledger_rows_parsed: std::sync::atomic::AtomicUsize,
+}
+
+/// A pass-local cursor over the append-only ledger. Never a persisted cache.
+#[derive(Default)]
+pub(super) struct LedgerCursor {
+    identity: Option<(u64, u64)>,
+    offset: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +42,25 @@ pub struct ActionClaim {
     pub status: ClaimStatus,
 }
 
-struct StoreLock {
+pub(super) struct StoreLock {
     _file: File,
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        // Closing alone releases flock only when the last descriptor sharing
+        // its open file description closes. Parallel fork/exec can retain a
+        // copy until exec, spuriously blocking the next run of this same store.
+        // Explicit unlock ends this guard's ownership regardless of such copies.
+        loop {
+            // SAFETY: this guard still owns an open descriptor.
+            if unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) } == 0
+                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break;
+            }
+        }
+    }
 }
 
 impl RuleStore {
@@ -57,7 +89,46 @@ impl RuleStore {
         }
         crate::create_private_dir(&rules)?;
         contained(&root, &rules)?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            #[cfg(test)]
+            mode_transactions: Default::default(),
+            #[cfg(test)]
+            ledger_rows_parsed: Default::default(),
+        })
+    }
+
+    /// Read an existing store without creating directories or changing modes.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into().canonicalize()?;
+        contained(&root, &root.join("rules"))?;
+        Ok(Self {
+            root,
+            #[cfg(test)]
+            mode_transactions: Default::default(),
+            #[cfg(test)]
+            ledger_rows_parsed: Default::default(),
+        })
+    }
+
+    /// Separate from the short writer lock: serialize engine effects and cap
+    /// reservations without holding a store transaction across network I/O.
+    pub(super) fn engine_lease(&self) -> Result<StoreLock> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(self.path(".engine.lock")?)?;
+        // SAFETY: the descriptor stays owned until the run completes.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                bail!("another mail rules apply is running");
+            }
+            return Err(error).context("locking mail rule engine");
+        }
+        Ok(StoreLock { _file: file })
     }
 
     pub fn root(&self) -> &Path {
@@ -317,11 +388,92 @@ impl RuleStore {
     }
     pub fn ledger(&self) -> Result<Vec<LedgerRow>> {
         let rows: Vec<LedgerRow> = self.read_rows("ledger.jsonl")?;
+        #[cfg(test)]
+        self.ledger_rows_parsed
+            .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
         for row in &rows {
             row.validate_key()?;
         }
         Ok(rows)
     }
+    /// Capture history and its exact byte boundary from the same descriptor.
+    /// An append after that boundary belongs to the next incremental read.
+    pub(super) fn ledger_snapshot(&self) -> Result<(Vec<LedgerRow>, LedgerCursor)> {
+        let mut cursor = LedgerCursor::default();
+        // Initial history must be readable in full, including a legacy final
+        // object without a newline. Only incremental reads can await a writer's
+        // unfinished append; never silently discard corrupt initial history.
+        let rows = self.read_ledger(&mut cursor, false)?;
+        Ok((rows, cursor))
+    }
+
+    /// Read newly appended evidence without reparsing the whole history at
+    /// every dispatch. Replacement/truncation/editing is not an append and
+    /// refuses this pass rather than dropping previously seen closure evidence.
+    pub(super) fn ledger_updates(&self, cursor: &mut LedgerCursor) -> Result<Vec<LedgerRow>> {
+        self.read_ledger(cursor, true)
+    }
+
+    fn read_ledger(
+        &self,
+        cursor: &mut LedgerCursor,
+        complete_lines_only: bool,
+    ) -> Result<Vec<LedgerRow>> {
+        let mut file = match File::open(self.path("ledger.jsonl")?) {
+            Ok(file) => file,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && cursor.identity.is_none() =>
+            {
+                return Ok(Vec::new())
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        let identity = (metadata.dev(), metadata.ino());
+        let modified = metadata.modified()?;
+        ensure!(
+            cursor.identity.is_none_or(|old| old == identity) && metadata.len() >= cursor.offset,
+            "ledger replaced or truncated during apply"
+        );
+        if cursor.identity.is_some() && metadata.len() == cursor.offset {
+            ensure!(
+                cursor.modified == Some(modified),
+                "ledger edited during apply"
+            );
+            return Ok(Vec::new());
+        }
+        file.seek(SeekFrom::Start(cursor.offset))?;
+        let mut bytes = Vec::new();
+        file.take(metadata.len() - cursor.offset)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 == metadata.len() - cursor.offset,
+            "ledger truncated during read"
+        );
+        if complete_lines_only {
+            // append() writes without holding this reader's lock. A trailing
+            // fragment is not committed evidence yet: retry it from the same
+            // offset next time, even if it is already syntactically valid JSON.
+            let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            bytes.truncate(complete);
+        }
+        let rows: Vec<LedgerRow> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+            .map(|line| serde_json::from_slice(line).context("unreadable ledger.jsonl row"))
+            .collect::<Result<_>>()?;
+        for row in &rows {
+            row.validate_key()?;
+        }
+        #[cfg(test)]
+        self.ledger_rows_parsed
+            .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
+        cursor.identity = Some(identity);
+        cursor.offset += bytes.len() as u64;
+        cursor.modified = Some(modified);
+        Ok(rows)
+    }
+
     pub fn deferred(&self) -> Result<Vec<DeferredEntry>> {
         let entries: Vec<DeferredEntry> = self.read_rows("deferred.jsonl")?;
         for entry in &entries {
@@ -381,8 +533,9 @@ impl RuleStore {
         crate::persona::validate_name(&row.rule)?;
         ensure!(!row.id.trim().is_empty(), "approval row needs an id");
         let rows = self.approvals()?;
+        let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
         ensure!(
-            !rows.iter().any(|old| old.id == row.id),
+            !row_ids.contains(row.id.as_str()),
             "duplicate approval row id"
         );
         let preceding = approvals::approval_state(&row.rule, row.group, &rows);
@@ -578,6 +731,9 @@ impl RuleStore {
         holds: &dyn HoldProvider,
         now: DateTime<Utc>,
     ) -> Result<Vec<ActionGroup>> {
+        #[cfg(test)]
+        self.mode_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::persona::validate_name(name)?;
         let _lock = self.lock()?;
         let mut rows = self.approvals()?;
@@ -666,6 +822,9 @@ impl RuleStore {
         holds: &dyn HoldProvider,
         reason: ApprovalReason,
     ) -> Result<Vec<ModeDecision>> {
+        #[cfg(test)]
+        self.mode_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::persona::validate_name(name)?;
         let _lock = self.lock()?;
         let mut rows = self.approvals()?;
@@ -745,9 +904,10 @@ impl RuleStore {
         }
         let _lock = self.lock()?;
         let rows = self.ledger()?;
+        let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
         for row in pending {
             ensure!(
-                !rows.iter().any(|old| old.id == row.id),
+                !row_ids.contains(row.id.as_str()),
                 "duplicate ledger row id"
             );
         }
@@ -795,8 +955,9 @@ impl RuleStore {
     fn append_ledger_locked(&self, row: &LedgerRow) -> Result<()> {
         row.validate_key()?;
         let rows = self.ledger()?;
+        let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
         ensure!(
-            !rows.iter().any(|r| r.id == row.id),
+            !row_ids.contains(row.id.as_str()),
             "duplicate ledger row id"
         );
         if let Some(id) = &row.settlement {
@@ -839,6 +1000,33 @@ impl RuleStore {
             "deferred actions must belong to the queued thread"
         );
         let _lock = self.lock()?;
+        // Pending producers may still add snapshots while a consumer settles
+        // another message. Expiry, however, must never renew an occasion.
+        let rows: Vec<_> = self
+            .ledger()?
+            .into_iter()
+            .filter(|row| row.outcome == Outcome::Expired)
+            .collect();
+        for action in &entry.actions {
+            let closed = message_closed(
+                &rows,
+                &MessageKey {
+                    rule: action.rule.clone(),
+                    account: action.message.account.clone(),
+                    provider_message_id: action.message.provider_message_id.clone(),
+                    action: action.action.clone(),
+                },
+            ) || (action.group.once_per_thread()
+                && thread_closed(
+                    &rows,
+                    &ThreadKey {
+                        rule: action.rule.clone(),
+                        account: action.message.account.clone(),
+                        thread_id: action.message.thread_id.clone(),
+                    },
+                ));
+            ensure!(!closed, "deferred occasion already expired");
+        }
         let mut queue = self.deferred()?;
         let effective_id = if let Some(existing) = queue
             .iter_mut()
@@ -919,9 +1107,39 @@ impl RuleStore {
     }
 
     pub fn expire_deferred(&self, now: DateTime<Utc>) -> Result<Vec<DeferredEntry>> {
+        self.expire_deferred_matching(now, None, &BTreeSet::new())
+    }
+
+    /// An engine pass expires only accounts whose listing completed successfully.
+    pub(super) fn expire_deferred_for_account(
+        &self,
+        account: &str,
+        now: DateTime<Utc>,
+        held_rules: &BTreeSet<String>,
+    ) -> Result<Vec<DeferredEntry>> {
+        self.expire_deferred_matching(now, Some(account), held_rules)
+    }
+
+    fn expire_deferred_matching(
+        &self,
+        now: DateTime<Utc>,
+        account: Option<&str>,
+        held_rules: &BTreeSet<String>,
+    ) -> Result<Vec<DeferredEntry>> {
         let _lock = self.lock()?;
         let mut queue = self.deferred()?;
-        let expired: Vec<_> = queue.iter().filter(|q| q.expired(now)).cloned().collect();
+        let expires = |entry: &DeferredEntry| {
+            account.is_none_or(|account| entry.account == account) && entry.expired(now)
+        };
+        let expired: Vec<_> = queue
+            .iter()
+            .filter(|q| expires(q))
+            .cloned()
+            .filter_map(|mut entry| {
+                entry.actions.retain(|row| !held_rules.contains(&row.rule));
+                (!entry.actions.is_empty()).then_some(entry)
+            })
+            .collect();
         let mut ledger = self.ledger()?;
         for entry in &expired {
             for action in &entry.actions {
@@ -932,7 +1150,7 @@ impl RuleStore {
                 }
                 row.at = Some(now);
                 row.outcome = Outcome::Expired;
-                row.closes = false;
+                row.closes = true;
                 row.settlement = None;
                 row.reason = "deferred for more than seven days".into();
                 row.failure_kind = FailureKind::Unknown;
@@ -940,7 +1158,14 @@ impl RuleStore {
                 ledger.push(row);
             }
         }
-        queue.retain(|q| !q.expired(now));
+        // A standing hold is not a closing occasion. Expire only eligible
+        // snapshots, retaining held siblings in the same queue entry.
+        for entry in &mut queue {
+            if expires(entry) {
+                entry.actions.retain(|row| held_rules.contains(&row.rule));
+            }
+        }
+        queue.retain(|q| !expires(q) || !q.actions.is_empty());
         if !expired.is_empty() {
             self.rewrite("deferred.jsonl", &queue)?;
         }
@@ -1029,4 +1254,27 @@ fn digest_inputs(inputs: &BTreeMap<String, Vec<u8>>) -> Result<String> {
 
 fn directory_digest(root: &Path) -> Result<String> {
     digest_inputs(&directory_inputs(root)?)
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn an_inherited_descriptor_cannot_retain_a_completed_engine_lease() {
+        let root = std::env::temp_dir().join(format!("rule-lease-{}", uuid::Uuid::new_v4()));
+        let store = RuleStore::open(&root).unwrap();
+        let lease = store.engine_lease().unwrap();
+        // dup and fork share the same open file description. No real child or
+        // process-global test state is needed to reproduce that shared lifetime.
+        let inherited = lease._file.try_clone().unwrap();
+        assert!(store.engine_lease().is_err());
+        drop(lease);
+        let next = store.engine_lease().expect(
+            "completed run must release the lease even while a forked child retains its descriptor",
+        );
+        drop(next);
+        drop(inherited);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

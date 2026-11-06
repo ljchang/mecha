@@ -56,7 +56,7 @@ pub enum ApprovalReason {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ApprovalRow {
     pub id: String,
     pub rule: String,

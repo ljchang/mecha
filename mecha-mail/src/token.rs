@@ -313,6 +313,17 @@ impl TokenManager {
         self.creds.lock().await.account.clone()
     }
 
+    /// Read-only operator plans must not rotate or persist credentials. Refuse
+    /// expired tokens rather than turning a dry run into an OAuth write.
+    pub(crate) async fn cached_access_token(&self) -> Result<String> {
+        let creds = self.creds.lock().await;
+        anyhow::ensure!(
+            creds.expires_at - chrono::Utc::now().timestamp() > EXPIRY_MARGIN_SECS,
+            "dry run needs a current access token; refresh credentials outside the dry run"
+        );
+        Ok(creds.access_token.clone())
+    }
+
     /// A currently-valid access token, refreshed if near expiry.
     pub async fn access_token(&self) -> Result<String> {
         let mut creds = self.creds.lock().await;
@@ -403,6 +414,20 @@ impl TokenManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dry_run_tokens_never_refresh_or_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oauth.json");
+        let mut credentials = creds();
+        credentials.expires_at = chrono::Utc::now().timestamp() + 3600;
+        let manager = TokenManager::with_credentials(path.clone(), credentials);
+        assert_eq!(manager.cached_access_token().await.unwrap(), "at");
+        manager.creds.lock().await.expires_at = 0;
+        assert!(manager.cached_access_token().await.is_err());
+        assert!(!path.exists());
+        assert!(!auth_error_path(&path).exists());
+    }
 
     /// A grant made with the shipped client refreshes with this build's
     /// secret, not the stale copy saved beside it — the rotation `builtin`'s

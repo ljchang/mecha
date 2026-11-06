@@ -57,9 +57,10 @@ impl Outcome {
             | Self::Edited
             | Self::Rejected
             | Self::Undone
+            | Self::Expired
             | Self::Unknown => true,
             Self::Failed => !matches!(group, ActionGroup::Mailbox | ActionGroup::PrivateRecord),
-            Self::WouldHave | Self::Expired | Self::Skipped | Self::ApprovalLapsed => false,
+            Self::WouldHave | Self::Skipped | Self::ApprovalLapsed => false,
         }
     }
 }
@@ -220,7 +221,11 @@ impl LedgerRow {
         );
         let mut row = self.settled(
             if safe { Outcome::Failed } else { Outcome::Held },
-            if safe { "interrupted" } else { "fate unknown" },
+            if safe {
+                "interrupted"
+            } else {
+                super::FATE_UNKNOWN_REASON
+            },
             now,
         )?;
         row.failure_kind = FailureKind::Interrupted;

@@ -212,8 +212,12 @@ impl RuleDefinition {
     pub fn parse(text: &str) -> Result<Self> {
         let rule: Self = toml::from_str(text)?;
         ensure!(!rule.actions.is_empty(), "a rule needs an action");
-        for action in &rule.actions {
+        for (index, action) in rule.actions.iter().enumerate() {
             action.validate()?;
+            ensure!(
+                !rule.actions[..index].contains(action),
+                "duplicate action in effect"
+            );
         }
         Ok(rule)
     }
