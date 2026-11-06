@@ -1024,12 +1024,18 @@ fn api() -> gate::Owned {
         .at(
             "/api/mail/rules/add",
             Owner::Of(Feature::MailRules),
-            axum::routing::post(mail_rules::add),
+            // The draft's stated budget (the child's stdin cap), at the door.
+            axum::routing::post(mail_rules::add).layer(axum::extract::DefaultBodyLimit::max(
+                mail_rules::MAX_DRAFT_BODY,
+            )),
         )
         .at(
             "/api/mail/rules/{name}/edit",
             Owner::Of(Feature::MailRules),
-            axum::routing::post(mail_rules::edit),
+            // The draft's stated budget (the child's stdin cap), at the door.
+            axum::routing::post(mail_rules::edit).layer(axum::extract::DefaultBodyLimit::max(
+                mail_rules::MAX_DRAFT_BODY,
+            )),
         )
         .at(
             "/api/mail/rules/{name}/mode",

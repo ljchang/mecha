@@ -305,6 +305,31 @@ pub fn test_match(
     test_match_with_header_capability(rule, candidate, in_inbox, now, true)
 }
 
+/// One message of a retrospective test: rows (possibly none, a known
+/// non-match), or the owner ruling's Unknown — the rule could not be checked
+/// because a reader that cannot prove absence did not surface the header.
+/// Kept apart so a report can never fold "could not see" into "matched
+/// nothing" (review of #849).
+#[derive(Debug)]
+pub enum TestMessage {
+    Rows(Vec<LedgerRow>),
+    HeaderNotVisible,
+}
+
+pub fn test_message(
+    rule: &LoadedRule,
+    candidate: &engine::Candidate,
+    in_inbox: Option<bool>,
+    now: DateTime<Utc>,
+    proves_absence: bool,
+) -> Result<TestMessage> {
+    if engine::absent_on_partial_headers(rule, candidate, proves_absence) {
+        return Ok(TestMessage::HeaderNotVisible);
+    }
+    test_match_with_header_capability(rule, candidate, in_inbox, now, proves_absence)
+        .map(TestMessage::Rows)
+}
+
 /// The provider-aware retrospective path shares live partial-header exclusion.
 /// Hosts report account-level holds before calling this per-message helper.
 pub fn test_match_with_header_capability(

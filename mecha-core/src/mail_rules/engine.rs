@@ -108,7 +108,9 @@ pub(super) fn partial_header_rule(rule: &LoadedRule, proves_absence: bool) -> bo
     !proves_absence && needs_raw_header_absence(rule) && !header_provider_hold(rule, proves_absence)
 }
 
-pub(super) fn absent_on_partial_headers(
+/// The owner ruling's Unknown: this rule is absent for this message because
+/// a reader that cannot prove absence did not surface the header.
+pub fn absent_on_partial_headers(
     rule: &LoadedRule,
     candidate: &Candidate,
     proves_absence: bool,
@@ -200,6 +202,11 @@ pub struct ApplyReport {
     pub handled: Vec<String>,
     /// Evaluation holds do not close action keys.
     pub list_cap: Vec<String>,
+    /// Messages a non-outbound header rule was absent for because the reader
+    /// cannot prove absence and did not surface the header (owner ruling
+    /// 2026-11-06). Counted by the retrospective test, so "matched nothing"
+    /// and "could not see the header" stay different readings.
+    pub unknown_header_messages: usize,
 }
 
 /// Keys AND; values OR. Addresses/domains/accounts/List-Id compare exactly

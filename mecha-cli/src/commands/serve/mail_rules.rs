@@ -43,6 +43,10 @@ async fn read(state: &super::WebState, args: &[&str]) -> Response {
 // this is a bounded interactive request, not a promise every mailbox fits.
 const TEST_SECONDS: u64 = 600;
 
+/// A rule draft's body: the 1 MiB stdin budget `mecha mail rule` reads, so a
+/// larger draft is refused here rather than read into serve and piped.
+pub const MAX_DRAFT_BODY: usize = 1 << 20;
+
 #[derive(serde::Deserialize)]
 pub struct Draft {
     name: String,

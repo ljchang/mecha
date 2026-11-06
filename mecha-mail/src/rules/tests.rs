@@ -2152,26 +2152,37 @@ fn retrospective_graph_positive_raw_headers_are_rows_and_unknown_is_absent() {
         assert_ne!(c.headers_complete, Some(true));
         let proves_absence = provider_proves_header_absence(Provider::Outlook, HeaderRead::Full);
         assert!(!engine::header_provider_hold(&rule, proves_absence));
-        let rows = mecha_core::mail_rules::test_match_with_header_capability(
+        let mut report = engine::ApplyReport::default();
+        match mecha_core::mail_rules::test_message(
             &rule,
             &c,
             Some(false),
             Utc::now(),
             proves_absence,
         )
-        .unwrap();
+        .unwrap()
+        {
+            TestMessage::Rows(rows) => {
+                assert!(positive, "a visible match is rows");
+                report.rows = rows;
+            }
+            TestMessage::HeaderNotVisible => {
+                assert!(!positive, "only an unseen header is unknown");
+                report.unknown_header_messages += 1;
+            }
+        }
+        let rows = report.rows.clone();
         assert_eq!(rows.len(), usize::from(positive));
         assert!(rows
             .iter()
             .all(|r| r.outcome == Outcome::WouldHave && r.headers_partial));
-        let report = engine::ApplyReport {
-            rows,
-            ..Default::default()
-        };
         let json = test_account_report("campus", &report);
         assert_eq!(json["status"], "complete");
         assert_eq!(json["matched_rows"], usize::from(positive));
         assert!(json["holds"].as_array().unwrap().is_empty());
+        // "Matched nothing" and "could not see the header" are different
+        // readings: the unseen header is counted beside the matches.
+        assert_eq!(json["unknown_header_messages"], usize::from(!positive));
     }
     assert!(store.ledger().unwrap().is_empty());
 }

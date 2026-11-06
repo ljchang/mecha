@@ -4586,7 +4586,8 @@ Names and row IDs follow `--`, except add, which passes `--name=NAME` (the
 `=` binds a value that begins with a hyphen), and test's `--account=NAME`.
 `RESERVED_RULE_NAMES` (the fixed route segments) are refused at install. Edit uses
 `edit --stdin -- NAME`, and drafts travel only on stdin. The stdin budget is
-1 MiB. Child writing, output draining and exit share a deadline; cancellation
+1 MiB, and the add and edit routes refuse a larger body at the door
+(`MAX_DRAFT_BODY`). Child writing, output draining and exit share a deadline; cancellation
 kills the child's process group. Ordinary mutations have 30 seconds, undo
 120 seconds and retrospective testing 600 seconds. The last stderr line and
 any JSON failure/partial report survive a nonzero exit (HTTP 409); timeout is
@@ -4650,7 +4651,12 @@ Wrong-match reports `changed`, `row` (null on a duplicate), `message`.
 JSON contains `dry_run`, `window_days:30`, `all_folders:true`, the existing
 aggregate `report`, and `accounts`. Each account carries `account`, `status`
 (`complete`, `held`, `failed`), `matched_rows` (null if incomplete/held),
-`would_have_rows`, `read_failures`, `candidate_failures`, `holds` and `rows`.
+`would_have_rows`, `read_failures`, `candidate_failures`,
+`unknown_header_messages`, `holds` and `rows`. `unknown_header_messages` counts
+messages a non-outbound header rule could not be checked against because the
+reader cannot prove absence and did not surface the header (the 2026-11-06
+ruling's Unknown); it is never folded into `matched_rows`, so "matched
+nothing" and "could not see the header" read differently.
 Partial would-have rows remain visible alongside a failed account.
 
 **Edits and corrections cannot restore permission.** `RuleStore::edit`

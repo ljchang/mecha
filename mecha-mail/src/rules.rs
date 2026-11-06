@@ -15,7 +15,7 @@ use mecha_core::{
         engine::{
             self, ActionResult, Candidate, Classified, Mailbox, Pass, Task, TaskSink, ThreadRead,
         },
-        Action, ActionVerb, FailureKind, GateStatus, LoadedRule, Outcome, RuleStore,
+        Action, ActionVerb, FailureKind, GateStatus, LoadedRule, Outcome, RuleStore, TestMessage,
     },
     mail_triage::{self, rule_records},
     mcp::McpClient,
@@ -968,6 +968,7 @@ pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
         accounts.push(test_account_report(&name, &account_report));
         report.read_failures += account_report.read_failures;
         report.candidate_failures += account_report.candidate_failures;
+        report.unknown_header_messages += account_report.unknown_header_messages;
         report.rows.extend(account_report.rows);
         report.notices.extend(account_report.notices);
     }
@@ -997,6 +998,10 @@ fn test_account_report(name: &str, report: &engine::ApplyReport) -> serde_json::
         "would_have_rows": count,
         "read_failures": report.read_failures,
         "candidate_failures": report.candidate_failures,
+        // Messages the rule could not be checked against: the header was not
+        // visible on a reader that cannot prove absence. Beside matched_rows,
+        // never folded into it.
+        "unknown_header_messages": report.unknown_header_messages,
         "holds": report.notices,
         "rows": report.rows,
     })
@@ -1126,16 +1131,18 @@ async fn test_recent(
                         .provider_arrival_at
                         .context("provider arrival unknown")?;
                     if arrival < since || arrival > now {
-                        return Ok(Vec::new());
+                        return Ok(TestMessage::Rows(Vec::new()));
                     }
                     match email.direction(&owners) {
-                        Some(MailDirection::Sent | MailDirection::Draft) => return Ok(Vec::new()),
+                        Some(MailDirection::Sent | MailDirection::Draft) => {
+                            return Ok(TestMessage::Rows(Vec::new()))
+                        }
                         Some(MailDirection::Inbound) => (),
                         None => bail!("message direction unknown"),
                     }
                     let candidate = candidate(&name, &hit.thread_id, &[email], &owners, None)
                         .map_err(anyhow::Error::msg)?;
-                    mecha_core::mail_rules::test_match_with_header_capability(
+                    mecha_core::mail_rules::test_message(
                         rule,
                         &candidate,
                         in_inbox,
@@ -1144,7 +1151,10 @@ async fn test_recent(
                     )
                 });
             match result {
-                Ok(rows) => report.rows.extend(rows),
+                Ok(TestMessage::Rows(rows)) => report.rows.extend(rows),
+                // Unknown is not a known negative: counted, so a run that never
+                // saw the header cannot read as "matched nothing".
+                Ok(TestMessage::HeaderNotVisible) => report.unknown_header_messages += 1,
                 Err(error) => {
                     report.read_failures += 1;
                     report
