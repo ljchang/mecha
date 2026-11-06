@@ -533,6 +533,11 @@
                 {:else if a.status === 'held'}<span class="heldword">held — no count</span>
                 {:else}<span class="bad">incomplete — {a.read_failures + a.candidate_failures} read{a.read_failures + a.candidate_failures === 1 ? '' : 's'} failed</span>{/if}
               </div>
+              {#if a.unknown_header_messages}
+                <!-- Unknown is not a non-match (the 2026-11-06 ruling): say how
+                     many messages could not be checked, beside the count. -->
+                <div class="hold">{a.unknown_header_messages} message{a.unknown_header_messages === 1 ? '' : 's'} could not be checked: the header this rule matches on was not visible ({a.account}'s provider returns headers incompletely).</div>
+              {/if}
               {#each a.holds ?? [] as h}<div class="hold">{h}</div>{/each}
               {#each (a.rows ?? []).slice(0, 50) as row (row.id)}
                 {@const m = messageLine(row)}
