@@ -2210,3 +2210,66 @@ observation refusal. Run appropriate targeted tests, full workspace all-feature 
 tests/strict Clippy on Spark, fmt and diff checks. Install only an isolated prototype
 binary and execute explicit synthetic CLI lifecycle. Update source-grounded handoff,
 history, architecture and Site with measured behavior and remaining limits.
+
+
+## 25. Durable model decisions after a guarded read (2026-11-06)
+
+Build the authorized next slice beside the default-off prototype: one successful
+host-bound synthetic file observation, an immutable objective/resource contract,
+one local model decision, a source-only check, and at most one reconsideration.
+Retain recommend, abstain, withheld and failed separately; do not execute a selected
+method or label a recommendation a measured outcome. The owner knowledge graph,
+production services and nightly activities remain independent.
+
+Explicit new schema v4 stores a single model binding per durable-read receipt.
+Existing v1-v3 files remain supported without silent migration. Read lifecycles run
+on v3/v4; v3's supplied-JSON finish cannot bypass v4 model validation. Content stays
+in revision-backed records; operational tables retain only opaque identities,
+phases, spent allowances and references. Bind model identifier, seed, evidence view,
+contract and checker version before the first call. Reopening cannot change them.
+
+Use one strict received-JSON measurement envelope with explicit workload, unsigned
+minutes/energy/quality per unique fixed method, and format terminator. The explicit
+host-authored synthetic contract does not prove that arbitrary file claims are true.
+The hash identifies exactly the normalized, bounded FsRead result, not the original
+whole disk file. Reject malformed/byte-truncated, duplicate-key, unknown-field or
+workload-mismatched envelopes. A valid line-bounded prefix is still only evidence
+about received bytes; make no full-file completeness claim. Missing alternatives
+remain missing. The source-only checker must never read hidden simulator truth.
+
+Factor existing experience assessment/revision-request helpers instead of duplicating
+its arithmetic. The current objectives remain minimize energy/minutes; all three
+methods and all consulted evidence remain bound even when uncited. No-memory view
+validates and binds the same source but supplies no measurement passages. Visible
+measurement passages retain their original observation reference/hash and separate
+projection hashes. Contract, request and response schema are immutable per attempt.
+
+Reserve each initial/revision call atomically before inference, then recheck the
+opaque guard after awaited resident-model/hold preflight immediately before sending.
+No SQLite transaction spans inference. The local provider remains tool-free,
+loopback-only, resident-model-only, with zero transport retries and its existing
+180-second timeout. A changed model response, refusal, truncation, malformed JSON or
+transport error remains a recorded failed attempt, never fallback success.
+
+Settlement saves the actual reply/error/usage/timing independently from its host
+assessment. A crash after settlement can repeat pure assessment and proceed without
+another initial call. A reservation with no settled result remains indeterminate
+and spent; no permit is reconstructed on reopen. One optional revision is permitted
+only after an initial host finding. Failed initial or revision attempts are terminal;
+no extra inference is concealed as repair. Finalization requires the applicable
+settled assessment and every original source still current and authorized.
+
+Cancellation retains the result of an already-started call but blocks new calls,
+assessment and finalization. Source change/forgetting denies late content settlement;
+this can leave a spent unresolved attempt rather than retain invalidated private
+content. Forgetting any lifecycle member removes model contract, requests, replies,
+errors, assessments and final decision plus sibling records atomically, suppressing
+erased source keys. Exported reports remain outside database erasure. Cooperative
+cancellation after the final pre-call check is not exactly-once inference execution.
+
+Qualify with independent process-loss, concurrent cancellation/forgetting and reply
+failure tests, then a small frozen synthetic no-memory/observed comparison. Score
+initial supported choices, appropriate abstention and host withholding separately;
+report optional revision gains and additional calls/tokens/time separately. No-memory
+abstention is often correct, so fewer abstentions alone is not a benefit. This tests
+use of supplied recalled evidence, not corpus-scale retrieval or general learning.
