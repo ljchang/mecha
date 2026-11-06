@@ -77,6 +77,13 @@ pub enum ActionResult {
     },
 }
 
+fn activation_unknown(mode: &ResolvedMode) -> bool {
+    mode.effective.rank() >= Mode::Propose.rank() && mode.activated_at.is_none()
+}
+fn evaluates(mode: &ResolvedMode) -> bool {
+    mode.effective != Mode::Off && !activation_unknown(mode)
+}
+
 fn needs_raw_header_absence(rule: &LoadedRule) -> bool {
     !rule.definition.matcher.list_id.is_empty() || !rule.definition.matcher.header.is_empty()
 }
@@ -95,7 +102,12 @@ pub trait Mailbox: Send + Sync {
     fn proves_header_absence(&self, _account: &str) -> bool {
         false
     }
-    async fn candidates(&self, account: &str, pass: Pass) -> Result<Vec<String>>;
+    async fn candidates(
+        &self,
+        account: &str,
+        pass: Pass,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>>;
     async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead>;
     /// Mutate only `candidate.message.provider_message_id`. Thread-only hosts
     /// must hold unless every affected message independently passed all guards.
@@ -122,6 +134,8 @@ pub trait TaskSink: Send + Sync {
 
 pub struct EngineOptions {
     pub pass: Pass,
+    /// Dry-run selection only. Live passes need every sibling's safeguards.
+    pub rules: Vec<String>,
     pub dry_run: bool,
     pub clock: std::sync::Arc<dyn crate::clock::Clock>,
     pub timezone: Tz,
@@ -131,6 +145,7 @@ impl Default for EngineOptions {
     fn default() -> Self {
         Self {
             pass: Pass::Headers,
+            rules: Vec::new(),
             dry_run: false,
             clock: std::sync::Arc::new(crate::clock::SystemClock),
             timezone: chrono_tz::UTC,
@@ -303,7 +318,7 @@ fn classified(c: &Candidate) -> bool {
 
 // Deliberately accepts a conservative addr-spec subset, never a display name,
 // whitespace or syntax that could turn into instructions in a task's name.
-fn parsed_address(s: &str) -> Option<String> {
+pub fn parsed_address(s: &str) -> Option<String> {
     let (local, domain) = s.split_once('@')?;
     if local.is_empty()
         || domain.is_empty()
@@ -379,7 +394,7 @@ pub fn brake_evidence(rule: &str, rows: &[LedgerRow]) -> BrakeEvidence {
         {
             mailbox.insert(action.clone());
         }
-        if row.outcome == Outcome::Undone {
+        if row.counts_as_undo(rows) {
             undone.insert(action);
         }
         if row.group.is_outbound() && row.mode == Mode::Auto && row.wrong_match {
@@ -400,6 +415,36 @@ pub fn brake_evidence(rule: &str, rows: &[LedgerRow]) -> BrakeEvidence {
     evidence.matches = matches.len();
     evidence.wrong_matches = matches.intersection(&wrong).count();
     evidence
+}
+
+pub fn unacknowledged_brakes(
+    rule: &LoadedRule,
+    rows: &[LedgerRow],
+    approvals: &[ApprovalRow],
+) -> BTreeMap<ActionGroup, Mode> {
+    let mut targets = brake_targets(rule.definition.groups(), &brake_evidence(&rule.name, rows));
+    // An owner raise acknowledges prior evidence. A brake needs a new
+    // adverse event after that approval, or recovery would be impossible:
+    // shadow cannot produce the success needed to reset its own streak.
+    targets.retain(|group, _| {
+        let acknowledged = approvals
+            .iter()
+            .rev()
+            .find(|r| {
+                r.rule == rule.name
+                    && r.group == *group
+                    && (r.reason == ApprovalReason::Brake
+                        || r.actor == crate::closure::Actor::Owner)
+            })
+            .and_then(|r| r.at);
+        rows.iter().any(|r| {
+            r.rule == rule.name
+                && (r.wrong_match
+                    || (r.group == *group && (r.is_action_failure() || r.counts_as_undo(rows))))
+                && acknowledged.is_none_or(|at| r.at.is_none_or(|event| event > at))
+        })
+    });
+    targets
 }
 
 struct CachedModes {
@@ -522,32 +567,7 @@ impl Run<'_> {
         {
             return Ok(());
         }
-        let mut targets = brake_targets(
-            rule.definition.groups(),
-            &brake_evidence(&rule.name, &self.rows),
-        );
-        // An owner raise acknowledges prior evidence. A brake needs a new
-        // adverse event after that approval, or recovery would be impossible:
-        // shadow cannot produce the success needed to reset its own streak.
-        targets.retain(|group, _| {
-            let acknowledged = approvals
-                .iter()
-                .rev()
-                .find(|r| {
-                    r.rule == rule.name
-                        && r.group == *group
-                        && (r.reason == ApprovalReason::Brake
-                            || r.actor == crate::closure::Actor::Owner)
-                })
-                .and_then(|r| r.at);
-            self.rows.iter().any(|r| {
-                r.rule == rule.name
-                    && (r.wrong_match
-                        || (r.group == *group
-                            && (r.is_action_failure() || r.outcome == Outcome::Undone)))
-                    && acknowledged.is_none_or(|at| r.at.is_none_or(|event| event > at))
-            })
-        });
+        let targets = unacknowledged_brakes(rule, &self.rows, &approvals);
         if !self.options.dry_run
             && targets.iter().any(|(group, target)| {
                 let mode = resolve_mode(rule, *group, &approvals, &holds);
@@ -592,7 +612,16 @@ impl Run<'_> {
 
     fn modes(&mut self, rule: &LoadedRule) -> Result<BTreeMap<ActionGroup, ResolvedMode>> {
         self.refresh_mode_cache(rule)?;
-        Ok(self.mode_cache[&rule.name].modes.clone())
+        let modes = self.mode_cache[&rule.name].modes.clone();
+        for (group, mode) in &modes {
+            if activation_unknown(mode) {
+                let notice = format!("{} / {group:?}: held: activation unknown", rule.name);
+                if !self.report.notices.contains(&notice) {
+                    self.report.notices.push(notice);
+                }
+            }
+        }
+        Ok(modes)
     }
     fn cap(
         &self,
@@ -697,21 +726,21 @@ impl Run<'_> {
         }
         let held = list_cap(rules, &modes);
         self.report.list_cap.extend(held.iter().cloned());
-        let descriptions = rules.iter().any(|r| {
-            r.definition.is_description()
-                && modes[&r.name].values().any(|m| m.effective != Mode::Off)
-        });
+        let descriptions = rules
+            .iter()
+            .any(|r| r.definition.is_description() && modes[&r.name].values().any(evaluates));
         let matched: Vec<_> = rules
             .iter()
             .filter(|r| {
                 !r.definition.is_description()
                     && !held.contains(&r.name)
+                    && modes[&r.name].values().any(evaluates)
                     && header_match(&r.definition.matcher, c) != HeaderMatch::NoMatch
             })
             .collect();
         let owes_verdict = matched.iter().any(|r| {
             r.definition.actions.iter().any(|a| {
-                modes[&r.name][&a.group()].effective != Mode::Off
+                evaluates(&modes[&r.name][&a.group()])
                     && (a.group().is_outbound()
                         || matches!(a.verb, ActionVerb::Digest | ActionVerb::Task))
             })
@@ -719,7 +748,7 @@ impl Run<'_> {
         let unknown_deferral = matched.iter().any(|r| {
             header_match(&r.definition.matcher, c) == HeaderMatch::Unknown
                 && r.definition.actions.iter().any(|a| {
-                    modes[&r.name][&a.group()].effective != Mode::Off
+                    evaluates(&modes[&r.name][&a.group()])
                         && (a.group().is_outbound()
                             || matches!(a.verb, ActionVerb::Digest | ActionVerb::Task))
                 })
@@ -739,6 +768,8 @@ impl Run<'_> {
                             ActionVerb::Archive | ActionVerb::Trash | ActionVerb::Spam
                         ));
                 if mode.effective == Mode::Off
+                    || (mode.effective.rank() >= Mode::Propose.rank()
+                        && mode.activated_at.is_none())
                     || !waits
                     || (self.options.pass == Pass::AfterClassify
                         && classified
@@ -780,7 +811,7 @@ impl Run<'_> {
             let mut reservations = Vec::new();
             let mut rule_handled = current
                 .get(&ActionGroup::Mailbox)
-                .is_some_and(|m| m.effective == Mode::Auto)
+                .is_some_and(|m| m.effective == Mode::Auto && m.activated_at.is_some())
                 && c.arrival_at.is_some()
                 && header_match(&rule.definition.matcher, c) == HeaderMatch::Match
                 && !defer_removal
@@ -798,7 +829,9 @@ impl Run<'_> {
             for (index, action) in rule.definition.actions.iter().enumerate() {
                 let resolved = &current[&action.group()];
                 let mode = resolved.effective;
-                if mode == Mode::Off {
+                if mode == Mode::Off
+                    || (mode.rank() >= Mode::Propose.rank() && resolved.activated_at.is_none())
+                {
                     continue;
                 }
                 let mut row = self.snapshot(rule, index, c, mode)?;
@@ -978,6 +1011,14 @@ impl Run<'_> {
                             "group disabled during apply".into(),
                             FailureKind::Unknown,
                         )
+                    } else if mode.rank() >= Mode::Propose.rank() && resolved.activated_at.is_none()
+                    {
+                        not_dispatched = true;
+                        (
+                            Outcome::Skipped,
+                            "activation unknown".into(),
+                            FailureKind::Environment,
+                        )
                     } else if mode.rank() >= Mode::Propose.rank()
                         && resolved
                             .activated_at
@@ -1142,7 +1183,7 @@ fn outbound_owner(
 
 // The loader currently admits no description execution. Still expose the
 // specified capacity hold so P4 cannot silently inherit an unbounded frame.
-fn list_cap(
+pub fn list_cap(
     rules: &[LoadedRule],
     modes: &BTreeMap<String, BTreeMap<ActionGroup, ResolvedMode>>,
 ) -> BTreeSet<String> {
@@ -1191,6 +1232,10 @@ pub async fn apply(
     options: &EngineOptions,
 ) -> Result<ApplyReport> {
     ensure!(
+        options.rules.is_empty() || options.dry_run,
+        "a rule filter requires a dry-run; live apply must consider all rules"
+    );
+    ensure!(
         options.pending_timeout > Duration::zero(),
         "pending timeout must be positive"
     );
@@ -1199,6 +1244,10 @@ pub async fn apply(
     } else {
         Some(store.engine_lease()?)
     };
+    let selected = |name: &str| options.rules.is_empty() || options.rules.iter().any(|r| r == name);
+    for name in &options.rules {
+        store.get(name)?;
+    }
     if !options.dry_run {
         // Detect broken/deleted definitions before list() can abort. Restoring
         // their bytes must not restore an old auto approval.
@@ -1206,6 +1255,7 @@ pub async fn apply(
             .approvals()?
             .into_iter()
             .map(|r| r.rule)
+            .filter(|name| selected(name))
             .collect::<BTreeSet<_>>()
         {
             let gate = store
@@ -1215,7 +1265,18 @@ pub async fn apply(
             store.detect_lapses(&name, &P1Holds { origin_gate: gate }, options.clock.now())?;
         }
     }
-    let rules = store.list()?;
+    let mut rules = if options.rules.is_empty() {
+        store.list()?
+    } else {
+        options
+            .rules
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|name| store.get(name))
+            .collect::<Result<Vec<_>>>()?
+    };
+    rules.sort_by(|a, b| (a.definition.priority, &a.name).cmp(&(b.definition.priority, &b.name)));
     let (rows, ledger_cursor) = store.ledger_snapshot()?;
     let mut run = Run {
         store,
@@ -1233,7 +1294,24 @@ pub async fn apply(
             .collect(),
         report: ApplyReport::default(),
     };
+    let recovery_approvals = store.approvals()?;
     for row in run.rows.clone() {
+        if row.outcome != Outcome::Pending || !selected(&row.rule) {
+            continue;
+        }
+        if let Some(rule) = rules.iter().find(|rule| rule.name == row.rule) {
+            let mode = resolve_mode(
+                rule,
+                row.group,
+                &recovery_approvals,
+                &P1Holds {
+                    origin_gate: mailbox.origin_gate(rule),
+                },
+            );
+            if activation_unknown(&mode) {
+                continue;
+            }
+        }
         if row.outcome == Outcome::Pending
             && !mailbox.proves_header_absence(&row.message.account)
             && rules
@@ -1254,11 +1332,31 @@ pub async fn apply(
     // Also resolve brakes and capacity when no mail is returned.
     let mut modes = BTreeMap::new();
     for rule in &rules {
-        modes.insert(rule.name.clone(), run.modes(rule)?);
+        let resolved = run.modes(rule)?;
+        modes.insert(rule.name.clone(), resolved);
     }
-    let queue = store.deferred()?;
+    let held_groups: BTreeSet<_> = modes
+        .iter()
+        .flat_map(|(name, groups)| {
+            groups
+                .iter()
+                .filter(|(_, mode)| activation_unknown(mode))
+                .map(|(group, _)| (name.clone(), *group))
+        })
+        .collect();
+    let mut queue = store.deferred()?;
+    let excluded: BTreeSet<_> = queue
+        .iter()
+        .flat_map(|entry| &entry.actions)
+        .filter(|row| !selected(&row.rule))
+        .map(|row| row.rule.clone())
+        .collect();
+    for entry in &mut queue {
+        entry.actions.retain(|row| selected(&row.rule));
+    }
+    queue.retain(|entry| !entry.actions.is_empty());
     for account in accounts {
-        let held_rules: BTreeSet<_> = rules
+        let mut held_rules: BTreeSet<_> = rules
             .iter()
             .filter(|rule| {
                 !mailbox.proves_header_absence(account) && needs_raw_header_absence(rule)
@@ -1270,6 +1368,7 @@ pub async fn apply(
                 "{account}/{name}: held: provider cannot prove header absence for list_id/header matchers"
             ));
         }
+        held_rules.extend(excluded.iter().cloned());
         // Standing conditions remove the whole rule before descriptions,
         // deferral, outbound priority, list caps or handled-marker decisions.
         // Even a positive raw-header match cannot override this account hold.
@@ -1284,11 +1383,23 @@ pub async fn apply(
             .filter(|entry| entry.account == *account)
             .cloned()
             .filter_map(|mut entry| {
-                entry.actions.retain(|row| !held_rules.contains(&row.rule));
+                entry.actions.retain(|row| {
+                    !held_rules.contains(&row.rule)
+                        && modes
+                            .get(&row.rule)
+                            .and_then(|groups| groups.get(&row.group))
+                            .is_none_or(|mode| {
+                                mode.effective.rank() < Mode::Propose.rank()
+                                    || mode.activated_at.is_some()
+                            })
+                });
                 (!entry.actions.is_empty()).then_some(entry)
             })
             .collect();
-        let mut ids: BTreeSet<_> = match mailbox.candidates(account, options.pass).await {
+        let mut ids: BTreeSet<_> = match mailbox
+            .candidates(account, options.pass, options.clock.now())
+            .await
+        {
             Ok(ids) => ids.into_iter().collect(),
             Err(error) => {
                 run.report.candidate_failures += 1;
@@ -1315,19 +1426,44 @@ pub async fn apply(
                     row.at = Some(options.clock.now());
                     row.outcome = Outcome::Expired;
                     row.closes = true;
+                    row.settlement = None;
+                    row.failure_kind = FailureKind::Unknown;
                     row.reason = "deferred for more than seven days".into();
+                    // A crash may have persisted expiry before rewriting its
+                    // queue. Preview the existing row, including its timestamp.
+                    let row = run
+                        .rows
+                        .iter()
+                        .find(|stored| stored.id == row.id)
+                        .cloned()
+                        .unwrap_or(row);
                     run.write(row)?;
                 }
             }
         } else {
-            for expired in
-                store.expire_deferred_for_account(account, options.clock.now(), &held_rules)?
-            {
+            let mut expired_ids = HashSet::new();
+            for expired in store.expire_deferred_for_account(
+                account,
+                options.clock.now(),
+                &held_rules,
+                &held_groups,
+            )? {
+                for snapshot in &expired.actions {
+                    expired_ids.insert(format!("expired:{}:{}", expired.id, snapshot.id));
+                }
                 run.report
                     .notices
                     .push(format!("{}: deferred work expired", expired.thread_id));
             }
             run.sync_ledger()?;
+            for row in run
+                .rows
+                .clone()
+                .into_iter()
+                .filter(|row| expired_ids.contains(&row.id))
+            {
+                run.report_row(row);
+            }
         }
         if options.pass == Pass::AfterClassify {
             ids.extend(

@@ -139,7 +139,7 @@ impl Mailbox for Fake {
     fn proves_header_absence(&self, account: &str) -> bool {
         !self.partial_header_accounts.contains(account)
     }
-    async fn candidates(&self, account: &str, _: Pass) -> Result<Vec<String>> {
+    async fn candidates(&self, account: &str, _: Pass, _: DateTime<Utc>) -> Result<Vec<String>> {
         ensure!(
             self.listing_failure.as_deref() != Some(account),
             "provider listing HTTP 503 unavailable"
@@ -2293,4 +2293,219 @@ async fn incomplete_message_on_capable_provider_still_holds_per_message() {
         .all(|row| row.outcome == Outcome::Held && !row.closes));
     assert_eq!(f.store.deferred().unwrap().len(), 2);
     assert!(report.notices.is_empty());
+}
+
+#[tokio::test]
+async fn live_expiry_rows_equal_the_dry_run_plan() {
+    let mut f = Fixture::new();
+    f.rule("digest", DIGEST);
+    f.run(None).await;
+    f.clock.advance(Duration::days(8));
+    f.mail.candidates.lock().unwrap().clear();
+    f.options.dry_run = true;
+    let plan = f.run(None).await;
+    assert_eq!(plan.rows.len(), 1);
+    f.options.dry_run = false;
+    let live = f.run(None).await;
+    assert_eq!(
+        serde_json::to_value(&live.rows).unwrap(),
+        serde_json::to_value(&plan.rows).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn unknown_activation_neither_enqueues_nor_dispatches_and_notices_once() {
+    let f = Fixture::new();
+    let r = f.rule("digest", DIGEST);
+    f.mode(&r, ActionGroup::PrivateRecord, Mode::Auto);
+    let path = f.store.root().join("approvals.jsonl");
+    let rows = f
+        .store
+        .approvals()
+        .unwrap()
+        .into_iter()
+        .map(|mut row| {
+            row.at = None;
+            serde_json::to_string(&row).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(path, rows).unwrap();
+    for _ in 0..2 {
+        let report = f.run(None).await;
+        assert!(
+            f.store.deferred().unwrap().is_empty(),
+            "unknown activation enqueued work"
+        );
+        assert!(
+            report.rows.is_empty(),
+            "standing holds must not repeat per message"
+        );
+        assert_eq!(
+            report
+                .notices
+                .iter()
+                .filter(|s| s.contains("activation unknown"))
+                .count(),
+            1
+        );
+        assert!(f.mail.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn live_rule_filter_is_refused_before_sibling_safeguards_can_be_lost() {
+    let mut f = Fixture::new();
+    let archive = f.rule("archive", ARCHIVE);
+    f.rule("digest", DIGEST);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    f.options.rules = vec![archive.name.clone()];
+    let before = std::fs::read(f.store.root().join("approvals.jsonl")).unwrap();
+    let result = apply(&f.store, &f.mail, None, &["campus".into()], &f.options).await;
+    assert!(
+        result.is_err(),
+        "live rule filtering must refuse before effects"
+    );
+    assert!(result.unwrap_err().to_string().contains("dry-run"));
+    assert!(f.mail.calls.lock().unwrap().is_empty());
+    assert!(f.store.ledger().unwrap().is_empty());
+    assert!(f.store.deferred().unwrap().is_empty());
+    assert_eq!(
+        before,
+        std::fs::read(f.store.root().join("approvals.jsonl")).unwrap()
+    );
+    f.options.dry_run = true;
+    let plan = f.run(None).await;
+    assert!(!plan.rows.is_empty());
+    assert!(plan.rows.iter().all(|row| row.rule == archive.name));
+    assert!(f.mail.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn explicit_rule_selection_preserves_priority_order() {
+    let mut f = Fixture::new();
+    let early = f.store.install("z-early", "description = 'Notice'\npriority = 5\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'read'\n", &BTreeMap::new()).unwrap();
+    let later = f.store.install("a-later", "description = 'Notice'\npriority = 10\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'archive'\n", &BTreeMap::new()).unwrap();
+    f.mode(&early, ActionGroup::Mailbox, Mode::Auto);
+    f.mode(&later, ActionGroup::Mailbox, Mode::Auto);
+    f.options.rules = vec![later.name.clone(), early.name.clone(), later.name.clone()];
+    f.options.dry_run = true;
+    let report = f.run(None).await;
+    let names: Vec<_> = report
+        .rows
+        .iter()
+        .filter(|row| row.outcome == Outcome::Done)
+        .map(|row| row.rule.as_str())
+        .collect();
+    assert_eq!(names, vec!["z-early", "a-later"]);
+    assert!(f.mail.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn explicit_rule_selection_never_evaluates_or_sweeps_siblings() {
+    let mut f = Fixture::new();
+    f.rule("first", DIGEST);
+    f.rule("second", DIGEST);
+    f.run(None).await;
+    assert_eq!(f.store.deferred().unwrap()[0].actions.len(), 2);
+    f.clock.advance(Duration::days(8));
+    f.mail.candidates.lock().unwrap().clear();
+    f.options.rules = vec!["first".into()];
+    f.options.dry_run = true;
+    let plan = f.run(None).await;
+    assert_eq!(plan.rows.len(), 1);
+    assert_eq!(plan.rows[0].rule, "first");
+    assert_eq!(f.store.deferred().unwrap()[0].actions.len(), 2);
+    assert!(f.store.ledger().unwrap().is_empty());
+}
+
+#[test]
+fn retrospective_match_includes_archived_mail_without_activation_or_claims() {
+    let f = Fixture::new();
+    let rule = f.rule("notice", ARCHIVE);
+    let candidate = f.mail.candidates.lock().unwrap()[0].clone();
+    let rows = test_match(&rule, &candidate, Some(false), f.options.clock.now()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome, Outcome::WouldHave);
+    assert_eq!(rows[0].in_inbox, Some(false));
+    assert!(rows[0].reason.contains("no longer in the inbox"));
+    assert!(!rows[0].closes);
+    assert!(f.store.ledger().unwrap().is_empty());
+    assert!(f.mail.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unknown_activation_preserves_old_queue_and_does_not_defer_other_rules() {
+    let mut f = Fixture::new();
+    let digest = f.rule("digest", DIGEST);
+    f.mode(&digest, ActionGroup::PrivateRecord, Mode::Auto);
+    f.run(None).await;
+    let queued = std::fs::read(f.store.root().join("deferred.jsonl")).unwrap();
+    let archive = f.rule("archive", ARCHIVE);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    let approvals = f
+        .store
+        .approvals()
+        .unwrap()
+        .into_iter()
+        .map(|mut row| {
+            if row.rule == "digest" {
+                row.at = None;
+            }
+            serde_json::to_string(&row).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(f.store.root().join("approvals.jsonl"), approvals).unwrap();
+    f.clock.advance(Duration::days(8));
+    for dry_run in [true, false] {
+        f.options.dry_run = dry_run;
+        let report = f.run(None).await;
+        assert!(report.rows.iter().all(|row| row.rule != "digest"));
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.rule == "archive" && row.outcome == Outcome::Done));
+        assert_eq!(
+            queued,
+            std::fs::read(f.store.root().join("deferred.jsonl")).unwrap()
+        );
+    }
+}
+
+#[test]
+fn retrospective_match_refuses_description_rules() {
+    let f = Fixture::new();
+    let rule = f.store.install("described", "description = 'Fictional notice'\n[match]\ndescribe = 'A fictional notice'\n[[action]]\ndo = 'archive'\n", &BTreeMap::new()).unwrap();
+    let candidate = f.mail.candidates.lock().unwrap()[0].clone();
+    assert!(
+        test_match(&rule, &candidate, Some(true), f.options.clock.now())
+            .unwrap_err()
+            .to_string()
+            .contains("P4")
+    );
+}
+
+#[tokio::test]
+async fn expiry_report_reuses_a_row_persisted_before_queue_rewrite() {
+    let mut f = Fixture::new();
+    f.rule("digest", DIGEST);
+    f.run(None).await;
+    let queued = std::fs::read(f.store.root().join("deferred.jsonl")).unwrap();
+    f.clock.advance(Duration::days(8));
+    f.mail.candidates.lock().unwrap().clear();
+    f.store.expire_deferred(f.options.clock.now()).unwrap();
+    // Reproduce a crash after appending the row but before rewriting the queue.
+    std::fs::write(f.store.root().join("deferred.jsonl"), queued).unwrap();
+    f.clock.advance(Duration::hours(1));
+    f.options.dry_run = true;
+    let plan = f.run(None).await;
+    f.options.dry_run = false;
+    let live = f.run(None).await;
+    assert_eq!(
+        serde_json::to_value(&plan.rows).unwrap(),
+        serde_json::to_value(&live.rows).unwrap()
+    );
 }

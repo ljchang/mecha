@@ -177,38 +177,95 @@ impl GmailProvider {
         Ok(self.get_messages_concurrently(&message_ids).await)
     }
 
-    /// Recent inbox conversation IDs, without fetching message bodies. The
-    /// provider applies the seven-day window; read_thread verifies arrival.
-    pub async fn rule_thread_ids(&self, max_results: u32) -> Result<Vec<String>, MailError> {
-        let mut ids = Vec::new();
+    /// Recent inbox conversations, using the engine's clock reading.
+    pub async fn rule_thread_ids(
+        &self,
+        max_results: u32,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, MailError> {
+        Ok(self
+            .rule_message_hits(max_results, since, true)
+            .await?
+            .into_iter()
+            .map(|hit| hit.thread_id)
+            .collect())
+    }
+
+    /// Separate read-only test surface: all folders, never the live inbox scope.
+    pub async fn rule_test_hits(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::rules::RuleMessageHit>, MailError> {
+        self.rule_message_hits(u32::MAX, since, false).await
+    }
+
+    async fn rule_message_hits(
+        &self,
+        max_results: u32,
+        since: chrono::DateTime<chrono::Utc>,
+        inbox_only: bool,
+    ) -> Result<Vec<crate::rules::RuleMessageHit>, MailError> {
+        let mut hits = Vec::new();
         let mut seen = 0;
         let mut page_token: Option<String> = None;
         let mut tokens = std::collections::BTreeSet::new();
+        let mut pages = 0;
         while seen < max_results {
+            crate::rules::check_rule_page(pages)?;
+            pages += 1;
             let size = (max_results - seen).min(100);
+            let query = format!(
+                "{}after:{}",
+                if inbox_only {
+                    "in:inbox "
+                } else {
+                    "in:anywhere "
+                },
+                since.timestamp()
+            );
             let mut url = format!(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={size}&q={}",
-                urlencode("in:inbox newer_than:7d")
+                urlencode(&query)
             );
+            if !inbox_only {
+                url.push_str("&includeSpamTrash=true");
+            }
             if let Some(token) = &page_token {
                 url.push_str(&format!("&pageToken={}", urlencode(token)));
             }
             let page = self.get_json(&url).await?;
+            for message in Self::list_messages(&page)?
+                .iter()
+                .take((max_results - seen) as usize)
             {
-                let messages = Self::list_messages(&page)?;
-                for message in messages.iter().take((max_results - seen) as usize) {
-                    seen += 1;
-                    if let Some(id) = message["threadId"].as_str().filter(|id| !id.is_empty()) {
-                        ids.push(id.to_owned());
-                    }
-                }
+                seen += 1;
+                let id = message["id"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| MailError::ParseError("rule message has no id".into()))?;
+                let thread = message["threadId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| MailError::ParseError("rule message has no thread id".into()))?;
+                hits.push(crate::rules::RuleMessageHit {
+                    id: id.into(),
+                    thread_id: thread.into(),
+                });
             }
             match Self::next_list_token(&page, &mut tokens)? {
                 Some(token) => page_token = Some(token),
                 None => break,
             }
         }
-        Ok(ids)
+        Ok(hits)
+    }
+
+    pub async fn rule_test_message(&self, id: &str) -> Result<(Email, Option<bool>), MailError> {
+        let raw = self.get_message(id).await?;
+        let in_inbox = raw["labelIds"]
+            .as_array()
+            .map(|labels| labels.iter().any(|l| l == "INBOX"));
+        Ok((parse_gmail_message(HeaderRead::Full, &raw), in_inbox))
     }
 
     /// Fetch a whole conversation in one round trip, rather than
@@ -314,6 +371,61 @@ impl GmailProvider {
     pub async fn archive_message(&self, id: &str) -> Result<(), MailError> {
         self.mutate(self.modify_message_request(id, &[], &["INBOX"]))
             .await
+    }
+    pub async fn unarchive_message(&self, id: &str) -> Result<(), MailError> {
+        if self
+            .rule_message_labels(id)
+            .await?
+            .iter()
+            .any(|label| label == "INBOX")
+        {
+            return Ok(());
+        }
+        self.mutate(self.modify_message_request(id, &["INBOX"], &[]))
+            .await
+    }
+    pub async fn untrash_message(&self, id: &str) -> Result<(), MailError> {
+        if !self
+            .rule_message_labels(id)
+            .await?
+            .iter()
+            .any(|label| label == "TRASH")
+        {
+            return Ok(());
+        }
+        self.mutate(
+            self.client
+                .post(format!(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}/untrash",
+                    urlencode(id)
+                ))
+                .header("Authorization", self.auth_header())
+                .header("Content-Length", "0"),
+        )
+        .await
+    }
+    async fn rule_message_labels(&self, id: &str) -> Result<Vec<String>, MailError> {
+        let raw = self
+            .get_json(&format!(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}?format=minimal",
+                urlencode(id)
+            ))
+            .await?;
+        if raw["id"].as_str() != Some(id) {
+            return Err(MailError::ParseError(
+                "restore read returned a different message id".into(),
+            ));
+        }
+        raw["labelIds"]
+            .as_array()
+            .ok_or_else(|| MailError::ParseError("restore read has unknown labels".into()))?
+            .iter()
+            .map(|label| {
+                label.as_str().map(str::to_owned).ok_or_else(|| {
+                    MailError::ParseError("restore read has malformed labels".into())
+                })
+            })
+            .collect()
     }
     pub async fn set_message_read(&self, id: &str, read: bool) -> Result<(), MailError> {
         let (add, remove): (&[&str], &[&str]) = if read {
@@ -761,35 +873,15 @@ fn mailboxes(raw: &str) -> Option<mailparse::MailAddrList> {
         return None;
     }
     let list = mailparse::addrparse_header(&header).ok()?;
-    let valid = |address: &mailparse::SingleInfo| valid_mailbox(&address.addr);
+    let valid = |address: &mailparse::SingleInfo| {
+        mecha_core::mail_rules::engine::parsed_address(&address.addr).is_some()
+    };
     list.iter()
         .all(|entry| match entry {
             mailparse::MailAddr::Single(address) => valid(address),
             mailparse::MailAddr::Group(group) => group.addrs.iter().all(valid),
         })
         .then_some(list)
-}
-
-/// Conservative routing-address validation: mailparse accepts any token with
-/// an @. Reject malformed tokens instead of exporting them as sender facts.
-fn valid_mailbox(address: &str) -> bool {
-    let Some((local, domain)) = address.split_once('@') else {
-        return false;
-    };
-    !local.is_empty()
-        && !domain.is_empty()
-        && local
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".!#$%&'*+-/=?^_`{|}~".contains(&b))
-        && !local.starts_with('.')
-        && !local.ends_with('.')
-        && !local.contains("..")
-        && domain.split('.').all(|part| {
-            !part.is_empty()
-                && !part.starts_with('-')
-                && !part.ends_with('-')
-                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
 }
 
 fn without_comments(raw: &str) -> Option<String> {
@@ -978,6 +1070,138 @@ pub(crate) fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn retrospective_listing_uses_all_mail_and_the_shared_page_ceiling() {
+        let since = "2026-10-01T00:00:00Z".parse().unwrap();
+        let mut provider = GmailProvider::new("fixture-token".into());
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new([
+            json!({"messages":[{"id":"archived", "threadId":"thread-archived"}], "nextPageToken":"next+page"}),
+            json!({"messages":[]})].into())));
+        assert_eq!(
+            provider.rule_test_hits(since).await.unwrap()[0].id,
+            "archived"
+        );
+        let urls = provider.read_urls.lock().unwrap().clone();
+        let first = reqwest::Url::parse(&urls[0]).unwrap();
+        assert!(first
+            .query_pairs()
+            .any(|(k, v)| k == "q" && v == format!("in:anywhere after:{}", since.timestamp())));
+        assert!(first
+            .query_pairs()
+            .any(|(k, v)| k == "includeSpamTrash" && v == "true"));
+        let mut pages: Vec<_> = (0..100)
+            .map(|n| json!({"messages":[], "nextPageToken":format!("distinct-{n}")}))
+            .collect();
+        pages.push(json!({"messages":[]}));
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(pages.into())));
+        assert!(provider
+            .rule_test_hits(since)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("page ceiling"));
+    }
+
+    #[tokio::test]
+    async fn rule_restore_retry_is_a_noop_after_message_was_restored() {
+        use mecha_core::mail_rules::{MessageRef, RestoreAction};
+        for action in [RestoreAction::Unarchive, RestoreAction::Untrash] {
+            let mut provider = GmailProvider::new("fixture-token".into());
+            let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            provider.scripted_mutations = Some(writes.clone());
+            provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(
+                [json!({"id":"authorized-message", "labelIds":["INBOX"]})].into(),
+            )));
+            let message = MessageRef {
+                provider_message_id: "authorized-message".into(),
+                ..Default::default()
+            };
+            crate::rules::gmail_restore(&provider, &message, action)
+                .await
+                .unwrap();
+            assert!(
+                writes.lock().unwrap().is_empty(),
+                "already restored must be a nothing-to-do success"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rule_restore_targets_only_the_authorized_message() {
+        use mecha_core::mail_rules::{MessageRef, RestoreAction};
+        for action in [
+            RestoreAction::Unarchive,
+            RestoreAction::Untrash,
+            RestoreAction::Read,
+            RestoreAction::Unread,
+        ] {
+            let mut provider = GmailProvider::new("fixture-token".into());
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            provider.scripted_mutations = Some(requests.clone());
+            provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new([
+                json!({"id":"authorized-message", "labelIds": if action == RestoreAction::Untrash { vec!["TRASH"] } else { vec!["UNREAD"] }}),
+                json!({"id":"authorized-message", "labelIds":["INBOX"]})
+            ].into())));
+            let message = MessageRef {
+                provider_message_id: "authorized-message".into(),
+                thread_id: "shared-thread".into(),
+                ..Default::default()
+            };
+            crate::rules::gmail_restore(&provider, &message, action)
+                .await
+                .unwrap();
+            if matches!(action, RestoreAction::Unarchive | RestoreAction::Untrash) {
+                crate::rules::gmail_restore(&provider, &message, action)
+                    .await
+                    .unwrap();
+            }
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0]
+                .url()
+                .path()
+                .starts_with("/gmail/v1/users/me/messages/authorized-message/"));
+            if action == RestoreAction::Untrash {
+                assert!(requests[0].url().path().ends_with("/untrash"));
+            }
+            if action == RestoreAction::Unarchive {
+                let body: Value =
+                    serde_json::from_slice(requests[0].body().unwrap().as_bytes().unwrap())
+                        .unwrap();
+                assert_eq!(body["addLabelIds"], json!(["INBOX"]));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn distinct_empty_rule_pages_hit_a_counted_ceiling() {
+        let mut provider = GmailProvider::new("fixture-token".into());
+        let mut pages: Vec<_> = (0..100)
+            .map(|n| json!({"messages":[], "nextPageToken":format!("page-{n}")}))
+            .collect();
+        pages.push(json!({"messages":[]}));
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(pages.into())));
+        let result = provider
+            .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+            .await;
+        assert!(
+            matches!(result, Err(MailError::ParseError(ref why)) if why.contains("page ceiling")),
+            "unbounded empty enumeration: {result:?}"
+        );
+        assert!(provider.read_urls.lock().unwrap().len() <= 100);
+    }
+
+    #[test]
+    fn oversized_routing_address_keeps_display_but_is_not_sender_evidence() {
+        let address = format!("{}@example.com", "a".repeat(243));
+        let email = parse_gmail_message(
+            HeaderRead::Full,
+            &json!({"payload":{"headers":[{"name":"From", "value":address}]}}),
+        );
+        assert_eq!(email.from_address, address);
+        assert_eq!(email.sender_known, Some(false));
+    }
+
+    #[tokio::test]
     async fn rule_listing_rejects_invalid_or_repeated_page_tokens() {
         for pages in [
             vec![serde_json::json!({"messages":[], "nextPageToken":false})],
@@ -993,7 +1217,9 @@ mod tests {
             let count = pages.len();
             provider.scripted_reads =
                 Some(std::sync::Arc::new(std::sync::Mutex::new(pages.into())));
-            let result = provider.rule_thread_ids(500).await;
+            let result = provider
+                .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+                .await;
             assert!(
                 matches!(result, Err(MailError::ParseError(_))),
                 "incomplete enumeration became success: {result:?}"
@@ -1043,7 +1269,10 @@ mod tests {
                 {"id":"gamma","threadId":"thread-gamma"}, {"id":"excess","threadId":"thread-excess"}],
                 "nextPageToken":"never-requested"})].into())));
         assert_eq!(
-            provider.rule_thread_ids(3).await.unwrap(),
+            provider
+                .rule_thread_ids(3, "2026-11-01T00:00:00Z".parse().unwrap())
+                .await
+                .unwrap(),
             ["thread-alpha", "thread-alpha", "thread-gamma"]
         );
         let urls = provider.read_urls.lock().unwrap();
@@ -1074,7 +1303,10 @@ mod tests {
             ]
             .into(),
         )));
-        let ids = provider.rule_thread_ids(500).await.unwrap();
+        let ids = provider
+            .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
         assert_eq!(ids, ["thread-alpha"]);
         let urls = provider.read_urls.lock().unwrap();
         assert_eq!(
@@ -1086,7 +1318,7 @@ mod tests {
         assert!(reqwest::Url::parse(&urls[0])
             .unwrap()
             .query_pairs()
-            .any(|(k, v)| k == "q" && v.contains("in:inbox") && v.contains("newer_than:7d")));
+            .any(|(k, v)| k == "q" && v.contains("in:inbox") && v.contains("after:1793491200")));
     }
 
     #[tokio::test]

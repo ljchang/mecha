@@ -53,6 +53,17 @@ pub struct MailTools {
 }
 
 impl MailTools {
+    #[cfg(test)]
+    pub(crate) fn empty_for_rules_test() -> Self {
+        Self {
+            accounts: Vec::new(),
+            default: None,
+            default_mail: None,
+            default_calendar: None,
+            definitions: Vec::new(),
+        }
+    }
+
     /// The configured accounts, for operator commands that work per mailbox
     /// rather than through the tool surface — `mecha-mail corpus` is the one
     /// today. Read-only: nothing outside this module builds an `Account`.

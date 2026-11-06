@@ -735,7 +735,6 @@ impl Command {
             | Command::Harness(_)
             | Command::Exp(_)
             | Command::Frontdoor(_)
-            | Command::Mail(_)
             | Command::Tasks(_)
             | Command::Workflow(_)
             | Command::Questions(_)
@@ -755,6 +754,8 @@ impl Command {
             // `rules propose-retirements` counts the ledger rows of the model
             // in use, so it resolves the default provider as `validate` does.
             | Command::Rules(_) => true,
+            // Rule management and provider children do not use the model router.
+            Command::Mail(a) => !matches!(a.cmd, Some(commands::mail::Cmd::Rule { .. })),
             // `persona memory write` runs the memory writer on the local
             // model, so it holds and follows like `distill`; every other
             // `persona` verb reads or edits the store and runs no model.
@@ -998,6 +999,22 @@ async fn dispatch() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mail_rule_commands_do_not_probe_or_hold_a_model() {
+        use clap::Parser;
+        for args in [
+            vec!["mecha", "mail", "rule", "list"],
+            vec!["mecha", "mail", "rule", "show", "notice"],
+            vec!["mecha", "mail", "rule", "pause-all"],
+            vec!["mecha", "mail", "rule", "test", "notice"],
+            vec!["mecha", "mail", "rule", "undo", "ledger-row"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert!(!cli.command.runs_a_model());
+            assert!(!cli.command.is_one_run());
+        }
+    }
+
     /// An early exit releases this process's router hold: the file a real
     /// hold wrote is gone once `release_run_hold` — what `exit_with` calls
     /// before `std::process::exit` — has run. Before, the hold lived in

@@ -212,6 +212,12 @@ impl RuleDefinition {
     pub fn parse(text: &str) -> Result<Self> {
         let rule: Self = toml::from_str(text)?;
         ensure!(!rule.actions.is_empty(), "a rule needs an action");
+        for (header, values) in &rule.matcher.header {
+            ensure!(
+                !values.is_empty(),
+                "match.header.{header} must contain at least one value"
+            );
+        }
         for (index, action) in rule.actions.iter().enumerate() {
             action.validate()?;
             ensure!(

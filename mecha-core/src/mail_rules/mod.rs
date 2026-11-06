@@ -8,12 +8,16 @@ mod definition;
 pub mod engine;
 mod headers;
 mod ledger;
+mod management;
 mod store;
+mod undo;
 
 pub use approvals::*;
 pub use definition::*;
 pub use ledger::*;
+pub use management::*;
 pub use store::*;
+pub use undo::*;
 
 #[cfg(test)]
 mod tests;
