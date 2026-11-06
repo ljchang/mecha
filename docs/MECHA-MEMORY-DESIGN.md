@@ -2276,3 +2276,46 @@ initial supported choices, appropriate abstention and host withholding separatel
 report optional revision gains and additional calls/tokens/time separately. No-memory
 abstention is often correct, so fewer abstentions alone is not a benefit. This tests
 use of supplied recalled evidence, not corpus-scale retrieval or general learning.
+
+## 26. One durable synthetic action and independent outcome (2026-11-06)
+
+Approved next increment: consume a finalized, source-checked recommendation through
+one explicitly authorized host fixture, retain its actual outcome separately, and
+project deterministic goal feedback for later recall. This is a default-off finite
+fixture qualification, not a general executor or production appraisal integration.
+The implementation plan is
+[`durable-synthetic-actions`](superpowers/plans/2026-11-06-durable-synthetic-actions.md).
+
+Use an explicitly created v5 store with one action binding per final decision;
+never migrate a prior database implicitly. Separate the action's identity and
+cancellation state from the completed model workflow. Reserve its one allowance
+before execution. After a crash, a reserved action without an outcome remains
+indeterminate; only an already-saved actual outcome can resume pure evaluation.
+This provides at-most-once dispatch, not exactly-once effects or knowledge of what
+happened during an unrecorded crash window.
+
+Bind an explicit closed fixture/version/state and authenticate the final
+recommendation against the retained source, exact request and actual model reply.
+Abstention, withholding and failure grant no action. Model-authored prose cannot
+select an executor, path, command or fixture state. Recheck source freshness,
+current access and cancellation immediately before execution, with no database
+transaction spanning the effect. Cancellation racing after that safe point may
+retain a real completed observation but cannot authorize another action or later
+feedback; changed/restricted/forgotten sources refuse late content.
+
+The fixture supplies actual numeric costs and quality independently of the source
+measurement claims. Preserve `expected_from_evidence` beside the actual observation;
+do not call it a numeric model forecast. Store outcome and feedback as separate
+source-linked revisions. Unknown and refused outcomes carry no invented numeric
+measurements and are not graded as measured performance failures. Project the
+original contract's resource and quality checks into existing `StepFeedback`, with
+no invented task-board goal and no repurposing of model-call count fields. Success
+against those criteria does not certify optimality or a correct free-text rationale.
+
+Generic recall can return the retained observation under the ordinary dependency,
+access, temporal and forgetting rules. It remains private/untrusted evidence, not
+an automatically promoted lesson or proof of present execution authority. Forgetting
+any lifecycle sibling erases the complete dependent lifecycle and suppresses its
+capture keys. Reports exported outside the database remain outside this erasure
+boundary. Qualification separates scripted process tests and fixture executions from
+new model inference, learning gains and broad generalization claims.
