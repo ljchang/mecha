@@ -1,7 +1,7 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R5). Nothing here is
-built.**
+**Status: 2026-11-06, designed and ruled (§9, R1–R6). D1 is in build;
+nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
 the owner's desk) gives mecha real work, mostly changes to mecha itself,
@@ -89,44 +89,85 @@ experiment twin) and admits them on an explicit flag. Fitness (§14.7) never
 counts them. Two readers want them on: this design's ledger, and appraisal
 calibration (§6).
 
-**D2. Driven sessions feed learning in a pool of their own.** The owner's
+**D2. Driven sessions feed learning in a store of their own.** The owner's
 ruling (R2, 2026-11-06) rejected excluding them. This is the one place the
 learning loop can be tuned against ground truth, and excluding it would
-throw that away. Three parts:
+throw that away. R6 (2026-11-06, after review) set the separation: **a
+separate store, not a scope inside the owner's.**
 
+Why a scope fails. The first draft kept driven rules in the owner's store,
+scoped `surface = driven`. Review of #847 showed that every way that scope
+can be lost *widens* the rule onto the owner's sessions:
+
+- `Situation::scope` strips a `MARK_KINDS` surface, and a scope with no
+  surface matches every run.
+- A mined lesson is stamped with `GlobalOpts::surface`, never the
+  environment mark, so a driven `mecha run` stamps `run`.
+- `mecha exp` marks its children `experiment`, so a validation trial could
+  never present `driven` anyway.
+- `Situation::region` collapses a surface that disagrees across a batch to
+  none.
+
+That is the half-life argument `EXPERIMENT-DESIGN.md` D12 called
+non-negotiable for trial homes: a rule learned inside a trial that landed in
+the owner's store would ride every real run's cached prefix from then on.
+
+The shape:
+
+- **Its own directory.** Driven reflections and rules live in a learning
+  store under its own path (`~/.mecha/learning-driven/` or similar; the
+  build names it). A driven run loads the owner's rules *and* the driven
+  store's. An owner run never opens the driven store. Every failure goes
+  dark: if the kind is not detected, a driven rule simply does not apply,
+  and nothing reaches the owner's prefix. `Driven` stays in
+  `Situation::MARK_KINDS`, because nothing needs it as a scope key.
+- **Mining is its own pass.** `reflect` keeps hiding driven sessions from
+  the owner's store (D1, already built). A separate pass reads only driven
+  sessions and writes only the driven store. The two passes share code and
+  never share a destination.
 - **The driver's interventions are labelled as the driver's, never as the
-  owner's.** A driver's steer or denial is a new `Origin::Driven`, not
+  owner's.** A driver's steer or denial gets a new `Origin::Driven`, never
   `Clean`. It is not `Derived` either, because those are mecha's own words
-  and this is another agent's. That is the same split the three refusal
-  strings keep: no approver can label a machine's verdict as a human
-  correction. `Origin` is written to an append-only store, which makes it a
-  wire format, so an older build reads the new variant as untrusted.
-  Untrusted taint still excludes as before, and driven runs over the repo,
-  with no network, are normally clean.
-- **Rules mined from driven sessions are scoped to driven runs.** Each one
-  carries `surface = driven` (`situation.rs`), so it renders into a driven
-  run's rules block and never into the owner's chat, Slack or triggers.
-  This is where `Driven` departs from `Test` on purpose. The test override
-  marks the record and never the match. The driven mark reaches the match
-  too, because the pool's separation depends on it.
+  and this is another agent's. That is the split the three refusal strings
+  keep. Two things that are **not** true of today's code, and that the
+  build owes:
+  - `Origin` has no `#[serde(other)]` arm, and its field default fires only
+    when the key is absent, so today an older build reading
+    `"origin":"driven"` *drops the reflection* (one corrupt line, one lost
+    reflection). The variant needs a lenient read first, parked as
+    `Untrusted` (the shape `surface_unread` and `de_lenient_kind` use).
+  - `Reflection::learnable()` is clean-only. A driven store needs a
+    deliberate `Driven => true` arm, **and that arm must be true only when
+    learning into the driven store.** This is the one place the design
+    loosens a structurally fail-closed gate. What replaces the gate is the
+    store boundary, and the test pins that an owner-store `learn` refuses a
+    driven reflection.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
   own documentation calls it "one gate away from being usable the day
   something can grade it". A driven run's hidden test is that grade. A
-  driven-pool rule is validated by `mecha exp` with the `learned_rules`
-  lever on against off, on held-out driven tasks with hidden tests. That
-  measures an outcome, where `counterfactual.rs` can only ask whether a
-  trajectory changed. So the whole self-updating machinery (reflect, learn,
-  validate, retirement) gets exercised at a volume the owner's sessions
-  cannot supply, and every verdict is grounded in a passing test.
+  driven-store rule is validated by `mecha exp` with the `learned_rules`
+  lever on against off, on held-out driven tasks with hidden tests. The trial
+  home is seeded with the driven store, so the `experiment` mark no longer
+  matters. That measures an outcome, where `counterfactual.rs` can only ask
+  whether a trajectory changed.
 
-**Promotion crosses the owner.** A driven-pool rule enters the owner's pool
-only by the owner's act, with its measured lift attached, and the rule text
-is shown as written. It loses its `surface = driven` scope in that one step,
-and nothing does it automatically. The existing self-accept gate for learned
-rules does not extend to promotion, because that gate measures on the
-owner's own sessions and a driven task is not one. Whether promotion can
-later earn a gate of its own is a question for once the pool has a track
-record (§8).
+**Promotion crosses the owner.** A driven-store rule enters the owner's
+store only by the owner's act: a copy, with its measured lift attached and
+the rule text shown as written. Nothing does it automatically. The existing
+self-accept gate for learned rules does not extend to promotion, because
+that gate measures on the owner's own sessions and a driven task is not one.
+Whether promotion can later earn a gate of its own is a question for once
+the store has a track record (§8).
+
+**Revisit when the v2 memory system rolls out (owner, 2026-11-06).** The
+owner expects the v2 appraisal and memory loop, more tightly integrated with
+memory and conceptual and semantic knowledge, to change how learned
+knowledge is stored and scoped. This separate-store shape was chosen
+against *today's* learning store and its scope semantics. When v2 lands,
+re-read this D2 against v2's store before building on it further:
+whether v2's representation can hold the driven/owner boundary
+structurally (a boundary that fails dark, never wide), and whether
+promotion becomes a v2 operation. Until then, D2 builds as written.
 
 ## 3. The task bank
 
@@ -305,15 +346,18 @@ from it is v2's design.
   failure is small. The full bank is not, so measurement arms run the ceiling
   on a seeded subset.
 
-- **Promotion's own gate.** When, if ever, a driven-pool rule could enter
-  the owner's pool behind a measurement rather than the owner's act. Not
-  before the pool has validated rules whose lift held on a later holdout.
+- **Promotion's own gate.** When, if ever, a driven-store rule could enter
+  the owner's store behind a measurement rather than the owner's act. Not
+  before the driven store has validated rules whose lift held on a later
+  holdout.
+- **v2 memory.** D2's store boundary is chosen against today's learning
+  store, and the owner expects v2 to change it (D2, last paragraph).
 
 ## 9. Rulings — the owner's, 2026-11-06
 
 - **R1. Yes.** D1: a third environment-settable kind, `driven`, hidden by
   default from every corpus reader.
-- **R2. Learning reads driven sessions, in a pool of their own.** This
+- **R2. Learning reads driven sessions, in a store of their own.** This
   replaces the draft's exclusion. The owner's reason: driven work is exactly
   what would make the self-updating system useful, and excluding it would
   waste that. D2 is the shape.
@@ -324,8 +368,12 @@ from it is v2's design.
   peers are base models.
 - **R5. Yes.** The pilot: build D1, then about 10 history tasks in
   exploration with the full panel, with the ledger as the deliverable. No
-  harness PR from the pilot until the D4 split is in. D2's pool follows D1,
+  harness PR from the pilot until the D4 split is in. D2's store follows D1,
   before the first validation run.
+- **R6. A separate store, not a scope** (after review of #847). Driven
+  rules live in their own learning store, which owner runs never open, so
+  every failure leaves a driven rule dark rather than applying it to the
+  owner's sessions. To be revisited when the v2 memory system rolls out (D2).
 
 ## 10. Deliberately out of scope
 
@@ -335,5 +383,5 @@ from it is v2's design.
   spend it.
 - **Skills or charter lines** from driven runs. The standing rulings apply
   (`SKILLS-RESEARCH.md` §9, and the charter's author rule). Learned rules
-  are in scope, in their own pool (D2).
+  are in scope, in their own store (D2).
 - **Public benchmarks as fitness.** They are transfer checks, later (§3).
