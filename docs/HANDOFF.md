@@ -34,7 +34,14 @@ snapshot on current GitHub main `6b709e08b`. The former private prototype branch
 predated main's history rewrite and must not be pushed wholesale. Only its memory
 patch was transferred; current-main mail-rule work and privacy protections remain.
 Original build SHAs below identify historical isolated qualification, not commits
-published in this branch. Current-main qualification is recorded separately.
+published in this branch. Current-main candidate `a4de9bb2f` passed **6463
+all-feature workspace tests /0 failed /26 ignored**, all-target build, strict Clippy,
+formatting and the current privacy checker on Spark (2026-11-06). Its memory code
+matches the previously installed prototype; the combined current-main tree has not
+replaced the production binary. Spark checkout:
+`/home/ljchang/Github/mecha-memory-pr-20261106`; logs in
+`results/memory-pr-20261106/`. Subsequent documentation-only commits do not change
+that qualified code.
 
 **2026-11-06 — durable guarded-read prototype qualified (`59ee1882b`).**
 `Memory::create_durable` explicitly creates schema v3; existing v1/v2 databases are

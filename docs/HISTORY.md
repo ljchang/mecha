@@ -14,6 +14,20 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-06 — publishable memory prototype snapshot on current main.**
+The original private prototype branched before GitHub main's history rewrite.
+Only its 116-file memory patch was transplanted onto `6b709e08b` as
+`codex/mecha-memory-v2-prototype`; none of the stale unrelated history was pushed.
+The two additive conflicts preserved current mail-rule entries and memory entries.
+Independent source review confirmed memory/runtime code unchanged and current-main
+routing/provenance additions retained. Candidate `a4de9bb2f` passed 6463 all-feature
+workspace tests (zero failures, 26 ignored), all-target build, strict Clippy and fmt.
+The strengthened privacy check passed on Spark; generic-word warnings were checked
+against synthetic fixtures, host references and the owner's Site URL. No model calls
+or production installs were made for this integration. This draft snapshot makes
+the implementation and next-task handoff available across machines; it is not a
+merge or a completed memory MVP.
+
 **2026-11-06 — durable synthetic reads through the existing guarded dispatcher.**
 `59ee1882b` implements design §§23–24 through parallel store, runtime and independent
 qualification lanes, with parent-owned CLI/integration/publication. Explicit
