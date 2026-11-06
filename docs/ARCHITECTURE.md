@@ -4578,8 +4578,15 @@ return a refresh token every time.
 **The engine belongs to core; mailbox clients and OAuth stay in the mail
 binary.** `mail_rules::engine::apply` takes `Mailbox` and `TaskSink` interfaces;
 `mecha-mail rules apply` supplies them. The `mecha` CLI keeps mail as a
-**dev-dependency only**, and P1c will invoke the mail binary as a child
-(`MAIL-RULES-DESIGN.md` R10). Every engine Outlook read and mutation uses
+**dev-dependency only**. `mecha mail rule` manages the core store and invokes
+`mecha-mail rules test` / `undo` as argv-only children from the canonical current
+executable directory, preserving output and exit status (`MAIL-RULES-DESIGN.md`
+R10). PATH is never searched: a workspace or `.` entry could execute a
+model-planted binary with the owner's mail access. Mode changes use the same shared actor reading as outbox; store gates
+remain authoritative. Approval binds the exact displayed input snapshot, and
+an intervening edit refuses the raise. Read-only views never persist lapses or
+brakes; pause-all can revoke unreadable definitions using their approval history.
+Every engine Outlook read and mutation uses
 `with_immutable_ids`; a folder move must not manufacture a new ledger key.
 Candidate pagination validates Graph origins and repeated links before any
 credential-bearing fetch; malformed pages or continuation tokens fail the pass.
@@ -4600,7 +4607,35 @@ The same held-read path handles uncertain sender, direction, newest-message
 identity and unreadable annotations or malformed message facts. These are
 observations, not closing action failures; seven-day expiry still closes them.
 Every dispatch rechecks the fresh mode's activation against provider arrival;
-an owner can pause and reactivate while an earlier sibling awaits I/O.
+an owner can pause and reactivate while an earlier sibling awaits I/O. Unknown
+activation holds the group before enqueue and dispatch, with one standing notice,
+never a per-message skipped row that hides the missing activation evidence.
+
+**Retrospective testing cannot become a timer pass.** The separate `rules test`
+command searches 30 days across all folders with cached tokens only. It tests
+header matches independently of activation and prior ledger closures, records
+fresh inbox membership in its report, and writes nothing. Description matchers
+refuse until P4. Test and live listing share origin/token validation and the
+100-page ceiling, so distinct empty pages cannot retain an engine lease forever;
+hitting the ceiling increments candidate failures. Live windows use the clock
+reading passed by the engine, including Gmail's absolute search cutoff.
+`apply --rule` requires `--dry-run` in both argument parsing and the core engine.
+A live subset would omit sibling digest/task obligations when deciding whether
+to remove a message or mark it handled; every live pass considers all rules.
+
+**Undo keeps the action closed.** Core validates a completed Mailbox row before
+the adapter restores its exact provider message; Graph restore requests retain
+immutable IDs. A durable `undo_pending` correction references the completed row
+before provider I/O, closes its undo key and counts toward the undo-rate brake
+immediately. The engine lease serializes undo with apply and other undos. A retry
+resumes the same unsettled intent; it cannot create a second intent. Exact-message
+restores treat a message already restored as a nothing-to-do success. An appended
+`undone` or `failed` settlement names the intent; a failed restore no longer counts
+toward the undo rate and cannot be retried as a fresh undo. A safety brake already
+recorded remains until owner re-approval. Ordinary action sweeps never settle undo
+intents, and older readers degrade their new outcome to `unknown`. Read/unread
+undo reverses the verb, since old rows have no previous-state snapshot. Spam,
+sends, tasks and private records have no restore here and refuse.
 
 **Claims and caps need different locks.** `RuleStore::claim_actions` remains
 the atomic per-action decision, including partial successes and once-per-thread
@@ -4657,7 +4692,8 @@ Semantic comparisons unfold raw headers and strictly decode RFC 2047 words;
 Graph subjects are already decoded. Malformed words and List-Id syntax remain
 unknown. Display and ledger fields retain the original strings.
 After-classify reads outstanding deferred entries and verdicts recorded within
-the headers path's seven-day window. Expiry closes an occasion even though it
+the headers path's seven-day window. Live expiry rows appear in the returned report
+just as they do in the dry-run plan. Expiry closes an occasion even though it
 is not a failure: historical verdicts must not recreate an expired queue entry
 with a fresh timestamp. Both claims and enqueue enforce that closure.
 Possible
@@ -4671,7 +4707,8 @@ accounts remain in the report. Rule annotations live
 beside triage and overlay its read: rewriting a classifier verdict must not
 erase a rule's tag or digest flag. The derived overlay keys are stripped before
 reading a sidecar and before writing a base verdict, so a broken sidecar cannot
-resurrect annotations cached by an older writer.
+resurrect annotations cached by an older writer. Broken overlays warn once per
+list pass while every healthy overlay and base record remains available.
 
 **Automatic task names contain no mail prose.** The owner's rule description
 plus a validated address, arrival date and typed deadline supply the name;

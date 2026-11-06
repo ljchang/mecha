@@ -218,41 +218,101 @@ impl OutlookProvider {
         max_results: u32,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<String>, MailError> {
-        let mut ids = Vec::new();
+        Ok(self
+            .rule_message_hits(max_results, since, true)
+            .await?
+            .into_iter()
+            .map(|hit| hit.thread_id)
+            .collect())
+    }
+
+    pub async fn rule_test_hits(
+        &self,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::rules::RuleMessageHit>, MailError> {
+        self.rule_message_hits(u32::MAX, since, false).await
+    }
+
+    async fn rule_message_hits(
+        &self,
+        max_results: u32,
+        since: chrono::DateTime<chrono::Utc>,
+        inbox_only: bool,
+    ) -> Result<Vec<crate::rules::RuleMessageHit>, MailError> {
+        let mut hits = Vec::new();
         let mut seen = 0;
-        let mut url = format!(
-            "{GRAPH}/me/mailFolders/inbox/messages?$top={}&$select=id,conversationId,receivedDateTime&$orderby=receivedDateTime%20desc",
-            max_results.clamp(1, 100)
-        );
+        let scope = if inbox_only {
+            "me/mailFolders/inbox/messages"
+        } else {
+            "me/messages"
+        };
+        let mut url = format!("{GRAPH}/{scope}?$top={}&$select=id,conversationId,receivedDateTime&$orderby=receivedDateTime%20desc", max_results.clamp(1, 100));
         let mut pages = std::collections::BTreeSet::new();
         while seen < max_results {
+            crate::rules::check_rule_page(pages.len())?;
             validate_page_url(&url, &mut pages)?;
             let page = self.get_json(&url).await?;
             let messages = page["value"].as_array().ok_or_else(|| {
                 MailError::ParseError("Graph message page has no value array".into())
             })?;
-            {
-                for message in messages.iter().take((max_results - seen) as usize) {
-                    seen += 1;
-                    let arrival = message["receivedDateTime"]
+            let mut all_older = !messages.is_empty();
+            for message in messages.iter().take((max_results - seen) as usize) {
+                seen += 1;
+                let arrival = message["receivedDateTime"]
+                    .as_str()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
+                if arrival.is_none_or(|at| at >= since) {
+                    all_older = false;
+                    let id = message["id"]
                         .as_str()
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok());
-                    if arrival.is_none_or(|at| at >= since) {
-                        if let Some(id) = message["conversationId"]
-                            .as_str()
-                            .filter(|id| !id.is_empty())
-                        {
-                            ids.push(id.to_owned());
-                        }
-                    }
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| MailError::ParseError("rule message has no id".into()))?;
+                    let thread = message["conversationId"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| {
+                            MailError::ParseError("rule message has no conversation id".into())
+                        })?;
+                    hits.push(crate::rules::RuleMessageHit {
+                        id: id.into(),
+                        thread_id: thread.into(),
+                    });
                 }
             }
-            match next_page(&page)? {
+            let next = next_page(&page)?;
+            if all_older {
+                break;
+            }
+            match next {
                 Some(next) => url = next,
                 None => break,
             }
         }
-        Ok(ids)
+        Ok(hits)
+    }
+
+    /// Inbox identity is account-local; compare it to the fresh message read.
+    pub async fn rule_inbox_id(&self) -> Result<String, MailError> {
+        self.get_json(&format!("{GRAPH}/me/mailFolders/inbox?$select=id"))
+            .await?["id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| MailError::ParseError("inbox folder has no id".into()))
+    }
+    pub async fn rule_test_message(
+        &self,
+        id: &str,
+        inbox: &str,
+    ) -> Result<(Email, Option<bool>), MailError> {
+        let raw = self
+            .get_json(&format!(
+                "{GRAPH}/me/messages/{}?$select={SELECT}",
+                urlencode(id)
+            ))
+            .await?;
+        let in_inbox = raw["parentFolderId"].as_str().map(|folder| folder == inbox);
+        Ok((parse_outlook_message(&raw), in_inbox))
     }
 
     /// Walk the whole mailbox backwards in time, newest first, stopping once
@@ -541,6 +601,37 @@ impl OutlookProvider {
     pub async fn move_message(&self, message_id: &str, folder: &str) -> Result<(), MailError> {
         self.mutate_message(self.move_message_request(message_id, folder))
             .await
+    }
+
+    /// Restore only the exact immutable message still in its source folder.
+    /// Like P0's structured restore, nothing left in the source is success.
+    pub async fn restore_rule_message(&self, id: &str, source: &str) -> Result<(), MailError> {
+        let folder = self
+            .get_json(&format!("{GRAPH}/me/mailFolders/{source}?$select=id"))
+            .await?;
+        let source_id = folder["id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| MailError::ParseError("restore source folder has no id".into()))?;
+        let message = self
+            .get_json(&format!(
+                "{GRAPH}/me/messages/{}?$select=id,parentFolderId",
+                urlencode(id)
+            ))
+            .await?;
+        if message["id"].as_str() != Some(id) {
+            return Err(MailError::ParseError(
+                "restore read returned a different message id".into(),
+            ));
+        }
+        let current = message["parentFolderId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| MailError::ParseError("restore read has unknown folder".into()))?;
+        if current != source_id {
+            return Ok(());
+        }
+        self.move_message(id, "inbox").await
     }
 
     /// Patch exactly the authorized message, retaining immutable-ID preference.
@@ -1025,6 +1116,150 @@ pub(crate) fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn retrospective_listing_uses_all_folders_and_the_shared_page_ceiling() {
+        let since = "2026-10-01T00:00:00Z".parse().unwrap();
+        let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(), pages: [Ok(json!({"value":[{"id":"archived", "conversationId":"thread-archived", "receivedDateTime":"2026-10-15T00:00:00Z"}]}))].into()
+        })));
+        assert_eq!(
+            provider.rule_test_hits(since).await.unwrap()[0].id,
+            "archived"
+        );
+        let urls = provider
+            .scripted_reads
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .urls
+            .clone();
+        assert_eq!(
+            reqwest::Url::parse(&urls[0]).unwrap().path(),
+            "/v1.0/me/messages"
+        );
+        let request = provider
+            .request(reqwest::Method::GET, &urls[0])
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["Prefer"], "IdType=\"ImmutableId\"");
+        let mut pages: Vec<_> = (0..100).map(|n| Ok(json!({"value":[], "@odata.nextLink":format!("{GRAPH}/me/messages?$skiptoken=distinct-{n}")}))).collect();
+        pages.push(Ok(json!({"value":[]})));
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: pages.into(),
+        })));
+        assert!(provider
+            .rule_test_hits(since)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("page ceiling"));
+    }
+
+    #[tokio::test]
+    async fn rule_restore_retry_is_a_noop_after_message_was_restored() {
+        use mecha_core::mail_rules::{MessageRef, RestoreAction};
+        for action in [RestoreAction::Unarchive, RestoreAction::Untrash] {
+            let provider = mailbox_provider().with_immutable_ids();
+            let message = MessageRef {
+                provider_message_id: "incoming".into(),
+                ..Default::default()
+            };
+            crate::rules::outlook_restore(&provider, &message, action)
+                .await
+                .unwrap();
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            assert!(
+                mailbox.writes.is_empty(),
+                "already restored must be a nothing-to-do success"
+            );
+            mailbox.assert_folder("incoming", "inbox");
+        }
+    }
+
+    #[tokio::test]
+    async fn rule_restore_preserves_immutable_id_and_leaves_thread_siblings_untouched() {
+        use mecha_core::mail_rules::{MessageRef, RestoreAction};
+        for action in [
+            RestoreAction::Unarchive,
+            RestoreAction::Untrash,
+            RestoreAction::Read,
+            RestoreAction::Unread,
+        ] {
+            let provider = mailbox_provider().with_immutable_ids();
+            if matches!(action, RestoreAction::Unarchive | RestoreAction::Untrash) {
+                let mut mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+                let original = mailbox
+                    .messages
+                    .iter_mut()
+                    .find(|m| m["id"] == "incoming")
+                    .unwrap();
+                original["fixtureFolder"] = json!(if action == RestoreAction::Unarchive {
+                    "archive"
+                } else {
+                    "deleteditems"
+                });
+            }
+            let message = MessageRef {
+                provider_message_id: "incoming".into(),
+                thread_id: "thread'1".into(),
+                ..Default::default()
+            };
+            crate::rules::outlook_restore(&provider, &message, action)
+                .await
+                .unwrap();
+            if matches!(action, RestoreAction::Unarchive | RestoreAction::Untrash) {
+                crate::rules::outlook_restore(&provider, &message, action)
+                    .await
+                    .unwrap();
+            }
+            let mailbox = provider.scripted_mailbox.as_ref().unwrap().lock().unwrap();
+            assert_eq!(mailbox.writes.len(), 1);
+            let request = &mailbox.writes[0];
+            assert!(request
+                .url()
+                .path()
+                .starts_with("/v1.0/me/messages/incoming"));
+            assert_eq!(request.headers()["Prefer"], "IdType=\"ImmutableId\"");
+            if matches!(action, RestoreAction::Unarchive | RestoreAction::Untrash) {
+                mailbox.assert_folder("incoming", "inbox");
+            }
+            mailbox.assert_folder("sent", "sentitems");
+            mailbox.assert_folder("incoming2", "inbox");
+        }
+    }
+
+    #[tokio::test]
+    async fn distinct_empty_rule_pages_hit_a_counted_ceiling() {
+        let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
+        let mut pages: Vec<_> = (0..100).map(|n| Ok(json!({"value":[], "@odata.nextLink":format!("{GRAPH}/me/messages?$skiptoken=page-{n}")}))).collect();
+        pages.push(Ok(json!({"value":[]})));
+        provider.scripted_reads = Some(std::sync::Arc::new(std::sync::Mutex::new(ScriptedReads {
+            urls: Vec::new(),
+            pages: pages.into(),
+        })));
+        let result = provider
+            .rule_thread_ids(500, "2026-11-01T00:00:00Z".parse().unwrap())
+            .await;
+        assert!(
+            matches!(result, Err(MailError::ParseError(ref why)) if why.contains("page ceiling")),
+            "unbounded empty enumeration: {result:?}"
+        );
+        assert!(
+            provider
+                .scripted_reads
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .urls
+                .len()
+                <= 100
+        );
+    }
+
+    #[tokio::test]
     async fn rule_listing_refuses_unsafe_links_before_authenticated_fetch() {
         let bad = "https://example.com/steal-token";
         let mut provider = OutlookProvider::new("fixture-token".into()).with_immutable_ids();
@@ -1130,6 +1365,19 @@ mod tests {
             let parsed = reqwest::Url::parse(url).unwrap();
             let query: std::collections::BTreeMap<_, _> =
                 parsed.query_pairs().into_owned().collect();
+            if let Some(folder) = parsed.path().strip_prefix("/v1.0/me/mailFolders/") {
+                if !folder.contains('/') {
+                    return Ok(json!({"id":folder}));
+                }
+            }
+            if let Some(id) = parsed.path().strip_prefix("/v1.0/me/messages/") {
+                let original = self
+                    .messages
+                    .iter()
+                    .find(|message| message["id"] == id)
+                    .unwrap();
+                return Ok(json!({"id":id, "parentFolderId":original["fixtureFolder"]}));
+            }
             assert_eq!(query["$filter"], "conversationId eq 'thread''1'");
             if query["$top"] == "1" {
                 assert_eq!(parsed.path(), "/v1.0/me/messages");

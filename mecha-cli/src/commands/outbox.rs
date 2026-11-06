@@ -17,7 +17,7 @@
 //! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::closure::{self, Actor};
+use mecha_core::closure::Actor;
 use mecha_core::outbox::{
     DeliveryOutcome, DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore,
 };
@@ -289,32 +289,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// sends nothing, and the stamp is what keeps the words from reading as the
 /// owner's. A marker directory that cannot be read is `unknown` rather than
 /// an error for the same reason.
-pub(crate) fn acting_actor() -> Actor {
-    acting_actor_explained().0
-}
-
-/// [`acting_actor`], with why it is not `owner` when it is not — so a
-/// reject whose reason will not be read as the owner's says so rather than
-/// demoting it silently (review of #343).
-fn acting_actor_explained() -> (Actor, Option<String>) {
-    let ancestor = match crate::commands::tasks::live_run_pids() {
-        Ok(pids) => closure::run_ancestor(&pids),
-        Err(e) => {
-            return (
-                Actor::Unknown,
-                Some(format!(
-                    "the run markers could not be read ({e:#}), so whether a run did this \
-                     cannot be told"
-                )),
-            )
-        }
-    };
-    closure::attribute_explained(
-        &closure::posture_from_env(),
-        &closure::ShellReading::from_registry(),
-        ancestor,
-    )
-}
+pub(crate) use super::actor::acting_actor;
+use super::actor::acting_actor_explained;
 
 /// What a demotion note is about.
 #[derive(Clone, Copy)]

@@ -1,3 +1,4 @@
+pub(crate) mod actor;
 pub mod batch;
 pub mod charter;
 pub mod chat;
@@ -19,6 +20,7 @@ pub mod kg;
 pub mod learn;
 pub mod learning_report;
 pub mod mail;
+pub mod mail_rule;
 pub mod model;
 pub mod model_catalog;
 pub mod msg;

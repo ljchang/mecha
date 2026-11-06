@@ -25,6 +25,8 @@ pub enum VerdictInput {
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Pending,
+    /// A durable correction intent. Ordinary action recovery must not settle it.
+    UndoPending,
     Done,
     WouldHave,
     Offered,
@@ -48,6 +50,7 @@ impl Outcome {
     pub fn closes(self, group: ActionGroup) -> bool {
         match self {
             Self::Pending
+            | Self::UndoPending
             | Self::Done
             | Self::Offered
             | Self::Staged
@@ -113,6 +116,12 @@ pub struct LedgerRow {
     /// Exact pending-row id; never merely another row under the same key.
     #[serde(default)]
     pub settlement: Option<String>,
+    /// Original completed row for an undo intent or its settlement.
+    #[serde(default)]
+    pub correction_of: Option<String>,
+    /// Fresh provider membership for retrospective tests; absent on historical rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_inbox: Option<bool>,
     #[serde(default)]
     pub matched_because: String,
     #[serde(default)]
@@ -176,6 +185,8 @@ impl LedgerRow {
             outcome,
             closes: outcome.closes(group),
             settlement: None,
+            correction_of: None,
+            in_inbox: None,
             matched_because: String::new(),
             reason: String::new(),
             failure_kind: FailureKind::Unknown,
@@ -191,22 +202,30 @@ impl LedgerRow {
         at: DateTime<Utc>,
     ) -> Result<Self> {
         ensure!(
-            self.outcome == Outcome::Pending,
+            matches!(self.outcome, Outcome::Pending | Outcome::UndoPending),
             "only a pending row can be settled"
         );
         ensure!(
             !matches!(
                 outcome,
-                Outcome::Pending | Outcome::ApprovalLapsed | Outcome::Unknown
+                Outcome::Pending
+                    | Outcome::UndoPending
+                    | Outcome::ApprovalLapsed
+                    | Outcome::Unknown
             ),
             "invalid settlement outcome"
+        );
+        ensure!(
+            self.outcome != Outcome::UndoPending
+                || matches!(outcome, Outcome::Undone | Outcome::Failed),
+            "undo intent must settle as undone or failed"
         );
         let mut row = self.clone();
         row.id = uuid::Uuid::new_v4().to_string();
         row.at = Some(at);
         row.settlement = Some(self.id.clone());
         row.outcome = outcome;
-        row.closes = outcome.closes(row.group);
+        row.closes = self.outcome == Outcome::UndoPending || outcome.closes(row.group);
         row.reason = reason.into();
         Ok(row)
     }
@@ -236,10 +255,19 @@ impl LedgerRow {
         // Only positively identified environment/interruption failures are
         // exempt from the brake. Missing or future kinds must count.
         self.outcome == Outcome::Failed
+            && self.correction_of.is_none()
             && !matches!(
                 self.failure_kind,
                 FailureKind::Environment | FailureKind::Interrupted
             )
+    }
+
+    /// Uncertain undo fate counts toward stopping until a definitive failure
+    /// settles this exact intent. A successful settlement still counts once.
+    pub(super) fn counts_as_undo(&self, rows: &[Self]) -> bool {
+        self.outcome == Outcome::Undone
+            || (self.outcome == Outcome::UndoPending
+                && !rows.iter().any(|settlement| settlement.settles(self)))
     }
 
     pub(super) fn same_key(&self, other: &Self) -> bool {
@@ -256,9 +284,20 @@ impl LedgerRow {
         // discard its pending closure evidence.
         self.action.verb != ActionVerb::Unknown
             && self.group != ActionGroup::Unknown
-            && pending.outcome == Outcome::Pending
-            && self.outcome != Outcome::Pending
-            && self.outcome != Outcome::ApprovalLapsed
+            && match pending.outcome {
+                Outcome::Pending => {
+                    !matches!(
+                        self.outcome,
+                        Outcome::Pending | Outcome::UndoPending | Outcome::ApprovalLapsed
+                    ) && self.correction_of == pending.correction_of
+                }
+                Outcome::UndoPending => {
+                    matches!(self.outcome, Outcome::Undone | Outcome::Failed)
+                        && pending.correction_of.is_some()
+                        && self.correction_of == pending.correction_of
+                }
+                _ => false,
+            }
             && self.settlement.as_deref() == Some(&pending.id)
             && self.same_key(pending)
     }
@@ -289,7 +328,8 @@ pub struct ThreadKey {
 /// Pending suppression precedes *every* closure signal, including closes=true.
 fn surviving(rows: &[LedgerRow]) -> impl Iterator<Item = &LedgerRow> {
     rows.iter().filter(|row| {
-        row.outcome != Outcome::Pending || !rows.iter().any(|settlement| settlement.settles(row))
+        !matches!(row.outcome, Outcome::Pending | Outcome::UndoPending)
+            || !rows.iter().any(|settlement| settlement.settles(row))
     })
 }
 

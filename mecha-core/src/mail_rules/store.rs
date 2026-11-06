@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 pub struct RuleStore {
     root: PathBuf,
     #[cfg(test)]
+    pub(super) fail_next_ledger_append: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
     pub(super) mode_transactions: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     pub(super) ledger_rows_parsed: std::sync::atomic::AtomicUsize,
@@ -92,6 +94,8 @@ impl RuleStore {
         Ok(Self {
             root,
             #[cfg(test)]
+            fail_next_ledger_append: Default::default(),
+            #[cfg(test)]
             mode_transactions: Default::default(),
             #[cfg(test)]
             ledger_rows_parsed: Default::default(),
@@ -104,6 +108,8 @@ impl RuleStore {
         contained(&root, &root.join("rules"))?;
         Ok(Self {
             root,
+            #[cfg(test)]
+            fail_next_ledger_append: Default::default(),
             #[cfg(test)]
             mode_transactions: Default::default(),
             #[cfg(test)]
@@ -129,6 +135,97 @@ impl RuleStore {
             return Err(error).context("locking mail rule engine");
         }
         Ok(StoreLock { _file: file })
+    }
+
+    /// Names survive an unreadable definition so the panic button can revoke it.
+    pub fn rule_names(&self) -> Result<Vec<String>> {
+        let mut names: BTreeSet<_> = self.approvals()?.into_iter().map(|row| row.rule).collect();
+        for entry in fs::read_dir(contained(&self.root, &self.root.join("rules"))?)? {
+            let name = entry?
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("non-UTF8 rule name"))?;
+            if !name.starts_with('.') {
+                names.insert(name);
+            }
+        }
+        for name in &names {
+            crate::persona::validate_name(name)?;
+        }
+        Ok(names.into_iter().collect())
+    }
+
+    /// Freeze exactly the bytes shown before a later change_mode binds their digest.
+    pub fn review_inputs(&self, name: &str) -> Result<ReviewInputs> {
+        let rule = self.get(name)?;
+        let inputs = directory_inputs(&rule.directory)?;
+        ensure!(
+            digest_inputs(&inputs)? == rule.approval_digest.directory,
+            "rule changed during review"
+        );
+        let mut files = BTreeMap::new();
+        for (name, bytes) in inputs {
+            files.insert(
+                format!("rule/{name}"),
+                String::from_utf8(bytes).context("approval input is not UTF-8")?,
+            );
+        }
+        for (name, expected) in &rule.approval_digest.skills {
+            let directory = self
+                .root
+                .parent()
+                .context("store has no home")?
+                .join("skills")
+                .join(name)
+                .canonicalize()?;
+            let inputs = directory_inputs(&directory)?;
+            ensure!(
+                &digest_inputs(&inputs)? == expected,
+                "skill changed during review"
+            );
+            for (file, bytes) in inputs {
+                files.insert(format!("skill/{name}/{file}"), String::from_utf8(bytes)?);
+            }
+        }
+        if rule.definition.uses_limits() {
+            for (name, expected) in [
+                ("aliases.toml", &rule.approval_digest.aliases),
+                ("limits.toml", &rule.approval_digest.limits),
+            ] {
+                let bytes = match fs::read(self.path(name)?) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                };
+                ensure!(
+                    &bytes
+                        .as_ref()
+                        .map(|b| definition::hash(b))
+                        .unwrap_or_default()
+                        == expected,
+                    "global rule input changed during review"
+                );
+                files.insert(
+                    name.into(),
+                    match bytes {
+                        Some(bytes) => String::from_utf8(bytes)?,
+                        None => "(absent; built-in defaults)".into(),
+                    },
+                );
+            }
+            files.insert(
+                "effective-limits.json".into(),
+                serde_json::to_string_pretty(&self.limits()?)?,
+            );
+        }
+        ensure!(
+            self.get(name)?.approval_digest == rule.approval_digest,
+            "rule changed during review"
+        );
+        Ok(ReviewInputs {
+            digest: rule.approval_digest,
+            files,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -801,6 +898,8 @@ impl RuleStore {
                 outcome: Outcome::ApprovalLapsed,
                 closes: false,
                 settlement: None,
+                correction_of: None,
+                in_inbox: None,
                 matched_because: String::new(),
                 reason: reason.into(),
                 failure_kind: FailureKind::Unknown,
@@ -953,6 +1052,13 @@ impl RuleStore {
     }
 
     fn append_ledger_locked(&self, row: &LedgerRow) -> Result<()> {
+        #[cfg(test)]
+        ensure!(
+            !self
+                .fail_next_ledger_append
+                .swap(false, std::sync::atomic::Ordering::SeqCst),
+            "injected ledger append failure"
+        );
         row.validate_key()?;
         let rows = self.ledger()?;
         let row_ids: HashSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
@@ -960,6 +1066,27 @@ impl RuleStore {
             !row_ids.contains(row.id.as_str()),
             "duplicate ledger row id"
         );
+        if row.outcome == Outcome::UndoPending {
+            let original = rows
+                .iter()
+                .find(|original| Some(&original.id) == row.correction_of.as_ref())
+                .context("undo intent names no completed row")?;
+            ensure!(
+                original.outcome == Outcome::Done
+                    && original.group == ActionGroup::Mailbox
+                    && row.same_key(original),
+                "undo intent must name its completed mailbox action"
+            );
+            ensure!(
+                row.settlement.is_none() && row.closes,
+                "undo intent must close its undo key"
+            );
+            ensure!(
+                !rows.iter().any(|prior| prior.same_key(original)
+                    && (prior.correction_of.is_some() || prior.outcome == Outcome::Undone)),
+                "this mailbox action already has an undo correction"
+            );
+        }
         if let Some(id) = &row.settlement {
             let pending = rows
                 .iter()
@@ -1107,7 +1234,7 @@ impl RuleStore {
     }
 
     pub fn expire_deferred(&self, now: DateTime<Utc>) -> Result<Vec<DeferredEntry>> {
-        self.expire_deferred_matching(now, None, &BTreeSet::new())
+        self.expire_deferred_matching(now, None, &BTreeSet::new(), &BTreeSet::new())
     }
 
     /// An engine pass expires only accounts whose listing completed successfully.
@@ -1116,8 +1243,9 @@ impl RuleStore {
         account: &str,
         now: DateTime<Utc>,
         held_rules: &BTreeSet<String>,
+        held_groups: &BTreeSet<(String, ActionGroup)>,
     ) -> Result<Vec<DeferredEntry>> {
-        self.expire_deferred_matching(now, Some(account), held_rules)
+        self.expire_deferred_matching(now, Some(account), held_rules, held_groups)
     }
 
     fn expire_deferred_matching(
@@ -1125,8 +1253,12 @@ impl RuleStore {
         now: DateTime<Utc>,
         account: Option<&str>,
         held_rules: &BTreeSet<String>,
+        held_groups: &BTreeSet<(String, ActionGroup)>,
     ) -> Result<Vec<DeferredEntry>> {
         let _lock = self.lock()?;
+        let held = |row: &LedgerRow| {
+            held_rules.contains(&row.rule) || held_groups.contains(&(row.rule.clone(), row.group))
+        };
         let mut queue = self.deferred()?;
         let expires = |entry: &DeferredEntry| {
             account.is_none_or(|account| entry.account == account) && entry.expired(now)
@@ -1136,7 +1268,7 @@ impl RuleStore {
             .filter(|q| expires(q))
             .cloned()
             .filter_map(|mut entry| {
-                entry.actions.retain(|row| !held_rules.contains(&row.rule));
+                entry.actions.retain(|row| !held(row));
                 (!entry.actions.is_empty()).then_some(entry)
             })
             .collect();
@@ -1162,7 +1294,7 @@ impl RuleStore {
         // snapshots, retaining held siblings in the same queue entry.
         for entry in &mut queue {
             if expires(entry) {
-                entry.actions.retain(|row| held_rules.contains(&row.rule));
+                entry.actions.retain(held);
             }
         }
         queue.retain(|q| !expires(q) || !q.actions.is_empty());

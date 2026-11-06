@@ -2456,3 +2456,465 @@ fn opening_a_store_does_not_chmod_an_escaping_rules_symlink() {
         0o755
     );
 }
+
+#[test]
+fn empty_header_or_is_rejected() {
+    let rule =
+        "description = 'Notice'\n[match.header]\nX-Notice = []\n[[action]]\ndo = 'archive'\n";
+    assert!(
+        RuleDefinition::parse(rule).is_err(),
+        "an empty header OR must not install an inert rule"
+    );
+}
+
+#[test]
+fn owner_path_install_reviews_all_bytes_and_rejects_stale_approval() {
+    let home = Home::new();
+    let store = home.store();
+    let source = home.0.join("notice-source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("rule.toml"), archive()).unwrap();
+    fs::write(source.join("extra.md"), "An owner-written explanation.").unwrap();
+    let rule = install_path(&store, &source.join("rule.toml"), Some("notice")).unwrap();
+    let review = store.review_inputs("notice").unwrap();
+    assert_eq!(
+        review.files["rule/extra.md"],
+        "An owner-written explanation."
+    );
+    assert_eq!(review.digest, rule.approval_digest);
+    assert_eq!(
+        rule_views(&store).unwrap()[0].groups[0].effective_mode,
+        Mode::Shadow
+    );
+    fs::write(rule.directory.join("extra.md"), "Changed.").unwrap();
+    assert!(store
+        .change_mode(
+            "notice",
+            ActionGroup::Mailbox,
+            Mode::Auto,
+            Some(Actor::Owner),
+            &review.digest,
+            &owner_holds()
+        )
+        .is_err());
+}
+
+#[test]
+fn pause_all_preserves_off_and_revokes_an_unreadable_definition() {
+    let home = Home::new();
+    let store = home.store();
+    let first = store
+        .install("first", &archive(), &BTreeMap::new())
+        .unwrap();
+    let second = store
+        .install("second", &archive(), &BTreeMap::new())
+        .unwrap();
+    approve(&store, &first, ActionGroup::Mailbox, Mode::Off);
+    approve(&store, &second, ActionGroup::Mailbox, Mode::Auto);
+    fs::write(second.directory.join("rule.toml"), "broken").unwrap();
+    pause_all(&store, Actor::Unknown).unwrap();
+    let views = rule_views(&store).unwrap();
+    assert_eq!(views[0].groups[0].recorded_mode, Mode::Off);
+    assert_eq!(views[1].groups[0].recorded_mode, Mode::Shadow);
+    assert!(views[1].load_error.is_some());
+    assert!(!store
+        .approvals()
+        .unwrap()
+        .iter()
+        .any(|r| r.actor != Actor::Owner && r.to_mode == Mode::Off));
+}
+
+#[test]
+fn ledger_view_keeps_unknown_outcomes_and_orders_newest_first() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let older = row(&rule, Outcome::Done);
+    store.append_ledger(&older).unwrap();
+    let mut future = row(&rule, Outcome::Done);
+    future.at = older.at.map(|t| t + Duration::hours(1));
+    let mut value = serde_json::to_value(&future).unwrap();
+    value["outcome"] = serde_json::json!("future-outcome");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(store.root().join("ledger.jsonl"))
+        .unwrap();
+    use std::io::Write;
+    writeln!(file, "{value}").unwrap();
+    let rows = recent_ledger(&store, Some(&rule.name), 1).unwrap();
+    assert_eq!(rows[0].id, future.id);
+    assert_eq!(rows[0].outcome, Outcome::Unknown);
+}
+
+#[derive(Default)]
+struct RestoreFixture(std::sync::Mutex<Vec<(String, RestoreAction)>>);
+#[async_trait::async_trait]
+impl Restorer for RestoreFixture {
+    async fn restore(&self, message: &MessageRef, action: RestoreAction) -> anyhow::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((message.provider_message_id.clone(), action));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn failed_undo_intent_append_never_reaches_the_provider() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let original = row(&rule, Outcome::Done);
+    store.append_ledger(&original).unwrap();
+    store
+        .fail_next_ledger_append
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let restore = RestoreFixture::default();
+    assert!(undo(&store, &original.id, &restore, Utc::now())
+        .await
+        .is_err());
+    assert!(restore.0.lock().unwrap().is_empty());
+    assert_eq!(store.ledger().unwrap().len(), 1);
+    undo(&store, &original.id, &restore, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(restore.0.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn undo_intents_have_separate_recovery_and_degrade_for_old_readers() {
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum LegacyOutcome {
+        Pending,
+        Done,
+        Undone,
+        Failed,
+        #[serde(other)]
+        Unknown,
+    }
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let original = row(&rule, Outcome::Done);
+    store.append_ledger(&original).unwrap();
+    let mut intent = original.clone();
+    intent.id = uuid::Uuid::new_v4().to_string();
+    intent.outcome = Outcome::UndoPending;
+    intent.correction_of = Some(original.id.clone());
+    store.append_ledger(&intent).unwrap();
+    let legacy: LegacyOutcome =
+        serde_json::from_value(serde_json::to_value(intent.outcome).unwrap()).unwrap();
+    assert_eq!(legacy, LegacyOutcome::Unknown);
+    assert!(intent
+        .interrupted(Utc::now() + Duration::days(10), Duration::minutes(1))
+        .unwrap()
+        .is_none());
+    assert!(intent
+        .settled(Outcome::Done, "not an action attempt", Utc::now())
+        .is_err());
+    let mut duplicate = intent.clone();
+    duplicate.id = uuid::Uuid::new_v4().to_string();
+    assert!(store.append_ledger(&duplicate).is_err());
+    let mut wrong = intent
+        .settled(Outcome::Failed, "failed restore", Utc::now())
+        .unwrap();
+    wrong.correction_of = Some("different-original".into());
+    assert!(store.append_ledger(&wrong).is_err());
+    assert_eq!(
+        engine::brake_evidence(&rule.name, &store.ledger().unwrap()).undone_mailbox,
+        1
+    );
+}
+
+#[tokio::test]
+async fn undo_recovers_provider_success_after_settlement_append_failure() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct CrashAfterRestore<'a> {
+        store: &'a RuleStore,
+        calls: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl Restorer for CrashAfterRestore<'_> {
+        async fn restore(&self, _: &MessageRef, _: RestoreAction) -> anyhow::Result<()> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.store
+                    .fail_next_ledger_append
+                    .store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let original = row(&rule, Outcome::Done);
+    store.append_ledger(&original).unwrap();
+    let restore = CrashAfterRestore {
+        store: &store,
+        calls: AtomicUsize::new(0),
+    };
+    let error = undo(&store, &original.id, &restore, Utc::now())
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("injected ledger append failure"));
+    let rows = store.ledger().unwrap();
+    let intent = rows
+        .iter()
+        .find(|r| r.correction_of.as_deref() == Some(&original.id))
+        .expect("durable undo intent must survive provider success and settlement failure");
+    assert_eq!(
+        serde_json::to_value(intent.outcome).unwrap(),
+        "undo_pending"
+    );
+    assert_eq!(engine::brake_evidence(&rule.name, &rows).undone_mailbox, 1);
+    assert!(message_closed(&rows, &key(&original)));
+    let settled = undo(&store, &original.id, &restore, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(settled.outcome, Outcome::Undone);
+    assert_eq!(settled.settlement.as_deref(), Some(intent.id.as_str()));
+    assert_eq!(restore.calls.load(Ordering::SeqCst), 2);
+    let rows = store.ledger().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(engine::brake_evidence(&rule.name, &rows).undone_mailbox, 1);
+    assert!(undo(&store, &original.id, &restore, Utc::now())
+        .await
+        .is_err());
+    assert_eq!(restore.calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn pending_undo_counts_and_applies_brake_before_provider_io() {
+    struct Inspect<'a> {
+        store: &'a RuleStore,
+        rule: &'a LoadedRule,
+        original: &'a LedgerRow,
+    }
+    #[async_trait::async_trait]
+    impl Restorer for Inspect<'_> {
+        async fn restore(&self, _: &MessageRef, _: RestoreAction) -> anyhow::Result<()> {
+            let rows = self.store.ledger().unwrap();
+            assert_eq!(
+                engine::brake_evidence(&self.rule.name, &rows).undone_mailbox,
+                3
+            );
+            assert_eq!(
+                resolve_mode(
+                    self.rule,
+                    ActionGroup::Mailbox,
+                    &self.store.approvals().unwrap(),
+                    &owner_holds()
+                )
+                .effective,
+                Mode::Propose
+            );
+            let other = RestoreFixture::default();
+            assert!(undo(self.store, &self.original.id, &other, Utc::now())
+                .await
+                .is_err());
+            assert!(other.0.lock().unwrap().is_empty());
+            Ok(())
+        }
+    }
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    let mut originals = Vec::new();
+    for index in 0..10 {
+        let mut original = row(&rule, Outcome::Done);
+        original.message.provider_message_id = format!("immutable-{index}");
+        store.append_ledger(&original).unwrap();
+        originals.push(original);
+    }
+    for original in originals.iter().take(2) {
+        let mut correction = original.clone();
+        correction.id = uuid::Uuid::new_v4().to_string();
+        correction.outcome = Outcome::Undone;
+        correction.correction_of = Some(original.id.clone());
+        store.append_ledger(&correction).unwrap();
+    }
+    let original = &originals[2];
+    undo(
+        &store,
+        &original.id,
+        &Inspect {
+            store: &store,
+            rule: &rule,
+            original,
+        },
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn undo_restores_exact_message_closes_key_and_counts_toward_brake() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    let restorer = RestoreFixture::default();
+    let mut done = Vec::new();
+    for index in 0..10 {
+        let mut entry = row(&rule, Outcome::Done);
+        entry.message.provider_message_id = format!("immutable-message-{index}");
+        store.append_ledger(&entry).unwrap();
+        done.push(entry);
+    }
+    for original in done.iter().take(3) {
+        let correction = undo(&store, &original.id, &restorer, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            correction.correction_of.as_deref(),
+            Some(original.id.as_str())
+        );
+        assert_eq!(correction.outcome, Outcome::Undone);
+        assert!(message_closed(&store.ledger().unwrap(), &key(original)));
+        assert!(undo(&store, &original.id, &restorer, Utc::now())
+            .await
+            .is_err());
+    }
+    assert_eq!(restorer.0.lock().unwrap().len(), 3);
+    assert_eq!(
+        restorer.0.lock().unwrap()[0],
+        (
+            done[0].message.provider_message_id.clone(),
+            RestoreAction::Unarchive
+        )
+    );
+    assert_eq!(
+        engine::brake_evidence(&rule.name, &store.ledger().unwrap()).undone_mailbox,
+        3
+    );
+    assert_eq!(
+        resolve_mode(
+            &rule,
+            ActionGroup::Mailbox,
+            &store.approvals().unwrap(),
+            &owner_holds()
+        )
+        .effective,
+        Mode::Propose
+    );
+}
+
+#[tokio::test]
+async fn undo_refuses_noncompleted_and_nonrestorable_rows_before_provider_io() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let restorer = RestoreFixture::default();
+    for outcome in [
+        Outcome::Unknown,
+        Outcome::Pending,
+        Outcome::WouldHave,
+        Outcome::Offered,
+        Outcome::Failed,
+    ] {
+        let entry = row(&rule, outcome);
+        store.append_ledger(&entry).unwrap();
+        assert!(undo(&store, &entry.id, &restorer, Utc::now())
+            .await
+            .is_err());
+    }
+    for (verb, group) in [
+        (ActionVerb::Spam, ActionGroup::Report),
+        (ActionVerb::Task, ActionGroup::Board),
+        (ActionVerb::Send, ActionGroup::TypedFields),
+        (ActionVerb::Tag, ActionGroup::PrivateRecord),
+    ] {
+        let mut entry = row(&rule, Outcome::Done);
+        entry.action.verb = verb;
+        entry.group = group;
+        store.append_ledger(&entry).unwrap();
+        assert!(undo(&store, &entry.id, &restorer, Utc::now())
+            .await
+            .is_err());
+    }
+    assert!(restorer.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn failed_restore_settles_intent_without_counting_an_undo_or_action_failure() {
+    struct Unavailable;
+    #[async_trait::async_trait]
+    impl Restorer for Unavailable {
+        async fn restore(&self, _: &MessageRef, _: RestoreAction) -> anyhow::Result<()> {
+            anyhow::bail!("provider unavailable")
+        }
+    }
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let original = row(&rule, Outcome::Done);
+    store.append_ledger(&original).unwrap();
+    assert!(undo(&store, &original.id, &Unavailable, Utc::now())
+        .await
+        .is_err());
+    let rows = store.ledger().unwrap();
+    assert_eq!(
+        rows.len(),
+        3,
+        "intent and failed settlement must both be recorded"
+    );
+    assert_eq!(rows[2].outcome, Outcome::Failed);
+    assert_eq!(rows[2].settlement.as_deref(), Some(rows[1].id.as_str()));
+    assert_eq!(rows[2].correction_of.as_deref(), Some(original.id.as_str()));
+    let evidence = engine::brake_evidence(&rule.name, &rows);
+    assert_eq!(evidence.undone_mailbox, 0);
+    assert_eq!(
+        evidence.consecutive_action_failures[&ActionGroup::Mailbox],
+        0
+    );
+    assert!(undo(&store, &original.id, &Unavailable, Utc::now())
+        .await
+        .is_err());
+    assert_eq!(store.ledger().unwrap().len(), 3);
+}
+
+#[test]
+fn rule_view_explains_lapse_unknown_modes_and_account_holds_without_writes() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &text("[[action]]\ndo = 'archive'\n"));
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    fs::write(rule.directory.join("extra.md"), "edited").unwrap();
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    let view = rule_views(&store).unwrap();
+    assert_eq!(view[0].groups[0].recorded_mode, Mode::Auto);
+    assert_eq!(view[0].groups[0].effective_mode, Mode::Propose);
+    assert!(view[0].groups[0].holds.iter().any(|h| h.contains("lapsed")));
+    assert_eq!(
+        before,
+        fs::read(store.root().join("approvals.jsonl")).unwrap()
+    );
+    let raw = String::from_utf8(before)
+        .unwrap()
+        .replace("\"to_mode\":\"auto\"", "\"to_mode\":\"future\"");
+    fs::write(store.root().join("approvals.jsonl"), raw).unwrap();
+    let view = rule_views(&store).unwrap();
+    assert_eq!(view[0].groups[0].recorded_mode, Mode::Unknown);
+    assert_eq!(view[0].groups[0].effective_mode, Mode::Shadow);
+    store.install("headers", "description = 'Fictional list'\n[match]\nlist_id = ['notice.example.com']\n[[action]]\ndo = 'archive'\n", &BTreeMap::new()).unwrap();
+    let mut views = rule_views(&store).unwrap();
+    account_holds(
+        &store,
+        &mut views,
+        &[RuleAccount {
+            name: "campus".into(),
+            proves_header_absence: false,
+        }],
+    )
+    .unwrap();
+    assert!(views
+        .iter()
+        .find(|v| v.name == "headers")
+        .unwrap()
+        .holds
+        .iter()
+        .any(|h| h.contains("campus") && h.contains("provider")));
+}

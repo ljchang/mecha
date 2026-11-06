@@ -23,6 +23,22 @@ use mecha_core::{
 };
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
+/// Bounded provider metadata shared by live and retrospective enumeration.
+#[derive(Debug, Clone)]
+pub struct RuleMessageHit {
+    pub id: String,
+    pub thread_id: String,
+}
+
+pub(crate) fn check_rule_page(already_read: usize) -> Result<(), MailError> {
+    if already_read >= 100 {
+        return Err(MailError::ParseError(
+            "rule listing page ceiling reached (100 pages); enumeration incomplete".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub struct RuleMailbox {
     tools: MailTools,
     triage_root: PathBuf,
@@ -378,8 +394,12 @@ impl Mailbox for RuleMailbox {
             .is_ok_and(|a| provider_proves_header_absence(a.provider, HeaderRead::Full))
     }
 
-    async fn candidates(&self, account: &str, pass: Pass) -> Result<Vec<String>> {
-        let now = Utc::now();
+    async fn candidates(
+        &self,
+        account: &str,
+        pass: Pass,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<String>> {
         if pass == Pass::AfterClassify {
             return after_classify_candidates(
                 &self.triage_root,
@@ -392,7 +412,11 @@ impl Mailbox for RuleMailbox {
         let ids = self
             .with_token(a, |t| async move {
                 match a.provider {
-                    Provider::Google => GmailProvider::new(t).rule_thread_ids(500).await,
+                    Provider::Google => {
+                        GmailProvider::new(t)
+                            .rule_thread_ids(500, now - RECENT_WINDOW)
+                            .await
+                    }
                     Provider::Outlook => {
                         OutlookProvider::new(t)
                             .with_immutable_ids()
@@ -630,8 +654,8 @@ impl TaskSink for GraphSink {
             Ok(output)
                 if output.failure_kind == Some(mecha_core::tool::ToolFailureKind::Transport) =>
             {
-                // No acknowledgement: preserve the once-per-thread claim and
-                // cap reservation. An outage says nothing about task fate.
+                // An unacknowledged transport keeps its occasion and capacity consumed.
+                // An outage says nothing about task fate.
                 ActionResult::Held {
                     kind: FailureKind::Environment,
                     reason: mecha_core::mail_rules::HeldReason::FateUnknown,
@@ -657,10 +681,16 @@ impl TaskSink for GraphSink {
 
 /// Operator entrypoint. Global config only, and graph absence/failure holds
 /// Board actions while leaving mailbox and private annotations available.
-pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -> Result<()> {
+pub async fn apply(
+    account: Option<&str>,
+    after_classify: bool,
+    dry_run: bool,
+    rules: Vec<String>,
+) -> Result<()> {
     let config = mecha_core::config::Config::load_global()?;
     let root = RuleStore::root_under(&mecha_core::work::mecha_home()?);
     if !root.exists() {
+        ensure!(rules.is_empty(), "unknown rule: rule store does not exist");
         println!(
             "{}",
             serde_json::to_string_pretty(&engine::ApplyReport::default())?
@@ -668,6 +698,9 @@ pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -
         return Ok(());
     }
     let store = RuleStore::open_existing(root)?;
+    for name in &rules {
+        store.get(name)?;
+    }
     let mailbox = RuleMailbox::load(dry_run, &store)?;
     let accounts = mailbox.accounts(account)?;
     let timezone = config
@@ -682,21 +715,24 @@ pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -
     // authoritative load and persists lapses for unreadable definitions.
     let connection_rules = store.list().unwrap_or_default();
     let needs_graph = after_classify
-        && connection_rules.iter().any(|rule| {
-            rule.definition
-                .groups()
-                .contains(&mecha_core::mail_rules::ActionGroup::Board)
-                && mecha_core::mail_rules::resolve_mode(
-                    rule,
-                    mecha_core::mail_rules::ActionGroup::Board,
-                    &approvals,
-                    &mecha_core::mail_rules::P1Holds {
-                        origin_gate: mailbox.origin_gate(rule),
-                    },
-                )
-                .effective
-                    == mecha_core::mail_rules::Mode::Auto
-        });
+        && connection_rules
+            .iter()
+            .filter(|rule| rules.is_empty() || rules.contains(&rule.name))
+            .any(|rule| {
+                rule.definition
+                    .groups()
+                    .contains(&mecha_core::mail_rules::ActionGroup::Board)
+                    && mecha_core::mail_rules::resolve_mode(
+                        rule,
+                        mecha_core::mail_rules::ActionGroup::Board,
+                        &approvals,
+                        &mecha_core::mail_rules::P1Holds {
+                            origin_gate: mailbox.origin_gate(rule),
+                        },
+                    )
+                    .effective
+                        == mecha_core::mail_rules::Mode::Auto
+            });
     let mut sink_notice = None;
     // Dry runs never spawn a server (startup itself may write). Report planned
     // tasks only if the configured sink exists, without claiming reachability.
@@ -729,6 +765,7 @@ pub async fn apply(account: Option<&str>, after_classify: bool, dry_run: bool) -
                 Pass::Headers
             },
             dry_run,
+            rules,
             timezone,
             ..Default::default()
         },
@@ -764,17 +801,268 @@ async fn finish_apply(
 }
 
 fn report_status(report: &engine::ApplyReport) -> Result<()> {
-    if report.candidate_failures > 0 {
-        bail!("some rule accounts could not be listed; see report");
-    }
-    if report.read_failures > 0 {
-        bail!("some rule threads could not be read; see report");
-    }
-    if report.handled_failures > 0 {
-        bail!("some rule threads could not be marked handled; see report");
-    }
+    let failures: Vec<_> = [
+        ("candidate_failures", report.candidate_failures),
+        ("read_failures", report.read_failures),
+        ("handled_failures", report.handled_failures),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(name, count)| format!("{name}={count}"))
+    .collect();
+    ensure!(
+        failures.is_empty(),
+        "mail rule pass incomplete: {}; see report",
+        failures.join(", ")
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests;
+
+#[async_trait]
+impl mecha_core::mail_rules::Restorer for RuleMailbox {
+    async fn restore(
+        &self,
+        message: &mecha_core::mail_rules::MessageRef,
+        action: mecha_core::mail_rules::RestoreAction,
+    ) -> Result<()> {
+        ensure!(!self.dry_run, "a dry-run mailbox cannot restore mail");
+        let account = self.account(&message.account)?;
+        self.with_token(account, |token| async move {
+            match account.provider {
+                Provider::Google => {
+                    gmail_restore(&GmailProvider::new(token), message, action).await
+                }
+                Provider::Outlook => {
+                    outlook_restore(
+                        &OutlookProvider::new(token).with_immutable_ids(),
+                        message,
+                        action,
+                    )
+                    .await
+                }
+            }
+        })
+        .await?;
+        Ok(())
+    }
+}
+
+pub(crate) async fn gmail_restore(
+    provider: &GmailProvider,
+    message: &mecha_core::mail_rules::MessageRef,
+    action: mecha_core::mail_rules::RestoreAction,
+) -> Result<(), MailError> {
+    use mecha_core::mail_rules::RestoreAction;
+    match action {
+        RestoreAction::Unarchive => {
+            provider
+                .unarchive_message(&message.provider_message_id)
+                .await
+        }
+        RestoreAction::Untrash => provider.untrash_message(&message.provider_message_id).await,
+        RestoreAction::Read => {
+            provider
+                .set_message_read(&message.provider_message_id, true)
+                .await
+        }
+        RestoreAction::Unread => {
+            provider
+                .set_message_read(&message.provider_message_id, false)
+                .await
+        }
+    }
+}
+pub(crate) async fn outlook_restore(
+    provider: &OutlookProvider,
+    message: &mecha_core::mail_rules::MessageRef,
+    action: mecha_core::mail_rules::RestoreAction,
+) -> Result<(), MailError> {
+    use mecha_core::mail_rules::RestoreAction;
+    match action {
+        // Rule actions only authorized inbound messages. The exact immutable
+        // message goes back to Inbox, never every message in its conversation.
+        RestoreAction::Unarchive => {
+            provider
+                .restore_rule_message(&message.provider_message_id, "archive")
+                .await
+        }
+        RestoreAction::Untrash => {
+            provider
+                .restore_rule_message(&message.provider_message_id, "deleteditems")
+                .await
+        }
+        RestoreAction::Read => {
+            provider
+                .set_message_read(&message.provider_message_id, true)
+                .await
+        }
+        RestoreAction::Unread => {
+            provider
+                .set_message_read(&message.provider_message_id, false)
+                .await
+        }
+    }
+}
+
+pub async fn undo(row_id: &str) -> Result<()> {
+    let store = RuleStore::open_existing(RuleStore::root_under(&mecha_core::work::mecha_home()?))?;
+    mecha_core::mail_rules::prepare_undo(&store, row_id)?;
+    let mailbox = RuleMailbox::load(false, &store)?;
+    let row = mecha_core::mail_rules::undo(&store, row_id, &mailbox, Utc::now()).await?;
+    println!("{}", serde_json::to_string_pretty(&row)?);
+    Ok(())
+}
+
+/// Dedicated retrospective path: no live/dry switch, engine apply, token refresh,
+/// lease, task sink, triage writes, approvals or ledger mutation can be reached.
+pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
+    let store = RuleStore::open_existing(RuleStore::root_under(&mecha_core::work::mecha_home()?))?;
+    let rule = store.get(name)?;
+    ensure!(
+        !rule.definition.is_description(),
+        "description rule testing requires P4; only header rules can be tested"
+    );
+    let mailbox = RuleMailbox::load(true, &store)?;
+    let now = Utc::now();
+    let report = test_recent(&mailbox, &store, &rule, account, now).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"dry_run":true, "window_days":30, "report":report})
+        )?
+    );
+    report_status(&report)
+}
+
+async fn test_recent(
+    mailbox: &RuleMailbox,
+    store: &RuleStore,
+    rule: &LoadedRule,
+    selected: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<engine::ApplyReport> {
+    ensure!(
+        mailbox.dry_run,
+        "retrospective testing requires a read-only mailbox"
+    );
+    ensure!(
+        !rule.definition.is_description(),
+        "description rule testing requires P4"
+    );
+    let since = now - chrono::Duration::days(30);
+    let mut report = engine::ApplyReport::default();
+    for name in mailbox.accounts(selected)? {
+        if !mailbox.proves_header_absence(&name)
+            && (!rule.definition.matcher.list_id.is_empty()
+                || !rule.definition.matcher.header.is_empty())
+        {
+            report.notices.push(format!(
+                "{name}/{}: held: provider cannot prove header absence for list_id/header matchers",
+                rule.name
+            ));
+            continue;
+        }
+        let account = mailbox.account(&name)?;
+        let owners = match owner_addresses(
+            &mailbox
+                .tools
+                .accounts()
+                .iter()
+                .map(|a| a.address.clone())
+                .collect::<Vec<_>>(),
+            account.address.as_deref(),
+            store,
+        ) {
+            Ok(owners) => owners,
+            Err(error) => {
+                report.read_failures += 1;
+                report.notices.push(format!("{name}: held: {error:#}"));
+                continue;
+            }
+        };
+        let listing = mailbox
+            .with_token(account, |token| async move {
+                match account.provider {
+                    Provider::Google => {
+                        Ok((GmailProvider::new(token).rule_test_hits(since).await?, None))
+                    }
+                    Provider::Outlook => {
+                        let provider = OutlookProvider::new(token).with_immutable_ids();
+                        let hits = provider.rule_test_hits(since).await?;
+                        Ok((hits, Some(provider.rule_inbox_id().await?)))
+                    }
+                }
+            })
+            .await;
+        let (hits, inbox) = match listing {
+            Ok(hits) => hits,
+            Err(error) => {
+                report.candidate_failures += 1;
+                report
+                    .notices
+                    .push(format!("{name}: candidate listing failed: {error}"));
+                continue;
+            }
+        };
+        let mut seen = BTreeSet::new();
+        for hit in hits {
+            if !seen.insert(hit.id.clone()) {
+                continue;
+            }
+            let read = mailbox
+                .with_token(account, |token| {
+                    let hit = &hit;
+                    let inbox = inbox.as_deref();
+                    async move {
+                        match account.provider {
+                            Provider::Google => {
+                                GmailProvider::new(token).rule_test_message(&hit.id).await
+                            }
+                            Provider::Outlook => {
+                                OutlookProvider::new(token)
+                                    .with_immutable_ids()
+                                    .rule_test_message(&hit.id, inbox.unwrap_or_default())
+                                    .await
+                            }
+                        }
+                    }
+                })
+                .await;
+            let result = read
+                .map_err(anyhow::Error::from)
+                .and_then(|(email, in_inbox)| {
+                    ensure!(
+                        email.provider_id == hit.id,
+                        "provider returned a different message id"
+                    );
+                    let arrival = email
+                        .provider_arrival_at
+                        .context("provider arrival unknown")?;
+                    if arrival < since || arrival > now {
+                        return Ok(Vec::new());
+                    }
+                    match email.direction(&owners) {
+                        Some(MailDirection::Sent | MailDirection::Draft) => return Ok(Vec::new()),
+                        Some(MailDirection::Inbound) => (),
+                        None => bail!("message direction unknown"),
+                    }
+                    let candidate = candidate(&name, &hit.thread_id, &[email], &owners, None)
+                        .map_err(anyhow::Error::msg)?;
+                    mecha_core::mail_rules::test_match(rule, &candidate, in_inbox, now)
+                });
+            match result {
+                Ok(rows) => report.rows.extend(rows),
+                Err(error) => {
+                    report.read_failures += 1;
+                    report
+                        .notices
+                        .push(format!("{name}/{}: held: {error:#}", hit.id));
+                }
+            }
+        }
+    }
+    Ok(report)
+}

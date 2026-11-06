@@ -87,7 +87,11 @@ pub(super) fn overlay(root: &Path, record: &mut super::Record) {
     overlay_with_warning(root, record, |warning| eprintln!("{warning}"));
 }
 
-fn overlay_with_warning(root: &Path, record: &mut super::Record, warn: impl FnOnce(String)) {
+pub(super) fn overlay_with_warning(
+    root: &Path,
+    record: &mut super::Record,
+    warn: impl FnOnce(String),
+) {
     clear_overlay(record);
     if let Err(error) = apply_overlay(root, record) {
         let path = root

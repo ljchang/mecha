@@ -1326,6 +1326,11 @@ impl TriageStore {
     /// fatal: one torn file must not hide the rest of the inbox. An unreadable
     /// rule overlay warns once and leaves its base record available.
     pub fn list(&self) -> Result<Vec<Record>> {
+        self.list_with_warning(|warning| eprintln!("{warning}"))
+    }
+
+    fn list_with_warning(&self, mut warn: impl FnMut(String)) -> Result<Vec<Record>> {
+        let mut warned = false;
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return Ok(out);
@@ -1337,7 +1342,12 @@ impl TriageStore {
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
                 if let Ok(mut rec) = serde_json::from_str::<Record>(&text) {
-                    rule_records::overlay(&self.root, &mut rec);
+                    rule_records::overlay_with_warning(&self.root, &mut rec, |warning| {
+                        if !warned {
+                            warn(warning);
+                            warned = true;
+                        }
+                    });
                     out.push(rec);
                 }
             }
@@ -1532,6 +1542,32 @@ mod tests {
     /// The boundary is a function with no way to ask for the prose. Every
     /// free-text field a stranger or the classifier authored must be absent
     /// from what a run with tools is handed.
+    #[test]
+    fn rule_overlay_warning_is_once_per_list_pass() {
+        let store = temp_store("overlay-pass");
+        for thread in ["first", "second"] {
+            store.put(&rec("campus", thread, Bucket::Notify)).unwrap();
+            rule_records::update(store.root(), "campus", thread, |_| {}).unwrap();
+        }
+        for file in std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+        {
+            if file.path().extension().is_some_and(|e| e == "json") {
+                std::fs::write(file.path(), "broken").unwrap();
+            }
+        }
+        for _ in 0..2 {
+            let mut warnings = Vec::new();
+            assert_eq!(
+                store.list_with_warning(|w| warnings.push(w)).unwrap().len(),
+                2
+            );
+            assert_eq!(warnings.len(), 1, "repeat warnings in one pass");
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
+    }
+
     #[test]
     fn the_privileged_view_carries_no_prose() {
         let mut r = rec("personal", "t1", Bucket::Respond);

@@ -659,7 +659,7 @@ impl Mailbox for FixtureMailbox {
     fn proves_header_absence(&self, _: &str) -> bool {
         true
     }
-    async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+    async fn candidates(&self, _: &str, _: Pass, _: DateTime<Utc>) -> Result<Vec<String>> {
         Ok(self.0.iter().map(|c| c.message.thread_id.clone()).collect())
     }
     async fn read_thread(&self, _: &str, thread: &str) -> Result<ThreadRead> {
@@ -1509,7 +1509,7 @@ async fn deferred_board_survives_unknown_from_until_expiry() {
     }
     #[async_trait]
     impl Mailbox for ChangingMailbox {
-        async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+        async fn candidates(&self, _: &str, _: Pass, _: DateTime<Utc>) -> Result<Vec<String>> {
             Ok(vec!["thread".into()])
         }
         async fn read_thread(&self, account: &str, thread: &str) -> Result<ThreadRead> {
@@ -1930,7 +1930,7 @@ async fn rule_exit_status_uses_read_failures_without_notices() {
     struct UnavailableMailbox;
     #[async_trait]
     impl Mailbox for UnavailableMailbox {
-        async fn candidates(&self, _: &str, _: Pass) -> Result<Vec<String>> {
+        async fn candidates(&self, _: &str, _: Pass, _: DateTime<Utc>) -> Result<Vec<String>> {
             Ok(vec!["thread-alpha".into()])
         }
         async fn read_thread(&self, _: &str, _: &str) -> Result<ThreadRead> {
@@ -2057,4 +2057,45 @@ fn header_absence_capability_requires_full_gmail_reads() {
     for read in [HeaderRead::Full, HeaderRead::Partial] {
         assert!(!provider_proves_header_absence(Provider::Outlook, read));
     }
+}
+
+#[test]
+fn report_status_names_every_nonzero_counter() {
+    let report = engine::ApplyReport {
+        candidate_failures: 2,
+        read_failures: 3,
+        handled_failures: 4,
+        ..Default::default()
+    };
+    let message = report_status(&report).unwrap_err().to_string();
+    for counter in [
+        "candidate_failures=2",
+        "read_failures=3",
+        "handled_failures=4",
+    ] {
+        assert!(message.contains(counter), "missing {counter}: {message}");
+    }
+}
+
+#[tokio::test]
+async fn rule_mailbox_uses_the_engine_clock_for_recent_verdicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let triage = mail_triage::TriageStore::open(dir.path().join("triage")).unwrap();
+    let now: DateTime<Utc> = "2020-01-15T12:00:00Z".parse().unwrap();
+    let record: mail_triage::Record = serde_json::from_value(json!({"account":"campus", "thread_id":"recent", "state":"classified", "classified_at":now.to_rfc3339(), "verdict":{"bucket":"notify", "urgency":"none", "proposed":"none"}})).unwrap();
+    triage.put(&record).unwrap();
+    let mailbox = RuleMailbox {
+        tools: MailTools::empty_for_rules_test(),
+        triage_root: triage.root().into(),
+        rule_root: store.root().into(),
+        dry_run: true,
+    };
+    assert_eq!(
+        mailbox
+            .candidates("campus", Pass::AfterClassify, now)
+            .await
+            .unwrap(),
+        ["recent"]
+    );
 }

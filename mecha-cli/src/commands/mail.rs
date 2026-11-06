@@ -37,6 +37,11 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
+    /// Owner-managed mail rules.
+    Rule {
+        #[command(subcommand)]
+        command: super::mail_rule::Cmd,
+    },
     /// What needs you, newest first (default). Typed fields only.
     List {
         /// Include threads already acted on, and the ones classified `ignore`.
@@ -384,6 +389,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         surface: false,
         json: false,
     }) {
+        Cmd::Rule { command } => super::mail_rule::run(command).await,
         Cmd::List {
             all,
             aged,

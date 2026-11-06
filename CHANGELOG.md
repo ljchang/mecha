@@ -9,13 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Owner mail-rule CLI.** `mecha mail rule add | list | show | mode | test |
+  ledger | undo | pause-all` installs in shadow, requires owner approval for
+  per-group raises, and exposes read-only JSON. Testing searches 30 days across
+  folders without writing; undo restores the exact mailbox message and records
+  a correction for the automatic brakes. Provider commands run through the
+  sibling `mecha-mail` binary without searching PATH. Filtered apply requires a
+  dry run so live passes retain sibling rules' safeguards. Undo records a durable
+  intent before restoring mail and recovers interrupted corrections on retry.
+  Timer and classify integration remain pending.
+
+- **Mail-rule pre-timer safeguards.** Bounded pagination, injected-clock windows,
+  visible expiry rows, unknown-activation holds, complete failure counts, one
+  triage-overlay warning per pass, and shared mailbox-address validation.
+
 - **Mail rule execution.** `mecha-mail rules apply` runs header rules in shadow,
   propose or approved automatic mode, with `--headers`, `--after-classify`,
   account selection and a dry run. The engine records per-action outcomes,
   defers classification-dependent work, recovers interrupted attempts, and
   applies failure brakes and task caps. Tasks use the configured graph MCP
-  server and stay held when it is unavailable. Rule management and automatic
-  scheduling remain for the next phase.
+  server and stay held when it is unavailable. Automatic scheduling remains
+  for the next phase.
 
 - **Approve persona memories as clean.** `mecha persona memory approve` and
   the Memories tab can now record the owner's vouch for a memory that came

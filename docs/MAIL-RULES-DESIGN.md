@@ -8,9 +8,10 @@ not being built, and R1–R3 below are the owner reversing that, inside the
 bounds this document sets.*
 
 *Implementation note, 2026-11-04: P0 prerequisites, P1a's store, and P1b's
-header engine with its mail-binary entrypoint are in the tree. P1c integration
-and P2–P7 remain; see §11. The original design below is retained, with P1b's
-review corrections marked where they change it.*
+header engine with its mail-binary entrypoint are in the tree. P1c-1 adds the
+owner CLI, retrospective header testing, corrections and pre-timer fixes.
+P1c-2 integration and P2–P7 remain; see §11. The original design below is retained,
+with review corrections marked where they change it.*
 
 **One word, two meanings, kept apart here:** *the digest* (§7) is the
 morning summary of what rules did; a rule's *digest* in §3 and §6.2 is a hash
@@ -1247,18 +1248,17 @@ without a new row on any non-owner step-down, automatic lapses and brakes
 included; clamping the target must not raise it or write an owner-only mode
 on another actor's behalf.
 
-**Both actor gates are advisory without the sandbox**, exactly as in
-`closure.rs`. A detached command with its environment cleared defeats an
-ancestry check, but missing identity is not proof of ownership: it is
-`Unknown`, refused for a raise and clamped for `off`. An unconfined `shell`
-can still bypass the CLI by appending to `approvals.jsonl` directly. That
-matters more here than for task closure, because §3 moved the mode out of
-`rule.toml` precisely so nothing could self-grant `auto`. With `shell`
-confined (§Security model, the sandbox), the store is outside anything a run
-can write and the gate is real. Without it, the residual is stated rather
-than hidden: `mecha doctor` reports any rule holding an outbound group in
-`auto` while `shell` runs unconfined, as attention, with the sandbox as the
-remedy.
+**P1c-1 review correction (2026-11-06): both actor gates are advisory without
+the sandbox.** The shared `closure::attribute_explained` reading used by outbox,
+tasks and this CLI returns `Owner` for `ShellReading::NotRegistered` plus
+`PostureReading::NotInRun` with no recorded run ancestor. A detached descendant
+of an unconfined shell with its environment cleared can therefore read as
+`Owner`; absence of a shell registration is not an `Unknown` reading. This is
+the same residual as an unconfined shell appending to `approvals.jsonl` directly.
+The sandbox is the remedy: confined shell cannot write the store (§Security
+model). P1c-2's `mecha doctor` will report groups in `auto` while shell is
+unconfined as attention, with the sandbox as the remedy; that doctor integration
+is not implemented in P1c-1. The attribution implementation is unchanged.
 
 A rule may be `auto` for some actions and not others: `mode` can be set per
 action group (§5's rows), and every mode row names one group (§3) — there is
@@ -1272,6 +1272,10 @@ group's mode cannot activate another. Only active outbound groups can take
 §4.3's outbound slot. §4.2 checks the cap on every entry addition, not just
 promotion; if the loader finds an over-cap store, omitted rules are visibly
 `held: list cap`, never silently missing from measurement.
+
+**P1c-1 correction:** an active group whose activation timestamp is unknown
+is held as a standing condition with one notice per group/pass; it neither
+enqueues nor dispatches work, and its existing deferred snapshots remain held.
 
 ### 6.2 Approval binds to what was shown (R1)
 
@@ -1644,7 +1648,10 @@ zero match rate.
   action waiting in the mail desk or the digest), `staged`, `held: rule cap`
   and `held: global cap` (§6.4), `held: fate unknown` (a send interrupted
   mid-flight, §4.4), `sent`, `released unchanged`, `edited`, `rejected`,
-  `undone`, `expired` (§4.1), `failed: <why>`, `skipped: <guard>`. One more
+  `undo_pending` (a durable correction intent before restore, P1c-1 §11),
+  `undone`, `expired` (§4.1), `failed: <why>`, `skipped: <guard>`. Undo intents
+  and settlements carry `correction_of` naming the original completed row;
+  the settlement also names the intent in `settlement`. One more
   row is not an action outcome and touches no action's key: `approval
   lapsed: files changed` (§6.2), a rule-level row for the page, reporting
   only non-off groups; an off group's old digest triggers no lapse row or
@@ -1866,6 +1873,62 @@ task sink holds the task without consuming its action key, once-per-thread
 occasion or cap capacity; the next pass retries once the sink is available.
 This does not reopen cap holds or tasks with uncertain dispatch fate. `mecha`
 gains no runtime dependency on `mecha-mail`.
+**P1c-1 implemented (2026-11-06).** `mecha mail rule add | list | show |
+mode | test | ledger | undo | pause-all` is the owner's CLI. Store operations
+use core directly; provider operations launch only the `mecha-mail` sibling in
+the canonical directory of the current executable, using argv and preserving
+output and exit status. PATH is never searched; a missing sibling names the
+`cargo install --path mecha-mail` remedy.
+The CLI shares the outbox's shell/posture/run-ancestry actor reading. Only a
+positive owner can raise a group; non-owner `off` requests clamp to `shadow`,
+and pause-all preserves already-off groups. Auto approval shows the exact
+rule-directory inputs, relevant skill/global inputs and their digest, and needs
+`--yes` or interactive `yes`; the store rejects any intervening edit. List,
+show and ledger offer read-only JSON, with recorded/effective group modes,
+load errors, lapse/brake/list-cap and provider holds, and last activity.
+
+`mecha mail rule test NAME` launches **`mecha-mail rules test NAME`**, a
+separate command with no live switch or timer options. It enumerates the last
+**30 days across all mailbox folders**, including archived mail, and reports
+header matches for individual inbound messages with fresh `in_inbox` evidence
+and an explicit label when a message is no longer in the inbox. It answers
+what the matcher would match, independently of activation, modes and prior
+ledger closures; it does not claim those actions would execute. Unknown
+membership is labelled unknown. Description rules refuse with the P4 requirement.
+No tokens are refreshed and no store, annotation, claim or task is written.
+Live `rules apply` retains its seven-day inbox window and always considers every
+rule for removal and handled safeguards. Repeatable `--rule NAME` is accepted
+only with `--dry-run`, enforced by argument parsing and the core engine; dry-run
+selection never sweeps or expires another rule's snapshots.
+Both listing paths share continuation validation and a 100-page ceiling;
+incomplete enumeration is a counted failure, never a successful truncation.
+
+`undo` launches `mecha-mail rules undo ROW-ID`. It restores only the immutable
+provider message recorded by a completed Mailbox action: Gmail unarchive/
+untrash, Graph move back to Inbox, and inverse read/unread verbs. The latter
+reverse the verb; historical rows contain no prior read-state snapshot. Private
+record actions have no restore implementation here; spam, sends and tasks also
+refuse. An append-only `undo_pending` intent links to the completed row before
+provider I/O, closes its undo key and counts toward the undo-rate brake immediately.
+Successful restore appends an `undone` settlement linked to that intent; a failed
+restore appends `failed` and ceases to count toward the undo rate. A persisted brake
+is not automatically raised again. If settlement writing fails after provider
+success, retrying `undo` on the original row resumes the same intent and re-drives
+the idempotent restore; already-restored messages are nothing-to-do successes.
+The retry never creates a second intent, concurrent attempts are refused by the
+engine lease, and any settled undo (successful or failed) refuses a fresh undo.
+Ordinary action recovery never settles undo intents. Older readers degrade
+`undo_pending` to `unknown`, keeping the closed-enum wire rule. The engine lease
+also serializes restores against apply.
+
+Pre-timer fixes also reject empty header OR lists, pass the engine's clock into
+mailbox windows, report live expiry rows just like dry runs, hold unknown
+activation, report every non-zero failure counter, warn about broken triage
+overlays once per list pass, and share the conservative 254-byte mailbox grammar.
+
+**P1c-2 remains unbuilt here:** timer units, the classify hook, the feature
+registry entry, doctor and backlog. No P2–P7 behavior is added by P1c-1.
+
 The following describes P1 as a whole:
 
  `rule.toml`, approvals,
