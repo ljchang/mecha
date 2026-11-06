@@ -148,6 +148,10 @@ pub fn corpus_slice(
             include_tests: false,
             // Experiment sessions belong to their trial home's readers (D13).
             include_experiments: mecha_core::experiment::in_experiment_home(),
+            // Fitness is the owner's usage: a driven run's failures are the
+            // driver's ledger, and how diagnosis may read them is
+            // `DRIVER-DESIGN.md` D2's question, not this default's.
+            include_driven: false,
         },
     )?;
     let sessions_read = corpus.sessions_read;

@@ -94,10 +94,12 @@ pub struct Forecast {
     /// from before the field: scored by today's window instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patience_secs: Option<i64>,
-    /// Staged by a smoke run (`MECHA_SESSION_KIND=test`): recorded so the
-    /// draft is not counted as unforecast, predicted nothing, never history,
-    /// and set aside by the readout — the instrument must not measure its
-    /// own tests (review of #401).
+    /// Staged by a smoke run (`MECHA_SESSION_KIND=test`) or a driven one
+    /// (`driven`, `DRIVER-DESIGN.md` D1): recorded so the draft is not
+    /// counted as unforecast, predicted nothing, never history, and set
+    /// aside by the readout — the instrument must not measure its own tests
+    /// (review of #401), nor learn the owner's habits from a draft another
+    /// agent's run staged. The field keeps its name: it is a wire format.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub test: bool,
     #[serde(default)]

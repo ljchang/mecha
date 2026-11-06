@@ -554,6 +554,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         kind: opts.kind,
         include_tests: opts.include_tests,
         include_experiments: mecha_core::experiment::in_experiment_home(),
+        include_driven: false,
     };
     let mut tally = Tally::default();
     let sessions_dir = Session::default_dir()?;

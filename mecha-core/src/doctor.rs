@@ -2119,6 +2119,10 @@ fn check_runs(sessions: &Path, charter: Option<&crate::charter::Charter>) -> Vec
             include_tests: false,
             // As the other readers: admitted in a trial home, hidden elsewhere.
             include_experiments: crate::experiment::in_experiment_home(),
+            // A driven run is another agent pushing the harness to fail on
+            // purpose: its failures are the driver's ledger, not the
+            // machine's distress (`DRIVER-DESIGN.md` D1).
+            include_driven: false,
         },
     ) {
         Ok(c) => c,

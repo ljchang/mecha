@@ -312,7 +312,17 @@ impl Situation {
     /// by the old miner, from a transcript since deleted so the reconcile
     /// left it, would otherwise have scoped a rule to a surface nothing
     /// matches, dark with nothing warning (found on review).
-    pub const MARK_KINDS: &[SessionKind] = &[SessionKind::Test, SessionKind::Experiment];
+    ///
+    /// `Driven` is a mark here for now and is meant to leave this list:
+    /// `DRIVER-DESIGN.md` D2 gives driven runs a rule pool of their own,
+    /// scoped `surface = driven`, which needs the mark to reach the match.
+    /// Until that lands, a driven run renders the owner's rules and nothing
+    /// is learned from it (it is hidden from `reflect` like any mark).
+    pub const MARK_KINDS: &[SessionKind] = &[
+        SessionKind::Test,
+        SessionKind::Experiment,
+        SessionKind::Driven,
+    ];
 
     /// The situation an intervention was recorded in.
     pub fn recorded(

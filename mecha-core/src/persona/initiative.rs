@@ -1131,6 +1131,7 @@ mod tests {
             for kind in [
                 crate::session::SessionKind::Test,
                 crate::session::SessionKind::Experiment,
+                crate::session::SessionKind::Driven,
             ] {
                 let t = scratch_kind(&dir, Some(kind));
                 config(&t, "p", "2026-01-02T12:00:00Z");
@@ -1143,7 +1144,7 @@ mod tests {
                 );
             }
             let read = stretches(&dir, std::time::UNIX_EPOCH).unwrap();
-            assert_eq!((read.chats, read.unreadable, read.left_out), (2, 0, 2));
+            assert_eq!((read.chats, read.unreadable, read.left_out), (2, 0, 3));
             let said = read.stretches;
             let owners: Vec<&str> = said.iter().map(|(_, t)| t[0].owner.as_str()).collect();
             assert_eq!(owners, vec!["hi", "rain", "how is Pell?"]);

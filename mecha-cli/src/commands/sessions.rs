@@ -440,6 +440,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 .iter()
                 .filter(|(meta, _)| scan.hides_experiment(meta))
                 .count();
+            let hidden_driven = all
+                .iter()
+                .filter(|(meta, _)| scan.hides_driven(meta))
+                .count();
             let total = all.len();
             let sessions: Vec<_> = all
                 .into_iter()
@@ -473,6 +477,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         why.push(format!(
                             "{hidden_experiments} experiment session(s) hidden — trial runs, and any you marked with `sessions mark`; `--kind experiment` shows them"
                         ));
+                    }
+                    if hidden_driven > 0 {
+                        why.push(format!("{hidden_driven} {DRIVEN_HIDDEN}"));
                     }
                     if unkinded > 0 && kind.is_some() {
                         why.push(format!(
@@ -515,6 +522,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 println!(
                     "({hidden_experiments} experiment session(s) hidden — trial runs, and any you marked with `sessions mark`; `--kind experiment` shows them)"
                 );
+            }
+            if hidden_driven > 0 {
+                println!("({hidden_driven} {DRIVEN_HIDDEN})");
             }
         }
 
@@ -1887,6 +1897,8 @@ async fn appraise(
         include_tests,
         // Experiment sessions belong to their trial home's readers (D13).
         include_experiments: mecha_core::experiment::in_experiment_home(),
+        // Driven runs only when asked for by name (`--kind driven`).
+        include_driven: false,
     };
 
     // Best-effort, like every reader over these stores: a read failure costs
@@ -2031,6 +2043,7 @@ async fn appraise(
     let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
     let mut tests_hidden = 0usize;
     let mut experiments_hidden = 0usize;
+    let mut driven_hidden = 0usize;
     for (meta, path) in listed {
         // The cap first, then attribution, as `Corpus::scan` orders them.
         if limit.is_some_and(|n| sessions_read >= n) {
@@ -2042,6 +2055,9 @@ async fn appraise(
             }
             if scan.hides_experiment(&meta) {
                 experiments_hidden += 1;
+            }
+            if scan.hides_driven(&meta) {
+                driven_hidden += 1;
             }
             continue;
         }
@@ -2336,6 +2352,7 @@ async fn appraise(
                 "sessions_unreadable": sessions_unreadable,
                 "tests_hidden": tests_hidden,
                 "experiments_hidden": experiments_hidden,
+                "driven_hidden": driven_hidden,
                 "named_a_goal": named_a_goal,
                 "attributed_by_sensor": attributed_by_sensor,
                 "cite_a_charter_line": cite_a_charter_line,
@@ -2493,6 +2510,9 @@ async fn appraise(
             "  ({tests_hidden} smoke-test session(s) hidden and in no count above; \
              `--include-tests` shows them)\n"
         );
+    }
+    if driven_hidden > 0 {
+        println!("  ({driven_hidden} {DRIVEN_HIDDEN})\n");
     }
     // A fact about a store, not about these sessions, so it is printed
     // before the early return — an empty walk still has a store to report.
@@ -2702,6 +2722,12 @@ fn enum_key<T: serde::Serialize>(v: T) -> String {
 /// answers whether they *worked*, and the two have different audiences and
 /// different units. Every rate here prints `—` where its denominator is zero,
 /// because no evidence is not a clean record.
+/// How a readout names the driven sessions it hid, after the count: one
+/// spelling for `list` and `health`, so the two never word the same filter
+/// differently (`DRIVER-DESIGN.md` D1).
+const DRIVEN_HIDDEN: &str =
+    "driven session(s) hidden — another agent's runs on real work; `--kind driven` shows them";
+
 fn health(
     dir: &std::path::Path,
     days: Option<i64>,
@@ -2725,6 +2751,8 @@ fn health(
             include_tests,
             // Experiment sessions belong to their trial home's readers (D13).
             include_experiments: mecha_core::experiment::in_experiment_home(),
+            // Driven runs only when asked for by name (`--kind driven`).
+            include_driven: false,
         },
     )?;
 
@@ -2762,6 +2790,9 @@ fn health(
             " · {} experiment session(s) hidden (they belong to a trial home)",
             corpus.hidden_experiments
         ));
+    }
+    if corpus.hidden_driven > 0 {
+        hidden_line.push_str(&format!(" · {} {DRIVEN_HIDDEN}", corpus.hidden_driven));
     }
 
     if corpus.is_empty() {
@@ -3148,6 +3179,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     // from — a structural seed (task, trigger, request) or an owner's
     // confirmation (charter, project, or a task named in an answer).
     out["runs_anchored_by_kind"] = serde_json::json!(corpus.anchored_by_kind());
+    // Beside `tests_hidden` and `experiments_hidden` in meaning; set here
+    // only because the macro above is at its limit.
+    out["driven_hidden"] = serde_json::json!(corpus.hidden_driven);
     // Planned under a trigger or request anchor: counted, never judged.
     out["runs_planned_under_an_unjudged_anchor"] = serde_json::json!(goals.planned_unjudged);
     // S5's phase-1 readout, per sensored line: the level's over-count beside
