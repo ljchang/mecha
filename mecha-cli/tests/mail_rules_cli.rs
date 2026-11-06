@@ -21,7 +21,11 @@ impl Fixture {
             mecha_core::session::Session::new_id()
         ));
         std::fs::create_dir_all(root.join("home")).unwrap();
-        std::fs::write(root.join("home/config.toml"), "[features]\nmail = true\n").unwrap();
+        std::fs::write(
+            root.join("home/config.toml"),
+            "[features]\nmail = true\nmail_rules = true\n",
+        )
+        .unwrap();
         Self { root }
     }
     fn command(&self) -> Command {
@@ -84,6 +88,221 @@ fn success(out: &Output) {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn mail_rules_review_queue_follows_the_existing_queues() {
+    let f = Fixture::new();
+    let output = f
+        .command()
+        .env("MECHA_GRAPH_BIN", f.root.join("unavailable-graph"))
+        .args(["review", "queues", "--json"])
+        .output()
+        .unwrap();
+    success(&output);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<_> = rows
+        .iter()
+        .map(|row| row["queue"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "graph candidates",
+            "graph entities",
+            "graph shadow",
+            "outbox drafts",
+            "blocked questions",
+            "front-door requests",
+            "rule proposals",
+            "harness changes",
+            "image candidates",
+            "mail rules",
+        ]
+    );
+}
+
+// APFS refuses a non-UTF-8 file name ("Illegal byte sequence"), so the
+// directory this override would name cannot exist on macOS.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn mail_rule_review_registry_uses_the_shared_non_utf8_override_fallback() {
+    use std::os::unix::ffi::OsStringExt;
+    let f = Fixture::new();
+    f.store().install("notice", "description='Fictional notice'\n[match]\nlist_id=['notices.example.com']\n[[action]]\ndo='archive'\n", &BTreeMap::new()).unwrap();
+    let real_home = f.root.join("real-home");
+    let fallback = real_home.join(".mecha/mail");
+    let invalid = f
+        .root
+        .join(std::ffi::OsString::from_vec(b"mail-\xff".to_vec()));
+    for (directory, provider) in [(&fallback, "google"), (&invalid, "outlook")] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join("accounts.toml"),
+            format!("[[account]]\nname='fictional'\nprovider='{provider}'\n"),
+        )
+        .unwrap();
+    }
+    let read = |override_path: Option<&std::path::Path>| {
+        let mut command = f.command();
+        command.env("HOME", &real_home).env_remove("MECHA_MAIL_DIR");
+        if let Some(path) = override_path {
+            command.env("MECHA_MAIL_DIR", path);
+        }
+        command
+            .args(["mail", "rule", "list", "--json"])
+            .output()
+            .unwrap()
+    };
+    let fallback_read = read(None);
+    success(&fallback_read);
+    let ignored_override = read(Some(&invalid));
+    success(&ignored_override);
+    assert_eq!(ignored_override.stdout, fallback_read.stdout);
+    let missing_registry = read(Some(invalid.parent().unwrap()));
+    assert_ne!(
+        missing_registry.stdout, fallback_read.stdout,
+        "the fallback must supply provider evidence"
+    );
+}
+
+#[test]
+fn mail_rule_review_pause_skips_junk_but_keeps_strict_store_commands() {
+    let f = Fixture::new();
+    let store = f.store();
+    let first = f.rule();
+    let second = store
+        .install(
+            "second",
+            &std::fs::read_to_string(first.directory.join("rule.toml")).unwrap(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    for rule in [&first, &second] {
+        store
+            .change_mode(
+                &rule.name,
+                ActionGroup::Mailbox,
+                Mode::Auto,
+                Some(Actor::Owner),
+                &rule.approval_digest,
+                &owner_file_holds(),
+            )
+            .unwrap();
+    }
+    let stray = store.root().join("rules/notice.old");
+    std::fs::create_dir(&stray).unwrap();
+    std::fs::copy(first.directory.join("rule.toml"), stray.join("rule.toml")).unwrap();
+    std::fs::write(store.root().join("rules/stray"), "not a directory").unwrap();
+    let paused = f.run(&["pause-all"]);
+    success(&paused);
+    let notices = String::from_utf8_lossy(&paused.stderr);
+    for junk in ["notice.old", "stray"] {
+        assert_eq!(notices.matches(junk).count(), 1, "{notices}");
+    }
+    for rule in [&first, &second] {
+        assert_eq!(
+            resolve_mode(
+                rule,
+                ActionGroup::Mailbox,
+                &store.approvals().unwrap(),
+                &owner_file_holds()
+            )
+            .recorded,
+            Mode::Shadow
+        );
+    }
+    assert!(!f.run(&["list"]).status.success());
+    assert!(!f.run(&["add", stray.to_str().unwrap()]).status.success());
+}
+
+fn refused_before_review(action: &str, group: &str) {
+    let f = Fixture::new();
+    let store = f.store();
+    store
+        .install(
+            "notice",
+            &format!(
+                "description='Fictional notice'\n[match]\nfrom_domain=['example.com']\n{action}"
+            ),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let before = store.approvals().unwrap().len();
+    for confirmation in [vec![], vec!["--yes"]] {
+        let mut args = vec!["mode", "notice", group, "auto"];
+        args.extend(confirmation);
+        let out = f.run(&args);
+        assert!(!out.status.success());
+        assert!(
+            out.stdout.is_empty(),
+            "approval screen shown for a forbidden mode: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("permanent ceiling"));
+        assert_eq!(store.approvals().unwrap().len(), before);
+    }
+}
+
+#[test]
+fn mail_rule_review_send_ceiling_precedes_the_approval_screen() {
+    refused_before_review(
+        "[[action]]\ndo='forward'\nto=['records@example.edu']\n",
+        "verbatim-forward",
+    );
+}
+
+#[test]
+fn mail_rule_review_report_ceiling_precedes_the_approval_screen() {
+    refused_before_review("[[action]]\ndo='spam'\n", "report");
+}
+
+#[test]
+fn mail_rule_review_empty_list_is_explicit_without_changing_json() {
+    let f = Fixture::new();
+    for create_store in [false, true] {
+        if create_store {
+            f.store();
+        }
+        let out = f.run(&["list"]);
+        success(&out);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "no mail rules installed"
+        );
+        let json = f.run(&["list", "--json"]);
+        success(&json);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&json.stdout).unwrap(),
+            serde_json::json!([])
+        );
+        // show already refuses a missing name explicitly; it is not an empty success.
+        let show = f.run(&["show", "missing"]);
+        assert!(!show.status.success());
+        assert!(!show.stderr.is_empty());
+    }
+}
+
+#[test]
+fn mail_rule_review_empty_ledger_is_explicit_without_changing_json() {
+    let f = Fixture::new();
+    for create_store in [false, true] {
+        if create_store {
+            f.store();
+        }
+        let out = f.run(&["ledger"]);
+        success(&out);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "no mail rule ledger entries"
+        );
+        let json = f.run(&["ledger", "--json"]);
+        success(&json);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&json.stdout).unwrap(),
+            serde_json::json!([])
+        );
+    }
 }
 
 #[test]
@@ -233,4 +452,139 @@ fn mail_rule_child_refuses_path_binary_when_sibling_is_missing() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("cargo install --path mecha-mail"));
+}
+
+#[test]
+fn mail_rules_off_preserves_store_reads_and_revocation_but_blocks_active_verbs() {
+    let f = Fixture::new();
+    let rule = f.rule();
+    std::fs::write(
+        f.root.join("home/config.toml"),
+        "[features]\nmail=false\nmail_rules=false\n",
+    )
+    .unwrap();
+    success(&f.run(&["list", "--json"]));
+    success(&f.run(&["show", "notice", "--json"]));
+    success(&f.run(&["ledger", "--json"]));
+    success(&f.run(&["pause-all"]));
+    success(&f.run(&["mode", "notice", "mailbox", "off"]));
+    for args in [
+        vec!["mode", "notice", "mailbox", "auto", "--yes"],
+        vec!["undo", "row"],
+        vec!["test", "notice"],
+        vec!["add", rule.directory.to_str().unwrap()],
+    ] {
+        let result = f.run(&args);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("mail_rules"));
+    }
+}
+
+#[test]
+fn mail_rules_classify_hook_failure_keeps_classify_stdout_exit_and_dry_run_unchanged() {
+    let f = Fixture::new();
+    let executable = f.isolated_binary();
+    f.fake("bin", "hook-child", 23);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/classify_empty.py");
+    let workspace = f.root.join("work");
+    std::fs::create_dir(&workspace).unwrap();
+    let configure = |enabled: bool| {
+        std::fs::write(f.root.join("home/config.toml"), format!(
+        "[features]\nmail=true\nmail_rules={enabled}\n[[mcp]]\nname='fixture'\ncommand='python3'\nargs=[{}]\n",
+        serde_json::to_string(&fixture).unwrap())).unwrap()
+    };
+    let run = |extra: &[&str]| {
+        f.isolated_command(&executable)
+            .args([
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "mail",
+                "classify",
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    configure(false);
+    let disabled = run(&["--account", "fictional"]);
+    success(&disabled);
+    assert!(!String::from_utf8_lossy(&disabled.stderr).contains("hook-child"));
+    assert_eq!(
+        String::from_utf8_lossy(&disabled.stderr)
+            .matches("skipping after-classify hook")
+            .count(),
+        1
+    );
+    configure(true);
+    let failed = run(&["--account", "fictional"]);
+    success(&failed);
+    assert_eq!(failed.stdout, disabled.stdout);
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains("hook-child\nrules\napply\n--after-classify\n--account\nfictional\n"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("1 attempted, 1 failed"));
+    let dry = run(&["--dry-run"]);
+    success(&dry);
+    assert!(!String::from_utf8_lossy(&dry.stderr).contains("hook-child"));
+    assert!(!String::from_utf8_lossy(&dry.stderr).contains("after classify:"));
+}
+
+#[test]
+fn mail_rules_classify_hook_observes_durable_verdicts_and_preserves_summary_on_failure() {
+    let f = Fixture::new();
+    let executable = f.isolated_binary();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/classify_empty.py");
+    let workspace = f.root.join("work");
+    std::fs::create_dir(&workspace).unwrap();
+    let configure = |enabled: bool| {
+        std::fs::write(f.root.join("home/config.toml"), format!(
+        "default_provider='fixture'\n[providers.fixture]\nkind='openai-compatible'\nmodel='fictional'\nbase_url='http://localhost:1'\n[features]\nmail=true\nmail_rules={enabled}\n[[mcp]]\nname='fixture'\ncommand='python3'\nargs=[{}, '--bulk']\n",
+        serde_json::to_string(&fixture).unwrap())).unwrap()
+    };
+    let run = || {
+        f.isolated_command(&executable)
+            .args([
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "mail",
+                "classify",
+                "--account",
+                "fictional",
+                "--force",
+            ])
+            .output()
+            .unwrap()
+    };
+    configure(false);
+    let before = run();
+    success(&before);
+    let fake = f.root.join("bin/mecha-mail");
+    std::fs::write(&fake, r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+records = [json.loads(p.read_text()) for p in (pathlib.Path(os.environ['MECHA_HOME']) / 'mail-triage').glob('*.json')]
+assert any(r['thread_id'] == 'fictional-thread' and r['state'] == 'classified' and r['verdict'] for r in records)
+print('verdict durable before child', file=sys.stderr)
+sys.exit(29)
+"#).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Remove the earlier verdict so this assertion cannot pass on old data.
+    std::fs::remove_dir_all(f.root.join("home/mail-triage")).unwrap();
+    configure(true);
+    let after = run();
+    success(&after);
+    assert_eq!(after.stdout, before.stdout);
+    let stderr = String::from_utf8_lossy(&after.stderr);
+    assert!(stderr.contains("verdict durable before child"), "{stderr}");
+    assert!(stderr.contains("1 attempted, 1 failed"));
+    let store =
+        mecha_core::mail_triage::TriageStore::open_existing(f.root.join("home/mail-triage"))
+            .unwrap();
+    assert_eq!(
+        store.get("fictional", "fictional-thread").unwrap().state,
+        "classified"
+    );
 }

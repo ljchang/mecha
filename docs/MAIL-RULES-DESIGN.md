@@ -10,7 +10,8 @@ bounds this document sets.*
 *Implementation note, 2026-11-04: P0 prerequisites, P1a's store, and P1b's
 header engine with its mail-binary entrypoint are in the tree. P1c-1 adds the
 owner CLI, retrospective header testing, corrections and pre-timer fixes.
-P1c-2 integration and P2–P7 remain; see §11. The original design below is retained,
+P1c-2 (2026-11-06) adds opt-in unattended execution, doctor and backlog.
+P2–P7 remain; see §11. The original design below is retained,
 with review corrections marked where they change it.*
 
 **One word, two meanings, kept apart here:** *the digest* (§7) is the
@@ -1256,9 +1257,18 @@ of an unconfined shell with its environment cleared can therefore read as
 `Owner`; absence of a shell registration is not an `Unknown` reading. This is
 the same residual as an unconfined shell appending to `approvals.jsonl` directly.
 The sandbox is the remedy: confined shell cannot write the store (§Security
-model). P1c-2's `mecha doctor` will report groups in `auto` while shell is
-unconfined as attention, with the sandbox as the remedy; that doctor integration
-is not implemented in P1c-1. The attribution implementation is unchanged.
+model). **P1c-2 review correction (2026-11-06):** `mecha doctor` reports
+**any group in `auto` while shell runs unconfined**, with attention severity
+for each group and the sandbox as the remedy. This includes Mailbox and Board:
+tasks reach a task run's prompt, and the self-grant residual applies to every
+group. Outbound auto is held in P1, so an outbound-only check would never fire.
+The attribution implementation is unchanged.
+
+**P1c-2 adversarial review correction (2026-11-06):** a configured sandbox
+with a writable mount covering the rules store is also exposed. Compare both
+the protected store and mount through resolved aliases and ancestors; a backend
+name alone is not confinement. The general confinement check protects the
+rules store alongside the actor registry and other owner stores.
 
 A rule may be `auto` for some actions and not others: `mode` can be set per
 action group (§5's rows), and every mode row names one group (§3) — there is
@@ -1926,8 +1936,80 @@ mailbox windows, report live expiry rows just like dry runs, hold unknown
 activation, report every non-zero failure counter, warn about broken triage
 overlays once per list pass, and share the conservative 254-byte mailbox grammar.
 
-**P1c-2 remains unbuilt here:** timer units, the classify hook, the feature
-registry entry, doctor and backlog. No P2–P7 behavior is added by P1c-1.
+**P1c-2 implemented (2026-11-06).** `mail_rules` has its own global switch,
+off by default, and requires `mail`. `mecha-mail rules apply` checks both before
+opening any store or provider; a disabled timer or classify hook says so once
+per invocation. Active owner verbs require the feature. `mecha mail rule list`,
+`show`, `ledger`, `pause-all` and lowering modes deliberately remain available
+with `mail` or `mail_rules` off: inspection and revocation must not depend on the
+switch. The hand-installed
+`mecha-mail-rules.service` / `.timer` runs headers every five minutes, with
+`~/.cargo/bin` on PATH and no model-idle gate. Packaged unit copies are held
+byte-equal to `scripts/`; the classify timers have no launchd twin to mirror.
+Typed engine-lease contention is a successful skip, while listing, read,
+dispatched-action and handled-marker failure counts cause a non-zero exit.
+Held passes are not failures.
+
+After durable verdict writes, classify uses the same canonical-sibling launcher
+for `rules apply --after-classify`, preserving the account selection. This also
+runs on an empty non-dry classify pass so deferred work can finish. Hook output
+and attempted/failed counts go to stderr; child failure, a missing binary,
+unreadable global config or timeout cannot alter classify's own stdout or exit
+status. Dry runs never launch it. A failed verdict write does not launch it.
+
+**P1c-2 adversarial review: direct entrypoints and service deadlines.** The
+mail binary checks the global `mail` and `mail_rules` switches before undo or
+retrospective test opens stores, tokens or providers. Test is read-only but
+still contacts a mailbox, so it requires the switches just like the owner CLI.
+Unreadable configuration refuses every rules subcommand. Disabled unattended
+apply remains a successful skip; explicit test/undo refuse.
+
+**P1c-2 review correction (2026-11-06):** the classify hook gets a fixed
+ten-minute total allowance for deferred work and seven days of verdicts. The
+running deadline reserves ten seconds for SIGTERM grace and two seconds for
+reaping after SIGKILL if needed, including when output pipes are held open.
+A deadline is reported and counted as a hook failure even if SIGTERM makes the
+child exit successfully; classify keeps its own status. This also applies on a
+terminal and does not mistake a watchdog interval for a service start deadline.
+Both classify services reserve ten minutes beyond their original sweep budgets:
+daytime is now 40 minutes, nightly 55 minutes.
+Script and packaged service copies are byte-equal. **Deploy note for this PR:**
+re-copy `mecha-mail-classify-day.service` and `mecha-mail-classify.service` from
+`scripts/` to `~/.config/systemd/user/`, along with the new mail-rules units,
+then run `systemctl --user daemon-reload`. Existing classify timers need no
+change. Updating binaries alone does not update these installed timeouts.
+
+Doctor reads stores without writes and reports unreadable rules/history,
+lapsed approvals (computed or persisted), unknown ledger outcomes, corrupt
+approvals and the resulting inability to write `off`, missing stored addresses
+(which hold the whole install), standing provider/list-cap holds, stranded
+pending actions and interruption settlements. Global-config checks report every
+automatic group under unconfined shell and missing, inactive or failing timer
+units while enabled. An unavailable systemd query (no binary or user bus) is
+skipped, matching doctor's other unit checks; returned missing/failed unit
+states remain findings. No provider or model is called.
+
+The sixth backlog store counts lapsed group approvals and remaining proposal
+directories under `proposals/`, with proposal age taken from `rule.toml`'s file
+modification time until P7 supplies proposal metadata and lifecycle. It creates
+nothing. An unreadable or deleted definition falls back to its approval history,
+so persisted lapses, other rules and proposal counts remain visible; unreadable
+shared history remains unknown. `mecha review` and `/queues` show the count.
+P3 has feature-owned list/show/ledger API routes, a `mail/rules` PANE_FEATURE
+entry and a `mail rules` QUEUE_FEATURE entry; VIEW_FEATURE keeps the Mail view
+under `mail`. No rules tab or page is added early. Model slots, a new sidecar,
+automatic service installer and a new settings table are not needed: this uses
+the existing mail binary and mail timers' manual install procedure.
+No P2–P7 execution behavior is added.
+
+**Carried P1c-1 review fixes (2026-11-06).** Mail views use the shared mail-store
+directory resolver. Emergency pause skips junk entries with a named notice,
+while add/list retain strict validation. The store's permanent ceiling is
+checked before displaying the automatic approval screen and rechecked when
+writing permission. Undo with unreadable rule files durably clamps historical
+groups before provider I/O; replacing the old files cannot revive auto. Empty
+text lists and ledgers explicitly report no entries; JSON arrays remain empty
+arrays, and showing a missing rule remains an explicit error.
 
 The following describes P1 as a whole:
 
@@ -1950,7 +2032,11 @@ default) — through
 the web pane's `PANE_FEATURE` entry P3 will need (#654 missed exactly that) —
 and
 `mecha doctor` reporting an unreadable store, a lapsed approval, and ledger
-rows with an outcome this build cannot read (§8). The store
+rows with an outcome this build cannot read (§8), corrupt approvals, absent
+account addresses, standing provider holds, stranded/recovered pending actions,
+and the enabled timer's health. **P1c-2 review correction (2026-11-06):** attention
+for **any group in auto while shell runs unconfined**, including Mailbox, Board
+and outbound groups; the sandbox is the remedy (§6.1). The store
 also registers with `backlog.rs` (and `CLAUDE.md`'s module-map line for it,
 "across five stores", and `backlog.rs`'s own module doc, "Five stores
 collect work for a person", each gain one), so proposals awaiting install and lapsed

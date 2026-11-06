@@ -41,6 +41,7 @@ export const VIEW_FEATURE = {
  * shown, and an array handed to them would fail open (LORA-DESIGN.md §6).
  */
 export const PANE_FEATURE = {
+  'mail/rules': 'mail_rules',
   'review/graph': 'graph',
   'review/entities': 'graph',
   'review/frontdoor': 'frontdoor',
@@ -85,6 +86,7 @@ export function featureFor(rows, view, sub) {
  * are core stores and appear nowhere here.
  */
 export const QUEUE_FEATURE = {
+  'mail rules': 'mail_rules',
   'front-door requests': 'frontdoor',
   'graph candidates': 'graph',
   'graph shadow': 'graph',

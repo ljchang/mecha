@@ -462,6 +462,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # web = false        # the web app (`mecha serve`)
 # slack = false      # Slack remote control
 # mail = false       # mail and calendar
+# mail_rules = false # owner-approved automatic mail rules (requires mail)
 # docs = false       # Google Docs, Sheets and Slides
 # graph = false      # the knowledge graph and the task board
 # search = false     # web search and open
@@ -475,6 +476,12 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # system = false     # the assistant reads this machine's state (system_read)
 # code = false       # programs over tool results (code)
 ```
+
+`mail_rules` requires `mail` and defaults off. With either switch off, the
+five-minute timer and post-classify hook skip once with an explanation; rules
+cannot act. Install the sibling `mecha-mail` binary and the timer units as
+shown in the [CLI reference](/docs/reference/cli#mail-rule). Rule list, show,
+ledger and revocation remain available while disabled.
 
 The switch is the only switch; a settings table such as `[image]` or
 `[documents]` is only settings. What a switch that is not `true` turns off

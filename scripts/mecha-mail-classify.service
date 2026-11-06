@@ -73,4 +73,7 @@ ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail clas
 # The sweep is model-bound and this host's inference is bandwidth-bound, so a
 # run that has somehow not finished by morning is worse than one that stopped:
 # it would still be competing with the briefing at 07:00.
-TimeoutStartSec=45min
+# Preserve the 45-minute sweep budget; reserve ten more minutes for the
+# mail-rules hook, including SIGTERM grace (10 seconds) and reap (2 seconds).
+# Re-copy this service and daemon-reload when deploying the hook.
+TimeoutStartSec=55min

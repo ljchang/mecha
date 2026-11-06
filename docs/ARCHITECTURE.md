@@ -4575,6 +4575,62 @@ return a refresh token every time.
 
 ## Mail rules
 
+**Unattended passes share the owner's gates.** P1c-2's `mail_rules` switch
+is global, off by default and requires `mail`; both the header timer and the
+post-classify child check it before opening stores or providers. `mecha mail rule`
+`list`, `show`, `ledger`, `pause-all` and lowering modes deliberately work with
+`mail` or `mail_rules` off: inspection and revocation must not depend on the
+switch. `mail_rules::child_path` is the
+canonical executable sibling used by the launcher and feature facts, never PATH.
+The header service has no model-idle gate. Its copies in `scripts/` and
+`mecha-core/units/` are byte-equal; installation follows the existing mail timers'
+manual procedure. `ApplyRunning` is typed lease contention and skips successfully;
+other lock errors and typed candidate/read/action/handled failures fail the pass.
+A held pass is not a failure. A fresh service reads global switches each tick.
+Direct mail-binary undo and retrospective test also check both switches before
+opening stores or providers, refusing unreadable configuration. Test requires
+the switch despite being read-only because it still contacts the mailbox.
+
+**Classification is already durable when its hook runs.** The same account
+selection goes to `rules apply --after-classify`, including an empty successful
+pass that may owe deferred work. A dry run or failed verdict write does not run
+the hook. Its output and attempted/failed counts go to stderr, and its errors
+never change classify's own stdout or exit decision. The launcher returns its
+status to the caller; only the explicit owner command propagates a child exit.
+The hook has a fixed ten-minute total allowance, including output draining,
+a ten-second SIGTERM grace and two seconds to reap after SIGKILL if needed.
+The running deadline reserves those last twelve seconds for termination;
+timeouts are reported and counted even if the child exits cleanly on SIGTERM.
+The shipped classify services reserve ten minutes beyond the original sweep
+budgets (40 minutes daytime, 55 nightly), so a successful sweep cannot lose its
+old allowance to a hung hook. Their packaged copies are byte-equal; deployment
+must re-copy both classify services and daemon-reload, not merely replace the
+binaries.
+
+**Doctor and backlog observe; they never persist a lapse.** Pending recovery
+findings distinguish unsettled attempts from exact interrupted settlements;
+normal completed attempts are healthy. Corrupt approvals cannot be skipped to
+write `off`. Unknown ledger outcomes keep their closing keys. An account without
+a stored address holds all rules, and Outlook's header limitations are standing
+findings. Every recorded automatic group under unconfined shell, or a sandbox
+with a writable mount reaching the rules store, gets attention, including
+Mailbox and Board: the actor reading is advisory without an effective sandbox,
+and Board tasks reach a task prompt. The rules store is also in the general
+confinement check's protected directories. Both the protected path and mount
+path resolve existing aliases before comparing ancestors or descendants.
+Doctor reads global confinement only and does not probe backend readiness.
+A failed configured sandbox is stopped by `Sandbox::preflight` before shell
+executes; the residual requires no sandbox or a writable mount exposing the store.
+Timer checks skip when systemd cannot be queried (including no binary or user
+bus); a returned missing-unit or failed-unit state is a finding.
+The sixth backlog store counts pending proposal directories and lapsed group
+approvals. An unreadable or deleted definition falls back to its approval rows,
+so its persisted lapse cannot hide the other rules or proposals; unreadable
+shared history still makes the count unknown. P7 owns proposal creation/lifecycle;
+for now proposal age is the definition's file modification time. P3's read API
+is feature-owned and its pane mapping is reserved, while the Mail view keeps
+its existing `mail` feature.
+
 **The engine belongs to core; mailbox clients and OAuth stay in the mail
 binary.** `mail_rules::engine::apply` takes `Mailbox` and `TaskSink` interfaces;
 `mecha-mail rules apply` supplies them. The `mecha` CLI keeps mail as a
@@ -4586,6 +4642,12 @@ model-planted binary with the owner's mail access. Mode changes use the same sha
 remain authoritative. Approval binds the exact displayed input snapshot, and
 an intervening edit refuses the raise. Read-only views never persist lapses or
 brakes; pause-all can revoke unreadable definitions using their approval history.
+Its emergency enumeration skips invalid directory entries with named notices,
+so a copied backup cannot prevent revocation of valid rules; ordinary listing
+and installation stay strict. The CLI asks the store for the permanent mode
+ceiling before displaying an automatic approval screen, and the store rechecks
+that same ceiling under its writer lock. Mail registry views use
+`onboarding::mail_store_dir`, including its non-UTF-8 override fallback.
 Every engine Outlook read and mutation uses
 `with_immutable_ids`; a folder move must not manufacture a new ledger key.
 Candidate pagination validates Graph origins and repeated links before any
@@ -4632,8 +4694,13 @@ resumes the same unsettled intent; it cannot create a second intent. Exact-messa
 restores treat a message already restored as a nothing-to-do success. An appended
 `undone` or `failed` settlement names the intent; a failed restore no longer counts
 toward the undo rate and cannot be retried as a fresh undo. A safety brake already
-recorded remains until owner re-approval. Ordinary action sweeps never settle undo
-intents, and older readers degrade their new outcome to `unknown`. Read/unread
+recorded remains until owner re-approval. An unreadable definition still goes
+through `lower_modes`, whose `lapse_unreadable_locked` clamps every historical
+group before restore; merely
+skipping the brake on a failed load would leave auto permission recoverable by
+restoring the old files. A failed clamp stops provider I/O. Ordinary action
+sweeps never settle undo intents, and older readers degrade their new outcome
+to `unknown`. Read/unread
 undo reverses the verb, since old rows have no previous-state snapshot. Spam,
 sends, tasks and private records have no restore here and refuse.
 

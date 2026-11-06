@@ -489,7 +489,8 @@ async fn only_action_failures_trip_the_sticky_group_brake() {
                 kind,
                 reason: "failed".into(),
             });
-            f.run(None).await;
+            let report = f.run(None).await;
+            assert_eq!(report.action_failures, 1);
         }
         f.mail.next("beta");
         let report = f.run(None).await;

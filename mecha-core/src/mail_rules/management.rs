@@ -189,7 +189,13 @@ pub fn install_path(store: &RuleStore, source: &Path, name: Option<&str>) -> Res
     store.install(name, &text.context("rule.toml is missing")?, &files)
 }
 
-pub fn pause_all(store: &RuleStore, actor: crate::closure::Actor) -> Result<usize> {
+#[derive(Debug, Default)]
+pub struct PauseReport {
+    pub groups: usize,
+    pub notices: Vec<String>,
+}
+
+pub fn pause_all(store: &RuleStore, actor: crate::closure::Actor) -> Result<PauseReport> {
     let mut count = 0;
     let mut errors = Vec::new();
     let targets = [
@@ -205,7 +211,8 @@ pub fn pause_all(store: &RuleStore, actor: crate::closure::Actor) -> Result<usiz
     .into_iter()
     .map(|g| (g, Mode::Shadow))
     .collect();
-    for name in store.rule_names()? {
+    let (names, notices) = store.pause_names()?;
+    for name in names {
         match store.lower_modes(
             &name,
             &targets,
@@ -222,7 +229,10 @@ pub fn pause_all(store: &RuleStore, actor: crate::closure::Actor) -> Result<usiz
         "pause-all incomplete: {}",
         errors.join("; ")
     );
-    Ok(count)
+    Ok(PauseReport {
+        groups: count,
+        notices,
+    })
 }
 
 #[derive(Debug, Serialize)]

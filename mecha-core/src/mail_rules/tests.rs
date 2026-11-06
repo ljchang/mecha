@@ -2560,6 +2560,63 @@ impl Restorer for RestoreFixture {
 }
 
 #[tokio::test]
+async fn review_undo_unreadable_definition_clamps_every_group_before_restore() {
+    struct Inspect<'a> {
+        store: &'a RuleStore,
+        rule: &'a LoadedRule,
+    }
+    #[async_trait::async_trait]
+    impl Restorer for Inspect<'_> {
+        async fn restore(&self, _: &MessageRef, _: RestoreAction) -> anyhow::Result<()> {
+            let approvals = self.store.approvals().unwrap();
+            for group in [ActionGroup::Mailbox, ActionGroup::Board] {
+                assert_eq!(
+                    resolve_mode(self.rule, group, &approvals, &owner_holds()).recorded,
+                    Mode::Shadow
+                );
+            }
+            Ok(())
+        }
+    }
+    let home = Home::new();
+    let store = home.store();
+    let definition = text("[[action]]\ndo='archive'\n[[action]]\ndo='task'\n");
+    let rule = install(&store, &definition);
+    for group in [ActionGroup::Mailbox, ActionGroup::Board] {
+        approve(&store, &rule, group, Mode::Auto);
+    }
+    let original = row(&rule, Outcome::Done);
+    store.append_ledger(&original).unwrap();
+    fs::write(rule.directory.join("rule.toml"), "broken definition").unwrap();
+    let result = undo(
+        &store,
+        &original.id,
+        &Inspect {
+            store: &store,
+            rule: &rule,
+        },
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.outcome, Outcome::Undone);
+    fs::write(rule.directory.join("rule.toml"), definition).unwrap();
+    let restored = store.get(&rule.name).unwrap();
+    for group in [ActionGroup::Mailbox, ActionGroup::Board] {
+        assert_eq!(
+            resolve_mode(
+                &restored,
+                group,
+                &store.approvals().unwrap(),
+                &owner_holds()
+            )
+            .effective,
+            Mode::Shadow
+        );
+    }
+}
+
+#[tokio::test]
 async fn failed_undo_intent_append_never_reaches_the_provider() {
     let home = Home::new();
     let store = home.store();
@@ -2917,4 +2974,390 @@ fn rule_view_explains_lapse_unknown_modes_and_account_holds_without_writes() {
         .holds
         .iter()
         .any(|h| h.contains("campus") && h.contains("provider")));
+}
+
+#[test]
+fn mail_rules_doctor_reports_lapses_without_writing_and_keeps_persisted_lapses_visible() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    fs::write(
+        rule.directory.join("rule.toml"),
+        archive().replace("Fictional notice", "Changed fictional notice"),
+    )
+    .unwrap();
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    let findings = crate::doctor::check_mail_rules(
+        &home.0,
+        &crate::doctor::MailStores::under(&home.0),
+        Utc::now(),
+    );
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("approval lapsed")));
+    assert_eq!(
+        before,
+        fs::read(store.root().join("approvals.jsonl")).unwrap()
+    );
+    assert!(!store.root().join("ledger.jsonl").exists());
+    store
+        .detect_lapses(&rule.name, &owner_holds(), Utc::now())
+        .unwrap();
+    let findings = crate::doctor::check_mail_rules(
+        &home.0,
+        &crate::doctor::MailStores::under(&home.0),
+        Utc::now(),
+    );
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("approval lapsed")));
+    assert_eq!(waiting(store.root()).unwrap().len(), 1);
+}
+
+#[test]
+fn mail_rules_doctor_reports_broken_history_and_unknown_outcome_independently() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let mut unknown = row(&rule, Outcome::Done);
+    unknown.outcome = Outcome::Unknown;
+    store.append_ledger(&unknown).unwrap();
+    fs::write(store.root().join("approvals.jsonl"), "{broken approval\n").unwrap();
+    let findings = crate::doctor::check_mail_rules(
+        &home.0,
+        &crate::doctor::MailStores::under(&home.0),
+        Utc::now(),
+    );
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("approvals history")
+            && f.detail.contains("`off` cannot be written")));
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("unknown ledger outcome")));
+    assert!(waiting(store.root()).is_err());
+    assert!(store
+        .change_mode(
+            &rule.name,
+            ActionGroup::Mailbox,
+            Mode::Off,
+            Some(Actor::Owner),
+            &rule.approval_digest,
+            &owner_holds()
+        )
+        .is_err());
+}
+
+#[test]
+fn mail_rules_doctor_distinguishes_inflight_stranded_recovered_and_completed_actions() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    let now = Utc::now();
+    let recent = row(&rule, Outcome::Pending);
+    store.append_ledger(&recent).unwrap();
+    let examine = || {
+        crate::doctor::check_mail_rules(&home.0, &crate::doctor::MailStores::under(&home.0), now)
+    };
+    assert!(examine().is_empty());
+    let completed = recent.settled(Outcome::Done, "", now).unwrap();
+    store.append_ledger(&completed).unwrap();
+    assert!(examine().is_empty());
+    let mut old = row(&rule, Outcome::Pending);
+    old.at = Some(now - Duration::hours(1));
+    store.append_ledger(&old).unwrap();
+    assert!(examine()
+        .iter()
+        .any(|f| f.summary.contains("stranded pending")));
+    let recovery = old
+        .interrupted(now, engine::EngineOptions::default().pending_timeout)
+        .unwrap()
+        .unwrap();
+    store.append_ledger(&recovery).unwrap();
+    let findings = examine();
+    assert!(!findings
+        .iter()
+        .any(|f| f.summary.contains("stranded pending")));
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("recovered pending")));
+    assert!(findings
+        .iter()
+        .all(|f| f.severity == crate::doctor::Severity::Attention));
+}
+
+#[test]
+fn mail_rules_doctor_reports_every_automatic_group_under_unconfined_shell() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &text("[[action]]\ndo='archive'\n[[action]]\ndo='task'\n[[action]]\ndo='forward'\nto=['records@example.edu']"));
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    approve(&store, &rule, ActionGroup::Board, Mode::Auto);
+    // A future build's outbound approval: P1 itself refuses this raise.
+    let mut recorded = serde_json::to_value(store.approvals().unwrap().last().unwrap()).unwrap();
+    recorded["id"] = serde_json::json!("future-permission");
+    recorded["group"] = serde_json::json!("verbatim_forward");
+    recorded["from_mode"] = serde_json::json!("shadow");
+    use std::io::Write;
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(store.root().join("approvals.jsonl"))
+            .unwrap(),
+        "{recorded}"
+    )
+    .unwrap();
+    let mut config = crate::config::Config::default();
+    config.sandbox.kind = crate::sandbox::Backend::None;
+    let findings = crate::doctor::check_mail_rule_shell(&home.0, &config);
+    assert_eq!(findings.len(), 3);
+    for group in ["Mailbox", "Board", "VerbatimForward"] {
+        assert!(findings.iter().any(|f| f.summary.contains(group)
+            && f.severity == crate::doctor::Severity::Attention
+            && f.detail.contains("sandbox")));
+    }
+    config.sandbox.kind = crate::sandbox::Backend::Bwrap;
+    assert!(crate::doctor::check_mail_rule_shell(&home.0, &config).is_empty());
+    config.sandbox.kind = crate::sandbox::Backend::None;
+    config.tools.disabled.push("shell".into());
+    assert!(crate::doctor::check_mail_rule_shell(&home.0, &config).is_empty());
+}
+
+#[test]
+fn mail_rules_doctor_detects_writable_ancestor_and_aliased_store_exposure() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    let alias = home.0.join("alias");
+    std::os::unix::fs::symlink(store.root(), &alias).unwrap();
+    for backend in [
+        crate::sandbox::Backend::Bwrap,
+        crate::sandbox::Backend::Docker,
+    ] {
+        let mut config = crate::config::Config::default();
+        config.sandbox.kind = backend;
+        assert!(crate::doctor::check_mail_rule_shell(&home.0, &config).is_empty());
+        for path in [&home.0, store.root(), &alias] {
+            config.sandbox.writable = vec![path.to_path_buf()];
+            let findings = crate::doctor::check_mail_rule_shell(&home.0, &config);
+            assert_eq!(findings.len(), 1, "{backend:?} exposed {}", path.display());
+            assert_eq!(findings[0].severity, crate::doctor::Severity::Attention);
+        }
+    }
+}
+
+#[test]
+fn mail_rules_store_is_protected_by_the_general_confinement_check() {
+    let home = Home::new();
+    let store = home.store();
+    let alias = home.0.join("alias");
+    std::os::unix::fs::symlink(store.root(), &alias).unwrap();
+    let mut sandbox = crate::sandbox::SandboxConfig {
+        kind: crate::sandbox::Backend::Bwrap,
+        ..Default::default()
+    };
+    for path in [store.root(), &alias, &home.0] {
+        sandbox.writable = vec![path.to_path_buf()];
+        assert!(
+            !crate::doctor::check_shell_confinement(&sandbox, &home.0).is_empty(),
+            "{}",
+            path.display()
+        );
+    }
+    // Resolve the protected directory too, not only the configured mount.
+    let relocated = home.0.join("relocated");
+    fs::rename(store.root(), &relocated).unwrap();
+    std::os::unix::fs::symlink(&relocated, store.root()).unwrap();
+    sandbox.writable = vec![relocated];
+    assert!(!crate::doctor::check_shell_confinement(&sandbox, &home.0).is_empty());
+}
+
+#[test]
+fn mail_rules_doctor_reads_owner_registry_addresses_and_outlook_standing_holds() {
+    let home = Home::new();
+    let store = home.store();
+    let rule = install(&store, "description='Fictional list'\n[match]\nlist_id=['news.example.com']\n[[action]]\ndo='archive'\n");
+    let registry = home.0.join("separate-mail");
+    fs::create_dir_all(registry.join("fictional")).unwrap();
+    fs::write(
+        registry.join("accounts.toml"),
+        "[[account]]\nname='fictional'\nprovider='outlook'\n",
+    )
+    .unwrap();
+    fs::write(registry.join("fictional/oauth.json"), "{}").unwrap();
+    let mail = crate::doctor::MailStores {
+        registry: Some(registry.clone()),
+        legacy: Vec::new(),
+    };
+    let findings = crate::doctor::check_mail_rules(&home.0, &mail, Utc::now());
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("no stored mailbox address")
+            && f.detail.contains("every mail rule")));
+    assert!(findings
+        .iter()
+        .any(|f| f.summary.contains("provider cannot prove header absence")));
+    fs::write(
+        registry.join("fictional/oauth.json"),
+        r#"{"account":"owner@example.edu"}"#,
+    )
+    .unwrap();
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Off);
+    assert!(crate::doctor::check_mail_rules(&home.0, &mail, Utc::now()).is_empty());
+}
+
+#[test]
+fn mail_rules_doctor_does_not_create_stores_and_reports_an_unreadable_store() {
+    let home = Home::new();
+    let mail = crate::doctor::MailStores::under(&home.0);
+    assert!(crate::doctor::check_mail_rules(&home.0, &mail, Utc::now()).is_empty());
+    assert!(fs::read_dir(&home.0).unwrap().next().is_none());
+    fs::write(RuleStore::root_under(&home.0), "not a directory").unwrap();
+    assert!(crate::doctor::check_mail_rules(&home.0, &mail, Utc::now())
+        .iter()
+        .any(|f| f.summary.contains("store unreadable")));
+}
+
+#[test]
+fn mail_rules_doctor_timer_is_checked_only_when_enabled_and_oneshot_idle_is_healthy() {
+    use crate::doctor::check_mail_rules_timer;
+    assert!(check_mail_rules_timer(false, Some("LoadState=not-found\n"), None).is_empty());
+    assert!(check_mail_rules_timer(true, None, None).is_empty());
+    let timer = "LoadState=loaded\nActiveState=active\n";
+    let service = "LoadState=loaded\nActiveState=inactive\nResult=success\n";
+    assert!(check_mail_rules_timer(true, Some(timer), Some(service)).is_empty());
+    assert_eq!(
+        check_mail_rules_timer(true, Some("LoadState=not-found\n"), Some(service)).len(),
+        1
+    );
+    assert_eq!(
+        check_mail_rules_timer(
+            true,
+            Some(timer),
+            Some("LoadState=loaded\nActiveState=failed\nResult=exit-code\n")
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        check_mail_rules_timer(
+            true,
+            Some("LoadState=loaded\nActiveState=inactive\n"),
+            Some(service)
+        )
+        .len(),
+        1
+    );
+}
+
+#[test]
+fn mail_rules_backlog_counts_proposals_and_lapsed_groups_and_clears_reapproval() {
+    let home = Home::new();
+    assert!(waiting(&RuleStore::root_under(&home.0)).unwrap().is_empty());
+    assert!(fs::read_dir(&home.0).unwrap().next().is_none());
+    let store = home.store();
+    let rule = install(&store, &archive());
+    approve(&store, &rule, ActionGroup::Mailbox, Mode::Auto);
+    fs::write(
+        rule.directory.join("rule.toml"),
+        archive().replace("Fictional notice", "Fictional revision"),
+    )
+    .unwrap();
+    let proposal = store.root().join("proposals/fictional-proposal");
+    fs::create_dir_all(&proposal).unwrap();
+    fs::write(proposal.join("rule.toml"), archive()).unwrap();
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    let items = waiting(store.root()).unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items
+        .iter()
+        .any(|i| i.id == "proposal:fictional-proposal" && !i.since.is_empty()));
+    assert!(items.iter().any(|i| i.id.starts_with("approval:notices:")));
+    assert_eq!(
+        before,
+        fs::read(store.root().join("approvals.jsonl")).unwrap()
+    );
+    approve(
+        &store,
+        &store.get(&rule.name).unwrap(),
+        ActionGroup::Mailbox,
+        Mode::Auto,
+    );
+    assert_eq!(waiting(store.root()).unwrap().len(), 1);
+    fs::remove_dir_all(proposal).unwrap();
+    assert!(waiting(store.root()).unwrap().is_empty());
+}
+
+#[test]
+fn mail_rules_backlog_keeps_lapses_and_proposals_when_a_definition_is_unreadable() {
+    let home = Home::new();
+    let store = home.store();
+    let broken = install(&store, &archive());
+    let healthy = store
+        .install("healthy", &archive(), &BTreeMap::new())
+        .unwrap();
+    for rule in [&broken, &healthy] {
+        approve(&store, rule, ActionGroup::Mailbox, Mode::Auto);
+    }
+    fs::write(broken.directory.join("rule.toml"), "invalid = [").unwrap();
+    assert!(store
+        .detect_lapses(&broken.name, &owner_holds(), Utc::now())
+        .is_err());
+    fs::write(
+        healthy.directory.join("rule.toml"),
+        archive().replace("Fictional notice", "Fictional revision"),
+    )
+    .unwrap();
+    let proposal = store.root().join("proposals/fictional-proposal");
+    fs::create_dir_all(&proposal).unwrap();
+    fs::write(proposal.join("rule.toml"), archive()).unwrap();
+    let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
+    for deleted in [false, true] {
+        if deleted {
+            fs::remove_dir_all(&broken.directory).unwrap();
+        }
+        let items = waiting(store.root()).unwrap();
+        assert_eq!(items.len(), 3);
+        for id in [
+            "approval:notices:Mailbox",
+            "approval:healthy:Mailbox",
+            "proposal:fictional-proposal",
+        ] {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.id == id && !item.since.is_empty()),
+                "missing {id}"
+            );
+        }
+        assert_eq!(
+            before,
+            fs::read(store.root().join("approvals.jsonl")).unwrap()
+        );
+    }
+}
+
+#[test]
+fn mail_rules_backlog_does_not_follow_proposals_outside_its_store() {
+    let home = Home::new();
+    let outside = Home::new();
+    let store = home.store();
+    std::os::unix::fs::symlink(&outside.0, store.root().join("proposals")).unwrap();
+    assert!(waiting(store.root()).is_err());
+}
+
+#[test]
+fn mail_rules_engine_lease_contention_has_a_typed_skip() {
+    let home = Home::new();
+    let store = home.store();
+    let lease = store.engine_lease().unwrap();
+    let error = match store.engine_lease() {
+        Err(error) => error,
+        Ok(_) => panic!("overlapping lease"),
+    };
+    assert!(error.is::<ApplyRunning>());
+    drop(lease);
+    assert!(store.engine_lease().is_ok());
 }

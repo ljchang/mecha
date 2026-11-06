@@ -1049,6 +1049,7 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         Feature::Mail => {
             "Mail and calendar, behind one server that names an account, never a provider."
         }
+        Feature::MailRules => "Run owner-approved mail rules every five minutes and after classification; new rules start in shadow.",
         Feature::Docs => {
             "Google Docs, Sheets and Slides — only files it made or you hand it in Google's picker."
         }
@@ -2248,6 +2249,7 @@ mod tests {
                 "web",
                 "slack",
                 "mail",
+                "mail_rules",
                 "docs",
                 "graph",
                 "search",

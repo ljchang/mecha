@@ -11,6 +11,11 @@ use std::os::unix::{
 };
 use std::path::{Path, PathBuf};
 
+/// Contention is a skipped pass; unrelated lock/I/O errors still fail.
+#[derive(Debug, thiserror::Error)]
+#[error("another mail rules apply is running")]
+pub struct ApplyRunning;
+
 pub struct RuleStore {
     root: PathBuf,
     #[cfg(test)]
@@ -130,7 +135,7 @@ impl RuleStore {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() == std::io::ErrorKind::WouldBlock {
-                bail!("another mail rules apply is running");
+                return Err(ApplyRunning.into());
             }
             return Err(error).context("locking mail rule engine");
         }
@@ -153,6 +158,58 @@ impl RuleStore {
             crate::persona::validate_name(name)?;
         }
         Ok(names.into_iter().collect())
+    }
+
+    /// Emergency enumeration: junk cannot prevent revocation of other rules.
+    /// Historical names still reach lower_modes even if their files disappeared.
+    pub(super) fn pause_names(&self) -> Result<(Vec<String>, Vec<String>)> {
+        let mut names = BTreeSet::new();
+        let mut skipped = BTreeSet::new();
+        for row in self.approvals()? {
+            if crate::persona::validate_name(&row.rule).is_ok() {
+                names.insert(row.rule);
+            } else {
+                skipped.insert(row.rule);
+            }
+        }
+        for entry in fs::read_dir(contained(&self.root, &self.root.join("rules"))?)? {
+            let entry = entry?;
+            let filename = entry.file_name();
+            let name = filename.to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            if names.contains(&name) {
+                continue; // Revoke from history even when this entry is broken.
+            }
+            if filename.to_str().is_none()
+                || crate::persona::validate_name(&name).is_err()
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+                || self.get(&name).is_err()
+            {
+                skipped.insert(name);
+            } else {
+                names.insert(name);
+            }
+        }
+        Ok((
+            names.into_iter().collect(),
+            skipped
+                .into_iter()
+                .map(|name| format!("skipping invalid rule entry {name:?}"))
+                .collect(),
+        ))
+    }
+
+    /// Read-only preflight for the approval screen; change_mode rechecks under
+    /// the writer lock. The permanent ceiling has one source in built_in_holds.
+    pub fn mode_ceiling(&self, name: &str, group: ActionGroup) -> Result<Mode> {
+        let rule = self.get(name)?;
+        ensure!(
+            rule.definition.groups().contains(&group),
+            "rule has no such group"
+        );
+        Ok(approvals::mode_ceiling(&rule, group))
     }
 
     /// Freeze exactly the bytes shown before a later change_mode binds their digest.
@@ -591,9 +648,11 @@ impl RuleStore {
         // duplicate action or resurrect an approval. Refuse a partial history.
         bytes
             .split(|b| *b == b'\n')
-            .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-            .map(|line| {
-                serde_json::from_slice(line).with_context(|| format!("unreadable {name} row"))
+            .enumerate()
+            .filter(|(_, line)| !line.iter().all(u8::is_ascii_whitespace))
+            .map(|(index, line)| {
+                serde_json::from_slice(line)
+                    .with_context(|| format!("unreadable {name} row at line {}", index + 1))
             })
             .collect()
     }
@@ -716,10 +775,7 @@ impl RuleStore {
             // Use the same permanent ceilings as resolution. Standing holds
             // remain computed, but an unsupported permission must never be
             // recorded as if it had been granted.
-            if approvals::built_in_holds(&rule, group)
-                .iter()
-                .any(|hold| decision.target.rank() > hold.ceiling.rank())
-            {
+            if decision.target.rank() > approvals::mode_ceiling(&rule, group).rank() {
                 decision.refused = true;
                 decision.write = false;
                 decision.target = current;

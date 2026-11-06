@@ -159,6 +159,8 @@ pub struct ApplyReport {
     /// Thread read failures, independent of diagnostic prose. Hosts use this
     /// for a non-zero exit even though no action was dispatched or settled.
     pub read_failures: usize,
+    /// Dispatched effects that failed in this pass (holds are not failures).
+    pub action_failures: usize,
     /// Account candidate-list failures; other accounts still run.
     pub candidate_failures: usize,
     /// Failed classification-skip marker writes; effects remain in the report.
@@ -1109,6 +1111,7 @@ impl Run<'_> {
                             }
                         }
                     };
+                    self.report.action_failures += usize::from(outcome == Outcome::Failed);
                     rule_handled &= outcome == Outcome::Done;
                     let mut settled = row.settled(outcome, reason, attempted_at)?;
                     provisional.remove(&row.id);
