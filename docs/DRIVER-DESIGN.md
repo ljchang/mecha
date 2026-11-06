@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R7 and R9 owed). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R7, R9 and R10 owed). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -117,11 +117,22 @@ The shape:
 - **Its own directory.** Driven reflections and rules live in a learning
   store under its own path (`~/.mecha/learning-driven/` or similar; the
   build names it). In the real home, a driven run loads the owner's rules
-  *and* the driven store's; that kind-gated load is the default for a
-  real-home run only. An owner run never opens the driven store. Every
-  failure goes dark: if the kind is not detected, a driven rule simply does
-  not apply, and nothing reaches the owner's prefix. `Driven` stays in
+  *and* the driven store's; that load is the default for a real-home run
+  only. An owner run never opens the driven store. `Driven` stays in
   `Situation::MARK_KINDS`, because nothing needs it as a scope key.
+- **The mark narrows alone, and adds only with a second factor.** Every
+  other reader of `MECHA_SESSION_KIND` treats it as narrowing: it hides a
+  session, or (D1b) turns surfaces off. Loading the driven store is the one
+  place the mark would *add* to a prompt, and the false-positive direction
+  has an incident behind it: a sticky `MECHA_SESSION_KIND=test` export once
+  relabelled every session a live run wrote. `Experiment` already shows the
+  fix, because the env mark alone admits nothing and admission also needs
+  `experiment::HOME_MARKER`. So the driven store loads only when the mark
+  *and* a driven marker in the run's workspace are both present. Task setup
+  writes the marker into the worktree, and setup is the harness, not the
+  model or the driver. A wrong mark with no marker, or a marker with no
+  mark, loads nothing, so the boundary fails dark both ways: on a missing
+  mark and on a mistaken one.
 - **The readers that notice a sick store must see it.** `doctor` walks
   `<home>/learning` by name, and `backlog` iterates a literal list of
   stores that includes `learning`. A driven store under its own path gets
@@ -152,7 +163,7 @@ The shape:
     when the key is absent, so today an older build reading
     `"origin":"driven"` *drops the reflection* (one corrupt line, one lost
     reflection). The variant needs a lenient read first, parked as
-    `Untrusted` (the shape `surface_unread` and `de_lenient_kind` use).
+    `Untrusted` (the shape `Situation::surface_unread` and `goal::de_lenient` use).
   - **The destination enters the type.** `Reflexion::learnable(&self)`
     sees only the record, and "learnable only into the driven store" is a
     fact about the destination, which nothing on a `Reflexion` carries. A
@@ -247,8 +258,12 @@ exception. The pins' trees were already scrubbed by the history rewrites;
 the prompt is the one new text. Whether prompts also need the owner's eye
 before a ceiling run is R9, owed.
 
-Task selection is stratified and seeded (`sample.rs`), by size (lines
-changed) and by subsystem. The driver does not hand-pick. Whatever the
+Task selection is seeded (`sample.rs`) and stratified by size (lines
+changed) and by subsystem. `sample.rs` offers uniform draws only
+(`shuffled`, `take_uniform`), so the strata are owed: bucket first, then
+`take_uniform` per bucket. The pilot's draw was one uniform draw over the
+eligible set, its seed and eligibility rule recorded before it ran. The
+driver does not hand-pick. Whatever the
 driver reads during exploration moves to a **seen** set and never enters a
 measurement holdout.
 
@@ -374,7 +389,18 @@ waits for that work.
    are rendered later with the router's template (`POST-TRAINING-RESEARCH.md`
    §7 step 1). A pair is kept only when the ceiling's run passed the hidden
    grade, because a ceiling run that reads well but fails the tests teaches
-   the wrong thing.
+   the wrong thing. **The bank does not amend `POST-TRAINING-RESEARCH.md`
+   §4.** §4 filters by *recorded taint* with no knob, because weights
+   outlive a prefix, and a driven trajectory enters only if its recorded
+   taint is clean, exactly as §4 says. `Origin::Driven` labels an
+   *intervention* for the learning store (D2). It does not classify a
+   trajectory, so nothing here loosens §4. **What R8 does not cover:** R8
+   ruled on the charter reaching the ceiling's provider, which is one
+   request, scoped and revocable. Weights are none of those, and §4 says
+   private data is memorised. Whether driven trajectories enter training at
+   all, and whether they are rendered without the owner's charter and
+   learned-rule blocks, is R10, owed. The recommendation is to render them
+   without both.
 3. **Eval cases.** These are failure shapes that are not about one task
    (a compaction that dropped the plan, a retry loop that `boredom` did not
    name) and that `eval/cases.jsonl` can hold deterministically.
@@ -477,9 +503,14 @@ passes vacuously.
 ## 8. Open, and named
 
 - **Build cost.** A cold `cargo build` per trial worktree is minutes, and the
-  disk cost is large. The likely answer is a shared `CARGO_TARGET_DIR` per
-  pin with trials run sequentially within a pin, but the cargo caps in
-  OPERATIONS need checking first.
+  disk cost is large. The target directory must sit inside the worktree,
+  because the run builds inside its jail with no grant (§7), so a shared
+  `CARGO_TARGET_DIR` outside it is not available to the run. The likely
+  answer is that setup, which is the harness, pre-builds the pin's
+  dependencies into the worktree's own `target/` before the run starts, so
+  the run pays only for the crates it touches. One build at a time, gated on
+  memory, per the cargo caps in OPERATIONS. (The pilot's *validation* runs
+  are the driver's, outside any jail, and do share one target directory.)
 - **Cargo inside the jail**: the dependencies are vendored into the worktree
   by setup (§7). Open is whether the shell sandbox can read the toolchain
   under `~/.rustup`, measured by running `cargo build --offline` in a
@@ -545,6 +576,10 @@ passes vacuously.
   contents.
 - **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
   owner's eye before its first ceiling run.
+- **R10, owed.** Whether driven trajectories enter training at all, and if
+  so whether they are rendered without the owner's charter and learned-rule
+  blocks (§5.2). Recommended: rendered without both, since weights memorise
+  and R8 priced only a request.
 
 ## 10. Deliberately out of scope
 
