@@ -533,3 +533,16 @@ fn live_dispatch_guard_rejects_wrong_context_and_replaced_store() {
     let _replacement = Memory::create_durable(&f.path(), "synthetic").unwrap();
     assert!(guard.check().is_err());
 }
+
+#[test]
+fn explicit_v4_is_readable_and_legacy_finish_is_refused() {
+    let mut f = Fixture::new();
+    let r = f.create();
+    f.settle(&r);
+    f.db.conn.execute_batch("PRAGMA user_version=4;").unwrap();
+    assert!(
+        Memory::open(&f.path()).is_ok(),
+        "explicit v4 must be supported"
+    );
+    assert!(f.db.durable_reserve_reconsideration(&r, &f.access).is_err());
+}

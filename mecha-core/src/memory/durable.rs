@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const SCHEMA: &str = "
+pub(super) const SCHEMA: &str = "
 CREATE TABLE durable_task (
  id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0,
  access_digest TEXT NOT NULL,
@@ -58,9 +58,9 @@ impl TaskSpec {
 /// No Deserialize or public constructor: reopening always checks the store.
 #[derive(Debug)]
 pub struct Receipt {
-    instance: String,
-    id: String,
-    generation: i64,
+    pub(super) instance: String,
+    pub(super) id: String,
+    pub(super) generation: i64,
 }
 impl Receipt {
     pub fn id(&self) -> &str {
@@ -138,7 +138,7 @@ impl DispatchGuard {
         let db = Memory::open_read_only(&self.path)?;
         db.check_access(&self.access)?;
         db.check_receipt_instance(&self.receipt)?;
-        require_v3(&db.conn)?;
+        require_read_schema(&db.conn)?;
         let tx = db.conn.unchecked_transaction()?;
         let row = checked_row(&tx, &self.receipt, &self.access)?;
         ensure!(
@@ -164,14 +164,14 @@ struct Sealed {
     scopes: BTreeSet<String>,
 }
 #[derive(Serialize, Deserialize)]
-struct TaskData {
+pub(super) struct TaskData {
     spec: TaskSpec,
     sealed: Vec<Sealed>,
 }
-struct Row {
+pub(super) struct Row {
     generation: i64,
     digest: String,
-    status: Status,
+    pub(super) status: Status,
 }
 
 impl Memory {
@@ -193,7 +193,7 @@ impl Memory {
         access: &Access,
     ) -> Result<Receipt> {
         self.check_access(access)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         spec.validate()?;
         spec.workspace = spec
             .workspace
@@ -250,7 +250,7 @@ impl Memory {
     }
     pub fn durable_reopen(&self, id: &str, access: &Access) -> Result<Receipt> {
         self.check_access(access)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let row = load(&self.conn, id)?;
         check_context(&row, access)?;
         Ok(Receipt {
@@ -264,7 +264,7 @@ impl Memory {
     pub fn durable_status(&self, receipt: &Receipt, access: &Access) -> Result<Status> {
         self.check_access(access)?;
         self.check_receipt_instance(receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let row = load(&self.conn, &receipt.id)?;
         check_context(&row, access)?;
         Ok(row.status)
@@ -272,7 +272,7 @@ impl Memory {
     pub fn durable_spec(&self, receipt: &Receipt, access: &Access) -> Result<TaskSpec> {
         self.check_access(access)?;
         self.check_receipt_instance(receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let tx = self.conn.unchecked_transaction()?;
         let row = checked_row(&tx, receipt, access)?;
         let data = checked_task(&tx, &row, access)?;
@@ -284,7 +284,7 @@ impl Memory {
     pub fn durable_observation(&self, receipt: &Receipt, access: &Access) -> Result<Option<Value>> {
         self.check_access(access)?;
         self.check_receipt_instance(receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let tx = self.conn.unchecked_transaction()?;
         let row = checked_row(&tx, receipt, access)?;
         checked_task(&tx, &row, access)?;
@@ -313,7 +313,7 @@ impl Memory {
     ) -> Result<DispatchPermit> {
         self.check_access(access)?;
         self.check_receipt_instance(receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -342,7 +342,7 @@ impl Memory {
     ) -> Result<DispatchGuard> {
         self.check_access(access)?;
         self.check_receipt_instance(&permit.receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let path = Path::new(self.conn.path().context("durable store has no file path")?)
             .canonicalize()
             .context("resolve durable store path")?;
@@ -363,7 +363,7 @@ impl Memory {
     ) -> Result<Status> {
         self.check_access(access)?;
         self.check_receipt_instance(&permit.receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         ensure!(
             observation.payload.is_object()
                 && serde_json::to_vec(&observation.payload)?.len() <= 100_000,
@@ -404,7 +404,7 @@ impl Memory {
     pub fn durable_cancel(&mut self, receipt: &Receipt, access: &Access) -> Result<Status> {
         self.check_access(access)?;
         self.check_receipt_instance(receipt)?;
-        require_v3(&self.conn)?;
+        require_read_schema(&self.conn)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -413,6 +413,7 @@ impl Memory {
             row.status.phase != Phase::Committed,
             "committed task is terminal"
         );
+        super::durable_decision::cancel_for_read(&tx, &receipt.id)?;
         if row.status.phase != Phase::Cancelled {
             // Cancellation must still work after an input becomes stale/restricted;
             // it only narrows authority and stores no source content.
@@ -432,7 +433,7 @@ impl Memory {
     ) -> Result<ReconsiderationPermit> {
         self.check_access(access)?;
         self.check_receipt_instance(receipt)?;
-        require_v3(&self.conn)?;
+        require_legacy_v3(&self.conn)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -462,7 +463,7 @@ impl Memory {
     ) -> Result<Status> {
         self.check_access(access)?;
         self.check_receipt_instance(&permit.receipt)?;
-        require_v3(&self.conn)?;
+        require_legacy_v3(&self.conn)?;
         ensure!(
             serde_json::to_vec(&attempt)?.len() <= 24_000,
             "oversized reconsideration"
@@ -520,15 +521,23 @@ fn copy_receipt(r: &Receipt) -> Receipt {
         generation: r.generation,
     }
 }
-fn require_v3(conn: &Connection) -> Result<()> {
+fn require_legacy_v3(conn: &Connection) -> Result<()> {
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
         v == 3,
-        "durable lifecycle requires an explicitly created version 3 store"
+        "supplied reconsideration requires version 3; v4 requires model validation"
     );
     Ok(())
 }
-fn access_digest(a: &Access) -> Result<String> {
+fn require_read_schema(conn: &Connection) -> Result<()> {
+    let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    ensure!(
+        matches!(v, 3 | 4),
+        "durable lifecycle requires an explicitly created version 3 or 4 store"
+    );
+    Ok(())
+}
+pub(super) fn access_digest(a: &Access) -> Result<String> {
     Ok(Sha256::digest(serde_json::to_vec(&(&a.domain, &a.scopes))?)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -541,7 +550,7 @@ fn check_context(row: &Row, a: &Access) -> Result<()> {
     );
     Ok(())
 }
-fn checked_row(conn: &Connection, r: &Receipt, a: &Access) -> Result<Row> {
+pub(super) fn checked_row(conn: &Connection, r: &Receipt, a: &Access) -> Result<Row> {
     let row = load(conn, &r.id)?;
     check_context(&row, a)?;
     ensure!(
@@ -573,13 +582,13 @@ fn load(conn: &Connection, id: &str) -> Result<Row> {
         },
     })
 }
-fn content(conn: &Connection, r: &RevisionRef) -> Result<Value> {
+pub(super) fn content(conn: &Connection, r: &RevisionRef) -> Result<Value> {
     let Some(Record::Evidence(e)) = lookup(conn, r)? else {
         anyhow::bail!("missing durable content")
     };
     Ok(serde_json::from_str(&e.text)?)
 }
-fn checked_task(conn: &Connection, row: &Row, access: &Access) -> Result<TaskData> {
+pub(super) fn checked_task(conn: &Connection, row: &Row, access: &Access) -> Result<TaskData> {
     let task = row.status.task.as_ref().context("erased task")?;
     current(conn, task)?;
     ensure!(
@@ -600,7 +609,7 @@ fn checked_task(conn: &Connection, row: &Row, access: &Access) -> Result<TaskDat
     }
     Ok(data)
 }
-fn check_observation(conn: &Connection, row: &Row, access: &Access) -> Result<()> {
+pub(super) fn check_observation(conn: &Connection, row: &Row, access: &Access) -> Result<()> {
     let r = row
         .status
         .observation
@@ -613,7 +622,7 @@ fn check_observation(conn: &Connection, row: &Row, access: &Access) -> Result<()
     );
     Ok(())
 }
-fn linked(
+pub(super) fn linked(
     conn: &Connection,
     instance: &str,
     id: &str,
@@ -650,14 +659,14 @@ fn linked(
 /// lifecycle content is doomed, doom its root and all sibling records as well.
 pub(super) fn extend_forgotten(conn: &Connection) -> Result<usize> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != 3 {
+    if !matches!(version, 3 | 4) {
         return Ok(0);
     }
     Ok(conn.execute("INSERT OR IGNORE INTO doomed SELECT task_object FROM durable_task WHERE task_object IN (SELECT id FROM doomed) OR observation_object IN (SELECT id FROM doomed) OR attempt_object IN (SELECT id FROM doomed) OR decision_object IN (SELECT id FROM doomed)",[])?)
 }
 pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version == 3 {
+    if matches!(version, 3 | 4) {
         // Suppress only lifecycle-owned Capture keys. A caller holding old content
         // cannot re-ingest an erased task/result under its former source identity;
         // unrelated generic capture/reimport semantics stay unchanged.

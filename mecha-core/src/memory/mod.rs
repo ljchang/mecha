@@ -3,6 +3,7 @@
 pub mod concept;
 pub mod context;
 pub mod durable;
+pub mod durable_decision;
 pub mod evaluation;
 pub mod experience;
 pub mod fixture;
@@ -50,3 +51,6 @@ mod plan_extraction_tests;
 
 #[cfg(test)]
 mod durable_tests;
+
+#[cfg(test)]
+mod durable_decision_tests;
