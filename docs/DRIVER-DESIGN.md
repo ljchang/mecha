@@ -129,27 +129,45 @@ The shape:
   owner's.** A driver's steer or denial gets a new `Origin::Driven`, never
   `Clean`. It is not `Derived` either, because those are mecha's own words
   and this is another agent's. That is the split the three refusal strings
-  keep. Two things that are **not** true of today's code, and that the
-  build owes:
+  keep. **Taint is classified first, and `Driven` is stamped only over it.**
+  `Origin` is one field and `classify_origin` answers `Clean` or
+  `Untrusted`, so a stamp that *replaced* the classification would make a
+  reflection mined after a `.from_outside()` result learnable, which is the
+  one case `Untrusted` exists to exclude. The rule: an intervention whose
+  covering taint is untrusted stays `Untrusted`, driver or not, and
+  `Driven` replaces only `Clean`. The store boundary protects owner runs.
+  This rule protects every later driven run's prefix, and through it the
+  ledger's attributions. Three things the build owes, none true of today's
+  code:
   - `Origin` has no `#[serde(other)]` arm, and its field default fires only
     when the key is absent, so today an older build reading
     `"origin":"driven"` *drops the reflection* (one corrupt line, one lost
     reflection). The variant needs a lenient read first, parked as
     `Untrusted` (the shape `surface_unread` and `de_lenient_kind` use).
-  - `Reflection::learnable()` is clean-only. A driven store needs a
+  - `Reflexion::learnable()` is clean-only. A driven store needs a
     deliberate `Driven => true` arm, **and that arm must be true only when
     learning into the driven store.** This is the one place the design
     loosens a structurally fail-closed gate. What replaces the gate is the
     store boundary, and the test pins that an owner-store `learn` refuses a
     driven reflection.
+  - A test that a driven intervention under untrusted taint classifies
+    `Untrusted` and is not learnable into either store.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
   own documentation calls it "one gate away from being usable the day
   something can grade it". A driven run's hidden test is that grade. A
-  driven-store rule is validated by `mecha exp` with the `learned_rules`
-  lever on against off, on held-out driven tasks with hidden tests. The trial
-  home is seeded with the driven store, so the `experiment` mark no longer
-  matters. That measures an outcome, where `counterfactual.rs` can only ask
-  whether a trajectory changed.
+  driven-store rule is validated by `mecha exp` on held-out driven tasks
+  with hidden tests, and the contrast is **the owner's rules against the
+  owner's rules plus the driven store's**. Comparing the `learned_rules`
+  lever on against off would not do: `Lever::LearnedRules` switches the
+  whole block, so on-against-off measures owner plus driven against
+  nothing, and credits the owner's rules to the driven rule under test. The
+  control arm's trial home is therefore seeded *without* the driven store
+  and the treatment arm's *with* it. `trial_env` seeds one `learning/`
+  directory today, so a second seeded store is new work, named here rather
+  than discovered at measurement time. Because the trial home carries the
+  store itself, the `experiment` mark does not matter. This measures an
+  outcome, where `counterfactual.rs` can only ask whether a trajectory
+  changed.
 
 **Promotion crosses the owner.** A driven-store rule enters the owner's
 store only by the owner's act: a copy, with its measured lift attached and
@@ -238,7 +256,7 @@ checks it against `qwen3.6-35b-a3b`, the default's own base. The abliterated
 variants are left out: their GGUFs drop the MTP head, so they also run at a
 different speed.
 
-**D4. Three harness-side verdicts, not one.** "Harness or model" is not
+**D4. Three harness-side verdicts, not one, and a residual.** "Harness or model" is not
 binary. The R12 `open()` shim was a harness change made because of a model
 habit:
 
@@ -253,6 +271,15 @@ habit:
   The pair goes to the SFT bank.
 - One local model failing while its peers pass is **model-specific**, and is
   fixed only if that model is the default.
+- **Unattributed**: every panel outcome the four above do not cover. Two
+  are expected. The ceiling fails while a local peer passes, which is the
+  inverted result: it says the task or the grade is suspect, not the harness
+  and not the model. Or the whole panel fails, each in a different way. The
+  set is closed, and an outcome that fits none of the four is recorded as
+  this, never forced into the nearest one, because forcing is how a harness
+  PR gets written for a bad grader. No PR and no SFT pair come from an
+  unattributed row. The task is re-read first, and a grade found wrong is
+  fixed under the freeze rule (§3), with the old grade kept beside it.
 
 **D5. Fork at the turn.** For a failed transcript, `replay_run` re-serves the
 recorded tool results up to turn *k*, then hands the rest to the ceiling.
@@ -317,13 +344,42 @@ from it is v2's design.
 
 ## 7. Guardrails
 
+**D1b. A driven run drops the surfaces the owner's config attaches.** A
+driven run is in the real home under the real config, and the global layer
+is where the private surfaces live: `[[mcp]]` (the knowledge graph's `kg_*`
+tools, mail and calendar), `[[hook]]`, and `[[grant]]`, which is
+global-file-only because it is the jail's way out. Project layers are
+narrowing-only, so the worktree's own `mecha.toml` is not the exposure; the
+owner's own file is. An outside agent, driving prompts written from PR and
+issue text, should not hold the owner's graph or run the owner's hooks.
+
+So the driven mark forces those three off **structurally**, from the same
+`harness::Lever` definitions `mecha eval` uses (`RunConfig::levers_off`),
+rather than trusting each run to be configured right:
+
+- **Off**: MCP servers, hooks, and the owner's grants.
+- **Kept**: builtins (under the interlock as always), the owner's learned
+  rules, skills and charter. The harness is measured as the owner runs it,
+  minus the private surfaces.
+- **Kept on purpose: the outbox.** With the outbox on, a routed call stages
+  rather than executes. Turning it off would make a routed call run
+  directly, and staging is the safer of the two. A driven draft is set
+  aside from the forecast (D1).
+
+D1b lands before the first driven run, not with D1: the mark alone gives a
+run nothing new. A run marked driven is refused at start if any forced-off
+surface is still attached, because a guard that cannot apply stops the run
+and never falls through.
+
 - **The jail stays the jail.** The run is jailed to its worktree. A worktree
   never contains the mecha home, so `setup`'s refusal does not fire. Shell
   runs under bwrap, with no network. `cargo` therefore runs `--offline`
-  against a registry fetched once outside the run, with read access granted
-  through `grant.rs` (§8, open).
-- **No push, ever.** A driven run has no git remote credentials, and the
-  outbox gets no route for it. Its output is a diff in a worktree.
+  against a registry fetched once outside the run. Its read access is the one
+  grant a driven run carries: named by the driver at start and recorded on
+  the run, never inherited from the owner's `[[grant]]`s, which D1b drops
+  (§8, open).
+- **No push, ever.** A driven run has no git remote credentials. Its output
+  is a diff in a worktree.
 - **No persona data and no mail.** The task bank is code. Fixture-based
   assistant tasks are a later source and use fixtures only. A driver reading
   the owner's real mail into a run would build a trifecta session for no
@@ -366,7 +422,7 @@ from it is v2's design.
 - **R4. Yes.** The panel in §4, including Anthropic spend for the ceiling.
   The default is the owner's daily model, `qwen3.6-35b-a3b-uncensored`; the
   peers are base models.
-- **R5. Yes.** The pilot: build D1, then about 10 history tasks in
+- **R5. Yes.** The pilot: build D1, then D1b (§7), then about 10 history tasks in
   exploration with the full panel, with the ledger as the deliverable. No
   harness PR from the pilot until the D4 split is in. D2's store follows D1,
   before the first validation run.
