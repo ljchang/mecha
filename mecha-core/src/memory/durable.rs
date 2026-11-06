@@ -532,8 +532,8 @@ fn require_legacy_v3(conn: &Connection) -> Result<()> {
 fn require_read_schema(conn: &Connection) -> Result<()> {
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        matches!(v, 3 | 4),
-        "durable lifecycle requires an explicitly created version 3 or 4 store"
+        matches!(v, 3..=5),
+        "durable lifecycle requires an explicitly created version 3, 4 or 5 store"
     );
     Ok(())
 }
@@ -659,14 +659,14 @@ pub(super) fn linked(
 /// lifecycle content is doomed, doom its root and all sibling records as well.
 pub(super) fn extend_forgotten(conn: &Connection) -> Result<usize> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if !matches!(version, 3 | 4) {
+    if !matches!(version, 3..=5) {
         return Ok(0);
     }
     Ok(conn.execute("INSERT OR IGNORE INTO doomed SELECT task_object FROM durable_task WHERE task_object IN (SELECT id FROM doomed) OR observation_object IN (SELECT id FROM doomed) OR attempt_object IN (SELECT id FROM doomed) OR decision_object IN (SELECT id FROM doomed)",[])?)
 }
 pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if matches!(version, 3 | 4) {
+    if matches!(version, 3..=5) {
         // Suppress only lifecycle-owned Capture keys. A caller holding old content
         // cannot re-ingest an erased task/result under its former source identity;
         // unrelated generic capture/reimport semantics stay unchanged.

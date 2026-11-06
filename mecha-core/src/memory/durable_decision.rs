@@ -8,7 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-const SCHEMA: &str = "
+pub(super) const SCHEMA: &str = "
 CREATE TABLE durable_model (
  id TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0,
  read_id TEXT NOT NULL UNIQUE, read_generation INTEGER NOT NULL,
@@ -28,9 +28,9 @@ PRAGMA user_version=4;";
 
 #[derive(Debug)]
 pub struct ModelReceipt {
-    instance: String,
-    id: String,
-    generation: i64,
+    pub(super) instance: String,
+    pub(super) id: String,
+    pub(super) generation: i64,
 }
 impl ModelReceipt {
     pub fn id(&self) -> &str {
@@ -150,8 +150,8 @@ fn reference(object: Option<String>, revision: Option<String>) -> Option<Revisio
 fn require_v4(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        version == 4,
-        "model lifecycle requires an explicitly created version 4 store"
+        matches!(version, 4 | 5),
+        "model lifecycle requires an explicitly created version 4 or 5 store"
     );
     Ok(())
 }
@@ -726,14 +726,14 @@ impl Memory {
 
 pub(super) fn extend_forgotten(conn: &Connection) -> Result<usize> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != 4 {
+    if !matches!(version, 4 | 5) {
         return Ok(0);
     }
     Ok(conn.execute("INSERT OR IGNORE INTO doomed SELECT d.task_object FROM durable_task d JOIN durable_model m ON m.read_id=d.id WHERE m.contract_object IN (SELECT id FROM doomed) OR m.decision_object IN (SELECT id FROM doomed) OR m.id IN (SELECT model_id FROM durable_model_attempt WHERE request_object IN (SELECT id FROM doomed) OR result_object IN (SELECT id FROM doomed) OR assessment_object IN (SELECT id FROM doomed))",[])?)
 }
 pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != 4 {
+    if !matches!(version, 4 | 5) {
         return Ok(());
     }
     conn.execute("INSERT OR IGNORE INTO suppression SELECT digest FROM source_item WHERE object_id IN (SELECT id FROM doomed) AND object_id IN (SELECT contract_object FROM durable_model UNION SELECT decision_object FROM durable_model UNION SELECT request_object FROM durable_model_attempt UNION SELECT result_object FROM durable_model_attempt UNION SELECT assessment_object FROM durable_model_attempt)",[])?;
@@ -746,7 +746,7 @@ pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
 /// finalized decision is terminal through either public cancellation surface.
 pub(super) fn cancel_for_read(conn: &Connection, read_id: &str) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != 4 {
+    if !matches!(version, 4 | 5) {
         return Ok(());
     }
     let finalized: bool = conn.query_row(
@@ -760,4 +760,33 @@ pub(super) fn cancel_for_read(conn: &Connection, read_id: &str) -> Result<()> {
         [read_id],
     )?;
     Ok(())
+}
+
+/// Validate the entire finalized model lifecycle in the caller's transaction.
+/// Action bindings retain every sibling, including unused-by-the-final-answer inputs.
+pub(super) fn action_dependencies(
+    conn: &Connection,
+    instance: &str,
+    receipt: &ModelReceipt,
+    access: &Access,
+) -> Result<Vec<RevisionRef>> {
+    let row = checked(conn, instance, receipt, access)?;
+    check_content(conn, &row, access)?;
+    ensure!(
+        row.status.phase == ModelPhase::Finalized && !row.status.cancelled,
+        "action requires a current finalized model decision"
+    );
+    Ok([
+        row.status.contract,
+        row.status.decision,
+        row.status.initial.request,
+        row.status.initial.result,
+        row.status.initial.assessment,
+        row.status.retry.request,
+        row.status.retry.result,
+        row.status.retry.assessment,
+    ]
+    .into_iter()
+    .flatten()
+    .collect())
 }

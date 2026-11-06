@@ -623,3 +623,18 @@ fn finalized_model_binding_is_terminal_through_both_cancellation_surfaces() {
     assert!(f.db.durable_cancel(&f.read, &f.access).is_err());
     assert!(!f.db.durable_model_status(&r, &f.access).unwrap().cancelled);
 }
+
+#[test]
+fn explicitly_versioned_action_store_keeps_existing_model_records_readable() {
+    let mut f = Fixture::new();
+    let r = f.bind();
+    f.db.conn.execute_batch("PRAGMA user_version=5;").unwrap();
+    assert!(
+        Memory::open(&f.path()).is_ok(),
+        "explicit v5 must be readable"
+    );
+    assert!(
+        f.db.durable_model_spec(&r, &f.access).is_ok(),
+        "v5 must retain model access"
+    );
+}

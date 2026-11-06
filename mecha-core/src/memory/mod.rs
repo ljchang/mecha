@@ -4,6 +4,7 @@ pub mod concept;
 pub mod context;
 pub mod decision;
 pub mod durable;
+pub mod durable_action;
 pub mod durable_decision;
 pub mod evaluation;
 pub mod experience;
@@ -58,3 +59,6 @@ mod durable_decision_tests;
 
 #[cfg(test)]
 mod decision_tests;
+
+#[cfg(test)]
+mod durable_action_tests;
