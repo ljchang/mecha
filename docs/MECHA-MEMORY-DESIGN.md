@@ -2331,7 +2331,9 @@ v5 action. SourceOnly is not the older no-observations arm. No source is rewritt
 no outcome is reimported as fabricated measurements, and no new action executes.
 
 Preparation binds an explicit existing action, current finite Contract, Access
-and bounded RecallQuery at one snapshot. Follow the action's model/read links to
+and bounded RecallQuery at one snapshot. The first preparation exports its Snapshot; every later prepare/run
+accepts that exact snapshot and the pilot verifies snapshot plus raw recall and
+request equality before counting a call. Follow the action's model/read links to
 recover original read bytes and provenance. Recall through Memory::recall, retain
 raw hits/ranks/controls, and require the action observation's exact revision and
 bytes to appear. A miss fails preparation rather than silently using direct lookup.
@@ -2356,7 +2358,9 @@ provider-discovery awaits, immediately before each call and after inference. No
 transaction spans inference. One first-response call per arm, no reconsideration;
 malformed/refused/wrong-model/truncated replies remain failed rows. Reports retain
 requests, raw replies, optional usage, timings, source/projection hashes and checks.
-Final recommendations are advisory, private/untrusted and executed:false. Exported
+A current-source invalidation aborts the pair, prevents subsequent calls and
+returns no newly exposed source-dependent audit or reply content. Ordinary model
+failures remain reportable rows. Final recommendations are advisory, private/untrusted and executed:false. Exported
 reports are point-in-time artifacts, not revocable durable execution receipts.
 
 The fixed development pilot reuses the prior mismatch action: source Nori(4,2,8),
