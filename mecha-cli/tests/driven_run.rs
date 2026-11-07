@@ -42,8 +42,11 @@ fn bwrap_available() -> bool {
     ok
 }
 
-/// A fixture provider that answers every request with one line of text and
-/// keeps each request body.
+/// A fixture provider that keeps each request body. Its first answer in a
+/// conversation calls `fs_write`, so a driven run is shown still able to
+/// *use* an allowlisted tool with `private` armed and the leak guard on —
+/// the property its usefulness rests on; once a tool result is in the
+/// request, it answers with one line of text.
 async fn provider() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let keep = Arc::clone(&seen);
@@ -54,9 +57,20 @@ async fn provider() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
         axum::routing::post(move |body: axum::Json<serde_json::Value>| {
             let keep = Arc::clone(&keep);
             async move {
+                let answered = body.0["messages"]
+                    .as_array()
+                    .is_some_and(|m| m.iter().any(|m| m["role"] == "tool"));
                 keep.lock().unwrap().push(body.0);
-                let chunk = serde_json::json!({"choices": [{"index": 0,
-                    "delta": {"content": "done"}, "finish_reason": "stop"}]});
+                let chunk = if answered {
+                    serde_json::json!({"choices": [{"index": 0,
+                        "delta": {"content": "done"}, "finish_reason": "stop"}]})
+                } else {
+                    serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                        "index": 0, "id": "call_1", "type": "function",
+                        "function": {"name": "fs_write",
+                            "arguments": "{\"path\":\"out.txt\",\"content\":\"written\"}"}}]},
+                        "finish_reason": "tool_calls"}]})
+                };
                 (
                     [("content-type", "text/event-stream")],
                     format!("data: {chunk}\n\ndata: [DONE]\n\n"),
@@ -203,6 +217,15 @@ async fn a_driven_run_drops_the_owners_surfaces_and_records_what_it_forced() {
     let out = mecha(&f.home, &f.clone, "driven", &["run", "hello", "--json"]).await;
     assert!(out.status.success(), "{}", stderr(&out));
 
+    // The allowlisted tool still works under the forcing.
+    assert_eq!(
+        std::fs::read_to_string(f.clone.join("out.txt"))
+            .ok()
+            .as_deref(),
+        Some("written"),
+        "fs_write did not run in the driven run: {}",
+        stderr(&out)
+    );
     // Nothing the owner attached reached the run.
     assert!(!f.started.exists(), "the owner's MCP server was started");
     let requests = seen.lock().unwrap().clone();
