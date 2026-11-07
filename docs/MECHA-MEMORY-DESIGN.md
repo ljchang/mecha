@@ -2384,3 +2384,52 @@ allowance does not mean equal token cost; report actual usage, unknown usage,
 latency and failures. Use an already resident local model without switching/loading
 it. These cases are development diagnostics, not a holdout or generalization claim.
 A held-out source/outcome configuration remains separate follow-up work.
+
+## 28. Constraint application and genuine abstention
+
+2026-11-06. The preceding pilot supplied the needed evidence but produced four
+infeasible outcome-arm proposals and no required model abstentions. A host veto
+prevented those proposals from being recommended; it did not repair the model's
+reasoning. This increment tests an explicit feasibility protocol over the existing
+read-only outcome pair, with retrieval and source provenance held fixed.
+
+Keep the original v1 protocol unchanged. An opt-in v2 supports choice-first or
+feasibility-first responses, each with a 4,000-character explanation limit. The
+latter asks for each method's effective minutes, energy, quality, source passage,
+and separate energy/quality/combined feasibility checks. Every source ID remains
+available in the schema; the correct source or answer is never preselected. State
+the decision rule explicitly: energy must be at most the budget and quality at
+least the minimum; minimize minutes among feasible methods; abstain if none is
+feasible or the evidence cannot support comparison.
+
+The host derives effective measurements independently from the original projected
+evidence. A numeric actual for the same deterministic workload overrides its
+expectation under the existing policy. Model-authored checks are claims, not
+trusted observations. Inconsistent checks withhold the proposal while preserving
+the raw answer for independent scoring. Correct citations do not establish correct
+arithmetic or sound prose. Existing current-source guards and local-only transport
+remain in force; no new database schema or executor is required.
+
+Freeze four fresh configurations at seeds 31 and 43, with both source-only and
+source-plus-outcome arms, and three treatments: choice-first without thinking,
+feasibility-first without thinking, and feasibility-first with a 2,048-token
+reasoning allowance inside an 8,192-token output cap. All three share the longer
+reason limit. This is 48 first responses, without repair, retries or adaptive
+replacement. It tests the response protocol as a bundle, not field order alone.
+Requested thinking and returned reasoning-channel presence are separate evidence.
+
+Create three isolated source stores and authenticated Arden/Quill actuals through
+the existing durable action lifecycle using authored provider replies. Fixture
+setup makes no real inference calls; the comparison executes no new actions.
+The cases test feasibility gained, continued infeasibility, a quality override
+requiring a different option, and a quality override requiring abstention.
+One case deliberately leaves an unobserved alternative's source quality wrong:
+visible-evidence abstention and the hidden simulator optimum must remain separate.
+
+The independent Python rubric uses the authored source tuples and exact retained
+actuals, never the runtime assessment's preferred answer. Report raw choice
+correctness, required and unnecessary abstentions, check/provenance accuracy,
+citation coverage, host withholding, explanation support, errors, costs and unknown
+usage separately. Freeze sources, snapshots, requests, controls and the complete
+schedule before inference. Preserve the preceding negative result. This is another
+small development diagnostic, not a held-out demonstration of general memory benefit.
