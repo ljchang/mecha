@@ -67,7 +67,11 @@
 ## Follow-up gate after automated review
 
 - [x] Refuse native code/program captures and prior bindings, before evidence assembly; scoped rereview and focused tests pass at `12e2432c4`.
-- [ ] Finish exact-fix full Spark checks and owner-corpus privacy scan after Tailscale authentication, then push the correction and inspect the next automated review.
+- [x] Finish exact-fix full Spark build/fmt/Clippy and serial default/feature suites.
+- [x] Finish retained demonstration with both independent artifact checks.
+
+Publication gate: scan the final commit range against the owner corpus before
+push; the PR head/checks record publication and the final automated review.
 
 ## Integration decisions
 

@@ -68,19 +68,20 @@ Existing v1–v5 experiments are not migrated. The authored `memory_bridge` exam
 uses ordinary file/todo tools and a separate process for a changed-criterion
 `GoalMemory` task. Its outputs establish integration, not real-model benefit.
 See `prototypes/memory/README.md` for the explicit synthetic command and HISTORY
-for verification results. Code `540485f71` passed Spark workspace build, fmt,
-strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6642
+for verification results. Code `12e2432c4` passed Spark workspace build, fmt,
+strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6646
 memory-enabled tests (0 failed / 29 ignored), and the connected example.
 Production chat does not automatically capture runs.
 
-**Closeout pending authentication:** draft PR head `1c8a9a79e` passed all GitHub
-CI checks. Its automated review identified a medium native code-program
-provenance gap. The local correction `12e2432c4` passed 19 runtime tests,
-5 connected tests plus the invoked child, strict core Clippy, formatting and
-scoped rereview. It rejects unsupported traces before evidence assembly and
-withholds prior bindings. Final full Spark verification, the owner-corpus
-privacy gate and pushing this correction remain pending a fresh Tailscale login.
-Do not treat the existing PR head as containing that correction.
+**Provenance correction:** `12e2432c4` rejects native code/program traces before
+evidence assembly and withholds previously issued unsupported bindings. It
+passed 19 focused runtime tests, the connected workflow and scoped rereview.
+Final workspace qualification passed 6302 default and 6646 memory-enabled tests
+(0 failed; 25/29 ignored respectively), with `--test-threads=1`. Two earlier
+parallel attempts failed in unrelated interpreter/mail fixtures; isolated
+reproductions passed. Those failures remain retained and unexplained, not fixed
+by this memory change. Normal GitHub CI is separate evidence.
+The full gate and current pushed/reviewed head are recorded on draft PR #846.
 
 **Next MVP qualification:** run this connected workflow with real models on a
 fresh frozen natural-language task set, with independently checked outcomes and
@@ -121,13 +122,12 @@ provenance gap corrected by admission and historical-binding refusal in
 
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
-Research v0.25 published 2026-11-07, source
-`560a9668816453e1e708deb8f43b76d6b4b67faa`, deployment
-`appgdep_6aef3b6987688191bcf11375feee20b2` succeeded. All 65 prior IDs retained;
-internal links, scripts, unchanged SVG and dist mirrors checked. v0.24's
-implemented bridge/results were verified in the published browser; v0.25's
-code-program correction and pending verification status were statically checked,
-native publication confirmed, and the existing Site tab opened.
+Research v0.26 published 2026-11-07, source
+`a833477763e3aa2c5eaea1b972ba9167ae7c66cd`, deployment
+`appgdep_6aef498dd5f0819188ea53f101440ab7` succeeded. All 65 prior IDs retained;
+internal links, scripts, unchanged SVG, dist mirrors and current version markers
+checked. The published browser showed v0.26 and the corrected code's exact
+qualification counts and serial-scheduling limitation.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

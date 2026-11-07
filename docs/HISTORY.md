@@ -84,8 +84,19 @@ Final focused checks passed 19 runtime tests, 5 connected tests (plus invoked
 child), strict core all-target/all-feature Clippy and formatting. No medium
 finding remained in the scoped rereview. The guard adds one bounded transcript
 record scan per source check; corpus-scale performance remains unqualified.
-Full exact-fix Spark verification and the pre-push privacy gate await fresh
-Tailscale authentication; these focused results do not replace them.
+Two subsequent parallel default-suite attempts failed before feature tests:
+interpreter worker launch returned ETXTBSY, then a mail-rule fixture returned
+HTTP 500. The isolated tests passed; the original interpreter group also passed
+22 tests with backend skips prohibited. Source review found possible global
+home/temp-directory fixture races but did not establish the HTTP 500 cause.
+Original logs remain in `code-lineage-final/attempt1` and `attempt2`; no unrelated
+production fix was made. Final complete suites use `--test-threads=1`, explicitly
+separate from normal GitHub CI and not evidence that parallel-suite reliability
+was repaired. At exact code head `12e2432c4`, the final serial runs passed **6302 default
+tests / 0 failed / 25 ignored** and **6646 memory-enabled tests / 0 failed /
+29 ignored**. Workspace/all-target build, formatting and strict all-target/
+all-feature Clippy also passed. The retained-artifact example passed both
+independent output checks. Logs are in `code-lineage-final`.
 
 The existing production artifact, services, configuration, owner knowledge and
 nightly ingestion were not changed. Automatic production capture, broader
