@@ -1421,6 +1421,97 @@ mod tests {
     }
 
     #[test]
+    fn literal_loopback_accepts_numeric_http_hosts_and_paths() {
+        for url in [
+            "http://127.0.0.1",
+            "http://127.0.0.2:8080/v1/",
+            "http://[::1]",
+            "http://[0:0:0:0:0:0:0:1]:8080/v1/",
+        ] {
+            assert!(is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_hostnames_and_remote_addresses() {
+        for url in [
+            "http://localhost:8080/v1",
+            "http://LOCALHOST:8080",
+            "http://example.invalid:8080",
+            "http://192.0.2.1:8080",
+            "http://[2001:db8::1]:8080",
+            "http://127.0.0.1.example.invalid:8080",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_credentials() {
+        for url in [
+            "http://user@127.0.0.1:8080",
+            "http://:password@127.0.0.1:8080",
+            "http://user:password@[::1]:8080/v1",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_queries_including_empty() {
+        for url in ["http://127.0.0.1:8080/v1?model=test", "http://[::1]:8080?"] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_fragments_including_empty() {
+        for url in ["http://127.0.0.1:8080/v1#model", "http://[::1]:8080#"] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_requires_http() {
+        for url in [
+            "https://127.0.0.1:8080/v1",
+            "ftp://127.0.0.1:8080",
+            "ws://[::1]:8080",
+            "file:///tmp/model",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_rejects_malformed_urls() {
+        for url in [
+            "",
+            "not a URL",
+            "/v1",
+            "http://",
+            "http://[::1",
+            "http://127.0.0.1:invalid",
+        ] {
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn literal_loopback_is_stricter_than_host_only_loopback() {
+        // General provider routing checks location only. Isolated local
+        // experiments additionally require a numeric host and a clean HTTP URL.
+        for url in [
+            "http://localhost:8080/v1",
+            "https://127.0.0.1:8080",
+            "http://user:password@[::1]:8080/v1?model=test#selection",
+        ] {
+            assert!(is_loopback(url), "{url}");
+            assert!(!is_literal_loopback(url), "{url}");
+        }
+    }
+
+    #[test]
     fn a_v1_spelling_is_the_same_router() {
         let mut c = cfg();
         c.providers.get_mut("local").unwrap().base_url = Some("http://127.0.0.1:8080/v1".into());
