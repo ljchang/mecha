@@ -152,61 +152,66 @@ The shape:
   sessions and writes only the driven store. The two passes share code and
   never share a destination.
 - **The driver's interventions are labelled as the driver's, never as the
-  owner's.** A driver's steer or denial gets a new `Origin::Driven`, never
-  `Clean`. It is not `Derived` either, because those are mecha's own words
-  and this is another agent's. That is the split the three refusal strings
-  keep. **Taint is classified first, and `Driven` is stamped only over it.**
-  `Origin` is one field and `classify_origin` answers `Clean` or
-  `Untrusted`, so a stamp that *replaced* the classification would make a
-  reflection mined after a `.from_outside()` result learnable, which is the
-  one case `Untrusted` exists to exclude. The rule: an intervention whose
-  covering taint is untrusted stays `Untrusted`, driver or not, and
-  `Driven` replaces only `Clean`. The store boundary protects owner runs.
-  This rule protects every later driven run's prefix, and through it the
-  ledger's attributions. Three things the build owes, none true of today's
-  code:
-  - `Origin` has no `#[serde(other)]` arm, and its field default fires only
-    when the key is absent, so today an older build reading
-    `"origin":"driven"` *drops the reflection* (one corrupt line, one lost
-    reflection). The variant needs a lenient read first, parked as
-    `Untrusted` (the shape `Situation::surface_unread` and `goal::de_lenient` use).
-  - **The destination enters the type.** `Reflexion::learnable(&self)`
-    sees only the record, and "learnable only into the driven store" is a
-    fact about the destination, which nothing on a `Reflexion` carries. A
-    bare `Driven => true` arm would be true everywhere: three of its readers
-    have no store context at all (`lesson_source::backfill_targets`,
-    `doctor`, `probe`), and the `learn` gate is store-blind. So
-    `learnable()` stays closed to `Driven`, returning false as it does for
-    `Derived`, and a new `learnable_into(&self, store: StoreKind)` is the
-    only place `Driven` is admitted, for `StoreKind::Driven` alone. The
-    driven store's own consolidation path calls it, and the compiler finds
-    every call site. This is the one place the design loosens a
-    structurally fail-closed gate. The triage arm is not a precedent: its
-    own documentation calls `RUN_DOMAINS` membership "a *proxy* for the
-    consumer rather than the consumer itself" and names the residual it
-    does not catch.
-  - **An edit cannot launder the driver out.** `learnable()` branches on
-    `provenance()`, and `provenance()` returns `Clean` for any reflection
-    with `edited_at` set, before the origin is consulted, because an edit is
-    how a reflection excluded for provenance is rescued: "an edit is a
-    promotion, and it has to be your own words". So a `Driven => false`
-    arm placed in the provenance match would hold only for an unedited
-    record, and editing a driven lesson would walk it into the owner's
-    store with no measured lift. The rule: both `learnable()` and
-    `learnable_into()` test the **recorded** origin
-    (`provenance_as_mined()`) for `Driven` *before* the edit promotion. An
-    edit cannot change who drove the run. Editing a driven reflection is
-    still the owner's act, and it rescues the lesson *within the driven
-    store*. The only door into the owner's store stays the promotion copy,
-    with its measured lift.
-  - Four tests: an owner-store `learn` refuses a driven reflection, **an
-    edited one included** (the case that tells the designs apart; an
-    unedited fixture passes vacuously); a store-agnostic reader
-    (`learnable()`) never reports a driven reflection as learnable, edited
-    or not, which is the direction the triage residual shows actually rots;
-    an edited driven reflection *is* learnable into the driven store; and a
-    driven intervention under untrusted taint classifies `Untrusted` and,
-    unedited, is learnable into neither store.
+  owner's, and the label sits beside `Origin`, never inside it.** A
+  reflection mined from a driven session carries a `driven` field, set at
+  mining from the session's recorded kind and never from text. `Origin`
+  keeps meaning what it means today: was third-party content in context,
+  classified from recorded taint. Two facts, two fields. An earlier draft
+  put the driver *into* `Origin` as a new variant, and every way to compose
+  that with the existing classes failed open:
+  - an `Origin::Driven` that replaced the taint classification made a
+    reflection mined after a `.from_outside()` result learnable;
+  - "`Driven` replaces only `Clean`" lost the driver under untrusted taint,
+    and `learnable()` admits `Untrusted` in the `triage` domain (live,
+    because `RUN_DOMAINS` is `behavior` and `writing`), so a driven
+    intervention under untrusted taint would have passed the *owner's* gate
+    as an ordinary triage lesson;
+  - an owner edit promotes any reflection to `Clean` through `provenance()`
+    before the origin is consulted.
+
+  A separate field is immune to all three: no taint class, no domain
+  exemption and no edit touches it. It is not `Derived` either, because
+  those are mecha's own words and this is another agent's; that is the
+  split the three refusal strings keep. The store boundary is the primary
+  guard, since driven reflections only ever live in the driven store. The
+  field is the second guard, for the day a driven reflection is somewhere it
+  should not be. What the build owes:
+  - **`learnable()` refuses any reflection with `driven` set, first, before
+    every other arm**: before the triage exemption, before the edit
+    promotion, and whatever its `Origin`. Its three store-blind readers
+    (`lesson_source::backfill_targets`, `doctor`, `probe`) and the `learn`
+    gate then never see a driven reflection as learnable.
+  - **The destination enters the type.** A new
+    `learnable_into(&self, store: StoreKind)` is the only place a driven
+    reflection is admitted, for `StoreKind::Driven` alone, and there it
+    applies today's rules unchanged: `Clean` as recorded, or rescued by the
+    owner's edit, with the triage exemption *not* extended to it. The driven
+    store's own consolidation path calls it, and the compiler finds every
+    call site. This is the one place the design loosens a structurally
+    fail-closed gate. The triage arm is not a precedent: its own
+    documentation calls `RUN_DOMAINS` membership "a *proxy* for the consumer
+    rather than the consumer itself" and names the residual it does not
+    catch.
+  - **An edit rescues a driven lesson only within the driven store.**
+    Editing one is the owner's act. It can make the lesson learnable *into
+    the driven store*, but the `driven` field is untouched, so it never
+    makes the lesson learnable into the owner's. The only door into the
+    owner's store stays the promotion copy, with its measured lift.
+  - **The field's wire rule.** It is `#[serde(default)]`, false when
+    absent. An older build that reads a driven reflection ignores the field
+    and sees an ordinary one, which is why the store boundary, and not the
+    field, is the primary guard: an older build never opens the driven store
+    at all. `Origin` needs no new variant and so no lenient read.
+  - **Five tests:**
+    1. an owner-store `learn` refuses a driven reflection, an edited one
+       included;
+    2. `learnable()` is false for a driven reflection whatever its `Origin`,
+       edited or not;
+    3. a driven `triage`-domain reflection under untrusted taint is
+       learnable into neither store (the case that broke the earlier draft);
+    4. an edited driven reflection is learnable into the driven store;
+    5. a driven reflection under untrusted taint, unedited, is learnable
+       into neither store.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
   own documentation calls it "one gate away from being usable the day
   something can grade it". A driven run's hidden test is that grade. A
@@ -427,7 +432,7 @@ waits for that work.
    the wrong thing. **The bank does not amend `POST-TRAINING-RESEARCH.md`
    §4.** §4 filters by *recorded taint* with no knob, because weights
    outlive a prefix, and a driven trajectory enters only if its recorded
-   taint is clean, exactly as §4 says. `Origin::Driven` labels an
+   taint is clean, exactly as §4 says. The `driven` field labels an
    *intervention* for the learning store (D2). It does not classify a
    trajectory, so nothing here loosens §4. **What R8 does not cover:** R8
    ruled on the charter reaching the ceiling's provider, which is one
@@ -473,8 +478,10 @@ global-file-only because it is the jail's way out, and `[messages]`, the
 owner's mailbox between live sessions, where taint travels with a message
 in both directions. **The worktree is an exposure path too.** Only the
 skills layer and the approval rules are narrowing-only; below
-`LayerTrust::Global`, `merge_text` narrows four tables, and `[[mcp]]` and
-`[[hook]]` are not among them. `Config::load_global`'s own doc comment says
+`LayerTrust::Global`, `merge_text` narrows one table (`[[grant]]`) and three
+`[[mcp]]` fields (`trust_result_claims`, `personas`, `effects`), and at
+`LayerTrust::Project` thirteen tables. Neither `[[mcp]]` as a table nor
+`[[hook]]` is among them. `Config::load_global`'s own doc comment says
 a project `mecha.toml` "can name MCP servers to spawn, hooks to execute". A
 driven run is jailed to a worktree at an arbitrary historical pin, so a
 `mecha.toml` in that tree could attach a server or a hook, and only the
@@ -537,9 +544,24 @@ rather than trusting each run to be configured right:
   owner's.
 
 D1b lands before the first driven run, not with D1: the mark alone gives a
-run nothing new. A run marked driven is refused at start if any forced-off
-surface is still attached, because a guard that cannot apply stops the run
-and never falls through. **A build trap for its tests:**
+run nothing new. **Both directions are refused at start.** A run marked
+driven is refused if any forced-off surface is still attached. And a run
+*not* marked driven is refused if a home-side driven marker (§2) names its
+workspace. For the store load, "a marker with no mark" fails dark; for D1b
+it is the unsafe direction, because every surface the mark removes is gated
+on the mark alone, so a driven task whose mark was lost would run with the
+owner's servers, hooks, grants and mailbox attached. The marker names its
+worktree, so the case is detectable, and it is refused rather than run.
+**What D1b forces is recorded on the run.** `block_sends_after_private` and
+`private` armed at start are not `harness::Lever`s, so they would not appear
+in the session record's `levers_off`, and a later reader could not tell the
+guard was armed. The run record carries them beside the levers. Neither
+confounds §4, being constant across arms. **The forecast's exclusion is
+named, not inherited:** it keys on `test_override() == Some(Test)` and does
+not cover `Experiment`, so "follow the `Experiment` shape" does not reach it,
+and `Driven` is added at that site explicitly (done in #848). Both
+refusals are the same rule: a guard that cannot apply stops the run and
+never falls through. **A build trap for its tests:**
 `SessionKind::test_override()` returns `None` under `cfg(test)` unless
 `MECHA_KIND_PROBE_EXPECT` is set, and `ignore_kind_env_for_tests` latches
 it off for a whole test binary. A test pinning "the driven mark forces these
