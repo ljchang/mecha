@@ -14,8 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classifier at each classify pass, which must quote the words in the message
   that show a match; quotes not in the message are dropped. Such a rule starts
   in shadow and, once approved, can archive, mark read or unread, tag and add
-  to the digest automatically; trash and spam always ask first, and tasks and
-  sends wait for the next phase. Newsletters and list mail are read for a
+  to the digest automatically; trash and spam always ask first. It can also
+  make a task automatically, but only when a second check — one that sees
+  only your descriptions, never what the classifier has learned — agrees;
+  otherwise the task is offered. Sends wait for the next phase. Newsletters and list mail are read for a
   description rule only when the rule could apply. Wrong match on such a row
   also corrects the classifier. At most 12 description list entries are
   admitted.

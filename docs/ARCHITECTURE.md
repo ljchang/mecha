@@ -4884,8 +4884,19 @@ quote in `matched_because`. A bulk thread the pre-filter took is asked about
 for the rules alone when a rule is eligible (owner ruling 2026-11-07), keeping
 its `ignore`. Admission (`RuleStore::admit_locked`) refuses an install, edit
 or raise that would add entries past the cap; lowerings are never checked.
-Until P4b, a description rule's Board and outbound groups are capped at
-`shadow` and its Mailbox group at `propose` when it contains `trash`.
+A description rule's Mailbox group is capped at `propose` when it contains
+`trash`, and its outbound groups at `shadow` until P4b-2.
+
+**A description rule's task is decided by a pass with no learned rules in
+it (P4b-1).** `mail_triage::confirm` asks the candidates' descriptions alone,
+with an instruction compiled into the binary; the sweep stores its answer on
+`rules.confirmation` with `CONFIRMATION_VERSION`. The engine demotes an
+automatic task to an offer, at planning and again at dispatch, unless that
+answer chose the same rule under this build, and reserves no cap for the
+demoted one. The version is in the match digest of only the groups it decides
+and the approval digest of only the rules it decides for. This is the
+argument `Reflexion::learnable` now cites for the triage exemption: a learned
+line can nominate a task or send, never decide one.
 
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound

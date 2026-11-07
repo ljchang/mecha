@@ -317,8 +317,9 @@ pub struct MatchDigest {
 }
 
 impl LoadedRule {
-    /// P1 writes the absent confirmation version explicitly. Gate status is
-    /// supplied mechanically by the provenance reader, never inferred as clean.
+    /// The confirmation version is written, empty when absent: only a
+    /// description rule's confirmed groups carry it. Gate status is supplied
+    /// mechanically by the provenance reader, never inferred as clean.
     pub fn match_digest(&self, group: ActionGroup, gate: super::GateStatus) -> Result<MatchDigest> {
         Ok(MatchDigest {
             matcher: hash(&serde_json::to_vec(&self.definition.matcher)?),
@@ -328,7 +329,16 @@ impl LoadedRule {
             } else {
                 String::new()
             },
-            confirmation_version: String::new(),
+            // The compiled confirmation frame decides this group (§4.2): a
+            // change to it starts new measurement for exactly these groups.
+            confirmation_version: if self.definition.is_description()
+                && super::describe::confirmation_decides(group)
+                && gate == super::GateStatus::Passing
+            {
+                crate::mail_triage::confirm::CONFIRMATION_VERSION.clone()
+            } else {
+                String::new()
+            },
         })
     }
 }

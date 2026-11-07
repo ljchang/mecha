@@ -163,6 +163,19 @@ struct FrameRule {
     shadow: bool,
     /// A send in a group that is not off: a match forces full-body evidence.
     escalates: bool,
+    /// A Board or outbound group in `propose`/`auto`: the main pass's match
+    /// is a candidate the active confirmation decides (§4.2).
+    confirm_active: bool,
+    /// A Board or outbound group in `shadow`: measured by both passes.
+    confirm_shadow: bool,
+    describe: String,
+}
+
+/// The groups the confirmation pass decides on a description rule. Every
+/// rule's origin gate passes until P7 installs proposals, so gate-failing
+/// ceilings do not arise yet.
+pub fn confirmation_decides(group: ActionGroup) -> bool {
+    group.is_outbound() || group == ActionGroup::Board
 }
 
 /// The description rules one classify sweep asks about.
@@ -217,12 +230,21 @@ impl ClassifierRules {
                 .actions
                 .iter()
                 .any(|a| a.group().is_outbound() && ms.get(&a.group()).is_some_and(evaluates));
+            let decided = |want: fn(&ResolvedMode) -> bool| {
+                ms.iter()
+                    .any(|(group, mode)| confirmation_decides(*group) && want(mode))
+            };
             out.rules.push(FrameRule {
                 name: rule.name.clone(),
                 matcher: rule.definition.matcher.clone(),
                 active,
                 shadow,
                 escalates,
+                confirm_active: decided(|m| {
+                    evaluates(m) && m.effective.rank() >= Mode::Propose.rank()
+                }),
+                confirm_shadow: decided(|m| m.effective == Mode::Shadow),
+                describe: rule.definition.matcher.describe.clone().unwrap_or_default(),
             });
         }
         out.rules.sort_by(|a, b| {
@@ -288,6 +310,48 @@ impl ClassifierRules {
                 .map(|r| r.name.clone())
                 .collect(),
         }
+    }
+
+    fn entry(r: &FrameRule) -> FrameEntry {
+        FrameEntry {
+            name: r.name.clone(),
+            describe: r.describe.clone(),
+            matcher: String::new(),
+        }
+    }
+
+    /// What the active confirmation is offered, when the main pass's
+    /// grounded `rule` is a candidate for a task or send: every rule eligible
+    /// for this message with a confirmation-eligible active group, in frame
+    /// order — not only the main pass's pick, so the choice *between* two
+    /// rules that both fit is never left to the pass with learned rules.
+    /// Empty when no confirmation is needed.
+    pub fn active_confirmation(&self, ask: &RuleAsk<'_>, reading: &RuleReading) -> Vec<FrameEntry> {
+        let candidate = reading.active.as_ref().is_some_and(|hit| {
+            self.rules
+                .iter()
+                .any(|r| r.name == hit.name && r.confirm_active)
+        });
+        if !candidate {
+            return Vec::new();
+        }
+        self.rules
+            .iter()
+            .filter(|r| r.confirm_active && ask.active.contains(&r.name))
+            .map(Self::entry)
+            .collect()
+    }
+
+    /// What the shadow confirmation judges, one verdict each: every rule in
+    /// the reconciled match set (named by either list) with a shadow group
+    /// the pass decides.
+    pub fn shadow_confirmation(&self, reading: &RuleReading) -> Vec<FrameEntry> {
+        let named: Vec<&str> = reading.named().collect();
+        self.rules
+            .iter()
+            .filter(|r| r.confirm_shadow && named.contains(&r.name.as_str()))
+            .map(Self::entry)
+            .collect()
     }
 
     /// Whether this reading needs the full body before it is final: a match,

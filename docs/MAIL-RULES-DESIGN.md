@@ -2382,6 +2382,34 @@ ruling:
 - Description-rule testing against past mail, with its cost shown, is a
   separate PR (P4a-2). Until then the Test button reports the store's refusal.
 
+**P4b-1 implemented (2026-11-07): the confirmation pass.** `mail_triage::confirm`
+is the second quarantined call of §4.2: a compiled instruction and the
+candidates' `match.describe` texts, no learned rules and no correction examples.
+The classify sweep runs it after the main pass's final reading, over the same
+text: the **choose** shape when the main pass's grounded `rule` names a rule
+with a Board or outbound group in `propose`/`auto` (offered every eligible such
+rule, in frame order), and the **each** shape, one verdict per candidate, for
+the reconciled match set's rules with such a group in `shadow`. The result
+rides on the triage record's `rules.confirmation` with
+`CONFIRMATION_VERSION`, a digest of the compiled strings. The engine runs an
+automatic description task only when the active confirmation, under this
+build, chose the same rule; otherwise the task is offered with the reason
+`unconfirmed`, and the row's `matched_because.confirmation` names what the pass
+chose. A shadow task's would-have row records `would have proposed: the
+confirmation pass disagreed` or `not confirmed`. The version enters the match
+digest of exactly the groups the pass decides, and the approval digest of a
+description rule with a task or send, so a changed instruction separates the
+measurement and lapses those approvals. A description rule's `task` therefore
+leaves `shadow` in this phase; its sends stay there until P4b-2.
+`Reflexion::learnable`'s comment gains the sentence naming the confirmation
+pass as why the triage exemption's premise still holds.
+
+Implementation choices, not owner rulings: a failed confirmation call is
+recorded as failed and disagrees, never retried into agreement; a
+confirmation from another build's frame confirms nothing; the shadow
+confirmation of a rule with no gate-failing text (every rule until P7) is the
+only shadow case.
+
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
 
