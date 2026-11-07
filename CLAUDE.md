@@ -235,6 +235,8 @@ system.rs    the machine's state, read in one place: a per-minute series of numb
              unknown is refused, never zero; a model reads it through `system_read`
 backlog.rs   what waits on the owner across six stores; one walk, three readers
 doctor.rs    every store's distress, read in one pass — no network, no model
+driven.rs    another agent's runs on real work: what the mark forces, refuses and
+             records, and the home-side marker naming each task clone
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
 sample.rs    seeded uniform draws: the holdout that prioritised replay cannot bias
 diagnose.rs  the one place a model authors a change: counters in, a typed candidate out
