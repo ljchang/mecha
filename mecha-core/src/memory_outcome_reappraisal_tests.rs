@@ -150,6 +150,107 @@ fn reply(choice: &str, count: usize) -> ModelReply {
     ModelReply{text:json!({"choice":choice,"citations":(1..=count).map(|i|format!("e{i}")).collect::<Vec<_>>(),"reason":"Comparison uses visible same-workload measurements"}).to_string(),model:"scripted-fixture".into(),input_tokens:None,output_tokens:None,error:None}
 }
 
+// Partial evidence must never acquire the authenticated action lineage required
+// by reappraisal. Earlier scripted decision calls are not reappraisal calls.
+#[tokio::test]
+async fn partial_measurements_cannot_bind_an_action_for_reappraisal() {
+    let mut f = Fixture::new(FixtureState::Baseline).await;
+    let input = f.db.capture(f.source.clone()).unwrap();
+    for count in 0..3 {
+        for proposed in ["Nori", "abstain"] {
+            let read =
+                f.db.durable_create(
+                    TaskSpec {
+                        workspace: f.root.clone(),
+                        path: format!("partial-{count}-{proposed}.json").into(),
+                        max_bytes: 16000,
+                        max_lines: 128,
+                    },
+                    std::slice::from_ref(&input),
+                    &f.access,
+                )
+                .unwrap();
+            let observations = [
+                json!({"choice":"Nori","observed_minutes":4,"energy":2,"quality":8}),
+                json!({"choice":"Arden","observed_minutes":8,"energy":3,"quality":9}),
+            ];
+            let content = json!({
+                "kind":"host_authored_synthetic_measurements_v1",
+                "workload":WORKLOAD,
+                "complete":true,
+                "observations":&observations[..count],
+            })
+            .to_string();
+            let permit = f.db.durable_reserve_dispatch(&read, &f.access).unwrap();
+            f.db.durable_settle(
+                permit,
+                HostObservation::from_dispatch(
+                    json!({"status":"successful","content":content,"cancelled":false}),
+                ),
+                &f.access,
+            )
+            .unwrap();
+            let receipt = model::bind(
+                &mut f.db,
+                &read,
+                ModelSpec {
+                    contract: contract(5, 7),
+                    model: "scripted-fixture".into(),
+                    seed: 7,
+                    view: EvidenceView::Observed,
+                },
+                &f.access,
+            )
+            .unwrap();
+            model::decide(&mut f.db, &receipt, &f.access, |_, _, guard| async move {
+                guard.check()?;
+                Ok(reply(proposed, count))
+            })
+            .await
+            .unwrap();
+            let decision =
+                f.db.durable_model_decision(&receipt, &f.access)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                decision["disposition"],
+                if proposed == "abstain" {
+                    "abstain"
+                } else {
+                    "withheld"
+                }
+            );
+            assert_eq!(
+                decision["assessment"]["missing"].as_array().unwrap().len(),
+                3 - count
+            );
+            if proposed != "abstain" {
+                assert!(decision["assessment"]["findings"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("missing_evidence")));
+            }
+            let error = action::bind(
+                &mut f.db,
+                &receipt,
+                ActionSpec {
+                    fixture: FixtureVersion::MeasurementsV1,
+                    state: FixtureState::Baseline,
+                },
+                &f.access,
+            )
+            .err()
+            .expect("partial evidence cannot authorize an action or outcome reappraisal");
+            assert!(
+                error
+                    .to_string()
+                    .contains("only an authenticated recommendation can bind an action"),
+                "unexpected boundary for {count} observations and {proposed}: {error:#}"
+            );
+        }
+    }
+}
+
 // Replacing the source-only control with an empty or modified source breaks this.
 #[tokio::test]
 async fn both_arms_preserve_expectations_and_only_treatment_adds_actual() {
