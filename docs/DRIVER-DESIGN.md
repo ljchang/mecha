@@ -738,10 +738,9 @@ rather than trusting each run to be configured right:
   declared, and so what `step.rs` and `Lever::StepChecks` act on), and
   `goal_context`. `goal_context` is the only consumer of
   `ToolCtx::goal_lessons`, because lessons are "served here, on demand,
-  never pushed into the prefix". Without it, §2's `goal_lessons` carve-out
-  would be dead in a driven run, and the positive check's "goal lessons
-  served" could pass only in an `experiment`-marked trial, measuring a
-  retrieval path production lacks. Its reach is a read of the learning
+  never pushed into the prefix". Without it, the owner's rules' goal lessons
+would be unreachable in a driven run, which would then not be the harness
+as the owner runs it. Driven rules carry none in v1 (§2). Its reach is a read of the learning
   stores in the home, not the jail, so it is named rather than falling out
   of the effects rule; that read is the goal-system behaviour under test.
   Long multi-turn repository work is the thing §0 says is unmeasured, and
