@@ -118,17 +118,35 @@ preserved text but added an `active` field: the exact grader rejected it althoug
 the criterion did not explicitly exclude extra fields. Preserve these original
 scores and their ambiguity; do not reclassify or rerun them as a repaired result.
 
-**Next MVP repair:** make todo/plan checks capability-aware. `TodoTool` converts a
-completed step's check into a shell dispatch even when the trial registry contains
-no shell; the two withdrawal-r1 traces each contain two harness-generated refused
-checks and no output artifact. Keep unavailable verification explicitly unverified
-without queueing a nonexistent tool; preserve the existing jail and permissions.
-Their 18/19 eligible passages also exceed the bridge's 16-passage capture bound.
-Separately qualify bounded evidence segmentation for longer failed episodes rather
-than raising limits to make this cohort pass. Calibration-r1 control exhausted
-through repeated empty queries/missing-file searches but wrote valid abstention.
-Tighten future fixture schemas before a separately versioned comparison. No new
-concept/rumination expansion until this ordinary-task path is dependable.
+**Planning-check registration repair:** `Agent::run_in` now admits command
+checks only when shell is registered and checks are enabled. `TodoTool` reports
+newly completed declared checks as unverified when no queue is available;
+`Verification::Skipped`, frozen commands and ordinary registered-tool guards are
+preserved. Old-code regressions fail as intended; 73 todo tests, 12 check tests,
+16 Python tests and all 24 native scripted slots/eight probes pass. Independent
+increment review found no major/medium findings. Spark build, formatting, strict Clippy and serial workspace tests passed
+(6305 default / 6669 memory-enabled; zero failures; 25/29 ignored). The exact
+executable preflight passed all 24 slots/eight probes (106 scripted requests, zero
+real inference). The unchanged-v1 repeat completed all 24 attempts/107 model calls:
+23 runs completed normally and all 24 captured; protocol integrity passed while
+the completion gate still failed. Later exact artifacts passed 7/8 with memory
+versus 5/8 control; correctness-or-appropriate-abstention was 7/8 versus 6/8.
+Two withdrawal runs declared checks and now finished with four unverified notices,
+six skipped step records and zero shell calls. Calibration-r1 control still
+exhausted on empty recall/missing-file reads, this time without an artifact.
+The two extra-field grading ambiguities remain. This historical development
+repeat is not a causal or generalization result; see
+`results/memory-planning-checks-20261107/`. This small ordinary-planning change is
+outside the memory feature gate; no installed production binary is changed.
+
+**Next MVP gaps:** qualify bounded evidence segmentation for longer failed
+episodes rather than raising limits to make a cohort pass. In the first
+comparison, 18/19 eligible passages exceeded the bridge's 16-passage bound.
+Calibration-r1 control exhausted through repeated empty queries/missing-file
+searches but wrote valid abstention. Improve dependable stopping, and tighten
+future fixture schemas in a separately versioned comparison. Keep original
+scores, failures and the exact-v1 repeat distinct. No new concept/rumination
+expansion until this ordinary-task path is dependable.
 
 After these reliability repairs, implement §31 C: share bounded episode assembly with the existing
 interpretation/distillation path, separate the agent interpretation producer from

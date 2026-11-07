@@ -18,6 +18,51 @@ class CoordinatorTests(unittest.TestCase):
         else:
             cls.m = None
 
+    def test_frozen_baseline_cases_inputs_and_order_are_unchanged(self):
+        # Retained real baseline cases.json and manifest.json, verified 2026-11-07.
+        cases = self.m.frozen_cases()
+        self.assertEqual(self.m.PROTOCOL, 'connected-bridge-model-comparison-v1')
+        self.assertEqual(self.m.BUDGETS, dict(max_turns=8, max_tokens=4096, max_output_tokens=16384, timeout_secs=600))
+        self.assertEqual(self.m.CONTROLS, dict(temperature=0.6, fast=True, provider_timeout_secs=180, retries=0))
+        self.assertEqual(self.m.TOOLS, ['fs_read', 'fs_write', 'goal_context', 'todo'])
+        self.assertEqual(self.m.digest(cases), '69de948532183b646e4d106659db70cc2b4782f1b5b8be56d713113ae56f5279')
+        self.assertEqual(self.m.digest(self.m.planned_pairs()), 'db259d7874b9b1370707154adb108ee6d624f40e6508c42b298b271e97458d7c')
+        self.assertEqual(self.m.digest([self.m.make_request(c, stage, c['id'])
+                                      for c in cases for stage in ('A', 'B')]),
+                         '5f2831a53eb5130224e7c03b1c806a00441488365fafeda7b928a1d66212a4a5')
+
+    def test_declared_check_probe_opens_completes_then_writes(self):
+        script = self.m.declared_check_script()
+        self.assertEqual([name for name, _ in script], ['todo', 'todo', 'fs_write'])
+        pending, completed = [args['items'][0] for _, args in script[:2]]
+        self.assertEqual(pending['status'], 'pending')
+        self.assertEqual(completed['status'], 'completed')
+        self.assertEqual(pending['check'], completed['check'])
+        self.assertTrue(pending['check'])
+
+    def test_declared_check_evidence_rejects_phantom_and_requires_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'transcript.jsonl'
+            feedback = {'steps': [{'verification': 'skipped'}],
+                        'decisions': [{'unverified_steps': 1}]}
+            records = [{'record': 'message', 'planning': feedback, 'content': [
+                {'type': 'text', 'text': 'A declared plan check was not run; completion remains unverified.'}]}]
+            def check():
+                path.write_text(''.join(self.m.encode(r) for r in records))
+                return self.m.declared_check_evidence({'transcript': str(path)},
+                    [{'tools': [{'function': {'name': name}} for name in self.m.TOOLS]}])
+            self.assertTrue(all(check().values()))
+            records[0]['content'].append({'type': 'tool_use', 'id': 'mecha-check-1', 'name': 'shell'})
+            self.assertFalse(check()['no_shell_dispatch'])
+            records[0]['content'] = [{'type': 'text', 'text': 'no tool named `shell`'}]
+            self.assertFalse(check()['no_unknown_shell'])
+            self.assertFalse(check()['explicit_unverified'])
+            feedback['steps'][0]['verification'] = 'passed'
+            self.assertFalse(check()['never_passed'])
+            self.assertFalse(check()['skipped_step'])
+            records.clear()
+            self.assertFalse(all(check().values()))
+
     def test_coordinator_exists(self):
         self.assertIsNotNone(self.m, 'frozen paired coordinator is not implemented')
 

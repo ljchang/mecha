@@ -1733,6 +1733,17 @@ impl Tool for TodoTool {
                 }
             }
             let mut findings = findings;
+            if ctx.step_checks.is_none()
+                && tracked.plan.items.iter().any(|item| {
+                    item.status == Status::Completed
+                        && !previous.contains(&item.content)
+                        && item.check.is_some()
+                })
+            {
+                findings.push(
+                    "A declared plan check was not run; completion remains unverified.".into(),
+                );
+            }
             if let Some(feedback) = &ctx.plan_feedback {
                 let mut feedback = feedback.lock().unwrap_or_else(|e| e.into_inner());
                 let mut observations = std::mem::take(&mut tracked.observations);
@@ -1952,6 +1963,34 @@ mod tests {
             tool.items_in(&PlanKey::of(&ctx)).is_empty(),
             "a rejected write changes nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn no_check_queue_notices_new_completions_once_and_preserves_frozen_checks() {
+        let tool = TodoTool::new();
+        let ctx = ToolCtx::default();
+        let notice = "A declared plan check was not run; completion remains unverified.";
+        for (status, check, expected_notices) in [
+            ("in_progress", "original", 0),
+            ("completed", "replacement", 1),
+            ("completed", "original", 0),
+        ] {
+            let out = tool
+                .call(
+                    json!({"items":[
+                        {"content":"work", "status":status, "check":check},
+                        {"content":"more work", "status":status, "check":"second"}
+                    ]}),
+                    &ctx,
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error);
+            assert!(!out.external);
+            assert_eq!(out.content.matches(notice).count(), expected_notices);
+            assert!(out.content.contains("original"));
+        }
+        assert_eq!(tool.tampered_in(&PlanKey::of(&ctx)), 1);
     }
 
     #[tokio::test]

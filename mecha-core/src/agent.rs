@@ -2955,9 +2955,7 @@ impl Agent {
             // leaves the run beside the line.
             tools.goal_commitments = cx.homeostat.as_ref().and_then(|h| h.in_run_commitments());
             tools.goal_guidance = self.cfg.goal_guidance;
-            tools.step_checks = self
-                .cfg
-                .step_checks
+            tools.step_checks = (self.cfg.step_checks && self.registry.get("shell").is_some())
                 .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
             // Past appraisals are keyed on the tool set the run record will
@@ -15809,6 +15807,71 @@ justification = "echo is off on this box"
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn missing_shell_skips_declared_checks_without_dispatch() {
+        let plan = |id: &str, status: &str, check: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "todo".into(),
+                    input: json!({"items":[{"content":"work","status":status,"check":check}]}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                plan("p1", "in_progress", "original check"),
+                plan("p2", "completed", "replacement"),
+                plan("p3", "completed", "original check"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        assert!(agent.cfg.step_checks);
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert!(!outcome
+            .tool_calls
+            .iter()
+            .any(|c| c.name == crate::step::CHECK_TRACE));
+        assert!(!convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b,
+            Block::ToolUse { id, .. } if id.starts_with("mecha-check-"))));
+        let feedback: Vec<_> = convo
+            .messages
+            .iter()
+            .filter_map(|m| m.planning.as_ref())
+            .collect();
+        let steps: Vec<_> = feedback.iter().flat_map(|f| &f.steps).collect();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].verification,
+            crate::planning::Verification::Skipped
+        );
+        assert_eq!(
+            feedback
+                .last()
+                .unwrap()
+                .decisions
+                .last()
+                .unwrap()
+                .unverified_steps,
+            1
+        );
+        let text = serde_json::to_string(&convo.messages).unwrap();
+        assert_eq!(
+            text.matches("A declared plan check was not run; completion remains unverified.")
+                .count(),
+            1
+        );
+        assert!(!text.contains("unknown tool"));
     }
 
     #[tokio::test]

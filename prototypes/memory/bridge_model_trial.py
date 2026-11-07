@@ -383,6 +383,41 @@ class ScriptedHTTP(BaseHTTPRequestHandler):
         else:self.send_json(reply)
 
 
+def declared_check_script():
+    item = dict(content='Verify the synthetic output', check='test -f output.json')
+    return [('todo', {'items': [dict(item, status='pending')]}),
+            ('todo', {'items': [dict(item, status='completed')]}),
+            ('fs_write', {'path': 'output.json', 'content': '[]'})]
+
+
+def declared_check_evidence(native, wire):
+    path = native.get('transcript')
+    records = [decode(line) for line in Path(path).read_text().splitlines()] if path and Path(path).exists() else []
+    messages = [r for r in records if r.get('record') == 'message']
+    blocks = [b for m in messages for b in m.get('content', [])]
+    feedback = [m['planning'] for m in messages if m.get('planning')]
+    steps = [step for f in feedback for step in f.get('steps', [])]
+    decisions = [d for f in feedback for d in f.get('decisions', [])]
+    text = encode(records) + encode(wire)
+    wire_calls = [call for r in wire for m in r.get('messages', []) for call in m.get('tool_calls', [])]
+    uses = {b.get('id') for b in blocks if b.get('type') == 'tool_use'}
+    results = {b.get('tool_use_id') for b in blocks if b.get('type') == 'tool_result'}
+    return dict(
+        transcript_present=bool(records),
+        no_orphan_results=uses == results,
+        same_four_tools=bool(wire) and all(sorted(t['function']['name'] for t in r.get('tools', [])) == TOOLS for r in wire),
+        no_shell_dispatch=not any(b.get('type') == 'tool_use' and
+            (b.get('name') == 'shell' or b.get('id', '').startswith('mecha-check-')) for b in blocks) and not any(
+            call.get('function', {}).get('name') == 'shell' or call.get('id', '').startswith('mecha-check-')
+            for call in wire_calls),
+        no_check_trace='step.check' not in text,
+        no_unknown_shell=all(term not in text.lower() for term in ('unknown tool', 'no tool named `shell`')),
+        explicit_unverified='A declared plan check was not run; completion remains unverified.' in text,
+        skipped_step=len(steps) == 1 and steps[0].get('verification') == 'skipped',
+        remains_unverified=bool(decisions) and decisions[-1].get('unverified_steps') == 1,
+        never_passed=bool(steps) and all(step.get('verification') != 'passed' for step in steps))
+
+
 def preflight(binary, root):
     root=Path(root).resolve()
     server=ThreadingHTTPServer(('127.0.0.1',0),ScriptedHTTP)
@@ -433,7 +468,7 @@ def preflight(binary, root):
             return result
         original=first['native']
         probe_rows=[]
-        for mode in ('jail','transport_error','partial_stream_error','missing_artifact','malformed_artifact','no_memory','unknown_usage'):
+        for mode in ('jail','transport_error','partial_stream_error','missing_artifact','malformed_artifact','no_memory','unknown_usage','declared_check_unavailable'):
             req=make_request(frozen_cases()[0],'B','probe-'+mode)
             req['expected_rows']=[{'host_only':gold_canary}]
             req_file=probe_root/(mode+'.request.json');write_json(req_file,req)
@@ -442,6 +477,8 @@ def preflight(binary, root):
                 server.script=[('fs_read',{'path':str(p)}) for p in (gold_file,req_file,original['artifact'],original['authority'])]
             elif mode in ('no_memory','unknown_usage'):
                 server.script=[('fs_write',{'path':'output.json','content':'[]'})]
+            elif mode=='declared_check_unavailable':
+                server.script=declared_check_script()
             elif mode=='malformed_artifact':
                 server.script=[('fs_write',{'path':'output.json','content':'not json'})]
             before=len(server.requests)
@@ -467,7 +504,13 @@ def preflight(binary, root):
             elif mode=='malformed_artifact':passed=(native.get('artifact_check') or {}).get('verdict')=='Failed'
             elif mode=='no_memory':passed=native.get('recall_calls')==0
             elif mode=='unknown_usage':passed=native.get('input_tokens') is None and native.get('output_tokens') is None
-            probe_rows.append(dict(mode=mode,passed=bool(passed),result=trial))
+            evidence=None
+            if mode=='declared_check_unavailable':
+                evidence=declared_check_evidence(native,wire)
+                evidence['artifact_written']=Path(native.get('artifact','')).is_file() and decode(Path(native['artifact']).read_text()) == []
+                evidence['finished']=not native.get('run_error') and native.get('model_calls_completed') == 4
+                passed=all(evidence.values())
+            probe_rows.append(dict(mode=mode,passed=bool(passed),result=trial,**({'checks':evidence} if evidence else {})))
         checks['probes']=all(p['passed'] for p in probe_rows)
         result.update(preflight_checks=checks,probes=probe_rows,scripted_http_requests=len(server.requests),new_real_model_inference_calls=0)
         result['complete']=result['complete'] and all(checks.values())

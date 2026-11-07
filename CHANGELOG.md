@@ -496,6 +496,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Plan checks no longer dispatch a nonexistent shell in runs without that tool.
+  Newly completed checked steps explicitly remain unverified when execution is
+  unavailable or disabled. Registered checks retain ordinary security guards.
+
 - Experimental goal-memory retrieval refreshes relation-validity time on every
   call while retaining the invocation's knowledge snapshot. Reusing a tool no
   longer keeps expired relations current; time remains controlled by the host.

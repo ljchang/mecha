@@ -14,6 +14,54 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Planning-check registration repair (2026-11-07, prototype branch)
+
+`Agent::run_in` now creates the command-check queue only when checks are enabled
+and shell is registered. `TodoTool` gives one unverified notice for newly
+completed checked steps without that queue. Existing skipped verification,
+command freezing and tamper detection remain intact; a registered shell still
+uses ordinary dispatch and all its guards. This ordinary planning repair is not
+feature-gated, although the memory comparison is. No production install changed.
+
+Both new Rust regressions failed against the earlier behavior. Targeted checks
+passed 73 todo tests, 12 check tests and 16 Python coordinator tests. The old
+native executable passed the original 24 slots/seven probes but failed the new
+eighth unavailable-check probe. The repaired executable passed all 24/eight
+without real inference. Case, input, oracle, pair, budget and control hashes
+remain pinned to the first comparison. Independent incremental review found no
+major or medium issues.
+
+Spark workspace build, formatting and strict all-target/all-feature Clippy passed.
+Clean serial suites passed 6305 default and 6669 memory-enabled tests, with zero
+failures and 25/29 ignored. The first default run failed two source-walk tests
+because the file transfer created binary macOS metadata sidecars ending in `.rs`.
+Removing those owned transfer artifacts restored source identity; both focused
+rechecks and the fresh full run passed. The initial failure log remains retained.
+
+The exact Spark executable passed native preflight (24 slots, eight probes,
+106 scripted requests, no inference). A fresh, separately frozen development
+repeat retained identical v1 cases, inputs, gold, ordering, seeds and budgets.
+All 24 attempts ran, with 107 completed model calls. Later exact artifacts passed
+7/8 memory versus 5/8 empty store; descriptive correctness-or-appropriate-
+abstention was 7/8 versus 6/8. All 24 experiences captured and 23 runs completed
+normally, compared with 22 captures and 21 normal completions previously. The
+completion gate still failed for one exhausted calibration control. It repeated
+empty recall/missing-file reads and never wrote output, unlike its previous
+final-turn abstention. Both multiline-r0 extra-field grading ambiguities remain;
+initial artifacts were still 7/8. No result was regraded or replaced.
+
+Both withdrawal-r1 later tasks declared checks, emitted two bounded unverified
+notices each, recorded three skipped step observations each, wrote appropriate
+abstention and completed in seven calls. No shell or harness-check ToolUse was
+generated anywhere in the repeat. The old run's four phantom shell calls are
+retained. All eight original source snapshots stayed unchanged; before/after
+router properties matched. Nonempty recall remained limited to two calibration
+memory tasks. Fresh experiences and stochastic/shared-server variation prevent a
+causal interpretation of the historical score or cost changes. Later memory/control
+used 37/39 calls, 70748/72837 input tokens, 3158/3024 output tokens, and 44.45/39.43
+summed seconds; these are not a speed claim. Exact executables, logs, manifests
+and trace audits remain under `results/memory-planning-checks-20261107/` on Spark.
+
 ### Native bridge comparison harness (2026-11-07, prototype branch)
 
 `memory_bridge_trial::run_trial` connects a real provider to the already-qualified

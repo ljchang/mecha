@@ -10525,8 +10525,16 @@ docstring on `Tracked::checks` says so. The first cut gated on the
 swaps its check through, which is exactly the rewrite the freeze exists for.
 **The loop executes a newly completed step's frozen check** after its tool
 batch, through ordinary shell dispatch: approver, sandbox, interlock and hooks.
-`agent.step_checks` disables execution; denied, unavailable, staged or skipped
-checks remain unverified. At most sixteen checks run per run. The result is a
+`Agent::run_in` admits the optional check queue only when `agent.step_checks`
+is enabled and `shell` is registered. This is a registration check, not a
+permission grant or a snapshot of dynamic availability: registered checks still
+traverse every ordinary dispatch guard. Without a queue, a newly completed
+checked step remains `Verification::Skipped`; `TodoTool` emits one bounded
+unverified notice per completing write, with no repeated notice for an unchanged
+completed-plan echo. Frozen commands and tamper detection remain intact. The
+first native memory comparison exposed harness-generated calls to a nonexistent
+shell, consuming context while contributing no verification. Disabled, denied,
+unavailable, staged or skipped checks remain unverified. At most sixteen checks run per run. The result is a
 trace named `step::CHECK_TRACE`: `Work::of` keeps those out of `calls` (the harness's work is not the
 model's, and `expect_calls` forecasts the model's), counts `checks_declared`
 / `checks_passed` (a refused check in neither), lets a passing check count

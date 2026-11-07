@@ -78,6 +78,11 @@ python3 prototypes/memory/bridge_model_trial.py \
   --output /tmp/mecha-bridge-scripted-new --preflight
 ```
 
+The preflight retains all 24 scheduled slots and adds eight authored probes.
+The unavailable-check probe completes a todo step with a declared command while
+shell is absent: no shell call is generated, feedback remains skipped/unverified,
+and artifact writing still completes. Registered checks retain ordinary guards.
+
 For the real comparison, supply the already resident model and the same holds
 directory used by the local Mecha router controller:
 
@@ -118,7 +123,9 @@ exhausted their turn budget and two exceeded capture's passage bound. Todo check
 also exposed an unavailable-shell dispatch in the fixed registry. Two other exact
 failures reflect an extra output field under ambiguous schema wording. Preserve
 these results; see [HISTORY](../../docs/HISTORY.md) and [HANDOFF](../../docs/HANDOFF.md) for the diagnosis and
-next repair. This prototype is not yet a dependable production memory loop.
+remaining repairs and separately retained follow-up comparisons. Planning-check
+registration is now repaired; capture coverage and dependable stopping still need
+qualification. This prototype is not yet a dependable production memory loop.
 
 ## Main Mecha CLI
 
