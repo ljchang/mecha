@@ -672,6 +672,27 @@ pub struct RunConfig {
         deserialize_with = "lenient_experiment"
     )]
     pub experiment: Option<crate::experiment::ExperimentRef>,
+    /// What a driven run forced (`docs/DRIVER-DESIGN.md` D1b): the leak
+    /// guard, `private` at start, `trifecta = "block"`,
+    /// `permission_mode = "allow"`, `prompt` as `forbid`, and what was
+    /// suppressed. None of these is a [`crate::harness::Lever`], so
+    /// `levers_off` cannot say they were in force. `None` on every run that
+    /// is not driven, and on a record this build cannot read.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_driven"
+    )]
+    pub driven: Option<crate::driven::Forced>,
+}
+
+/// Wire-format rule, as for `experiment`.
+fn lenient_driven<'de, D>(d: D) -> std::result::Result<Option<crate::driven::Forced>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 /// Wire-format rule, as for `levers_off`: a reference this build cannot
@@ -752,6 +773,7 @@ impl Default for RunConfig {
             levers_off: None,
             features_on: None,
             experiment: None,
+            driven: None,
             rules_hash: None,
             rule_ids: Vec::new(),
             rules_skipped: Vec::new(),
@@ -837,6 +859,9 @@ impl RunConfig {
             // file's (stripped from project layers) or a trial home's own.
             features_on: Some(crate::feature::switches_on(config)),
             experiment: crate::experiment::ExperimentRef::from_env(),
+            // Set by the one front-end that forces it (`mecha run`), as
+            // `mismatch_case` is: the agent cannot answer for it.
+            driven: None,
             // A block rendered past a skipped file is not a measurement of
             // the rule set: unknown, never the hash of what was left.
             rules_hash: known.map(|r| r.hash.clone()),

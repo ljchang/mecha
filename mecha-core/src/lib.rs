@@ -76,6 +76,7 @@ pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod document;
+pub mod driven;
 pub mod embed;
 pub mod engine;
 pub mod engine_gate;

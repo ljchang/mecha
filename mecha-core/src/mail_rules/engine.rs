@@ -518,7 +518,50 @@ impl Run<'_> {
         }
     }
 
+    /// An observation the ledger already holds, seen again by a later pass.
+    ///
+    /// The header timer runs every five minutes over a seven-day window, so
+    /// the same shadow match or pre-activation skip is seen about two
+    /// thousand times. Each is one fact about one key, recorded once: neither
+    /// closes the key, and the page's rates already count distinct keys, so a
+    /// repeat changes no measurement and only buries the ledger. A change in
+    /// anything that makes it a different fact (mode, match digest, evidence
+    /// kind, reason, partial headers) is recorded anew. Settlements and
+    /// corrections are never observations.
+    fn already_observed(&self, row: &LedgerRow) -> Option<&LedgerRow> {
+        if !matches!(row.outcome, Outcome::WouldHave | Outcome::Skipped)
+            || row.closes
+            || row.settlement.is_some()
+            || row.correction_of.is_some()
+        {
+            return None;
+        }
+        self.rows.iter().find(|seen| {
+            seen.same_key(row)
+                && seen.outcome == row.outcome
+                && seen.settlement.is_none()
+                && seen.correction_of.is_none()
+                && seen.mode == row.mode
+                && seen.match_digest == row.match_digest
+                && seen.verdict_input == row.verdict_input
+                && seen.reason == row.reason
+                && seen.headers_partial == row.headers_partial
+        })
+    }
+
     fn write(&mut self, row: LedgerRow) -> Result<()> {
+        if let Some(seen) = self.already_observed(&row).cloned() {
+            // Reported as the row the ledger already holds, never as a new
+            // one: the deferred settlement reads this report and appends any
+            // outcome whose id the ledger lacks, and a dry run shows what a
+            // live pass would. Still sync, so a concurrent owner correction
+            // reaches this run as it would through a write.
+            if !self.options.dry_run {
+                self.sync_ledger()?;
+            }
+            self.report_row(seen);
+            return Ok(());
+        }
         if !self.options.dry_run {
             self.store.append_ledger(&row)?;
             self.sync_ledger()?;

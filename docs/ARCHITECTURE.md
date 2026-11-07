@@ -4845,6 +4845,20 @@ exact attempt; uncertain task creation stays held, while an interrupted
 mailbox/record action reopens. Unknown action failure kinds count toward the
 brake; positively identified outages and interruptions do not.
 
+**An observation is recorded once.** A `would_have` or unsettled `skipped`
+row closes no key, and the timer sees the same inbox message every five
+minutes for a week, so `Run::write` drops a repeat that matches a row already
+in the ledger on key, outcome, mode, match digest, `verdict_input`, reason and
+`headers_partial`. Any of those changing is a new fact and is written. Rates
+were never affected, since they count distinct keys; before this, one shadow
+match wrote about two thousand rows and filled the page's ledger window.
+Settlements and corrections are never observations and are always written.
+A repeat is still *reported*, as the row the ledger already holds: the
+after-classify settlement of a deferred snapshot finds its outcome in the
+run's report and appends any outcome whose id the ledger lacks, so a fresh id
+there would bring the growth back under a false "no longer matches" reason,
+and a dry run must show what a live pass would.
+
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound
 action defer removals regardless of priority. Owed actions enter the store's
@@ -8133,6 +8147,33 @@ The design decisions, each of which is a bug if undone:
   been mined into the owner's store. `DRIVER-DESIGN.md` D2 gives driven runs
   a learning store of their own (R6), never a scope, so `Driven` stays in
   `Situation::MARK_KINDS`.
+- **The driven mark is honoured through one door, and only narrows**
+  (`mecha_core::driven`, `DRIVER-DESIGN.md` D1b). The door is a fresh,
+  recorded `mecha run`. The mark is read from the environment, which every
+  verb inherits, so `setup::prepare_tools` refuses it on any start that did
+  not come through `setup::force_driven`. What it does:
+  - **Forces off.** No project layer (`main` forces `global_config_only`
+    for every command under the mark); MCP, hooks, grants, the mailbox,
+    `system_read` and fallbacks off as levers (`setup::DRIVEN_OFF`); and no
+    subagent.
+  - **Narrows the tools** to `driven::TOOLS` through `--tool`'s own
+    narrowing. Not a sweep over levers, because a tool with no `Lever`
+    (`persona_propose`) would slip past one.
+  - **Forces approvals and sends.** `block_sends_after_private`,
+    `trifecta = "block"`, `private` armed at start, `permission_mode =
+    "allow"`, and every question for a person refused (`DrivenApprover`).
+    Each door has its own stem: `driven::PROMPT_REFUSED` for an approval
+    rule's `prompt` (the one D4 counts as approval-floor), and
+    `ESCALATION_REFUSED` and `ACCESS_REFUSED` for the interlock and the jail.
+  - **Refuses to start** in both directions: a driven run whose sandbox can
+    reach the network, whose binds overlap the home, or whose `[outbox]
+    tools` routes an allowlisted tool (its drafts would reach the owner's
+    queue unmarked, and the marking is not built); and an unmarked run
+    whose workspace a home-side marker covers, expired or not.
+  - **Is checked twice.** Before anything spawns (the switches thrown) and
+    after the build (nothing attached).
+  - **Records** the non-lever half on `RunConfig::driven`, because
+    `levers_off` cannot say it.
 - **The owner can mark a session an experiment after the fact**
   (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
   ordinary chat is not the owner's work, and the appraiser read two such

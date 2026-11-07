@@ -8,6 +8,7 @@ pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod document;
+pub mod driven;
 pub mod eval;
 pub mod exp;
 pub mod features;
