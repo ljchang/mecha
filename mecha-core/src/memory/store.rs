@@ -9,11 +9,17 @@ pub struct Memory {
     pub(super) conn: Connection,
     pub(super) instance: String,
     domain: String,
+    pub(super) source_guard: Option<std::sync::Arc<dyn host_capture::ExternalSourceGuard>>,
 }
 
 impl Memory {
     /// Creates a new file, never replaces one. Parent directory must already exist.
     pub fn create(path: &Path, domain: &str) -> Result<Self> {
+        Self::create_schema(path, domain, "")
+    }
+
+    /// Base schema, version extension and identity commit in a single transaction.
+    pub(super) fn create_schema(path: &Path, domain: &str, extension: &str) -> Result<Self> {
         validate_path(path)?;
         ensure!(
             !domain.trim().is_empty() && domain.len() <= 256,
@@ -30,19 +36,31 @@ impl Memory {
             .open(path)
             .context("prototype requires a new file")?;
         drop(file);
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        configure(&conn)?;
-        conn.execute_batch(include_str!("schema.sql"))?;
-        let instance = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO meta VALUES (1,?1,?2,0)",
-            params![instance, domain],
-        )?;
-        Ok(Self {
-            conn,
-            instance,
-            domain: domain.into(),
-        })
+        let result = (|| {
+            let mut conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+            configure(&conn)?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute_batch(include_str!("schema.sql"))?;
+            tx.execute_batch(extension)?;
+            let instance = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO meta VALUES (1,?1,?2,0)",
+                params![instance, domain],
+            )?;
+            tx.commit()?;
+            Ok(Self {
+                conn,
+                source_guard: None,
+                instance,
+                domain: domain.into(),
+            })
+        })();
+        if result.is_err() {
+            // We exclusively created this path above; a failed initialization
+            // must not leave a valid-looking lower-version prototype behind.
+            let _ = std::fs::remove_file(path);
+        }
+        result
     }
 
     /// Checks identity read-only before enabling writes; never upgrades another DB.
@@ -66,6 +84,7 @@ impl Memory {
         )?;
         Ok(Self {
             conn,
+            source_guard: None,
             instance,
             domain,
         })
@@ -90,6 +109,7 @@ impl Memory {
         )?;
         Ok(Self {
             conn,
+            source_guard: None,
             instance,
             domain,
         })
@@ -103,6 +123,22 @@ impl Memory {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let digest = source_digest(&self.instance, &input.source)?;
+        let existing = tx
+            .query_row(
+                "SELECT object_id FROM source_item WHERE digest=?1",
+                [&digest],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(object) = existing {
+            if let Some((reference, _, _)) = head(&tx, &object, i64::MAX)? {
+                ensure!(
+                    unguarded(&tx, &reference)?,
+                    "unsupported guarded source update"
+                );
+            }
+        }
         let reference = capture_in(&tx, &self.instance, input)?;
         tx.commit()?;
         Ok(reference)
@@ -140,7 +176,9 @@ impl Memory {
         self.check_access(access)?;
         let tx = self.conn.unchecked_transaction()?;
         let record = lookup(&tx, reference)?;
-        let result = if record.is_some() && authorized(&tx, reference, access)? {
+        let result = if record.is_some()
+            && authorized_with_guard(&tx, reference, access, self.source_guard.as_deref())?
+        {
             record
         } else {
             None
@@ -182,6 +220,7 @@ impl Memory {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(prev) = expected {
+            ensure!(unguarded(&tx, prev)?, "unsupported guarded dependency");
             current(&tx, prev)?;
             ensure!(
                 matches!(lookup(&tx, prev)?, Some(Record::Relation(_))),
@@ -219,6 +258,10 @@ impl Memory {
         dependencies.extend(input.consulted.iter().cloned());
         let mut scopes = BTreeSet::new();
         for dependency in &dependencies {
+            ensure!(
+                unguarded(&tx, dependency)?,
+                "unsupported guarded dependency"
+            );
             current(&tx, dependency)?;
             if let Some(expected) = expected {
                 ensure!(
@@ -251,6 +294,7 @@ impl Memory {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         current(&tx, expected)?;
+        ensure!(unguarded(&tx, expected)?, "unsupported guarded dependency");
         let record = lookup(&tx, expected)?.context("missing record")?;
         ensure!(
             matches!(record, Record::Relation(_) | Record::Concept(_)),
@@ -300,7 +344,7 @@ impl Memory {
         for row in rows {
             let (revision, object, seq, payload) = row?;
             let reference = RevisionRef { object, revision };
-            if !authorized(&tx, &reference, access)?
+            if !authorized_with_guard(&tx, &reference, access, self.source_guard.as_deref())?
                 || !fresh(&tx, &reference, query.known_at.sequence)?
             {
                 continue;
@@ -333,8 +377,14 @@ impl Memory {
             }
         }
         drop(statement);
+        let mut checked = Vec::new();
+        for hit in hits {
+            if authorized_with_guard(&tx, &hit.reference, access, self.source_guard.as_deref())? {
+                checked.push(hit);
+            }
+        }
         tx.commit()?;
-        Ok(hits)
+        Ok(checked)
     }
 
     pub(crate) fn check_access(&self, access: &Access) -> Result<()> {

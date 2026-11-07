@@ -20,13 +20,15 @@ impl Memory {
         )?;
         loop {
             let added=tx.execute("INSERT OR IGNORE INTO doomed SELECT r.object_id FROM dependency d JOIN revision i ON i.id=d.input JOIN revision r ON r.id=d.output WHERE i.object_id IN (SELECT id FROM doomed)",[])?;
-            let lifecycle_added = durable::extend_forgotten(&tx)?
+            let lifecycle_added = host_capture::extend_forgotten(&tx)?
+                + durable::extend_forgotten(&tx)?
                 + durable_decision::extend_forgotten(&tx)?
                 + durable_action::extend_forgotten(&tx)?;
             if added + lifecycle_added == 0 {
                 break;
             }
         }
+        host_capture::invalidate_forgotten(&tx)?;
         durable_action::invalidate_forgotten(&tx)?;
         durable_decision::invalidate_forgotten(&tx)?;
         durable::invalidate_forgotten(&tx)?;

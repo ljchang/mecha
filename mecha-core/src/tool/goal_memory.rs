@@ -4,6 +4,7 @@ use super::{goal_context::GoalContext, Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::clock::{Clock, SystemClock};
 use crate::memory::{
     context::{ContextPolicy, ContextRequest, Situation},
+    host_capture::ExternalSourceGuard,
     Access, Memory, RecallQuery,
 };
 use anyhow::{ensure, Context, Result};
@@ -34,12 +35,41 @@ impl GoalMemory {
         Self::open_with_clock(path, access, account, situation, Arc::new(SystemClock))
     }
 
+    /// Opens the explicitly selected store with host-owned source authority.
+    pub fn open_with_source_guard(
+        path: &Path,
+        access: Access,
+        account: String,
+        situation: Situation,
+        guard: Arc<dyn ExternalSourceGuard>,
+    ) -> Result<Self> {
+        Self::open_configured(
+            path,
+            access,
+            account,
+            situation,
+            Arc::new(SystemClock),
+            Some(guard),
+        )
+    }
+
     pub(super) fn open_with_clock(
         path: &Path,
         access: Access,
         account: String,
         situation: Situation,
         clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        Self::open_configured(path, access, account, situation, clock, None)
+    }
+
+    fn open_configured(
+        path: &Path,
+        access: Access,
+        account: String,
+        situation: Situation,
+        clock: Arc<dyn Clock>,
+        guard: Option<Arc<dyn ExternalSourceGuard>>,
     ) -> Result<Self> {
         ensure!(
             !account.trim().is_empty() && account.len() <= 256,
@@ -51,7 +81,10 @@ impl GoalMemory {
                 && situation.needs.as_ref().is_none_or(|n| n.len() <= 1024),
             "oversized memory situation"
         );
-        let memory = Memory::open_read_only(path)?;
+        let mut memory = Memory::open_read_only(path)?;
+        if let Some(guard) = guard {
+            memory = memory.with_source_guard(guard);
+        }
         memory.check_access(&access)?;
         let policy = ContextPolicy {
             access,

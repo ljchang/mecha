@@ -130,6 +130,8 @@ pub mod memory_action_runtime;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_decision_runtime;
 #[cfg(feature = "memory-prototype")]
+pub mod memory_experience_bridge;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_outcome_reappraisal;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_runtime;

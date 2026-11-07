@@ -15,9 +15,12 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        app == 1296912466 && matches!(version, 1..=5),
+        app == 1296912466 && matches!(version, 1..=6),
         "not a supported Mecha memory prototype"
     );
+    if version == 6 {
+        host_capture::validate_schema(conn)?;
+    }
     Ok(())
 }
 pub(super) fn validate_path(path: &Path) -> Result<()> {
@@ -189,7 +192,28 @@ pub(super) fn authorized(
     reference: &RevisionRef,
     access: &Access,
 ) -> Result<bool> {
+    authorized_with_guard(conn, reference, access, None)
+}
+pub(super) fn authorized_with_guard(
+    conn: &Connection,
+    reference: &RevisionRef,
+    access: &Access,
+    guard: Option<&dyn host_capture::ExternalSourceGuard>,
+) -> Result<bool> {
+    let bindings = host_capture::has_bindings(conn)?;
     for input in closure(conn, reference)? {
+        if bindings {
+            let binding = conn.query_row("SELECT authority,locator,binding_revision FROM external_binding WHERE revision=?1", [&input.revision], |r| Ok(host_capture::ExternalBinding { authority:r.get(0)?,locator:r.get(1)?,revision:r.get(2)? })).optional();
+            match binding {
+                Ok(Some(b))
+                    if host_capture::valid_binding(&b)
+                        && guard.is_some_and(|g| {
+                            g.check(&b) == host_capture::SourceStatus::Checked
+                        }) => {}
+                Ok(None) => {}
+                _ => return Ok(false),
+            }
+        }
         if restricted(conn, &input.object)? {
             return Ok(false);
         }
@@ -200,6 +224,23 @@ pub(super) fn authorized(
             return Ok(false);
         };
         if !required_scopes(conn, &now.revision)?.is_subset(&access.scopes) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+/// Unsupported producers never acquire bridge authority from a guarded input.
+pub(super) fn unguarded(conn: &Connection, reference: &RevisionRef) -> Result<bool> {
+    if !host_capture::has_bindings(conn)? {
+        return Ok(true);
+    }
+    for input in closure(conn, reference)? {
+        let bound: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM external_binding WHERE revision=?1)",
+            [&input.revision],
+            |r| r.get(0),
+        )?;
+        if bound {
             return Ok(false);
         }
     }

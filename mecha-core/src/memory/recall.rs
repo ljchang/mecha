@@ -58,7 +58,28 @@ impl Memory {
         access: &Access,
     ) -> Result<Vec<RecallHit>> {
         let tx = self.conn.unchecked_transaction()?;
-        let hits = self.recall_in(query, mention, access, &tx)?;
+        let mut hits = self.recall_in(query, mention, access, &tx)?;
+        let mut checked = Vec::new();
+        for hit in hits.hits {
+            let mut valid = authorized_with_guard(
+                &tx,
+                &hit.anchor.reference,
+                access,
+                self.source_guard.as_deref(),
+            )?;
+            for neighbor in &hit.context {
+                valid &= authorized_with_guard(
+                    &tx,
+                    &neighbor.reference,
+                    access,
+                    self.source_guard.as_deref(),
+                )?;
+            }
+            if valid {
+                checked.push(hit);
+            }
+        }
+        hits.hits = checked;
         tx.commit()?;
         Ok(hits.hits)
     }
@@ -118,7 +139,13 @@ impl Memory {
         // FTS5's built-in rank uses collection-wide statistics. A WHERE
         // clause on the persistent index cannot isolate historical/scope
         // statistics, so score a disposable eligible-corpus index in RAM.
-        let scorer = eligible_index(tx, &query, access, mention.is_some())?;
+        let scorer = eligible_index(
+            tx,
+            &query,
+            access,
+            mention.is_some(),
+            self.source_guard.as_deref(),
+        )?;
         let sql = if mention.is_some() {
             "SELECT revision,object_id,seq,bm25(evidence) FROM evidence
              WHERE evidence MATCH ?1 AND revision IN
@@ -148,7 +175,16 @@ impl Memory {
             let Some(record) = lookup(tx, &reference)? else {
                 continue;
             };
-            let Some(anchor) = eligible(tx, reference, seq, record, &query, access)? else {
+            let Some(anchor) = eligible(
+                tx,
+                reference,
+                seq,
+                record,
+                &query,
+                access,
+                self.source_guard.as_deref(),
+            )?
+            else {
                 continue;
             };
             let size = serde_json::to_vec(&anchor)?.len();
@@ -212,7 +248,16 @@ impl Memory {
             for row in rows {
                 let (reference, seq, payload) = row?;
                 let record = serde_json::from_str(&payload)?;
-                let Some(neighbor) = eligible(tx, reference, seq, record, &query, access)? else {
+                let Some(neighbor) = eligible(
+                    tx,
+                    reference,
+                    seq,
+                    record,
+                    &query,
+                    access,
+                    self.source_guard.as_deref(),
+                )?
+                else {
                     continue;
                 };
                 let size = serde_json::to_vec(&neighbor)?.len();
@@ -243,6 +288,7 @@ pub(super) fn eligible(
     record: Record,
     query: &RecallQuery,
     access: &Access,
+    guard: Option<&dyn host_capture::ExternalSourceGuard>,
 ) -> Result<Option<Hit>> {
     let Record::Evidence(ref e) = record else {
         return Ok(None);
@@ -269,7 +315,8 @@ pub(super) fn eligible(
             return Ok(None);
         }
     }
-    if !authorized(conn, &reference, access)? || !fresh(conn, &reference, query.known_at.sequence)?
+    if !authorized_with_guard(conn, &reference, access, guard)?
+        || !fresh(conn, &reference, query.known_at.sequence)?
     {
         return Ok(None);
     }
@@ -291,6 +338,7 @@ fn eligible_index(
     query: &RecallQuery,
     access: &Access,
     with_mentions: bool,
+    guard: Option<&dyn host_capture::ExternalSourceGuard>,
 ) -> Result<Connection> {
     let mut scorer = Connection::open_in_memory()?;
     scorer.execute_batch("PRAGMA temp_store=MEMORY;
@@ -323,7 +371,7 @@ fn eligible_index(
         for row in rows {
             let (reference, seq, payload, text) = row?;
             let record = serde_json::from_str(&payload)?;
-            if let Some(hit) = eligible(conn, reference, seq, record, query, access)? {
+            if let Some(hit) = eligible(conn, reference, seq, record, query, access, guard)? {
                 if with_mentions {
                     tx.execute(
                         "INSERT INTO mentions VALUES (?1,?2)",
