@@ -140,8 +140,11 @@ The shape:
   task's deadline. Teardown removes it, and a marker past its deadline loads
   nothing even if teardown failed. The deadline governs this load only. D1b's
   refusal of an unmarked run keys on the marker's presence, expired or not
-  (§7). The run cannot reach it, because `setup`
-  refuses any jail that contains the mecha home. A wrong mark with no
+  (§7). The run cannot reach it. Inside the jail, bwrap binds only the
+  workspace and the `[sandbox] readable` paths, and `setup` refuses any jail
+  that contains the mecha home. So R7's `readable` list must never cover the
+  mecha home or a parent of it, and a driven run whose resolved `readable`
+  set does is refused at start. A wrong mark with no
   marker, or a marker with no mark, loads nothing, so the boundary fails
   dark both ways: on a missing mark and on a mistaken one.
 - **The readers that notice a sick store must see it.** `doctor` walks
@@ -234,11 +237,11 @@ The shape:
   - **Five tests:**
     1. an owner-store `learn` refuses a driven reflection, an edited one
        included;
-    2. `learnable()` is false for a driven reflection whatever its `Origin`,
-       edited or not;
+    2. `learnable_into_owner()` (the renamed `learnable()`) is false for a
+       driven reflection whatever its `Origin`, edited or not;
     3. a driven `triage`-domain reflection under untrusted taint is
        learnable into neither store (the case that broke the earlier draft);
-    4. an edited driven reflection is learnable into the driven store;
+    4. an edited driven reflection is `learnable_into(StoreKind::Driven)`;
     5. a driven reflection under untrusted taint, unedited, is learnable
        into neither store.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
@@ -575,9 +578,27 @@ rather than trusting each run to be configured right:
   `Chosen`, is refused for the whole run. The pilot's tasks are offline
   repository work and lose nothing. A later task that needs the network is
   a ruling, not a default.
-- **Kept**: builtins (under the interlock as always), the owner's learned
-  rules, skills and charter. The harness is measured as the owner runs it,
-  minus the private surfaces.
+- **A driven run's tools are an allowlist, never a sweep.** Forcing levers
+  off misses every tool that has no `Lever`. `persona_propose` is gated on
+  `Feature::Personas` alone and writes into the mecha home with
+  `Capabilities::default()` and no approver, so a driven run could stage a
+  persona onto the owner's page. The `image_library` tools, gated on
+  `Feature::Library`, read a global-only store of character descriptions
+  that may be of real people, and their results land in a transcript that a
+  D5 fork sends to the ceiling. Neither has a `Lever`. This is the fourth
+  list in this design to come up short (config tables, `learnable()`
+  readers, layers, and now tools), so the rule is a closed allowlist: a
+  driven run registers only the builtins whose effects stay inside its jail
+  (the file, search and edit tools, `shell` under the sandbox, `code`), and
+  `web_search` and `http_fetch`, which the forced send guard refuses anyway.
+  Every other tool, feature-gated or MCP, is absent from a driven run unless
+  this document names it. A tool added later is then out of driven runs by
+  default, failing closed, where a sweep over levers would have let it in.
+  The run record's `features_on` already sits beside `levers_off`, and the
+  registered tool list is recorded with them.
+- **Kept**: those builtins (under the interlock as always), the owner's
+  learned rules, skills and charter. The harness is measured as the owner
+  runs it, minus the private surfaces.
 - **The charter stays on, and that is a stated cost (R8, the owner's).**
   Whatever rides in the system prompt leaves the machine on every ceiling
   rerun (§4's `claude-opus-5`), the charter included. §4 requires the same
@@ -686,9 +707,11 @@ passes vacuously.
 ## 8. Open, and named
 
 - **Build cost.** A cold `cargo build` per task clone is minutes, and the
-  disk cost is large. The target directory must sit inside the clone,
-  because the run builds inside its jail with no grant (§7), so a shared
-  `CARGO_TARGET_DIR` outside it is not available to the run. The likely
+  disk cost is large. The target directory must sit inside the clone. A
+  shared `CARGO_TARGET_DIR` outside it would need a `[sandbox] writable`
+  entry, which is the direction §7's no-push bullet calls dangerous: a
+  `writable` entry is how a jail reaches outside itself. It is not blocked
+  by "no grant", because `[sandbox]` is not a grant. The likely
   answer is that setup, which is the harness, pre-builds the pin's
   dependencies into the clone's own `target/` before the run starts, so
   the run pays only for the crates it touches. One build at a time, gated on
@@ -704,7 +727,10 @@ passes vacuously.
   **reach the process**, and is the toolchain tree **readable**. With
   `HOME=<workspace>`, a toolchain found by home-relative lookup resolves
   inside the jail. The expected remedy is `[sandbox] readable` for the
-  toolchain and `[sandbox] env` for the three variables (R7).
+  toolchain, `[sandbox] env` for `CARGO_HOME` and `RUSTUP_HOME`, and
+  `cargo` by absolute path, because `PATH` collides with bwrap's own pinned
+  value (R7). The measurement also pins which `--setenv` wins for a name
+  bwrap already sets.
 - **Old trees and the 2026-11-04 history rewrite.** Commits from 2026-09-09
   to 2026-10-04 no longer build `mecha-core`'s tests. The rewrite's
   `--replace-text` changed `include_str!` paths in `mismatch.rs` to the
@@ -755,12 +781,18 @@ passes vacuously.
   every failure leaves a driven rule dark rather than applying it to the
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
 - **R7, recommended, the owner's config.** A driven run reaches the Rust
-  toolchain through the owner's `[sandbox] readable` (the toolchain trees)
-  and `[sandbox] env` (`PATH`, `CARGO_HOME`, `RUSTUP_HOME`) in the owner's
-  **global** file, never through a `[[grant]]`, never through anything the
-  driver names, and never from a project layer, which a driven run does not
-  read (§7). The entry
-  is the owner's to add, after the §8 measurement says what it must hold.
+  toolchain through the owner's `[sandbox] readable` (the toolchain trees,
+  never the mecha home or a parent of it) and `[sandbox] env` (`CARGO_HOME`,
+  `RUSTUP_HOME`) in the owner's **global** file. `PATH` is *not* named
+  there: `bwrap_args` applies `[sandbox] env` after its own pinned `PATH`, so
+  naming it would substitute the operator's whole host `PATH`, or do
+  nothing, depending on which `--setenv` wins. Either is wider or narrower
+  than "the toolchain is on PATH". So `cargo` is invoked by its absolute path
+  under the readable toolchain tree, and the §8 measurement pins which
+  `--setenv` wins before anyone relies on it. Neither entry comes through a
+  `[[grant]]`, through anything the driver names, or from a project layer,
+  which a driven run does not read (§7). Both are the owner's to add, after
+  the §8 measurement says what they must hold.
 - **R8. The charter stays on** on every arm of a driven run (owner,
   2026-11-06), including the ceiling's, where it leaves the machine. The
   recommendation had been off; the owner kept it, so driven runs measure the
