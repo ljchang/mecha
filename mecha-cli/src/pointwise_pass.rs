@@ -56,6 +56,10 @@ pub struct Tally {
     pub sessions_read: usize,
     pub sessions_unreadable: usize,
     pub tests_hidden: usize,
+    /// Driven sessions the admission hid (`DRIVER-DESIGN.md` D1): counted
+    /// where they were excluded, or a recent window of driving reads as an
+    /// empty pool rather than a filter working.
+    pub driven_hidden: usize,
     /// Every point found, by kind — before provenance, so a readout can say
     /// how much of the corpus the gate keeps out.
     pub found: BTreeMap<String, usize>,
@@ -222,6 +226,9 @@ pub fn collect(
         if !scan.admits(&meta) {
             if scan.hides_test(&meta) {
                 tally.tests_hidden += 1;
+            }
+            if scan.hides_driven(&meta) {
+                tally.driven_hidden += 1;
             }
             continue;
         }
@@ -554,6 +561,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
         kind: opts.kind,
         include_tests: opts.include_tests,
         include_experiments: mecha_core::experiment::in_experiment_home(),
+        include_driven: false,
     };
     let mut tally = Tally::default();
     let sessions_dir = Session::default_dir()?;
@@ -1232,8 +1240,15 @@ fn skipped_line(t: &Tally) -> String {
 fn print_text(t: &Tally, seed: u64, outbox_read: bool) {
     let found: Vec<String> = t.found.iter().map(|(k, n)| format!("{k} {n}")).collect();
     println!(
-        "point-wise comparison (seed {seed}): {} session(s) read, {} unreadable, {} test session(s) hidden",
-        t.sessions_read, t.sessions_unreadable, t.tests_hidden
+        "point-wise comparison (seed {seed}): {} session(s) read, {} unreadable, {} test session(s) hidden{}",
+        t.sessions_read,
+        t.sessions_unreadable,
+        t.tests_hidden,
+        if t.driven_hidden > 0 {
+            format!(", {} driven session(s) hidden", t.driven_hidden)
+        } else {
+            String::new()
+        }
     );
     println!(
         "  points found: {}",

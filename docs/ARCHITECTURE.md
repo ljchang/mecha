@@ -6837,7 +6837,9 @@ X3 unparked).
 - **History is what the ledger forecast as real.** A smoke run's draft
   (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
   counts as history, and the readout sets it aside. The instrument must not
-  measure its own tests. Drafts from before forecasting began are not
+  measure its own tests. A driven run's draft (`driven`) is set aside the
+  same way, under the same field, because another agent staged it and it
+  says nothing about how the owner acts. Drafts from before forecasting began are not
   history either.
 - **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
   under the patience window recorded on the forecast when it was made
@@ -8103,7 +8105,7 @@ The design decisions, each of which is a bug if undone:
   runs. Doctor's constraint — one pass, no network, no model — is the bar.
 - **A session has a kind, written by the front-end and never inferred**
   (`SessionKind` on `SessionMeta`: run, chat, tui, web, voice, task,
-  trigger, frontdoor, mail, slack, test). `Test` is excluded
+  trigger, frontdoor, mail, slack, test, experiment, driven). `Test` is excluded
   from every corpus readout by default, `--kind test` implies inclusion, a
   row with no kind matches no `--kind` filter, and the hidden rows are
   *counted* at every reader (`Corpus::hidden_tests`, and the same number on
@@ -8113,6 +8115,24 @@ The design decisions, each of which is a bug if undone:
   a chat into a test, never a test into anything else. The incident: 46 of
   143 appraised sessions were development runs before the mark existed, and
   the instrument measured its own tests.
+- **A driven session is another agent's run on real work**
+  (`SessionKind::Driven`, `MECHA_SESSION_KIND=driven`, `DRIVER-DESIGN.md`
+  D1), and it lives in the owner's own store. Every reader hides it by
+  default and counts what it hid (`Corpus::hidden_driven`, `driven_hidden`
+  on `list`, `health` and `appraise`); `--kind driven` admits it. Unlike an
+  experiment, no home admits it by default, and admitting the other marks
+  never admits it. The rule is fitness: fitness is the owner's usage, and a
+  driver pushing the harness to fail is not usage. Nothing is learned from
+  a driven session: `reflect`'s transcript pass, `distill`, the contrast
+  pool and the persona writer all admit through `Scan::admits`, and
+  `reflect`'s outbox pass, which selects by the owner's verdict on a draft
+  rather than by session, passes over a draft whose staging session the
+  admission refuses or the store cannot resolve (`staged_by_refused`: a torn
+  header drops a transcript from the listing, and unknown is never clean). That second half was found on
+  review: a draft a driven run staged and the owner then edited would have
+  been mined into the owner's store. `DRIVER-DESIGN.md` D2 gives driven runs
+  a learning store of their own (R6), never a scope, so `Driven` stays in
+  `Situation::MARK_KINDS`.
 - **The owner can mark a session an experiment after the fact**
   (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
   ordinary chat is not the owner's work, and the appraiser read two such
@@ -11315,8 +11335,8 @@ comparison over a chosen set**, with the design written before the run.
   its own hash term, and `identical_arms` takes the per-arm digests, or two
   arms differing only in environment would be named identical.
 - **A session in a trial home is `SessionKind::Experiment`** (D13), set by
-  the runner through `MECHA_SESSION_KIND` — the second and last kind an
-  environment may set, beside `test`. `runlog::Scan` hides it in the real
+  the runner through `MECHA_SESSION_KIND`, one of the three marks an
+  environment may set, beside `test` and `driven`. `runlog::Scan` hides it in the real
   store like a test session — and counts what it hid
   (`Corpus::hidden_experiments`, `hides_experiment`), on the incident
   behind `hidden_tests`: the failure was never that test runs were

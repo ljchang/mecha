@@ -441,7 +441,9 @@ mecha sessions appraise --days 30
 Use `--kind web`, `--kind task`, or another recorded surface to narrow the
 scan. Development sessions marked `MECHA_SESSION_KIND=test` are excluded by
 default; `--include-tests` includes them, and `--kind test` implies that flag.
-Experiment sessions are excluded from the ordinary corpus as well.
+Experiment sessions are excluded from the ordinary corpus as well, and so are
+driven sessions (`MECHA_SESSION_KIND=driven`), which another agent ran on real
+work; `--kind driven` reads only those.
 
 ```bash
 mecha sessions appraise --days 30 --kind web --json
@@ -459,7 +461,7 @@ mecha sessions appraise --days 30 --kind web --json
 | `unattributed_rejections` | Rejected drafts with a reason that is not recorded as yours — a run's `shell` made the reject, or it predates the record of who did. Never mined. |
 | `curation` | Your verdicts on rules (`retired`, `restored`), reflections (`dropped`, `edited`) and harness candidates (`accepted`, `rejected`, `reverted`); a group is `null` when its store could not be read. None of these is a run's score. |
 | `graph_fact_rejections` | Always `null` for now: not readable from mecha. |
-| `tests_hidden`, `experiments_hidden` | Development data excluded from the population. |
+| `tests_hidden`, `experiments_hidden`, `driven_hidden` | Development and driven sessions excluded from the population. |
 | `probe` | Results of the optional paid pass; `null` when it did not run. |
 | `comparisons` | The comparison store, counted for **one model**: `model` is the model of the newest comparison a model was run on, and `records`, the verdict counts (`separated`, `tied`, `inconclusive`, `unreadable_verdict`), `judge_decided`, `by_kind` and `separated_share` are that model's only. Comparisons under other models (`other_models`) are counted beside it, never in it, because a share summed across models describes none of them. `unposed` counts the moments no structural test could pose, across the store: no model was run on them, so they belong to none. `no_model` counts any other comparison with no model recorded, which is unknown and never counted. `separated_share` is `null` when nothing was decided; `read` is `false` when a line could not be read. |
 | `appraiser` | Always `null`: the counts-only appraiser is retired. Kept so a reader of the old shape still finds the key. |

@@ -148,6 +148,10 @@ pub fn corpus_slice(
             include_tests: false,
             // Experiment sessions belong to their trial home's readers (D13).
             include_experiments: mecha_core::experiment::in_experiment_home(),
+            // Fitness is the owner's usage: a driven run's failures are the
+            // driver's ledger, and how diagnosis may read them is
+            // `DRIVER-DESIGN.md` D2's question, not this default's.
+            include_driven: false,
         },
     )?;
     let sessions_read = corpus.sessions_read;
@@ -196,13 +200,12 @@ pub fn corpus_slice(
             // set the mark). After the unreadable finding, never ahead of
             // it: a rotting store must not read as a filter working
             // (found on the next review pass).
-            if sessions_read == 0 && corpus.hidden_tests > 0 {
+            if sessions_read == 0 && !excluded_marks(&corpus).is_empty() {
                 anyhow::bail!(
-                    "the only sessions rooted under {} are {} smoke-test session(s) \
-                     (`MECHA_SESSION_KIND=test`), which the diagnosis excludes — a \
+                    "the only sessions rooted under {} are {}, which the diagnosis excludes — a \
                      candidate is measured against real use, and there is none here yet.",
                     w.display(),
-                    corpus.hidden_tests
+                    excluded_marks(&corpus)
                 );
             }
             if sessions_read == 0 {
@@ -232,17 +235,43 @@ pub fn corpus_slice(
                 corpus.unreadable
             );
         }
-        if corpus.hidden_tests > 0 && sessions_read == 0 {
+        if !excluded_marks(&corpus).is_empty() && sessions_read == 0 {
             anyhow::bail!(
-                "the store holds only {} smoke-test session(s) (`MECHA_SESSION_KIND=test`), \
-                 which the diagnosis excludes — nothing recorded as real use yet.",
-                corpus.hidden_tests
+                "the store holds only {}, which the diagnosis excludes — nothing recorded as \
+                 real use yet.",
+                excluded_marks(&corpus)
             );
         }
         return Ok(None);
     }
     let (model, slice) = pick_slice(&corpus.by_model(), want)?;
     Ok(Some((model, slice, sessions_read)))
+}
+
+/// The marked sessions an empty diagnosis excluded, named by what marked
+/// them: a store of only driven runs must read as the filter working, never
+/// as a prefix typo (`DRIVER-DESIGN.md` D1, found on review of #848).
+fn excluded_marks(corpus: &Corpus) -> String {
+    let mut parts = Vec::new();
+    if corpus.hidden_tests > 0 {
+        parts.push(format!(
+            "{} smoke-test session(s) (`MECHA_SESSION_KIND=test`)",
+            corpus.hidden_tests
+        ));
+    }
+    if corpus.hidden_experiments > 0 {
+        parts.push(format!(
+            "{} experiment session(s) (trial runs, or ones marked with `sessions mark`)",
+            corpus.hidden_experiments
+        ));
+    }
+    if corpus.hidden_driven > 0 {
+        parts.push(format!(
+            "{} driven session(s) (`MECHA_SESSION_KIND=driven`, another agent's runs)",
+            corpus.hidden_driven
+        ));
+    }
+    parts.join(" and ")
 }
 
 /// Build the evidence brief for one model's slice: counters, plus doctor's
@@ -1093,6 +1122,33 @@ mod tests {
             sessions_read: 1,
             ..Default::default()
         }
+    }
+
+    /// An empty diagnosis names every mark it excluded, so a store of only
+    /// driven runs reads as the filter working, never as a prefix typo
+    /// (review of #848). Before the fix, a driven-only store fell through to
+    /// "the filter matched nothing".
+    #[test]
+    fn an_empty_diagnosis_names_the_driven_sessions_it_excluded() {
+        let mut c = corpus(Vec::new());
+        c.hidden_driven = 3;
+        let said = excluded_marks(&c);
+        assert!(said.contains("3 driven session(s)"), "{said}");
+        assert!(!said.contains("smoke-test"), "{said}");
+        c.hidden_tests = 2;
+        c.hidden_experiments = 1;
+        let all = excluded_marks(&c);
+        assert!(
+            all.contains("2 smoke-test session(s)")
+                && all.contains("1 experiment session(s)")
+                && all.contains("3 driven session(s)"),
+            "{all}"
+        );
+        assert_eq!(
+            excluded_marks(&corpus(Vec::new())),
+            "",
+            "nothing excluded, nothing said"
+        );
     }
 
     /// **The invariant the other tests could not see.** All three set
