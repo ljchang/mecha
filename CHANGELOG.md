@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An opt-in synthetic appraisal bridge connects ordinary task execution,
+  independent artifact checks and existing appraisal to source-linked v6 memory.
+  An explicit example reopens memory in another process under a changed task
+  criterion. Current source checks guard recall; capture retries do not replay
+  actions, and host sensor data stays outside reader memory. This is authored
+  integration qualification, not automatic production capture or a learning claim.
+
 - A separately versioned, synthetic 48-response memory-benefit diagnostic compares
   source-only and recalled-outcome decisions with frozen inputs, independent
   scoring, authored transport qualification and no retries. It leaves earlier

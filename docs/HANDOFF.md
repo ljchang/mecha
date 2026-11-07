@@ -56,27 +56,36 @@ build, 6302 default tests / 0 failed / 25 ignored, fmt and strict Clippy passed.
 independent oracle, frozen rubric and audits: results/memory-benefit-20261107.
 Current GitHub CI/review status remains on draft PR #846; no merge is authorized.
 
-**Next MVP slice (owner priority, 2026-11-07):** streamline appraisal integration
-per `MECHA-MEMORY-DESIGN.md` §31. Two source audits and an independent builder
-review found no unresolved design blocker. The design is not implemented. First
-bridge one ordinary guarded task into memory capture and existing appraisal, then recall it on a fresh invocation with a changed constraint.
-Reuse `Agent::run_in`, the tool registry and plan checks; do not build another
-executor. `GoalMemory::call` already preserves `GoalContext` lessons and past
-appraisals, and synthetic action feedback reuses `planning::StepFeedback`.
-However, fixture feedback has no goal/criterion linkage, the memory reader passes
-`Situation.needs=None`, and the prototype action/comparison path does not call
-`appraisal::of_session` or `live_readout`. Capture the run's actual observation
-and checked result into source-linked
-memory; retain host-only goal/sensor/appraisal context in its canonical records.
-Do not serialize full Appraisal/RunStats into reader-visible memory. Preserve
-Clean-only interpretation eligibility and explicit source withdrawal checks;
-missing sensors remain unknown.
-Start in an explicit synthetic workspace; use fast inference as baseline and
-bounded reconsideration for failed checks. A second invocation must demonstrate
-useful recall and changed-goal interpretation without rewriting the historical
-appraisal. Fresh natural-language tasks and independently observed outcomes are
-the acceptance test; the completed arithmetic diagnostic is not a working
-production MVP. Useful concept revision and rumination follow this integration.
+**2026-11-07 — connected appraisal bridge (prototype branch).**
+`memory_experience_bridge::LocalAuthority` freezes an explicit synthetic task
+criterion/check before ordinary `Agent::run_in` dispatch, reads native JSONL once
+for source evidence/appraisal, independently checks the artifact, and admits a
+bounded observation through `Memory::admit_host_capture`. Host-only appraisal,
+charter/sensors and audit records stay outside reader SQLite and the task
+workspace. New v6 files require injected current source authority for bound reads;
+unknown authority, source changes, withdrawal and forgetting fail closed.
+Existing v1–v5 experiments are not migrated. The authored `memory_bridge` example
+uses ordinary file/todo tools and a separate process for a changed-criterion
+`GoalMemory` task. Its outputs establish integration, not real-model benefit.
+See `prototypes/memory/README.md` for the explicit synthetic command and HISTORY
+for verification results. Code `540485f71` passed Spark workspace build, fmt,
+strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6642
+memory-enabled tests (0 failed / 29 ignored), and the connected example.
+Production chat does not automatically capture runs.
+
+**Next MVP qualification:** run this connected workflow with real models on a
+fresh frozen natural-language task set, with independently checked outcomes and
+memory-withheld controls. Use fast inference as baseline; report current-criterion
+adherence, abstention, useful recall and cost, including ceilings/no gain. The
+completed numeric diagnostic and authored bridge are different evidence.
+
+Then implement §31 C: share bounded episode assembly with the existing
+interpretation/distillation path, separate the agent interpretation producer from
+graph export, and compare grounding/scope/cost/consumer eligibility before switching
+default writers or retiring old orchestration. Keep Clean-only interpretation
+eligibility, conversation taint and action permission unchanged. Broader situated
+interpretations, useful concept revision and rumination remain open; the bridge
+retains historical host appraisal without exposing internal sensors to the model.
 
 The transitive-freshness limitation remains: revising a consulted source makes
 its independently measured outcome ineligible. Separating historical provenance
@@ -93,12 +102,11 @@ production deployment claim was requalified by this memory-only increment.
 
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
-Research v0.23 published 2026-11-07, source
-`ccf9890b1dd68c0238cb6bab588015fa9661a7d4`, deployment
-`appgdep_6aef22df774881918ab672554810d2f9` succeeded. All 64 prior IDs retained
-(65 current); internal links, scripts, unchanged SVG and dist mirror checked.
-The v0.22 comparison results were verified in the published browser; v0.23's
-text-only design addition was statically checked and native publication confirmed.
+Research v0.24 published 2026-11-07, source
+`39dfcf7f1f1a4181ea0ce6b972b4df06f7545c78`, deployment
+`appgdep_6aef34024e208191a98c26452e669564` succeeded. All 65 prior IDs retained;
+internal links, scripts, unchanged SVG and dist mirrors checked. The published
+browser showed the implemented bridge and exact qualification results.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

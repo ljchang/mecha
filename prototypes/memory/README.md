@@ -13,6 +13,49 @@ unpublished harness compiles the **same source and synthetic fixture**, without
 pulling in unrelated Mecha dependencies. It is not another implementation or
 a new production service.
 
+## Connected task, appraisal and recall demonstration
+
+The feature-gated `mecha-core` example connects ordinary `Agent::run_in` tools
+to an independently checked artifact, existing deterministic appraisal and an
+explicitly created v6 memory file. Run from the repository root with a **new**
+absolute directory:
+
+```sh
+MECHA_SESSION_KIND=test cargo run -p mecha-core --features memory-prototype \
+  --example memory_bridge -- --synthetic-only /tmp/mecha-appraisal-bridge-demo
+```
+
+It uses an authored provider, makes no model/network calls, and retains synthetic
+artifacts for inspection. The first task converts quoted-newline CSV to JSON
+using ordinary file and todo tools. A separate OS process opens `GoalMemory`,
+recalls the observation, and executes a second task with an uppercase-output
+criterion. Both outputs are independently checked. This verifies a connected
+workflow; the authored answers do not measure model learning or memory benefit.
+
+Native JSONL remains authoritative. Full appraisal and sensor context live in
+the private host authority directory, outside the task workspace and reader
+database. SQLite stores bounded source passages, typed tool receipts, the frozen
+criterion and the independent check result, linked by real dependencies. A
+successful file write and an incorrect artifact remain different observations.
+Library callers must preserve the example's confinement: recorded and actual
+workspaces match, and tools have no grants or alternate access to host records.
+The adapter does not establish those conditions for an arbitrary tool registry.
+
+The host adapter accepts explicit Test sessions only. It freezes one criterion
+before dispatch, rejects ambiguous/changed goal histories, and retries capture
+without executing tools. `GoalMemory::open_with_source_guard` injects current
+authority checks; a missing guard, source change or withdrawal withholds the
+bound records. Forgetting purges the receipt and its dependent content and blocks
+late recapture; it does not delete external JSONL or host audit files.
+
+This example does not enable automatic capture in normal chat or the deployed
+service. Existing v1–v5 files and CLI experiments remain separate. The v6 reader
+rejects intermediate v6 files lacking the complete-lineage format marker; create
+a fresh synthetic demo rather than migrating those development artifacts. It
+supports guarded evidence recall; unsupported concept/durable producers do not
+gain authority from it. Interpretation generation, model-based transfer tests
+and production/private-data qualification remain separate work.
+
 ## Main Mecha CLI
 
 From the repository root, build the opt-in binary:

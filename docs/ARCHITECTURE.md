@@ -12831,6 +12831,53 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **Host capture has a separate reader boundary.** The opt-in v6 bridge
+  (`memory_experience_bridge::LocalAuthority`) resolves native transcript,
+  confirmed criterion, independent artifact check and existing
+  `appraisal::for_transcript` from explicit inputs. Full host audit data stays
+  outside reader SQLite and outside the task workspace. Only bounded message
+  passages, typed call receipts, the criterion and checked artifact verdict enter
+  `Memory::admit_host_capture`; no full RunStats/Appraisal or sensor rationale.
+  A successful tool call is not a successful task check. Keep those two verdicts
+  separate when extending the projection.
+  The trusted host must match recorded workspace to the actual `ToolCtx` and
+  supply no grants or alternate readers into the authority directory/transcript.
+  The synthetic example does so; metadata alone does not confine arbitrary tools.
+- **External provenance must participate in authorization.** Every bridge
+  original and projection carries an external binding; the projection also has
+  real dependency edges. `ExternalSourceGuard` checks current source authority
+  during supported read/search/recall/context eligibility and before returning
+  a bundle. Missing authority withholds bound records. Unsupported producers
+  retain guardless, conservative authorization; injecting a reader guard cannot
+  silently authorize concept promotion or legacy durable operations. Missing v6
+  schema must fail closed rather than look like an older unguarded database.
+  These are bounded point-in-time checks, not an atomic filesystem/SQLite snapshot.
+- **Recalled text keeps its original authority when captured again.** A native
+  memory result can copy an earlier episode into a later transcript. Capture must
+  derive or validate those returned revision references, and every separately
+  readable later passage must inherit consulted dependencies, not only the later
+  summary. Otherwise withdrawing the original hides its projection while leaving
+  a searchable transcript copy. This first bridge conservatively applies the
+  complete consulted set to all passages in a capture; finer influence tracking
+  is separate work, and dependency-changing reuse must not mutate old revisions.
+  The required v6 receipt `lineage_version=2` marker rejects intermediate files
+  produced before this invariant; silently backfilling a marker would certify
+  lineage that was never checked. Published v1–v5 files retain their own behavior.
+- **Retry capture, never execution.** A host capture identity binds session,
+  prefix, criterion/check and evaluator versions. Exact still-authorized retries
+  reuse the receipt; conflicts refuse. Forgetting a receipt member purges its
+  originals and projection plus dependents, and leaves an opaque suppression
+  identity so a later prefix cannot resurrect it. It does not erase the external
+  JSONL or host audit. v6 is created explicitly in a new file, with no implicit
+  upgrade or downgrade of earlier prototype stores.
+- **The first bridge is deliberately narrow.** Only explicit synthetic Test
+  sessions with one frozen, confirmed criterion are admitted. Changed or ambiguous
+  goal histories refuse capture. A later task uses a fresh session and current
+  criterion; recall does not rewrite the historical assessment or remove taint.
+  The existing Clean-only interpretation policy remains in force. The authored
+  example exercises ordinary `Agent::run_in` tools, not another action executor;
+  its assertions establish integration contracts, not a measured memory benefit.
+
 - **A JSONL record is source evidence, not reconstructed conversation state.**
   The session adapter preserves exact lines and unknown record types; only
   original known message text is indexed. Indexing a rewrite as another

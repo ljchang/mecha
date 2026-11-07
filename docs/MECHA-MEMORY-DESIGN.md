@@ -2,6 +2,15 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Implementation addendum, 2026-11-07:** §31 A+B now have an explicit synthetic
+host-capture adapter and an authored cross-process task demonstration. V6 stores
+bounded observations with current source guards; full existing appraisal and
+sensor context remain host-only. See HISTORY for qualification and limits, and
+`prototypes/memory/README.md` for the runnable example. §31 C, real-model transfer,
+automatic production capture and broader situated interpretation remain open.
+The completed scope and contracts are in the
+[implementation plan](superpowers/plans/2026-11-07-appraisal-bridge.md).
+
 **Evaluation addendum, 2026-11-07:** §30's frozen 48-response comparison is
 complete: 20/24 paired information improvements, 0 regressions; both arms 24/24
 correct from their own evidence. Fast/thinking combined support 22/24 versus 24/24,

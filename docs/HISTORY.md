@@ -14,6 +14,65 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-07 — ordinary task/appraisal/recall bridge (prototype branch).**
+`memory_experience_bridge::LocalAuthority` freezes an explicit synthetic Test
+session's criterion and exact JSON-row checker before ordinary `Agent::run_in`
+execution. `SessionEvidence::from_transcript_text` shares existing evidence logic
+without a second file read; `appraisal::for_transcript` resolves historical
+assessment from explicit joined records. Full transcript/appraisal, sensors,
+charter and audit data stay in host authority files outside the task workspace.
+The reader receives bounded original message passages, typed call receipts,
+criterion and independent artifact verdict through `Memory::admit_host_capture`.
+Tool success does not establish artifact correctness or owner acceptance.
+
+Explicit new v6 stores enforce source authority during supported reads/ranking
+and final context bundles. Each original and projection has a binding; every
+passage inherits consulted dependencies. Native GoalMemory result references are
+derived before passage truncation, so omitting a manual dependency cannot orphan
+recalled content. Immutable dependency-changing reuse refuses. Exact authorized
+retries reuse receipts; forgetting erases receipt members/dependents and blocks
+late recapture. Required `lineage_version=2` rejects intermediate v6 files with
+incomplete lineage, with no migration or effect on v1–v5. This is conservative
+capture-wide inheritance, not finer per-passage influence inference.
+
+The shared `memory_bridge` example/test fixture uses ordinary Todo/FsRead/FsWrite
+and native session recording. A separate OS process reopens actual GoalMemory,
+recalls A, freezes B's changed criterion, executes/checks B and captures its
+A-dependent outcome. A chosen-egress tripwire immediately after recall tests
+memory taint before file reads can mask it. Complete reader tables/FTS and actual
+provider requests are scanned for host sensor/setpoint canaries. Wrong artifacts,
+missing sensors/checks, changed goals, authority withdrawal/correction, forgetting,
+and capture-only retry have distinct assertions. These are authored-provider
+integration checks, not new real-model benefit measurements. Capture recovery
+simulates the post-recording boundary; no power-loss fault injection is claimed.
+
+Independent task reviews corrected projection-only context bundles, revision of
+guarded prior relations, absent B criterion freezing, a masked taint assertion,
+late native result semantics and resumed ranges appraised against an old outcome.
+Final review found copied passages losing consulted authority and accepted omitted
+consultation; both were fixed with old-behavior failures through the connected
+workflow. Late semantic appends now withhold a pinned source; complete Summary
+records alone may follow it. The host still must match recorded/actual workspace
+and avoid grants or other tool access into host records; arbitrary registries are
+not qualified. Synchronous checks emit Passed/Failed/Unavailable/Refused, not an
+invented Pending result.
+
+Exact code head `540485f71` passed Spark workspace/all-target build, formatting,
+all-target/all-feature Clippy with warnings denied, and both complete workspace
+suites: default **6302 passed / 0 failed / 25 ignored**; memory-prototype
+**6642 passed / 0 failed / 29 ignored**. Ignored backend/helpers are not counted
+as passes. The retained-artifact `memory_bridge` example also passed both
+independent checks. Scoped final rereview approved the lineage fixes without a
+remaining major/medium finding. Logs, review reports and synthetic artifacts are
+retained under `results/memory-appraisal-bridge-20261107` locally/on Spark.
+The first final Clippy run found two fixture style warnings; both were corrected
+before the complete successful run. No real-model inference was run.
+
+The existing production artifact, services, configuration, owner knowledge and
+nightly ingestion were not changed. Automatic production capture, broader
+situated interpretation, useful concept learning and rumination remain open;
+§31 C is the next consolidation design after fresh connected model qualification.
+
 **2026-11-07 — 48-response memory benefit diagnostic (prototype branch).**
 `memory_benefit_trial.py` at `8c5b48246` freezes six authored numeric cases,
 seeds 71/83, source-only/source-plus-actual and fast/thinking2048: 48 first responses,
