@@ -1628,6 +1628,12 @@ mod tests {
                 PURE,
             ),
             (
+                "mecha-core/src/tool/goal_memory.rs",
+                "GoalMemory",
+                None, // delegates its name to GoalContext
+                PURE, // read-only SQLite handle, RAM-only ranking
+            ),
+            (
                 "mecha-core/src/tool/hud.rs",
                 "HudPreview",
                 Some("hud_preview"),

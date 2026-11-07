@@ -22,6 +22,94 @@ maps which document holds what.
 
 ## Where the work is
 
+**Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
+mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's
+experience and learning memory. Keep their lifecycles independent while reusing
+architectural patterns and preserving future integration options. A merger or
+replacement is deferred until v2 is solid. See the current-scope addendum in
+`MECHA-MEMORY-DESIGN.md`; older migration proposals are not an approved cutover.
+
+**Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
+`codex/mecha-memory-v2-prototype`. This is the clean prototype snapshot on GitHub
+main `d2adb3742`; do not push the older private prototype branch, whose history
+predated main's rewrite. No merge or production cutover is authorized by this handoff.
+
+**2026-11-07 — memory benefit diagnostic complete (prototype branch).**
+V4 `feasibility-provenance` preserves full host lineage separately from exact
+model citations, requires each effective measurement and independently checks
+arithmetic. The installed Rust artifact remains `de5d60980`, SHA256
+`fa48a1fb68e522fb5f700cf0cf5db3519d5c43be1de97e02add3d19da4568bbf`, at
+`~/.local/share/mecha-prototypes/memory-provenance-de5d60980/bin/mecha` on Spark.
+Runtime clock, cancellation, source and authenticated-action boundaries remain
+as documented in ARCHITECTURE; prior implementation qualification is in HISTORY.
+
+`memory_benefit_trial.py` at `8c5b48246` completed 48 first responses across six
+authored cases, two seeds, two evidence arms and fast/thinking2048. Against the
+shared outcome-informed reference, recall improved 20/24 pairs with no regression;
+source-only 4/24 versus recall 24/24. Both arms were 24/24 correct from their own
+visible evidence. Fast/think combined supported responses were 22/24 and 24/24;
+thinking used 4.95x output tokens and 4.57x summed time, with no choice gain.
+HISTORY preserves all metrics, the citation failure and ambiguous explanation.
+This is a small information-use diagnostic, not general learning or production
+utility. The full Python qualification passed 91 tests / 0 skips; current workspace
+build, 6302 default tests / 0 failed / 25 ignored, fmt and strict Clippy passed. Raw outputs,
+independent oracle, frozen rubric and audits: results/memory-benefit-20261107.
+Current GitHub CI/review status remains on draft PR #846; no merge is authorized.
+
+**2026-11-07 — connected appraisal bridge (prototype branch).**
+`memory_experience_bridge::LocalAuthority` freezes an explicit synthetic task
+criterion/check before ordinary `Agent::run_in` dispatch, reads native JSONL once
+for source evidence/appraisal, independently checks the artifact, and admits a
+bounded observation through `Memory::admit_host_capture`. Host-only appraisal,
+charter/sensors and audit records stay outside reader SQLite and the task
+workspace. New v6 files require injected current source authority for bound reads;
+unknown authority, source changes, withdrawal and forgetting fail closed.
+Existing v1–v5 experiments are not migrated. The authored `memory_bridge` example
+uses ordinary file/todo tools and a separate process for a changed-criterion
+`GoalMemory` task. Its outputs establish integration, not real-model benefit.
+See `prototypes/memory/README.md` for the explicit synthetic command and HISTORY
+for verification results. Code `540485f71` passed Spark workspace build, fmt,
+strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6642
+memory-enabled tests (0 failed / 29 ignored), and the connected example.
+Production chat does not automatically capture runs.
+
+**Next MVP qualification:** run this connected workflow with real models on a
+fresh frozen natural-language task set, with independently checked outcomes and
+memory-withheld controls. Use fast inference as baseline; report current-criterion
+adherence, abstention, useful recall and cost, including ceilings/no gain. The
+completed numeric diagnostic and authored bridge are different evidence.
+
+Then implement §31 C: share bounded episode assembly with the existing
+interpretation/distillation path, separate the agent interpretation producer from
+graph export, and compare grounding/scope/cost/consumer eligibility before switching
+default writers or retiring old orchestration. Keep Clean-only interpretation
+eligibility, conversation taint and action permission unchanged. Broader situated
+interpretations, useful concept revision and rumination remain open; the bridge
+retains historical host appraisal without exposing internal sensors to the model.
+
+The transitive-freshness limitation remains: revising a consulted source makes
+its independently measured outcome ineligible. Separating historical provenance
+from current support must preserve access revocation and forgetting. No second
+planner/executor is needed.
+
+Still open: reliable semantic evaluation, production action/appraisal integration,
+internal sensors, useful concept discovery/revision and rumination, production
+private-data/encryption/source-fidelity qualification, retention/recovery,
+corpus-scale/identity/vector retrieval and an authorized personal-knowledge bridge.
+Nightly migration and merging mecha-graph remain deferred. Generic provider
+per-field usage missingness remains open. No unrelated subsystem open item or
+production deployment claim was requalified by this memory-only increment.
+
+Living Site remains owner-private:
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
+Research v0.24 published 2026-11-07, source
+`39dfcf7f1f1a4181ea0ce6b972b4df06f7545c78`, deployment
+`appgdep_6aef34024e208191a98c26452e669564` succeeded. All 65 prior IDs retained;
+internal links, scripts, unchanged SVG and dist mirrors checked. The published
+browser showed the implemented bridge and exact qualification results.
+Shared production binaries, services, configuration, owner stores and nightly
+jobs were not changed.
+
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live
 with `ed72a382`. `docs/VOICE-BREEZE-DESIGN.md` §5 records each gate's

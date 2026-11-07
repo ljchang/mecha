@@ -53,6 +53,7 @@ flate2 = "1"
 
 [features]
 default = ["monty"]
+memory-prototype = []
 # The monty backend for code mode, and the worker pool it drives.
 monty = ["dep:monty-pool", "dep:monty-types"]
 

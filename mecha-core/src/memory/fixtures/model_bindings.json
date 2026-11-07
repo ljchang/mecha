@@ -1,0 +1,362 @@
+{
+  "version": 3,
+  "sessions": [
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"palisade\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Palisade cargo can travel by São Vale or Stone Pier. Both services are operating.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The dock sign was repainted.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"São Vale is operating, carries up to 8 crates, costs 6 credits, and takes 40 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The loading checklist is on paper.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Stone Pier is operating, carries up to 30 crates, costs 12 credits, and takes 15 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The storage shed has blue doors.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Palisade needs a transport selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The weather log was filed.\"}]}\n"
+    },
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"magnetar\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Magnetar can archive through Amber Vault or Cedar Cache. Both are online.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The archive label is orange.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Amber Vault is online, stores up to 50 GB with encryption at rest, and completes in 30 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The shelves were dusted.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cedar Cache is online, stores up to 50 GB without encryption at rest, and completes in 4 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The cabinet handle was replaced.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Magnetar needs an archive selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The index card is blank.\"}]}\n"
+    },
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"bracken\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Bracken can assemble with Aster Kit or Vesper Kit. Both are in stock.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The workbench is level.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Aster Kit is in stock, fits a 4-mm connector, carries a load up to 5 kg, and costs 7 credits.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The inventory sheet is green.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Vesper Kit is in stock, fits a 9-mm connector, carries a load up to 12 kg, and costs 14 credits.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The spare labels are in a drawer.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Bracken needs a kit selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The toolbox latch closes.\"}]}\n"
+    },
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"compass\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Compass can print on Bank or Banks. These are distinct printers and both are ready.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The paper cupboard is closed.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Bank is ready, supports only monochrome output, prints up to 100 sheets per job, and finishes in 3 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The desk calendar is open.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Banks is ready, supports monochrome and color output, prints up to 100 sheets per job, and finishes in 18 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The supply labels are neat.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Compass needs a printer selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The bin is empty.\"}]}\n"
+    },
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"tessel\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Tessel release R8 may proceed without inspection according to the initial note.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The box labels are attached.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Tessel revised R8 release note: inspection is now mandatory before dispatch, superseding the initial note. Inspection has not been completed.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The packing table is clear.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Tessel ownership update: Rumi now owns R8 dispatch, replacing Hana.\"}]}\n"
+    },
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"ochre\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Ochre meter reading: 18 units.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The meter casing is grey.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Ochre meter reading: 41 units.\"}]}\n"
+    },
+    {
+      "account": "synthetic-bindings",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"mistral\", \"created_at\": \"2026-03-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Mistral requested a delivery quote. No price response has been recorded.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The loading bay is paved.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-03-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Mistral has not selected a courier or booked a pickup.\"}]}\n"
+    }
+  ],
+  "cases": [
+    {
+      "id": "palisade-budget",
+      "session_id": "palisade",
+      "account": "synthetic-bindings",
+      "question": "Which transport should Palisade use?",
+      "choices": {
+        "sao_vale": "Use São Vale",
+        "stone_pier": "Use Stone Pier",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "sao_vale",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Transport all crates at minimum cost within the deadline.",
+      "homeostatic_context": "6 crates; deadline 60 minutes; budget 20 credits.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "palisade-load",
+      "session_id": "palisade",
+      "account": "synthetic-bindings",
+      "question": "Which transport should Palisade use?",
+      "choices": {
+        "sao_vale": "Use São Vale",
+        "stone_pier": "Use Stone Pier",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "stone_pier",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Transport all crates within the deadline.",
+      "homeostatic_context": "20 crates; deadline 25 minutes; budget 20 credits.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "magnetar-protected",
+      "session_id": "magnetar",
+      "account": "synthetic-bindings",
+      "question": "Which archive should Magnetar use?",
+      "choices": {
+        "amber": "Use Amber Vault",
+        "cedar": "Use Cedar Cache",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "amber",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Store all data with mandatory encryption at rest.",
+      "homeostatic_context": "10 GB; 45 minutes available.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "magnetar-urgent",
+      "session_id": "magnetar",
+      "account": "synthetic-bindings",
+      "question": "Which archive should Magnetar use?",
+      "choices": {
+        "amber": "Use Amber Vault",
+        "cedar": "Use Cedar Cache",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "cedar",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Complete archival before the deadline; encryption is optional for these public files.",
+      "homeostatic_context": "10 GB; 8 minutes available.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "bracken-small",
+      "session_id": "bracken",
+      "account": "synthetic-bindings",
+      "question": "Which kit should Bracken use?",
+      "choices": {
+        "aster": "Use Aster Kit",
+        "vesper": "Use Vesper Kit",
+        "neither": "Use neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "aster",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Choose a compatible kit that supports the full load within budget.",
+      "homeostatic_context": "4-mm connector; load 3 kg; budget 20 credits.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "bracken-large",
+      "session_id": "bracken",
+      "account": "synthetic-bindings",
+      "question": "Which kit should Bracken use?",
+      "choices": {
+        "aster": "Use Aster Kit",
+        "vesper": "Use Vesper Kit",
+        "neither": "Use neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "vesper",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Choose a compatible kit that supports the full load within budget.",
+      "homeostatic_context": "9-mm connector; load 10 kg; budget 20 credits.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "compass-color",
+      "session_id": "compass",
+      "account": "synthetic-bindings",
+      "question": "Which printer should Compass use?",
+      "choices": {
+        "bank": "Use Bank",
+        "banks": "Use Banks",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "banks",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Produce color output within the deadline.",
+      "homeostatic_context": "20 sheets; 25 minutes available.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "compass-fast",
+      "session_id": "compass",
+      "account": "synthetic-bindings",
+      "question": "Which printer should Compass use?",
+      "choices": {
+        "bank": "Use Bank",
+        "banks": "Use Banks",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "bank",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Finish monochrome printing before the deadline.",
+      "homeostatic_context": "20 sheets; 5 minutes available.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "tessel-prerequisite",
+      "session_id": "tessel",
+      "account": "synthetic-bindings",
+      "question": "What must Tessel do next before R8 dispatch?",
+      "choices": {
+        "inspect": "Perform inspection",
+        "dispatch": "Dispatch immediately",
+        "cancel": "Cancel dispatch",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "inspect",
+      "expected_lines": [
+        4
+      ],
+      "goal": "Follow the current dispatch requirement.",
+      "homeostatic_context": "Ready to prepare dispatch.",
+      "category": "correction",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "tessel-owner",
+      "session_id": "tessel",
+      "account": "synthetic-bindings",
+      "question": "Who currently owns Tessel R8 dispatch?",
+      "choices": {
+        "rumi": "Rumi",
+        "hana": "Hana",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "rumi",
+      "expected_lines": [
+        6
+      ],
+      "goal": "Identify the current accountable owner.",
+      "homeostatic_context": "Use the latest recorded assignment.",
+      "category": "correction",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "ochre-early",
+      "session_id": "ochre",
+      "account": "synthetic-bindings",
+      "question": "What was the Ochre meter reading in the specified interval?",
+      "choices": {
+        "18": "18 units",
+        "41": "41 units",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "18",
+      "expected_lines": [
+        2
+      ],
+      "goal": "Retrieve the reading in the requested interval.",
+      "homeostatic_context": "Historical lookup.",
+      "category": "temporal",
+      "occurred_after": null,
+      "occurred_before": "2026-03-02T00:00:00Z"
+    },
+    {
+      "id": "ochre-late",
+      "session_id": "ochre",
+      "account": "synthetic-bindings",
+      "question": "What was the Ochre meter reading in the specified interval?",
+      "choices": {
+        "18": "18 units",
+        "41": "41 units",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "41",
+      "expected_lines": [
+        4
+      ],
+      "goal": "Retrieve the reading in the requested interval.",
+      "homeostatic_context": "Historical lookup.",
+      "category": "temporal",
+      "occurred_after": "2026-03-03T00:00:00Z",
+      "occurred_before": null
+    },
+    {
+      "id": "mistral-price",
+      "session_id": "mistral",
+      "account": "synthetic-bindings",
+      "question": "What delivery price was quoted to Mistral?",
+      "choices": {
+        "5": "5 credits",
+        "10": "10 credits",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "insufficient_evidence",
+      "expected_lines": [],
+      "goal": "Report the actual quoted price.",
+      "homeostatic_context": "Do not estimate.",
+      "category": "abstention",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "mistral-courier",
+      "session_id": "mistral",
+      "account": "synthetic-bindings",
+      "question": "Which courier is booked for Mistral pickup?",
+      "choices": {
+        "orio": "Orio",
+        "mira": "Mira",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "insufficient_evidence",
+      "expected_lines": [],
+      "goal": "Identify the actual booked courier.",
+      "homeostatic_context": "Do not infer a booking.",
+      "category": "abstention",
+      "occurred_after": null,
+      "occurred_before": null
+    }
+  ],
+  "binding_targets": {
+    "palisade-budget": [
+      "São Vale",
+      "Stone Pier"
+    ],
+    "palisade-load": [
+      "São Vale",
+      "Stone Pier"
+    ],
+    "magnetar-protected": [
+      "Amber Vault",
+      "Cedar Cache"
+    ],
+    "magnetar-urgent": [
+      "Amber Vault",
+      "Cedar Cache"
+    ],
+    "bracken-small": [
+      "Aster Kit",
+      "Vesper Kit"
+    ],
+    "bracken-large": [
+      "Aster Kit",
+      "Vesper Kit"
+    ],
+    "compass-color": [
+      "Bank",
+      "Banks"
+    ],
+    "compass-fast": [
+      "Bank",
+      "Banks"
+    ]
+  }
+}

@@ -32,6 +32,31 @@ pub struct Args {
     #[arg(long, value_name = "KIND:ID")]
     pub goal: Option<mecha_core::goal::GoalRef>,
 
+    /// Read-only synthetic memory for goal_context (experimental, unencrypted).
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
+    pub memory_context: Option<std::path::PathBuf>,
+
+    /// Acknowledge the selected memory database contains synthetic data only.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_synthetic: bool,
+
+    /// Explicit host-owned security domain for the prototype database.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_domain: Option<String>,
+
+    /// Retrieve only this source account.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_account: Option<String>,
+
+    /// Authorized synthetic source scope. Repeat for additional scopes.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "memory_context")]
+    pub memory_scope: Vec<String>,
+
     /// Owner-authored commitment/check evidence for this invocation's confirmed goal.
     /// Observation by default; agent.goal_guidance enables fixed advice.
     #[arg(long, requires = "goal", conflicts_with = "mismatch_case")]
@@ -106,6 +131,46 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
 
+    // Validate the owner-supplied path/scope before provider/setup work. No
+    // database path, scope or snapshot is exposed in the tool's input schema.
+    #[cfg(feature = "memory-prototype")]
+    let memory_context = args
+        .memory_context
+        .as_ref()
+        .map(|path| {
+            use mecha_core::{
+                memory::{context::Situation, Access},
+                tool::goal_memory::GoalMemory,
+            };
+            anyhow::ensure!(
+                args.memory_synthetic,
+                "memory context requires synthetic-data acknowledgement"
+            );
+            GoalMemory::open(
+                path,
+                Access {
+                    domain: args
+                        .memory_domain
+                        .clone()
+                        .context("memory domain required")?,
+                    scopes: args.memory_scope.iter().cloned().collect(),
+                },
+                args.memory_account
+                    .clone()
+                    .context("memory account required")?,
+                Situation {
+                    event: prompt.clone(),
+                    goal: args
+                        .goal
+                        .as_ref()
+                        .context("memory context requires --goal")?
+                        .to_string(),
+                    needs: None,
+                },
+            )
+        })
+        .transpose()?;
+
     let appraisal_evidence: Option<mecha_core::anticipation::Evidence> = args
         .appraisal_evidence
         .as_ref()
@@ -132,6 +197,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         ..global.clone()
     };
     let mut prepared = setup::prepare(&opts, interactive).await?;
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = memory_context {
+        anyhow::ensure!(
+            prepared.agent.registry().get("goal_context").is_some(),
+            "memory context requires goal_context to be enabled in this run's tool profile"
+        );
+        // RegistryMut rebuilds code mode with the new private/external reach.
+        // Existing subagents keep their original tool; this opt-in is run-local.
+        prepared
+            .agent
+            .registry_mut()
+            .insert(std::sync::Arc::new(memory));
+    }
+
     if let Some(evidence) = appraisal_evidence {
         prepared.agent.set_appraisal_evidence(evidence)?;
     }
@@ -508,6 +587,47 @@ mod tests {
     use mecha_core::agent::{RunOutcome, StopCause};
     use mecha_core::message::{Refusal, Usage};
     use mecha_core::StopReason;
+
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn memory_context_requires_explicit_synthetic_scope_and_goal() {
+        use clap::Parser;
+        let args = [
+            "mecha",
+            "run",
+            "launch",
+            "--memory-context",
+            "/tmp/x.memory-prototype.sqlite",
+            "--memory-synthetic",
+            "--memory-domain",
+            "test",
+            "--memory-account",
+            "synthetic",
+            "--memory-scope",
+            "chat",
+            "--goal",
+            "task:launch",
+        ];
+        assert!(crate::Cli::try_parse_from(args).is_ok());
+        for flag in [
+            "--memory-synthetic",
+            "--memory-domain",
+            "--memory-account",
+            "--memory-scope",
+            "--goal",
+        ] {
+            let mut missing = args.to_vec();
+            let at = missing.iter().position(|a| *a == flag).unwrap();
+            missing.remove(at);
+            if flag != "--memory-synthetic" {
+                missing.remove(at);
+            }
+            assert!(crate::Cli::try_parse_from(missing).is_err(), "{flag}");
+        }
+        assert!(
+            crate::Cli::try_parse_from(["mecha", "run", "launch", "--memory-synthetic"]).is_err()
+        );
+    }
 
     #[test]
     fn guidance_opt_out_is_global_like_other_execution_switches() {

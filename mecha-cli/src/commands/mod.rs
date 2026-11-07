@@ -21,6 +21,8 @@ pub mod learn;
 pub mod learning_report;
 pub mod mail;
 pub mod mail_rule;
+#[cfg(feature = "memory-prototype")]
+pub mod memory;
 pub mod model;
 pub mod model_catalog;
 pub mod msg;

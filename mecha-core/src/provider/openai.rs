@@ -58,6 +58,23 @@ pub struct OpenAiCompatible {
 }
 
 impl OpenAiCompatible {
+    /// Explicit isolated local client. Unlike the general provider, this
+    /// opts out of system proxies and HTTP redirects, and requires a numeric
+    /// loopback address so hostname resolution cannot move its destination.
+    pub fn from_local_config(cfg: &ProviderConfig) -> Result<Self> {
+        anyhow::ensure!(
+            cfg.kind == "local"
+                && cfg
+                    .base_url
+                    .as_deref()
+                    .is_some_and(crate::provider::router::is_literal_loopback),
+            "strict local provider requires a literal loopback HTTP endpoint"
+        );
+        let mut provider = Self::from_config(cfg)?;
+        provider.http = crate::provider::HttpClients::loopback_only()?;
+        Ok(provider)
+    }
+
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
         Ok(Self {
             // Two clients, chosen per request by the body's `stream` flag —

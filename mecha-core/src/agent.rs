@@ -11310,6 +11310,69 @@ mod tests {
         agent
     }
 
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn prototype_goal_memory_arms_the_interlock_but_local_errors_do_not() {
+        use crate::memory::{context::Situation, fixture};
+        use crate::tool::goal_memory::GoalMemory;
+        let dir = std::env::temp_dir().join(format!("memory-interlock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("fixture.memory-prototype.sqlite");
+        fixture::demo(&path).unwrap();
+        let tool = GoalMemory::open(
+            &path,
+            fixture::access(),
+            "synthetic".into(),
+            Situation {
+                event: "Plan an organization summary".into(),
+                goal: "task:summary".into(),
+                needs: None,
+            },
+        )
+        .unwrap();
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(tool));
+        agent.registry_mut().insert(Arc::new(SendTool));
+        agent.ctx_mut().security.trifecta = TrifectaPolicy::Block;
+        let cx = Arc::clone(agent.context());
+        let mut convo = Conversation::user("Plan a summary");
+        let bad = agent
+            .dispatch_one(
+                &cx,
+                &mut convo,
+                "goal_context",
+                json!({"memory":{"query":"!!!"}}),
+                &None,
+            )
+            .await;
+        assert!(bad.is_error);
+        assert!(
+            !convo.taint.untrusted,
+            "local validation errors are not outside content"
+        );
+        let read = agent
+            .dispatch_one(
+                &cx,
+                &mut convo,
+                "goal_context",
+                json!({"memory":{"query":"Person"}}),
+                &None,
+            )
+            .await;
+        assert!(!read.is_error && read.content.contains("Organization B"));
+        assert!(convo.taint.private && convo.taint.untrusted);
+        let send = agent
+            .dispatch_one(&cx, &mut convo, "send", json!({}), &None)
+            .await;
+        assert!(
+            send.denied && send.is_error,
+            "memory evidence must arm chosen-egress blocking"
+        );
+        drop(agent);
+        drop(cx);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A call the harness makes itself (`Agent::dispatch_one`, Regenerate's
     /// path) meets the gates a model's call meets, in the same function: the
     /// interlock against the conversation's taint, a `pre_tool` hook, and the

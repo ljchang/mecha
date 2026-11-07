@@ -453,6 +453,10 @@ pub enum Command {
     /// The knowledge graph from the terminal: search it, read an entity,
     /// capture a note — through the same `kg_*` tool surface the model uses.
     Kg(commands::kg::Args),
+
+    /// Experimental memory store: synthetic fixtures only, explicit database.
+    #[cfg(feature = "memory-prototype")]
+    Memory(commands::memory::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
     /// Judge whether queued generalisations hold beyond their one source.
@@ -587,6 +591,10 @@ impl Command {
     fn is_one_run(&self) -> bool {
         use commands::{exp, frontdoor, harness, mail, questions, sessions, tasks};
         match self {
+            #[cfg(feature = "memory-prototype")]
+            // Memory commands with explicit local endpoint/model arguments manage
+            // resident-only inference themselves, outside generic provider setup.
+            Command::Memory(_) => false,
             Command::Run(_)
             | Command::Batch(_)
             | Command::Eval(_)
@@ -719,6 +727,10 @@ impl Command {
     /// review).
     fn runs_a_model(&self) -> bool {
         match self {
+            #[cfg(feature = "memory-prototype")]
+            // Memory commands with explicit local endpoint/model arguments manage
+            // resident-only inference themselves, outside generic provider setup.
+            Command::Memory(_) => false,
             Command::Run(_)
             | Command::Chat(_)
             | Command::Tui(_)
@@ -974,6 +986,8 @@ async fn dispatch() -> Result<()> {
         Command::Questions(args) => commands::questions::run(&cli.global, args).await,
         Command::Polls(args) => commands::polls::run(&cli.global, args).await,
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,
+        #[cfg(feature = "memory-prototype")]
+        Command::Memory(args) => commands::memory::execute(args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,
@@ -1123,6 +1137,30 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn memory_never_loads_a_model_holds_the_router_or_announces_features() {
+        for tail in [
+            vec!["demo"],
+            vec!["inspect"],
+            vec!["query", "works"],
+            vec!["forget", "employment"],
+        ] {
+            let mut argv = vec![
+                "mecha",
+                "memory",
+                "--experimental",
+                "--db",
+                "test.memory-prototype.sqlite",
+            ];
+            argv.extend(tail);
+            let command = Cli::try_parse_from(argv).unwrap().command;
+            assert!(!command.runs_a_model());
+            assert!(!command.is_one_run());
+            assert!(!command.announces_features());
+        }
+    }
 
     /// The router snapshot is taken where a default provider can be resolved,
     /// and never by `mecha doctor`, whose module doc promises no network.

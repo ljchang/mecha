@@ -391,9 +391,19 @@ impl SessionEvidence {
             .and_then(|m| m.modified())
             .ok()
             .map(DateTime::<Utc>::from);
-        let transcript = crate::session::Session::parse(path, &text)?;
-        let ever = crate::session::Session::messages_ever(&text);
-        let programs = crate::tool::code::record::ever(&text, &transcript.meta.id);
+        Self::from_transcript_text(path, &text, ended_at)
+    }
+
+    /// Host adapters must derive digest, provenance and appraisal from one read.
+    /// This seam deliberately stays crate-private: callers cannot claim taint.
+    pub(crate) fn from_transcript_text(
+        path: &Path,
+        text: &str,
+        ended_at: Option<DateTime<Utc>>,
+    ) -> Result<(crate::session::Transcript, SessionEvidence)> {
+        let transcript = crate::session::Session::parse(path, text)?;
+        let ever = crate::session::Session::messages_ever(text);
+        let programs = crate::tool::code::record::ever(text, &transcript.meta.id);
         let mut evidence = SessionEvidence::of(&transcript, &ever, &programs);
         evidence.ended_at = ended_at;
         Ok((transcript, evidence))

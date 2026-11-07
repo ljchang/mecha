@@ -144,6 +144,36 @@ jobs:
           MECHA_SESSION_KIND: test
         run: cargo test --workspace --locked
 
+      # The default-off prototype has security/lifecycle tests of its own.
+      # Execute them on one pinned leg; all-feature clippy only type-checks them.
+      - name: Test experimental memory
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo test --workspace --locked --features memory-prototype
+        env:
+          MECHA_SESSION_KIND: test
+
+      # The standalone memory harness and independent pilot rubrics are not
+      # workspace members, so workspace tests cannot execute either suite.
+      - name: Test standalone memory harness
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        working-directory: prototypes/memory
+        run: cargo test --locked
+        env:
+          MECHA_SESSION_KIND: test
+          # Shared core files expose runtime APIs this standalone subset never
+          # invokes; keep every other warning fatal, as in the workspace.
+          RUSTFLAGS: -D warnings -A dead_code
+
+      - name: Build experimental memory CLI
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo build -p mecha-cli --locked --features memory-prototype
+
+      - name: Test memory Python pilots
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha
+        env:
+          MECHA_SESSION_KIND: test
+
   no-logs:
     # No logs, recordings or run output in a public repository (owner's
     # ruling, 2026-10-04). The pre-commit and pre-push hooks compare added text

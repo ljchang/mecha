@@ -1,0 +1,285 @@
+{
+  "version": 2,
+  "sessions": [
+    {
+      "account": "synthetic-hop",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"lumen\", \"created_at\": \"2026-02-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The Lumen workshop may use either Vireo or Rill. Both rooms are available.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The stationery cupboard is organized.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Vireo is available, quiet, seats 6 people, and is a 10-minute walk away.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The coffee machine was cleaned.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Rill is available, noisy, seats 20 people, and is a 2-minute walk away.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The poster board is green.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Lumen needs a room selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The carpet was vacuumed.\"}]}\n"
+    },
+    {
+      "account": "synthetic-hop",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"watershed\", \"created_at\": \"2026-02-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Watershed is selecting one test-cartridge design: Noma or Tavi. Both are stocked.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The benchtop is white.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Noma is stocked and removes bacteria from the synthetic test fluid but does not remove dissolved salts; capacity is 5 litres.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The measuring cylinders are clean.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Tavi is stocked and removes dissolved salts from the synthetic test fluid but does not remove bacteria; capacity is 5 litres.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The gloves are in the drawer.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Watershed needs a cartridge selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The supply cupboard is closed.\"}]}\n"
+    },
+    {
+      "account": "synthetic-hop",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"lyra\", \"created_at\": \"2026-02-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Lyra analysis can use the Ilex or Quill pipeline. Both are operational.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The monitor stand is adjustable.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Ilex is operational and runs entirely on the workstation without uploading inputs; it completes in 40 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The keyboard layout is standard.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Quill is operational and requires uploading all inputs to an external service; it completes in 5 minutes.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The mouse mat is grey.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-07T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Lyra needs a pipeline selection.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-08T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The spare cable is coiled.\"}]}\n"
+    },
+    {
+      "account": "synthetic-hop",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"cinder\", \"created_at\": \"2026-02-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cinder probe P4 release note: calibration is optional; it may be shipped directly.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The packing tape is on the shelf.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cinder revised release note for P4: calibration is mandatory before shipping, replacing the earlier optional rule. Calibration is not yet done.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The shipping carton is ready.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-05T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Cinder owner correction: Soren now owns P4 release, replacing Mira.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-06T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The shelf labels were replaced.\"}]}\n"
+    },
+    {
+      "account": "synthetic-hop",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"basalt\", \"created_at\": \"2026-02-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Basalt chamber counter reading: 14 completed cycles.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The chamber exterior was wiped.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Basalt chamber counter reading: 27 completed cycles.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The wrench was returned to storage.\"}]}\n"
+    },
+    {
+      "account": "synthetic-hop",
+      "jsonl": "{\"record\": \"meta\", \"id\": \"nacre\", \"created_at\": \"2026-02-01T00:00:00Z\"}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-01T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Nacre asked the studio about an opening time. No response or published opening time is recorded.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-02T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The studio has a brick entrance.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-03T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"Nacre has not selected a technician or scheduled a maintenance visit.\"}]}\n{\"record\": \"message\", \"role\": \"user\", \"timestamp\": \"2026-02-04T12:00:00Z\", \"content\": [{\"type\": \"text\", \"text\": \"The maintenance kit is packed.\"}]}\n"
+    }
+  ],
+  "cases": [
+    {
+      "id": "lumen-quiet",
+      "session_id": "lumen",
+      "account": "synthetic-hop",
+      "question": "Which room should Lumen use?",
+      "choices": {
+        "vireo": "Choose Vireo",
+        "rill": "Choose Rill",
+        "cancel": "Cancel the workshop",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "vireo",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Minimize noise while seating everyone.",
+      "homeostatic_context": "3 participants; 15 minutes available to walk.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "lumen-capacity",
+      "session_id": "lumen",
+      "account": "synthetic-hop",
+      "question": "Which room should Lumen use?",
+      "choices": {
+        "vireo": "Choose Vireo",
+        "rill": "Choose Rill",
+        "cancel": "Cancel the workshop",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "rill",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Seat everyone and arrive within 5 minutes.",
+      "homeostatic_context": "12 participants; 5 minutes available to walk.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "watershed-bacteria",
+      "session_id": "watershed",
+      "account": "synthetic-hop",
+      "question": "Which cartridge should Watershed use?",
+      "choices": {
+        "noma": "Use Noma",
+        "tavi": "Use Tavi",
+        "neither": "Use neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "noma",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Remove the identified contaminant from this test batch.",
+      "homeostatic_context": "2 litres of synthetic fluid; identified contaminant: bacteria only.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "watershed-salts",
+      "session_id": "watershed",
+      "account": "synthetic-hop",
+      "question": "Which cartridge should Watershed use?",
+      "choices": {
+        "noma": "Use Noma",
+        "tavi": "Use Tavi",
+        "neither": "Use neither",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "tavi",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Remove the identified contaminant from this test batch.",
+      "homeostatic_context": "2 litres of synthetic fluid; identified contaminant: dissolved salts only.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "lyra-local",
+      "session_id": "lyra",
+      "account": "synthetic-hop",
+      "question": "Which pipeline should Lyra run?",
+      "choices": {
+        "ilex": "Run Ilex",
+        "quill": "Run Quill",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "ilex",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Finish analysis while keeping all input data on this workstation.",
+      "homeostatic_context": "Inputs must not leave the workstation; 60 minutes available.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "lyra-fast",
+      "session_id": "lyra",
+      "account": "synthetic-hop",
+      "question": "Which pipeline should Lyra run?",
+      "choices": {
+        "ilex": "Run Ilex",
+        "quill": "Run Quill",
+        "wait": "Wait",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "quill",
+      "expected_lines": [
+        4,
+        6
+      ],
+      "goal": "Finish analysis within 10 minutes.",
+      "homeostatic_context": "Public synthetic inputs may be uploaded; network available.",
+      "category": "changed_goal",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "cinder-prerequisite",
+      "session_id": "cinder",
+      "account": "synthetic-hop",
+      "question": "What must Cinder do next before shipping P4?",
+      "choices": {
+        "ship": "Ship immediately",
+        "calibrate": "Calibrate first",
+        "discard": "Discard the probe",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "calibrate",
+      "expected_lines": [
+        4
+      ],
+      "goal": "",
+      "homeostatic_context": "",
+      "category": "correction",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "cinder-owner",
+      "session_id": "cinder",
+      "account": "synthetic-hop",
+      "question": "Who currently owns the Cinder P4 release?",
+      "choices": {
+        "mira": "Mira",
+        "soren": "Soren",
+        "tala": "Tala",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "soren",
+      "expected_lines": [
+        6
+      ],
+      "goal": "",
+      "homeostatic_context": "",
+      "category": "correction",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "basalt-early",
+      "session_id": "basalt",
+      "account": "synthetic-hop",
+      "question": "What was the Basalt counter reading during the requested interval?",
+      "choices": {
+        "14": "14 completed cycles",
+        "27": "27 completed cycles",
+        "41": "41 completed cycles",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "14",
+      "expected_lines": [
+        2
+      ],
+      "goal": "",
+      "homeostatic_context": "",
+      "category": "temporal",
+      "occurred_after": null,
+      "occurred_before": "2026-02-02T00:00:00Z"
+    },
+    {
+      "id": "basalt-late",
+      "session_id": "basalt",
+      "account": "synthetic-hop",
+      "question": "What was the Basalt counter reading during the requested interval?",
+      "choices": {
+        "14": "14 completed cycles",
+        "27": "27 completed cycles",
+        "41": "41 completed cycles",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "27",
+      "expected_lines": [
+        4
+      ],
+      "goal": "",
+      "homeostatic_context": "",
+      "category": "temporal",
+      "occurred_after": "2026-02-03T00:00:00Z",
+      "occurred_before": null
+    },
+    {
+      "id": "nacre-opening",
+      "session_id": "nacre",
+      "account": "synthetic-hop",
+      "question": "At what time does the Nacre studio open?",
+      "choices": {
+        "8": "08:00",
+        "9": "09:00",
+        "10": "10:00",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "insufficient_evidence",
+      "expected_lines": [],
+      "goal": "",
+      "homeostatic_context": "",
+      "category": "abstention",
+      "occurred_after": null,
+      "occurred_before": null
+    },
+    {
+      "id": "nacre-technician",
+      "session_id": "nacre",
+      "account": "synthetic-hop",
+      "question": "Which technician is scheduled for the Nacre maintenance visit?",
+      "choices": {
+        "aya": "Aya",
+        "bo": "Bo",
+        "cy": "Cy",
+        "insufficient_evidence": "The supplied evidence cannot determine this."
+      },
+      "expected_choice": "insufficient_evidence",
+      "expected_lines": [],
+      "goal": "",
+      "homeostatic_context": "",
+      "category": "abstention",
+      "occurred_after": null,
+      "occurred_before": null
+    }
+  ]
+}
