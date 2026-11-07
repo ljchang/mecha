@@ -95,42 +95,49 @@ def arm_request(prepared, arm):
 
 def validate_preparation(prepared, case, action):
     """Fail before inference if this is not the frozen retained-mismatch pilot."""
+
+    def require(condition):
+        if not condition:
+            raise ValueError('invalid frozen preparation')
+
     try:
-        assert prepared['protocol'] == CORE_PROTOCOL and prepared['policy'] == POLICY
-        assert prepared['action_id'] == action and prepared['contract'] == case['contract']
-        assert prepared['private_data'] is True and prepared['untrusted_input'] is True and prepared['executed'] is False
-        assert set(prepared['snapshot']) == {'instance', 'sequence'}
+        require(prepared['protocol'] == CORE_PROTOCOL and prepared['policy'] == POLICY)
+        require(prepared['action_id'] == action and prepared['contract'] == case['contract'])
+        require(prepared['private_data'] is True and prepared['untrusted_input'] is True
+                and prepared['executed'] is False)
+        require(set(prepared['snapshot']) == {'instance', 'sequence'})
         query = prepared['recall_query']
-        assert query['known_at'] == prepared['snapshot']
-        assert (query['text'], query['limit'], query['neighbors'], query['max_bytes']) == ('Nori', 100, 0, 100000)
-        assert prepared['raw_recall']
+        require(query['known_at'] == prepared['snapshot'])
+        require((query['text'], query['limit'], query['neighbors'], query['max_bytes']) == ('Nori', 100, 0, 100000))
+        require(prepared['raw_recall'])
         for name in ('read', 'observation'):
-            assert hash_text(prepared[name]['text']) == prepared[name]['sha256']
+            require(hash_text(prepared[name]['text']) == prepared[name]['sha256'])
         source = decode(prepared['read']['text'])
-        assert source['kind'] == 'host_authored_synthetic_measurements_v1'
-        assert source['workload'] == WORKLOAD and source['complete'] is True
+        require(source['kind'] == 'host_authored_synthetic_measurements_v1')
+        require(source['workload'] == WORKLOAD and source['complete'] is True)
         measurements = source['observations']
-        assert len(measurements) == 3
-        assert {r['choice']: (r['observed_minutes'], r['energy'], r['quality']) for r in measurements} == SOURCE
+        require(len(measurements) == 3)
+        require({r['choice']: (r['observed_minutes'], r['energy'], r['quality']) for r in measurements} == SOURCE)
         observation = decode(prepared['observation']['text'])
-        assert observation['kind'] == 'host_action_observation' and observation['action_id'] == action
-        assert observation['cancelled_action'] is False
+        require(observation['kind'] == 'host_action_observation' and observation['action_id'] == action)
+        require(observation['cancelled_action'] is False)
         actual = observation['observation']
-        assert (actual['kind'], actual['fixture'], actual['state'], actual['choice']) == (
-            'host_observed_synthetic_action_v1', 'measurements_v1', 'baseline', 'Nori')
-        assert actual['outcome'] == dict(status='observed', observed_minutes=4, energy=9, quality=8)
-        assert any(h['anchor']['reference'] == prepared['observation']['source'] for h in prepared['raw_recall'])
-        assert len(prepared['arms']) == 2 and {a['arm'] for a in prepared['arms']} == set(ARMS)
-        first = arm_request(prepared, ARMS[0]); second = arm_request(prepared, ARMS[1])
-        assert len(first['passages']) == 3 and len(second['passages']) == 4
-        assert first['passages'] == second['passages'][:3]
-        assert second['passages'][3]['source'] == prepared['observation']['source']
+        require((actual['kind'], actual['fixture'], actual['state'], actual['choice']) == (
+            'host_observed_synthetic_action_v1', 'measurements_v1', 'baseline', 'Nori'))
+        require(actual['outcome'] == dict(status='observed', observed_minutes=4, energy=9, quality=8))
+        require(any(h['anchor']['reference'] == prepared['observation']['source'] for h in prepared['raw_recall']))
+        require(len(prepared['arms']) == 2 and {a['arm'] for a in prepared['arms']} == set(ARMS))
+        first = arm_request(prepared, ARMS[0])
+        second = arm_request(prepared, ARMS[1])
+        require(len(first['passages']) == 3 and len(second['passages']) == 4)
+        require(first['passages'] == second['passages'][:3])
+        require(second['passages'][3]['source'] == prepared['observation']['source'])
         for request in (first, second):
-            assert isinstance(request['prompt'], str) and request['prompt']
+            require(isinstance(request['prompt'], str) and request['prompt'])
             ids = [p['id'] for p in request['passages']]
-            assert len(set(ids)) == len(ids)
-            assert set(request['response_schema']['properties']['citations']['items']['enum']) == set(ids)
-    except (AssertionError, KeyError, TypeError, ValueError, StopIteration) as error:
+            require(len(set(ids)) == len(ids))
+            require(set(request['response_schema']['properties']['citations']['items']['enum']) == set(ids))
+    except (AttributeError, KeyError, TypeError, ValueError, StopIteration) as error:
         raise ValueError('invalid frozen preparation') from error
 
 
@@ -146,6 +153,7 @@ def score_row(case, row, prepared, model):
                   host_withheld=(row.get('decision') or {}).get('disposition') == 'withheld',
                   model_choice=None)
     try:
+        validate_preparation(prepared, case, prepared['action_id'])
         call = row['call']; reply = call['reply']; request = arm_request(prepared, arm)
         answer = decode(reply['text'])
         ids = {p['id'] for p in request['passages']}
@@ -186,6 +194,7 @@ def summarize(pairs, model):
         report = pair.get('report')
         if report:
             prepared = pair['preparation']
+            validate_preparation(prepared, cases[key[0]], prepared['action_id'])
             order = list(reversed(ARMS)) if pair['outcome_first'] else list(ARMS)
             if (report['protocol'] != CORE_PROTOCOL or report['preparation'] != prepared
                     or report['model'] != model or report['seed'] != pair['seed']
@@ -322,6 +331,7 @@ def run_trial(*, binary, db, action, endpoint, model, holds_dir, output, invoke=
         cases=frozen_cases(), offline_rubric=dict(source_expectations=SOURCE, actual_nori=ACTUAL, simulator=SIMULATOR),
         pairs=[], error=None)
     pairs = manifest['pairs']; error = None; before = None
+    interruption = None; interruption_traceback = None
     write_json(root/'manifest.json', manifest)
     try:
         before = inspect_database(db); manifest['database_before'] = before
@@ -375,16 +385,20 @@ def run_trial(*, binary, db, action, endpoint, model, holds_dir, output, invoke=
                 for row in report['rows']:
                     write_json(progress/(row['arm']+'.json'), row)
                 write_json(progress/'progress.json', dict(status='recorded', reported_calls=len(report['rows'])))
-            except Exception as failure:
+            except BaseException as failure:
                 pair['error'] = f'{type(failure).__name__}: {failure}'
-                write_json(progress/'progress.json', dict(status='failed', error=pair['error'], dispatch_count=None))
+                status = 'failed' if isinstance(failure, Exception) else 'interrupted'
+                write_json(progress/'progress.json', dict(status=status, error=pair['error'], dispatch_count=None))
                 raise
             write_json(root/'manifest.json', manifest)
         manifest['resident_after'] = inspect_model(endpoint, model)
         if settings_identity(manifest['resident_after']) != settings_identity(state):
             raise ValueError('resident model settings changed after pilot')
-    except Exception as failure:
+    except BaseException as failure:
         error = f'{type(failure).__name__}: {failure}'
+        if not isinstance(failure, Exception):
+            interruption = failure
+            interruption_traceback = failure.__traceback__
     finally:
         if before is not None:
             try:
@@ -392,15 +406,23 @@ def run_trial(*, binary, db, action, endpoint, model, holds_dir, output, invoke=
                 manifest['database_unchanged'] = manifest['database_after'] == before
                 if not manifest['database_unchanged']:
                     error = (error+'; ' if error else '')+'database changed during read-only evaluation'
-            except Exception as failure:
-                error = (error+'; ' if error else '')+f'database audit failed: {failure}'
+            except BaseException as failure:
+                error = (error+'; ' if error else '')+f'database audit failed: {type(failure).__name__}: {failure}'
+                if interruption is None and not isinstance(failure, Exception):
+                    interruption = failure
+                    interruption_traceback = failure.__traceback__
+        manifest['interrupted'] = interruption is not None
         manifest['error'] = error
         write_json(root/'manifest.json', manifest)
     summary = summarize(pairs, model)
-    summary.update(error=error, database_unchanged=manifest.get('database_unchanged'),
+    summary.update(error=error, interrupted=interruption is not None,
+                   database_unchanged=manifest.get('database_unchanged'),
                    private_data=True, untrusted_input=True, executed=False)
     summary['complete'] &= error is None and manifest.get('database_unchanged') is True
     write_json(root/'summary.json', summary)
+    if interruption is not None:
+        # Persist the incomplete matrix first, then preserve operator/exit semantics.
+        raise interruption.with_traceback(interruption_traceback)
     return summary
 
 

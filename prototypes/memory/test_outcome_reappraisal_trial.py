@@ -388,5 +388,117 @@ class ActualCliQualification(unittest.TestCase):
             self.assertEqual(c.execute('SELECT * FROM durable_action ORDER BY id').fetchall(), before_actions)
 
 
+class OptimizedInterpreterTests(unittest.TestCase):
+    def test_optimized_validation_scoring_summary_and_runner_reject_bad_inputs(self):
+        import subprocess
+        import sys
+        script = r'''
+import copy
+import json
+from pathlib import Path
+import tempfile
+from test_outcome_reappraisal_trial import preparation, report, RunnerTests
+import outcome_reappraisal_trial as trial
+
+case = trial.frozen_cases()[0]
+prepared = preparation(case)
+trial.validate_preparation(prepared, case, 'action')
+if not trial.score_row(case, report(prepared)['rows'][0], prepared, 'scripted')['valid']:
+    raise SystemExit('valid optimized baseline rejected')
+variants = []
+for key, value in [('protocol', 'foreign'), ('action_id', 'foreign'), ('raw_recall', []),
+                   ('private_data', False), ('executed', True)]:
+    bad = copy.deepcopy(prepared); bad[key] = value; variants.append(bad)
+bad = copy.deepcopy(prepared); bad['observation']['sha256'] = 'foreign'; variants.append(bad)
+bad = copy.deepcopy(prepared)
+observation = json.loads(bad['observation']['text']); observation['cancelled_action'] = True
+bad['observation']['text'] = trial.encode(observation)
+bad['observation']['sha256'] = trial.hash_text(bad['observation']['text']); variants.append(bad)
+bad = copy.deepcopy(prepared); bad['arms'][1]['request']['passages'][0]['text'] = 'rewritten'; variants.append(bad)
+plan = trial.planned_pairs()[0]
+for index, bad in enumerate(variants):
+    try:
+        trial.validate_preparation(bad, case, 'action')
+    except ValueError:
+        pass
+    else:
+        raise SystemExit(f'optimized preparation accepted malformed variant {index}')
+    if trial.score_row(case, report(bad)['rows'][0], bad, 'scripted')['valid']:
+        raise SystemExit(f'optimized scorer accepted malformed variant {index}')
+    pair = dict(plan, preparation=bad, report=report(bad), error=None)
+    try:
+        trial.summarize([pair], 'scripted')
+    except ValueError:
+        pass
+    else:
+        raise SystemExit(f'optimized summary accepted malformed variant {index}')
+# Runtime-envelope checks must also remain live when Python assertions are absent.
+for field, value in [('protocol', 'foreign'), ('seed', 99), ('model_controls', {}), ('executed', True)]:
+    runtime = report(prepared); runtime[field] = value
+    try:
+        trial.summarize([dict(plan, preparation=prepared, report=runtime, error=None)], 'scripted')
+    except ValueError:
+        pass
+    else:
+        raise SystemExit('optimized summary accepted malformed runtime '+field)
+with tempfile.TemporaryDirectory() as temp:
+    worker = RunnerTests()
+    calls = []
+    def malformed(argv, **kwargs):
+        calls.append(argv)
+        if '--prepare-only' not in argv:
+            raise SystemExit('optimized runner dispatched malformed preparation')
+        bad = copy.deepcopy(prepared); bad['protocol'] = 'foreign'
+        return bad
+    summary = worker.run_fake(Path(temp), malformed)
+    if summary['complete'] or summary['calls_recorded'] != 0 or len(calls) != 1:
+        raise SystemExit('optimized runner failed to stop before dispatch')
+print('all optimized public input paths rejected malformed data')
+'''
+        result = subprocess.run([sys.executable, '-O', '-c', script],
+            cwd=Path(__file__).resolve().parent, text=True, capture_output=True, timeout=30,
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn('all optimized public input paths rejected malformed data', result.stdout)
+
+
+class InterruptionTests(unittest.TestCase):
+    def test_interrupt_during_first_runtime_pair_retains_matrix_and_original_exception(self):
+        for interruption in (KeyboardInterrupt('operator interruption'), SystemExit(23), SystemExit(0)):
+            with self.subTest(interruption=type(interruption).__name__), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                worker = RunnerTests()
+                ordinary = worker.fake()
+                def interrupt(argv, **kwargs):
+                    if '--prepare-only' in argv:
+                        return ordinary(argv, **kwargs)
+                    worker.calls.append(argv)
+                    raise interruption
+                with self.assertRaises(type(interruption)) as caught:
+                    worker.run_fake(root, interrupt)
+                self.assertIs(caught.exception, interruption)
+                self.assertEqual(len([a for a in worker.calls if '--prepare-only' in a]), 10)
+                self.assertEqual(len([a for a in worker.calls if '--prepare-only' not in a]), 1)
+                output = root/'output'
+                frozen = trial.decode((output/'freeze.json').read_text())
+                manifest = trial.decode((output/'manifest.json').read_text())
+                summary = trial.decode((output/'summary.json').read_text())
+                self.assertEqual(manifest['freeze_sha256'], trial.sha(output/'freeze.json'))
+                self.assertTrue(all(p['report'] is None and not p['started'] for p in frozen['pairs']))
+                self.assertIn(type(interruption).__name__, manifest['error'])
+                self.assertIn(type(interruption).__name__, manifest['pairs'][0]['error'])
+                self.assertTrue(manifest['interrupted'])
+                self.assertTrue(summary['interrupted'])
+                self.assertFalse(summary['complete'])
+                self.assertEqual(len(summary['matrix']), 20)
+                self.assertEqual(summary['calls_recorded'], 0)
+                self.assertEqual(summary['unknown_dispatch_slots'], 2)
+                self.assertEqual(sum(r['status'] == 'not_started' for r in summary['matrix']), 18)
+                progress = trial.decode((output/'tight-energy-seed7'/'progress.json').read_text())
+                self.assertEqual(progress['status'], 'interrupted')
+                self.assertIsNone(progress['dispatch_count'])
+                self.assertEqual((root/'db').read_text(), 'sentinel existing database')
+
+
 if __name__ == '__main__':
     unittest.main()
