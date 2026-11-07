@@ -1,6 +1,7 @@
 //! Explicit synthetic-only overlay for the existing goal_context planning tool.
 //! No memory handle or authority is obtained from model-supplied arguments.
 use super::{goal_context::GoalContext, Capabilities, Tool, ToolCtx, ToolOutput};
+use crate::clock::{Clock, SystemClock};
 use crate::memory::{
     context::{ContextPolicy, ContextRequest, Situation},
     Access, Memory, RecallQuery,
@@ -17,16 +18,28 @@ pub struct GoalMemory {
     memory: Arc<Mutex<Memory>>,
     policy: ContextPolicy,
     situation: Situation,
+    clock: Arc<dyn Clock>,
 }
 
 impl GoalMemory {
     /// Owner-selected synthetic database/account/scopes only. Snapshot freezes
     /// at construction; current restrictions and forget still override it.
+    /// Relation validity uses the host clock afresh for every memory read.
     pub fn open(
         path: &Path,
         access: Access,
         account: String,
         situation: Situation,
+    ) -> Result<Self> {
+        Self::open_with_clock(path, access, account, situation, Arc::new(SystemClock))
+    }
+
+    pub(super) fn open_with_clock(
+        path: &Path,
+        access: Access,
+        account: String,
+        situation: Situation,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self> {
         ensure!(
             !account.trim().is_empty() && account.len() <= 256,
@@ -53,12 +66,13 @@ impl GoalMemory {
                 neighbors: 0,
                 max_bytes: 20_000,
             },
-            valid_at: Some(chrono::Utc::now().to_rfc3339()),
+            valid_at: None,
         };
         Ok(Self {
             memory: Arc::new(Mutex::new(memory)),
             policy,
             situation,
+            clock,
         })
     }
 }
@@ -125,7 +139,10 @@ impl Tool for GoalMemory {
             }
         };
         let memory = self.memory.clone();
-        let policy = self.policy.clone();
+        let mut policy = self.policy.clone();
+        // Knowledge remains at the invocation's snapshot; validity must follow
+        // current host time even when this tool survives across turns.
+        policy.valid_at = Some(self.clock.now().to_rfc3339());
         let situation = self.situation.clone();
         let result = tokio::task::spawn_blocking(move || {
             memory
