@@ -16,7 +16,7 @@ fn criterion() -> ConfirmedCriterion {
     }
 }
 fn transcript() -> String {
-    let records = vec![
+    let records = [
         Record::Meta(SessionMeta {
             id: "synthetic-session".into(),
             created_at: chrono::Utc::now(),
@@ -473,5 +473,98 @@ fn missing_authority_marker_withholds_previously_captured_source() {
     let binding = f.authority.binding(&f.confirmation).unwrap();
     fs::remove_file(f.root.join("audit/authority")).unwrap();
     assert_ne!(f.authority.check(&binding), SourceStatus::Checked);
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[test]
+fn malformed_native_memory_packets_refuse_capture() {
+    for result in [
+        "not JSON",
+        "{}",
+        r#"{"memory":{"records":[]}}"#,
+        r#"{"memory":{"records":[{"reference":{"object":"x","revision":"y"}}]}}"#,
+    ] {
+        let text = transcript()
+            .lines()
+            .map(|line| {
+                let mut record: Record = serde_json::from_str(line).unwrap();
+                if let Record::Message(message) = &mut record {
+                    for block in &mut message.content {
+                        match block {
+                            Block::ToolUse { name, input, .. } => {
+                                *name = "goal_context".into();
+                                *input = serde_json::json!({"memory":{"query":"fixture"}});
+                            }
+                            Block::ToolResult { content, .. } => *content = result.into(),
+                            _ => {}
+                        }
+                    }
+                }
+                serde_json::to_string(&record).unwrap() + "\n"
+            })
+            .collect::<String>();
+        assert!(
+            events(&text, &criterion(), "synthetic").is_err(),
+            "malformed native memory packet must not become a lineage-free original"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_memory_packet_supports_exact_envelope_and_rejects_truncation() {
+    use crate::tool::{goal_memory::GoalMemory, Tool, ToolCtx};
+    let f = captured();
+    let tool = GoalMemory::open_with_source_guard(
+        &f.root.join("test.memory-prototype.sqlite"),
+        f.access.clone(),
+        "synthetic".into(),
+        crate::memory::context::Situation {
+            event: "Convert fixture".into(),
+            goal: "task:convert".into(),
+            needs: None,
+        },
+        std::sync::Arc::new(f.authority.clone()),
+    )
+    .unwrap();
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"fixture"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error && output.external);
+    let raw = output.content.clone();
+    let refs = memory_packet_references(&raw).unwrap();
+    assert!(refs.contains(&f.receipt.projection));
+    assert!(f.receipt.originals.iter().all(|r| refs.contains(r)));
+    let wrapped = crate::jobs::render(
+        "goal_context",
+        "memory",
+        output,
+        &crate::jobs::Terms {
+            cap: 100_000,
+            ..Default::default()
+        },
+    )
+    .content;
+    assert_eq!(refs, memory_packet_references(&wrapped).unwrap());
+    assert!(
+        memory_packet_references(wrapped.strip_suffix("\n</untrusted-content>").unwrap()).is_err()
+    );
+    assert!(memory_packet_references(
+        &wrapped.replace("source=\"goal_context\"", "source=\"other\"")
+    )
+    .is_err());
+    assert!(memory_packet_references(&raw[..raw.len() - 1]).is_err());
+    let mut packet: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    packet["memory"]["unsupported"] = serde_json::json!(true);
+    assert!(memory_packet_references(&packet.to_string()).is_err());
+    packet["memory"]
+        .as_object_mut()
+        .unwrap()
+        .remove("unsupported");
+    packet["memory"]["records"][0]["reference"]["authority"] = serde_json::json!("model-claim");
+    assert!(memory_packet_references(&packet.to_string()).is_err());
     fs::remove_dir_all(f.root).unwrap();
 }

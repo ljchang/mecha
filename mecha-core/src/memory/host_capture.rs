@@ -176,10 +176,12 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
         "SELECT revision,authority,locator,binding_revision FROM external_binding LIMIT 0",
     )
     .map_err(|_| anyhow::anyhow!("invalid host capture schema"))?;
-    conn.prepare("SELECT identity_hash,payload_hash,receipt_id,projection_object,projection_revision,originals,state FROM host_capture_receipt LIMIT 0")
+    // Earlier unpublished v6 fixtures could copy memory without complete
+    // lineage. Refuse that schema; never backfill immutable provenance.
+    conn.prepare("SELECT identity_hash,payload_hash,receipt_id,projection_object,projection_revision,originals,state,lineage_version FROM host_capture_receipt LIMIT 0")
         .map_err(|_|anyhow::anyhow!("invalid host capture schema"))?;
     let incomplete: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM host_capture_receipt h WHERE h.state='active' AND
+        "SELECT EXISTS(SELECT 1 FROM host_capture_receipt h WHERE h.lineage_version IS NOT 2 OR h.state='active' AND
            (h.projection_revision IS NULL OR h.originals IS NULL OR
             NOT EXISTS(SELECT 1 FROM external_binding b WHERE b.revision=h.projection_revision) OR
             EXISTS(SELECT 1 FROM json_each(h.originals) j WHERE
@@ -212,7 +214,7 @@ fn hash<T: Serialize>(value: &T) -> Result<String> {
 impl Memory {
     pub fn create_host_capture(path: &Path, domain: &str) -> Result<Self> {
         Self::create_schema(path, domain, "CREATE TABLE external_binding(revision TEXT PRIMARY KEY REFERENCES revision(id),authority TEXT NOT NULL,locator TEXT NOT NULL,binding_revision TEXT NOT NULL);
-          CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')));
+          CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')),lineage_version INTEGER NOT NULL CHECK(lineage_version=2));
           PRAGMA user_version=6;")
     }
     pub fn with_source_guard(mut self, guard: Arc<dyn ExternalSourceGuard>) -> Self {
@@ -258,6 +260,7 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
         )?;
         ensure!(!suppressed, "host source unavailable");
     }
+    let mut consulted_objects = BTreeSet::new();
     for dependency in &input.consulted {
         current(&tx, dependency)?;
         ensure!(
@@ -278,6 +281,7 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
                 "unsupported host dependency"
             );
             scopes.extend(required_scopes(&tx, &member.revision)?);
+            consulted_objects.insert(member.object);
         }
     }
     let existing = tx.query_row("SELECT payload_hash,receipt_id,projection_object,projection_revision,originals,state FROM host_capture_receipt WHERE identity_hash=?1", [&identity], |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,String>(5)?))).optional()?;
@@ -313,6 +317,20 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
     }
     let mut originals = Vec::new();
     for passage in &input.originals {
+        let key = source_digest(&db.instance, &passage.source)?;
+        let old_object: Option<String> = tx
+            .query_row(
+                "SELECT object_id FROM source_item WHERE digest=?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let old_reference = old_object
+            .as_deref()
+            .map(|object| head(&tx, object, i64::MAX))
+            .transpose()?
+            .flatten()
+            .map(|(reference, _, _)| reference);
         let reference = capture_in(
             &tx,
             &db.instance,
@@ -324,6 +342,31 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
                 transcript: None,
             },
         )?;
+        // Every separately readable passage can repeat consulted evidence.
+        // Seal the same conservative lineage onto originals in this transaction.
+        // Reused revisions are immutable: a later prefix cannot add/drop edges.
+        ensure!(
+            !consulted_objects.contains(&reference.object),
+            "unsupported host dependency cycle"
+        );
+        if old_reference.as_ref() == Some(&reference) {
+            let pairs = |refs: &[RevisionRef]| {
+                refs.iter()
+                    .map(|r| (r.object.clone(), r.revision.clone()))
+                    .collect::<BTreeSet<_>>()
+            };
+            ensure!(
+                pairs(&dependencies(&tx, &reference.revision)?) == pairs(&input.consulted),
+                "unsupported host source lineage change"
+            );
+        } else {
+            for dependency in &input.consulted {
+                tx.execute(
+                    "INSERT OR IGNORE INTO dependency VALUES (?1,?2)",
+                    params![reference.revision, dependency.revision],
+                )?;
+            }
+        }
         bind(&tx, &reference, &input.binding)?;
         originals.push(reference);
     }
@@ -366,7 +409,7 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
         originals,
     };
     tx.execute(
-        "INSERT INTO host_capture_receipt VALUES (?1,?2,?3,?4,?5,?6,'active')",
+        "INSERT INTO host_capture_receipt VALUES (?1,?2,?3,?4,?5,?6,'active',2)",
         params![
             identity,
             payload,

@@ -422,8 +422,12 @@ pub async fn connected_capture_reopen_changed_goal_and_capture_only_retry() -> R
 
 /// Runs only in a caller-selected NEW synthetic directory. Retains auditable outputs.
 pub async fn connected_demo(root: &Path, retain: bool) -> Result<()> {
+    connected_demo_lineage(root, retain, false).await
+}
+
+async fn connected_demo_lineage(root: &Path, retain: bool, omit_consulted: bool) -> Result<()> {
     anyhow::ensure!(!root.exists(), "synthetic demo requires a new directory");
-    let mut fixture = Fixture::create(&root, FIRST_GOAL)?;
+    let mut fixture = Fixture::create(root, FIRST_GOAL)?;
     let requests = fixture.execute(false, true).await?;
     assert_safe(&requests_text(&requests));
     let artifact: Value =
@@ -455,11 +459,15 @@ pub async fn connected_demo(root: &Path, retain: bool) -> Result<()> {
     );
     drop(reopened);
     // Host-retained receipt lives outside either jailed task workspace. The
-    // child gets the consulted reference from this host record, never model metadata.
+    // child may supply extra provenance from this host record; native memory
+    // result references are derived independently by the capture adapter.
     std::fs::write(
         root.join("first-capture-receipt.json"),
         serde_json::to_vec(&receipt)?,
     )?;
+    if omit_consulted {
+        std::fs::write(root.join("omit-consulted"), b"true")?;
+    }
     let mut command = Command::new(std::env::current_exe()?);
     if retain {
         command.arg("--child-root").arg(root);
@@ -498,7 +506,10 @@ pub async fn connected_demo(root: &Path, retain: bool) -> Result<()> {
         second.artifact.verdict,
         mecha_core::memory::host_capture::CheckVerdict::Passed
     );
-    assert_eq!(second.consulted, vec![receipt.projection.clone()]);
+    assert!(
+        second.consulted.contains(&receipt.projection),
+        "native memory consultation must be derived when caller omits it"
+    );
     scan_all_sqlite_payloads(&path)?;
     assert_eq!(
         before,
@@ -506,6 +517,82 @@ pub async fn connected_demo(root: &Path, retain: bool) -> Result<()> {
         "second goal rewrote historical run"
     );
     if !retain {
+        // The copied native memory result is a separately readable original.
+        // Revocation must reach every B passage, not only B's projection.
+        let mut writer =
+            Memory::open(&path)?.with_source_guard(Arc::new(fixture.authority.clone()));
+        let Some(mecha_core::memory::Record::Evidence(first_original)) =
+            writer.read(&receipt.originals[0], &access())?
+        else {
+            anyhow::bail!("first original missing")
+        };
+        let copied = second_receipt.originals.iter().find(|reference| {
+            matches!(writer.read(reference, &access()), Ok(Some(mecha_core::memory::Record::Evidence(ref e))) if e.text.contains("\"memory\""))
+        }).context("B native memory ToolResult original missing")?;
+        assert!(writer.read(copied, &access())?.is_some());
+        let assert_withheld = || -> Result<()> {
+            for reference in second_receipt
+                .originals
+                .iter()
+                .chain(std::iter::once(&second_receipt.projection))
+            {
+                assert!(
+                    checked.read(reference, &access())?.is_none(),
+                    "B original copied recalled evidence after A invalidation"
+                );
+            }
+            assert!(checked
+                .search(
+                    &mecha_core::memory::Query {
+                        text: "quoted newline".into(),
+                        known_at: checked.snapshot()?,
+                        valid_at: None,
+                        include_possible: false,
+                        limit: 100
+                    },
+                    &access()
+                )?
+                .is_empty());
+            Ok(())
+        };
+        // Correction of A's authoritative transcript invalidates its historic
+        // binding without modifying B's source or SQLite dependency graph.
+        std::fs::write(
+            &fixture.session.path,
+            String::from_utf8(before.clone())?.replace("quoted", "corrected"),
+        )?;
+        assert_withheld()?;
+        let answer = memory_answer(&path, Some(&root.join("host-authority"))).await?;
+        assert!(
+            serde_json::from_str::<Value>(&answer.content)?["memory"]["records"]
+                .as_array()
+                .context("memory packet missing")?
+                .is_empty()
+        );
+        std::fs::write(&fixture.session.path, &before)?;
+        assert!(checked.read(copied, &access())?.is_some());
+        if !omit_consulted {
+            let binding = fixture.authority.binding(&fixture.confirmation)?;
+            fixture.authority.withdraw(&binding.locator)?;
+            assert_withheld()?;
+            let answer = memory_answer(&path, Some(&root.join("host-authority"))).await?;
+            assert!(
+                serde_json::from_str::<Value>(&answer.content)?["memory"]["records"]
+                    .as_array()
+                    .context("memory packet missing")?
+                    .is_empty()
+            );
+        }
+        writer.forget(&first_original.source)?;
+        assert_withheld()?;
+        let answer = memory_answer(&path, Some(&root.join("host-authority"))).await?;
+        assert!(
+            serde_json::from_str::<Value>(&answer.content)?["memory"]["records"]
+                .as_array()
+                .context("memory packet missing")?
+                .is_empty()
+        );
+        drop(writer);
         std::fs::remove_dir_all(root)?;
     }
     Ok(())
@@ -592,6 +679,26 @@ pub async fn subprocess_goalmemory_changed_criterion(root: &Path) -> Result<()> 
         "fresh-process GoalMemory did not supply historical original evidence"
     );
     assert_safe(memory_result);
+    assert!(
+        memory_result.len() > 4096,
+        "fixture must exercise refs beyond passage cap"
+    );
+    let native_packet: Value = serde_json::from_str(
+        memory_result
+            .split_once("\n---\n")
+            .context("native wrapper missing")?
+            .1
+            .strip_suffix("\n</untrusted-content>")
+            .context("native wrapper incomplete")?,
+    )?;
+    let observed_refs = native_packet["memory"]["records"]
+        .as_array()
+        .context("memory records missing")?
+        .iter()
+        .map(|hit| {
+            serde_json::from_value::<mecha_core::memory::RevisionRef>(hit["reference"].clone())
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let actual = requests_text(&requests);
     assert_safe(&actual);
     assert!(
@@ -635,7 +742,11 @@ pub async fn subprocess_goalmemory_changed_criterion(root: &Path) -> Result<()> 
             domain: DOMAIN.into(),
             account: ACCOUNT.into(),
             scopes: access().scopes,
-            consulted: vec![first_receipt.projection],
+            consulted: if root.join("omit-consulted").exists() {
+                vec![]
+            } else {
+                vec![first_receipt.projection]
+            },
             records: records(),
         },
         &access(),
@@ -648,6 +759,12 @@ pub async fn subprocess_goalmemory_changed_criterion(root: &Path) -> Result<()> 
     let projection: mecha_core::memory::host_capture::HostCapture =
         serde_json::from_str(&projection.text)?;
     assert_eq!(projection.criterion.goal, SECOND_GOAL);
+    assert!(
+        observed_refs
+            .iter()
+            .all(|reference| projection.consulted.contains(reference)),
+        "capture must retain every returned context bundle reference"
+    );
     assert_eq!(
         projection.artifact.verdict,
         mecha_core::memory::host_capture::CheckVerdict::Passed
@@ -819,4 +936,10 @@ pub async fn changing_confirmed_goal_after_freeze_refuses_capture_without_projec
     drop(memory);
     std::fs::remove_dir_all(&root)?;
     Ok(())
+}
+
+/// Empty host extras must not erase native GoalMemory provenance.
+pub async fn connected_capture_derives_omitted_consultation() -> Result<()> {
+    let root = std::env::temp_dir().join(format!("mecha-omitted-bridge-{}", uuid::Uuid::new_v4()));
+    connected_demo_lineage(&root, false, true).await
 }

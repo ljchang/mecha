@@ -34,3 +34,8 @@ async fn subprocess_goalmemory_changed_criterion() -> Result<()> {
     );
     support::subprocess_goalmemory_changed_criterion(&root).await
 }
+
+#[tokio::test]
+async fn connected_capture_derives_omitted_consultation() -> Result<()> {
+    support::connected_capture_derives_omitted_consultation().await
+}

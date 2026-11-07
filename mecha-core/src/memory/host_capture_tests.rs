@@ -778,3 +778,128 @@ fn relation_revision_cannot_drop_authority_acquired_by_existing_support() {
     );
     assert_eq!(db.snapshot().unwrap().sequence, before);
 }
+
+#[test]
+fn consulted_authority_protects_each_original_not_only_projection() {
+    struct SelectiveGuard(Arc<AtomicBool>);
+    impl ExternalSourceGuard for SelectiveGuard {
+        fn check(&self, binding: &ExternalBinding) -> SourceStatus {
+            if binding.locator == "c".repeat(64) && !self.0.load(Ordering::SeqCst) {
+                SourceStatus::Withheld
+            } else {
+                SourceStatus::Checked
+            }
+        }
+    }
+    let (path, db, state) = fixture();
+    let mut db = db.with_source_guard(Arc::new(SelectiveGuard(state.clone())));
+    let a = db.admit_host_capture(input(), &access()).unwrap();
+    let mut b = input();
+    b.identity.session_id = "second-session".into();
+    b.binding.locator = "1".repeat(64);
+    b.originals[0].source.id = "second-memory-result".into();
+    b.originals[0].kind = PassageKind::ToolResult;
+    b.originals[0].text = "Copied synthetic CSV evidence from first session".into();
+    b.consulted = vec![a.projection.clone()];
+    let b = db.admit_host_capture(b, &access()).unwrap();
+    assert!(db.read(&b.originals[0], &access()).unwrap().is_some());
+    state.store(false, Ordering::SeqCst);
+    assert!(db.read(&b.projection, &access()).unwrap().is_none());
+    assert!(
+        db.read(&b.originals[0], &access()).unwrap().is_none(),
+        "copied original must inherit consulted authority"
+    );
+    assert!(db
+        .search(
+            &Query {
+                text: "Copied".into(),
+                known_at: db.snapshot().unwrap(),
+                valid_at: None,
+                include_possible: false,
+                limit: 100
+            },
+            &access()
+        )
+        .unwrap()
+        .is_empty());
+    drop(db);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn source_reuse_cannot_change_immutable_original_lineage() {
+    let (_path, mut db, _state) = fixture();
+    let a = db.admit_host_capture(input(), &access()).unwrap();
+    let mut b = input();
+    b.identity.session_id = "second-session".into();
+    b.originals[0].source.id = "second-original".into();
+    let first_b = db.admit_host_capture(b.clone(), &access()).unwrap();
+    b.identity.prefix_digest = "1".repeat(64);
+    b.consulted = vec![a.projection];
+    let mut new_passage = b.originals[0].clone();
+    new_passage.source.id = "must-roll-back".into();
+    b.originals.insert(0, new_passage);
+    let before = db.snapshot().unwrap().sequence;
+    assert!(
+        db.admit_host_capture(b, &access()).is_err(),
+        "same original with changed lineage must refuse rather than mutate history"
+    );
+    assert_eq!(before, db.snapshot().unwrap().sequence);
+    assert_eq!(
+        super::sql::closure(&db.conn, &first_b.originals[0])
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn revised_original_cannot_consult_its_own_previous_capture() {
+    let (_path, mut db, _state) = fixture();
+    let a = db.admit_host_capture(input(), &access()).unwrap();
+    let mut changed = input();
+    changed.identity.prefix_digest = "1".repeat(64);
+    changed.originals[0].text = "revised original".into();
+    changed.consulted = vec![a.projection];
+    let before = db.snapshot().unwrap().sequence;
+    assert!(db.admit_host_capture(changed, &access()).is_err());
+    assert_eq!(before, db.snapshot().unwrap().sequence);
+    assert!(db.read(&a.originals[0], &access()).unwrap().is_some());
+}
+
+#[test]
+fn unchanged_original_reuse_preserves_consulted_lineage() {
+    let (_path, mut db, _state) = fixture();
+    let a = db.admit_host_capture(input(), &access()).unwrap();
+    let mut b = input();
+    b.identity.session_id = "second-session".into();
+    b.originals[0].source.id = "second-original".into();
+    b.consulted = vec![a.projection];
+    let first_b = db.admit_host_capture(b.clone(), &access()).unwrap();
+    let closure = super::sql::closure(&db.conn, &first_b.originals[0]).unwrap();
+    b.identity.prefix_digest = "1".repeat(64);
+    let second_b = db.admit_host_capture(b, &access()).unwrap();
+    assert_eq!(first_b.originals, second_b.originals);
+    assert_eq!(
+        closure,
+        super::sql::closure(&db.conn, &second_b.originals[0]).unwrap()
+    );
+}
+
+#[test]
+fn pre_lineage_v6_files_refuse_instead_of_serving_old_copied_passages() {
+    let dir = std::env::temp_dir().join(format!("bridge-old-format-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("old.memory-prototype.sqlite");
+    let db = Memory::create(&path, "test").unwrap();
+    db.conn.execute_batch("CREATE TABLE external_binding(revision TEXT PRIMARY KEY REFERENCES revision(id),authority TEXT NOT NULL,locator TEXT NOT NULL,binding_revision TEXT NOT NULL);
+        CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')));
+        PRAGMA user_version=6;").unwrap();
+    drop(db);
+    assert!(
+        Memory::open(&path).is_err(),
+        "unsealed intermediate v6 must not be served"
+    );
+    assert!(Memory::open_read_only(&path).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
