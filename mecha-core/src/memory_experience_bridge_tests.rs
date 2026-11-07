@@ -568,3 +568,273 @@ async fn native_memory_packet_supports_exact_envelope_and_rejects_truncation() {
     assert!(memory_packet_references(&packet.to_string()).is_err());
     fs::remove_dir_all(f.root).unwrap();
 }
+
+// Exercise the native ProgramCall/Record wire format with an actual GoalMemory
+// result. The interpreter itself is deliberately not required by this refusal
+// test: even a lost program record must not admit an untracked `code` result.
+async fn unsupported_program_capture(tool_name: &str, record_program: bool, legacy_binding: bool) {
+    use crate::tool::{code::record, goal_memory::GoalMemory, Tool, ToolCtx};
+    let mut f = captured();
+    let db_path = f.root.join("test.memory-prototype.sqlite");
+    let memory = GoalMemory::open_with_source_guard(
+        &db_path,
+        f.access.clone(),
+        "synthetic".into(),
+        crate::memory::context::Situation {
+            event: "Read prior fixture".into(),
+            goal: "task:convert".into(),
+            needs: None,
+        },
+        std::sync::Arc::new(f.authority.clone()),
+    )
+    .unwrap();
+    let input = serde_json::json!({"memory":{"query":"fixture"}});
+    let result = memory
+        .call(input.clone(), &ToolCtx::default())
+        .await
+        .unwrap();
+    assert!(!result.is_error && result.external);
+    let copied = crate::jobs::render(
+        tool_name,
+        "write-1",
+        crate::tool::ToolOutput::ok(result.content.clone() + "\n").from_outside(),
+        &crate::jobs::Terms {
+            cap: 100_000,
+            ..Default::default()
+        },
+    )
+    .content;
+    let mut call = record::ProgramCall::ran(
+        "write-1.host-1",
+        "write-1",
+        "goal_context",
+        input,
+        true,
+        false,
+        std::sync::Arc::from(result.content.as_str()),
+    );
+    call.blob = Some(
+        record::Store::at(f.root.join("program-blobs"))
+            .put("synthetic-program-session", &result.content)
+            .unwrap(),
+    );
+    if tool_name != crate::tool::code::NAME {
+        call.under = Some(record::Under {
+            call: "write-1".into(),
+            tool: tool_name.into(),
+            trusted: false,
+        });
+    }
+    let mut records: Vec<Record> = transcript()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for record in &mut records {
+        match record {
+            Record::Meta(meta) => {
+                meta.id = "synthetic-program-session".into();
+                meta.workspace = f.root.join("workspace");
+            }
+            Record::Message(message) => {
+                for block in &mut message.content {
+                    match block {
+                        Block::ToolUse { name, input, .. } => {
+                            *name = tool_name.into();
+                            *input = serde_json::json!({"program":"print(goal_context(memory={\"query\": \"fixture\"}))"});
+                        }
+                        Block::ToolResult { content, .. } => *content = copied.clone(),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if record_program {
+        records.insert(6, Record::Program { calls: vec![call] });
+    }
+    let path = f.root.join("program-session.jsonl");
+    let serialize = |records: &[Record]| {
+        records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap() + "\n")
+            .collect::<String>()
+    };
+    fs::write(&path, serialize(&records[..3])).unwrap();
+    let confirmation = f
+        .authority
+        .freeze(FreezeRequest {
+            transcript: path.clone(),
+            artifact: f.artifact.clone(),
+            criterion: criterion(),
+            expected_rows: vec![],
+        })
+        .unwrap();
+    fs::write(&path, serialize(&records)).unwrap();
+    if legacy_binding {
+        // Reconstruct a previously issued binding using the native completed
+        // trace. Seed through typed admission with the former permissive guard;
+        // the current public capture path is tested separately below.
+        struct FormerGuard;
+        impl ExternalSourceGuard for FormerGuard {
+            fn check(&self, _: &ExternalBinding) -> SourceStatus {
+                SourceStatus::Checked
+            }
+        }
+        let record_projection = f
+            .memory
+            .read(&f.receipt.projection, &f.access)
+            .unwrap()
+            .unwrap();
+        let crate::memory::Record::Evidence(projection) = record_projection else {
+            panic!("projection missing")
+        };
+        let mut input: HostCapture = serde_json::from_str(&projection.text).unwrap();
+        let old_binding = f.authority.binding(&f.confirmation).unwrap();
+        let mut audit: HostAudit = serde_json::from_slice(
+            &fs::read(f.authority.file(&old_binding.locator, "audit").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let (_, frozen_bytes) = f.authority.frozen(&confirmation).unwrap();
+        audit.confirmation = confirmation;
+        audit.frozen_digest = digest(&frozen_bytes);
+        audit.transcript = serialize(&records);
+        audit.prefix_digest = digest(audit.transcript.as_bytes());
+        let audit_bytes = serde_json::to_vec(&audit).unwrap();
+        let binding = ExternalBinding {
+            authority: AUTHORITY.into(),
+            locator: digest(
+                serde_json::to_string(&(&audit.confirmation, &audit.prefix_digest))
+                    .unwrap()
+                    .as_bytes(),
+            ),
+            revision: digest(&audit_bytes),
+        };
+        write_once(
+            &f.authority.file(&binding.locator, "audit").unwrap(),
+            &audit_bytes,
+        )
+        .unwrap();
+        input.identity.session_id = "synthetic-program-session".into();
+        input.identity.prefix_digest = audit.prefix_digest;
+        input.binding = binding.clone();
+        for original in &mut input.originals {
+            original.source.id = original
+                .source
+                .id
+                .replace("synthetic-session", "synthetic-program-session");
+            if original.kind == PassageKind::ToolResult {
+                original.text = copied.chars().take(4096).collect();
+            }
+        }
+        input.receipts[0].tool_name = tool_name.into();
+        let legacy_path = f.root.join("legacy.memory-prototype.sqlite");
+        let mut legacy = Memory::create_host_capture(&legacy_path, &f.access.domain)
+            .unwrap()
+            .with_source_guard(std::sync::Arc::new(FormerGuard));
+        let receipt = legacy.admit_host_capture(input, &f.access).unwrap();
+        assert!(legacy
+            .read(&receipt.projection, &f.access)
+            .unwrap()
+            .is_some());
+        drop(legacy);
+        let reopened = Memory::open(&legacy_path)
+            .unwrap()
+            .with_source_guard(std::sync::Arc::new(f.authority.clone()));
+        assert_ne!(
+            f.authority.check(&binding),
+            SourceStatus::Checked,
+            "previously issued native program binding must be withheld too"
+        );
+        for reference in receipt
+            .originals
+            .iter()
+            .chain(std::iter::once(&receipt.projection))
+        {
+            assert!(reopened.read(reference, &f.access).unwrap().is_none());
+        }
+        let tool = GoalMemory::open_with_source_guard(
+            &legacy_path,
+            f.access.clone(),
+            "synthetic".into(),
+            crate::memory::context::Situation {
+                event: "Read prior fixture".into(),
+                goal: "task:convert".into(),
+                needs: None,
+            },
+            std::sync::Arc::new(f.authority.clone()),
+        )
+        .unwrap();
+        let result = tool
+            .call(
+                serde_json::json!({"memory":{"query":"fixture"}}),
+                &ToolCtx::default(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&result.content).unwrap()["memory"]
+                ["records"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        fs::remove_dir_all(f.root).unwrap();
+        return;
+    }
+    // Both first capture and persistence-only retry must refuse before writing
+    // an audit, binding, receipt, original, projection, or change sequence.
+    let before_db = fs::read(&db_path).unwrap();
+    let before_sequence = f.memory.snapshot().unwrap().sequence;
+    let authority_files = || {
+        fs::read_dir(f.root.join("audit"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<BTreeSet<_>>()
+    };
+    let before_files = authority_files();
+    for _ in 0..2 {
+        let error = f
+            .authority
+            .capture(
+                &mut f.memory,
+                CaptureRequest {
+                    confirmation: confirmation.clone(),
+                    domain: f.access.domain.clone(),
+                    account: "synthetic".into(),
+                    scopes: BTreeSet::new(),
+                    consulted: vec![],
+                    records: SessionRecords::default(),
+                },
+                &f.access,
+            )
+            .expect_err("unsupported program output must not become lineage-free memory");
+        assert_eq!(error.to_string(), "host capture unavailable");
+        assert_eq!(f.memory.snapshot().unwrap().sequence, before_sequence);
+        assert_eq!(fs::read(&db_path).unwrap(), before_db);
+        assert_eq!(authority_files(), before_files);
+    }
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[tokio::test]
+async fn native_code_memory_read_refuses_before_any_capture_writes() {
+    unsupported_program_capture(crate::tool::code::NAME, true, false).await;
+}
+
+#[tokio::test]
+async fn native_code_without_program_evidence_still_refuses_capture() {
+    unsupported_program_capture(crate::tool::code::NAME, false, false).await;
+}
+
+#[tokio::test]
+async fn native_program_carried_by_another_tool_refuses_capture() {
+    unsupported_program_capture("synthetic_delegate", true, false).await;
+}
+
+#[tokio::test]
+async fn previously_issued_program_bindings_are_withheld_by_read_and_goalmemory() {
+    unsupported_program_capture(crate::tool::code::NAME, false, true).await;
+    unsupported_program_capture("synthetic_delegate", true, true).await;
+}

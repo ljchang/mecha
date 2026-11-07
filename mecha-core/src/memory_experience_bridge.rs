@@ -13,7 +13,8 @@
 //! model. Appended cost-only Summary records can preserve a pinned historic
 //! prefix; other semantic appends withhold this narrow completed-range binding.
 //! A second assessment requires a new pre-dispatch confirmation.
-//! Late deliveries and unfinished resumed ranges are unsupported and refused.
+//! Late deliveries, unfinished resumed ranges, and code/program captures are
+//! unsupported and refused; nested program-read provenance is not reconstructed.
 use crate::memory::{
     host_capture::{ConfirmedCriterion, OriginalPassage, PassageKind, ReceiptStatus, ToolReceipt},
     SourceKey,
@@ -160,7 +161,33 @@ fn strict_record(text: &str) -> Result<Record> {
     Ok(serde_json::from_value(value.0)?)
 }
 
+// A program's printed output can contain memory read through nested host
+// calls. This slice reconstructs direct native GoalMemory provenance only.
+// Use the same refusal at admission and for bindings issued by older builds.
+fn check_execution_record(record: &Record) -> Result<()> {
+    let unsupported = match record {
+        Record::Program { .. } => true,
+        Record::Message(message) => message.content.iter().any(
+            |block| matches!(block, Block::ToolUse { name, .. } if name == crate::tool::code::NAME),
+        ),
+        _ => false,
+    };
+    ensure!(!unsupported, "capture refused");
+    Ok(())
+}
+
+// Run before SessionEvidence assembly: that seam loads native Program blobs
+// from its legacy default store, which this explicit-input adapter must never
+// discover for an unsupported execution format.
+fn check_execution_text(text: &str) -> Result<()> {
+    for line in text.lines() {
+        check_execution_record(&strict_record(line)?)?;
+    }
+    Ok(())
+}
+
 fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<Events> {
+    check_execution_text(text)?;
     let (transcript, _) = crate::appraisal_store::SessionEvidence::from_transcript_text(
         std::path::Path::new("capture.jsonl"),
         text,
@@ -693,6 +720,7 @@ impl LocalAuthority {
             text.starts_with(&frozen.seed) && text.ends_with('\n'),
             "host capture unavailable"
         );
+        check_execution_text(&text)?;
         let prefix_digest = digest(text.as_bytes());
         let (transcript, evidence) = crate::appraisal_store::SessionEvidence::from_transcript_text(
             &frozen.transcript,
@@ -839,6 +867,10 @@ impl LocalAuthority {
             current.starts_with(audit.transcript.as_bytes()),
             "host capture unavailable"
         );
+        // Older captures may predate the program refusal. Recheck the exact
+        // authenticated pinned bytes; do not let an existing receipt bypass
+        // the execution-format boundary. No appraisal or blob loading occurs.
+        check_execution_text(&audit.transcript)?;
         // A matching byte prefix is insufficient: native late results,
         // failures and rewrites can amend the meaning of earlier records.
         // This slice certifies one completed range, so only cost summaries may
