@@ -65,6 +65,18 @@ Build/install hashes, version and actual CLI behavior verified. Results:
 is `ccee4000d`; it adds tests only to product `611bbc048`. The previous measured
 model diagnostic remains in HISTORY and `results/memory-constraint-20261106/`.
 
+
+Automated review then identified that ordinary CI discovery skipped the four
+installed-CLI tests without explicit fixture variables. `ci_qualification.py`
+now creates a disposable mismatch fixture through the authored loopback action
+lifecycle, validates its finalized action, sets the three qualification variables
+before discovery, and rejects missing configuration, empty discovery, skips or
+failed tests. CI explicitly builds the feature-enabled CLI first. The exact runner
+at `7a3bfcd11` passed **81 tests, zero failed/skipped**, on Spark with a fresh
+fixture and the qualified `611bbc048` artifact; no real model inference. Scoped
+re-review found both this gap and the corrected architecture/main inference comments
+addressed, with no major/medium findings. Portable developer skips remain explicit.
+
 **Next:** freeze broader multi-seed cases to test whether the bounded-reasoning
 benefit holds under the new citation contract at acceptable cost. Score raw model
 citations, effective-source support, full packet omissions, explanation fidelity,
@@ -88,9 +100,9 @@ production deployment claim was requalified by this memory-only increment.
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#comparison-provenance-is-separate-from-model-citations
 Research v0.21 published 2026-11-07, source
-`a66f331d8f14d00e5fe5c43b0dc5946426e2febb`, deployment
-`appgdep_6aeecb467c848191849dc83621106ed5` succeeded. All62 prior IDs retained
-(63 current); internal links,21 revision rows,inline scripts,unchanged SVG and
+`5838b611c9db882baf487c782305acc623983086`, deployment
+`appgdep_6aeed04b0354819194c45c8139c5db04` succeeded. All 62 prior IDs retained
+(63 current); internal links, 21 revision rows, inline scripts, unchanged SVG and
 dist mirror checked. Browser preview verified the new comparison table and ledger;
 native publication confirmed the matching source deployment. Shared production
 binaries, services, configuration, owner stores and nightly jobs were not changed.

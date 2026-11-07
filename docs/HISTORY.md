@@ -55,6 +55,18 @@ is `ccee4000d`; it adds tests only to product `611bbc048`. The previous measured
 model diagnostic remains in HISTORY and `results/memory-constraint-20261106/`.
 
 
+
+Automated review then identified that ordinary CI discovery skipped the four
+installed-CLI tests without explicit fixture variables. `ci_qualification.py`
+now creates a disposable mismatch fixture through the authored loopback action
+lifecycle, validates its finalized action, sets the three qualification variables
+before discovery, and rejects missing configuration, empty discovery, skips or
+failed tests. CI explicitly builds the feature-enabled CLI first. The exact runner
+at `7a3bfcd11` passed **81 tests, zero failed/skipped**, on Spark with a fresh
+fixture and the qualified `611bbc048` artifact; no real model inference. Scoped
+re-review found both this gap and the corrected architecture/main inference comments
+addressed, with no major/medium findings. Portable developer skips remain explicit.
+
 The first all-feature run failed in the unchanged mail-hook timeout test while
 launching its temporary executable with ETXTBSY (Text file busy). The exact isolated
 test and the full unchanged suite then passed. Both logs remain in the results;

@@ -1158,3 +1158,11 @@ material; this is not a fix for historical-outcome transitive freshness.
 The v1 default and v3 modes/rubrics/results are unchanged. V4 qualification uses
 authored HTTP replies, not a claim of better model reasoning. A new frozen
 multi-seed model comparison is the next experiment.
+
+CI uses `python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha`
+after `cargo build --locked -p mecha-cli --features memory-prototype`. The runner
+creates its own disposable synthetic fixture through authored loopback replies,
+sets the explicit qualification environment before discovery, and refuses empty,
+skipped or failing suites. It makes no real model calls and needs no owner store.
+Ordinary developer unittest discovery retains explicit skips when those fixture
+variables are absent. The exact fresh-fixture runner passed 81 tests on Spark.
