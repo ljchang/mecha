@@ -162,7 +162,11 @@ def jail_argv(tc, tree, env):
     """bwrap as `Sandbox::bwrap_args` builds it for the owner's `[sandbox]`
     (no network, the system read-only, a private /tmp, the toolchain tree
     read-only, the workspace the only writable path, the environment
-    cleared), up to and not including the command."""
+    cleared), up to and not including the command. Not the run's limits: no
+    `systemd-run` scope wraps it, so `[sandbox] memory_mb` does not bound
+    the grade, and its cargo calls pass `jobs=4`, which CARGO_BUILD_JOBS
+    sets ahead of the clone's `[build] jobs = 2` (that setting is the run's,
+    under its 8192 MB). The grade runs on the host's memory gate instead."""
     bwrap = shutil.which("bwrap", path="/usr/local/bin:/usr/bin:/bin")
     if not bwrap:
         die("bwrap is not installed, and a run's tree is never built unconfined")
@@ -376,7 +380,13 @@ def graft(tree, merge):
     """Put the PR's added tests into `tree`: whole new integration-test files
     copied, and added items in an existing test module grafted into a module
     of their own, so a test the run wrote under the same name is not a
-    compile error charged to the model. Returns the names placed."""
+    compile error charged to the model. Returns the names placed. A tree is
+    grafted once: a second graft would be a duplicate module, every hidden
+    test a build error, so a re-grade needs a fresh setup."""
+    if os.path.exists(os.path.join(tree, ".git", "hidden-grade")):
+        die("this tree has been graded already; grade a fresh setup")
+    with open(os.path.join(tree, ".git", "hidden-grade"), "w") as fh:
+        fh.write(merge + "\n")
     for path in new_test_files(merge):
         dest = os.path.join(tree, path)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -635,9 +645,9 @@ def cmd_validate(task_id, r):
         pin_why, merge_why = {}, {}
         tc = prepare(t, pin_tree, t["pin"])
         graft(pin_tree, t["merge"])
-        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why) for _ in range(r)]
+        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True) for _ in range(r)]
         tc_m = prepare(t, merge_tree, t["merge"])
-        merge = [run_hidden(tc_m, merge_tree, tests, jobs=4, why=merge_why) for _ in range(r)]
+        merge = [run_hidden(tc_m, merge_tree, tests, jobs=4, why=merge_why, confined=True) for _ in range(r)]
     res["pin"], res["merge"], res["pin_why"], res["merge_why"] = pin, merge, pin_why, merge_why
     if any("skipped" in p.values() for p in pin + merge):
         res["verdict"] = "reject: a hidden test skips here for want of its backend, so it would pass a run that did nothing"

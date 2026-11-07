@@ -88,6 +88,14 @@
       "prompt_check": {
         "sha256": "ace565cf0b3239a773ecdfe61d9a886e8855d5509efb441a3c4dbda4d2c0d034",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-core": []
+        }
       }
     },
     {
@@ -126,7 +134,17 @@
           "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
           "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
         }
-      ]
+      ],
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-core": [
+            "imagegen::tests::a_persona_draws_itself_without_casting_itself"
+          ]
+        }
+      }
     },
     {
       "id": "pr-807",
@@ -177,6 +195,14 @@
       "prompt_check": {
         "sha256": "2690d378ad2493825d474bee8904ee21ce0e4d011ad15daaef6d600a3df7d5c9",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-core": []
+        }
       }
     },
     {
@@ -215,6 +241,16 @@
       "prompt_check": {
         "sha256": "356269cb2aec283edf1d534d185793a2b7c41d52491d45dcd1fb777e00a96e2e",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-core": [
+            "imagegen::tests::a_persona_draws_itself_without_casting_itself"
+          ]
+        }
       }
     },
     {
@@ -243,6 +279,15 @@
       "prompt_check": {
         "sha256": "3e790390910561b912df840f22f74183df5e26238792304c9399f70be69a2e5f",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        }
       }
     },
     {
@@ -271,6 +316,15 @@
       "prompt_check": {
         "sha256": "606135eb1a72f52ced50fdccc3d6f601424996531adb0d022842f17e5bdb90db",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        }
       }
     },
     {
@@ -323,6 +377,14 @@
       "prompt_check": {
         "sha256": "615693bccec3965727482200538962807e1e06499a9d90256ff5f2aeda3a250b",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-core": []
+        }
       }
     },
     {
@@ -361,6 +423,16 @@
       "prompt_check": {
         "sha256": "50cef0c712be161ab46652c7fa02c23733205defa73d7cee841f71fe10db90e9",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-core": [
+            "imagegen::tests::a_persona_draws_itself_without_casting_itself"
+          ]
+        }
       }
     },
     {
@@ -399,6 +471,14 @@
       "prompt_check": {
         "sha256": "e34c634b1d3cf31a235bb75663a59a63021d9c3587520ba1f2aac3a666a4baa7",
         "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "date": "2026-11-07",
+        "by": "baseline",
+        "failing": {
+          "mecha-cli": []
+        }
       }
     }
   ]

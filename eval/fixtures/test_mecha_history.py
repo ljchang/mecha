@@ -118,6 +118,26 @@ def executable(path, text):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
 
 
+class CommittedBank(unittest.TestCase):
+    """The bank this repository ships, not a made-up one: a task it admits and
+    `list` does not offer is a pilot with nothing to run (review of #852,
+    pass 2, where no task carried its baseline)."""
+
+    def test_every_task_the_bank_admits_is_offered(self):
+        path = os.path.join(HERE, "mecha_history", "tasks.json")
+        with open(path) as fh:
+            tasks = json.load(fh)["tasks"]
+        admitted = [t for t in tasks if t["admission"]["state"] in mecha_history.OFFERED]
+        self.assertTrue(admitted)
+        old = mecha_history.BANK
+        mecha_history.BANK = os.path.dirname(path)
+        try:
+            unoffered = [t["id"] for t in admitted if not mecha_history.offered(t)]
+        finally:
+            mecha_history.BANK = old
+        self.assertEqual(unoffered, [])
+
+
 class Regressions(unittest.TestCase):
     def test_a_test_the_pin_already_fails_is_not_the_runs(self):
         self.assertEqual(mecha_history.counted(["a::slow"], ["a::slow"]),
@@ -316,6 +336,11 @@ class Source(unittest.TestCase):
                 "    #[test]\n    fn adds()", "    #[test]\n    fn saturates_at_the_top() {}\n\n    #[test]\n    fn adds()")
             write(lib, text)
             mecha_history.graft(self.ws, self.merge)
+            once = read(lib)
+            # A second grade of the same tree is refused, never a duplicate module.
+            with self.assertRaises(SystemExit):
+                mecha_history.graft(self.ws, self.merge)
+            self.assertEqual(read(lib), once)
         finally:
             del os.environ["MECHA_HISTORY_REPO"]
         grafted = read(lib)
@@ -405,8 +430,14 @@ class Source(unittest.TestCase):
         self.assertEqual(argv[i + 1:i + 3], ["/work/clone", "/work/clone"])
         self.assertEqual(argv.count("--bind"), 1, "the clone is the only writable path")
         self.assertIn(["--ro-bind-try", "/opt/tc", "/opt/tc"], [argv[k:k + 3] for k in range(len(argv))])
-        self.assertFalse(any(a.startswith(os.path.expanduser("~")) for a in argv), "nothing of the home")
         self.assertEqual(argv[-1], "--")
+        # The real toolchain sits under the home: it alone of the home is bound.
+        home = os.path.expanduser("~")
+        tc = os.path.join(home, ".rustup", "toolchains", "stable-test-triple")
+        with mock.patch.object(mecha_history.shutil, "which", return_value="/usr/bin/bwrap"):
+            argv = mecha_history.jail_argv(tc, "/work/clone", {"HOME": "/work/clone"})
+        under_home = {a for a in argv if a == home or a.startswith(home + os.sep)}
+        self.assertEqual(under_home, {tc}, "nothing of the home but the toolchain")
 
     def test_libtest_output_is_read_per_test(self):
         out = ("test tests::adds ... ok\n"

@@ -1016,8 +1016,10 @@ def in_head_exact(text, cache={}):
     parts appearing apart (review of #841)."""
     if text not in cache:
         cache[text] = any(
-            subprocess.run(["git", "grep", "-q", "-I", "-i", "-F", "-e", text, rev, "--", ".",
-                            *[f":(exclude){p}" for p in SELF]],
+            # `:/` and `top`: SELF is the toplevel's path, and a bare pathspec
+            # is the cwd's (review of #852, pass 2).
+            subprocess.run(["git", "grep", "-q", "-I", "-i", "-F", "-e", text, rev, "--", ":/",
+                            *[f":(top,exclude){p}" for p in SELF]],
                            capture_output=True).returncode == 0
             for rev in BASE + PUBLIC)
     return cache[text]
@@ -1026,7 +1028,7 @@ def in_head_exact(text, cache={}):
 def tree_words(rev):
     """Every file of `rev` as one run of words, files apart."""
     # Per file: `git grep -h` gives no file boundaries, so ask with them.
-    listing = subprocess.run(["git", "grep", "-I", "-z", "-e", "", rev, "--"],
+    listing = subprocess.run(["git", "grep", "--full-name", "-I", "-z", "-e", "", rev, "--", ":/"],
                              capture_output=True, text=True, errors="replace").stdout
     files = {}
     for rec in listing.split("\n"):

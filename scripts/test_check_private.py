@@ -57,9 +57,9 @@ class Guard(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_guard(self, *args, home=None):
+    def run_guard(self, *args, home=None, cwd=None):
         env = dict(os.environ, MECHA_HOME=home or self.home, CHECK_PRIVATE_JOURNAL="0")
-        return subprocess.run([sys.executable, GUARD, *args], cwd=self.repo, env=env,
+        return subprocess.run([sys.executable, GUARD, *args], cwd=cwd or self.repo, env=env,
                               capture_output=True, text=True)
 
     def stage(self, name, text):
@@ -157,6 +157,23 @@ class Guard(unittest.TestCase):
         self.stage("harness.md", f"{SAID}\n")
         git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
         self.assertEqual(self.run_guard("--text", os.path.join(self.repo, "prompt.md")).returncode, 0)
+
+    def test_a_committed_text_does_not_excuse_itself_from_any_directory(self):
+        # The exclusion is the toplevel's path, so it must hold wherever the
+        # guard runs from, not only at the toplevel (review of #852, pass 2).
+        for d in ("bank", "elsewhere"):
+            os.makedirs(os.path.join(self.repo, d), exist_ok=True)
+        self.stage("bank/prompt.md", f"# {SAID}\n")
+        self.stage("elsewhere/keep.md", "Nothing to say.\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "add")
+        prompt = os.path.join(self.repo, "bank", "prompt.md")
+        for cwd in ("bank", "elsewhere"):
+            r = self.run_guard("--text", prompt, cwd=os.path.join(self.repo, cwd))
+            self.assertEqual(r.returncode, 1, (cwd, r.stdout))
+        # And another file anywhere in the tree still excuses it, from below.
+        self.stage("harness.md", f"{SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
+        self.assertEqual(self.run_guard("--text", prompt, cwd=os.path.join(self.repo, "bank")).returncode, 0)
 
     def test_a_push_reads_every_commit_not_only_the_ends(self):
         # Added in one --no-verify commit and rewritten in the next: the

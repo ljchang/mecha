@@ -533,8 +533,12 @@ the text above:
 - **The grade runs in a jail of its own,** built the way the run's is: bwrap,
   no network, a cleared environment, the toolchain read-only and the tree
   the only writable path. A run's tree is the model's code, and the grade
-  executes it. Setup and `validate` build only the repository's own history,
-  and run unconfined.
+  executes it. `validate` and `baseline` run their tests in the same jail,
+  so a test whose backend the host has and the jail lacks is caught at
+  admission, not charged to a run. Setup's prebuild compiles only the
+  repository's own history, and runs unconfined. The jail carries no
+  memory ceiling: the grade runs behind the host's memory gate, with four
+  build jobs.
 - **Regressions are counted against the pin's own failures.** An old pin can
   fail some of its own unit tests. At 525's pin one fails deterministically,
   so its oracle grade (the merge's own diff, applied to the clone) failed.
