@@ -724,12 +724,20 @@ rather than trusting each run to be configured right:
   readers, layers, and now tools), so the rule is a closed allowlist: a
   driven run registers only the builtins whose effects stay inside its jail
   (the file, search and edit tools, `shell` under the sandbox, `code`), and
-  three harness tools that `opts.tools` would otherwise narrow away with
+  four harness tools that `opts.tools` would otherwise narrow away with
   everything else: `skill` (whose registration also gates the skills prompt
   block, so without it skills are off wholesale, contradicting "Kept"
-  below), `compact` (model-invoked compaction), and `todo` (how a plan is
-  declared, and so what `step.rs` and `Lever::StepChecks` act on). Long
-  multi-turn repository work is the thing §0 says is unmeasured, and
+  below), `compact` (model-invoked compaction), `todo` (how a plan is
+  declared, and so what `step.rs` and `Lever::StepChecks` act on), and
+  `goal_context`. `goal_context` is the only consumer of
+  `ToolCtx::goal_lessons`, because lessons are "served here, on demand,
+  never pushed into the prefix". Without it, §2's `goal_lessons` carve-out
+  would be dead in a driven run, and the positive check's "goal lessons
+  served" could pass only in an `experiment`-marked trial, measuring a
+  retrieval path production lacks. Its reach is a read of the learning
+  stores in the home, not the jail, so it is named rather than falling out
+  of the effects rule; that read is the goal-system behaviour under test.
+  Long multi-turn repository work is the thing §0 says is unmeasured, and
   `compact` and `todo` are what it exercises.
   **`web_search` and `http_fetch` are left out, not kept and refused.**
   With the forced send guard every call to either would be refused, and a
@@ -838,13 +846,13 @@ every `shell`, `fs_write` and `fs_edit` approval goes to whoever is at the
 terminal, which is the driver. That is the influence channel D1b drops the
 mailbox and `ask_user` to close, and broader than the trifecta residual,
 since it covers every destructive call. Non-interactive `Ask` gives a
-`ModeApprover` that refuses every non-read-only call no `[[policy]]` `allow`
+`ModeApprover` that refuses every non-read-only call no `[[rule]]` `allow`
 rule covers, as "needs approval and this run is non-interactive", so
 without such rules every `cargo build` and every edit would be a harness
 refusal for D4 to attribute. `mecha eval` answers the same
 question by its own explicit line, and a driven run does too: inside a jail
 with no network, no sends, a closed tool allowlist and a clone with no
-remote, the run's own actions need no approval. The owner's `[[policy]]`
+remote, the run's own actions need no approval. The owner's `[[rule]]`
 `forbid` rules still apply, because the approval rules only narrow, so a
 command the owner forbids stays forbidden.
 
@@ -854,7 +862,7 @@ command the owner forbids stays forbidden.
 not be answered by"). `ModeApprover` does not override `consult`, so it
 returns the trait default, `Blocked`, in every mode. A driven `shell` call
 reaches it two ways: an owner `prompt` rule a repository command matches,
-and, **once any `[[policy]]` rule names `shell`**, `[approval]
+and, **once any `[[rule]]` rule names `shell`**, `[approval]
 strict_inline_eval`, on by default, which floors any segment whose head
 runs its arguments (`timeout`, `env`, `make`, `xargs`, `find -exec`,
 `sh -c`, `bash -c`) at `prompt`. Then `timeout 600 cargo test` is refused.
@@ -865,7 +873,7 @@ the forced `allow` mode then answers every call, and every `shell` command
 in the jail runs unasked, `bash -c` included. That is acceptable inside a
 jail with no network and no sends, and it is the owner's config that decides
 which case a driven run is in. So D1b **records whether any `shell`
-`[[policy]]` rule was loaded**. An approval-floor count of zero is then
+`[[rule]]` rule was loaded**. An approval-floor count of zero is then
 distinguishable from a floor that was never reachable, because a dash is
 never a zero. Where the floor *is* reached, a yes is not the answer:
 answering a `prompt` from policy is exactly what that ruling exists to stop. So in a
@@ -977,6 +985,20 @@ passes vacuously.
   read-only, `cargo` is invoked by absolute path because `PATH` collides with
   bwrap's own pinned value, and no `writable` entry is needed (R7). The measurement also pins which `--setenv` wins for a name
   bwrap already sets.
+- **The self-hosting test confound.** The grade runs mecha's own suite
+  inside a network-less bwrap jail, and a chunk of `mecha-core/tests/`
+  skips by design when its backend is absent (`sandbox_backends.rs`,
+  `mcp_server.rs`, `code_interpreter.rs`, `document_backends.rs`, through
+  `tests/support`'s `unavailable` helper). Inside the jail those skip, or
+  need nested bwrap. D3a mostly protects the grade, because a hidden test
+  that skips *passes* on the pin and the task is refused. But the bank then
+  systematically drops the sandbox, MCP and interpreter PRs, so it is *not*
+  quite the owner's real distribution of work, and that bias is recorded as
+  a stratum, not hidden. Setup does **not** set
+  `MECHA_TEST_REQUIRE_BACKENDS=1`, which would turn every such skip into a
+  failure on pin and merge alike and refuse tasks for a fact about the jail.
+  Those subsystems need a different grading environment, named when one is
+  built.
 - **Old trees and the 2026-11-04 history rewrite.** Commits from 2026-09-09
   to 2026-10-04 no longer build `mecha-core`'s tests. The rewrite's
   `--replace-text` changed `include_str!` paths in `mismatch.rs` to the
