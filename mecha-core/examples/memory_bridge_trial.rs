@@ -9,16 +9,17 @@ mod enabled {
     use std::time::{Duration, Instant};
     use tokio_util::sync::CancellationToken;
 
-    const USAGE: &str = "usage: memory_bridge_trial --synthetic-only REQUEST_JSON NEW_DIRECTORY --endpoint URL --model MODEL --holds-dir ABSOLUTE_DIRECTORY --seed U64";
+    const USAGE: &str = "usage: memory_bridge_trial --synthetic-only REQUEST_JSON NEW_DIRECTORY --endpoint URL --model MODEL --holds-dir ABSOLUTE_DIRECTORY --seed U64 [--budget-notice true|false]";
 
     struct Arguments {
         request: PathBuf,
         root: PathBuf,
         provider: LocalTrialConfig,
+        budget_notice: bool,
     }
 
     fn parse(args: Vec<OsString>) -> Result<Arguments> {
-        ensure!(args.len() == 11, USAGE);
+        ensure!(matches!(args.len(), 11 | 13), USAGE);
         ensure!(
             args[0] == "--synthetic-only",
             "explicit --synthetic-only acknowledgement required; {USAGE}"
@@ -30,6 +31,7 @@ mod enabled {
         let mut model = None;
         let mut holds_dir = None;
         let mut seed = None;
+        let mut budget_notice = None;
         for pair in args[3..].as_chunks::<2>().0 {
             match pair[0].to_str() {
                 Some("--endpoint") if endpoint.is_none() => {
@@ -55,6 +57,15 @@ mod enabled {
                             .context("seed must be U64")?,
                     )
                 }
+                Some("--budget-notice") if budget_notice.is_none() => {
+                    budget_notice = Some(
+                        pair[1]
+                            .to_str()
+                            .context("budget notice must be UTF-8")?
+                            .parse::<bool>()
+                            .context("budget notice must be true or false")?,
+                    );
+                }
                 _ => anyhow::bail!("unknown or duplicate argument; {USAGE}"),
             }
         }
@@ -63,6 +74,7 @@ mod enabled {
         Ok(Arguments {
             request,
             root,
+            budget_notice: budget_notice.unwrap_or(false),
             provider: LocalTrialConfig {
                 endpoint: endpoint.context(USAGE)?,
                 model: model.context(USAGE)?,
@@ -117,7 +129,10 @@ mod enabled {
                 signal_cancel.cancel();
             }
         });
-        let config = TrialConfig::default();
+        let config = TrialConfig {
+            budget_notice: args.budget_notice,
+            ..Default::default()
+        };
         let deadline = Deadline::start(Duration::from_secs(config.timeout_secs), cancel.clone());
         let result = async {
             let provider = LocalTrialProvider::new(args.provider, cancel.clone()).await?;
@@ -179,6 +194,25 @@ mod enabled {
                 .unwrap();
             assert!(deadline.expired());
             assert!(deadline.started.elapsed() < Duration::from_millis(100));
+        }
+        #[test]
+        fn budget_notice_arguments_are_explicit_and_strict() {
+            assert!(!parse(args()).unwrap().budget_notice);
+            for (value, want) in [("true", true), ("false", false)] {
+                let mut input = args();
+                input.extend(["--budget-notice".into(), value.into()]);
+                assert_eq!(parse(input).unwrap().budget_notice, want);
+            }
+            for value in ["yes", "1", "TRUE", ""] {
+                let mut input = args();
+                input.extend(["--budget-notice".into(), value.into()]);
+                assert!(parse(input).is_err());
+            }
+            let mut duplicate = args();
+            duplicate[3] = "--budget-notice".into();
+            duplicate[4] = "false".into();
+            duplicate.extend(["--budget-notice".into(), "true".into()]);
+            assert!(parse(duplicate).is_err());
         }
         #[test]
         fn explicit_arguments_are_required_and_preserved() {

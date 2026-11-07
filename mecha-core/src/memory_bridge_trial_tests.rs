@@ -425,3 +425,124 @@ async fn transport_error_retains_actual_stream_events_without_fabricated_respons
         .unwrap()
         .contains("\"record\":\"outcome\""));
 }
+
+#[test]
+fn budget_notice_config_preserves_old_serialized_shape() {
+    let old = json!({"max_turns":8,"max_tokens":4096,"max_output_tokens":16384,"timeout_secs":600});
+    let parsed: TrialConfig = serde_json::from_value(old.clone()).unwrap();
+    assert!(!parsed.budget_notice);
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), old);
+    let enabled = TrialConfig {
+        budget_notice: true,
+        ..parsed
+    };
+    assert_eq!(
+        serde_json::to_value(enabled).unwrap()["budget_notice"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn budget_notice_trial_ignoring_advice_keeps_max_turns_and_missing_artifact() {
+    let t = Temp::new();
+    let mut requests = Vec::new();
+    for (i, gold) in ["HIDDEN_EXPECTED_ALPHA", "HIDDEN_EXPECTED_BETA"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut request = req();
+        request.expected_rows = vec![BTreeMap::from([("value".into(), gold.into())])];
+        let script = (0..8)
+            .map(|i| call(&format!("read-{i}"), "fs_read", json!({"path":"input.csv"})))
+            .collect::<Vec<_>>();
+        let report = run_trial(
+            &t.path().join(format!("run-{i}")),
+            request,
+            Box::new(Script(Mutex::new(script.into()))),
+            TrialConfig {
+                budget_notice: true,
+                max_tokens: 32,
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.status, "exhausted");
+        assert_eq!(report.turns, 8);
+        assert_eq!(report.model_calls_started, 8);
+        assert_eq!(report.model_calls_completed, 8);
+        assert_eq!(report.artifact_check.verdict, CheckVerdict::Unavailable);
+        assert!(
+            !report.artifact.exists(),
+            "host must not repair the actor's missing deliverable"
+        );
+        assert!(report.config.budget_notice);
+        let audit = fs::read_to_string(&report.provider_audit).unwrap();
+        assert!(
+            !audit.contains("HIDDEN_EXPECTED_ALPHA") && !audit.contains("HIDDEN_EXPECTED_BETA")
+        );
+        let calls: Vec<serde_json::Value> = audit
+            .lines()
+            .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+            .filter(|v| v["event"] == "request_started")
+            .map(|v| v["request"].clone())
+            .collect();
+        assert_eq!(calls.len(), 8);
+        assert_eq!(
+            calls
+                .iter()
+                .position(|v| v.to_string().contains("Run budget: two model turns remain")),
+            Some(6)
+        );
+        let transcript = fs::read_to_string(&report.transcript).unwrap();
+        assert_eq!(
+            transcript
+                .matches("Run budget: two model turns remain")
+                .count(),
+            1
+        );
+        assert!(transcript.contains("max_turns"));
+        let receipt = report
+            .capture_receipt
+            .as_ref()
+            .expect("native capture succeeds");
+        let authority = LocalAuthority::open(&report.authority).unwrap();
+        let memory = Memory::open(&report.database)
+            .unwrap()
+            .with_source_guard(Arc::new(authority));
+        let crate::memory::Record::Evidence(projection) = memory
+            .read(&receipt.projection, &access())
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected captured projection");
+        };
+        let captured: crate::memory::host_capture::HostCapture =
+            serde_json::from_str(&projection.text).unwrap();
+        let owner: Vec<_> = captured
+            .originals
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.kind,
+                    crate::memory::host_capture::PassageKind::UserRequest
+                )
+            })
+            .collect();
+        assert_eq!(owner.len(), 1);
+        assert_eq!(owner[0].text, req().prompt);
+        assert!(
+            !captured
+                .originals
+                .iter()
+                .any(|p| p.text.starts_with("Run budget:")),
+            "delivered advice is never admitted as owner evidence"
+        );
+        requests.push(calls);
+    }
+    assert_eq!(
+        requests[0], requests[1],
+        "hidden gold must not change request construction"
+    );
+}

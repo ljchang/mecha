@@ -10477,6 +10477,19 @@ unreachable. Inventing precedence until every run gets an interesting word
 manufactures the signal the measurement exists to test for; showing the sign
 the record already holds does not.
 
+**Turn-budget advice is an opt-in resource fact, not an absence verdict.**
+`RunContext::with_budget_notice` enables one harness notice before the request
+with two turns left (one for a one-turn run), using the effective hard turn
+ceiling. Stop checks still win; advice neither extends the cap nor disables a
+late read or write. Its run-local delivery state survives compaction, and its
+exact text is harness voice rather than owner steering. The synthetic bridge
+excludes recognized harness text from newly admitted `UserRequest` passages,
+while retaining the raw transcript and the original coordinates of owner text
+and tool results. Historical captures are not rewritten. This follows a trial
+whose boredom notice arrived after its eighth and final call: the model had
+never received the warning. The trial explicitly opts in; ordinary runs remain
+unchanged pending behavioral qualification.
+
 **Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
 measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the

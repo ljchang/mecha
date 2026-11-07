@@ -296,7 +296,13 @@ fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<E
                             });
                             Some((PassageKind::ToolResult, "content", content))
                         }
-                        Block::Text { text } if message.role == Role::User => {
+                        // Preserve raw transcript positions but never admit a
+                        // registered harness voice as the owner's request.
+                        Block::Text { text }
+                            if message.role == Role::User
+                                && !message.harness
+                                && !crate::agent::is_harness_voice(&text) =>
+                        {
                             Some((PassageKind::UserRequest, "text", text))
                         }
                         Block::Text { text } if message.role == Role::Assistant => {

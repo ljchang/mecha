@@ -858,3 +858,40 @@ fn host_checker_uses_frozen_gold_independently_of_capture() {
     );
     assert!(f.authority.check_artifact(&"0".repeat(64)).is_err());
 }
+
+#[test]
+fn budget_notice_harness_passages_are_not_admitted_as_owner_requests() {
+    let notice="Run budget: two model turns remain, including this one. Preserve time for the requested deliverable and an honest account of unresolved requirements. Continue gathering evidence when a concrete available source or new result justifies it. Otherwise finish from supported evidence and state what is missing, using any fallback the user specified. Do not invent missing facts.";
+    let mut records: Vec<Record> = transcript()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    if let Record::Message(message) = &mut records[4] {
+        message.content.push(Block::text(notice));
+        message.content.push(Block::text(
+            "Use the revised fixture supplied by the owner.",
+        ));
+    } else {
+        panic!("fixture tool result missing");
+    }
+    let text: String = records
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap() + "\n")
+        .collect();
+    let projected = events(&text, &criterion(), "synthetic").unwrap();
+    assert!(text.contains(notice), "raw audit must retain the advice");
+    assert!(!projected.originals.iter().any(|p| p.text == notice));
+    let user: Vec<_> = projected
+        .originals
+        .iter()
+        .filter(|p| matches!(p.kind, PassageKind::UserRequest))
+        .collect();
+    assert_eq!(user.len(), 2);
+    assert_eq!(user[0].text, "Convert the fixture");
+    assert_eq!(
+        user[1].text,
+        "Use the revised fixture supplied by the owner."
+    );
+    assert_eq!(user[1].pointer, "/content/2/text");
+    assert_eq!(user[1].line, 5);
+}

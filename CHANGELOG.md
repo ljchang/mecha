@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The synthetic memory trial can opt into a turn-budget notice before its last
+  two model turns, preserving ordinary tools, guards and hard limits. A separate
+  paired diagnostic records completion, notice exposure and premature abstention.
+  New episode captures distinguish harness advice from owner requests; raw
+  transcripts and existing stored episodes remain unchanged.
+
 - A bounded synthetic native-memory comparison runs paired ordinary tasks with
   recalled experience or an empty store. It retains independently checked
   artifacts, capture failures, provenance, model calls, token usage and latency, with frozen

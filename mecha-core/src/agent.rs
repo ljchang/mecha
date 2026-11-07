@@ -223,6 +223,8 @@ pub struct RunContext {
     pub tools: Arc<ToolCtx>,
     pub approver: Arc<dyn Approver>,
     pub budget: Budget,
+    /// Opt-in advice near this run's hard turn ceiling; never changes its budget.
+    pub budget_notice: bool,
     /// Cancels this run. `None` means it cannot be interrupted.
     ///
     /// Opt-in rather than always-on, because making a run cancellable changes
@@ -889,6 +891,7 @@ impl RunContext {
             tools: Arc::new(tools),
             approver,
             budget: Budget::default(),
+            budget_notice: false,
             cancel: None,
             cancel_reason: Arc::new(std::sync::Mutex::new(None)),
             phase: Phase::default(),
@@ -937,6 +940,12 @@ impl RunContext {
 
     pub fn with_budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Enable advisory finalization guidance near this run's turn ceiling.
+    pub fn with_budget_notice(mut self, enabled: bool) -> Self {
+        self.budget_notice = enabled;
         self
     }
 
@@ -1802,12 +1811,14 @@ budget went entirely to reasoning before you began your answer. Do not start the
 not re-derive what you already worked out. Either give your answer now, briefly, using what you \
 already know, or make the single next tool call. Keep your reasoning short this turn.";
 
+/// Advisory resource facts, delivered once while tools are still available.
+/// Exact whole-message registration keeps these separate from owner corrections.
+pub(crate) const BUDGET_NOTICE_TWO: &str = "Run budget: two model turns remain, including this one. Preserve time for the requested deliverable and an honest account of unresolved requirements. Continue gathering evidence when a concrete available source or new result justifies it. Otherwise finish from supported evidence and state what is missing, using any fallback the user specified. Do not invent missing facts.";
+pub(crate) const BUDGET_NOTICE_ONE: &str = "Run budget: one model turn remains, including this one. Preserve time for the requested deliverable and an honest account of unresolved requirements. Continue gathering evidence when a concrete available source or new result justifies it. Otherwise finish from supported evidence and state what is missing, using any fallback the user specified. Do not invent missing facts.";
+
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Ten of them now (the arms below number the later ones; the two closing
-/// lines of one picture per run, `PICTURE_ON_ITS_WAY` and
-/// `PICTURE_STILL_BEING_MADE`, are the newest), and the miner
-/// has to know every one: `agent.rs` prefixes
+/// The miner has to know every one: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
 /// `learning::extract_interventions` mines a transcript for corrections and has
@@ -1842,6 +1853,8 @@ already know, or make the single next tool call. Keep your reasoning short this 
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
+        || text == BUDGET_NOTICE_TWO
+        || text == BUDGET_NOTICE_ONE
         || text == EMPTY_TURN_NUDGE
         || text == PICTURE_ON_ITS_WAY
         || text == PICTURE_STILL_BEING_MADE
@@ -3135,6 +3148,8 @@ impl Agent {
 
         let mut usage = Usage::default();
         let mut turns = 0;
+        // Run-local, not inferred from history: compaction may remove the block.
+        let mut budget_notice_sent = false;
         let mut trace: Vec<ToolCallTrace> = Vec::new();
         let mut malformed = 0u32;
         let mut blocked_sends = 0u32;
@@ -3622,6 +3637,22 @@ impl Agent {
                     sensors_of(cx),
                 );
                 return Ok(outcome);
+            }
+            // Every existing stop has won before this advisory is considered.
+            // Count the request about to be made, using the authoritative run
+            // override rather than the context-window forecast.
+            let turns_left = cx.budget.max_turns.unwrap_or(self.cfg.max_turns) - turns;
+            if cx.budget_notice && !budget_notice_sent && turns_left <= 2 {
+                append_user_text(
+                    messages,
+                    if turns_left == 1 {
+                        BUDGET_NOTICE_ONE
+                    } else {
+                        BUDGET_NOTICE_TWO
+                    }
+                    .into(),
+                );
+                budget_notice_sent = true;
             }
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
@@ -7275,6 +7306,7 @@ fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
 
 #[cfg(test)]
 mod tests {
+    include!("agent_budget_notice_tests.rs");
     use super::*;
     use crate::config::PermissionMode;
     use crate::provider::StreamSink;

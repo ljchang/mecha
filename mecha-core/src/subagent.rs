@@ -352,6 +352,8 @@ impl Tool for Subagent {
             // The child's own `max_turns` comes from its profile, via its
             // config — a parent's remaining budget is not the child's business.
             budget: Default::default(),
+            // Advice is opt-in for the run that requested it, never inherited.
+            budget_notice: false,
             // Cancelling the parent cancels the child with it: the child is
             // one of the parent's tool calls, and a Ctrl-C that left a
             // subagent running would be a lie. From the *caller's* context —
