@@ -178,14 +178,24 @@ The shape:
   should not be. What the build owes:
   - **`learnable()` refuses any reflection with `driven` set, first, before
     every other arm**: before the triage exemption, before the edit
-    promotion, and whatever its `Origin`. It has five readers, and the build
-    names each one, so "the compiler finds every call site" holds for the
-    enumeration and not only for `learnable_into`:
-    `lesson_source::backfill_targets`, `doctor`, `probe`, the `learn` gate,
-    and two more that the first draft missed, `commands/reflections.rs`
-    (three sites, including `provenance_admits` in `--json`) and
-    `learning::goal_lessons`. All five fail *closed* under "refuse driven
-    first", so the security direction holds. But `goal_lessons` is a
+    promotion, and whatever its `Origin`. **Its readers are found by the
+    compiler, never by a list.** Two drafts of this paragraph enumerated
+    them by hand and both came up short. The tree has a reader in
+    `lesson_source` (twice, including `Sources::pair`), in `learning` (the
+    `learn` gate, `goal_lessons`, `goal_keys_in_play`), and in `doctor`,
+    `probe`, `commands/learn.rs` and `commands/reflections.rs` (three
+    sites). So the build **renames** `learnable()` to
+    `learnable_into_owner()`, and every caller fails to compile until it is
+    assigned on purpose: the owner's gate, the driven store's
+    (`learnable_into(StoreKind::Driven)`), or a readout that reports both.
+    A list in a document goes stale as soon as a reader is added; a rename
+    makes the compiler do the listing. `Sources::pair` needs more than a
+    refusal: it branches four ways on `learnable()` into provenance
+    *exclusion reasons*, so "refuse driven first" there would misfile a
+    driven reflection under some other reason. It gets a reason of its own,
+    `driven`, so a readout never reports a driven lesson as excluded for
+    taint. Every reader fails *closed* under "refuse driven first", so the
+    security direction holds. But `goal_lessons` is a
     run-facing path: it feeds `ToolCtx::goal_lessons` and so a run's goal
     context. Over the driven store, "refuse first" would silently keep a
     driven rule's goal lessons from the very driven runs §2 says load it.
@@ -497,14 +507,27 @@ skills layer and the approval rules are narrowing-only; below
 `LayerTrust::Global`, `merge_text` narrows one table (`[[grant]]`) and three
 `[[mcp]]` fields (`trust_result_claims`, `personas`, `effects`), and at
 `LayerTrust::Project` thirteen tables. Neither `[[mcp]]` as a table nor
-`[[hook]]` is among them. `Config::load_global`'s own doc comment says
-a project `mecha.toml` "can name MCP servers to spawn, hooks to execute". A
-driven run is jailed to a clone at an arbitrary historical pin, so a
-`mecha.toml` in that tree could attach a server or a hook, and only the
-forcing below closes it. That is the reason to force surfaces off by lever
-rather than trust any layer to be configured right, and it is the test for
-a surface added later: if any layer can attach it, the driven mark forces
-it off. An outside agent, driving prompts written from PR and issue text,
+`[[hook]]` is among them, **and neither are `[sandbox]` nor `[security]`**,
+both full tables. `Config::load_global`'s own doc comment says a project
+`mecha.toml` "can name MCP servers to spawn, hooks to execute". A driven run
+is jailed to a clone at an arbitrary historical pin, so a `mecha.toml` in
+that tree could attach a server or a hook. Worse, it could set
+`[sandbox] kind = "none"` or `network = true`, undoing the confinement that
+the interlock's egress narrowing depends on. It could add
+`[sandbox] readable` paths, which are host reads that `Lever::Grants` does
+not reach. Or it could set `[security] block_sends_after_private = false`,
+the one switch D1b forces on.
+
+**So a driven run reads no project layer at all.** Forcing table by table
+would be a list, and lists here go stale (D2's reader enumeration came up
+short twice). A pinned historical tree's config is neither the owner's nor
+the run's to choose. A driven run loads the owner's global file and no
+project layer: a `mecha.toml` present anywhere in the clone is recorded on
+the run and never merged. No `mecha.toml` is tracked anywhere in this
+repository's history today, so the rule costs nothing now, and it is the
+test for any later surface: whatever a project layer can set, a driven run
+does not read. The forcing below then acts on the owner's global layer
+alone. An outside agent, driving prompts written from PR and issue text,
 should hold neither the owner's graph nor a server a pinned tree names, and
 should run no one's hooks.
 
@@ -608,8 +631,10 @@ passes vacuously.
   grant" refuses `[[grant]]`, the jail's way out. It does not refuse
   `SandboxConfig::readable`, which is documented for exactly this ("Use for
   a toolchain or a cache that lives outside the workspace"), or
-  `SandboxConfig::env` for the variables. Both are the owner's own config,
-  read-only, and untouched by `Lever::Grants`. R7 is therefore a
+  `SandboxConfig::env` for the variables. In a driven run both come from
+  the owner's global file only, because a driven run reads no project layer
+  (above), so they are the owner's own config, read-only, and untouched by
+  `Lever::Grants`. R7 is therefore a
   recommended config entry, not an open question (§8, §9).
 - **No push, ever.** A driven run has no git remote credentials, and the
   clone has no remote it could push to. Its output is a diff in the clone.
@@ -693,8 +718,10 @@ passes vacuously.
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
 - **R7, recommended, the owner's config.** A driven run reaches the Rust
   toolchain through the owner's `[sandbox] readable` (the toolchain trees)
-  and `[sandbox] env` (`PATH`, `CARGO_HOME`, `RUSTUP_HOME`), never through a
-  `[[grant]]` and never through anything the driver names (§7). The entry
+  and `[sandbox] env` (`PATH`, `CARGO_HOME`, `RUSTUP_HOME`) in the owner's
+  **global** file, never through a `[[grant]]`, never through anything the
+  driver names, and never from a project layer, which a driven run does not
+  read (§7). The entry
   is the owner's to add, after the §8 measurement says what it must hold.
 - **R8. The charter stays on** on every arm of a driven run (owner,
   2026-11-06), including the ceiling's, where it leaves the machine. The
