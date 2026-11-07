@@ -15,12 +15,24 @@ use crate::{
     memory_action_runtime,
 };
 use anyhow::{ensure, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{future::Future, path::PathBuf, time::Instant};
 
 const PROTOCOL: &str = "outcome-reappraisal-v1";
+pub const REASON_MAX_CHARS: usize = 4000;
+const RESPONSE_MAX_BYTES: usize = 65536;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseFormat {
+    ChoiceFirst,
+    FeasibilityFirst,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct PairOptions {
+    pub response_format: ResponseFormat,
+}
 const POLICY: &str = "same-workload-actual-over-expectation-v1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +75,10 @@ struct ArmPreparation {
 pub struct PreparedPair {
     protocol: &'static str,
     policy: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason_max_chars: Option<usize>,
     action_id: String,
     contract: Contract,
     snapshot: Snapshot,
@@ -142,6 +158,34 @@ pub fn prepare_pair(
     query: &RecallQuery,
     access: &Access,
 ) -> Result<PreparedPair> {
+    prepare_pair_inner(db, action, current, query, access, None)
+}
+/// Explicit diagnostic treatment; the legacy entry point retains its wire bytes.
+pub fn prepare_pair_with_options(
+    db: &Memory,
+    action: &ActionReceipt,
+    current: &Contract,
+    query: &RecallQuery,
+    access: &Access,
+    options: PairOptions,
+) -> Result<PreparedPair> {
+    prepare_pair_inner(
+        db,
+        action,
+        current,
+        query,
+        access,
+        Some(options.response_format),
+    )
+}
+fn prepare_pair_inner(
+    db: &Memory,
+    action: &ActionReceipt,
+    current: &Contract,
+    query: &RecallQuery,
+    access: &Access,
+    response_format: Option<ResponseFormat>,
+) -> Result<PreparedPair> {
     ensure!(
         query.limit == 100 && query.neighbors == 0 && query.max_bytes == 100000,
         "outcome recall requires limit100, neighbors0, max_bytes100000"
@@ -205,7 +249,10 @@ pub fn prepare_pair(
         }),
     });
     let make_arm = |arm, passages| -> Result<ArmPreparation> {
-        let request = paired_request(&state, passages)?;
+        let mut request = paired_request(&state, passages)?;
+        if let Some(format) = response_format {
+            diagnostic_request(&mut request, format);
+        }
         let request_sha256 = sha(&serde_json::to_string(&request)?);
         Ok(ArmPreparation {
             arm,
@@ -225,8 +272,14 @@ pub fn prepare_pair(
             .collect(),
     };
     let pair = PreparedPair {
-        protocol: PROTOCOL,
+        protocol: if response_format.is_some() {
+            "outcome-reappraisal-v2"
+        } else {
+            PROTOCOL
+        },
         policy: POLICY,
+        response_format,
+        reason_max_chars: response_format.map(|_| REASON_MAX_CHARS),
         action_id: action.id().into(),
         contract: current.clone(),
         snapshot: query.known_at.clone(),
@@ -275,6 +328,91 @@ fn paired_request(state: &experience::State, passages: Vec<Passage>) -> Result<R
         passages,
     })
 }
+fn diagnostic_request(request: &mut Request, format: ResponseFormat) {
+    request.prompt = request.prompt.replace("Return only JSON with choice, citations, and a brief reason.",
+        "A method is feasible iff energy <= current energy_budget AND quality >= current minimum_quality, including equality. Optimize the current goal ONLY among feasible methods. If no method is feasible, choose abstain. Return only JSON with choice, citations, and a reason of at most 4000 Unicode characters.");
+    request.response_schema["properties"]["reason"]["maxLength"] = json!(REASON_MAX_CHARS);
+    if format == ResponseFormat::FeasibilityFirst {
+        request.prompt.push_str("\nBefore choosing, report candidate_checks for Nori, Arden and Quill: effective minutes, energy, quality, source ID, energy_ok, quality_ok and feasible. Use the supplied source expectation unless the same-workload numeric actual supersedes it. Compute both inequalities independently; feasible is their conjunction. Then report choice, citations and reason.");
+        let ids: Vec<_> = request.passages.iter().map(|p| p.id.as_str()).collect();
+        let check = json!({"type":"object","additionalProperties":false,
+            "required":["minutes","energy","quality","source","energy_ok","quality_ok","feasible"],
+            "properties":{"minutes":{"type":"integer","minimum":0,"maximum":u32::MAX},
+            "energy":{"type":"integer","minimum":0,"maximum":u32::MAX},"quality":{"type":"integer","minimum":0,"maximum":u32::MAX},
+            "source":{"type":"string","enum":ids},"energy_ok":{"type":"boolean"},"quality_ok":{"type":"boolean"},"feasible":{"type":"boolean"}}});
+        request.response_schema["properties"]["candidate_checks"] = json!({"type":"object","additionalProperties":false,
+            "required":["Nori","Arden","Quill"],"properties":{"Nori":check,"Arden":check,"Quill":check}});
+        request.response_schema["required"] =
+            json!(["candidate_checks", "choice", "citations", "reason"]);
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateCheck {
+    pub minutes: u32,
+    pub energy: u32,
+    pub quality: u32,
+    pub source: String,
+    pub energy_ok: bool,
+    pub quality_ok: bool,
+    pub feasible: bool,
+}
+fn parse_diagnostic(
+    request: &Request,
+    text: &str,
+    require_checks: bool,
+) -> Result<(
+    experience::Choice,
+    Option<std::collections::BTreeMap<String, CandidateCheck>>,
+)> {
+    use crate::memory::plan_extraction::UniqueValue;
+    ensure!(
+        text.len() <= RESPONSE_MAX_BYTES,
+        "oversized diagnostic response"
+    );
+    let UniqueValue(mut value) = serde_json::from_str(text)?;
+    let checks = value
+        .as_object_mut()
+        .context("expected response object")?
+        .remove("candidate_checks");
+    ensure!(
+        checks.is_some() == require_checks,
+        "candidate_checks required only for feasibility-first"
+    );
+    let candidate_checks: Option<std::collections::BTreeMap<String, CandidateCheck>> =
+        checks.map(serde_json::from_value).transpose()?;
+    if let Some(checks) = &candidate_checks {
+        ensure!(
+            checks.len() == 3 && experience::METHODS.iter().all(|m| checks.contains_key(*m)),
+            "missing or foreign candidate"
+        );
+        ensure!(
+            checks
+                .values()
+                .all(|c| request.passages.iter().any(|p| p.id == c.source)),
+            "foreign candidate source"
+        );
+    }
+    let choice: experience::Choice = serde_json::from_value(value)?;
+    ensure!(
+        choice.choice == "abstain" || experience::METHODS.contains(&choice.choice.as_str()),
+        "unknown method"
+    );
+    ensure!(
+        !choice.reason.trim().is_empty() && choice.reason.chars().count() <= REASON_MAX_CHARS,
+        "invalid reason"
+    );
+    let cited: std::collections::BTreeSet<_> = choice.citations.iter().collect();
+    ensure!(
+        choice.citations.len() <= 4
+            && cited.len() == choice.citations.len()
+            && cited
+                .iter()
+                .all(|id| request.passages.iter().any(|p| &p.id == *id)),
+        "duplicate or foreign citation"
+    );
+    Ok((choice, candidate_checks))
+}
 impl PreparedPair {
     pub fn request(&self, arm: Arm) -> &Request {
         &self.arms[arm.index()].request
@@ -293,7 +431,15 @@ impl PreparedPair {
     }
     fn finish(&self, arm: Arm, text: &str) -> Result<OutcomeDecision> {
         let request = self.request(arm);
-        let choice = experience::parse_choice(request, text)?;
+        let (choice, candidate_checks) = if self.response_format.is_some() {
+            parse_diagnostic(
+                request,
+                text,
+                self.response_format == Some(ResponseFormat::FeasibilityFirst),
+            )?
+        } else {
+            (experience::parse_choice(request, text)?, None)
+        };
         let mut measurements = Vec::new();
         for passage in self.request(Arm::SourceOnly).passages.iter() {
             let value: Value = serde_json::from_str(
@@ -335,6 +481,28 @@ impl PreparedPair {
                 }
             }
         }
+        let expected_checks: std::collections::BTreeMap<String, CandidateCheck> = measurements
+            .iter()
+            .map(|m| {
+                let energy_ok = m.energy <= self.contract.energy_budget;
+                let quality_ok = m.quality >= self.contract.minimum_quality;
+                (
+                    m.method.clone(),
+                    CandidateCheck {
+                        minutes: m.minutes,
+                        energy: m.energy,
+                        quality: m.quality,
+                        source: m.citation.clone(),
+                        energy_ok,
+                        quality_ok,
+                        feasible: energy_ok && quality_ok,
+                    },
+                )
+            })
+            .collect();
+        let checks_consistent = candidate_checks
+            .as_ref()
+            .map(|checks| checks == &expected_checks);
         let mut assessment =
             checks::assess_measurements(&self.contract.state()?, request, &choice, measurements)?;
         // This protocol always supplies a comparison packet. Abstention must
@@ -348,6 +516,9 @@ impl PreparedPair {
             assessment.findings.push(checks::Finding::MissingCitations);
             assessment.admissible = false;
         }
+        if checks_consistent == Some(false) {
+            assessment.admissible = false;
+        }
         let disposition = if !assessment.admissible {
             "withheld"
         } else if choice.choice == "abstain" {
@@ -356,6 +527,8 @@ impl PreparedPair {
             "recommend"
         };
         Ok(OutcomeDecision {
+            candidate_checks,
+            checks_consistent,
             proposed_choice: choice.choice,
             citations: choice.citations,
             reason: choice.reason,
@@ -375,6 +548,10 @@ fn number(v: &Value, field: &str) -> Result<u32> {
 }
 #[derive(Serialize)]
 pub struct OutcomeDecision {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_checks: Option<std::collections::BTreeMap<String, CandidateCheck>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checks_consistent: Option<bool>,
     pub proposed_choice: String,
     pub citations: Vec<String>,
     pub reason: String,
@@ -394,6 +571,10 @@ pub struct Row {
 }
 #[derive(Serialize)]
 pub struct PairReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_max_chars: Option<usize>,
     pub protocol: &'static str,
     pub model: String,
     pub arm_order: [Arm; 2],
@@ -468,7 +649,9 @@ where
     pair.recheck(db, access)
         .context("outcome sources invalidated")?;
     Ok(PairReport {
-        protocol: PROTOCOL,
+        protocol: pair.protocol,
+        response_format: pair.response_format,
+        reason_max_chars: pair.reason_max_chars,
         model: model.into(),
         arm_order: order,
         preparation: serde_json::to_value(pair)?,

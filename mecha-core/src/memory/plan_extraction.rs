@@ -505,7 +505,7 @@ fn schema(passages: Vec<String>) -> Value {
 
 // Value normally keeps the last repeated object key. Reject ambiguity before
 // stripping schema-owned fields, including duplicates nested in dead branches.
-pub(super) struct UniqueValue(pub(super) Value);
+pub(crate) struct UniqueValue(pub(crate) Value);
 impl<'de> Deserialize<'de> for UniqueValue {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,

@@ -273,6 +273,19 @@ pub enum DurableDecideCommand {
     },
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OutcomeResponseFormat {
+    ChoiceFirst,
+    FeasibilityFirst,
+}
+impl From<OutcomeResponseFormat> for mecha_core::memory_outcome_reappraisal::ResponseFormat {
+    fn from(value: OutcomeResponseFormat) -> Self {
+        match value {
+            OutcomeResponseFormat::ChoiceFirst => Self::ChoiceFirst,
+            OutcomeResponseFormat::FeasibilityFirst => Self::FeasibilityFirst,
+        }
+    }
+}
 #[derive(ClapArgs)]
 pub struct OutcomeRecallArgs {
     #[arg(long, required = true)]
@@ -294,6 +307,13 @@ pub struct OutcomeRecallArgs {
     seed: u64,
     #[arg(long)]
     outcome_first: bool,
+    /// Opt into the v2 diagnostic; omission preserves legacy request bytes.
+    #[arg(long, value_enum)]
+    response_format: Option<OutcomeResponseFormat>,
+    /// Per-request reasoning cap, within the 8192-token total allowance.
+    #[arg(long, requires = "response_format", value_parser = clap::value_parser!(u32).range(1..=4096))]
+    thinking_budget: Option<u32>,
+
     /// Original exported Snapshot JSON; required for inference, reused for every later preparation.
     #[arg(long, required_unless_present = "prepare_only")]
     snapshot: Option<String>,
@@ -1151,11 +1171,28 @@ async fn execute_outcome_recall(
         max_bytes: 100000,
     };
     let current = serde_json::from_str(&input.contract)?;
-    let pair = outcome::prepare_pair(&db, &action, &current, &query, &access)?;
+    let pair = match input.response_format {
+        Some(format) => outcome::prepare_pair_with_options(
+            &db,
+            &action,
+            &current,
+            &query,
+            &access,
+            outcome::PairOptions {
+                response_format: format.into(),
+            },
+        )?,
+        None => outcome::prepare_pair(&db, &action, &current, &query, &access)?,
+    };
+    let controls = json!({"temperature":0.6,"max_tokens":8192,"thinking":input.thinking_budget.is_some(),"max_retries":0,"local_only":true,"structured_output":"llama_json","timeout_seconds":180,"thinking_budget":input.thinking_budget});
     if input.prepare_only {
-        return Ok(serde_json::to_value(pair)?);
+        let mut value = serde_json::to_value(pair)?;
+        if input.response_format.is_some() {
+            value["model_controls"] = controls;
+        }
+        return Ok(value);
     }
-    let local = LocalMemoryModel::new(
+    let mut local = LocalMemoryModel::new(
         input
             .endpoint
             .as_deref()
@@ -1165,6 +1202,10 @@ async fn execute_outcome_recall(
         input.seed,
         true,
     )?;
+    if input.thinking_budget.is_some() {
+        local.pass = local.pass.think(true);
+    }
+    let reasoning_counts = std::cell::RefCell::new(Vec::new());
     let order = if input.outcome_first {
         [Arm::SourceAndOutcome, Arm::SourceOnly]
     } else {
@@ -1176,12 +1217,43 @@ async fn execute_outcome_recall(
         &access,
         &input.model,
         order,
-        |prompt, schema, guard| local.complete_outcome_guarded(prompt, schema, guard),
+        |prompt, schema, guard| {
+            let local = &local;
+            let counts = &reasoning_counts;
+            async move {
+                let result = local
+                    .complete_with_guard(
+                        prompt,
+                        schema,
+                        input.thinking_budget,
+                        Some(MemoryCallGuard::Outcome(guard)),
+                    )
+                    .await;
+                counts
+                    .borrow_mut()
+                    .push(result.as_ref().ok().map(|(_, count)| *count));
+                result.map(|(reply, _)| reply)
+            }
+        },
     )
     .await?;
     let mut value = serde_json::to_value(report)?;
+    if input.response_format.is_some() {
+        value["model_controls"] = controls.clone();
+        value["preparation"]["model_controls"] = controls;
+        for (row, count) in value["rows"]
+            .as_array_mut()
+            .context("missing paired rows")?
+            .iter_mut()
+            .zip(reasoning_counts.into_inner())
+        {
+            row["reasoning_char_count"] = json!(count);
+        }
+    }
     value["seed"] = json!(input.seed);
-    value["model_controls"] = json!({"temperature":0.6,"max_tokens":8192,"thinking":false,"max_retries":0,"local_only":true,"structured_output":"llama_json","timeout_seconds":180});
+    if input.response_format.is_none() {
+        value["model_controls"] = json!({"temperature":0.6,"max_tokens":8192,"thinking":false,"max_retries":0,"local_only":true,"structured_output":"llama_json","timeout_seconds":180});
+    }
     Ok(value)
 }
 
@@ -1284,17 +1356,6 @@ impl LocalMemoryModel {
             .await?
             .0)
     }
-    async fn complete_outcome_guarded(
-        &self,
-        prompt: String,
-        schema: Option<serde_json::Value>,
-        guard: mecha_core::memory_outcome_reappraisal::OutcomeGuard,
-    ) -> Result<mecha_core::memory::model_evaluation::ModelReply> {
-        Ok(self
-            .complete_with_guard(prompt, schema, None, Some(MemoryCallGuard::Outcome(guard)))
-            .await?
-            .0)
-    }
     async fn complete_with_guard(
         &self,
         prompt: String,
@@ -1380,6 +1441,22 @@ mod durable_cli_tests {
             "--prepare-only",
         ];
         assert!(crate::Cli::try_parse_from(args).is_ok());
+        let mut diagnostic = args.to_vec();
+        diagnostic.extend([
+            "--response-format",
+            "feasibility-first",
+            "--thinking-budget",
+            "2048",
+        ]);
+        assert!(crate::Cli::try_parse_from(&diagnostic).is_ok());
+        for budget in ["0", "4097"] {
+            *diagnostic.last_mut().unwrap() = budget;
+            assert!(crate::Cli::try_parse_from(&diagnostic).is_err());
+        }
+        let mut legacy_thinking = args.to_vec();
+        legacy_thinking.extend(["--thinking-budget", "2048"]);
+        assert!(crate::Cli::try_parse_from(&legacy_thinking).is_err());
+
         for omitted in [
             "--synthetic-input",
             "--domain",

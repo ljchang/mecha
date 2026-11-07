@@ -651,3 +651,262 @@ async fn final_arm_canonical_store_replacement_aborts_without_report() {
         .to_string()
         .contains("outcome sources invalidated"));
 }
+
+// A v2 Unicode explanation must not inherit v1's 1000-byte limit.
+#[tokio::test]
+async fn diagnostic_accepts_unicode_reason_and_rejects_false_checks() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = prepare_pair_with_options(
+        &f.db,
+        &f.action,
+        &contract(3, 9),
+        &f.query(),
+        &f.access,
+        PairOptions {
+            response_format: ResponseFormat::FeasibilityFirst,
+        },
+    )
+    .unwrap();
+    let mut value = json!({"choice":"Arden","citations":["e1","e2","e3"],"reason":"界".repeat(4000),
+        "candidate_checks":{
+            "Nori":{"minutes":4,"energy":2,"quality":8,"source":"e1","energy_ok":true,"quality_ok":false,"feasible":false},
+            "Arden":{"minutes":8,"energy":3,"quality":9,"source":"e2","energy_ok":true,"quality_ok":true,"feasible":true},
+            "Quill":{"minutes":6,"energy":5,"quality":7,"source":"e3","energy_ok":false,"quality_ok":false,"feasible":false}}});
+    let checked = pair.finish(Arm::SourceOnly, &value.to_string()).unwrap();
+    assert_eq!(checked.disposition, "recommend");
+    let escaped = value
+        .to_string()
+        .replace(&"界".repeat(4000), &"\\ud83d\\ude00".repeat(4000));
+    assert_eq!(
+        pair.finish(Arm::SourceOnly, &escaped).unwrap().disposition,
+        "recommend"
+    );
+    value["choice"] = json!("Nori");
+    let infeasible = pair.finish(Arm::SourceOnly, &value.to_string()).unwrap();
+    assert_eq!(infeasible.checks_consistent, Some(true));
+    assert_eq!(infeasible.disposition, "withheld");
+    value["choice"] = json!("Arden");
+    value["candidate_checks"]["Nori"]["feasible"] = json!(true);
+    let checked = pair.finish(Arm::SourceOnly, &value.to_string()).unwrap();
+    assert_eq!(checked.proposed_choice, "Arden");
+    assert_eq!(checked.disposition, "withheld");
+    let report = evaluate_pair(
+        &f.db,
+        &pair,
+        &f.access,
+        "scripted-fixture",
+        [Arm::SourceOnly, Arm::SourceAndOutcome],
+        |_, _, guard| {
+            let text = value.to_string();
+            async move {
+                guard.check()?;
+                let mut response = reply("Arden", 3);
+                response.text = text;
+                Ok(response)
+            }
+        },
+    )
+    .await
+    .unwrap();
+    let audit = serde_json::to_value(report).unwrap();
+    assert_eq!(audit["protocol"], "outcome-reappraisal-v2");
+    assert_eq!(audit["response_format"], "feasibility_first");
+    assert_eq!(audit["reason_max_chars"], 4000);
+    assert_eq!(audit["rows"][0]["decision"]["proposed_choice"], "Arden");
+    assert_eq!(audit["rows"][0]["decision"]["checks_consistent"], false);
+    assert_eq!(audit["rows"][0]["decision"]["disposition"], "withheld");
+    let legacy = serde_json::to_value(f.pair(3, 9)).unwrap();
+    for i in 0..2 {
+        assert_eq!(
+            audit["preparation"]["arms"][i]["request"]["passages"],
+            legacy["arms"][i]["request"]["passages"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_request_stays_exact() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = f.pair(4, 7);
+    for (arm, expected_prompt_hash, ids) in [
+        (
+            Arm::SourceOnly,
+            "4c14b581bc98a0e6240da5e07502ab24b3dc6df869c617459833d4a225af1417",
+            vec!["e1", "e2", "e3"],
+        ),
+        (
+            Arm::SourceAndOutcome,
+            "14b2ab2143a2585276d0ab3592d0acd8ad801c3e1b1ef0ec542c6f530c865bb9",
+            vec!["e1", "e2", "e3", "e4"],
+        ),
+    ] {
+        let request = pair.request(arm);
+        assert_eq!(sha(&request.prompt), expected_prompt_hash);
+        assert_eq!(
+            request.response_schema,
+            json!({"type":"object","additionalProperties":false,"required":["choice","citations","reason"],"properties":{"choice":{"type":"string","enum":["Nori","Arden","Quill","abstain"]},"citations":{"type":"array","maxItems":4,"uniqueItems":true,"items":{"type":"string","enum":ids}},"reason":{"type":"string","maxLength":1000}}})
+        );
+    }
+    let audit = serde_json::to_value(&pair).unwrap();
+    assert_eq!(audit["protocol"], "outcome-reappraisal-v1");
+    assert!(audit.get("response_format").is_none());
+}
+
+#[tokio::test]
+async fn diagnostic_checks_schema_bounds_and_abstention_use_current_contract() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    for (budget, quality, proposed, disposition, finding) in [
+        (2, 8, "Nori", "recommend", None),
+        (1, 8, "abstain", "abstain", None),
+        (5, 7, "abstain", "abstain", Some("unnecessary_abstention")),
+        (5, 7, "Arden", "recommend", Some("suboptimal_choice")),
+    ] {
+        let pair = prepare_pair_with_options(
+            &f.db,
+            &f.action,
+            &contract(budget, quality),
+            &f.query(),
+            &f.access,
+            PairOptions {
+                response_format: ResponseFormat::ChoiceFirst,
+            },
+        )
+        .unwrap();
+        let checked = pair
+            .finish(Arm::SourceOnly, &reply(proposed, 3).text)
+            .unwrap();
+        assert_eq!(checked.disposition, disposition);
+        if let Some(finding) = finding {
+            assert!(
+                serde_json::to_value(&checked.assessment).unwrap()["findings"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(finding))
+            );
+        }
+    }
+    let pair = prepare_pair_with_options(
+        &f.db,
+        &f.action,
+        &contract(5, 7),
+        &f.query(),
+        &f.access,
+        PairOptions {
+            response_format: ResponseFormat::FeasibilityFirst,
+        },
+    )
+    .unwrap();
+    let schema = &pair.request(Arm::SourceAndOutcome).response_schema;
+    for method in experience::METHODS {
+        assert_eq!(
+            schema["properties"]["candidate_checks"]["properties"][method]["properties"]["source"]
+                ["enum"],
+            json!(["e1", "e2", "e3", "e4"])
+        );
+    }
+    assert!(
+        serde_json::to_string(schema)
+            .unwrap()
+            .find("candidate_checks")
+            .unwrap()
+            < serde_json::to_string(schema)
+                .unwrap()
+                .find("choice")
+                .unwrap()
+    );
+    let mut value = json!({"choice":"Nori","citations":["e1","e2","e3"],"reason":"valid","candidate_checks":{
+        "Nori":{"minutes":4,"energy":2,"quality":8,"source":"e1","energy_ok":true,"quality_ok":true,"feasible":true},
+        "Arden":{"minutes":8,"energy":3,"quality":9,"source":"e2","energy_ok":true,"quality_ok":true,"feasible":true},
+        "Quill":{"minutes":6,"energy":5,"quality":7,"source":"e3","energy_ok":true,"quality_ok":true,"feasible":true}}});
+    assert_eq!(
+        pair.finish(Arm::SourceOnly, &value.to_string())
+            .unwrap()
+            .disposition,
+        "recommend"
+    );
+    // Visible but inapplicable provenance is a withheld proposal, not a substituted choice.
+    value["candidate_checks"]["Nori"]["source"] = json!("e2");
+    let d = pair.finish(Arm::SourceOnly, &value.to_string()).unwrap();
+    assert_eq!(d.checks_consistent, Some(false));
+    assert_eq!(d.proposed_choice, "Nori");
+    assert_eq!(d.disposition, "withheld");
+    value["candidate_checks"]["Nori"]["source"] = json!("e99");
+    assert!(pair.finish(Arm::SourceOnly, &value.to_string()).is_err());
+    value["candidate_checks"]["Nori"]["source"] = json!("e1");
+    for field in [
+        "minutes",
+        "energy",
+        "quality",
+        "energy_ok",
+        "quality_ok",
+        "feasible",
+    ] {
+        let mut wrong = value.clone();
+        wrong["candidate_checks"]["Nori"][field] = if field.ends_with("ok") || field == "feasible" {
+            json!(false)
+        } else {
+            json!(99)
+        };
+        assert_eq!(
+            pair.finish(Arm::SourceOnly, &wrong.to_string())
+                .unwrap()
+                .disposition,
+            "withheld",
+            "{field}"
+        );
+    }
+    for bad in [
+        value
+            .to_string()
+            .replacen("\"minutes\":4", "\"minutes\":4,\"minutes\":4", 1),
+        value.to_string().replacen(
+            "\"choice\":\"Nori\"",
+            "\"choice\":\"Nori\",\"choice\":\"Nori\"",
+            1,
+        ),
+    ] {
+        assert!(pair.finish(Arm::SourceOnly, &bad).is_err());
+    }
+    for reason in ["界".repeat(4001), " ".repeat(4000)] {
+        value["reason"] = json!(reason);
+        assert!(pair.finish(Arm::SourceOnly, &value.to_string()).is_err());
+    }
+    assert!(pair.finish(Arm::SourceOnly, &" ".repeat(65537)).is_err());
+    value["reason"] = json!("valid");
+    value["candidate_checks"]
+        .as_object_mut()
+        .unwrap()
+        .remove("Quill");
+    assert!(pair.finish(Arm::SourceOnly, &value.to_string()).is_err());
+}
+
+#[tokio::test]
+async fn diagnostic_actual_precedence_and_source_guards_remain_independent_of_claims() {
+    let mut f = Fixture::new(FixtureState::Baseline).await;
+    let pair = prepare_pair_with_options(
+        &f.db,
+        &f.action,
+        &contract(5, 7),
+        &f.query(),
+        &f.access,
+        PairOptions {
+            response_format: ResponseFormat::FeasibilityFirst,
+        },
+    )
+    .unwrap();
+    let value = json!({"choice":"Arden","citations":["e1","e2","e3","e4"],"reason":"actual rules out Nori", "candidate_checks":{
+        "Nori":{"minutes":4,"energy":9,"quality":8,"source":"e4","energy_ok":false,"quality_ok":true,"feasible":false},
+        "Arden":{"minutes":8,"energy":3,"quality":9,"source":"e2","energy_ok":true,"quality_ok":true,"feasible":true},
+        "Quill":{"minutes":6,"energy":5,"quality":7,"source":"e3","energy_ok":true,"quality_ok":true,"feasible":true}}});
+    let decision = pair
+        .finish(Arm::SourceAndOutcome, &value.to_string())
+        .unwrap();
+    assert_eq!(decision.checks_consistent, Some(true));
+    assert_eq!(decision.disposition, "recommend"); // feasible suboptimal retains prior semantics
+    let guard = pair.guard(&f.db, &f.access).unwrap();
+    let mut corrected = f.source.clone();
+    corrected.text = "changed source".into();
+    f.db.capture(corrected).unwrap();
+    assert!(guard.check().is_err());
+    assert!(pair.recheck(&f.db, &f.access).is_err());
+}
