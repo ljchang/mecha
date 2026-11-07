@@ -44,12 +44,12 @@
 
 **Interfaces:** `frozen_cases()`, `planned_pairs()`, `expected(case, arm, simulator=False)`, `score_row(...)`, `create_fixtures(binary, output)`, `run_trial(...)`, `qualify_scripted(...)`; CLI patterned after constraint_abstention_trial.py. New protocol memory-benefit-pilot-v1.
 
-- [ ] Write failing tests for all six exact oracles, both tie options, 24 unique paired slots/48 responses, balanced orders, effective citation policy, malformed/false checks and incomplete report accounting.
-- [ ] Implement fresh fixture lineages with authored prerequisite decisions that select each designated method under a valid temporary contract. Reuse lineage where identical source/actual permits. Assert actuals match baseline handler.
-- [ ] Implement separate evidence-relative, shared outcome-informed and hidden-simulator choice metrics; paired improvement/regression/unchanged counts; abstention/check/citation/host/cost metrics.
-- [ ] Freeze exact preparations before calls; verify full scripted HTTP request schedule and schema order, no retries or output overwrite, post-audit unchanged fixture/model state.
-- [ ] Run unit tests and authored full-schedule qualification against installed isolated Spark binary. Preserve evidence; do not invoke real model.
-- [ ] Independent spec/code review, resolve material findings, integrate commit.
+- [x] Write failing tests for all six exact oracles, both tie options, 24 unique paired slots/48 responses, balanced orders, effective citation policy, malformed/false checks and incomplete report accounting.
+- [x] Implement fresh fixture lineages with authored prerequisite decisions that select each designated method under a valid temporary contract. Reuse lineage where identical source/actual permits. Assert actuals match baseline handler.
+- [x] Implement separate evidence-relative, shared outcome-informed and hidden-simulator choice metrics; paired improvement/regression/unchanged counts; abstention/check/citation/host/cost metrics.
+- [x] Freeze exact preparations before calls; verify full scripted HTTP request schedule and schema order, no retries or output overwrite, post-audit unchanged fixture/model state.
+- [x] Run unit tests and authored full-schedule qualification against installed isolated Spark binary. Preserve evidence; do not invoke real model.
+- [x] Independent spec/code review, resolve material findings, integrate commit.
 
 ### Task 2: Frozen real comparison and reporting
 
@@ -57,7 +57,17 @@
 
 **Interfaces:** Task 1 frozen manifest and per-row reports feed aggregate and independent explanation audit.
 
-- [ ] Freeze explanation rubric before real inference: correct effective evidence, inclusive inequalities, objective/tie handling, no invented numbers, expectation/actual distinction. Reasoning prose is separately graded and untrusted.
-- [ ] Verify baseline and authored qualification, artifact hashes and resident model; execute all 48 first responses once, retaining errors and uncertain slots without replay.
-- [ ] Independently audit frozen artifacts and raw answers; calculate paired benefit, reasoning correctness, host acceptance, citations, explanations and cost. Report six authored cases/two seeds as a small diagnostic, not general efficacy or v4 superiority.
-- [ ] Run required checks and review, update PR #846 and existing owner-private Site with verified results and remaining limitations; retain raw results on Spark and locally.
+- [x] Freeze explanation rubric before real inference: correct effective evidence, inclusive inequalities, objective/tie handling, no invented numbers, expectation/actual distinction. Reasoning prose is separately graded and untrusted.
+- [x] Verify baseline and authored qualification, artifact hashes and resident model; execute all 48 first responses once, retaining errors and uncertain slots without replay.
+- [x] Independently audit frozen artifacts and raw answers; calculate paired benefit, reasoning correctness, host acceptance, citations, explanations and cost. Report six authored cases/two seeds as a small diagnostic, not general efficacy or v4 superiority.
+- [x] Run required checks and review, update PR #846 and existing owner-private Site with verified results and remaining limitations; retain raw results on Spark and locally.
+
+## Result
+
+All 48 first responses completed; paired recall benefit was 20 improvements,
+zero regressions and four unchanged-correct against the shared outcome-informed
+reference. Both evidence arms made 24/24 evidence-appropriate choices. Independent
+code, artifact and blinded explanation audits are retained under the operator-local
+results directory; HISTORY records the full results and limitations. Site v0.22
+is published owner-private. Final documentation and PR delivery are tracked in the
+session ledger; no production rollout or merge is part of this plan.

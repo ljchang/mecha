@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A separately versioned, synthetic 48-response memory-benefit diagnostic compares
+  source-only and recalled-outcome decisions with frozen inputs, independent
+  scoring, authored transport qualification and no retries. It leaves earlier
+  experiments and production behavior unchanged.
+
 - Experimental outcome recall adds opt-in `feasibility-provenance` response
   protocol v4. Complete host comparison provenance stays separate from exact
   model citations; every effective measurement must still be cited and checked.

@@ -2,6 +2,12 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Evaluation addendum, 2026-11-07:** §30's frozen 48-response comparison is
+complete: 20/24 paired information improvements, 0 regressions; both arms 24/24
+correct from their own evidence. Fast/thinking combined support 22/24 versus 24/24,
+with 4.95x output tokens for thinking. See HISTORY for all denominators, failures,
+independent reviews and limits; this does not establish production learning.
+
 **Implementation addendum, 2026-11-07:** §28's v3 constraint/abstention
 protocol and corrective diagnostic are implemented; §29's opt-in v4 separates
 host comparison provenance from model citations. V4 changes the citation contract,
@@ -2482,3 +2488,32 @@ First qualify the bookkeeping with authored replies over the actual CLI transpor
 This changes the citation contract, not demonstrated model capability. Broader
 multi-seed model evaluation requires a new frozen schedule and separate scoring;
 never regrade the prior 24 responses as evidence of an improvement.
+
+
+## 30. Frozen paired memory benefit diagnostic
+
+The separately versioned `memory-benefit-pilot-v1` runner asks whether recalling
+one authenticated actual improves a recommendation under new constraints. Six
+numeric authored cases cover inclusive boundaries, energy and quality correction,
+emptying a feasible set, an unchanged optimum, and an energy-objective tie. Seeds
+71 and 83 cross source-only/source-plus-outcome with fast/thinking2048, yielding
+48 first responses. The exact cases and implementation plan are in
+[the comparison plan](superpowers/plans/2026-11-07-memory-benefit-comparison.md).
+
+Three reference sets remain distinct. Visible-evidence accuracy grades each arm
+against its own packet. Paired information benefit grades both arms against the
+same source expectations with only the retained actual substituted. Unobserved
+alternatives can still be wrong, so full hidden-simulator optimality is separately
+reported. An uninformed but evidence-correct answer can lose under the shared
+reference without demonstrating a reasoning error. Both valid energy ties count.
+
+The runner freezes sources, actuals, snapshots, exact requests/property order,
+artifact hashes, model settings and schedule before inference. Authored HTTP
+qualification covers all 48 requests first; only durable-act supplies actuals.
+No retry or answer repair is allowed, unknown dispatches stay unknown, and failed
+report metadata cannot earn qualified success. Model choices, typed checks,
+effective citations, host withholding, explanation fidelity and costs retain
+separate denominators. Independent prose review uses a frozen rubric, with
+condition labels and aggregate scores hidden where practical. No protocol/rubric
+change is justified by looking at these outcomes. This authored diagnostic is not
+a held-out benchmark, production trial or matched v3/v4 comparison.

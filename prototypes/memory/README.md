@@ -1165,8 +1165,8 @@ advisory. Full packet access/freshness checks still apply, including superseded
 material; this is not a fix for historical-outcome transitive freshness.
 
 The v1 default and v3 modes/rubrics/results are unchanged. V4 qualification uses
-authored HTTP replies, not a claim of better model reasoning. A new frozen
-multi-seed model comparison is the next experiment.
+authored HTTP replies, not a claim of better model reasoning. The separate frozen
+multi-seed runner below tests the v4 contract without rescoring those earlier responses.
 
 CI uses `python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha`
 after `cargo build --locked -p mecha-cli --features memory-prototype`. The runner
@@ -1175,3 +1175,37 @@ sets the explicit qualification environment before discovery, and refuses empty,
 skipped or failing suites. It makes no real model calls and needs no owner store.
 Ordinary developer unittest discovery retains explicit skips when those fixture
 variables are absent. The exact fresh-fixture runner passed 81 tests on Spark.
+
+## Frozen paired memory benefit diagnostic
+
+`memory_benefit_trial.py` implements `memory-benefit-pilot-v1`: six authored cases,
+seeds 71/83, two evidence arms and fast/thinking2048, for 48 first responses.
+It preserves first replies and errors, refuses output-directory reuse, freezes
+all preparations before dispatch, and checks fixture/binary/helper/model drift.
+
+```sh
+python3 prototypes/memory/memory_benefit_trial.py --create-fixtures \
+  --binary /absolute/path/to/mecha --output /new/path/fixtures
+python3 prototypes/memory/memory_benefit_trial.py --qualify-scripted \
+  --binary /absolute/path/to/mecha --fixtures /new/path/fixtures/fixtures.json \
+  --output /new/path/authored-qualification
+python3 prototypes/memory/memory_benefit_trial.py \
+  --binary /absolute/path/to/mecha --fixtures /new/path/fixtures/fixtures.json \
+  --endpoint http://127.0.0.1:8080 --model <already-resident-model> \
+  --holds-dir /explicit/router/holds --output /new/path/real-comparison
+```
+
+Fixture creation and qualification use authored loopback replies, not inference;
+actual observations come only through the durable host handler. Preserve fixture
+paths and exact runner/helper/binary identities between qualification and the real
+run. The last command performs real inference without loading a model or retrying.
+
+Visible-evidence choice correctness uses each arm's own packet. Paired memory
+benefit scores both choices against one shared reference: source expectations with
+only the retained actual substituted. Unobserved alternatives remain expectations;
+full hidden-simulator optimality is a separate secondary diagnostic. Effective
+citations, checks, host withholding and independent explanation fidelity are
+separate from these choice scores. Metadata-invalid reports retain raw responses
+but cannot earn qualified success. This small authored diagnostic measures neither
+production learning nor superiority over v3. See MECHA-MEMORY-DESIGN section 30
+and HISTORY for the dated run and limitations.

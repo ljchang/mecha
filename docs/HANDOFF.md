@@ -34,50 +34,44 @@ replacement is deferred until v2 is solid. See the current-scope addendum in
 main `d2adb3742`; do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
-**2026-11-07 — comparison provenance (prototype branch).**
-`ResponseFormat::FeasibilityProvenance` and CLI `--response-format
-feasibility-provenance` select outcome protocol v4 over the existing v5 synthetic
-store. `PreparedPair::finish` retains exact model citations and a separate
-`ComparisonProvenance`: every supplied revision/hash and role, method-effective
-source mapping, packet omissions and missing effective citations. V4 requires
-citations for all effective measurements, including rejected alternatives and
-abstentions. Superseded-only omission no longer vetoes an otherwise eligible
-proposal; missing active evidence and false candidate checks still do. Free-text
-reasons are explicitly unverified. Existing v1/v3 bytes/defaults and all-source
-guards remain unchanged. No persistence migration or new action executor.
+**2026-11-07 — memory benefit diagnostic complete (prototype branch).**
+V4 `feasibility-provenance` preserves full host lineage separately from exact
+model citations, requires each effective measurement and independently checks
+arithmetic. The installed Rust artifact remains `de5d60980`, SHA256
+`fa48a1fb68e522fb5f700cf0cf5db3519d5c43be1de97e02add3d19da4568bbf`, at
+`~/.local/share/mecha-prototypes/memory-provenance-de5d60980/bin/mecha` on Spark.
+Runtime clock, cancellation, source and authenticated-action boundaries remain
+as documented in ARCHITECTURE; prior implementation qualification is in HISTORY.
 
-Current runtime boundaries: extraction reasoning budgets accept 1–4096 within
-8192 total tokens; strict numeric-loopback transport is directly regression-tested.
-CI creates a fresh authored fixture and rejects empty discovery, missing
-configuration, skips and failures. `GoalMemory` refreshes host-owned `valid_at`
-on every call while keeping `known_at` frozen; expired relations disappear,
-post-snapshot captures remain excluded, and current restrictions still apply.
+`memory_benefit_trial.py` at `8c5b48246` completed 48 first responses across six
+authored cases, two seeds, two evidence arms and fast/thinking2048. Against the
+shared outcome-informed reference, recall improved 20/24 pairs with no regression;
+source-only 4/24 versus recall 24/24. Both arms were 24/24 correct from their own
+visible evidence. Fast/think combined supported responses were 22/24 and 24/24;
+thinking used 4.95x output tokens and 4.57x summed time, with no choice gain.
+HISTORY preserves all metrics, the citation failure and ambiguous explanation.
+This is a small information-use diagnostic, not general learning or production
+utility. The full Python qualification passed 91 tests / 0 skips; current workspace
+build, 6302 default tests / 0 failed / 25 ignored, fmt and strict Clippy passed. Raw outputs,
+independent oracle, frozen rubric and audits: results/memory-benefit-20261107.
+Current GitHub CI/review status remains on draft PR #846; no merge is authorized.
 
-Outcome reappraisal requires an authenticated retained action. Six real durable
-lineage cases confirm that 0/1/2 observations with either a method choice or
-abstention cannot bind that action. The review's partial-packet inconsistency is
-unreachable through the supported workflow; no comparison schema was changed.
-Independent scoped code and evidence reviews found no remaining issue in these
-changes. Current aggregate PR review/CI status is on the draft PR.
-
-Latest qualified source `de5d60980`: Spark passed **6,598 all-feature tests
-/0 failed /28 ignored**, **6,302 default /0 /25**, formatting, strict
-all-target/all-feature Clippy, release build and **81 fresh-fixture Python tests,
-zero skipped**. The independently installed release is
-`~/.local/share/mecha-prototypes/memory-provenance-de5d60980/bin/mecha`, SHA256
-`fa48a1fb68e522fb5f700cf0cf5db3519d5c43be1de97e02add3d19da4568bbf`.
-Build/install hashes and CLI identity match. Evidence is retained under
-`results/memory-provenance-20261107/final-boundary-fixes/`; earlier qualification,
-review findings and failures remain in HISTORY and the adjacent result folders.
-No new real-model calls were made. The prior 24-response model diagnostic remains
-in HISTORY and `results/memory-constraint-20261106/`.
-
-**Next:** freeze broader multi-seed cases to test whether the bounded-reasoning
-benefit holds under the new citation contract at acceptable cost. Score raw model
-citations, effective-source support, full packet omissions, explanation fidelity,
-choice quality and host withholding separately. Earlier 24-response results remain
-unchanged: 8/8 visible choices in one condition did not pass the complete gate.
-This increment establishes bookkeeping, not improved model capability.
+**Next MVP slice:** bridge one ordinary guarded task into memory capture and
+existing appraisal, then recall it on a fresh invocation with a changed constraint.
+Reuse `Agent::run_in`, the tool registry and plan checks; do not build another
+executor. `GoalMemory::call` already preserves `GoalContext` lessons and past
+appraisals, and synthetic action feedback reuses `planning::StepFeedback`.
+However, fixture feedback has no goal/criterion linkage, the memory reader passes
+`Situation.needs=None`, and the prototype action/comparison path does not call
+`appraisal::of_session` or `live_readout`. Capture the run's actual observation,
+checked result, goal/context snapshot, existing appraisal and available homeostat
+readings as separate source-linked records. Missing sensors remain unknown.
+Start in an explicit synthetic workspace; use fast inference as baseline and
+bounded reconsideration for failed checks. A second invocation must demonstrate
+useful recall and changed-goal interpretation without rewriting the historical
+appraisal. Fresh natural-language tasks and independently observed outcomes are
+the acceptance test; the completed arithmetic diagnostic is not a working
+production MVP. Useful concept revision and rumination follow this integration.
 
 The transitive-freshness limitation remains: revising a consulted source makes
 its independently measured outcome ineligible. Separating historical provenance
@@ -93,14 +87,14 @@ per-field usage missingness remains open. No unrelated subsystem open item or
 production deployment claim was requalified by this memory-only increment.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#comparison-provenance-is-separate-from-model-citations
-Research v0.21 published 2026-11-07, source
-`8fad238b504d67da7ea11feb3aacad77b3ef3682`, deployment
-`appgdep_6aeedf3740c08191bcf17dcc696d1a56` succeeded. All 62 prior IDs retained
-(63 current); internal links, 21 revision rows, inline scripts, unchanged SVG and
-dist mirror checked. Browser preview verified the new comparison table and ledger;
-native publication confirmed the matching source deployment. Shared production
-binaries, services, configuration, owner stores and nightly jobs were not changed.
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#does-recalled-experience-improve-decisions
+Research v0.22 published 2026-11-07, source
+`bc17cf494cc76962564f92ee2768f052bbc35a24`, deployment
+`appgdep_6aef1f9b29088191b3693649ec7f4d5a` succeeded. All 63 prior IDs retained
+(64 current); internal links, 22 revision rows, inline scripts, unchanged SVG and
+dist mirror checked. The published browser page was reloaded and verified against
+the new comparison table and results. Shared production binaries, services,
+configuration, owner stores and nightly jobs were not changed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live

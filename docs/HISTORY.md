@@ -14,6 +14,55 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-07 — 48-response memory benefit diagnostic (prototype branch).**
+`memory_benefit_trial.py` at `8c5b48246` freezes six authored numeric cases,
+seeds 71/83, source-only/source-plus-actual and fast/thinking2048: 48 first responses,
+no retries or repairs. It adds no Rust behavior or storage schema. The installed
+`de5d60980` binary is unchanged. Five fixture lineages use authored prerequisite
+decisions and actuals from durable-act, never direct inserted measurements.
+All 48 authored HTTP requests passed before real inference. Ten new unit tests
+and the installed-binary full Python suite passed (91 tests, zero skips). Current
+workspace build, 6302 default tests / 0 failed / 25 ignored, fmt and strict Clippy passed.
+A nondeterministic authored tie failed on Spark and was fixed before inference;
+review also corrected treatment/order confounding and unqualified metadata credit.
+Original failed logs remain retained. Independent final code review found no
+major/medium issue; automated review on `8c5b48246` also found none.
+
+All 48 real responses completed without transport/format errors or uncertain
+slots. Both evidence arms made 24/24 evidence-appropriate choices and exact
+candidate checks. Against a shared reference substituting only the retained
+actual into source expectations, source-only scored 4/24 and outcome recall 24/24:
+20 paired improvements, 0 regressions, 4 unchanged-correct. Each reasoning mode had
+10 improvements / 2 unchanged. This is an information benefit on six authored cases,
+not better reasoning from identical evidence. Hidden-simulator optimality was
+0/24 versus 12/24: unobserved alternatives still contain mistaken expectations.
+Each arm correctly abstained 4/4 times required, with no unnecessary abstention.
+
+Fast mode had 23/24 effective-citation passes; unchanged/seed 71/source_only omitted
+e2 (Arden), and the host withheld it despite correct arithmetic. Thinking had 24/24.
+Blinded review of original reasons under a pre-frozen rubric found 47 faithful and
+one insufficient (fast outcome-arm provenance wording), no explicit conflicts.
+Combined choice/check/citation/host/prose success was 22/24 fast and 24/24 thinking;
+a charitable reading of the ambiguity raises fast to 23/24, preserving the citation
+failure. Thinking added no choice gain but used 58,743 versus 11,860 output tokens
+(4.95x), and 575.838 versus 125.970 summed seconds (4.57x). Input tokens 14,072 versus
+14,120; total 28,192 input / 70,603 output, 701.808 summed seconds, no missing usage.
+Resident qwen3.6-35b-a3b-uncensored, temperature 0.6, max 8192 tokens; reasoning 2048
+was explicit and returned in all 24 thinking responses, none of 24 fast responses.
+
+Independent artifact audit verified the 24 pairs / 48 unique rows, frozen requests
+and schema-order arrays, 168 passage provenance links and original/projection
+hashes, five copied SQLite logical dumps and before/after state equality. Runner
+SHA256 fb378442c6bfd15fc64bc876e28e970080cf05a92d6f2cefd33777f59e28554e;
+freeze SHA256 cd8cee3b1c34a16f8bb00ace8776abdcda1a40363891297448773c662cdc397c.
+Evidence, oracle/rubric, raw replies and blinded reviews are operator-local under
+results/memory-benefit-20261107 on the development machine and Spark. Earlier
+24-response results remain unchanged. No generalization, matched v3/v4 advantage,
+production learning or action execution is established. Fast inference is the
+next baseline for a narrow natural-language workflow; richer unseen tasks,
+targeted reconsideration and independently observed outcomes remain to qualify.
+
+
 **2026-11-07 — comparison provenance distinct from model citations (prototype branch).**
 Product `611bbc048` adds `ResponseFormat::FeasibilityProvenance` and CLI
 `--response-format feasibility-provenance`, selecting outcome protocol v4.
@@ -678,7 +727,7 @@ validation. A duplicate-rejecting deserializer now runs before inline conversion
 plan/requirements/kind/citation duplicates have RED→GREEN tests. Empty branch arms
 no longer consume a depth level. Final qualification: 6,017 all-feature workspace
 passed/25 ignored;109 standalone unit+4 CLI integration;19 Python;strict workspace
-and standalone Clippy,fmt and diff checks. The next experiment is staged declarations
+and standalone Clippy, fmt and diff checks. The next experiment is staged declarations
 and constrained branch references, plus a bounded reasoning-mode comparison;
 semantic completeness remains independent of reference validity.
 
