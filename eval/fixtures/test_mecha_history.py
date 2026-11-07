@@ -391,6 +391,53 @@ class Source(unittest.TestCase):
         tail = third[third.index("mod hidden_grade {"):]
         self.assertIn("    /// The module is new, attributes and all.\n    #[cfg(test)]\n    mod tests {", tail)
 
+    def with_home(self):
+        home = os.path.join(self.tmp.name, ".mecha")  # where `source` (HOME=tmp) puts it
+        old = os.environ.get("MECHA_HOME")
+        os.environ["MECHA_HOME"] = home
+        self.addCleanup(lambda: os.environ.__setitem__("MECHA_HOME", old) if old is not None
+                        else os.environ.pop("MECHA_HOME", None))
+        os.environ["MECHA_HISTORY_REPO"] = self.repo
+        self.addCleanup(lambda: os.environ.pop("MECHA_HISTORY_REPO", None))
+
+    def test_the_grade_puts_back_everything_setup_owns_before_any_cargo(self):
+        # The run's tree is its one writable path, and `.git/info/exclude`
+        # hides setup's files from `git status` (review of #852, pass 4).
+        self.with_home()
+        self.assertEqual(self.source("setup", "pr-1").returncode, 0)
+        config = read(os.path.join(self.ws, ".cargo", "config.toml"))
+        write(os.path.join(self.ws, ".cargo", "config.toml"), '[build]\nrustc = "/tmp/forge"\n')
+        write(os.path.join(self.ws, ".cargo", "config"), '[target.x]\nrunner = "/tmp/forge"\n')
+        write(os.path.join(self.ws, ".cargo-home", "config.toml"), '[build]\nrustc = "/tmp/forge"\n')
+        write(os.path.join(self.ws, "demo", "fixture.json"), '{"made": "by the run"}\n')
+        self.assertIsNone(mecha_history.restore_setup(self.ws, self.task))
+        self.assertEqual(read(os.path.join(self.ws, ".cargo", "config.toml")), config)
+        self.assertEqual(os.listdir(os.path.join(self.ws, ".cargo")), ["config.toml"])
+        self.assertEqual(os.listdir(os.path.join(self.ws, ".cargo-home")), [])
+        self.assertEqual(read(os.path.join(self.ws, "demo", "fixture.json")), '{"made": "up"}\n')
+        # A build script rewriting `.cargo/` mid-grade is undone at the next call.
+        write(os.path.join(self.ws, ".cargo", "config"), '[target.x]\nrunner = "/tmp/forge"\n')
+        fake = os.path.join(self.tmp.name, "tc")
+        os.makedirs(os.path.join(fake, "bin"))
+        executable(os.path.join(fake, "bin", "cargo"), "#!/bin/sh\nexit 0\n")
+        mecha_history.cargo(fake, self.ws, "test")
+        self.assertEqual(os.listdir(os.path.join(self.ws, ".cargo")), ["config.toml"])
+        # The vendored crates are compared, never trusted.
+        os.makedirs(os.path.join(self.ws, "vendor", "dep", "src"))
+        write(os.path.join(self.ws, "vendor", "dep", "src", "lib.rs"), "pub fn forged() {}\n")
+        self.assertEqual(mecha_history.restore_setup(self.ws, self.task), "the vendored crates differ from setup's")
+
+    def test_a_graft_that_dies_partway_leaves_the_tree_spent(self):
+        self.with_home()
+        self.assertEqual(self.source("setup", "pr-1").returncode, 0)
+        os.remove(os.path.join(self.ws, "demo", "src", "other.rs"))  # the run deleted it
+        first = self.source("grade", "pr-1", stdin="{}")
+        self.assertEqual(first.returncode, 2, first.stdout)
+        self.assertIn("other.rs", first.stderr)
+        second = self.source("grade", "pr-1", stdin="{}")
+        self.assertEqual(second.returncode, 2)
+        self.assertIn("graded already", second.stderr)
+
     def test_a_grade_is_taken_once_and_its_record_is_out_of_the_runs_tree(self):
         home = os.path.join(self.tmp.name, ".mecha")
         old = os.environ.get("MECHA_HOME")
@@ -456,6 +503,8 @@ class Source(unittest.TestCase):
         self.assertIn("MECHA_TEST_REQUIRE_BACKENDS", bodies["needs_a_worker"])
         self.assertNotIn("MECHA_TEST_REQUIRE_BACKENDS", bodies["asserts"])
         self.assertIn("assertion", bodies["asserts"])
+        self.assertEqual(mecha_history.statuses(out, ["needs_a_worker", "asserts"]),
+                         {"needs_a_worker": "skipped", "asserts": "fail"})
 
     def test_the_grafted_copy_decides_over_a_same_named_test_the_run_wrote(self):
         out = ("test tests::saturates_at_the_top ... FAILED\n"

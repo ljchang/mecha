@@ -539,6 +539,17 @@ the text above:
   repository's own history, and runs unconfined. The jail carries no
   memory ceiling: the grade runs behind the host's memory gate, with four
   build jobs.
+- **Nothing that decides a grade lives where the run can write.** The
+  record that a tree was graded, and setup's record of its cargo config and
+  the vendored crates' digest, sit in the mecha home (`driven/graded/`,
+  `driven/setup/`). Before each cargo call, the grade puts back `.cargo/`
+  and an empty `.cargo-home/`, because a `[build] rustc` or a `runner` there
+  chooses what prints the libtest lines it reads, and `.git/info/exclude`
+  hides those files from `git status`. Before its first call it also puts
+  back the repaired fixtures and compares `vendor/`. The residual is the run's own
+  code: the grade executes it, so a test binary that forges libtest's
+  output from inside the process is beyond this grade, and the driver
+  reads diffs that touch `Cargo.toml` or a build script.
 - **Regressions are counted against the pin's own failures.** An old pin can
   fail some of its own unit tests. At 525's pin one fails deterministically,
   so its oracle grade (the merge's own diff, applied to the clone) failed.

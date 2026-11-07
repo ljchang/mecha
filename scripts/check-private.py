@@ -1050,7 +1050,10 @@ def main(args):
             return 2
         PUBLIC.append(run_git(["git", "rev-parse", "--verify", f"{args[i + 1]}^{{commit}}"]).strip())
         args = args[:i] + args[i + 2:]
-    if args and args[0] == "--text" and len(args) > 1:
+    if args and args[0] == "--text" and len(args) < 2:
+        print("check-private: --text needs a file; refusing.")
+        return 2
+    if args and args[0] == "--text":
         top = run_git(["git", "rev-parse", "--show-toplevel"]).strip()
         rel = os.path.relpath(os.path.realpath(args[1]), os.path.realpath(top))
         if not rel.startswith(".."):

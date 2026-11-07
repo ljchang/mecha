@@ -187,6 +187,9 @@ def jail_argv(tc, tree, env):
     return a + ["--"]
 
 
+RESTORE = {}  # tree -> setup's cargo config, set by `grade` for every call it makes
+
+
 def cargo(tc, tree, *args, jobs=None, require_backends=False, confined=False):
     """cargo in the jail's environment. `confined` runs it inside bwrap too,
     for a tree a model wrote: compiling one runs its build scripts, proc
@@ -199,6 +202,10 @@ def cargo(tc, tree, *args, jobs=None, require_backends=False, confined=False):
     if require_backends:
         env["MECHA_TEST_REQUIRE_BACKENDS"] = "1"
     argv = [os.path.join(tc, "bin", "cargo"), "--offline", *args]
+    if os.path.realpath(tree) in RESTORE:
+        # The run's build scripts execute during the grade, and could rewrite
+        # `.cargo/` between two of its cargo calls: setup's goes back each time.
+        write_cargo_config(tree, RESTORE[os.path.realpath(tree)])
     if confined:
         argv = jail_argv(tc, tree, env) + argv
     return run(["nice", "-n", "19", *argv], cwd=tree, env=env)
@@ -240,12 +247,40 @@ def prepare(t, tree, commit, cargo_too=True):
         if r.returncode != 0:
             die(f"cargo vendor failed: {r.stderr.strip()[-400:]}")
         vendored = r.stdout
-    os.makedirs(os.path.join(tree, ".cargo"), exist_ok=True)
-    with open(os.path.join(tree, ".cargo", "config.toml"), "w") as fh:
-        fh.write(vendored)
-        fh.write("\n[build]\njobs = 2\n")
-        fh.write(f'rustc = "{tc}/bin/rustc"\nrustdoc = "{tc}/bin/rustdoc"\n')
+    write_cargo_config(tree, vendored + "\n[build]\njobs = 2\n"
+                       + f'rustc = "{tc}/bin/rustc"\nrustdoc = "{tc}/bin/rustdoc"\n')
     return tc
+
+
+def write_cargo_config(tree, text):
+    """`.cargo/` holds this one file and nothing else (a legacy `config`
+    beside it would win), and `.cargo-home/` starts empty."""
+    for d in (".cargo", ".cargo-home"):
+        shutil.rmtree(os.path.join(tree, d), ignore_errors=True)
+        os.makedirs(os.path.join(tree, d))
+    with open(os.path.join(tree, ".cargo", "config.toml"), "w") as fh:
+        fh.write(text)
+
+
+def vendor_digest(tree):
+    """sha256 over `vendor/`'s paths and bytes, or None when nothing is vendored."""
+    root = os.path.join(tree, "vendor")
+    if not os.path.isdir(root):
+        return None
+    h = hashlib.sha256()
+    for d, dirs, files in os.walk(root):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(d, f)
+            h.update(os.path.relpath(p, root).encode() + b"\0")
+            if os.path.islink(p):
+                h.update(b"link:" + os.readlink(p).encode())
+            else:
+                with open(p, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+            h.update(b"\0")
+    return h.hexdigest()
 
 
 # --- the hidden tests ------------------------------------------------------
@@ -523,13 +558,57 @@ def workspace():
     return os.path.abspath(ws)
 
 
+def record_path(ws, kind):
+    home = os.environ.get("MECHA_HOME") or os.path.expanduser("~/.mecha")
+    key = hashlib.sha256(os.path.realpath(ws).encode()).hexdigest()[:32]
+    return os.path.join(home, "driven", kind, key)
+
+
+def save_setup(ws, t):
+    """What setup made that the grade relies on, kept out of the run's jail:
+    the cargo config, the vendored crates' digest."""
+    with open(os.path.join(ws, ".cargo", "config.toml")) as fh:
+        config = fh.read()
+    p = record_path(ws, "setup")
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    with open(p, "w") as fh:
+        json.dump({"task": t["id"], "workspace": os.path.realpath(ws), "cargo_config": config,
+                   "vendor_sha256": vendor_digest(ws)}, fh)
+
+
+def restore_setup(ws, t):
+    """Before the grade's first cargo call, everything setup owns is put back
+    from its record: `.cargo/` (where `[build] rustc` or a `runner` would
+    choose what prints the libtest lines read here), `.cargo-home/` (whose
+    `config.toml` cargo also reads), and the repaired fixtures. `.git/info/
+    exclude` hides all of them from `git status`, so an edit is never seen
+    there (review of #852, pass 4). Returns None, or why the tree cannot be
+    graded: the vendored crates are compared, never rebuilt (that needs the
+    network)."""
+    p = record_path(ws, "setup")
+    if not os.path.exists(p):
+        die("no setup record for this workspace; grade a tree `setup` made")
+    with open(p) as fh:
+        rec = json.load(fh)
+    if rec.get("task") != t["id"]:
+        die(f"this workspace was set up for {rec.get('task')}, not {t['id']}")
+    write_cargo_config(ws, rec["cargo_config"])
+    RESTORE[os.path.realpath(ws)] = rec["cargo_config"]
+    for fix in t.get("repair", []):
+        dest = os.path.join(ws, fix["path"])
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w") as fh:
+            fh.write(git("show", f"{fix['from']}:{fix['path']}"))
+    if vendor_digest(ws) != rec.get("vendor_sha256"):
+        return "the vendored crates differ from setup's"
+    return None
+
+
 def claim_path(ws):
     """Where a workspace's grade is recorded as taken: in the mecha home, out
     of the run's jail, so a run cannot pre-empt its own grade (review of #852,
     pass 3: a file under the tree's `.git` was the run's to create)."""
-    home = os.environ.get("MECHA_HOME") or os.path.expanduser("~/.mecha")
-    key = hashlib.sha256(os.path.realpath(ws).encode()).hexdigest()[:32]
-    return os.path.join(home, "driven", "graded", key)
+    return record_path(ws, "graded")
 
 
 def claim(ws, task_id):
@@ -561,6 +640,7 @@ def cmd_setup(task_id):
             r = cargo(tc, ws, "test", "-p", crate, "--no-run", jobs=4)
             if r.returncode != 0:
                 die(f"the pin's tests for {crate} do not build: {first_error(r.stderr)}")
+    save_setup(ws, t)
     r = run([mecha(), "driven", "mark", t["id"], "--clone", ws, "--for", MARKER_FOR])
     if r.returncode != 0:
         die(f"could not write the driven marker: {(r.stderr or r.stdout).strip()}")
@@ -584,10 +664,15 @@ def cmd_grade(task_id):
     changed = git("status", "--porcelain", cwd=ws).strip()
     tc = toolchain_dir(t, t["pin"])
     tests = hidden_tests(t["merge"])
-    if os.path.exists(claim_path(ws)):
-        die("this workspace has been graded already; grade a fresh setup")
-    names = graft(ws, t["merge"])
+    # Taken before the tree is touched: a graft that dies partway leaves the
+    # tree spent, never open to a second graft (review of #852, pass 4).
     claim(ws, t["id"])
+    tampered = restore_setup(ws, t)
+    if tampered:
+        json.dump({"passed": False, "detail": tampered,
+                   "checks": [{"name": "setup's files", "passed": False, "detail": tampered}]}, sys.stdout)
+        return
+    names = graft(ws, t["merge"])
     hidden = run_hidden(tc, ws, tests, jobs=4, confined=True)
     checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
     pre = t["baseline"]["failing"]
