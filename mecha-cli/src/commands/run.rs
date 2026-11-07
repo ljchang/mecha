@@ -205,7 +205,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
     if let Some(forced) = &prepared.driven {
-        convo.taint.private = forced.private_armed_at_start;
+        convo.taint.private |= forced.private_armed_at_start;
     }
 
     // Written on create *and* on resume: a session picked up under different

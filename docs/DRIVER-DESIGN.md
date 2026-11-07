@@ -984,8 +984,16 @@ The forcing is checked twice:
 
 `mecha-cli/tests/driven_run.rs` exercises it through the real binary, where
 the kind override is live. The driven-draft marking on the owner's queue
-(the outbox bullet above) is not built: it has no reachable case while the
-allowlist registers no sender.
+(the outbox bullet above) is not built. Its case is made unreachable
+structurally rather than left to the owner's file: a driven start is refused
+if `[outbox] tools` routes any allowlisted tool, since every such call would
+otherwise stage into the owner's queue unmarked. The outbox itself stays on.
+Each of the approver's three refusals carries its own stem:
+- `driven::PROMPT_REFUSED`, for an approval rule's `prompt` and the floor;
+- `ESCALATION_REFUSED`, for the interlock's `ask`;
+- `ACCESS_REFUSED`, for a reach outside the jail.
+
+D4's approval-floor count reads the first alone.
 
 ## 8. Open, and named
 

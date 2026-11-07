@@ -306,6 +306,10 @@ async fn a_driven_start_is_refused_where_it_could_not_be_confined() {
     for (args, why) in [
         (vec!["run", "hello", "--resume", "x"], "never resumes"),
         (vec!["run", "hello", "--no-session"], "is recorded"),
+        (
+            vec!["run", "hello", "--read-only"],
+            "`--read-only` would refuse",
+        ),
         (vec!["batch", "items.jsonl"], "fresh one-shot `mecha run`"),
     ] {
         std::fs::write(f3.clone.join("items.jsonl"), "\"hello\"\n").unwrap();

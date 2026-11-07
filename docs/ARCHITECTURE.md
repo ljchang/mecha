@@ -8147,10 +8147,14 @@ The design decisions, each of which is a bug if undone:
     (`persona_propose`) would slip past one.
   - **Forces approvals and sends.** `block_sends_after_private`,
     `trifecta = "block"`, `private` armed at start, `permission_mode =
-    "allow"`, and every question for a person refused (`DrivenApprover`,
-    whose text carries `driven::PROMPT_REFUSED` so D4 can count those rows).
+    "allow"`, and every question for a person refused (`DrivenApprover`).
+    Each door has its own stem: `driven::PROMPT_REFUSED` for an approval
+    rule's `prompt` (the one D4 counts as approval-floor), and
+    `ESCALATION_REFUSED` and `ACCESS_REFUSED` for the interlock and the jail.
   - **Refuses to start** in both directions: a driven run whose sandbox can
-    reach the network or whose binds overlap the home, and an unmarked run
+    reach the network, whose binds overlap the home, or whose `[outbox]
+    tools` routes an allowlisted tool (its drafts would reach the owner's
+    queue unmarked, and the marking is not built); and an unmarked run
     whose workspace a home-side marker covers, expired or not.
   - **Is checked twice.** Before anything spawns (the switches thrown) and
     after the build (nothing attached).

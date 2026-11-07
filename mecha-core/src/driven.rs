@@ -51,10 +51,22 @@ pub fn marked() -> bool {
 }
 
 /// The stem every refusal of an approval rule's `prompt` carries in a driven
-/// run. D4 counts rows whose transcript holds it as **approval-floor
-/// refusals**, apart from model gaps, so it is a constant and never
-/// rephrased at a call site.
+/// run — the rule's own `prompt`, or the `strict_inline_eval` floor. D4
+/// counts rows whose transcript holds it as **approval-floor refusals**,
+/// apart from model gaps, so it is a constant, never rephrased at a call
+/// site, and carried by this door alone.
 pub const PROMPT_REFUSED: &str = "a driven run treats an approval rule's `prompt` as `forbid`";
+
+/// The stem of a driven run's refusal of the interlock's `ask`
+/// (`Approver::escalate`). Unreachable while the mark forces
+/// `trifecta = "block"` and registers no sender; its own stem so that, if it
+/// is ever reached, D4 does not count it as an approval-floor refusal.
+pub const ESCALATION_REFUSED: &str = "a driven run puts no send in front of a person";
+
+/// The stem of a driven run's refusal of a reach outside its jail
+/// (`Approver::escalate_access`): the path jail, which no rewording of the
+/// call gets around.
+pub const ACCESS_REFUSED: &str = "a driven run is held to its workspace and grants no access";
 
 /// What a driven run forced, recorded on the run beside `levers_off`
 /// (`RunConfig::driven`). None of these is a `harness::Lever`, so without
@@ -62,10 +74,12 @@ pub const PROMPT_REFUSED: &str = "a driven run treats an approval rule's `prompt
 /// approver's mode is what decides whether a failed row is a model gap or
 /// an approver refusal.
 ///
-/// A wire format: every field defaults, and a record this build cannot read
-/// loads as `None` on the run rather than failing it.
+/// A wire format. The forced values have **no default**: a record missing
+/// one is a record this build cannot read, and it loads as `None` on the run
+/// (`RunConfig::driven`'s lenient reader) rather than as a run that forced
+/// nothing. Only the lists and the marker, whose empty value is a true
+/// reading, default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Forced {
     /// `[security] block_sends_after_private`, forced on.
     pub block_sends_after_private: bool,
@@ -90,35 +104,20 @@ pub struct Forced {
     pub shell_rule_loaded: bool,
     /// Every `mecha.toml` found in the workspace (and the working directory's
     /// own), none of them merged: a driven run reads no project layer.
+    #[serde(default)]
     pub project_configs: Vec<PathBuf>,
     /// The walk for `project_configs` stopped at its bound, so the list may
     /// be short.
+    #[serde(default)]
     pub project_configs_truncated: bool,
     /// The owner's `[[subagent]]` profiles, none registered.
+    #[serde(default)]
     pub subagents_dropped: Vec<String>,
     /// The task whose live marker names a clone holding this workspace, if
     /// one does. The store load (D2) keys on it; recorded so a run that
     /// carried no driven rules can be told apart from one that had none.
+    #[serde(default)]
     pub marker: Option<String>,
-}
-
-impl Default for Forced {
-    fn default() -> Self {
-        Forced {
-            block_sends_after_private: false,
-            private_armed_at_start: false,
-            trifecta: TrifectaPolicy::Block,
-            owner_trifecta: TrifectaPolicy::Block,
-            permission_mode: PermissionMode::Allow,
-            owner_permission_mode: PermissionMode::Ask,
-            prompt_as_forbid: false,
-            shell_rule_loaded: false,
-            project_configs: Vec::new(),
-            project_configs_truncated: false,
-            subagents_dropped: Vec::new(),
-            marker: None,
-        }
-    }
 }
 
 /// Force the config a driven run is built from, and say what was forced.
@@ -137,8 +136,12 @@ pub fn force(cfg: &mut Config) -> Forced {
         permission_mode: PermissionMode::Allow,
         owner_permission_mode: cfg.tools.permission_mode,
         prompt_as_forbid: true,
+        // Filled in by setup once the policy, the walk and the marker are read.
+        shell_rule_loaded: false,
+        project_configs: Vec::new(),
+        project_configs_truncated: false,
         subagents_dropped: cfg.subagents.iter().map(|p| p.name.clone()).collect(),
-        ..Forced::default()
+        marker: None,
     };
     cfg.security.block_sends_after_private = true;
     cfg.security.trifecta = TrifectaPolicy::Block;
@@ -193,6 +196,22 @@ pub fn refusals(cfg: &Config, sandbox: &Sandbox, workspace: &Path, home: &Path) 
                 home.display()
             ));
         }
+    }
+    // The outbox stays on, as defence in depth (§7), but the marking of a
+    // driven draft on the owner's queue is not built. A route over an
+    // allowlisted tool would stage every such call into that queue unmarked,
+    // so it is refused rather than left to the owner's file never naming one.
+    let routed: Vec<&str> = TOOLS
+        .iter()
+        .copied()
+        .filter(|t| cfg.outbox.tools.iter().any(|r| r == t))
+        .collect();
+    if !routed.is_empty() {
+        why.push(format!(
+            "`[outbox] tools` routes {}, and a driven run's drafts are not yet marked on the \
+             owner's queue",
+            routed.join(", ")
+        ));
     }
     if overlaps(workspace) {
         why.push(format!(
@@ -267,10 +286,11 @@ pub fn project_configs(cwd: &Path, workspace: &Path) -> (Vec<PathBuf>, bool) {
 pub struct DrivenApprover;
 
 impl DrivenApprover {
-    fn refuse(tool: &dyn Tool, why: &str) -> Decision {
+    /// Each door says what actually stopped the call, with its own stem, so
+    /// the model is told the true constraint and D4 can count each apart.
+    fn refuse(tool: &dyn Tool, why: &str, stem: &str, next: &str) -> Decision {
         Decision::Blocked(format!(
-            "{why} — and {PROMPT_REFUSED}, so `{}` was not run. Nobody is asked in a driven \
-             run; find a way to do this that the rule does not cover.",
+            "{why} — and {stem}, so `{}` was not run. Nobody is asked in a driven run; {next}",
             tool.name()
         ))
     }
@@ -287,15 +307,30 @@ impl Approver for DrivenApprover {
     }
 
     async fn consult(&self, tool: &dyn Tool, _input: &Value, why: &str) -> Decision {
-        Self::refuse(tool, why)
+        Self::refuse(
+            tool,
+            why,
+            PROMPT_REFUSED,
+            "find a way to do this that the rule does not cover.",
+        )
     }
 
     async fn escalate(&self, tool: &dyn Tool, _input: &Value, why: &str) -> Decision {
-        Self::refuse(tool, why)
+        Self::refuse(
+            tool,
+            why,
+            ESCALATION_REFUSED,
+            "this run sends nothing, so finish the task without it.",
+        )
     }
 
     async fn escalate_access(&self, tool: &dyn Tool, _input: &Value, why: &str) -> Decision {
-        Self::refuse(tool, why)
+        Self::refuse(
+            tool,
+            why,
+            ACCESS_REFUSED,
+            "work with what is inside the workspace.",
+        )
     }
 }
 
@@ -530,6 +565,14 @@ mod tests {
                 path.display()
             );
         }
+        // An outbox route over an allowlisted tool: its drafts would stage
+        // into the owner's queue unmarked.
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["mail__mail_send".into()];
+        assert!(refusals(&cfg, &ok, &ws, &home).is_empty());
+        cfg.outbox.tools.push("fs_write".into());
+        let why = refusals(&cfg, &ok, &ws, &home);
+        assert!(why.len() == 1 && why[0].contains("fs_write"), "{why:?}");
         // And the workspace itself, inside the home.
         let why = refusals(&Config::default(), &ok, &home.join("driven"), &home);
         assert_eq!(why.len(), 1, "{why:?}");
@@ -640,6 +683,24 @@ mod tests {
             serde_json::from_value(serde_json::json!({"driven": {"trifecta": "sideways"}}))
                 .unwrap();
         assert_eq!(run.driven, None);
+        // A record missing a forced value is unknown, never "forced nothing".
+        let mut partial = serde_json::to_value(&forced).unwrap();
+        partial.as_object_mut().unwrap().remove("prompt_as_forbid");
+        let run: crate::session::RunConfig =
+            serde_json::from_value(serde_json::json!({ "driven": partial })).unwrap();
+        assert_eq!(run.driven, None);
+        // The lists and the marker may be absent: empty is a true reading.
+        let mut lean = serde_json::to_value(&forced).unwrap();
+        for k in [
+            "project_configs",
+            "project_configs_truncated",
+            "subagents_dropped",
+            "marker",
+        ] {
+            lean.as_object_mut().unwrap().remove(k);
+        }
+        let back: Forced = serde_json::from_value(lean).unwrap();
+        assert_eq!(back, forced);
     }
 
     struct Named(&'static str);
@@ -670,13 +731,25 @@ mod tests {
         let input = serde_json::json!({});
         assert!(matches!(a.approve(&t, &input).await, Decision::Allow));
         assert!(matches!(a.permit(&t, &input).await, Decision::Allow));
-        for d in [
-            a.consult(&t, &input, "rule says ask").await,
-            a.escalate(&t, &input, "interlock").await,
-            a.escalate_access(&t, &input, "outside").await,
+        let stems = [PROMPT_REFUSED, ESCALATION_REFUSED, ACCESS_REFUSED];
+        for (d, stem) in [
+            (a.consult(&t, &input, "rule says ask").await, PROMPT_REFUSED),
+            (
+                a.escalate(&t, &input, "interlock").await,
+                ESCALATION_REFUSED,
+            ),
+            (
+                a.escalate_access(&t, &input, "outside").await,
+                ACCESS_REFUSED,
+            ),
         ] {
             match d {
-                Decision::Blocked(why) => assert!(why.contains(PROMPT_REFUSED), "{why}"),
+                Decision::Blocked(why) => {
+                    // Its own stem, and no other door's: D4 counts each apart.
+                    for other in stems {
+                        assert_eq!(why.contains(other), other == stem, "{why}");
+                    }
+                }
                 other => panic!("{other:?}"),
             }
         }
