@@ -88,7 +88,7 @@ accepted values (#848 edits all three):
 
 Readers follow the `Experiment` shape. Every corpus reader hides driven
 sessions by default (`hidden_driven` beside `hidden_tests` and the
-experiment twin) and admits them on an explicit flag. Fitness (§14.7) never
+experiment twin) and admits them on an explicit flag. Fitness (`SELF-IMPROVEMENT-RESEARCH.md` §14.7) never
 counts them. Two readers want them on: this design's ledger, and appraisal
 calibration (§6).
 
@@ -364,13 +364,13 @@ because it fails only sometimes. The first prototype, #525 (one write per
 record, a concurrent-writer test), failed 5/5 on the pin with "a merged or
 torn line" and passed 5/5 on the merge.
 
-All sources are served through §21.1's contract as
+All sources are served through `EXPERIMENT-DESIGN.md` §21.1's contract as
 `eval/fixtures/mecha_history.py`: `setup` makes a **full clone** at the pin
 (not a `git worktree`, §7), and `grade` applies the hidden tests and runs
 them.
 
 Terminal-Bench and the other public suites come **after** this loop has
-tuned the harness, as transfer checks (§14.7). Their place in this design is
+tuned the harness, as transfer checks (`SELF-IMPROVEMENT-RESEARCH.md` §14.7). Their place in this design is
 to be the number that tells whether the tuning overfitted to mecha's own
 repository.
 
@@ -394,7 +394,9 @@ panel's job is to tell harness from model, and a base peer says that most
 plainly. One consequence: a harness affordance (D4) that the default needs
 and `qwen3.8-27b` does not could be an effect of the uncensoring rather than
 of the family. Before such a result is called general, a measurement arm
-checks it against `qwen3.6-35b-a3b`, the default's own base. The one
+checks it against `qwen3.6-35b-a3b`, the default's own base. It is a
+router preset (the eval TOMLs use it) rather than a `catalog.rs` entry, so
+it is reachable on this machine though not installable by `mecha model add`. The one
 abliterated build in the catalog, `qwen3.8-27b-abliterated`, is left out:
 it is a third flavour of the `qwen3.8-27b` family, and it tells the panel
 nothing that the base does not.
@@ -486,7 +488,7 @@ waits for that work.
 
 ## 6. The principal, and the seam for appraisal
 
-In a multi-turn driven run, the driver is §16's model-driven principal. It
+In a multi-turn driven run, the driver is `EXPERIMENT-DESIGN.md` §16's model-driven principal. It
 steers, answers `questions`, and denies calls, always through the owner's own
 verbs, so the stores record exactly what they would record from a person.
 §16's first rule holds: **a verdict comes from gold wherever gold exists**.
@@ -541,8 +543,12 @@ So the driven mark forces those four off **structurally**, from the same
 `harness::Lever` definitions `mecha eval` uses (`RunConfig::levers_off`),
 rather than trusting each run to be configured right:
 
-- **Off**: MCP servers, hooks, the owner's grants, and the mailbox
-  (`Lever::Messages`). A driven run must not post into the owner's live
+- **Off**: MCP servers, hooks, the owner's grants, the mailbox
+  (`Lever::Messages`), and `system_read` (`Lever::SystemRead`), which
+  `mecha eval` already forces off. Machine state is small and closed-set,
+  but it is the one tool result in a driven transcript that is not repo
+  content, and a D5 fork sends that transcript to the ceiling's provider
+  (R8). A driven run must not post into the owner's live
   sessions: a peer message is an influence channel, which is why a peer
   cannot grant escalation, and here the peer would be the driver. A model
   batch is announced to peers (below) by the driver, from outside the run,
@@ -660,8 +666,16 @@ passes vacuously.
   (above), so they are the owner's own config, read-only, and untouched by
   `Lever::Grants`. R7 is therefore a
   recommended config entry, not an open question (§8, §9).
-- **No push, ever.** A driven run has no git remote credentials, and the
-  clone has no remote it could push to. Its output is a diff in the clone.
+- **No push, ever, and true of the clone itself.** `git clone` always
+  writes `remote.origin.url`, and from a local source a push needs neither
+  credentials nor network: `git push origin HEAD:refs/heads/x` writes
+  straight into the source's `.git`. Today the jail stops that, because the
+  source path is not bound and the network is off. But that is a property of
+  the sandbox, and R7 widens `[sandbox]` in exactly that direction, so a
+  later `writable` entry covering the checkout would make the push land. So
+  task setup removes the remote after cloning (`git remote remove origin`),
+  and "no remote to push to" is then checkable by asking the clone,
+  whatever the bind set. Its output is a diff in the clone.
 - **No persona data and no mail.** The task bank is code. Fixture-based
   assistant tasks are a later source and use fixtures only. A driver reading
   the owner's real mail into a run would build a trifecta session for no
