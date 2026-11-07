@@ -146,8 +146,9 @@ pub enum Cmd {
         /// Request reasoning; off by default. Report counts instead of reasoning text.
         #[arg(long)]
         thinking: bool,
-        /// Per-request reasoning cap; does not alter shared server settings.
-        #[arg(long, requires = "thinking", value_parser = clap::value_parser!(u32).range(1..8192))]
+        /// Per-request reasoning cap (1-4096), leaving at least 4096 of 8192 tokens for the answer.
+        /// Does not alter shared server settings.
+        #[arg(long, requires = "thinking", value_parser = clap::value_parser!(u32).range(1..=4096))]
         thinking_budget: Option<u32>,
         /// Compare a direct coverage judgment against structured extraction.
         #[arg(long)]
@@ -1417,6 +1418,51 @@ impl LocalMemoryModel {
 #[cfg(test)]
 mod durable_cli_tests {
     use clap::Parser;
+
+    #[test]
+    fn extract_plan_thinking_budget_reserves_final_answer_tokens() {
+        let args = [
+            "mecha",
+            "memory",
+            "--experimental",
+            "--db",
+            "/tmp/test.memory-prototype.sqlite",
+            "extract-plan",
+            "/tmp/synthetic-plan.json",
+            "--synthetic-input",
+            "--endpoint",
+            "http://127.0.0.1:8080",
+            "--model",
+            "fixture-model",
+            "--holds-dir",
+            "/tmp/holds",
+        ];
+        assert!(crate::Cli::try_parse_from(args).is_ok());
+        for (budget, accepted) in [
+            ("1", true),
+            ("4096", true),
+            ("0", false),
+            ("4097", false),
+            ("8191", false),
+        ] {
+            let mut bounded = args.to_vec();
+            bounded.extend(["--thinking", "--thinking-budget", budget]);
+            assert_eq!(
+                crate::Cli::try_parse_from(bounded).is_ok(),
+                accepted,
+                "thinking budget {budget}"
+            );
+        }
+        let mut without_thinking = args.to_vec();
+        without_thinking.extend(["--thinking-budget", "4096"]);
+        let error = crate::Cli::try_parse_from(without_thinking)
+            .err()
+            .expect("a thinking budget requires --thinking");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
 
     #[test]
     fn outcome_recall_prepare_requires_explicit_synthetic_access_and_model() {
