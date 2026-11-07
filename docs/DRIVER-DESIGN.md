@@ -161,11 +161,16 @@ The shape:
   task's deadline. Teardown removes it, and a marker past its deadline loads
   nothing even if teardown failed. The deadline governs this load only. D1b's
   refusal of an unmarked run keys on the marker's presence, expired or not
-  (§7). The run cannot reach it. Inside the jail, bwrap binds only the
-  workspace and the `[sandbox] readable` paths, and `setup` refuses any jail
-  that contains the mecha home. So R7's `readable` list must never cover the
-  mecha home or a parent of it, and a driven run whose resolved `readable`
-  set does is refused at start. A wrong mark with no
+  (§7). The run cannot reach it. Inside the jail, bwrap binds three sets:
+  the workspace (`--bind`), `[sandbox] readable` (`--ro-bind-try`), and
+  `[sandbox] writable` (`--bind-try`, "extra paths mounted writable, on top
+  of the workspace"). `setup` refuses any jail that contains the mecha home.
+  A `writable` entry covering the home is the dangerous one, because it
+  puts the marker, the owner's learning store, the transcripts and the
+  global config inside the jail, *writable* by the model, which is exactly
+  what moving the marker under the home was for. So a driven run resolves
+  **both** sets and is refused at start if either covers the mecha home or
+  a parent of it. A wrong mark with no
   marker, or a marker with no mark, loads nothing, so the boundary fails
   dark both ways: on a missing mark and on a mistaken one.
 - **The readers that notice a sick store must see it.** `doctor` walks
@@ -334,7 +339,19 @@ The shape:
 
 **Promotion crosses the owner.** A driven-store rule enters the owner's
 store only by the owner's act: a copy, with its measured lift attached and
-the rule text shown as written. Nothing does it automatically. The existing
+the rule text shown as written. Nothing does it automatically. **Promotion
+shows and re-derives the scope, and never carries it.** A driven reflection
+records the front-end's surface, which is `run` (`setup.rs` builds the run
+situation from `opts.surface`, never from the mark), and a batch that
+disagrees collapses to no surface. So a driven-store rule's scope is
+`surface = run` or standing, and copied as is it would ride every owner
+`mecha run`, or every run, which is strictly wider than the driven tasks
+its lift was measured on. That would reopen, through the owner's own
+deliberate act, the widening R6 closed against a lost mark. So promotion
+shows the copy's scope beside its text and lift, and the copy's scope is
+set by the owner at promotion, offered as the narrowest region the
+measurement supports (the owner's checkout the tasks were drawn from),
+never the driven batch's carried scope. The existing
 self-accept gate for learned rules does not extend to promotion, because
 that gate measures on the owner's own sessions and a driven task is not one.
 Whether promotion can later earn a gate of its own is a question for once
@@ -864,13 +881,19 @@ passes vacuously.
   system directories and `HOME` set to the workspace. A confined
   `cargo build --offline` today ends in `cargo: command not found`, which is
   a fact about `PATH`, not about whether `~/.rustup` is readable. So
-  measure: is the toolchain **on PATH**, do `CARGO_HOME` and `RUSTUP_HOME`
-  **reach the process**, and is the toolchain tree **readable**. With
+  measure four facts: is the toolchain **on PATH**, do `CARGO_HOME` and
+  `RUSTUP_HOME` **reach the process**, is the toolchain tree **readable**,
+  and can cargo **write** what it needs under `CARGO_HOME`. That last one is
+  a write fact: `readable` is a read-only bind, and cargo takes a lock under
+  `$CARGO_HOME` (`.package-cache`) when it resolves, which a vendored
+  offline build may or may not skip depending on the version. With
   `HOME=<workspace>`, a toolchain found by home-relative lookup resolves
-  inside the jail. The expected remedy is `[sandbox] readable` for the
-  toolchain, `[sandbox] env` for `CARGO_HOME` and `RUSTUP_HOME`, and
-  `cargo` by absolute path, because `PATH` collides with bwrap's own pinned
-  value (R7). The measurement also pins which `--setenv` wins for a name
+  inside the jail. The expected remedy is the cheaper one: **`CARGO_HOME`
+  points inside the clone**, which is already writable, since vendoring plus
+  source replacement means nothing needs the host registry. `readable` then
+  holds the toolchain tree (`RUSTUP_HOME`) alone, which genuinely is
+  read-only, `cargo` is invoked by absolute path because `PATH` collides with
+  bwrap's own pinned value, and no `writable` entry is needed (R7). The measurement also pins which `--setenv` wins for a name
   bwrap already sets.
 - **Old trees and the 2026-11-04 history rewrite.** Commits from 2026-09-09
   to 2026-10-04 no longer build `mecha-core`'s tests. The rewrite's
@@ -922,9 +945,11 @@ passes vacuously.
   every failure leaves a driven rule dark rather than applying it to the
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
 - **R7, the owner's config, and a precondition of a driven run** (D1b refuses a start whose sandbox can reach the network). A driven run reaches the Rust
-  toolchain through the owner's `[sandbox] readable` (the toolchain trees,
-  never the mecha home or a parent of it) and `[sandbox] env` (`CARGO_HOME`,
-  `RUSTUP_HOME`) in the owner's **global** file. `PATH` is *not* named
+  toolchain through the owner's `[sandbox] readable` (the rustup toolchain
+  tree only, never the mecha home or a parent of it, and never a `writable`
+  entry) and `[sandbox] env` (`CARGO_HOME`, `RUSTUP_HOME`) in the owner's
+  **global** file. `CARGO_HOME` points inside the task clone, which is
+  already writable, so no host path needs write access (§8). `PATH` is *not* named
   there: `bwrap_args` applies `[sandbox] env` after its own pinned `PATH`, so
   naming it would substitute the operator's whole host `PATH`, or do
   nothing, depending on which `--setenv` wins. Either is wider or narrower
@@ -937,8 +962,12 @@ passes vacuously.
   name through, and sets no value.** `bwrap_args` emits `--setenv` only
   `if let Ok(value) = std::env::var(name)`, with no warning when the name is
   absent, and rustup exports neither variable in a normal shell. So the
-  entry is half the remedy: the driver must also export `CARGO_HOME` and
-  `RUSTUP_HOME` in the environment it launches `mecha run` from. Otherwise
+  entry is half the remedy: the driver must also export `CARGO_HOME` (a path
+  inside the clone) and `RUSTUP_HOME` in the environment it launches
+  `mecha run` from. Setting a value for a name the owner's config already
+  passes through is not a jail exception, because `CARGO_HOME` names a path
+  inside the jail and `RUSTUP_HOME` one the owner's `readable` already
+  binds. Otherwise
   the entry looks right and changes nothing, and with `HOME=<workspace>`
   cargo's home-relative fallback resolves into the empty clone. The §8
   measurement's pass criterion is that the value arrives in the child,
