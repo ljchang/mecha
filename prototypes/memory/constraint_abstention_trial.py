@@ -166,7 +166,7 @@ def score_row(case,row,prepared,model,treatment):
         valid=(not row.get('error') and not call.get('error') and not reply.get('error') and reply['model']==model
             and call['prompt']==request['prompt'] and call['response_schema']==request['response_schema']
             and isinstance(answer,dict) and set(answer)==fields and answer['choice'] in (*METHODS,'abstain')
-            and isinstance(answer['reason'],str) and 0<len(answer['reason'].strip())<=4000
+            and isinstance(answer['reason'],str) and bool(answer['reason'].strip()) and len(answer['reason'])<=4000
             and isinstance(answer['citations'],list) and all(type(c) is str for c in answer['citations'])
             and len(set(answer['citations']))==len(answer['citations']) and set(answer['citations'])<=ids)
         if not valid:return score
@@ -227,6 +227,11 @@ def isolated_env(home):
     return env
 
 
+
+def helper_artifacts():
+    return {module.__name__:dict(path=str(Path(module.__file__).resolve()),sha256=sha(Path(module.__file__)))
+            for module in (old,action)}
+
 def create_fixtures(binary, output):
     binary=binary.resolve(strict=True);output.mkdir(parents=True,mode=0o700,exist_ok=False);root=output.resolve()
     env=isolated_env(root/'isolated-home');holds=root/'holds';holds.mkdir()
@@ -271,7 +276,7 @@ def create_fixtures(binary, output):
     finally:
         server.shutdown();server.server_close();thread.join(timeout=5)
     manifest=dict(protocol=PROTOCOL,fixtures=fixtures,new_real_model_inference_calls=0,
-        scripted_transport_requests=len(server.requests),binary_sha256=sha(binary),runner_sha256=sha(Path(__file__)),
+        scripted_transport_requests=len(server.requests),binary_sha256=sha(binary),runner_sha256=sha(Path(__file__)),helper_artifacts=helper_artifacts(),
         cases=frozen_cases(),reply_source='authored loopback HTTP replies; actuals solely durable-act baseline handler')
     require(len(server.requests)==3,'fixture creation unexpectedly used revision/retry calls')
     write_json(root/'fixtures.json',manifest)
@@ -296,7 +301,7 @@ def run_trial(*,binary,fixtures,endpoint,model,holds_dir,output,invoke=old.invok
     binary=binary.resolve(strict=True);holds_dir=holds_dir.resolve(strict=True)
     output.mkdir(parents=True,mode=0o700,exist_ok=False);root=output.resolve();env=isolated_env(root/'isolated-home')
     manifest=dict(protocol=PROTOCOL,private_data=True,untrusted_input=True,executed=False,planned_calls=48,
-        binary=str(binary),binary_sha256=sha(binary),runner_sha256=sha(Path(__file__)),fixture_manifest=fixture_manifest,
+        binary=str(binary),binary_sha256=sha(binary),runner_sha256=sha(Path(__file__)),helper_artifacts=helper_artifacts(),fixture_manifest=fixture_manifest,
         endpoint=endpoint,model=model,cases=frozen_cases(),seeds=list(SEEDS),treatments={t:controls(t) for t in TREATMENTS},
         offline_rubric=dict(simulator=SIMULATOR),pairs=[],error=None)
     pairs=manifest['pairs'];before={};state=None;error=None;interruption=None;tb=None
@@ -370,6 +375,25 @@ def run_trial(*,binary,fixtures,endpoint,model,holds_dir,output,invoke=old.invok
 
 
 
+
+def expected_http_request(request,treatment,seed,model):
+    settings=controls(treatment)
+    body=dict(model=model,max_tokens=settings['max_tokens'],temperature=settings['temperature'],seed=seed,
+        messages=[dict(role='user',content=request['prompt'])],
+        response_format=dict(type='json_object',schema=request['response_schema']),
+        chat_template_kwargs=dict(enable_thinking=settings['thinking']))
+    if settings['thinking_budget'] is not None:body['reasoning_budget_tokens']=settings['thinking_budget']
+    return body
+
+
+def audit_http_requests(expected,recorded):
+    require(len(recorded)==len(expected),'HTTP dispatch count differs from frozen requests')
+    for index,(wanted,actual) in enumerate(zip(expected,recorded)):
+        require(all(actual.get(key)==value for key,value in wanted.items()),f'HTTP request drift at slot {index}')
+        require(('reasoning_budget_tokens' in actual)==('reasoning_budget_tokens' in wanted),
+                f'HTTP thinking-budget presence drift at slot {index}')
+        require(not actual.get('tools') and not actual.get('stream'),f'HTTP request surface drift at slot {index}')
+
 class QualificationProvider(action.ScriptedProvider):
     """Authored queue, never a model; request bytes remain available for audit."""
     def do_GET(self):
@@ -396,7 +420,7 @@ def qualify_scripted(binary, fixtures, output):
     output.mkdir(parents=True,mode=0o700,exist_ok=False);root=output.resolve();holds=root/'holds';holds.mkdir()
     server=ThreadingHTTPServer(('127.0.0.1',0),QualificationProvider);server.requests=[];server.answers=[]
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-    endpoint=f'http://127.0.0.1:{server.server_port}';preparations={}
+    endpoint=f'http://127.0.0.1:{server.server_port}';preparations={};expected_requests=[]
     def invoke(argv,**kwargs):
         key=tuple(argv[:argv.index('--endpoint')]) if '--endpoint' in argv else tuple(argv[:-1])
         if '--prepare-only' in argv:
@@ -413,6 +437,7 @@ def qualify_scripted(binary, fixtures, output):
         require(not server.answers,'unconsumed authored response')
         for arm in order:
             request=arm_request(prepared,arm)
+            expected_requests.append(expected_http_request(request,treatment,int(argv[argv.index('--seed')+1]),action.MODEL))
             answer=dict(choice=next(iter(expected(case,arm)),'abstain'),
                 citations=[p['id'] for p in request['passages']],reason='Authored qualification response; no model inference.')
             if response_format(treatment)=='feasibility_first':answer['candidate_checks']=expected_checks(case,arm,request)
@@ -425,11 +450,15 @@ def qualify_scripted(binary, fixtures, output):
     finally:
         server.shutdown();server.server_close();thread.join(timeout=5)
         write_json(root/'http-requests.json',server.requests)
+        write_json(root/'expected-http-requests.json',expected_requests)
+    audit_http_requests(expected_requests,server.requests)
     require(summary['complete'] and len(server.requests)==48,'scripted CLI qualification incomplete')
     require(all(r['score']['valid'] and r['score']['evidence_appropriate'] and r['score']['citation_coverage']
                 and r['score']['check_correctness'] is not False and not r['score']['host_withheld'] for r in summary['matrix']),
             'scripted CLI qualification failed independent rubric')
-    result=dict(complete=True,new_real_model_inference_calls=0,scripted_transport_requests=48,summary=summary)
+    result=dict(complete=True,new_real_model_inference_calls=0,scripted_transport_requests=48,
+        http_request_audit=True,recorded_http_sha256=sha(root/'http-requests.json'),
+        expected_http_sha256=sha(root/'expected-http-requests.json'),helper_artifacts=helper_artifacts(),summary=summary)
     write_json(root/'qualification.json',result);return result
 
 def main():

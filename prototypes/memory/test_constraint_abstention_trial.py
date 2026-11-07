@@ -97,6 +97,29 @@ class ScoringTests(unittest.TestCase):
             self.assertFalse(t.score_row(c,row,p,'scripted',t.TREATMENTS[0])['valid'])
         row=copy.deepcopy(good);row['call']['reply']['model']='wrong'
         self.assertFalse(t.score_row(c,row,p,'scripted',t.TREATMENTS[0])['valid'])
+    def test_reason_limit_counts_raw_unicode_characters(self):
+        case=t.frozen_cases()[0];treatment=t.TREATMENTS[0];p=preparation(case,treatment)
+        row=report(dict(t.planned_pairs()[0],preparation=p))['rows'][0]
+        answer=json.loads(row['call']['reply']['text'])
+        for reason,valid in [(' '*4001+'x',False),('x'+' '*4000,False),(' '*4000,False),('🌱'*4000,True)]:
+            answer['reason']=reason;row['call']['reply']['text']=json.dumps(answer)
+            self.assertEqual(t.score_row(case,row,p,'scripted',treatment)['valid'],valid)
+
+    def test_http_audit_checks_dispatch_order_and_all_frozen_controls(self):
+        expected=[]
+        for pair_plan in t.planned_pairs()[:3]:
+            case=t.frozen_cases()[0];p=preparation(case,pair_plan['treatment'])
+            for arm in (list(reversed(t.ARMS)) if pair_plan['outcome_first'] else t.ARMS):
+                expected.append(t.expected_http_request(t.arm_request(p,arm),pair_plan['treatment'],pair_plan['seed'],'scripted'))
+        t.audit_http_requests(expected,copy.deepcopy(expected))
+        for mutate in (lambda x:x.__setitem__(slice(0,2),list(reversed(x[:2]))),lambda x:x[0].update(seed=99),lambda x:x[0].update(max_tokens=4096),
+                       lambda x:x[0].update(reasoning_budget_tokens=2048),
+                       lambda x:x[0].update(chat_template_kwargs={'enable_thinking':True}),
+                       lambda x:x[0]['messages'][0].update(content='rewritten'),
+                       lambda x:x[0]['response_format'].update(schema={})):
+            bad=copy.deepcopy(expected);mutate(bad)
+            with self.assertRaises(ValueError):t.audit_http_requests(expected,bad)
+
     def test_preparation_rejects_metadata_and_projection_drift(self):
         c=t.frozen_cases()[0];treatment=t.TREATMENTS[0];p=preparation(c,treatment)
         t.validate_preparation(p,c,dict(action='action'),treatment)
@@ -147,6 +170,8 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(summary['complete'],not interrupt)
                 freeze=t.decode((root/'output'/'freeze.json').read_text())
                 self.assertTrue(all(not p['started'] and p['report'] is None for p in freeze['pairs']))
+                self.assertEqual(set(freeze['helper_artifacts']),{'outcome_reappraisal_trial','durable_action_trial'})
+                for artifact in freeze['helper_artifacts'].values():self.assertEqual(artifact['sha256'],t.sha(Path(artifact['path'])))
                 self.assertTrue(summary['database_unchanged']);self.assertTrue(summary['settings_unchanged'])
     def test_metadata_drift_stops_without_retry(self):
         with tempfile.TemporaryDirectory() as directory:
