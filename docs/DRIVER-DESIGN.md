@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R7, R9 and R10 owed). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R9 and R10 owed; R7 a recommended config entry). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -46,7 +46,7 @@ repository work has not been measured at all.
  task bank (pinned commit, prompt, hidden grade; frozen by sha before any run)
         │
         ▼
- driver ──opens──▶ mecha run, kind = driven, jailed to a worktree at the pin
+ driver ──opens──▶ mecha run, kind = driven, jailed to a clone at the pin
         │                       │
         │◀── transcript + diff ─┘
         ▼
@@ -130,10 +130,10 @@ The shape:
   `experiment::HOME_MARKER`, which sits in the home and outside every jail.
   So the driven store loads only when the mark *and* a driven marker are
   both present, and **the marker sits under the mecha home, never in the
-  workspace**. A marker in the worktree would be inside the run's own path
+  workspace**. A marker in the task clone would be inside the run's own path
   jail, where the model can write it, and it would outlive the run. Task
   setup, which is the harness and not the model or the driver, writes one
-  marker per task under the home, naming the worktree it covers and the
+  marker per task under the home, naming the task clone it covers and the
   task's deadline. Teardown removes it, and a marker past its deadline loads
   nothing even if teardown failed. The run cannot reach it, because `setup`
   refuses any jail that contains the mecha home. A wrong mark with no
@@ -178,9 +178,22 @@ The shape:
   should not be. What the build owes:
   - **`learnable()` refuses any reflection with `driven` set, first, before
     every other arm**: before the triage exemption, before the edit
-    promotion, and whatever its `Origin`. Its three store-blind readers
-    (`lesson_source::backfill_targets`, `doctor`, `probe`) and the `learn`
-    gate then never see a driven reflection as learnable.
+    promotion, and whatever its `Origin`. It has five readers, and the build
+    names each one, so "the compiler finds every call site" holds for the
+    enumeration and not only for `learnable_into`:
+    `lesson_source::backfill_targets`, `doctor`, `probe`, the `learn` gate,
+    and two more that the first draft missed, `commands/reflections.rs`
+    (three sites, including `provenance_admits` in `--json`) and
+    `learning::goal_lessons`. All five fail *closed* under "refuse driven
+    first", so the security direction holds. But `goal_lessons` is a
+    run-facing path: it feeds `ToolCtx::goal_lessons` and so a run's goal
+    context. Over the driven store, "refuse first" would silently keep a
+    driven rule's goal lessons from the very driven runs §2 says load it.
+    So `goal_lessons` takes the store it reads and calls
+    `learnable_into(StoreKind::Driven)` over the driven store, exactly as
+    consolidation does. Its output joins the positive check below, because
+    that check keys on the rules-carried set, a different path, and would not
+    see goal lessons go missing.
   - **The destination enters the type.** A new
     `learnable_into(&self, store: StoreKind)` is the only place a driven
     reflection is admitted, for `StoreKind::Driven` alone, and there it
@@ -230,7 +243,9 @@ The shape:
   already seeds one `learning/`, so no loader learns a new path. **A
   positive check guards against a vacuous null.** The treatment arm's run
   records must show the rule under test carried in the prefix (the run
-  record's rules-carried set). A trial whose prefix lacks it is a failed
+  record's rules-carried set), and, where the rule has goal lessons, those
+  lessons served into the run's goal context, which is a separate path that
+  the rules-carried set does not see. A trial missing either is a failed
   trial, never a measured zero, because a store that failed to load reads
   exactly like an absence of lift. This measures an outcome, where
   `counterfactual.rs` can only ask whether a trajectory changed.
@@ -334,8 +349,9 @@ record, a concurrent-writer test), failed 5/5 on the pin with "a merged or
 torn line" and passed 5/5 on the merge.
 
 All sources are served through §21.1's contract as
-`eval/fixtures/mecha_history.py`: `setup` makes a worktree at the pin, and
-`grade` applies the hidden tests and runs them.
+`eval/fixtures/mecha_history.py`: `setup` makes a **full clone** at the pin
+(not a `git worktree`, §7), and `grade` applies the hidden tests and runs
+them.
 
 Terminal-Bench and the other public suites come **after** this loop has
 tuned the harness, as transfer checks (§14.7). Their place in this design is
@@ -476,14 +492,14 @@ is where the private surfaces live: `[[mcp]]` (the knowledge graph's `kg_*`
 tools, mail and calendar), `[[hook]]`, `[[grant]]`, which is
 global-file-only because it is the jail's way out, and `[messages]`, the
 owner's mailbox between live sessions, where taint travels with a message
-in both directions. **The worktree is an exposure path too.** Only the
+in both directions. **The task tree is an exposure path too.** Only the
 skills layer and the approval rules are narrowing-only; below
 `LayerTrust::Global`, `merge_text` narrows one table (`[[grant]]`) and three
 `[[mcp]]` fields (`trust_result_claims`, `personas`, `effects`), and at
 `LayerTrust::Project` thirteen tables. Neither `[[mcp]]` as a table nor
 `[[hook]]` is among them. `Config::load_global`'s own doc comment says
 a project `mecha.toml` "can name MCP servers to spawn, hooks to execute". A
-driven run is jailed to a worktree at an arbitrary historical pin, so a
+driven run is jailed to a clone at an arbitrary historical pin, so a
 `mecha.toml` in that tree could attach a server or a hook, and only the
 forcing below closes it. That is the reason to force surfaces off by lever
 rather than trust any layer to be configured right, and it is the test for
@@ -551,7 +567,7 @@ workspace. For the store load, "a marker with no mark" fails dark; for D1b
 it is the unsafe direction, because every surface the mark removes is gated
 on the mark alone, so a driven task whose mark was lost would run with the
 owner's servers, hooks, grants and mailbox attached. The marker names its
-worktree, so the case is detectable, and it is refused rather than run.
+task clone, so the case is detectable, and it is refused rather than run.
 **What D1b forces is recorded on the run.** `block_sends_after_private` and
 `private` armed at start are not `harness::Lever`s, so they would not appear
 in the session record's `levers_off`, and a later reader could not tell the
@@ -568,44 +584,64 @@ it off for a whole test binary. A test pinning "the driven mark forces these
 off" must opt back in the way the kind probe does (a child process), or it
 passes vacuously.
 
-- **The jail stays the jail.** The run is jailed to its worktree. A worktree
-  never contains the mecha home, so `setup`'s refusal does not fire. Shell
-  runs under bwrap, with no network. `cargo` therefore runs `--offline`
-  inside the jail, with **no grant**. `Lever::Grants` off means a run reaches
-  no grant (standing or the conversation's) and can add none, and
+- **The jail stays the jail, and the tree is a full clone.** The run is
+  jailed to its task tree. That tree is a **full clone at the pin, never a
+  `git worktree`**: a worktree's `.git` is a file pointing into the main
+  repository's `.git/worktrees/`, which bwrap does not bind, so inside the
+  jail `git status`, `git diff` and `git log` would all fail. Rebuilding a
+  merged PR is work where a model reasonably reaches for `git diff` on its
+  own changes, and every such failure would land in a transcript as the
+  harness refusing something, which D4 then has to attribute. A clone
+  carries a real `.git` inside the jail, and it also takes the task trees
+  out of the peers' `.git/worktrees/*/MERGE_HEAD` collision surface. A
+  clone never contains the mecha home, so `setup`'s refusal does not fire.
+  Shell runs under bwrap, with no network. `cargo` therefore runs
+  `--offline`, with **no `[[grant]]`**. `Lever::Grants` off means a run
+  reaches no grant (standing or the conversation's) and can add none, and
   `grant::Source` has no run-scoped variant. A grant the driver named would
   also make a peer the author of a jail exception, the rule D1b invokes to
   drop the mailbox. So task setup, which is the harness and not the model or
-  the driver, vendors the dependencies into the worktree before the run
-  (`cargo vendor` plus a source replacement in the worktree's
+  the driver, vendors the dependencies into the clone before the run
+  (`cargo vendor` plus a source replacement in the clone's
   `.cargo/config.toml`), and the run builds offline from inside its own
-  jail. Whether the toolchain under `~/.rustup` is readable under the shell
-  sandbox is open (§8). If it is not, the answer is an owner ruling (R7),
-  never a driver-named grant.
-- **No push, ever.** A driven run has no git remote credentials. Its output
-  is a diff in a worktree.
+  jail. **The toolchain is reached by `[sandbox]`, not by a grant.** "No
+  grant" refuses `[[grant]]`, the jail's way out. It does not refuse
+  `SandboxConfig::readable`, which is documented for exactly this ("Use for
+  a toolchain or a cache that lives outside the workspace"), or
+  `SandboxConfig::env` for the variables. Both are the owner's own config,
+  read-only, and untouched by `Lever::Grants`. R7 is therefore a
+  recommended config entry, not an open question (§8, §9).
+- **No push, ever.** A driven run has no git remote credentials, and the
+  clone has no remote it could push to. Its output is a diff in the clone.
 - **No persona data and no mail.** The task bank is code. Fixture-based
   assistant tasks are a later source and use fixtures only. A driver reading
   the owner's real mail into a run would build a trifecta session for no
   reason.
 - **Peers.** Announce a model batch, check `.git/worktrees/*/MERGE_HEAD`
-  before touching a shared tree, and give every worktree its own path.
+  before touching a shared tree, and give every task clone its own path.
 
 ## 8. Open, and named
 
-- **Build cost.** A cold `cargo build` per trial worktree is minutes, and the
-  disk cost is large. The target directory must sit inside the worktree,
+- **Build cost.** A cold `cargo build` per task clone is minutes, and the
+  disk cost is large. The target directory must sit inside the clone,
   because the run builds inside its jail with no grant (§7), so a shared
   `CARGO_TARGET_DIR` outside it is not available to the run. The likely
   answer is that setup, which is the harness, pre-builds the pin's
-  dependencies into the worktree's own `target/` before the run starts, so
+  dependencies into the clone's own `target/` before the run starts, so
   the run pays only for the crates it touches. One build at a time, gated on
   memory, per the cargo caps in OPERATIONS. (The pilot's *validation* runs
   are the driver's, outside any jail, and do share one target directory.)
-- **Cargo inside the jail**: the dependencies are vendored into the worktree
-  by setup (§7). Open is whether the shell sandbox can read the toolchain
-  under `~/.rustup`, measured by running `cargo build --offline` in a
-  confined shell. If it cannot, R7 is owed.
+- **Cargo inside the jail**: the dependencies are vendored into the clone
+  by setup (§7). The measurement is **three facts, not one**, because
+  `Sandbox::bwrap_args` passes `--clearenv` with `PATH` pinned to the
+  system directories and `HOME` set to the workspace. A confined
+  `cargo build --offline` today ends in `cargo: command not found`, which is
+  a fact about `PATH`, not about whether `~/.rustup` is readable. So
+  measure: is the toolchain **on PATH**, do `CARGO_HOME` and `RUSTUP_HOME`
+  **reach the process**, and is the toolchain tree **readable**. With
+  `HOME=<workspace>`, a toolchain found by home-relative lookup resolves
+  inside the jail. The expected remedy is `[sandbox] readable` for the
+  toolchain and `[sandbox] env` for the three variables (R7).
 - **Old trees and the 2026-11-04 history rewrite.** Commits from 2026-09-09
   to 2026-10-04 no longer build `mecha-core`'s tests. The rewrite's
   `--replace-text` changed `include_str!` paths in `mismatch.rs` to the
@@ -655,8 +691,11 @@ passes vacuously.
   rules live in their own learning store, which owner runs never open, so
   every failure leaves a driven rule dark rather than applying it to the
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
-- **R7, owed.** If the shell sandbox cannot read the Rust toolchain, how a
-  driven run builds: the owner's call, never a driver-named grant (§7).
+- **R7, recommended, the owner's config.** A driven run reaches the Rust
+  toolchain through the owner's `[sandbox] readable` (the toolchain trees)
+  and `[sandbox] env` (`PATH`, `CARGO_HOME`, `RUSTUP_HOME`), never through a
+  `[[grant]]` and never through anything the driver names (§7). The entry
+  is the owner's to add, after the §8 measurement says what it must hold.
 - **R8. The charter stays on** on every arm of a driven run (owner,
   2026-11-06), including the ceiling's, where it leaves the machine. The
   recommendation had been off; the owner kept it, so driven runs measure the
