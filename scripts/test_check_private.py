@@ -133,6 +133,19 @@ class Guard(unittest.TestCase):
         open(msg, "w").write("Fix the fixture\n\nIt said something made up.\n")
         self.assertEqual(self.run_guard("--message", msg).returncode, 0)
 
+    def test_a_text_is_checked_headings_included(self):
+        # `--message` skips `#` lines as git's; a markdown prompt's headings
+        # are not git's, so `--text` reads them (DRIVER-DESIGN.md D3b).
+        doc = os.path.join(self.tmp.name, "prompt.md")
+        open(doc, "w").write(f"# {SAID}\n\nMake the change.\n")
+        self.assertEqual(self.run_guard("--message", doc).returncode, 0)
+        r = self.run_guard("--text", doc)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("text:1", r.stdout)
+        self.assertNotIn("lighthouse", r.stdout)
+        open(doc, "w").write("# Count the bytes\n\nMake the change.\n")
+        self.assertEqual(self.run_guard("--text", doc).returncode, 0)
+
     def test_a_push_reads_every_commit_not_only_the_ends(self):
         # Added in one --no-verify commit and rewritten in the next: the
         # range's endpoint diff is clean, and the push must still refuse.

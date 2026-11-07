@@ -26,7 +26,9 @@ Then it looks at the text being added — each run of consecutive added lines
 read as one passage, since prose here is wrapped and a sentence crosses lines
 — in the staged diff (`--staged`, the
 pre-commit hook), a commit range (`--range A..B`, the pre-push hook) or a
-commit message (`--message FILE`, the commit-msg hook) — for:
+commit message (`--message FILE`, the commit-msg hook), or any other text that
+will be published (`--text FILE`: every line, `#` lines included, which is
+how a driven task's prompt is checked before admission) — for:
 
 1. a run of `SHINGLE` words that was said in a conversation;
 2. a quoted phrase of three or more words that was said in one;
@@ -910,6 +912,14 @@ def added_lines(args):
     one — an endpoint diff would never read text added and then rewritten
     inside the range, which is exactly a `--no-verify` WIP branch (review of
     #557)."""
+    if args and args[0] == "--text":
+        # A prompt written for a driven task (DRIVER-DESIGN.md D3b): markdown,
+        # so its headings start with `#`, and `--message` would skip them as
+        # git's own instruction lines.
+        with open(args[1], errors="replace") as fh:
+            for num, line in enumerate(fh, 1):
+                yield "text", num, line.rstrip("\n")
+        return
     if args and args[0] == "--message":
         with open(args[1], errors="replace") as fh:
             for num, line in enumerate(fh, 1):

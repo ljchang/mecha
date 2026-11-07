@@ -1,0 +1,403 @@
+{
+  "draw": {
+    "seed": 20261106,
+    "date": "2026-11-06",
+    "rule": "merged since 2026-09-30, 20-400 lines, <=8 files, touches .rs, adds >=1 #[test], no persona/voice/image/web paths or titles",
+    "eligible": [
+      "813",
+      "807",
+      "798",
+      "793",
+      "780",
+      "759",
+      "726",
+      "723",
+      "564",
+      "525",
+      "476",
+      "474",
+      "471",
+      "466",
+      "464",
+      "421"
+    ],
+    "excluded": {
+      "553": "toolchain pin: graded by CI install, not code",
+      "788": "TLS provider at runtime: graded by a live socket",
+      "709": "OAuth sign-in: graded by a live provider"
+    },
+    "pilot": [
+      "421",
+      "476",
+      "525",
+      "726",
+      "759",
+      "780",
+      "793",
+      "798",
+      "807",
+      "813"
+    ],
+    "replacement_order": [
+      "466",
+      "471",
+      "464",
+      "723",
+      "474",
+      "564"
+    ],
+    "replaced": {
+      "780": "white-box: its tests read a private field (watchdog_ps)",
+      "807": "471"
+    },
+    "note": "one uniform draw over the eligible set (sample.rs), seed and rule recorded before it ran; 780 was replaced by the next in order (466) because its tests read a private field; 807 was rejected at validation (its hidden tests skip without the monty worker) and replaced by the next in order (471)"
+  },
+  "tasks": [
+    {
+      "id": "pr-421",
+      "pr": 421,
+      "author": "history",
+      "merge": "1ccd003b67254804b4107006eaa70d8d3fc9c170",
+      "pin": "7a3f1263a902da018f26fe380575f1de38f49f0e",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-421.md",
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "pin": "every run fails an assertion",
+        "merge": "every run passes"
+      },
+      "prompt_check": {
+        "sha256": "ace565cf0b3239a773ecdfe61d9a886e8855d5509efb441a3c4dbda4d2c0d034",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-525",
+      "pr": 525,
+      "author": "history",
+      "merge": "7da23dd2508ab1e8a5edb59d1da81a085c451671",
+      "pin": "e9352db6244cdf98ab8960a0b2219cd1e0ca0fa7",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-525.md",
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "pin": "every run fails an assertion (a merged or torn line)",
+        "merge": "every run passes",
+        "note": "needs the two mismatch fixtures repaired, which its pin compiles in"
+      },
+      "prompt_check": {
+        "sha256": "56373261ef7295fb14e466071526d568539bdc5c36c105e512d21c97fe7c53b0",
+        "store_present": true
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ]
+    },
+    {
+      "id": "pr-807",
+      "pr": 807,
+      "author": "history",
+      "merge": "e1b2305b14777a839da7da0f44f2184dc17cf353",
+      "pin": "4c8845144692d1724d619446e29fe4ccc12239cf",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-807.md",
+      "admission": {
+        "state": "rejected",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "reason": "its hidden tests return early when the pinned monty worker is unavailable, as it is in a fresh clone, so the grade passes on the pin and would pass a run that did nothing (under MECHA_TEST_REQUIRE_BACKENDS=1 every run names the skip). The prototype admitted it from a worktree where the worker happened to exist."
+      },
+      "prompt_check": {
+        "sha256": "2227bdb5e2d13939c57f4b9f0c6b28603dd1506ff13188c060076192f7b48c6a",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-813",
+      "pr": 813,
+      "author": "history",
+      "merge": "fd1a74a1581c3c9a5d3ca9b993a4b9d5ce515874",
+      "pin": "b6610c9d4fa54a8f27c5e9bb0e1e68955ff1102f",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-813.md",
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "pin": "every run fails an assertion",
+        "merge": "every run passes"
+      },
+      "prompt_check": {
+        "sha256": "2690d378ad2493825d474bee8904ee21ce0e4d011ad15daaef6d600a3df7d5c9",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-476",
+      "pr": 476,
+      "author": "history",
+      "merge": "5cb31fed48afbbda7ecba2cc84db9d6aa8fe7385",
+      "pin": "8ec8c1abec03590f4fa27d813cba9550945b8c36",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-476.md",
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-06",
+        "pin": "the hidden tests do not build: they call fn lever_that_switches_on",
+        "merge": "every run passes",
+        "by": "the prototype of `validate`",
+        "note": "D3a admits a pin that fails an assertion; this one fails to build, so it runs only with the interface named in its prompt, and only on the owner's ruling. Its admission is the prototype's (2026-11-06); `validate` re-runs it before it is offered"
+      },
+      "prompt_check": {
+        "sha256": "356269cb2aec283edf1d534d185793a2b7c41d52491d45dcd1fb777e00a96e2e",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-726",
+      "pr": 726,
+      "author": "history",
+      "merge": "5c4aa9628e5f9dcd98394dddc8b74d9287aee981",
+      "pin": "b439795712e525f4c064dffb5384e3fcd11abd76",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-726.md",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-06",
+        "pin": "the hidden tests do not build: they call type Pick",
+        "merge": "every run passes",
+        "by": "the prototype of `validate`",
+        "note": "D3a admits a pin that fails an assertion; this one fails to build, so it runs only with the interface named in its prompt, and only on the owner's ruling. Its admission is the prototype's (2026-11-06); `validate` re-runs it before it is offered"
+      },
+      "prompt_check": {
+        "sha256": "3e790390910561b912df840f22f74183df5e26238792304c9399f70be69a2e5f",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-759",
+      "pr": 759,
+      "author": "history",
+      "merge": "ad1e3c425e7e2d885dcdf1f29de1ee12b830a121",
+      "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-759.md",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-06",
+        "pin": "the hidden tests do not build: they call fn mecha_core::harness::setting_of",
+        "merge": "every run passes",
+        "by": "the prototype of `validate`",
+        "note": "D3a admits a pin that fails an assertion; this one fails to build, so it runs only with the interface named in its prompt, and only on the owner's ruling. Its admission is the prototype's (2026-11-06); `validate` re-runs it before it is offered"
+      },
+      "prompt_check": {
+        "sha256": "606135eb1a72f52ced50fdccc3d6f601424996531adb0d022842f17e5bdb90db",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-793",
+      "pr": 793,
+      "author": "history",
+      "merge": "98f160a8e85f7f690d8f55aa889665205dcf9d85",
+      "pin": "1f0458432f1a290483cd1ea0897150a10137f27a",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-793.md",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-06",
+        "pin": "the hidden tests do not build: they call helpers its tests call (read from the build errors)",
+        "merge": "every run passes",
+        "by": "the prototype of `validate`",
+        "note": "D3a admits a pin that fails an assertion; this one fails to build, so it runs only with the interface named in its prompt, and only on the owner's ruling. Its admission is the prototype's (2026-11-06); `validate` re-runs it before it is offered"
+      },
+      "prompt_check": {
+        "sha256": "0007469c3405de243ecaf467ba7b83fb1d48dc34da95b6605c16a4140518436c",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-798",
+      "pr": 798,
+      "author": "history",
+      "merge": "8e892ac429feefa115a546b88107e64f8085bab2",
+      "pin": "2188ea4aae1b44ee7ab41717e7e3dc849b17eb9b",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-798.md",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-06",
+        "pin": "the hidden tests do not build: they call fn lossy_prefix",
+        "merge": "every run passes",
+        "by": "the prototype of `validate`",
+        "note": "D3a admits a pin that fails an assertion; this one fails to build, so it runs only with the interface named in its prompt, and only on the owner's ruling. Its admission is the prototype's (2026-11-06); `validate` re-runs it before it is offered"
+      },
+      "prompt_check": {
+        "sha256": "615693bccec3965727482200538962807e1e06499a9d90256ff5f2aeda3a250b",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-466",
+      "pr": 466,
+      "author": "history",
+      "merge": "73eadbcad15601aaf9bbec4b95ed31a70fe65005",
+      "pin": "360a486f0e4d9a834344523f629b58fdec4a975a",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-466.md",
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-06",
+        "pin": "the hidden tests do not build: they call pub field RunConfig::features_on",
+        "merge": "every run passes",
+        "by": "the prototype of `validate`",
+        "note": "D3a admits a pin that fails an assertion; this one fails to build, so it runs only with the interface named in its prompt, and only on the owner's ruling. Its admission is the prototype's (2026-11-06); `validate` re-runs it before it is offered"
+      },
+      "prompt_check": {
+        "sha256": "50cef0c712be161ab46652c7fa02c23733205defa73d7cee841f71fe10db90e9",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-471",
+      "pr": 471,
+      "author": "history",
+      "merge": "93239051a186e5e650263d3a89b3b9a9f3929d42",
+      "pin": "2f495af5f27b0d004424026fa0cf3d73d27554cf",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-471.md",
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "pin": "the hidden test does not build: it calls ChatState::sessions_dir",
+        "merge": "every run passes",
+        "note": "kept, as the other interface-named draws were; its prompt is owed, so it is not offered"
+      }
+    }
+  ]
+}
