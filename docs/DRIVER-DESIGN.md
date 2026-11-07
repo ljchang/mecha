@@ -133,10 +133,20 @@ The shape:
   degraded-prefix verdict would look the same, and D2's measurement would
   read the lift of a longer prompt. So at render, driven rules take only
   the room the owner's active rules leave in their domain, in both counts
-  and characters, and the owner's rules are never displaced. A driven rule
-  with no room does not render, and the positive check below then fails its
-  trial loudly rather than reading a zero. When the mark is set, the startup
-  warning asks the union, for each cap.
+  and characters, and the owner's rules are never displaced. **The selection
+  is pinned, because nothing trims at render today** (`rules_carried_with`
+  renders each domain in store order and checks neither cap), so this is a
+  new mechanism and its output must be a stated function. Driven rules are
+  taken in the driven store's own stable order, and the rendered set is the
+  longest prefix of that order that fits both caps after the owner's rules.
+  That set changes only when the owner's rules or the driven store change,
+  and either already changes the prefix, so the cached prefix is not
+  re-paid for any other reason. And the seed-time computation below has a
+  defined input. A driven rule dropped for want of room is **recorded**, the
+  way `RulesCarried::skipped` records an unparseable file, so a non-test
+  driven run never drops a rule dark. In a trial, the positive check then
+  fails loudly rather than reading a zero. When the mark is set, the
+  startup warning asks the union, for each cap.
 - **The mark narrows alone, and adds only with a second factor.** Every
   other reader of `MECHA_SESSION_KIND` treats it as narrowing: it hides a
   session, or (D1b) turns surfaces off. Loading the driven store is the one
@@ -734,7 +744,16 @@ rather than trusting each run to be configured right:
   driven run unless this document names it. A tool added later is then out
   of driven runs by default, failing closed, where a sweep over levers would
   have let it in. **The allowlist is `opts.tools` *plus* "registers no
-  front-end tool"**, because the second does not follow from the first:
+  front-end tool and no subagent"**, because neither follows from the first.
+  `opts.tools` narrows a subagent by its *profile's* tools, never by the
+  subagent's own name, and no `Lever` covers subagents. So an owner subagent
+  whose profile names only allowlisted builtins would register in a driven
+  run as a tool this document does not name. And `build_subagent` resolves
+  the profile's own `provider`, which could be a hosted model answering a
+  subtree on every arm. That is an egress R8 never priced, and a D4
+  confound, because that part of the work would not be the arm's model. A
+  driven run registers no subagent, and records that it did not. The
+  front-end half is that
   `ask_user`, `show_file` and `recall` are inserted after `prepare` and
   consult nothing, and none has a `Lever`. A fresh `mecha run` registers
   none of them, and a driven run refuses `--resume`, which would register
