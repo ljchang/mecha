@@ -273,7 +273,7 @@ fn prepare_pair_inner(
     };
     let pair = PreparedPair {
         protocol: if response_format.is_some() {
-            "outcome-reappraisal-v2"
+            "outcome-reappraisal-v3"
         } else {
             PROTOCOL
         },
@@ -340,8 +340,18 @@ fn diagnostic_request(request: &mut Request, format: ResponseFormat) {
             "properties":{"minutes":{"type":"integer","minimum":0,"maximum":u32::MAX},
             "energy":{"type":"integer","minimum":0,"maximum":u32::MAX},"quality":{"type":"integer","minimum":0,"maximum":u32::MAX},
             "source":{"type":"string","enum":ids},"energy_ok":{"type":"boolean"},"quality_ok":{"type":"boolean"},"feasible":{"type":"boolean"}}});
-        request.response_schema["properties"]["candidate_checks"] = json!({"type":"object","additionalProperties":false,
-            "required":["Nori","Arden","Quill"],"properties":{"Nori":check,"Arden":check,"Quill":check}});
+        // llama-server's grammar follows properties insertion order. The required
+        // array cannot move a property inserted after choice ahead of it.
+        let mut properties = serde_json::Map::new();
+        properties.insert("candidate_checks".into(), json!({"type":"object","additionalProperties":false,
+            "required":["Nori","Arden","Quill"],"properties":{"Nori":check,"Arden":check,"Quill":check}}));
+        properties.extend(
+            request.response_schema["properties"]
+                .as_object()
+                .expect("host-owned response schema properties")
+                .clone(),
+        );
+        request.response_schema["properties"] = Value::Object(properties);
         request.response_schema["required"] =
             json!(["candidate_checks", "choice", "citations", "reason"]);
     }

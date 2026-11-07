@@ -652,7 +652,7 @@ async fn final_arm_canonical_store_replacement_aborts_without_report() {
         .contains("outcome sources invalidated"));
 }
 
-// A v2 Unicode explanation must not inherit v1's 1000-byte limit.
+// A diagnostic Unicode explanation must not inherit v1's 1000-byte limit.
 #[tokio::test]
 async fn diagnostic_accepts_unicode_reason_and_rejects_false_checks() {
     let f = Fixture::new(FixtureState::Baseline).await;
@@ -709,7 +709,7 @@ async fn diagnostic_accepts_unicode_reason_and_rejects_false_checks() {
     .await
     .unwrap();
     let audit = serde_json::to_value(report).unwrap();
-    assert_eq!(audit["protocol"], "outcome-reappraisal-v2");
+    assert_eq!(audit["protocol"], "outcome-reappraisal-v3");
     assert_eq!(audit["response_format"], "feasibility_first");
     assert_eq!(audit["reason_max_chars"], 4000);
     assert_eq!(audit["rows"][0]["decision"]["proposed_choice"], "Arden");
@@ -804,15 +804,16 @@ async fn diagnostic_checks_schema_bounds_and_abstention_use_current_contract() {
             json!(["e1", "e2", "e3", "e4"])
         );
     }
-    assert!(
-        serde_json::to_string(schema)
-            .unwrap()
-            .find("candidate_checks")
-            .unwrap()
-            < serde_json::to_string(schema)
-                .unwrap()
-                .find("choice")
-                .unwrap()
+    let serialized = serde_json::to_string(schema).unwrap();
+    let emitted: Value = serde_json::from_str(&serialized).unwrap();
+    let properties = emitted["properties"].as_object().unwrap();
+    assert_eq!(
+        properties.keys().next().map(String::as_str),
+        Some("candidate_checks")
+    );
+    assert_eq!(
+        properties.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["candidate_checks", "choice", "citations", "reason"]
     );
     let mut value = json!({"choice":"Nori","citations":["e1","e2","e3"],"reason":"valid","candidate_checks":{
         "Nori":{"minutes":4,"energy":2,"quality":8,"source":"e1","energy_ok":true,"quality_ok":true,"feasible":true},

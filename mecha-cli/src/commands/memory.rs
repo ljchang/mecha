@@ -307,7 +307,7 @@ pub struct OutcomeRecallArgs {
     seed: u64,
     #[arg(long)]
     outcome_first: bool,
-    /// Opt into the v2 diagnostic; omission preserves legacy request bytes.
+    /// Opt into the v3 diagnostic; omission preserves legacy request bytes.
     #[arg(long, value_enum)]
     response_format: Option<OutcomeResponseFormat>,
     /// Per-request reasoning cap, within the 8192-token total allowance.
