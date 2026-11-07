@@ -31,7 +31,7 @@ pub struct Contract {
     pub minimum_quality: u32,
 }
 impl Contract {
-    fn state(&self) -> Result<State> {
+    pub(crate) fn state(&self) -> Result<State> {
         ensure!(
             (1..=128).contains(&self.workload.len()) && !self.workload.trim().is_empty(),
             "workload must contain 1..128 bytes of nonblank text"
@@ -239,4 +239,12 @@ impl Prepared {
             request_sha256: self.request_sha256.clone(),
         })
     }
+}
+
+/// Canonical file identity for a read-only reopened check. This does not grant writes.
+pub(crate) fn source_store_path(db: &super::Memory) -> Result<std::path::PathBuf> {
+    Ok(
+        std::path::Path::new(db.conn.path().context("memory store has no file path")?)
+            .canonicalize()?,
+    )
 }

@@ -40,6 +40,8 @@ pub enum Cmd {
     },
     /// Bind, run or inspect one closed host synthetic action; no model calls.
     DurableAct(DurableActArgs),
+    /// Reappraise retained actual evidence under current synthetic contracts; read-only.
+    EvaluateOutcomeRecall(OutcomeRecallArgs),
     /// Bind, run or inspect a bounded model decision over a retained guarded read.
     DurableDecide(DurableDecideArgs),
     /// Explicit synthetic guarded-read lifecycle; no model or live-store discovery.
@@ -272,6 +274,39 @@ pub enum DurableDecideCommand {
 }
 
 #[derive(ClapArgs)]
+pub struct OutcomeRecallArgs {
+    #[arg(long, required = true)]
+    synthetic_input: bool,
+    #[arg(long)]
+    domain: String,
+    #[arg(long, required = true)]
+    scope: Vec<String>,
+    #[arg(long)]
+    action: String,
+    /// Strict inline JSON current contract, not inferred from the historical goal.
+    #[arg(long)]
+    contract: String,
+    #[arg(long)]
+    query: String,
+    #[arg(long)]
+    model: String,
+    #[arg(long, default_value_t = 7)]
+    seed: u64,
+    #[arg(long)]
+    outcome_first: bool,
+    /// Original exported Snapshot JSON; required for inference, reused for every later preparation.
+    #[arg(long, required_unless_present = "prepare_only")]
+    snapshot: Option<String>,
+    /// Emit the exact frozen pair without provider discovery or setup.
+    #[arg(long)]
+    prepare_only: bool,
+    #[arg(long, required_unless_present = "prepare_only")]
+    endpoint: Option<String>,
+    #[arg(long, required_unless_present = "prepare_only")]
+    holds_dir: Option<PathBuf>,
+}
+
+#[derive(ClapArgs)]
 pub struct DurableActArgs {
     #[arg(long, required = true)]
     synthetic_input: bool,
@@ -386,6 +421,7 @@ pub async fn execute(args: Args) -> Result<()> {
             json!({"snapshot":memory.snapshot()?,"fixture_only":true,"durable_action":true,"model_called":false})
         }
         Cmd::DurableAct(action) => execute_durable_act(&args.db, action)?,
+        Cmd::EvaluateOutcomeRecall(input) => execute_outcome_recall(&args.db, input).await?,
         Cmd::DurableDecide(decision) => execute_durable_decide(&args.db, decision).await?,
         Cmd::DurableRead(read) => execute_durable_read(&args.db, read).await?,
         Cmd::ImportSession {
@@ -1080,6 +1116,88 @@ fn parse_reference(value: &str) -> Result<mecha_core::memory::RevisionRef> {
     })
 }
 
+async fn execute_outcome_recall(
+    path: &std::path::Path,
+    input: OutcomeRecallArgs,
+) -> Result<serde_json::Value> {
+    use mecha_core::{
+        memory::{Access, Snapshot},
+        memory_outcome_reappraisal::{self as outcome, Arm},
+    };
+    ensure!(input.synthetic_input, "--synthetic-input is required");
+    ensure!(
+        !input.model.trim().is_empty() && input.model.len() <= 256,
+        "explicit bounded model required"
+    );
+    let db = Memory::open_read_only(path)?;
+    let access = Access {
+        domain: input.domain,
+        scopes: input.scope.into_iter().collect(),
+    };
+    let action = db.durable_action_reopen(&input.action, &access)?;
+    let snapshot: Snapshot = match input.snapshot {
+        Some(text) => serde_json::from_str(&text)?,
+        None => db.snapshot()?,
+    };
+    let query = RecallQuery {
+        text: input.query,
+        known_at: snapshot,
+        account: None,
+        session_id: None,
+        occurred_after: None,
+        occurred_before: None,
+        limit: 100,
+        neighbors: 0,
+        max_bytes: 100000,
+    };
+    let current = serde_json::from_str(&input.contract)?;
+    let pair = outcome::prepare_pair(&db, &action, &current, &query, &access)?;
+    if input.prepare_only {
+        return Ok(serde_json::to_value(pair)?);
+    }
+    let local = LocalMemoryModel::new(
+        input
+            .endpoint
+            .as_deref()
+            .context("explicit --endpoint required")?,
+        &input.model,
+        input.holds_dir.context("explicit --holds-dir required")?,
+        input.seed,
+        true,
+    )?;
+    let order = if input.outcome_first {
+        [Arm::SourceAndOutcome, Arm::SourceOnly]
+    } else {
+        [Arm::SourceOnly, Arm::SourceAndOutcome]
+    };
+    let report = outcome::evaluate_pair(
+        &db,
+        &pair,
+        &access,
+        &input.model,
+        order,
+        |prompt, schema, guard| local.complete_outcome_guarded(prompt, schema, guard),
+    )
+    .await?;
+    let mut value = serde_json::to_value(report)?;
+    value["seed"] = json!(input.seed);
+    value["model_controls"] = json!({"temperature":0.6,"max_tokens":8192,"thinking":false,"max_retries":0,"local_only":true,"structured_output":"llama_json","timeout_seconds":180});
+    Ok(value)
+}
+
+enum MemoryCallGuard {
+    Decision(mecha_core::memory::durable_decision::ModelGuard),
+    Outcome(mecha_core::memory_outcome_reappraisal::OutcomeGuard),
+}
+impl MemoryCallGuard {
+    fn check(self) -> Result<()> {
+        match self {
+            Self::Decision(g) => g.check(),
+            Self::Outcome(g) => g.check(),
+        }
+    }
+}
+
 /// Shared local-only transport. No global configuration, source discovery, tools,
 /// retries or model switching; existing evaluation protocols retain their inputs.
 struct LocalMemoryModel {
@@ -1162,7 +1280,18 @@ impl LocalMemoryModel {
         guard: mecha_core::memory::durable_decision::ModelGuard,
     ) -> Result<mecha_core::memory::model_evaluation::ModelReply> {
         Ok(self
-            .complete_with_guard(prompt, schema, None, Some(guard))
+            .complete_with_guard(prompt, schema, None, Some(MemoryCallGuard::Decision(guard)))
+            .await?
+            .0)
+    }
+    async fn complete_outcome_guarded(
+        &self,
+        prompt: String,
+        schema: Option<serde_json::Value>,
+        guard: mecha_core::memory_outcome_reappraisal::OutcomeGuard,
+    ) -> Result<mecha_core::memory::model_evaluation::ModelReply> {
+        Ok(self
+            .complete_with_guard(prompt, schema, None, Some(MemoryCallGuard::Outcome(guard)))
             .await?
             .0)
     }
@@ -1171,7 +1300,7 @@ impl LocalMemoryModel {
         prompt: String,
         schema: Option<serde_json::Value>,
         thinking_budget: Option<u32>,
-        guard: Option<mecha_core::memory::durable_decision::ModelGuard>,
+        guard: Option<MemoryCallGuard>,
     ) -> Result<(mecha_core::memory::model_evaluation::ModelReply, usize)> {
         use mecha_core::{
             memory::model_evaluation::ModelReply,
@@ -1225,6 +1354,65 @@ impl LocalMemoryModel {
 #[cfg(test)]
 mod durable_cli_tests {
     use clap::Parser;
+
+    #[test]
+    fn outcome_recall_prepare_requires_explicit_synthetic_access_and_model() {
+        let args = [
+            "mecha",
+            "memory",
+            "--experimental",
+            "--db",
+            "/tmp/test.memory-prototype.sqlite",
+            "evaluate-outcome-recall",
+            "--synthetic-input",
+            "--domain",
+            "synthetic",
+            "--scope",
+            "fixture",
+            "--action",
+            "action-id",
+            "--contract",
+            r#"{"workload":"durable-action-fixture-v1","objective":"minimize_minutes","energy_budget":4,"minimum_quality":7}"#,
+            "--query",
+            "Nori",
+            "--model",
+            "fixture-model",
+            "--prepare-only",
+        ];
+        assert!(crate::Cli::try_parse_from(args).is_ok());
+        for omitted in [
+            "--synthetic-input",
+            "--domain",
+            "--scope",
+            "--action",
+            "--contract",
+            "--query",
+            "--model",
+        ] {
+            let mut incomplete = Vec::new();
+            let mut i = 0;
+            while i < args.len() {
+                if args[i] == omitted {
+                    i += if omitted == "--synthetic-input" { 1 } else { 2 };
+                } else {
+                    incomplete.push(args[i]);
+                    i += 1;
+                }
+            }
+            assert!(crate::Cli::try_parse_from(incomplete).is_err(), "{omitted}");
+        }
+        let mut runtime = args[..args.len() - 1].to_vec();
+        assert!(crate::Cli::try_parse_from(&runtime).is_err());
+        runtime.extend([
+            "--endpoint",
+            "http://127.0.0.1:8080",
+            "--holds-dir",
+            "/tmp/holds",
+        ]);
+        assert!(crate::Cli::try_parse_from(&runtime).is_err());
+        runtime.extend(["--snapshot", r#"{"instance":"fixture","sequence":1}"#]);
+        assert!(crate::Cli::try_parse_from(runtime).is_ok());
+    }
 
     #[test]
     fn durable_read_requires_explicit_authority_and_source() {

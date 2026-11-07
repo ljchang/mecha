@@ -130,6 +130,63 @@ fn verified_spec(db: &Memory, receipt: &ActionReceipt, access: &Access) -> Resul
     Ok(sealed)
 }
 
+/// A validated retained actual, never reconstructed from arbitrary recalled text.
+pub(crate) struct RetainedOutcome {
+    pub original: Value,
+    pub choice: String,
+    pub measurement: Option<(u32, u32, u32)>,
+}
+/// Authenticate an existing finalized action and its complete model/read lineage.
+/// Numeric values come only from its retained observation, never fixture truth.
+pub(crate) fn retained_outcome(
+    db: &Memory,
+    receipt: &ActionReceipt,
+    access: &Access,
+) -> Result<RetainedOutcome> {
+    let status = db.durable_action_status(receipt, access)?;
+    ensure!(
+        status.phase == ActionPhase::Finalized && !status.cancelled,
+        "uncancelled finalized action required"
+    );
+    let sealed = verified_spec(db, receipt, access)?;
+    let original = db
+        .durable_action_observation(receipt, access)?
+        .context("missing retained action observation")?;
+    ensure!(
+        original["kind"] == "host_action_observation"
+            && original["action_id"] == receipt.id()
+            && original["cancelled_action"] == false,
+        "invalid host action observation envelope"
+    );
+    let observation: Observation = serde_json::from_value(original["observation"].clone())?;
+    ensure!(
+        observation.kind == "host_observed_synthetic_action_v1"
+            && observation.fixture == sealed.spec.fixture
+            && observation.state == sealed.spec.state
+            && observation.choice == sealed.choice
+            && observation.expected_from_evidence == sealed.expected_from_evidence,
+        "observation differs from sealed action"
+    );
+    let measurement = match (&sealed.spec.state, &observation.outcome) {
+        (
+            FixtureState::Baseline,
+            Outcome::Observed {
+                observed_minutes,
+                energy,
+                quality,
+            },
+        ) => Some((*observed_minutes, *energy, *quality)),
+        (FixtureState::Refused, Outcome::Refused { .. })
+        | (FixtureState::Unknown, Outcome::Unknown { .. }) => None,
+        _ => anyhow::bail!("outcome differs from sealed fixture state"),
+    };
+    Ok(RetainedOutcome {
+        original,
+        choice: observation.choice,
+        measurement,
+    })
+}
+
 /// A live, one-use reservation. It cannot be cloned, serialized, or recovered
 /// from an indeterminate operational row after process loss.
 pub struct PendingAction {

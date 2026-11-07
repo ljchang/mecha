@@ -206,3 +206,61 @@ fn spec_rejects_executable_or_model_chosen_fields() {
     )
     .is_err());
 }
+
+#[tokio::test]
+async fn read_only_pair_authenticates_actual_and_preserves_source_bytes() {
+    use mecha_core::{
+        memory::RecallQuery,
+        memory_outcome_reappraisal::{self as outcome, Arm},
+    };
+    let mut f = Fixture::new().await;
+    let action = f.bind(FixtureState::Baseline);
+    runtime::run(&mut f.db, &action, &f.access).unwrap();
+    let path = f.root.join("trial.memory-prototype.sqlite");
+    let before = std::fs::read(&path).unwrap();
+    let db = Memory::open_read_only(&path).unwrap();
+    let query = RecallQuery {
+        text: "Nori".into(),
+        known_at: db.snapshot().unwrap(),
+        account: None,
+        session_id: None,
+        occurred_after: None,
+        occurred_before: None,
+        limit: 100,
+        neighbors: 0,
+        max_bytes: 100000,
+    };
+    let pair = outcome::prepare_pair(
+        &db,
+        &action,
+        &Contract {
+            workload: WORKLOAD.into(),
+            objective: Objective::MinimizeMinutes,
+            energy_budget: 4,
+            minimum_quality: 7,
+        },
+        &query,
+        &f.access,
+    )
+    .unwrap();
+    let source = pair.request(Arm::SourceOnly);
+    assert_eq!(source.passages.len(), 3);
+    assert!(source
+        .passages
+        .iter()
+        .all(|p| p.text.contains("host_authored_synthetic_measurements_v1")));
+    let mut calls = 0;
+    let report=outcome::evaluate_pair(&db,&pair,&f.access,"scripted-fixture",[Arm::SourceOnly,Arm::SourceAndOutcome],|_,_,guard|{
+        calls+=1;let count=calls;
+        async move { guard.check()?;Ok(ModelReply{text:json!({"choice":if count==1{"Nori"}else{"Arden"},"citations":if count==1{vec!["e1","e2","e3"]}else{vec!["e1","e2","e3","e4"]},"reason":"Compare only the current supplied evidence"}).to_string(),model:"scripted-fixture".into(),input_tokens:None,output_tokens:None,error:None}) }
+    }).await.unwrap();
+    assert_eq!(calls, 2);
+    let value = serde_json::to_value(report).unwrap();
+    assert_eq!(value["rows"][0]["decision"]["proposed_choice"], "Nori");
+    assert_eq!(value["rows"][1]["decision"]["proposed_choice"], "Arden");
+    assert_eq!(value["rows"][1]["decision"]["disposition"], "recommend");
+    assert_eq!(value["executed"], false);
+    assert_eq!(value["private_data"], true);
+    assert_eq!(value["untrusted_input"], true);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}

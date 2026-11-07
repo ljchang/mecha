@@ -72,12 +72,7 @@ pub(crate) fn assess_observations<'a>(
         quality: u32,
         kind: String,
     }
-    ensure!(
-        matches!(state.goal.as_str(), "minimize energy" | "minimize minutes"),
-        "unknown objective"
-    );
-    let mut seen = BTreeSet::new();
-    let mut candidates = Vec::new();
+    let mut measurements = Vec::new();
     for (citation, text) in observations {
         let UniqueValue(value) = serde_json::from_str(text)?;
         let obs: Observation = serde_json::from_value(value)?;
@@ -86,14 +81,51 @@ pub(crate) fn assess_observations<'a>(
             "not a same-workload fixture observation"
         );
         let m = obs.outcome;
-        ensure!(
-            METHODS.contains(&m.choice.as_str()) && seen.insert(m.choice.clone()),
-            "unknown or duplicate method observation"
-        );
-        candidates.push(Candidate {
+        measurements.push(EffectiveMeasurement {
             method: m.choice,
             citation: citation.to_owned(),
             minutes: m.observed_minutes,
+            energy: m.energy,
+            quality: m.quality,
+        });
+    }
+    assess_measurements(state, request, choice, measurements)
+}
+
+/// One effective value and its original provenance per method. The caller owns
+/// evidence-kind/precedence validation; this helper never classifies text as fact.
+pub(crate) struct EffectiveMeasurement {
+    pub method: String,
+    pub citation: String,
+    pub minutes: u32,
+    pub energy: u32,
+    pub quality: u32,
+}
+pub(crate) fn assess_measurements(
+    state: &State,
+    request: &Request,
+    choice: &Choice,
+    measurements: impl IntoIterator<Item = EffectiveMeasurement>,
+) -> Result<Assessment> {
+    ensure!(
+        matches!(state.goal.as_str(), "minimize energy" | "minimize minutes"),
+        "unknown objective"
+    );
+    let mut seen = BTreeSet::new();
+    let mut candidates = Vec::new();
+    for m in measurements {
+        ensure!(
+            METHODS.contains(&m.method.as_str()) && seen.insert(m.method.clone()),
+            "unknown or duplicate method observation"
+        );
+        ensure!(
+            request.passages.iter().any(|p| p.id == m.citation),
+            "measurement provenance is not visible"
+        );
+        candidates.push(Candidate {
+            method: m.method,
+            citation: m.citation,
+            minutes: m.minutes,
             energy: m.energy,
             quality: m.quality,
             feasible: m.energy <= state.energy_budget && m.quality >= state.minimum_quality,
@@ -173,7 +205,7 @@ where
         millis: start.elapsed().as_millis(),
     }
 }
-pub(super) fn reply<'a>(call: &'a Call, model: &str) -> Result<&'a str> {
+pub(crate) fn reply<'a>(call: &'a Call, model: &str) -> Result<&'a str> {
     ensure!(call.error.is_none(), "inference failed: {:?}", call.error);
     let reply = call.reply.as_ref().context("missing reply")?;
     ensure!(
