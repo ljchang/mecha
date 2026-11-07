@@ -3660,11 +3660,6 @@ pub fn resolve_thread_id<'a>(
     }
 }
 
-/// A stable key for one correction, for the mining ledger.
-///
-/// Thread, field and timestamp. Per *correction* rather than per thread,
-/// because a thread corrected twice is two lessons and the second is often the
-/// more interesting one — it says the first correction was not enough.
 /// Whether `mecha mail reflect` may mine this correction into a learned
 /// triage rule. A description rule's wrong match (`rule`) is not a triage
 /// lesson: §10 of MAIL-RULES-DESIGN.md sends it to the correction examples
@@ -3674,6 +3669,11 @@ pub fn reflectable(c: &Correction) -> bool {
     c.field != "rule"
 }
 
+/// A stable key for one correction, for the mining ledger.
+///
+/// Thread, field and timestamp. Per *correction* rather than per thread,
+/// because a thread corrected twice is two lessons and the second is often the
+/// more interesting one — it says the first correction was not enough.
 pub fn correction_key(account: &str, thread_id: &str, c: &Correction) -> String {
     format!("{account}/{thread_id}#{}@{}", c.field, c.at)
 }
@@ -3925,13 +3925,6 @@ fn classifier_prompt_asking(
     )
 }
 
-/// Pull the JSON object out of a reply and drop anything outside the closed
-/// vocabularies.
-///
-/// A tag or a request type the model invented is **discarded, not stored**.
-/// The vocabularies are the point: a tag set that grows by generation stops
-/// being a filter within a month, and a `request_type` nobody wrote a manifest
-/// for would route a thread at a door that cannot open.
 /// The reply's JSON object, by the same bounds [`parse_verdict`] uses.
 fn json_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
@@ -3939,6 +3932,13 @@ fn json_object(text: &str) -> Option<&str> {
     (end > start).then(|| &text[start..=end])
 }
 
+/// Pull the JSON object out of a reply and drop anything outside the closed
+/// vocabularies.
+///
+/// A tag or a request type the model invented is **discarded, not stored**.
+/// The vocabularies are the point: a tag set that grows by generation stops
+/// being a filter within a month, and a `request_type` nobody wrote a manifest
+/// for would route a thread at a door that cannot open.
 fn parse_verdict(text: &str) -> Result<Verdict> {
     let start = text
         .find('{')

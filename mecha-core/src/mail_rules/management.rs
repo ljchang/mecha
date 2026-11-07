@@ -161,7 +161,7 @@ pub fn rule_views(store: &RuleStore) -> Result<Vec<RuleView>> {
     for view in &mut views {
         if omitted.contains(&view.name) {
             view.holds.push(format!(
-                "held: list cap ({} entries); lower or disable another rule",
+                "held: list cap ({} entries); lower or turn off another description rule",
                 super::describe::LIST_CAP
             ));
         }

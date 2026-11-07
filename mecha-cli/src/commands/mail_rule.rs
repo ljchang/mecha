@@ -381,7 +381,11 @@ async fn run_inner(cmd: Cmd) -> Result<()> {
             // here after the ledger row landed is repaired by running again.
             let taught = description_correction(&store, &row_id)?;
             if json {
-                print_json(&report)?;
+                // `taught`: whether this call recorded the correction for the
+                // classifier (false for a header row, or one already recorded).
+                let mut value = serde_json::to_value(&report)?;
+                value["taught"] = serde_json::json!(taught);
+                print_json(&value)?;
             } else {
                 println!("{}", report.message);
                 if taught {

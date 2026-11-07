@@ -1259,6 +1259,11 @@ async fn classify(
 
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
+    // Model calls the description rules added, reported apart so neither
+    // `prefiltered` ("disposed without a model") nor `escalated` (triage's own
+    // second pass) is made false by them.
+    let mut rules_only = 0u32;
+    let mut rules_body = 0u32;
     // Every failure is written the moment it happens, counted against its
     // thread (`fail_now`) — a sweep that dies late (an error, the unit's
     // start timeout) must not leave a failed thread with no `failed` record,
@@ -1368,8 +1373,17 @@ async fn classify(
                     full_body,
                 )
                 .await;
+                rules_only += 1;
                 match asked {
-                    Ok(rules) => rec.rules = Some(rules),
+                    Ok(rules) => {
+                        if !full_body
+                            && rules.input
+                                == mecha_core::mail_triage::rule_frame::RuleInput::FullBody
+                        {
+                            rules_body += 1;
+                        }
+                        rec.rules = Some(rules)
+                    }
                     Err(e) => eprintln!(
                         "      (description rules not read for {}: {e:#})",
                         thread.thread_id
@@ -1384,7 +1398,16 @@ async fn classify(
             } else {
                 prefiltered += 1;
                 if global.verbose {
-                    println!("  · {} — {} (no model)", thread.subject, rule.as_str());
+                    println!(
+                        "  · {} — {} ({})",
+                        thread.subject,
+                        rule.as_str(),
+                        if rec.rules.is_some() {
+                            "no model for triage; read for description rules"
+                        } else {
+                            "no model"
+                        }
+                    );
                 }
             }
             continue;
@@ -1443,6 +1466,7 @@ async fn classify(
                                 reading = second;
                                 rule_input =
                                     mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
+                                rules_body += 1;
                             }
                             Err(e) => eprintln!(
                                 "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
@@ -1686,9 +1710,19 @@ async fn classify(
     // nobody can grade.
     println!(
         "\n{ok} classified ({escalated} read in full on a second pass{}), \
-         {prefiltered} disposed without a model, {failed} failed",
+         {prefiltered} disposed without a model{}, {failed} failed{}",
         if requeued_ok > 0 {
             format!(", {requeued_ok} retried whole from the store")
+        } else {
+            String::new()
+        },
+        if rules_only > 0 {
+            format!(" for triage ({rules_only} of them read by the model for description rules)")
+        } else {
+            String::new()
+        },
+        if rules_body > 0 {
+            format!("; {rules_body} read in full for description rules")
         } else {
             String::new()
         }

@@ -792,9 +792,12 @@ fn mail_rule_p3_wrong_match_cli_records_correction_and_teaches_only_from_descrip
     drow.closes = false;
     drow.matched_because = r#"{"quote":"your booking"}"#.into();
     store.append_ledger(&drow).unwrap();
-    for _ in 0..2 {
-        success(&f.run(&["wrong-match", "--", &drow.id]));
-    }
+    let first = f.run(&["wrong-match", "--json", "--", &drow.id]);
+    success(&first);
+    assert_eq!(json_output(&first)["taught"], true);
+    let again = f.run(&["wrong-match", "--json", "--", &drow.id]);
+    success(&again);
+    assert_eq!(json_output(&again)["taught"], false);
     let corrections = triage.get("campus", "thread-b").unwrap().corrections;
     assert_eq!(corrections.len(), 1, "{corrections:?}");
     assert_eq!(

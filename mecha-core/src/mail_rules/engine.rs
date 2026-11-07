@@ -1441,10 +1441,10 @@ pub fn list_cap(
         .filter(|r| r.definition.is_description())
         .map(|r| {
             let ms = &modes[&r.name];
-            let shadow = ms.values().any(|m| m.effective == Mode::Shadow);
-            let active = ms
-                .values()
-                .any(|m| m.effective.rank() >= Mode::Propose.rank());
+            // The frame's own reading of which lists a rule is in, so the cap
+            // never charges an entry the frame would not render (an active
+            // mode with unknown activation is neither asked nor counted).
+            let (active, shadow) = super::describe::lists(ms);
             (
                 ms.values()
                     .map(|m| m.effective.rank())
@@ -1817,7 +1817,10 @@ pub async fn apply(
     run.report.list_cap.sort();
     run.report.list_cap.dedup();
     for name in &run.report.list_cap {
-        run.report.notices.push(format!("{name}: held: list cap (12 entries); reduce description list membership through an owner mode change"));
+        run.report.notices.push(format!(
+            "{name}: held: list cap ({} entries); lower or turn off another description rule",
+            super::describe::LIST_CAP
+        ));
     }
     run.report.notices.sort();
     run.report.notices.dedup();
