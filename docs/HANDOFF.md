@@ -57,7 +57,7 @@ actual transmitted schema order and unchanged fixture stores. Zero real inferenc
 The first all-feature attempt hit an unchanged mail-hook ETXTBSY launch error;
 its exact retry and the full unchanged rerun passed. Both logs are retained.
 
-Installed isolated Spark artifact:
+Initial isolated Spark artifact (review build below supersedes it):
 `~/.local/share/mecha-prototypes/memory-provenance-611bbc048/bin/mecha`, SHA256
 `e39b1beb17514d0b996c835e1f587d5d547008ea7e008689a6f0feb23d63cef5`.
 Build/install hashes, version and actual CLI behavior verified. Results:
@@ -76,6 +76,23 @@ at `7a3bfcd11` passed **81 tests, zero failed/skipped**, on Spark with a fresh
 fixture and the qualified `611bbc048` artifact; no real model inference. Scoped
 re-review found both this gap and the corrected architecture/main inference comments
 addressed, with no major/medium findings. Portable developer skips remain explicit.
+
+Further automated review identified an extraction reasoning-budget gap and missing
+direct tests for the strict loopback predicate. At `0c96be336`, `extract-plan`
+accepts explicit budgets 1–4096 within its unchanged 8192-token allowance. Its
+new parser test failed on the old 4097 acceptance. Eight direct loopback tests
+passed; weakening numeric-host and URL-envelope checks produced two and five
+failures respectively, and both mutations were restored. Independent scoped
+re-review found no remaining issue. Spark passed **6,302 workspace tests /0 failed
+/25 ignored**, **1,612 feature-enabled CLI tests /0 /1**, formatting, strict
+all-target/all-feature Clippy, release build and the **81-test fresh-fixture
+qualification with zero skips**. Thirteen local socket tests had been denied by
+the local sandbox; all passed in the Spark workspace suite. No real inference.
+The current isolated release is
+`~/.local/share/mecha-prototypes/memory-provenance-0c96be336/bin/mecha`, SHA256
+`37613b6ab0a5099fe99c1ffca55fea899696849da5de71a778ef16e1c92075d2`.
+Build/install hashes and CLI identity match; logs are retained under
+`results/memory-provenance-20261107/review-fixes/`.
 
 **Next:** freeze broader multi-seed cases to test whether the bounded-reasoning
 benefit holds under the new citation contract at acceptable cost. Score raw model
@@ -100,8 +117,8 @@ production deployment claim was requalified by this memory-only increment.
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#comparison-provenance-is-separate-from-model-citations
 Research v0.21 published 2026-11-07, source
-`5838b611c9db882baf487c782305acc623983086`, deployment
-`appgdep_6aeed04b0354819194c45c8139c5db04` succeeded. All 62 prior IDs retained
+`cddd3b7d9d9574aeb919bf2a32dcfe9f82698a17`, deployment
+`appgdep_6aeed77eeba48191b12dee6cba27f858` succeeded. All 62 prior IDs retained
 (63 current); internal links, 21 revision rows, inline scripts, unchanged SVG and
 dist mirror checked. Browser preview verified the new comparison table and ledger;
 native publication confirmed the matching source deployment. Shared production

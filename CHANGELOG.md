@@ -478,6 +478,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Experimental `extract-plan --thinking-budget` now accepts 1–4096, reserving
+  answer capacity within the 8192-token total allowance. Larger budgets are
+  rejected before inference, matching outcome recall's existing cap.
+
 - **Mail-rule review queues and timer diagnostics.** A broken or deleted rule
   definition no longer hides other lapses or proposal counts. Doctor skips
   unavailable systemd queries while still reporting missing or failed units.

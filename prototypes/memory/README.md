@@ -772,7 +772,9 @@ being faithful. No successful diagnostic may authorize an action.
 `direct_judgment`; the normal mode keeps V2 extraction in `extraction`. Optional
 `--thinking` requests reasoning; default remains off. Optional
 `--thinking-budget 512` bounds that request through the existing provider field
-and requires `--thinking`; it does not change server settings. Output records returned
+and requires `--thinking`. The accepted range is 1–4096, reserving at least half
+of the 8192-token total allowance for the answer; it does not change server settings.
+Output records returned
 reasoning character count only. This baseline answers structural guard coverage,
 not immediate action permission, and never opens the `--db` placeholder.
 

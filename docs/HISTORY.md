@@ -67,6 +67,23 @@ fixture and the qualified `611bbc048` artifact; no real model inference. Scoped
 re-review found both this gap and the corrected architecture/main inference comments
 addressed, with no major/medium findings. Portable developer skips remain explicit.
 
+Further automated review identified an extraction reasoning-budget gap and missing
+direct tests for the strict loopback predicate. At `0c96be336`, `extract-plan`
+accepts explicit budgets 1–4096 within its unchanged 8192-token allowance. Its
+new parser test failed on the old 4097 acceptance. Eight direct loopback tests
+passed; weakening numeric-host and URL-envelope checks produced two and five
+failures respectively, and both mutations were restored. Independent scoped
+re-review found no remaining issue. Spark passed **6,302 workspace tests /0 failed
+/25 ignored**, **1,612 feature-enabled CLI tests /0 /1**, formatting, strict
+all-target/all-feature Clippy, release build and the **81-test fresh-fixture
+qualification with zero skips**. Thirteen local socket tests had been denied by
+the local sandbox; all passed in the Spark workspace suite. No real inference.
+The current isolated release is
+`~/.local/share/mecha-prototypes/memory-provenance-0c96be336/bin/mecha`, SHA256
+`37613b6ab0a5099fe99c1ffca55fea899696849da5de71a778ef16e1c92075d2`.
+Build/install hashes and CLI identity match; logs are retained under
+`results/memory-provenance-20261107/review-fixes/`.
+
 The first all-feature run failed in the unchanged mail-hook timeout test while
 launching its temporary executable with ETXTBSY (Text file busy). The exact isolated
 test and the full unchanged suite then passed. Both logs remain in the results;
