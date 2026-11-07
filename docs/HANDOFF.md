@@ -68,8 +68,8 @@ Existing v1–v5 experiments are not migrated. The authored `memory_bridge` exam
 uses ordinary file/todo tools and a separate process for a changed-criterion
 `GoalMemory` task. Its outputs establish integration, not real-model benefit.
 See `prototypes/memory/README.md` for the explicit synthetic command and HISTORY
-for verification results. Code `12e2432c4` passed Spark workspace build, fmt,
-strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6646
+for verification results. Code `883bd2c72` passed Spark workspace build, fmt,
+strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6649
 memory-enabled tests (0 failed / 29 ignored), and the connected example.
 Production chat does not automatically capture runs.
 
@@ -82,6 +82,17 @@ parallel attempts failed in unrelated interpreter/mail fixtures; isolated
 reproductions passed. Those failures remain retained and unexplained, not fixed
 by this memory change. Normal GitHub CI is separate evidence.
 The full gate and current pushed/reviewed head are recorded on draft PR #846.
+
+**Source-check optimization:** exact external-binding verdicts are shared within
+selection, then rechecked through an independent final phase. A 16-passage fixture
+reduced underlying guard calls from 17/34/67/133 to 1/2/2/2 for
+read/search/recall/context while retaining the complete 17-record context.
+Checks are not retained across public operations; withdrawal between phases and
+all three binding-key components have regressions. Focused tests and independent
+source review passed. Code `883bd2c72` passed full Spark workspace build, fmt,
+strict all-feature Clippy, serial default 6302/0/25 and memory-enabled 6649/0/29
+(passed/failed/ignored), plus the retained two-artifact connected demonstration.
+The standalone memory suite passed 221 unit and four integration tests.
 
 **Next MVP qualification:** run this connected workflow with real models on a
 fresh frozen natural-language task set, with independently checked outcomes and
@@ -115,19 +126,22 @@ host-confirmed-reference wording is broader than its enforcement on the plain
 (non-memory) goal-context path; the bridge duplicates the untrusted wrapper
 literal from `jobs::render`; and CLI memory setup duplicates a looser loopback
 check before the stricter provider check. The standalone module dependency
-boundary also deserves a short usage note. These do not expand authority in the
+boundary also deserves a short usage note. The older explicit JSONL importer
+relies on the operator's synthetic-input acknowledgement rather than requiring a
+native Test session marker; changing that contract and its legacy fixtures is a
+separate minor follow-up. These do not expand authority in the
 reviewed paths; they remain cleanup items, separate from the code-program
 provenance gap corrected by admission and historical-binding refusal in
 `12e2432c4`; nested program capture remains unsupported.
 
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
-Research v0.26 published 2026-11-07, source
-`a833477763e3aa2c5eaea1b972ba9167ae7c66cd`, deployment
-`appgdep_6aef498dd5f0819188ea53f101440ab7` succeeded. All 65 prior IDs retained;
-internal links, scripts, unchanged SVG, dist mirrors and current version markers
-checked. The published browser showed v0.26 and the corrected code's exact
-qualification counts and serial-scheduling limitation.
+Research v0.27 published 2026-11-07, source
+`98f6df400c4ab829b661fb6ed0521eb220161499`, deployment
+`appgdep_6aef54a7ea648191a727a704dc366286` succeeded. All 65 prior IDs retained;
+internal links, scripts, unchanged SVG, dist mirrors and version markers checked.
+Native deployment verified publication. Browser verification of this text-only
+update was unavailable; the preceding v0.26 browser check remains separate evidence.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

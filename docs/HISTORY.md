@@ -14,6 +14,26 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Source authorization work per retrieval (2026-11-07)
+
+PR #846 review found repeated external source reads and hashes for passages that
+share one binding. The unchanged implementation measured 17/34/67/133 underlying
+checks for read/search/recall/context on a synthetic 16-passage capture. Regression
+fixtures preserve all 17 context records and require 1/2/2/2 checks. `SourceChecks`
+shares exact authority/locator/revision verdicts within selection and separately
+within final validation; it never caches database access checks or crosses public
+operations. A transaction-wide cache was rejected because SQLite does not freeze
+external source files. These are call counts, not a measured latency speedup.
+
+At code `883bd2c72`, standalone memory qualification passed 221 unit tests and
+four integration tests. Spark passed workspace/all-target build, fmt, strict
+all-target/all-feature Clippy, 6302 default tests (0 failed / 25 ignored) and 6649
+memory-enabled tests (0 failed / 29 ignored), both full suites with serial test
+scheduling. The retained connected example passed both independent artifact
+checks. Scoped review found no major/medium issue; the final automated review is
+recorded on PR #846. No new real-model calls or production changes.
+
+
 **2026-11-07 — ordinary task/appraisal/recall bridge (prototype branch).**
 `memory_experience_bridge::LocalAuthority` freezes an explicit synthetic Test
 session's criterion and exact JSON-row checker before ordinary `Agent::run_in`

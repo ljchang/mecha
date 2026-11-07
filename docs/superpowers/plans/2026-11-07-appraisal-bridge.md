@@ -69,6 +69,9 @@
 - [x] Refuse native code/program captures and prior bindings, before evidence assembly; scoped rereview and focused tests pass at `12e2432c4`.
 - [x] Finish exact-fix full Spark build/fmt/Clippy and serial default/feature suites.
 - [x] Finish retained demonstration with both independent artifact checks.
+- [x] Bound repeated source checks with separate eligibility/final phase caches; exact-key, withdrawal, full-closure and selected-mention regressions pass.
+- [x] Qualify source-check correction on Spark (code `883bd2c72`, full suites and retained example).
+Final automated-review status is tracked on PR #846 after publication.
 
 Publication gate: scan the final commit range against the owner corpus before
 push; the PR head/checks record publication and the final automated review.
