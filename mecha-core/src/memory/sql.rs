@@ -15,11 +15,14 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        app == 1296912466 && matches!(version, 1..=6),
+        app == 1296912466 && matches!(version, 1..=7),
         "not a supported Mecha memory prototype"
     );
-    if version == 6 {
+    if version >= 6 {
         host_capture::validate_schema(conn)?;
+        if version == 7 {
+            interpretation::validate_schema(conn)?;
+        }
     }
     Ok(())
 }
@@ -315,6 +318,7 @@ pub(super) fn append(
         Record::Entity { .. } => "entity",
         Record::Relation(_) => "relation",
         Record::Concept(_) => "concept",
+        Record::Interpretation(_) => "interpretation",
     };
     let reference = RevisionRef {
         object: previous
@@ -359,6 +363,7 @@ pub(super) fn append(
         Record::Entity { label } => label,
         Record::Relation(r) => &r.text,
         Record::Concept(c) => &c.principle,
+        Record::Interpretation(_) => "",
     };
     let transcript_text = match record {
         Record::Evidence(Capture {

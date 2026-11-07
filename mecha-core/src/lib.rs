@@ -108,6 +108,7 @@ pub mod imagegen;
 pub mod imagelib;
 pub mod install;
 pub mod instrument;
+mod interpretation;
 pub mod interpreter;
 pub mod jobs;
 pub mod launchd;
@@ -138,6 +139,12 @@ pub mod memory_experience_bridge;
 pub mod memory_outcome_reappraisal;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_runtime;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_situated_appraisal;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_situated_needs;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_situated_workflow;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_trial_provider;
 pub mod message;

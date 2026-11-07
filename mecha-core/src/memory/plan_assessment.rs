@@ -181,6 +181,13 @@ impl Memory {
     ) -> Result<AssessmentRequest> {
         validate_candidates(candidates)?;
         self.recheck_assessment_sources(&packet, access)?;
+        ensure!(
+            !packet
+                .records
+                .iter()
+                .any(|h| matches!(h.record, Record::Interpretation(_))),
+            "legacy assessment refuses interpretations"
+        );
         let sources = visible_sources(&packet);
         let (visible, passages) = passage_sources(&sources)?;
         ensure!(!passages.is_empty(), "no visible assessment passages");
@@ -601,7 +608,7 @@ fn visible_sources(packet: &ContextPacket) -> Vec<VisibleSource> {
                     text: r.text.clone(),
                 }],
             ),
-            Record::Entity { .. } => continue,
+            Record::Entity { .. } | Record::Interpretation(_) => continue,
         };
         let metadata = match &hit.record {
             Record::Evidence(e) => {
@@ -611,7 +618,7 @@ fn visible_sources(packet: &ContextPacket) -> Vec<VisibleSource> {
                 json!({"status":c.status,"support":c.support,"counterexamples":c.counterexamples,"consulted":c.consulted})
             }
             Record::Relation(r) => json!({"valid":r.valid,"possible_time":hit.possible_time}),
-            Record::Entity { .. } => json!({}),
+            Record::Entity { .. } | Record::Interpretation(_) => json!({}),
         };
         sources.push(VisibleSource {
             id: hit.reference.revision.clone(),

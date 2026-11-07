@@ -2,7 +2,16 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
-**Implementation addendum, 2026-11-07:** §31 A+B now have an explicit synthetic
+**Situated implementation addendum, 2026-11-07:** §31.7 is implemented in a
+new explicit v7 synthetic store with shared interpretation generation, exact
+source-linked hypotheses, host-only needs assessment and current/historical
+retrieval. Authored ordinary-agent integration passes; final qualification and
+the equal-source model comparison are recorded separately in HISTORY. Automatic
+context orchestration, production capture, useful concept learning and rumination
+remain open. See the [situated plan](superpowers/plans/2026-11-07-situated-interpretation.md)
+and the runnable command in `prototypes/memory/README.md`.
+
+**Earlier implementation addendum, 2026-11-07:** §31 A+B now have an explicit synthetic
 host-capture adapter and an authored cross-process task demonstration. V6 stores
 bounded observations with current source guards; full existing appraisal and
 sensor context remain host-only. See HISTORY for qualification and limits, and
@@ -2733,3 +2742,112 @@ choose a replacement on quality/coverage/cost rather than keeping a third writer
 No deletion is justified merely by an old comment, an unused in-tree wrapper or a
 large file. The next implementation should reduce duplicated orchestration while
 preserving distinct evidence, interpretation, evaluation and permission contracts.
+
+### 31.7 Situated interpretation implementation contract
+
+2026-11-07. Implementation design for the owner's request to finish the situated
+appraisal functionality. This is an opt-in synthetic milestone, not production
+activation or proof of general semantic learning. Implement one captured episode,
+current confirmed goal, and eligible previous evidence producing a durable,
+context-bound interpretation that ordinary planning can consult. Reinterpret the
+same episode under a changed goal without changing its original observation.
+The two previously identified capture limitations remain independent repairs;
+they do not block this bounded workflow.
+
+**One shared interpretation engine.** Extract the existing distill reply parser
+and response-envelope handling into core `interpretation.rs`. Keep raw claim
+pointers as strings until the legacy or v2 adapter resolves them. Share ordered
+claim retention and support-index remapping with `TextAppraisal::seal`, preserving
+its existing bounds and refusal precedence. Keep the graph frame, episode body,
+follow-up request prefix, one-historical-appraisal-per-session store, and all
+existing clean-reader consumers unchanged. The v2 producer makes one independently
+budgeted tool-free call, never a graph extraction prerequisite or a third nightly
+writer. No new dependencies, service, config switch, or executor is needed.
+
+**Separate observation and interpretation records.** Create v7 explicitly in a
+new `.memory-prototype.sqlite` file, retaining v6 host-capture tables and adding
+`Record::Interpretation` plus a receipt/context index. Existing v1-v6 stores are
+not migrated. A prepared interpretation has private fields, no Deserialize, and
+binds store instance, access, a real capture receipt, current confirmed criterion,
+an opaque host context identity, knowledge snapshot, all consulted revisions,
+qualified source fields, producer version and request identity. Preparation and
+admission are separate transactions; no transaction crosses inference.
+
+Qualified citation IDs map to exact revision and original field identities.
+Session-local tool IDs cannot be concatenated across episodes. Source passages
+remain labelled observations, assistant statements, or prior interpretations;
+none becomes verified fact merely by quotation. The core grounds the draft with
+the existing `grounding::admit`; storage independently checks the exact source,
+field and quotation and rechecks every supplied dependency, cited or not.
+Malformed/refused/cut-off replies retain diagnostics but produce no partial
+interpretation. Quote membership is not semantic entailment. Unsupported claims
+and unresolved goals are counted; an unsupported judgment cannot count as grounded.
+
+**Explicit untrusted interpretation reader policy.** This new v2 reader is separate
+from the privileged `Clean` reader. It serves provisional interpretations only
+when a host-owned policy matches the complete current context, including goal,
+criterion revision and opaque needs-context identity. Default search, recall and
+context do not select these records. `GoalMemory` opts in through a host builder,
+with no model-controlled context key. A matching interpretation and its complete
+authorized dependency bundle either fit the response budget together or are
+omitted. Selection and return use independent current-source checks. Every such
+result remains private/untrusted and arms the ordinary conversation interlock.
+No lesson promotion, charter editing, action grant, or `Clean` conversion exists.
+This is the explicit reader policy anticipated by §31.4, not an exception to it.
+
+Every interpretation in a returned dependency closure has a host-assigned role:
+`SelectedCurrent` requires the exact current context; `HistoricalDependency` is
+reachable only from an explicitly selected root and retains its original context.
+Historical support is not a current recommendation. Roles cover every returned
+interpretation and cannot be supplied by a model. Default readers withhold any
+bundle containing an interpretation, including a later captured episode that
+copied one. The opt-in reader labels historical dependencies explicitly, supporting
+repeated read → capture → changed-goal reappraisal without laundering history.
+Absent, duplicate, foreign or inconsistent roles refuse the contextual packet.
+The two-selection cap excludes historical ancestors; the existing 32-record native
+capture bound and byte budget apply to the whole bundle. An optional exact-revision
+role list is omitted when empty, preserving legacy output.
+
+Preparation authenticates a supplied CaptureReceipt against the canonical active
+database row, including its ID, projection and originals; deserialization is not
+authentication. V2 refuses even parseable MaxTokens replies; the legacy adapter
+retains its existing complete-JSON-at-cap behavior.
+
+The receipt is idempotent for exact persistence retries and rejects conflicting
+content. Forgetting and source withdrawal suppress interpretations and late retries.
+v7 recapture may depend on a canonical interpretation and its admitted bridge
+evidence closure; v6 and generic concept/relation producers retain their refusals.
+An interpretation may never masquerade as an externally observed passage.
+
+**Current needs stay host-side.** Reuse `reading::Reading`, `LineReading.withdrawn`
+and existing goal types in a timestamped host context. Preserve missing, stale,
+unread, deferred, sparse, nothing, withdrawn and observed states; observed zero
+is not missing. Evaluate these states separately from semantic grounding and
+action permission, without inventing a universal utility score or automatic goal
+reprioritization. Model generation depends on public goal/task context and source
+evidence. Varying only private sensor values leaves its request byte-identical;
+host-side assessment and opaque context identity may differ. No values, thresholds,
+sensor-derived rationale or unsalted low-entropy sensor hashes enter prompts or
+reader SQLite. Private evaluation audit belongs with explicit host artifacts.
+
+**Bounds chosen for this increment:** at most 16 consulted source roots, 64 qualified
+source fields, 32 KiB entire generation packet, 64 offered/16 retained claims, 12-300 characters
+per quotation, 2,000 characters per claim statement, 8 KiB interpretation prose,
+and 16 KiB model reply. Refuse an oversized packet rather than silently clipping a
+source. Generation accepts an explicit positive token limit up to 8,192 and a
+deadline up to 600 seconds; the demonstration uses 4,096 tokens and 180 seconds.
+The contextual reader serves at most two interpretations within the existing
+20,000-byte GoalMemory packet budget. These are engineering bounds, not measured
+optima; source identity and complete lineage take precedence over fitting more.
+
+**Acceptance:** one episode under two confirmed goals yields distinct grounded
+interpretations; reopening and ordinary `GoalMemory` select only the current one;
+the subsequent task capture preserves lineage. A needs-only variation changes
+host assessment without changing model input. Regressions cover colliding local
+tool IDs, fabricated quotes, unsupported goals, stale/withdrawn/forgotten inputs,
+uncited dependencies, foreign-store prepared objects, conflicting retries, budget
+overflow, sensor canaries, and original legacy prompt/store compatibility. Authored
+providers prove these mechanics. A small frozen resident-model comparison reports
+semantic grounding, changed-goal adaptation, failures and cost separately; it must
+not turn model self-assessment into the correctness oracle. General concept
+learning, open-ended rumination and production rollout remain later milestones.

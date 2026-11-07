@@ -205,3 +205,53 @@ async fn exact_selection_routes_through_existing_planning_tool_with_taint() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn interpretation_opt_in_requires_the_same_confirmed_goal_and_no_new_model_arguments() {
+    use crate::memory::{host_capture::ConfirmedCriterion, interpretation::InterpretationContext};
+    let dir = std::env::temp_dir().join(format!("goal-memory-context-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("fixture.memory-prototype.sqlite");
+    let _db = Memory::create_situated(&path, "fixture").unwrap();
+    let open = || {
+        GoalMemory::open(
+            &path,
+            Access {
+                domain: "fixture".into(),
+                scopes: ["chat".into()].into(),
+            },
+            "synthetic".into(),
+            Situation {
+                event: "launch".into(),
+                goal: "task:launch".into(),
+                needs: None,
+            },
+        )
+        .unwrap()
+    };
+    let context = |goal: &str| {
+        InterpretationContext::new(
+            ConfirmedCriterion {
+                goal: goal.into(),
+                goal_text: "launch".into(),
+                criterion_text: "Choose a checked route".into(),
+                criterion_revision: "a".repeat(64),
+                confirmation_digest: "b".repeat(64),
+            },
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .unwrap()
+    };
+    assert!(open()
+        .with_interpretations(context("task:other").read_policy())
+        .is_err());
+    let before = open().input_schema();
+    let opted = open()
+        .with_interpretations(context("task:launch").read_policy())
+        .unwrap();
+    assert_eq!(opted.input_schema(), before);
+    assert!(opted.capabilities().private_data && opted.capabilities().untrusted_input);
+    drop(opted);
+    drop(_db);
+    std::fs::remove_dir_all(dir).unwrap();
+}

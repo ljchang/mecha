@@ -57,8 +57,56 @@ service. Existing v1–v5 files and CLI experiments remain separate. The v6 read
 rejects intermediate v6 files lacking the complete-lineage format marker; create
 a fresh synthetic demo rather than migrating those development artifacts. It
 supports guarded evidence recall; unsupported concept/durable producers do not
-gain authority from it. Interpretation generation and production/private-data qualification remain
-separate work. The bounded model comparison below measures this bridge directly.
+gain authority from it. This v6 example has no interpretation generation; the explicit v7 workflow below adds it.
+Production/private-data qualification remains separate work. The bounded model comparison below measures this bridge directly.
+
+## Situated appraisal and changed-goal interpretation
+
+The explicit v7 workflow adds durable, source-linked interpretation hypotheses
+beside the unchanged episode. It reuses existing interpretation parsing,
+qualified grounding, deterministic appraisal and the ordinary agent loop.
+Run the authored mechanics check from the repository root with a new directory:
+
+```sh
+MECHA_SESSION_KIND=test cargo run -p mecha-core --features memory-prototype \
+  --example memory_situated_appraisal -- --synthetic-only /tmp/mecha-situated-demo
+```
+
+This makes no model calls. The same route evidence supports a speed goal and a
+calibration-preservation goal. The example reopens the store, plans with the
+current interpretation, checks the output independently, captures that task,
+and reappraises its history under the changed goal. Withdrawing the source
+withholds dependent interpretations and captured descendants.
+
+`Memory::create_situated` creates a new v7 store; it does not migrate v6 files.
+`prepare_interpretation` authenticates the original capture and produces a
+bounded source packet. `memory_situated_appraisal::generate` generates without
+holding a database transaction. `retain_interpretation` rechecks source authority,
+quotes, criterion, model identity and limits before saving the hypothesis and
+its exact revision/field citation map. These checks establish source membership,
+not semantic truth. Every supplied source remains a dependency, even if uncited.
+
+Default readers withhold interpretations and interpreted descendants. A host
+explicitly opts into `GoalMemory::with_interpretations` using the exact current
+context. Returned hypotheses are marked `selected_current` or
+`historical_dependency`; old meanings retain their original criteria. Both are
+private, untrusted evidence, never action permission or accepted learned rules.
+V7 projections reference existing original evidence instead of copying its text;
+this preserves complete lineage within the unchanged contextual byte budget.
+
+`NeedsInput::assess` retains the existing reading states, withdrawal, observed
+zero and freshness for the host. Private readings and their rationales are not
+serialized into memory or prompts. Needs-only changes leave the generation
+request identical; automatic needs-driven goal reprioritization is not implemented.
+Callers must explicitly supply the current confirmed goal and opaque context.
+
+The separate `memory_situated_trial` example accepts explicit local endpoint,
+resident model, shared holds directory, seed, goal and arm order. It clones the
+same source store before generation and planning; both arms see the same original
+facts, while treatment alone can retrieve a generated current interpretation.
+It records provider requests, partial failures, exact artifacts and new captures.
+The fixed development protocol and its retained results are documented in HISTORY;
+this is not automatic production capture or a held-out learning benchmark.
 
 ## Bounded native model comparison
 
@@ -232,9 +280,10 @@ hits, then other initial hits. All stages share one read transaction. Retrieved
 records arm both private and untrusted taint; validation errors remain local.
 
 The CLI supplies its prompt and confirmed goal. It leaves needs unavailable;
-internal charter/homeostat readings are not exposed. The library accepts
-caller-described needs for later appraisal integration, but does not evaluate
-needs, rank plans, learn concepts, or generate interpretations. Retrieval remains
+internal charter/homeostat readings are not exposed. The older generic context API accepts
+caller-described needs, but does not itself evaluate needs, rank plans, learn
+concepts or generate interpretations. The separate v7 producer and host-only
+needs assessment above are explicit opt-ins. Retrieval remains
 a correctness-first eligible-corpus lexical scan, not a production latency claim.
 The older model-comparison protocols and measurements are unchanged.
 

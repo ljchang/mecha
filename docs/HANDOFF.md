@@ -141,13 +141,15 @@ had 18/19 passages against a 16-passage bound). Dependable stopping remains open
 new default-off notice had no artifact-success gain. Preserve fixed comparisons
 and test fresh task schemas before expanding concepts or rumination.
 
-After these reliability repairs, implement §31 C: share bounded episode assembly with the existing
-interpretation/distillation path, separate the agent interpretation producer from
-graph export, and compare grounding/scope/cost/consumer eligibility before switching
-default writers or retiring old orchestration. Keep Clean-only interpretation
-eligibility, conversation taint and action permission unchanged. Broader situated
-interpretations, useful concept revision and rumination remain open; the bridge
-retains historical host appraisal without exposing internal sensors to the model.
+The explicit v7 situated-interpretation path is now implemented: shared parsing
+and claim admission, a separate source-linked hypothesis store, host-only needs
+assessment and opt-in current/historical interpretation retrieval through ordinary
+GoalMemory. Authored Agent integration passes changed-goal reappraisal and source
+withdrawal. Final qualification and the equal-source model comparison are in progress;
+see the situated plan and HISTORY for the completed evidence when available.
+Default writers and historical graph orchestration have not switched. Automatic
+needs-driven goal reprioritization, useful concept revision and rumination remain
+open; private sensor values and rationales never enter the interpretation prompt.
 
 The transitive-freshness limitation remains: revising a consulted source makes
 its independently measured outcome ineligible. Separating historical provenance

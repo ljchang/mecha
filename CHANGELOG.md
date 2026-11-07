@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The synthetic memory prototype supports explicit v7 stores with source-linked,
+  provisional interpretations of an episode under different confirmed goals.
+  An opt-in planning reader distinguishes current interpretations from historical
+  dependencies; default readers and privileged learning remain unchanged. Shared
+  interpretation parsing and grounding preserve the existing graph follow-up,
+  while private needs assessment remains outside model prompts and reader memory.
+
 - The synthetic memory trial can opt into a turn-budget notice before its last
   two model turns, preserving ordinary tools, guards and hard limits. A separate
   paired diagnostic records completion, notice exposure and premature abstention.

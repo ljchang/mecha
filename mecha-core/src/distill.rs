@@ -506,24 +506,8 @@ impl Distiller {
         withhold: bool,
     ) -> Result<AppraisalTurn> {
         let request = self.appraisal_request(turn, inputs, withhold);
-        let started = std::time::Instant::now();
-        let response = self.provider.complete(&request, None).await?;
-        let elapsed = started.elapsed();
-        let draft = match response.stop_reason {
-            crate::message::StopReason::Refusal => Err(Malformed::Refused),
-            stop => parse_appraisal_reply(&response.message.text()).map_err(|m| {
-                // Truncation is its own diagnosis, as for the episode: a
-                // reply cut off mid-object is the budget's doing, not the
-                // model's shape.
-                if stop == crate::message::StopReason::MaxTokens
-                    && matches!(m, Malformed::NoJson | Malformed::Unreadable)
-                {
-                    Malformed::CutOff
-                } else {
-                    m
-                }
-            }),
-        };
+        let response = crate::interpretation::complete(self.provider.as_ref(), &request).await?;
+        let draft = response.draft.map(legacy_appraisal_draft);
         let draft = draft.map(|mut d| {
             if withhold {
                 d.expected_act = None;
@@ -534,7 +518,7 @@ impl Distiller {
         Ok(AppraisalTurn {
             draft,
             usage: response.usage,
-            elapsed,
+            elapsed: response.elapsed,
         })
     }
 }
@@ -653,114 +637,33 @@ impl Malformed {
 pub fn parse_appraisal_reply(
     text: &str,
 ) -> std::result::Result<crate::appraisal_store::Draft, Malformed> {
-    use crate::appraisal_store::{Bearing, Claim, Draft, ExpectedAct, Judgment, Pointer};
-    let json = crate::eval::extract_json(text).ok_or(Malformed::NoJson)?;
-    let v: Value = serde_json::from_str(&json).map_err(|_| Malformed::Unreadable)?;
-    let obj = v.as_object().ok_or(Malformed::Unreadable)?;
-    let present = |k: &str| obj.get(k).filter(|v| !v.is_null());
-    let string = |k: &'static str| -> std::result::Result<Option<String>, Malformed> {
-        match present(k) {
-            None => Ok(None),
-            Some(Value::String(s)) => Ok(Some(s.clone())),
-            Some(_) => Err(Malformed::Shape(k)),
-        }
-    };
-    let list = |k: &'static str| -> std::result::Result<&[Value], Malformed> {
-        match present(k) {
-            None => Ok(&[]),
-            Some(Value::Array(a)) => Ok(a.as_slice()),
-            Some(_) => Err(Malformed::Shape(k)),
-        }
-    };
-    let strings = |k: &'static str| -> std::result::Result<Vec<String>, Malformed> {
-        list(k)?
-            .iter()
-            .map(|v| v.as_str().map(str::to_string).ok_or(Malformed::Shape(k)))
-            .collect()
-    };
+    crate::interpretation::parse_reply(text).map(legacy_appraisal_draft)
+}
 
-    let interpretation = string("interpretation")?.unwrap_or_default();
-    if interpretation.trim().is_empty() {
-        return Err(Malformed::NoInterpretation);
-    }
-
-    let mut unreadable_goals = 0usize;
-    let mut judgments = Vec::new();
-    for j in list("judgments")? {
-        let j = j.as_object().ok_or(Malformed::Shape("judgments"))?;
-        let goal = match j.get("goal").filter(|v| !v.is_null()) {
-            None => None,
-            Some(Value::String(g)) if g.trim().is_empty() => None,
-            Some(Value::String(g)) => match g.trim().parse::<crate::goal::GoalRef>() {
-                Ok(g) => Some(g),
-                Err(_) => {
-                    unreadable_goals += 1;
-                    None
-                }
-            },
-            Some(_) => return Err(Malformed::Shape("judgments.goal")),
-        };
-        let bearing = match j.get("bearing").filter(|v| !v.is_null()) {
-            None => Bearing::Unknown,
-            Some(Value::String(b)) => match b.trim().to_ascii_lowercase().as_str() {
-                "good" => Bearing::Good,
-                "bad" => Bearing::Bad,
-                _ => Bearing::Unknown,
-            },
-            Some(_) => return Err(Malformed::Shape("judgments.bearing")),
-        };
-        let because = match j.get("because").filter(|v| !v.is_null()) {
-            None => Vec::new(),
-            Some(Value::Array(a)) => a
-                .iter()
-                .map(|i| {
-                    i.as_u64()
-                        .and_then(|i| usize::try_from(i).ok())
-                        .ok_or(Malformed::Shape("judgments.because"))
-                })
-                .collect::<std::result::Result<Vec<usize>, Malformed>>()?,
-            Some(_) => return Err(Malformed::Shape("judgments.because")),
-        };
-        judgments.push(Judgment {
-            goal,
-            bearing,
-            because,
-        });
-    }
-
-    let mut claims = Vec::new();
-    for c in list("claims")? {
-        let c = c.as_object().ok_or(Malformed::Shape("claims"))?;
-        let field = |k: &'static str| -> std::result::Result<String, Malformed> {
-            match c.get(k).filter(|v| !v.is_null()) {
-                None => Ok(String::new()),
-                Some(Value::String(s)) => Ok(s.clone()),
-                Some(_) => Err(Malformed::Shape("claims")),
-            }
-        };
-        claims.push(Claim {
-            statement: field("statement")?,
-            pointer: Pointer::parse(&field("pointer")?),
-            quote: field("quote")?,
-        });
-    }
-
-    Ok(Draft {
-        interpretation,
-        judgments,
-        claims,
-        prediction: string("prediction")?,
-        expected_act: string("expected_act")?
-            .as_deref()
-            .and_then(ExpectedAct::parse),
-        // The producer's word, never the reply's.
+fn legacy_appraisal_draft(
+    reply: crate::interpretation::ReplyDraft,
+) -> crate::appraisal_store::Draft {
+    use crate::appraisal_store::{Claim, Draft, Pointer};
+    Draft {
+        interpretation: reply.interpretation,
+        judgments: reply.judgments,
+        claims: reply
+            .claims
+            .into_iter()
+            .map(|c| Claim {
+                statement: c.statement,
+                pointer: Pointer::parse(&c.pointer),
+                quote: c.quote,
+            })
+            .collect(),
+        prediction: reply.prediction,
+        expected_act: reply.expected_act,
         backfilled: false,
-        // The harness's word, never the reply's: `Distiller::appraise` sets it.
         expected_act_withheld: false,
-        unreadable_goals,
-        goal_hypotheses: strings("goal_hypotheses")?,
-        lessons: strings("lessons")?,
-    })
+        unreadable_goals: reply.unreadable_goals,
+        goal_hypotheses: reply.goal_hypotheses,
+        lessons: reply.lessons,
+    }
 }
 
 // ─── What the appraiser reads besides the transcript ────────────────────────
@@ -2934,6 +2837,53 @@ mod tests {
             let answered = d.appraise(&turn, "inputs", false).await.unwrap();
             assert_eq!(answered.draft.unwrap_err(), why);
         }
+    }
+
+    #[tokio::test]
+    async fn a_complete_legacy_appraisal_at_the_token_cap_is_still_kept() {
+        use crate::message::StopReason;
+        let (model, _) = Recording::new(vec![
+            (said(EPISODE_REPLY), StopReason::EndTurn),
+            (
+                said(r#"{"interpretation":"Complete at the cap."}"#),
+                StopReason::MaxTokens,
+            ),
+        ]);
+        let d = Distiller::new(Box::new(model), None);
+        let turn = d.distill_turn("t").await.unwrap();
+        assert_eq!(
+            d.appraise(&turn, "inputs", false)
+                .await
+                .unwrap()
+                .draft
+                .unwrap()
+                .interpretation,
+            "Complete at the cap."
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_appraisal_keeps_existing_served_model_alias_behavior() {
+        use crate::message::StopReason;
+        // Recording reports local-1, independently of this requested alias.
+        let (model, _) = Recording::new(vec![
+            (said(EPISODE_REPLY), StopReason::EndTurn),
+            (
+                said(r#"{"interpretation":"Complete appraisal."}"#),
+                StopReason::EndTurn,
+            ),
+        ]);
+        let d = Distiller::new(Box::new(model), Some("requested-alias".into()));
+        let turn = d.distill_turn("t").await.unwrap();
+        assert_eq!(
+            d.appraise(&turn, "inputs", false)
+                .await
+                .unwrap()
+                .draft
+                .unwrap()
+                .interpretation,
+            "Complete appraisal."
+        );
     }
 
     /// Ruling 1B: an output with nothing for the owner to act on is asked

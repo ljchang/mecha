@@ -13,6 +13,48 @@ use std::{collections::BTreeMap, fs, path::Path, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
 struct Script(Mutex<VecDeque<Result<Message>>>);
+
+#[tokio::test]
+async fn shared_trial_recorder_preserves_unknown_usage_budget_and_never_overwrites_audit() {
+    let temp = Temp::new();
+    let path = temp.path().join("shared-audit.jsonl");
+    let recorder = recorded_provider(
+        Box::new(Script(Mutex::new(vec![done()].into()))),
+        &path,
+        4096,
+        CancellationToken::new(),
+    )
+    .unwrap();
+    let request =
+        crate::quarantine::QuarantinedPass::new("script", 4096).ask("Synthetic audit check");
+    recorder.complete(&request, None).await.unwrap();
+    assert!(
+        recorder.complete(&request, None).await.is_err(),
+        "unknown usage reserves the full first request budget"
+    );
+    let before = fs::read(&path).unwrap();
+    assert!(recorded_provider(
+        Box::new(Script(Mutex::new(VecDeque::new()))),
+        &path,
+        4096,
+        CancellationToken::new()
+    )
+    .is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let rows: Vec<serde_json::Value> = String::from_utf8(before)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r["event"] == "request_started")
+            .count(),
+        1
+    );
+    assert_eq!(rows[0]["wire_body"]["think"], false);
+    assert_eq!(rows[0]["wire_body"]["local_only"], true);
+}
 #[async_trait::async_trait]
 impl Provider for Script {
     fn id(&self) -> &str {

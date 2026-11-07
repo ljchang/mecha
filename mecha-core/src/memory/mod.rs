@@ -12,6 +12,7 @@ pub mod fixture;
 mod forget;
 pub mod guard_coverage;
 pub mod host_capture;
+pub mod interpretation;
 mod model;
 pub mod model_evaluation;
 pub mod plan_assessment;
@@ -66,3 +67,6 @@ mod durable_action_tests;
 
 #[cfg(test)]
 mod host_capture_tests;
+
+#[cfg(test)]
+mod interpretation_tests;

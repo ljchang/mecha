@@ -287,7 +287,8 @@ pub(super) fn eligible(
             return Ok(None);
         }
     }
-    if !authorized_with_guard(conn, &reference, access, guard)?
+    if interpretation::contains_interpretation(conn, &reference)?
+        || !authorized_with_guard(conn, &reference, access, guard)?
         || !fresh(conn, &reference, query.known_at.sequence)?
     {
         return Ok(None);

@@ -177,6 +177,7 @@ impl Memory {
         let tx = self.conn.unchecked_transaction()?;
         let record = lookup(&tx, reference)?;
         let result = if record.is_some()
+            && !interpretation::contains_interpretation(&tx, reference)?
             && authorized_with_guard(&tx, reference, access, self.source_guard.as_deref())?
         {
             record
@@ -345,7 +346,8 @@ impl Memory {
         for row in rows {
             let (revision, object, seq, payload) = row?;
             let reference = RevisionRef { object, revision };
-            if !authorized_with_guard(&tx, &reference, access, Some(&selection))?
+            if interpretation::contains_interpretation(&tx, &reference)?
+                || !authorized_with_guard(&tx, &reference, access, Some(&selection))?
                 || !fresh(&tx, &reference, query.known_at.sequence)?
             {
                 continue;

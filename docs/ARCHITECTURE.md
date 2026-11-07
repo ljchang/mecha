@@ -12893,6 +12893,46 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **A contextual interpretation is neither an observation nor a learned rule.**
+  Explicit v7 files add a guarded Interpretation record and canonical receipt.
+  Preparation authenticates the capture against its database row; a deserialized
+  receipt is not authority. Every supplied input remains a dependency, including
+  uncited inputs. Generation and admission recheck sources independently, and no
+  transaction spans inference. Retained claims carry host-resolved revision/field
+  locators as well as the model's qualified citation ID: an opaque hash alone
+  cannot tell a reopened reader which of two identical quotations was cited.
+- **Default readers must also withhold interpreted descendants.** Merely omitting
+  Interpretation from initial search still leaks it through a recaptured episode's
+  dependency closure. The explicit contextual reader assigns every returned
+  interpretation a host-owned role: SelectedCurrent matches the complete current
+  context; HistoricalDependency is a necessary ancestor retaining its old context.
+  Historical meaning never silently becomes a recommendation for the current goal.
+  Complete authorized bundles fit together or are withheld, within the same byte
+  budget. GoalMemory retains ordinary private/untrusted taint and action guards;
+  this path never constructs Clean or promotes a lesson.
+- **V7 projections reference original text instead of duplicating it.** The projection retains original
+  descriptors and references, with text in original Evidence records. Reconstruction
+  checks those descriptors against the canonical capture and dependency graph.
+  Repeating escaped memory packets inside both originals and projection exhausted
+  the 20 KB contextual budget on a second task despite retaining few source facts.
+  Deduplication preserves original source bytes and complete lineage; v6 projection
+  bytes remain unchanged.
+- **Private needs assessment is not hidden prompt content.** Timestamped readings
+  retain missing/stale and Unread/Deferred/Nothing/Sparse/Observed distinctions,
+  including withdrawal and observed zero. An opaque random context identity binds
+  the host context; never hash low-entropy sensor values into a reader-visible key.
+  Needs-only changes leave the generation request identical. Current public goals
+  and evidence may change an interpretation; host needs assessment remains separate
+  from semantic support and action permission.
+- **Legacy and v2 share interpretation machinery, not historical identity.**
+  Core interpretation parsing preserves raw claim pointers until the appropriate
+  adapter resolves them; v2 IDs qualify exact source revisions and fields instead
+  of colliding session-local tool IDs. Shared grounding retains the old claim-cap
+  and support-remapping semantics. The legacy graph follow-up keeps its pinned
+  frame/prefix and complete-JSON-at-MaxTokens behavior. The new producer refuses
+  every MaxTokens reply, unexpected stop and mismatched served-model identity;
+  requested model names alone cannot certify the model that produced a record.
+
 - **Host capture has a separate reader boundary.** The opt-in v6 bridge
   (`memory_experience_bridge::LocalAuthority`) resolves native transcript,
   confirmed criterion, independent artifact check and existing

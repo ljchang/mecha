@@ -69,8 +69,7 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
     struct Situation {
         #[serde(rename = "event")]
         _event: String,
-        #[serde(rename = "goal")]
-        _goal: String,
+        goal: String,
         #[serde(rename = "needs")]
         _needs: Option<String>,
     }
@@ -93,8 +92,7 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
         reference: Reference,
         #[serde(rename = "sequence")]
         _sequence: i64,
-        #[serde(rename = "record")]
-        _record: crate::memory::Record,
+        record: crate::memory::Record,
         #[serde(rename = "possible_time")]
         _possible_time: bool,
         #[serde(rename = "required_scopes")]
@@ -104,15 +102,22 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
     }
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
+    struct RoleEntry {
+        reference: Reference,
+        role: crate::memory::interpretation::InterpretationRole,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Packet {
         #[serde(rename = "known_at")]
         _known_at: Snapshot,
         #[serde(rename = "valid_at")]
         _valid_at: Option<String>,
-        #[serde(rename = "situation")]
-        _situation: Situation,
+        situation: Situation,
         bindings: Vec<Selection>,
         records: Vec<Hit>,
+        #[serde(default)]
+        interpretation_roles: Vec<RoleEntry>,
         incomplete: bool,
         #[serde(rename = "needs_unavailable")]
         _needs_unavailable: bool,
@@ -131,6 +136,57 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
     )?;
     ensure!(
         packet.incomplete && packet.records.len() <= 32 && packet.bindings.len() <= 2,
+        "capture refused"
+    );
+    // The role map is a host-issued interpretation vocabulary, never a model
+    // claim. Authenticate references again during admission; here reject any
+    // packet that drops, duplicates or relabels that vocabulary inconsistently.
+    use crate::memory::interpretation::InterpretationRole;
+    let interpretations = packet
+        .records
+        .iter()
+        .filter_map(|hit| {
+            if let crate::memory::Record::Interpretation(value) = &hit.record {
+                Some((&hit.reference, value))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        packet.interpretation_roles.len() == interpretations.len(),
+        "capture refused"
+    );
+    let mut seen = BTreeSet::new();
+    let mut selected = 0;
+    let mut selected_context = None;
+    for entry in &packet.interpretation_roles {
+        ensure!(
+            seen.insert((&entry.reference.object, &entry.reference.revision)),
+            "capture refused"
+        );
+        let (_, interpretation) = interpretations
+            .iter()
+            .find(|(reference, _)| {
+                reference.object == entry.reference.object
+                    && reference.revision == entry.reference.revision
+            })
+            .ok_or_else(|| anyhow::anyhow!("capture refused"))?;
+        if entry.role == InterpretationRole::SelectedCurrent {
+            ensure!(
+                interpretation.criterion.goal == packet.situation.goal,
+                "capture refused"
+            );
+            if let Some(context) = selected_context {
+                ensure!(context == &interpretation.context_key, "capture refused");
+            } else {
+                selected_context = Some(&interpretation.context_key);
+            }
+            selected += 1;
+        }
+    }
+    ensure!(
+        interpretations.is_empty() || (1..=2).contains(&selected),
         "capture refused"
     );
     let mut references = Vec::new();

@@ -28,6 +28,7 @@ impl Memory {
                 break;
             }
         }
+        interpretation::invalidate_forgotten(&tx)?;
         host_capture::invalidate_forgotten(&tx)?;
         durable_action::invalidate_forgotten(&tx)?;
         durable_decision::invalidate_forgotten(&tx)?;

@@ -1,6 +1,6 @@
 //! Typed, sensor-free host observations. Authority is injected, never inferred.
 use super::{sql::*, store::capture_in, *};
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,6 +112,145 @@ pub struct HostCapture {
     pub occurred_at: Option<String>,
 }
 
+// V7 stores original passage bytes once. Descriptors retain every other
+// admitted attribute and bind the exact independent Evidence revision.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OriginalDescriptor {
+    #[serde(deserialize_with = "strict_reference")]
+    reference: RevisionRef,
+    kind: PassageKind,
+    line: u64,
+    pointer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    occurred_at: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectionV2 {
+    identity: CaptureIdentity,
+    binding: ExternalBinding,
+    criterion: ConfirmedCriterion,
+    originals: Vec<OriginalDescriptor>,
+    receipts: Vec<ToolReceipt>,
+    artifact: ArtifactCheck,
+    consulted: Vec<RevisionRef>,
+    scopes: BTreeSet<String>,
+    occurred_at: Option<String>,
+}
+fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64) -> Result<String> {
+    if version == 6 {
+        return Ok(serde_json::to_string(input)?);
+    }
+    ensure!(
+        version == 7 && originals.len() == input.originals.len(),
+        "invalid host projection version"
+    );
+    Ok(serde_json::to_string(&ProjectionV2 {
+        identity: input.identity.clone(),
+        binding: input.binding.clone(),
+        criterion: input.criterion.clone(),
+        originals: input
+            .originals
+            .iter()
+            .zip(originals)
+            .map(|(p, r)| OriginalDescriptor {
+                reference: r.clone(),
+                kind: p.kind.clone(),
+                line: p.line,
+                pointer: p.pointer.clone(),
+                occurred_at: p.occurred_at.clone(),
+            })
+            .collect(),
+        receipts: input.receipts.clone(),
+        artifact: input.artifact.clone(),
+        consulted: input.consulted.clone(),
+        scopes: input.scopes.clone(),
+        occurred_at: input.occurred_at.clone(),
+    })?)
+}
+/// Reconstruct only from the canonical receipt and exact immutable originals.
+/// The receipt's original HostCapture hash authenticates descriptor metadata too.
+pub(super) fn projection_input(conn: &Connection, projection: &Capture) -> Result<HostCapture> {
+    let (object, revision, originals, payload_hash): (String,String,String,String) = conn.query_row(
+        "SELECT projection_object,projection_revision,originals,payload_hash FROM host_capture_receipt WHERE identity_hash=?1 AND state='active'",
+        [&projection.source.id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    ).optional()?.context("host projection has no active receipt")?;
+    let reference = RevisionRef { object, revision };
+    let Some(Record::Evidence(saved)) = lookup(conn, &reference)? else {
+        anyhow::bail!("host projection missing")
+    };
+    ensure!(
+        serde_json::to_vec(&saved)? == serde_json::to_vec(projection)?,
+        "noncanonical host projection"
+    );
+    let originals: Vec<RevisionRef> = serde_json::from_str(&originals)?;
+    let closure = closure(conn, &reference)?;
+    ensure!(
+        originals.iter().all(|r| closure.contains(r)),
+        "missing original dependency"
+    );
+    let input = match projection.source.connector.as_str() {
+        "host-capture-projection-v1" => serde_json::from_str::<HostCapture>(&projection.text)?,
+        "host-capture-projection-v2" => {
+            ensure!(
+                conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 7,
+                "unsupported host projection version"
+            );
+            let p: ProjectionV2 = serde_json::from_str(&projection.text)?;
+            ensure!(
+                p.originals
+                    .iter()
+                    .map(|d| &d.reference)
+                    .eq(originals.iter()),
+                "noncanonical original descriptors"
+            );
+            let mut passages = Vec::new();
+            for d in p.originals {
+                let Some(Record::Evidence(original)) = lookup(conn, &d.reference)? else {
+                    anyhow::bail!("missing original evidence")
+                };
+                ensure!(
+                    original
+                        .occurred_at
+                        .as_deref()
+                        .map(normalize_time)
+                        .transpose()?
+                        == d.occurred_at.as_deref().map(normalize_time).transpose()?,
+                    "original descriptor mismatch"
+                );
+                passages.push(OriginalPassage {
+                    source: original.source,
+                    kind: d.kind,
+                    line: d.line,
+                    pointer: d.pointer,
+                    text: original.text,
+                    occurred_at: d.occurred_at,
+                });
+            }
+            HostCapture {
+                identity: p.identity,
+                binding: p.binding,
+                criterion: p.criterion,
+                originals: passages,
+                receipts: p.receipts,
+                artifact: p.artifact,
+                consulted: p.consulted,
+                scopes: p.scopes,
+                occurred_at: p.occurred_at,
+            }
+        }
+        _ => anyhow::bail!("unsupported host projection version"),
+    };
+    ensure!(
+        hash(&input)? == payload_hash
+            && hash(&input.identity)? == projection.source.id
+            && input.identity.account == projection.source.account,
+        "host projection payload mismatch"
+    );
+    Ok(input)
+}
+
 // Historical Record/RevisionRef decoders intentionally allow future fields.
 // Strict trusted-host DTO decoding is local to this admission boundary.
 #[derive(Deserialize)]
@@ -161,7 +300,7 @@ fn strict_source<'de, D: serde::Deserializer<'de>>(
 
 pub(super) fn has_bindings(conn: &Connection) -> Result<bool> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version == 6 {
+    if version >= 6 {
         validate_schema(conn)?;
         return Ok(true);
     }
@@ -237,7 +376,10 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
         "invalid host capture domain"
     );
     let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    ensure!(version == 6, "host capture requires version 6");
+    ensure!(
+        matches!(version, 6 | 7),
+        "host capture requires version 6 or 7"
+    );
     validate(&input)?;
     let identity = hash(&input.identity)?;
     let payload = hash(&input)?;
@@ -277,7 +419,10 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
                 |r| r.get(0),
             )?;
             ensure!(
-                safe && matches!(lookup(&tx, &member)?, Some(Record::Evidence(_))),
+                (safe && matches!(lookup(&tx, &member)?, Some(Record::Evidence(_))))
+                    || (version == 7
+                        && interpretation::canonical(&tx, &member)?
+                        && matches!(lookup(&tx, &member)?, Some(Record::Interpretation(_)))),
                 "unsupported host dependency"
             );
             scopes.extend(required_scopes(&tx, &member.revision)?);
@@ -371,7 +516,12 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
         originals.push(reference);
     }
     let projection_source = SourceKey {
-        connector: "host-capture-projection-v1".into(),
+        connector: if version == 7 {
+            "host-capture-projection-v2"
+        } else {
+            "host-capture-projection-v1"
+        }
+        .into(),
         account: input.identity.account.clone(),
         id: identity.clone(),
     };
@@ -389,7 +539,7 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
         None,
         &Record::Evidence(Capture {
             source: projection_source,
-            text: serde_json::to_string(&input)?,
+            text: projection_text(&input, &originals, version)?,
             occurred_at: input.occurred_at.clone(),
             scopes: scopes.clone(),
             transcript: None,

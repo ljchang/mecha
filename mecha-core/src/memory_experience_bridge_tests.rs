@@ -895,3 +895,51 @@ fn budget_notice_harness_passages_are_not_admitted_as_owner_requests() {
     assert_eq!(user[1].pointer, "/content/2/text");
     assert_eq!(user[1].line, 5);
 }
+
+#[test]
+fn contextual_packet_requires_an_exhaustive_consistent_role_map() {
+    let reference =
+        serde_json::json!({"object":"interpretation-object","revision":"interpretation-revision"});
+    let mut packet = serde_json::json!({"memory":{
+        "known_at":{"instance":"fixture","sequence":1},"valid_at":null,
+        "situation":{"event":"fixture","goal":"task:convert","needs":null},
+        "bindings":[],"records":[{"reference":reference,"sequence":1,
+          "record":{"kind":"interpretation","data":{"context_key":"context","criterion":criterion(),"host_context_id":"opaque","claim_sources":[],
+            "draft":{"interpretation":"provisional","claims":[],"judgments":[],"prediction":null,
+              "grounding":{"offered":0,"dropped":0,"dropped_by":{},"unresolved_goals":0},"model":"authored","producer_version":"v1"}}},
+          "possible_time":false,"required_scopes":[],"private_data":true,"untrusted_input":true}],
+        "incomplete":true,"needs_unavailable":true,"budget_omitted":false,"evidence_limit":"fixture"
+    }});
+    assert!(
+        memory_packet_references(&packet.to_string()).is_err(),
+        "missing roles must refuse"
+    );
+    let selected = serde_json::json!({"reference":reference,"role":"SelectedCurrent"});
+    packet["memory"]["interpretation_roles"] = serde_json::json!([selected]);
+    assert_eq!(
+        memory_packet_references(&packet.to_string()).unwrap().len(),
+        1
+    );
+    for roles in [
+        serde_json::json!([]),
+        serde_json::json!([selected, selected]),
+        serde_json::json!([{"reference":{"object":"foreign","revision":"foreign"},"role":"SelectedCurrent"}]),
+        serde_json::json!([{"reference":reference,"role":"HistoricalDependency"}]),
+    ] {
+        let mut bad = packet.clone();
+        bad["memory"]["interpretation_roles"] = roles;
+        assert!(memory_packet_references(&bad.to_string()).is_err());
+    }
+    let mut bad = packet.clone();
+    bad["memory"]["situation"]["goal"] = serde_json::json!("task:other");
+    assert!(memory_packet_references(&bad.to_string()).is_err());
+    let mut bad = packet.clone();
+    bad["memory"]["interpretation_roles"][0]["extra"] = serde_json::json!(true);
+    assert!(memory_packet_references(&bad.to_string()).is_err());
+    packet["memory"]["records"] = serde_json::json!([]);
+    assert!(memory_packet_references(&packet.to_string()).is_err());
+    packet["memory"]["interpretation_roles"] = serde_json::json!([]);
+    assert!(memory_packet_references(&packet.to_string())
+        .unwrap()
+        .is_empty());
+}

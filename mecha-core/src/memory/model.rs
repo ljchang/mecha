@@ -110,6 +110,7 @@ pub enum Record {
     Entity { label: String },
     Relation(RelationInput),
     Concept(super::concept::Concept),
+    Interpretation(super::interpretation::Interpretation),
 }
 
 #[derive(Clone, Debug)]

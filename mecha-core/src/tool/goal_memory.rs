@@ -5,6 +5,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::memory::{
     context::{ContextPolicy, ContextRequest, Situation},
     host_capture::ExternalSourceGuard,
+    interpretation::InterpretationRead,
     Access, Memory, RecallQuery,
 };
 use anyhow::{ensure, Context, Result};
@@ -20,9 +21,20 @@ pub struct GoalMemory {
     policy: ContextPolicy,
     situation: Situation,
     clock: Arc<dyn Clock>,
+    interpretations: Option<InterpretationRead>,
 }
 
 impl GoalMemory {
+    /// Host-only opt-in. A model cannot select the context or change its goal.
+    pub fn with_interpretations(mut self, policy: InterpretationRead) -> Result<Self> {
+        ensure!(
+            policy.criterion().goal == self.situation.goal,
+            "interpretation context does not match confirmed goal"
+        );
+        self.interpretations = Some(policy);
+        Ok(self)
+    }
+
     /// Owner-selected synthetic database/account/scopes only. Snapshot freezes
     /// at construction; current restrictions and forget still override it.
     /// Relation validity uses the host clock afresh for every memory read.
@@ -106,6 +118,7 @@ impl GoalMemory {
             policy,
             situation,
             clock,
+            interpretations: None,
         })
     }
 }
@@ -177,11 +190,17 @@ impl Tool for GoalMemory {
         // current host time even when this tool survives across turns.
         policy.valid_at = Some(self.clock.now().to_rfc3339());
         let situation = self.situation.clone();
+        let interpretations = self.interpretations.clone();
         let result = tokio::task::spawn_blocking(move || {
-            memory
+            let memory = memory
                 .lock()
-                .map_err(|_| anyhow::anyhow!("memory reader unavailable"))?
-                .context(&request, &policy, &situation)
+                .map_err(|_| anyhow::anyhow!("memory reader unavailable"))?;
+            match interpretations {
+                Some(ref read) => {
+                    memory.context_with_interpretations(&request, &policy, &situation, read)
+                }
+                None => memory.context(&request, &policy, &situation),
+            }
         })
         .await
         .context("memory reader task failed")?;
