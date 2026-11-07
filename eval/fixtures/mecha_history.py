@@ -345,7 +345,10 @@ def added_items(merge):
             added.update(range(start, start + n))
         groups = []
         whole_file = bool(re.search(r"(^|/)(\w+_)?tests\.rs$", path) or "/tests/" in path)
-        modules = test_modules(lines)
+        # A module whose own header the PR added is new as a whole: it is one
+        # top-level item, its attributes with it, never also its items
+        # (review of #852, pass 3).
+        modules = [m for m in test_modules(lines) if (m[1] + 1) not in added]
         for name, start, end in modules:
             items = whole_items(lines, added, start + 1, end - 1, "    ")
             if items:
@@ -380,13 +383,8 @@ def graft(tree, merge):
     """Put the PR's added tests into `tree`: whole new integration-test files
     copied, and added items in an existing test module grafted into a module
     of their own, so a test the run wrote under the same name is not a
-    compile error charged to the model. Returns the names placed. A tree is
-    grafted once: a second graft would be a duplicate module, every hidden
-    test a build error, so a re-grade needs a fresh setup."""
-    if os.path.exists(os.path.join(tree, ".git", "hidden-grade")):
-        die("this tree has been graded already; grade a fresh setup")
-    with open(os.path.join(tree, ".git", "hidden-grade"), "w") as fh:
-        fh.write(merge + "\n")
+    compile error charged to the model. Returns the names placed. Grafting
+    twice would be a duplicate module; `cmd_grade` holds the once (`claim`)."""
     for path in new_test_files(merge):
         dest = os.path.join(tree, path)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -525,6 +523,26 @@ def workspace():
     return os.path.abspath(ws)
 
 
+def claim_path(ws):
+    """Where a workspace's grade is recorded as taken: in the mecha home, out
+    of the run's jail, so a run cannot pre-empt its own grade (review of #852,
+    pass 3: a file under the tree's `.git` was the run's to create)."""
+    home = os.environ.get("MECHA_HOME") or os.path.expanduser("~/.mecha")
+    key = hashlib.sha256(os.path.realpath(ws).encode()).hexdigest()[:32]
+    return os.path.join(home, "driven", "graded", key)
+
+
+def claim(ws, task_id):
+    """A tree is graded once: a second graft would be a duplicate module and
+    every hidden test a build error. Refuses a tree already graded."""
+    p = claim_path(ws)
+    if os.path.exists(p):
+        die("this workspace has been graded already; grade a fresh setup")
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    with open(p, "w") as fh:
+        fh.write(json.dumps({"task": task_id, "workspace": os.path.realpath(ws)}) + "\n")
+
+
 def mecha():
     return os.environ.get("MECHA_BIN", "mecha")
 
@@ -536,6 +554,8 @@ def cmd_setup(task_id):
     ws = workspace()
     skip = os.environ.get("MECHA_HISTORY_SKIP_CARGO") == "1"  # this source's own tests
     tc = prepare(t, ws, t["pin"], cargo_too=not skip)
+    if os.path.exists(claim_path(ws)):
+        os.remove(claim_path(ws))  # a fresh tree at a reused path
     if not skip:
         for crate in t["crates"]:
             r = cargo(tc, ws, "test", "-p", crate, "--no-run", jobs=4)
@@ -563,8 +583,12 @@ def cmd_grade(task_id):
         pass  # the verdict is the tests', never the run's own report
     changed = git("status", "--porcelain", cwd=ws).strip()
     tc = toolchain_dir(t, t["pin"])
+    tests = hidden_tests(t["merge"])
+    if os.path.exists(claim_path(ws)):
+        die("this workspace has been graded already; grade a fresh setup")
     names = graft(ws, t["merge"])
-    hidden = run_hidden(tc, ws, hidden_tests(t["merge"]), jobs=4, confined=True)
+    claim(ws, t["id"])
+    hidden = run_hidden(tc, ws, tests, jobs=4, confined=True)
     checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
     pre = t["baseline"]["failing"]
     for crate in t["crates"]:

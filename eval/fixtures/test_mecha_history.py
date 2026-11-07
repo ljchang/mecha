@@ -6,6 +6,7 @@ cargo, the network or the owner's store. Run: python3 eval/fixtures/test_mecha_h
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -91,6 +92,27 @@ fn top_level_test() {
 }
 """
 
+PIN_THIRD = """pub fn three() -> u32 {
+    3
+}
+"""
+
+MERGE_THIRD = """pub fn three() -> u32 {
+    3
+}
+
+/// The module is new, attributes and all.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_module_test() {
+        assert_eq!(three(), 3);
+    }
+}
+"""
+
 NEW_TEST_FILE = """#[test]
 fn a_whole_new_file() {
     assert!(true);
@@ -166,12 +188,14 @@ class Source(unittest.TestCase):
         git(self.repo, "config", "user.name", "t")
         write(os.path.join(self.repo, "demo", "src", "lib.rs"), PIN_LIB)
         write(os.path.join(self.repo, "demo", "src", "other.rs"), PIN_OTHER)
+        write(os.path.join(self.repo, "demo", "src", "third.rs"), PIN_THIRD)
         write(os.path.join(self.repo, "demo", "src", "gone.rs"), "pub fn gone() {}\n")
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "pin")
         self.pin = git(self.repo, "rev-parse", "HEAD").strip()
         write(os.path.join(self.repo, "demo", "src", "lib.rs"), MERGE_LIB)
         write(os.path.join(self.repo, "demo", "src", "other.rs"), MERGE_OTHER)
+        write(os.path.join(self.repo, "demo", "src", "third.rs"), MERGE_THIRD)
         os.remove(os.path.join(self.repo, "demo", "src", "gone.rs"))
         os.makedirs(os.path.join(self.repo, "demo", "tests"))
         write(os.path.join(self.repo, "demo", "tests", "fresh.rs"), NEW_TEST_FILE)
@@ -326,8 +350,8 @@ class Source(unittest.TestCase):
         try:
             self.assertEqual(
                 sorted(mecha_history.hidden_tests(self.merge)),
-                [("demo", "lib", "saturates_at_the_top"), ("demo", "lib", "top_level_test"),
-                 ("demo", "test:fresh", "a_whole_new_file")],
+                [("demo", "lib", "a_new_module_test"), ("demo", "lib", "saturates_at_the_top"),
+                 ("demo", "lib", "top_level_test"), ("demo", "test:fresh", "a_whole_new_file")],
             )
             self.assertEqual(self.source("setup", "pr-1").returncode, 0)
             # A test the run wrote under the hidden test's own name.
@@ -336,11 +360,6 @@ class Source(unittest.TestCase):
                 "    #[test]\n    fn adds()", "    #[test]\n    fn saturates_at_the_top() {}\n\n    #[test]\n    fn adds()")
             write(lib, text)
             mecha_history.graft(self.ws, self.merge)
-            once = read(lib)
-            # A second grade of the same tree is refused, never a duplicate module.
-            with self.assertRaises(SystemExit):
-                mecha_history.graft(self.ws, self.merge)
-            self.assertEqual(read(lib), once)
         finally:
             del os.environ["MECHA_HISTORY_REPO"]
         grafted = read(lib)
@@ -365,6 +384,37 @@ class Source(unittest.TestCase):
         self.assertIn("    fn top_level_test() {", tail)
         self.assertIn("    /// A test at the top of an ordinary source file.", tail)
         self.assertNotIn("added_code() -> u32", other)
+        # A test module the PR added whole is grafted once, as one item.
+        third = read(os.path.join(self.ws, "demo", "src", "third.rs"))
+        self.assertEqual(third.count("fn a_new_module_test()"), 1, third)
+        self.assertEqual(third.count("mod hidden_grade {"), 1, third)
+        tail = third[third.index("mod hidden_grade {"):]
+        self.assertIn("    /// The module is new, attributes and all.\n    #[cfg(test)]\n    mod tests {", tail)
+
+    def test_a_grade_is_taken_once_and_its_record_is_out_of_the_runs_tree(self):
+        home = os.path.join(self.tmp.name, ".mecha")
+        old = os.environ.get("MECHA_HOME")
+        os.environ["MECHA_HOME"] = home
+        try:
+            self.assertEqual(self.source("setup", "pr-1").returncode, 0)
+            path = mecha_history.claim_path(self.ws)
+            self.assertFalse(os.path.realpath(path).startswith(os.path.realpath(self.ws) + os.sep))
+            mecha_history.claim(self.ws, "pr-1")
+            with self.assertRaises(SystemExit):
+                mecha_history.claim(self.ws, "pr-1")
+            # Nothing the run can write in its tree stands in for the record.
+            write(os.path.join(self.ws, ".git", "hidden-grade"), "x\n")
+            self.assertTrue(os.path.exists(path))
+            # A fresh setup at the same path is a fresh tree, not yet graded.
+            self.assertEqual(self.source("teardown", "pr-1").returncode, 0)
+            shutil.rmtree(self.ws)
+            self.assertEqual(self.source("setup", "pr-1").returncode, 0)
+            self.assertFalse(os.path.exists(path))
+        finally:
+            if old is None:
+                del os.environ["MECHA_HOME"]
+            else:
+                os.environ["MECHA_HOME"] = old
 
     def test_a_test_module_ends_where_rustfmt_closes_it_not_where_braces_balance(self):
         lines = [
