@@ -73,6 +73,15 @@ strict all-feature Clippy, 6302 default tests (0 failed / 25 ignored), 6642
 memory-enabled tests (0 failed / 29 ignored), and the connected example.
 Production chat does not automatically capture runs.
 
+**Closeout pending authentication:** draft PR head `1c8a9a79e` passed all GitHub
+CI checks. Its automated review identified a medium native code-program
+provenance gap. The local correction `12e2432c4` passed 19 runtime tests,
+5 connected tests plus the invoked child, strict core Clippy, formatting and
+scoped rereview. It rejects unsupported traces before evidence assembly and
+withholds prior bindings. Final full Spark verification, the owner-corpus
+privacy gate and pushing this correction remain pending a fresh Tailscale login.
+Do not treat the existing PR head as containing that correction.
+
 **Next MVP qualification:** run this connected workflow with real models on a
 fresh frozen natural-language task set, with independently checked outcomes and
 memory-withheld controls. Use fast inference as baseline; report current-criterion
@@ -100,13 +109,25 @@ Nightly migration and merging mecha-graph remain deferred. Generic provider
 per-field usage missingness remains open. No unrelated subsystem open item or
 production deployment claim was requalified by this memory-only increment.
 
+Nonblocking review notes for the owner at merge: the GoalMemory schema's
+host-confirmed-reference wording is broader than its enforcement on the plain
+(non-memory) goal-context path; the bridge duplicates the untrusted wrapper
+literal from `jobs::render`; and CLI memory setup duplicates a looser loopback
+check before the stricter provider check. The standalone module dependency
+boundary also deserves a short usage note. These do not expand authority in the
+reviewed paths; they remain cleanup items, separate from the code-program
+provenance gap corrected by admission and historical-binding refusal in
+`12e2432c4`; nested program capture remains unsupported.
+
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
-Research v0.24 published 2026-11-07, source
-`39dfcf7f1f1a4181ea0ce6b972b4df06f7545c78`, deployment
-`appgdep_6aef34024e208191a98c26452e669564` succeeded. All 65 prior IDs retained;
-internal links, scripts, unchanged SVG and dist mirrors checked. The published
-browser showed the implemented bridge and exact qualification results.
+Research v0.25 published 2026-11-07, source
+`560a9668816453e1e708deb8f43b76d6b4b67faa`, deployment
+`appgdep_6aef3b6987688191bcf11375feee20b2` succeeded. All 65 prior IDs retained;
+internal links, scripts, unchanged SVG and dist mirrors checked. v0.24's
+implemented bridge/results were verified in the published browser; v0.25's
+code-program correction and pending verification status were statically checked,
+native publication confirmed, and the existing Site tab opened.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

@@ -68,6 +68,25 @@ retained under `results/memory-appraisal-bridge-20261107` locally/on Spark.
 The first final Clippy run found two fixture style warnings; both were corrected
 before the complete successful run. No real-model inference was run.
 
+A subsequent current-head automated review identified a native code-mode route
+that the direct-tool qualification had not covered: `Record::Program` was
+ignored while the outer code result could copy memory without its dependencies.
+`12e2432c4` refuses code/program traces at admission and through current source
+guards for already-issued bindings. Three native-wire regressions failed before
+the admission fix; a fourth showed an old binding still returned Checked before
+the guard fix. Both first capture and retry now leave storage unchanged, while
+existing originals/projections and actual GoalMemory withhold unsupported traces.
+The regression uses actual GoalMemory output and serialized native program records;
+it does not execute the interpreter. Scoped rereview also moved the shared
+preflight before SessionEvidence assembly, avoiding ambient program-blob reads.
+That ordering is source-traced, not measured with filesystem instrumentation.
+Final focused checks passed 19 runtime tests, 5 connected tests (plus invoked
+child), strict core all-target/all-feature Clippy and formatting. No medium
+finding remained in the scoped rereview. The guard adds one bounded transcript
+record scan per source check; corpus-scale performance remains unqualified.
+Full exact-fix Spark verification and the pre-push privacy gate await fresh
+Tailscale authentication; these focused results do not replace them.
+
 The existing production artifact, services, configuration, owner knowledge and
 nightly ingestion were not changed. Automatic production capture, broader
 situated interpretation, useful concept learning and rumination remain open;

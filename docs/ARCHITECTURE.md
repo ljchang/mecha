@@ -12863,6 +12863,14 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   The required v6 receipt `lineage_version=2` marker rejects intermediate files
   produced before this invariant; silently backfilling a marker would certify
   lineage that was never checked. Published v1–v5 files retain their own behavior.
+- **Unsupported tool composition cannot shed provenance.** A native `code`
+  program may call GoalMemory while its outer result contains copied memory.
+  Direct-tool matching alone cannot attribute that copy. This first bridge
+  refuses native `Program` records and `code` calls, including code traces with
+  missing program evidence, before persistence. The source guard applies the
+  same refusal to previously captured traces; an authentic old binding does not
+  make incomplete lineage safe. Supporting code-mode capture requires explicit
+  nested-call provenance, separately from its already-propagated taint.
 - **Retry capture, never execution.** A host capture identity binds session,
   prefix, criterion/check and evaluator versions. Exact still-authorized retries
   reuse the receipt; conflicts refuse. Forgetting a receipt member purges its

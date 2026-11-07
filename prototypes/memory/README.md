@@ -41,6 +41,10 @@ Library callers must preserve the example's confinement: recorded and actual
 workspaces match, and tools have no grants or alternate access to host records.
 The adapter does not establish those conditions for an arbitrary tool registry.
 
+Native code-mode/program traces are refused by admission and source guards;
+this bridge currently supports direct-tool captures. Nested-call provenance is
+required before code-mode capture can be enabled.
+
 The host adapter accepts explicit Test sessions only. It freezes one criterion
 before dispatch, rejects ambiguous/changed goal histories, and retries capture
 without executing tools. `GoalMemory::open_with_source_guard` injects current

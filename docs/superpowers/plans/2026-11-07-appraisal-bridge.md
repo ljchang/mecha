@@ -64,6 +64,11 @@
 - [x] Update owner-private Site with exact implemented scope/limits.
 - [x] Prepare draft PR update and required owner-corpus privacy gate. Publication completion is recorded by the PR head/checks; do not merge or deploy production.
 
+## Follow-up gate after automated review
+
+- [x] Refuse native code/program captures and prior bindings, before evidence assembly; scoped rereview and focused tests pass at `12e2432c4`.
+- [ ] Finish exact-fix full Spark checks and owner-corpus privacy scan after Tailscale authentication, then push the correction and inspect the next automated review.
+
 ## Integration decisions
 
 The supported completed range rejects native late results/failures and resumed
