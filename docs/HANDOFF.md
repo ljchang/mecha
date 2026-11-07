@@ -56,16 +56,21 @@ build, 6302 default tests / 0 failed / 25 ignored, fmt and strict Clippy passed.
 independent oracle, frozen rubric and audits: results/memory-benefit-20261107.
 Current GitHub CI/review status remains on draft PR #846; no merge is authorized.
 
-**Next MVP slice:** bridge one ordinary guarded task into memory capture and
-existing appraisal, then recall it on a fresh invocation with a changed constraint.
+**Next MVP slice (owner priority, 2026-11-07):** streamline appraisal integration
+per `MECHA-MEMORY-DESIGN.md` §31. Two source audits and an independent builder
+review found no unresolved design blocker. The design is not implemented. First
+bridge one ordinary guarded task into memory capture and existing appraisal, then recall it on a fresh invocation with a changed constraint.
 Reuse `Agent::run_in`, the tool registry and plan checks; do not build another
 executor. `GoalMemory::call` already preserves `GoalContext` lessons and past
 appraisals, and synthetic action feedback reuses `planning::StepFeedback`.
 However, fixture feedback has no goal/criterion linkage, the memory reader passes
 `Situation.needs=None`, and the prototype action/comparison path does not call
-`appraisal::of_session` or `live_readout`. Capture the run's actual observation,
-checked result, goal/context snapshot, existing appraisal and available homeostat
-readings as separate source-linked records. Missing sensors remain unknown.
+`appraisal::of_session` or `live_readout`. Capture the run's actual observation
+and checked result into source-linked
+memory; retain host-only goal/sensor/appraisal context in its canonical records.
+Do not serialize full Appraisal/RunStats into reader-visible memory. Preserve
+Clean-only interpretation eligibility and explicit source withdrawal checks;
+missing sensors remain unknown.
 Start in an explicit synthetic workspace; use fast inference as baseline and
 bounded reconsideration for failed checks. A second invocation must demonstrate
 useful recall and changed-goal interpretation without rewriting the historical
@@ -87,14 +92,15 @@ per-field usage missingness remains open. No unrelated subsystem open item or
 production deployment claim was requalified by this memory-only increment.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#does-recalled-experience-improve-decisions
-Research v0.22 published 2026-11-07, source
-`bc17cf494cc76962564f92ee2768f052bbc35a24`, deployment
-`appgdep_6aef1f9b29088191b3693649ec7f4d5a` succeeded. All 63 prior IDs retained
-(64 current); internal links, 22 revision rows, inline scripts, unchanged SVG and
-dist mirror checked. The published browser page was reloaded and verified against
-the new comparison table and results. Shared production binaries, services,
-configuration, owner stores and nightly jobs were not changed.
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
+Research v0.23 published 2026-11-07, source
+`ccf9890b1dd68c0238cb6bab588015fa9661a7d4`, deployment
+`appgdep_6aef22df774881918ab672554810d2f9` succeeded. All 64 prior IDs retained
+(65 current); internal links, scripts, unchanged SVG and dist mirror checked.
+The v0.22 comparison results were verified in the published browser; v0.23's
+text-only design addition was statically checked and native publication confirmed.
+Shared production binaries, services, configuration, owner stores and nightly
+jobs were not changed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live

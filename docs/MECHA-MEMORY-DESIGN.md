@@ -2517,3 +2517,190 @@ separate denominators. Independent prose review uses a frozen rubric, with
 condition labels and aggregate scores hidden where practical. No protocol/rubric
 change is justified by looking at these outcomes. This authored diagnostic is not
 a held-out benchmark, production trial or matched v3/v4 comparison.
+
+## 31. Appraisal integration and simplification for the MVP
+
+2026-11-07. **Proposed implementation design, not shipped.** The owner asked to
+focus the next increment on a working memory/appraisal loop and explicitly permits
+streamlining earlier appraisal iterations. This follows §30's completed diagnostic;
+it does not reopen the decision to keep owner knowledge and agent memory independent.
+
+### 31.1 What the source audit establishes
+
+| Existing responsibility | Reuse / integration decision |
+| --- | --- |
+| `appraisal::of_session`, `for_transcript` | Keep deterministic signed outcome assessment, evidence attribution and origin classification. This is session-scoped; do not repeat the whole assessment as a new independent success for each resumed run. |
+| `appraisal::live_readout` | Keep the lightweight UI view. It has less joined evidence than offline assessment and must not be stored as a complete replacement. |
+| `distill::Distiller::appraise`, CLI `Appraiser::appraise` | Keep grounded interpretation semantics; decouple its eventual v2 producer from the graph `EpisodeTurn` follow-up. Do not add a third permanent interpretation/lesson writer. |
+| `AppraisalStore::record`, `SessionEvidence`, `Clean` | Preserve one-read evidence/taint admission, bounds, pointer resolution, unknown provenance, withdrawal and clean-reader policy while adapting storage. |
+| `AppraisalStore::score`, `teach` | Preserve prediction-versus-owner-act scoring and counterfactual evidence as distinct record kinds; neither is an observed task outcome. |
+| `GoalMemory::call`, `GoalContext::call` | Existing memory overlay already preserves lessons and past appraisals. Extend the evidence bridge rather than replacing planning context. |
+| `memory_action_runtime::feedback` | Reuses `planning::StepFeedback`, but goal/criterion/call linkage is missing and execution is a finite synthetic fixture. It is not the ordinary runtime integration. |
+| `Homeostat`, `GoalTrack`, `RunStats`, `Session` | Reuse actual host context and transcript records. Current memory `Situation.needs` is caller text, not a sensor interface; `run` passes `None`. |
+
+The source audit found no justification for deleting the whole old appraisal
+subsystem. The largest simplification opportunity is shared evidence assembly and
+independent producers, not collapsing different assertions into a single summary.
+Small wrappers with no production in-tree callers (`appraisal::live`, `for_session`)
+are only public-API retirement candidates; absence of external callers is unproven.
+Optional/default wire fields and legacy readers are active compatibility behavior.
+
+### 31.2 One loop, four responsibilities
+
+1. **Capture experience:** retain what was requested, what the existing executor
+   actually did, what was observed, and the source/goal/context identity.
+2. **Interpret:** propose what that experience means in the current situation,
+   using memory and the current goal. A model interpretation is a revisable
+   hypothesis with evidence, not an observation or authorization.
+3. **Evaluate:** compute objective checks with code; assess goal relevance and
+   effects using the existing appraisal functions; preserve prediction residuals
+   and uncertainty. Evidence verification, semantic quality and policy permission
+   remain separate verdicts.
+4. **Retain and recall:** persist linked experience/interpretation records and
+   retrieve eligible evidence when another decision needs it. Reappraisal creates
+   a new context-bound interpretation; it does not edit the old experience.
+
+The same records can later serve planning and rumination. Rumination changes when
+and against which counterfactual context the loop runs, not which store defines
+truth. Concept formation remains a later provisional abstraction over several
+experiences, with held-out usefulness tests and counterexamples.
+
+**Implementer's default:** preserve the existing deterministic appraiser and
+executor. First build a narrow capture adapter. Then remove graph dependence from
+interpretation generation behind the same grounded admission contract. Avoid a
+wholesale appraisal rewrite before an ordinary task has completed this loop.
+
+### 31.3 Record and authority contracts
+
+A host-owned experience envelope binds these references; names below describe
+roles, not new generic JSON tables:
+
+- **Episode identity:** explicit synthetic account/domain, session identity,
+  transcript prefix digest and record range, original source revisions, and
+  occurrence/recording times. A resumed session advances the captured prefix;
+  it does not reattribute old outcomes to a later goal.
+- **Context snapshot:** confirmed `GoalRef` and confirmation provenance, exact
+  goal/acceptance-criterion revision, event-time goal association where available,
+  knowledge snapshot and host clock. Unknown event-time attribution stays unknown;
+  the final session goal is not a substitute for all earlier events.
+- **Observation/check:** actual execution receipt, original result/artifact digest,
+  frozen criterion and check identity, and existing `StepFeedback`/`Verification`.
+  Passing a process or model-written check alone is not owner acceptance or task
+  completion. Refused, unavailable, pending and failed remain distinct.
+- **Assessment reference:** evaluator/version and exact input references for the
+  existing deterministic appraisal. Derived assessments are reproducible views;
+  a retained historical snapshot is explicitly a cache of specified inputs, not
+  a mutable second source of truth. New evidence creates a new version.
+- **Interpretation (later increment):** grounded `TextAppraisal`-equivalent claims,
+  scope, source pointers and original origin/taint; hypotheses and lessons remain
+  proposals. Prospective prediction, backfill, counterfactual and observed outcome
+  retain different kinds and times.
+
+**Host context and model evidence require separate projections.** Existing charter
+sensors/setpoints and full Homeostat/RunStats/Appraisal payloads are not exposed in
+model prompts or memory tool answers; numeric valence is also host-only. Read
+existing recorded measurements once;
+missing/deferred/sparse/withdrawn states remain distinct, and snapshots never
+become current sensor readings. The evaluator can use host-side context without
+publishing it. The first memory projection contains admitted observations,
+artifact-check results and ordinary goal/criterion text only; no numeric internal
+sensor values, hidden thresholds or sensor-derived rationale. Any later exposure
+policy is a distinct design change, not a side effect of serialization.
+
+The original JSONL remains the authoritative transcript. Do not copy its entire
+host record into a searchable `Capture.text`. A bounded, source-linked evidence
+projection is retained in SQLite for recall, with the original pointer/digest
+available to a host audit. Host-only snapshots stay in the original private
+record system, outside the reader's database/connection, for this first slice.
+
+**Provenance must be enforced, not decorative.** `Memory::capture` currently creates
+root evidence; revision IDs inside JSON do not create dependency edges. Add a typed
+host admission path for a projection plus its exact eligible memory dependencies,
+committed atomically with its idempotency identity. It must not be callable as a
+model tool or accept model claims as authenticated execution. Reuse store dependency,
+access and suppression checks; no transaction crosses dispatch or inference.
+
+For the first slice, only sensor-free original source passages and observations
+are imported into the reader database. Each projection depends on those records;
+full host records are represented by opaque host audit locators/digests, never
+reader-visible ancestors. The host adapter rechecks that external source binding
+and the session's current withdrawal/suppression status before admission and before
+serving such projections. If a binding cannot be checked, withhold it. Do not link
+a readable projection to a sensor-bearing raw memory record: today's
+`knowledge_bundle` returns dependency contents, and merely hiding that ancestor's
+scope makes the projection inaccessible rather than safely redacted.
+
+A receipt keys domain/account/session/prefix/check/evaluator versions. Repeating
+the same admission is idempotent; conflicting content under that identity fails.
+Restart retries only persistence, never the action. A forgotten/withdrawn source
+suppresses both projection and late capture; externally held source bytes are not
+claimed erased by deleting a SQLite row. Keep graph and nightly writers untouched.
+
+### 31.4 Preserve the trust boundary while using experience
+
+The existing `Clean` reader is a privileged interpretation/learning path. Memory
+retrieval is external/untrusted evidence and arms the ordinary conversation taint.
+An appraisal of that run may therefore be ineligible for `Clean`; that is expected,
+not a reason to clear taint. Such text appraisals remain owner-only under the
+current policy; the first slice recalls admitted factual observations, not those
+interpretations. A future untrusted-interpretation reader needs a separate explicit
+policy design and tests, rather than generic capture bypassing `Clean`. Host-authenticated execution
+proves that a call occurred; it does not certify the truth of returned text.
+
+Neither a successful appraisal nor a high utility estimate grants action authority,
+changes the owner charter, promotes a lesson, or weakens the path jail, hooks,
+sandbox, cancellation or outbox. Reuse `Agent::run_in` and its existing registry.
+No new universal scalar combines permission, task success, resource cost and
+semantic confidence; `Metric`, `Setpoint` and `GoalRef` remain distinct types.
+
+### 31.5 Build order and the working-MVP exit test
+
+**A — evidence bridge, no additional model pass.** In an isolated synthetic home
+and workspace, run an ordinary bounded task through the existing executor and
+plan/check machinery. Capture the transcript and independently checked artifact,
+resolve the existing session appraisal from explicit supplied records, and retain
+only the allowed memory projection. The bridge loads no ambient owner stores.
+Use injected/synthetic goal, sensor and joined-store snapshots for qualification;
+production connectors and encryption qualification remain outside this step.
+
+**B — second-run use.** Reopen the same memory from another process. Supply a
+changed owner-confirmed task constraint, retrieve the first observation through
+`GoalMemory`, and produce/check the new artifact. A suitable initial task family
+is converting synthetic CSV into a specified JSON report: prior experience can
+expose quoted-newline or missing-field handling; the next task changes inclusion
+or validation requirements. Gold output is held by the independent grader, not
+included in the model packet. Baseline may already succeed, so no positive gain
+is assumed or required to call persistence correct.
+
+**C — interpretation decoupling and consolidation.** Extract a bounded episode
+packet and grounded draft-admission interface from the existing distill/appraisal
+path. Add an independently budgeted v2 interpretation producer only as the
+replacement for that responsibility; retain graph episode export unchanged.
+Compare grounding, scope, cost and consumer eligibility before routing any default
+writer or deleting old orchestration. Do not migrate stored history in this slice.
+
+The first usable opt-in MVP requires A and B plus explicit results: a task with a
+verified outcome is captured once; a new process retrieves it; a changed constraint
+produces a separately evaluated decision; traces distinguish observation, historical
+assessment and present interpretation. Include negative cases: successful tool but
+wrong artifact; missing/blocked check; changed goal during a session; missing sensor;
+malicious retrieved instruction; source revision/withdrawal/forgetting; and a crash
+after execution before capture. No resumed path repeats an uncertain side effect.
+
+Lifecycle qualification uses authored providers and actual store/dispatcher paths.
+A separately frozen model comparison measures artifact correctness, useful recall,
+current-constraint adherence, abstention, provenance and cost on fresh cases. Report
+ceiling effects/no gain honestly. This milestone demonstrates an opt-in agent-memory
+workflow; production rollout and useful learned concepts/rumination have separate
+exit gates. Do not claim a complete research vision from this smaller MVP.
+
+### 31.6 Retirement policy
+
+Consolidate shared evidence assembly first. Remove an old producer only after its
+callers switch, replacement results pass, history remains readable and rollback is
+available. Keep existing wire compatibility until a versioned migration explicitly
+owns it. Reflector lessons versus appraisal lessons remain a measured comparison;
+choose a replacement on quality/coverage/cost rather than keeping a third writer.
+No deletion is justified merely by an old comment, an unused in-tree wrapper or a
+large file. The next implementation should reduce duplicated orchestration while
+preserving distinct evidence, interpretation, evaluation and permission contracts.
