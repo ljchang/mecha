@@ -14,6 +14,51 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-06 — outcome recall under changed goals (prototype branch).**
+Implementation `3be9ddecf` adds read-only `memory_outcome_reappraisal` and
+`evaluate-outcome-recall`: source expectations remain identical between arms, and
+only treatment receives the exact retained action observation through bounded
+recall. A same-workload numeric actual supersedes its expectation for current
+arithmetic without rewriting either episode. Historical feedback/recommendations
+and hidden simulator data stay outside prompts. Opaque guards cover all frozen
+raw hits plus complete action/model/read lineage, and fresh canonical-store checks
+prevent post-inference reports from an obsolete connection. Source invalidation
+aborts the pair; ordinary model failures remain rows. No new schema or action.
+
+Independent task and final reviews found two real guard defects before execution:
+unrelated recalled audit hits were not revalidated, and a database replacement could
+leave the final check on an old connection. Both reproduced in failing regressions
+and were fixed. Pilot review also caught optimized Python removing assertion-based
+validation and interruption omitting an incomplete matrix; unconditional checks and
+atomic interrupted accounting fixed both. Thirteen focused core tests pass. Spark
+qualification passed 6,545 all-feature tests (0 failed, 28 ignored), 6,264 default tests
+(0 failed, 25 ignored), 198 standalone tests, formatting, strict Clippy, workspace/release
+builds and privacy checking. All 63 Python tests passed on the installed artifact,
+including scripted 20-response CLI pairing and paused-discovery source revocation
+with zero completion requests; qualification used zero real inference.
+
+The frozen real pilot then made 20 first-response calls: five authored contracts,
+seeds 7/19, counterbalanced source-only/source-plus-outcome, no repair. Resident
+`qwen3.6-35b-a3b-uncensored`, temperature 0.6, thinking off, 8,192 output-token cap and
+zero retries. Four primary pairs scored simulator-optimal 4/8 in both arms: no gain.
+Visible-evidence appropriate answers fell 8/8→4/8; outcome context led to Quill at
+budget 4 and Nori at budget 2 in both seeds, all four infeasible proposals withheld.
+Required model abstentions were 0/2. The fifth hidden-quality pair scored visible
+appropriateness 2/2 and simulator optimality 0/2 in each arm; missing knowledge must not
+be relabeled as a reasoning error. All 20citation sets were complete, not proof of
+explanation entailment. A conservative independent explanation audit judged 5/10 source-only and 4/10 outcome-arm reasons strictly supported, with two additional outcome reasons marked ambiguous rather than false. The grading treats an initial false claim followed by correction as a non-clean explanation; these are explicit qualitative judgments, not an automated truth metric.
+
+No recorded call/format/model-identity errors or missing usage. Source-only cost
+3,702 input /1,214 output tokens and 17.773s; outcome context 4,222 /2,197 and 27.000s, total
+7,924 /3,411 tokens and 44.773s. Four withheld reasons reached the schema's 1,000-character
+limit and ended mid-sentence; valid JSON and sub-cap token counts do not establish
+sound reasoning. Exact freeze/preparations/source hashes and unchanged database
+were audited. These are development cases, not held-out generalization. No new
+action executed, no production service/configuration/owner-store/nightly change.
+Installed prototype SHA256 `22adb10ccfc2f82c2a0f0c1d34819a48c340dc2c8cddc110f7733c54e9823a7d`;
+artifacts `results/memory-outcome-reappraisal-20261107/`. Next work targets constraint
+application/abstention with fresh configurations; this negative result remains intact.
+
 **2026-11-06 — durable synthetic actions and independent outcomes (prototype branch).**
 Implementation `4379eef50` adds explicit schema v5 and
 `memory_action_runtime::{bind,reserve,PendingAction::execute,settle,advance,run}`.

@@ -13095,7 +13095,11 @@ labels never become a current plan's feasibility judgment.
 
 **A frozen comparison is not permission to use revoked evidence.** Both arms use
 one frozen snapshot and exact auditable recall/projection; current source access,
-freshness and cancellation are rechecked after provider discovery and after inference.
+freshness and lifecycle eligibility are rechecked after provider discovery and after
+inference. This includes every retained raw-recall anchor/context hit, even when it
+is unrelated to the selected action; an audit can disclose revoked evidence too.
+Post-inference and final checks reopen the canonical database rather than trusting
+an old connection whose pathname may now name a different store.
 Invalidation stops the pair and returns no newly exposed source-dependent report;
 ordinary model failures remain failed rows. No transaction spans inference and no
 comparison writes a new action or changes source records. Source-supported scoring

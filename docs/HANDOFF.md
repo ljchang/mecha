@@ -34,58 +34,62 @@ replacement is deferred until v2 is solid. See the current-scope addendum in
 main `6b709e08b`; do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
-**2026-11-06 — durable synthetic action loop implemented (`4379eef50`).**
-Explicit `Memory::create_durable_action` creates schema v5. The new
-`memory_action_runtime::{bind,reserve,settle,advance,run}` authenticates a retained
-recommendation, binds one host-selected closed fixture, reserves before execution,
-and retains independent actual measurements followed by deterministic
-`planning::StepFeedback`. The CLI exposes `init-action` and
-`durable-act bind/run/status/cancel`. This is default-off, synthetic-only and not
-connected to the production executor or appraisal loop. See design section 26 and
-`prototypes/memory/README.md` for the exact CLI surface.
+**2026-11-06 — read-only outcome reappraisal implemented and measured (`3be9ddecf`).**
+The v5 durable read → decision → host simulation → outcome → feedback path remains
+implemented. `memory_outcome_reappraisal::{prepare_pair,evaluate_pair}` now compares
+identical original expectations with/without one exact actual observation returned
+by bounded recall, under a changed current contract. CLI `evaluate-outcome-recall`
+requires explicit synthetic input/access/model and a frozen snapshot for inference.
+It writes no source/action records and does not connect production appraisal.
 
-Interrupted reservations stay spent/indeterminate; settled observations resume
-feedback without executing again. Cancellation can retain a real started outcome
-but cannot permit further work. Current-source/access guards, complete dependency
-erasure and capture-key suppression cover the read/model/action closure. Expected
-source values, actual observations and goal feedback remain separate. Refused and
-unknown results have no fabricated numeric measurements.
+Every retained raw-recall anchor/context is revalidated, including unrelated hits;
+post-inference and final checks freshly reopen the canonical store. Source
+invalidation suppresses the new report and subsequent calls. The independent
+`outcome_reappraisal_trial.py` freezes ten pairs before inference, validates full
+preparations even under optimized Python, and records incomplete interrupted
+matrices with unknown dispatch counts rather than retrying.
 
-Verified at `4379eef50`: Spark all-feature workspace tests **6530 passed /0 failed
-/28 ignored**; default workspace tests **6264 /0 /25**. Formatting, strict
-all-target/all-feature Clippy, all-target workspace/release builds and current privacy gate
-passed. Independent store/runtime and whole-increment reviews found no actionable
-findings. Ten new process/lifecycle tests and two CLI tests passed; process kills
-before execution, after execution and after settlement retained controlled handler
-counts 0→0, 1→1 and 1→1 across reopening; concurrent reservations completed one
-handler. Eval inventory is 36 cases /15 tags. Unavailable sandbox backends are not
-claimed qualified by these aggregate counts.
+Verified exact product `3be9ddecf`: Spark all-feature workspace **6545 passed /0
+failed /28 ignored**; default workspace **6264 /0 /25**; standalone **198 passed**.
+Formatting, strict all-target/all-feature Clippy, workspace/release builds and the
+privacy gate passed. All **63 Python tests** passed against the installed release,
+including the two actual-CLI checks (authored HTTP responses, zero real inference).
+Independent task/final code reviews are clean after reproduced guard and runner
+fixes. Eval inventory remains 36 cases /15 tags. Unavailable sandbox backends are
+not claimed qualified by aggregate counts.
 
-Both the local and installed Spark standalone actual-CLI audits passed **5/5 cases**, using six authored
-HTTP responses and **zero real model inference**: mismatched expectation versus
-actual measurement, pass, refused, unknown and abstention. Source energy 2 remains
-beside actual energy 9, correctly failing budget 5. The audit checked recursive
-provenance, feedback arithmetic and exact outcome recall. Logs/artifacts:
-`results/memory-durable-action-20261106/` and
-`results/memory-durable-action-qualification-20261106/`. Prior real-model pilot
-results are historical evidence in HISTORY, not new action-performance results.
+**Measured pilot: no primary decision gain.** Twenty first-response calls completed
+at seeds 7/19 with the resident `qwen3.6-35b-a3b-uncensored`, no thinking or repair.
+Both arms scored **4/8 simulator-optimal primary proposals**. Visible-evidence
+appropriate answers were **8/8 source-only versus 4/8 source-plus-outcome**; the
+latter produced four infeasible proposals, all host-withheld, and **0/2 required
+model abstentions**. The separate hidden-quality diagnostic was evidence-appropriate
+2/2 in each arm but simulator-optimal 0/2 in each: the missing alternative measurement
+was unavailable to both prompts. All 20 citation sets were complete, which did not
+establish sound explanations. A conservative independent explanation audit judged 5/10 source-only and 4/10 outcome-arm reasons strictly supported, with two additional outcome reasons marked ambiguous rather than false. The grading treats an initial false claim followed by correction as a non-clean explanation; these are explicit qualitative judgments, not an automated truth metric.
 
-The isolated Spark install is
-`~/.local/share/mecha-prototypes/memory-action-20261106/bin/mecha`, implementation
-`4379eef50bb7b1c2ba0bdc74952ac8af02cd5b05`, SHA256
-`7bdad7c2b6096d9fb5882a5c9a15a30a9a8e855e0e6df74b6817cd202f3eede5`.
-Verified its version, new CLI surface and all five scripted cases from the actual
-installed release binary. Spark artifacts:
-`results/memory-durable-action-spark-20261106/`. Later documentation-only commits
-do not change qualified product bytes.
+The original database and all full frozen preparations were unchanged. Total
+usage 7,924 input /3,411 output tokens and 44.773s summed call time; outcome context cost
+more (4,222 /2,197 tokens, 27.000s) than source-only (3,702 /1,214 tokens, 17.773s). This is a
+five-case development diagnostic, not held-out generalization or equal-token benefit.
+Four withheld reasons reached their 1,000-character schema limit and ended mid-sentence
+inside valid JSON; provider raw finish reasons are not retained. No new action ran.
 
-**Next:** qualify a later decision under changed goals using these actual outcomes,
-compared with an otherwise matched no-outcome condition. Keep software durability
-and model decision improvement separate. Address the currently conservative
-transitive-freshness rule in a focused design: revising a consulted source also
-makes its independently measured outcome ineligible for recall. Separating
-historical provenance from current evidential support must preserve access
-revocation and forgetting. No second planner/executor is needed.
+Isolated installed Spark binary:
+`~/.local/share/mecha-prototypes/memory-outcome-20261107/bin/mecha`, implementation
+`3be9ddecf7a2e8d935edc51ddad63c6c0f9030ab`, SHA256
+`22adb10ccfc2f82c2a0f0c1d34819a48c340dc2c8cddc110f7733c54e9823a7d`.
+Verified matching build/install hashes, version, CLI and full scripted qualification.
+Local/Spark artifacts: `results/memory-outcome-reappraisal-20261107/` (pilot,
+immutable freeze, qualification logs and independent explanation audit).
+
+**Next:** improve constraint application and genuine abstention before expanding
+memory features. Design a separate frozen comparison of feasibility-first responses
+and bounded reasoning on fresh source/outcome configurations, holding retrieval fixed.
+Preserve this negative pilot rather than retuning it into an apparent success.
+The transitive-freshness limitation also remains: revising a consulted source makes
+its independently measured outcome ineligible. A future provenance/support split
+must preserve access revocation and forgetting. No second planner/executor is needed.
 
 Still open: reliable semantic evaluation, production action/appraisal integration,
 internal sensors, useful concept discovery/revision and rumination, production
@@ -97,14 +101,14 @@ block was resolved by the increment; other subsystem deployment claims below wer
 not requalified by this memory-only session.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#from-a-recommendation-to-an-observed-outcome
-Research v0.18 published 2026-11-06, source
-`c060b83d49ba14601d4d8057f48274ce012ca552`, deployment
-`appgdep_6aee6c9ca1bc8191bb2625a74da84ec6` succeeded. All 59 prior IDs retained
-(60 current); internal links, revision table, inline scripts and dist mirror
-checked. Browser preview verified the new outcome section; native publication
-confirmed the matching source was deployed. Shared production binaries, services,
-configuration, owner stores and nightly jobs were not changed.
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#does-recalling-an-outcome-change-the-next-decision
+Research v0.19 published 2026-11-06, source
+`9cd7c45b77d4e45eccd2b41a428f994ad7846bc7`, deployment
+`appgdep_6aee9af781548191afa462d1dccd0b29` succeeded. All 60 prior IDs retained
+(61 current); internal links, revision table, inline scripts, unchanged SVG and dist
+mirror checked. Browser preview verified the new comparison and results tables;
+native publication confirmed matching source deployment. Shared production binaries,
+services, configuration, owner stores and nightly jobs were not changed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live

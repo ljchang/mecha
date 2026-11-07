@@ -12,8 +12,11 @@ structured decisions 9/24 to 24/24 and independently supported rationale plus de
 checks. That read adapter makes no model calls. §25 now adds an explicit v4 durable
 model-decision runtime at `3ed543a17`, with raw responses saved before source-only
 assessment and one optional revision. §26 now adds a closed host-simulated action,
-independent outcome and retained StepFeedback at `4379eef50`. Later decision gains
-and production appraisal integration remain unqualified. See `HANDOFF.md` for current
+independent outcome and retained StepFeedback at `4379eef50`. §27 now adds read-only
+paired outcome reappraisal at `3be9ddecf`. Its 20-call
+development pilot found no primary simulator-optimal gain (4/8 versus 4/8) and four
+host-withheld infeasible proposals; required model abstention remains unreliable.
+Production appraisal integration remains unqualified. See `HANDOFF.md` for current
 state and `HISTORY.md` for verified work; earlier proposals/results remain below.
 
 **Owner decision — independent systems for now (2026-11-05):** mecha-graph
