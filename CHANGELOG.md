@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental outcome recall adds opt-in feasibility-first responses and bounded
+  reasoning. Per-option measurements, source attribution and hard-constraint checks
+  are independently verified; inconsistent proposals are withheld without rewriting
+  the model answer. Legacy requests remain unchanged. A separate frozen diagnostic
+  distinguishes genuine abstention from host withholding.
+
 - Experimental memory adds a read-only outcome-recall comparison. Original source
   expectations and an actual retained outcome stay separate while two matched
   model conditions evaluate a new goal. Frozen retrieval, current-source guards

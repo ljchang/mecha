@@ -34,80 +34,78 @@ replacement is deferred until v2 is solid. See the current-scope addendum in
 main `6b709e08b`; do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
-**2026-11-06 — read-only outcome reappraisal implemented and measured (`3be9ddecf`).**
-The v5 durable read → decision → host simulation → outcome → feedback path remains
-implemented. `memory_outcome_reappraisal::{prepare_pair,evaluate_pair}` now compares
-identical original expectations with/without one exact actual observation returned
-by bounded recall, under a changed current contract. CLI `evaluate-outcome-recall`
-requires explicit synthetic input/access/model and a frozen snapshot for inference.
-It writes no source/action records and does not connect production appraisal.
+**2026-11-06 — constraint application and abstention diagnostic (`96f3c479f`).**
+The v5 durable read → decision → host simulation → outcome → feedback path and
+read-only source/outcome comparison remain implemented. Opt-in
+`prepare_pair_with_options` adds choice-first/feasibility-first response formats,
+explicit inclusive energy/quality constraints, empty-feasible-set abstention and
+bounded reasoning. `PreparedPair::finish` independently reconstructs values,
+provenance and checks; withholding preserves the raw model choice. Legacy
+`prepare_pair` v1 bytes/defaults remain unchanged. No persistence migration,
+new action, production appraisal integration or owner-knowledge change.
 
-Every retained raw-recall anchor/context is revalidated, including unrelated hits;
-post-inference and final checks freshly reopen the canonical store. Source
-invalidation suppresses the new report and subsequent calls. The independent
-`outcome_reappraisal_trial.py` freezes ten pairs before inference, validates full
-preparations even under optimized Python, and records incomplete interrupted
-matrices with unknown dispatch counts rather than retrying.
+Exact product `96f3c479f` passed Spark qualification: **6,549 all-feature tests /0
+failed /28 ignored**, **6,264 default /0 /25**, **198 standalone**; formatting,
+strict all-target/all-feature Clippy, workspace/release builds. All **76 Python
+checks passed** against the installed release, including actual-CLI tests. The
+24-response scripted rehearsal verified actual HTTP prompts/settings/schema order
+with zero real inference. Independent task/final reviews have no major/medium
+findings. Eval inventory remains 36 cases /15 tags; unavailable sandbox backends
+are not qualified merely by aggregate counts.
 
-Verified exact product `3be9ddecf`: Spark all-feature workspace **6545 passed /0
-failed /28 ignored**; default workspace **6264 /0 /25**; standalone **198 passed**.
-Formatting, strict all-target/all-feature Clippy, workspace/release builds and the
-privacy gate passed. All **63 Python tests** passed against the installed release,
-including the two actual-CLI checks (authored HTTP responses, zero real inference).
-Independent task/final code reviews are clean after reproduced guard and runner
-fixes. Eval inventory remains 36 cases /15 tags. Unavailable sandbox backends are
-not claimed qualified by aggregate counts.
+**Corrective model diagnostic: better choices, incomplete evidence records.**
+All 24 first responses completed: four authored contracts, seed 59, two evidence
+conditions and three treatments, no repairs. Choice-first, feasibility-first and
+feasibility-first with 2,048-token reasoning scored visible appropriateness
+**5/8, 7/8, 8/8** and required abstention **1/4, 3/4, 4/4** respectively; no
+unnecessary abstentions. Comparison citations were complete **8/8, 7/8, 7/8**;
+structured checks correct **7/8 and 8/8**. Host withholding was **3, 2, 1**,
+not successful model abstention. All 16 structured replies emitted checks first.
+The fastest structured condition still called energy 3 feasible under budget 1.
+Both structured conditions once omitted the superseded expectation from their
+citation array despite mentioning it in prose. No condition passed the complete
+predeclared gate. Combined strict support was **2/8, 6/8, 7/8**; supported prose alone cannot
+repair a contradictory structured choice. See HISTORY for the independent
+explanation audit, ambiguity sensitivity and costs.
 
-**Measured pilot: no primary decision gain.** Twenty first-response calls completed
-at seeds 7/19 with the resident `qwen3.6-35b-a3b-uncensored`, no thinking or repair.
-Both arms scored **4/8 simulator-optimal primary proposals**. Visible-evidence
-appropriate answers were **8/8 source-only versus 4/8 source-plus-outcome**; the
-latter produced four infeasible proposals, all host-withheld, and **0/2 required
-model abstentions**. The separate hidden-quality diagnostic was evidence-appropriate
-2/2 in each arm but simulator-optimal 0/2 in each: the missing alternative measurement
-was unavailable to both prompts. All 20 citation sets were complete, which did not
-establish sound explanations. A conservative independent explanation audit judged 5/10 source-only and 4/10 outcome-arm reasons strictly supported, with two additional outcome reasons marked ambiguous rather than false. The grading treats an initial false claim followed by correction as a non-clean explanation; these are explicit qualitative judgments, not an automated truth metric.
+The initial run exposed a schema-order delivery defect, stopped with 22 completed
+responses and two uncertain dispatch slots, and remains separate. Corrective 24
+keeps total possible inference within the original 48-call ceiling but sacrifices
+replication; it is not a replacement for missing rows or a holdout result. Frozen
+preparations, source/projection hashes, databases and model settings were audited.
+The earlier 20-call outcome pilot remains unchanged in HISTORY.
 
-The original database and all full frozen preparations were unchanged. Total
-usage 7,924 input /3,411 output tokens and 44.773s summed call time; outcome context cost
-more (4,222 /2,197 tokens, 27.000s) than source-only (3,702 /1,214 tokens, 17.773s). This is a
-five-case development diagnostic, not held-out generalization or equal-token benefit.
-Four withheld reasons reached their 1,000-character schema limit and ended mid-sentence
-inside valid JSON; provider raw finish reasons are not retained. No new action ran.
+Installed isolated Spark artifact:
+`~/.local/share/mecha-prototypes/memory-constraint-96f3c479f/bin/mecha`, SHA256
+`3139b5531c854e225c580f095e82119f21825b3cc90904a616b9e71af9001150`.
+Build/install digests, version, CLI behavior and actual transport were verified.
+Local/Spark artifacts: `results/memory-constraint-20261106/`; original stopped
+`pilot/` and completed `pilot-corrective/` must not be pooled.
 
-Isolated installed Spark binary:
-`~/.local/share/mecha-prototypes/memory-outcome-20261107/bin/mecha`, implementation
-`3be9ddecf7a2e8d935edc51ddad63c6c0f9030ab`, SHA256
-`22adb10ccfc2f82c2a0f0c1d34819a48c340dc2c8cddc110f7733c54e9823a7d`.
-Verified matching build/install hashes, version, CLI and full scripted qualification.
-Local/Spark artifacts: `results/memory-outcome-reappraisal-20261107/` (pilot,
-immutable freeze, qualification logs and independent explanation audit).
-
-**Next:** improve constraint application and genuine abstention before expanding
-memory features. Design a separate frozen comparison of feasibility-first responses
-and bounded reasoning on fresh source/outcome configurations, holding retrieval fixed.
-Preserve this negative pilot rather than retuning it into an apparent success.
-The transitive-freshness limitation also remains: revising a consulted source makes
-its independently measured outcome ineligible. A future provenance/support split
-must preserve access revocation and forgetting. No second planner/executor is needed.
+**Next:** close the evidence-record gap without silently repairing model answers,
+then freeze broader multi-seed cases to test whether the reasoning benefit holds
+at acceptable cost. Keep raw model citations separate from host-derived comparison
+provenance. Do not promote the diagnostic to production based on 8/8 choices alone.
+The transitive-freshness limitation remains: revising a consulted source makes
+its independently measured outcome ineligible. A provenance/support split must
+preserve access revocation and forgetting. No second planner/executor is needed.
 
 Still open: reliable semantic evaluation, production action/appraisal integration,
 internal sensors, useful concept discovery/revision and rumination, production
 private-data/encryption/source-fidelity qualification, retention/recovery,
 corpus-scale/identity/vector retrieval and an authorized personal-knowledge bridge.
 Nightly migration and merging mecha-graph remain deferred. Generic provider
-per-field usage missingness remains open. No open item outside this initial memory
-block was resolved by the increment; other subsystem deployment claims below were
-not requalified by this memory-only session.
+per-field usage missingness remains open. No unrelated subsystem open item or
+production deployment claim was requalified by this memory-only increment.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#does-recalling-an-outcome-change-the-next-decision
-Research v0.19 published 2026-11-06, source
-`9cd7c45b77d4e45eccd2b41a428f994ad7846bc7`, deployment
-`appgdep_6aee9af781548191afa462d1dccd0b29` succeeded. All 60 prior IDs retained
-(61 current); internal links, revision table, inline scripts, unchanged SVG and dist
-mirror checked. Browser preview verified the new comparison and results tables;
-native publication confirmed matching source deployment. Shared production binaries,
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#check-feasibility-before-choosing
+Research v0.20 published 2026-11-06, source
+`00ee7aa18883c61fbd6fa3a9190a024de4d95798`, deployment
+`appgdep_6aeead6d74448191929f985175dc3467` succeeded. All 61 prior IDs retained
+(62 current); internal links, revision order, inline scripts, unchanged SVG and
+dist mirror checked. Browser preview verified the new results table; native
+publication confirmed the matching source deployment. Shared production binaries,
 services, configuration, owner stores and nightly jobs were not changed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**

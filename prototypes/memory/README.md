@@ -1080,3 +1080,55 @@ the answer follows all visible evidence. The runner records cost, missing usage,
 failed or incomplete calls, and database content before/after. These development
 cases do not establish generalization or equal-token efficiency. This evaluation
 has no durable inference-resume contract and does not replay an interrupted pair.
+
+### Constraint application and abstention diagnostic
+
+`evaluate-outcome-recall --response-format choice-first` opts into protocol v3
+with explicit inclusive energy/quality constraints, an explicit empty-feasible-set
+abstention rule, and a 4,000-character reason limit. `--response-format
+feasibility-first` additionally requests `candidate_checks` for all three methods:
+effective minutes, energy, quality, source ID and separate constraint/feasibility
+Booleans. The host reconstructs these independently; `checks_consistent:false`
+withholds the proposal while retaining its original choice. Correct checks cannot
+make an infeasible choice admissible. This is still read-only, untrusted advice.
+
+Optional `--thinking-budget` accepts 1–4096 only with a response format and turns
+on bounded thinking within the 8,192-token output allowance. The diagnostic uses
+2,048. Reports retain requested controls and returned `reasoning_char_count` per
+row; a requested flag alone does not prove the model returned reasoning. Omit
+both new flags to retain the original v1 protocol exactly.
+
+The separate runner creates three new fixture stores through the existing durable
+read/model/action CLI, with three authored HTTP replies and zero real inference:
+
+```bash
+python3 prototypes/memory/constraint_abstention_trial.py \
+  --create-fixtures --binary /absolute/prototype/mecha --output /new/fixtures
+python3 prototypes/memory/constraint_abstention_trial.py \
+  --qualify-scripted --binary /absolute/prototype/mecha \
+  --fixtures /new/fixtures/fixtures.json --output /new/scripted-qualification
+```
+
+Scripted qualification exercises all 24 corrective responses through the actual CLI and
+compares captured HTTP prompts, schemas, order and generation settings against
+frozen requests. This is transport/implementation qualification, not a model score.
+To run the fixed development experiment with an already-resident local model:
+
+```bash
+python3 prototypes/memory/constraint_abstention_trial.py \
+  --binary /absolute/prototype/mecha --fixtures /new/fixtures/fixtures.json \
+  --endpoint http://127.0.0.1:8080 --model RESIDENT_MODEL \
+  --holds-dir /absolute/holds --output /new/constraint-comparison
+```
+
+Four corrective contracts, seed 59, both evidence arms and three response treatments
+produce 24 first responses. The initial run was stopped after a schema-order defect;
+its 22 completed responses and two uncertain dispatch slots remain separate. The
+corrective run keeps total possible calls within the original 48-call ceiling.
+This one-seed diagnostic is not a holdout or a replacement for the missing rows. All preparations precede inference; interrupted runs
+retain incomplete slots and are never resumed or repaired. The independent rubric
+uses fixture evidence, not host assessments; model choice, model abstention,
+check accuracy, host withholding and hidden simulator score remain separate.
+Source/setting drift aborts; original stores are audited before and after.
+See `docs/MECHA-MEMORY-DESIGN.md` section 28 for the design and `docs/HISTORY.md`
+for measured results. The old outcome pilot is unchanged.

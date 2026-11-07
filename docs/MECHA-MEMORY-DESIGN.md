@@ -2433,3 +2433,23 @@ citation coverage, host withholding, explanation support, errors, costs and unkn
 usage separately. Freeze sources, snapshots, requests, controls and the complete
 schedule before inference. Preserve the preceding negative result. This is another
 small development diagnostic, not a held-out demonstration of general memory benefit.
+
+**Delivery correction:** the initial 48-slot run stopped after 22 recorded responses
+and two uncertain dispatch slots. The emitted schema properties still placed choice
+before candidate_checks; the required array's order did not deliver the intended
+checks-first treatment. Preserve that incomplete run without an efficacy claim.
+The corrected core protocol is v3 and explicitly emits candidate_checks first.
+A separate 24-response diagnostic uses one new seed 59 and new contracts (3,9),
+(1,9),(6,8),(6,9) on the same authenticated source/actual configurations. This keeps
+total possible calls within 48 but sacrifices replication. Actual HTTP schema order
+and returned response field order are measured explicitly; sorted exports alone
+cannot establish generation order.
+
+**Implemented and measured at `96f3c479f`:** the corrective 24-response run
+completed with unchanged stores/settings and correct emitted field order. Visible
+choices scored 5/8, 7/8 and 8/8; required abstentions 1/4, 3/4 and 4/4 for
+choice-first, feasibility-first and feasibility-first with bounded reasoning.
+Citation omissions keep both structured conditions below the complete acceptance
+gate; the fast structured arm also has one false feasibility check. See HISTORY
+for explanation support, costs and qualification. The one-seed result does not
+establish generalization or production readiness.

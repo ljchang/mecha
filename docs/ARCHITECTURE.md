@@ -13105,3 +13105,28 @@ ordinary model failures remain failed rows. No transaction spans inference and n
 comparison writes a new action or changes source records. Source-supported scoring
 uses visible evidence only; hidden simulator outcomes belong to a separate offline
 score, so a missing measurement cannot masquerade as a reasoning failure.
+
+**Model-authored feasibility checks remain claims.** The opt-in v3 outcome
+response lists effective values, their source and each hard-constraint comparison.
+`PreparedPair::finish` reconstructs the effective table from original projections,
+checks exact values/provenance/Booleans, and independently assesses the choice.
+False checks only withhold; they never repair a raw choice or provide action
+permission. Empty-feasible-set abstention is explicitly requested and measured
+separately from host withholding. Legacy v1 prompt/schema/parser bytes remain
+unchanged through `prepare_pair`; diagnostic options require the new entry point.
+
+**A response bound measures the submitted response.** Diagnostic reasons use
+4,000 decoded Unicode characters, with a separate 65,536-byte JSON envelope bound
+that accommodates escaped surrogate pairs. The independent scorer checks raw
+length separately from nonblank content: trimming first incorrectly accepted a
+4,002-character padded reason during review. Requested reasoning controls and
+returned channel size are separate audit fields; authored HTTP qualification
+checks actual request bodies against the frozen schedule, not just report labels.
+
+**Test decoder order at the serialized boundary.** The first checks-first schema
+changed the `required` array but appended `candidate_checks` after `choice` in
+`properties`; actual constrained responses still chose first. `diagnostic_request`
+now constructs the properties map in generation order. Qualify actual HTTP order
+and retain explicit order arrays/raw requests: recursively sorted audit exports
+erase the very property being tested. Response order does not prove hidden
+reasoning order.

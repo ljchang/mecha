@@ -14,6 +14,83 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-06 — explicit constraints and genuine abstention (prototype branch).**
+Product `96f3c479f` adds opt-in outcome response protocol v3 via
+`PairOptions`, `ResponseFormat`, `prepare_pair_with_options` and CLI controls.
+`diagnostic_request` specifies both inclusive constraints, fastest feasible choice
+and empty-set abstention. Structured candidate values, applicable source and
+Booleans remain model claims; `PreparedPair::finish` reconstructs them independently
+and withholds inconsistency without replacing the raw choice. Legacy v1 remains
+unchanged. Reasons use a 4,000-Unicode-character cap and 65,536-byte JSON bound;
+recursive duplicate fields, foreign/missing entries and invalid values fail.
+Reasoning budget is explicitly opt-in, 1–4096 within the 8,192 output allowance.
+No new persistence schema, executor, production wiring or dependency.
+
+Independent core/runner/final review found and fixed raw-reason whitespace bound
+handling, then actual HTTP qualification exposed a fake-router discovery fixture
+error before any inference. Full Spark qualification passed 6,549 all-feature tests
+(0 failed, 28 ignored), 6,264 default (0 failed, 25 ignored), 198 standalone, formatting,
+strict Clippy and workspace/release builds. All 76 Python tests passed against the
+installed artifact. The corrected 24-authored-response HTTP rehearsal matched
+frozen prompts, schemas, generation controls and property order exactly; it used
+zero real inference. Installed SHA256
+`3139b5531c854e225c580f095e82119f21825b3cc90904a616b9e71af9001150`
+matches the qualified release. Current eval inventory remains 36 cases/15 tags.
+
+The initial real run stopped with 22 completed responses and two uncertain dispatch
+slots after discovery that changing only the schema's `required` order left choice
+before checks in `properties`. All 14 structured replies emitted choice first; the
+intended checks-first treatment was not delivered. Preserve that incomplete run
+without efficacy interpretation. Corrected v3 explicitly constructs the properties
+map in order; raw HTTP strings and explicit order arrays prevent sorted audit
+exports from hiding this defect.
+
+A separately frozen corrective diagnostic used four new contracts E–H, seed 59,
+both evidence conditions and three treatments: 24 first responses, no retries or
+repairs. Total possible inference stayed within the original 48-call ceiling.
+This sacrificed replication; new thresholds on inspected fixture lineages do not
+make a holdout. Resident model `qwen3.6-35b-a3b-uncensored`, temperature 0.6,
+8,192 output cap, shared 4,000-character reason cap; reasoning arm requested 2,048.
+All 24 responses were valid, all 16 structured replies emitted checks before choice,
+and all 8 reasoning-arm replies returned reasoning-channel content. Original
+preparations, source/projection hashes, databases and model settings stayed intact.
+
+Choice-first / feasibility-first / feasibility-first with reasoning scored visible
+choice correctness **5/8 /7/8 /8/8**, required abstention **1/4 /3/4 /4/4**, and
+unnecessary abstention **0/4 each**. Comparison citations were complete 8/8, 7/8, 7/8;
+structured values/provenance/checks correct 7/8 and 8/8. Host withheld 3, 2, 1 responses.
+In F/outcome, fast structured output copied Arden energy 3 but marked it feasible
+under budget 1, selected Arden, then correctly said no method was feasible in prose.
+The two citation omissions were E/outcome with reasoning (superseded Arden
+expectation e2) and G/outcome fast structured (superseded Quill expectation e3).
+Both reasons discussed the omitted source; the required citation array did not.
+No condition passed the full predeclared gate. Simulator-optimal counts 4/8, 3/8, 4/8
+remain distinct: E/source and G/H contain information gaps, not evidence that an
+unsupported hidden-optimal guess is good reasoning.
+
+Independent qualitative explanation support was 5/8,8/8,8/8, with two false
+provenance claims and one ambiguous baseline reason. Combined strict grounded
+responses were 2/8,6/8,7/8: three baseline and one fast-structured choice/prose
+contradictions cannot be repaired from their prose. Treating the ambiguous baseline
+G/outcome wording charitably raises its combined score to 3/8; explicit final-stance
+correction adds no credit. All comparisons separate those sensitivity judgments.
+No reason saturated its 4,000-character cap (maxima 1,167/996/781 characters).
+
+Per-treatment input/output tokens and summed call time were 3,560/2,591/30.299 s,
+4,120/3,681/37.582 s, and 4,104/19,395/187.557 s. Total 11,784 input/25,667 output,
+255.438 s; no missing usage. Reasoning cost about 5 times fast structured latency
+and output. These are development diagnostics, not equal-compute generalization
+or proof of memory benefit. Raw replies and independent audit artifacts remain
+in `results/memory-constraint-20261106/`; stopped `pilot/` and completed
+`pilot-corrective/` are separate. Production services, owner stores and nightly
+jobs were unchanged. Next work is evidence-record simplification followed by
+broader frozen replication, not production promotion from 8/8 choices.
+
+Owner-private research Site v0.20 published from source
+`00ee7aa18883c61fbd6fa3a9190a024de4d95798`, deployment
+`appgdep_6aeead6d74448191929f985175dc3467` succeeded. All 61 prior anchors retained,
+62 current, unchanged figure; links/scripts/dist and visible results table checked.
+
 **2026-11-06 — outcome recall under changed goals (prototype branch).**
 Implementation `3be9ddecf` adds read-only `memory_outcome_reappraisal` and
 `evaluate-outcome-recall`: source expectations remain identical between arms, and
@@ -9094,6 +9171,17 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+A checks-first constrained response schema reordered `required` but appended its
+checks field after choice in `properties`. The first real run therefore emitted
+choice first; all 14 completed structured responses had the unintended order.
+The run stopped with 22 recorded responses and two uncertain dispatch slots.
+Corrected `diagnostic_request` constructs properties in order; qualification
+compares actual HTTP bytes/order with the freeze, and scoring retains raw reply
+order. **Test treatment delivery at the serialized boundary.** Sorted exports
+and a required-field list cannot prove decoder generation order, and output
+order cannot establish hidden reasoning order. Preserve the failed delivery
+separately rather than labeling it a negative model-treatment result.
 
 The requirements evaluator passed scripted tests but its first real-model replay
 completed only 3/9 workflows: a schema with broad step bounds and free-text guards

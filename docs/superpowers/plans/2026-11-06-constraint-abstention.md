@@ -7,6 +7,10 @@
 **Tech Stack:** Rust core/CLI, SQLite, Python experiment harness.
 **Spec:** User request and MECHA-MEMORY-DESIGN.md section28.
 
+**Current protocol:** the corrective addendum below supersedes the original v2
+48-slot schedule. Core v3 / runner v2 use 24 corrective responses; the stopped
+original run remains separate.
+
 User-authorized increment, 2026-11-06. Base 41c6bce18. Spec: improve application of current hard constraints and genuine model abstention, with source-linked outcome memory, independent grading and no new action execution during comparison.
 
 ## Global constraints
@@ -26,3 +30,21 @@ Parent integrates reviewed worker commits. Required baseline then focused regres
 
 ## Task 4: documentation and delivery
 Parent updates existing design/handoff/history/changelog/prototype guide and living Site preserving audience/anchors. Commit/push draftPR846 coherently, poll CI and automatedreview and fix verified major/medium findings. Record implementation vs tests vs model findings separately. Next steps determined by frozen diagnostic; no additional adaptive model runs thisincrement.
+
+## Corrective protocol after delivery failure
+
+The first run stopped with 22 completed responses and two uncertain dispatch slots.
+Actual CLI schema output listed choice/citations/reason before candidate_checks;
+reordering only `required` did not deliver the intended checks-first protocol.
+Preserve that incomplete v2 run and make no efficacy claim from it. Correct the
+serialized properties order and version the diagnostic core protocol as v3.
+Qualify actual HTTP property order explicitly; sorted JSON exports cannot prove it.
+
+Use a separate, frozen 24-response corrective diagnostic, keeping total possible
+inference within the original 48-call ceiling. Reuse authenticated source/actual
+lineages, but use new contracts E=(3,9), F=(1,9), G=(6,8), H=(6,9), where tuple is
+energy budget/minimum quality and stores are AB, AB, C, D respectively. One new
+seed59, both evidence conditions and all three treatments produce24 responses.
+Expected source/outcome answers are abstain/Arden, abstain/abstain, Quill/Arden,
+Quill/abstain. This is a one-seed corrective development check, not the originally
+planned replicated comparison, a replacement for missing rows, or a holdout.
