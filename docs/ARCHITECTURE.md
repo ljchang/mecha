@@ -8133,6 +8133,29 @@ The design decisions, each of which is a bug if undone:
   been mined into the owner's store. `DRIVER-DESIGN.md` D2 gives driven runs
   a learning store of their own (R6), never a scope, so `Driven` stays in
   `Situation::MARK_KINDS`.
+- **The driven mark is honoured through one door, and only narrows**
+  (`mecha_core::driven`, `DRIVER-DESIGN.md` D1b). The door is a fresh,
+  recorded `mecha run`. The mark is read from the environment, which every
+  verb inherits, so `setup::prepare_tools` refuses it on any start that did
+  not come through `setup::force_driven`. What it does:
+  - **Forces off.** No project layer (`main` forces `global_config_only`
+    for every command under the mark); MCP, hooks, grants, the mailbox,
+    `system_read` and fallbacks off as levers (`setup::DRIVEN_OFF`); and no
+    subagent.
+  - **Narrows the tools** to `driven::TOOLS` through `--tool`'s own
+    narrowing. Not a sweep over levers, because a tool with no `Lever`
+    (`persona_propose`) would slip past one.
+  - **Forces approvals and sends.** `block_sends_after_private`,
+    `trifecta = "block"`, `private` armed at start, `permission_mode =
+    "allow"`, and every question for a person refused (`DrivenApprover`,
+    whose text carries `driven::PROMPT_REFUSED` so D4 can count those rows).
+  - **Refuses to start** in both directions: a driven run whose sandbox can
+    reach the network or whose binds overlap the home, and an unmarked run
+    whose workspace a home-side marker covers, expired or not.
+  - **Is checked twice.** Before anything spawns (the switches thrown) and
+    after the build (nothing attached).
+  - **Records** the non-lever half on `RunConfig::driven`, because
+    `levers_off` cannot say it.
 - **The owner can mark a session an experiment after the fact**
   (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
   ordinary chat is not the owner's work, and the appraiser read two such

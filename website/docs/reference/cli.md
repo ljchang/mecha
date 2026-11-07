@@ -97,6 +97,23 @@ ceiling for callers that care which one it was.
 Approval prompts are only offered when stdin is a terminal and `--json` was not
 passed; otherwise the configured `permission_mode` decides.
 
+**A driven run** is a `mecha run` under `MECHA_SESSION_KIND=driven`: another
+agent running mecha on real work, recorded apart from yours. The mark only
+narrows:
+- **Config.** It reads your global config and no `mecha.toml`.
+- **Off.** MCP servers, hooks, grants, the mailbox, `system_read`, fallbacks
+  and subagents are dropped. The tools are a fixed list: the file tools,
+  `shell`, `code`, `skill`, `compact`, `todo` and `goal_context`.
+- **No sends.** Every send is refused for the whole run.
+- **Approvals.** The run's own calls are approved inside the sandbox. A
+  `prompt` rule is refused, never asked, and a `forbid` rule still applies.
+
+It refuses to start without a sandbox that cannot reach the network (`bwrap`
+or `docker` with `network = false`), or with a `[sandbox] readable` or
+`writable` path that overlaps the mecha home. It also refuses `--resume`,
+`--no-session` and `--read-only`, and every other command refuses the mark.
+What it forced is recorded on the session. See [`driven`](#driven).
+
 ```bash
 mecha run "summarize what changed in this repo today"
 
@@ -762,6 +779,32 @@ mecha work clean --producer briefing --keep 3
 ```
 
 See [The work directory](/docs/features/automation/work).
+
+## `driven`
+
+The markers a driven task's setup writes under the mecha home, one per task
+clone. While a marker exists, a run *not* marked driven whose workspace is
+inside that clone is refused, even after the marker's deadline. That is a
+driven task whose mark was lost, and it would otherwise run with your
+servers, hooks, grants and mailbox attached. `list` is the default
+subcommand.
+
+```
+mecha driven [list|mark|unmark] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | | Each marker, its clone, and whether it is live. |
+| `mark` | `<TASK> --clone <PATH>` | Write the task's marker covering that clone. The clone must exist and must not overlap the mecha home. |
+| `mark` | `--for <DURATION>` | How long the marker is live: `90s`, `30m`, `2h`, `1d`. Default `4h`. |
+| `unmark` | `<TASK>` | Remove the task's marker, at teardown. |
+
+```bash
+mecha driven mark pr-466 --clone ~/driven/pr-466 --for 2h
+mecha driven
+mecha driven unmark pr-466
+```
 
 ## `document`
 

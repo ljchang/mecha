@@ -2146,6 +2146,7 @@ mod tests {
                 compact_requested: None,
                 posture: mecha_core::closure::RunPosture::Unattended,
                 _mcp: Vec::new(),
+                driven: None,
             },
             ctx: mecha_core::tool::ToolCtx::default(),
         }

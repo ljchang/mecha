@@ -1,7 +1,7 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8–R11, all ruled; R7 is the owner's config and a precondition of a driven run). D1 is
-built in #848, not yet merged; nothing else is built.**
+**Status: 2026-11-07, designed and ruled (§9, R1–R6 and R8–R11, all ruled; R7 is the owner's config and a precondition of a driven run). D1 is
+merged (#848). D1b is built (`mecha_core::driven`, §7 "As built"); nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
 the owner's desk) gives mecha real work, mostly changes to mecha itself,
@@ -955,6 +955,37 @@ passes vacuously.
   reason.
 - **Peers.** Announce a model batch, check `.git/worktrees/*/MERGE_HEAD`
   before touching a shared tree, and give every task clone its own path.
+
+**As built (2026-11-07).** D1b lives in `mecha_core::driven` and in the
+CLI's `setup` and `commands::run`. The one door is `commands::run` on a fresh,
+recorded run: it throws the switches (`setup::force_driven`), and
+`setup::prepare_tools` refuses the mark on any start that did not come
+through that door. That refusal has to be there because the mark is read
+from the environment, which every verb inherits. Three places go beyond the
+text above, each in the narrowing direction:
+
+- **Fallbacks are off too.** `Lever::Fallback` joins the five levers, for the
+  same reason as subagents: a fallback answers a turn on a model that is
+  not the arm's, which is unpriced egress and a confound for D4.
+- **The home check runs both ways.** A `readable` or `writable` entry is
+  refused if it overlaps the home in either direction, not only when it
+  covers the home. A path *inside* the home, the marker directory
+  especially, binds exactly the part that matters. The workspace is held to
+  the same check.
+- **Task setup's marker has a verb**: `mecha driven mark | unmark | list`.
+  An unreadable marker is an error that names its file, because the refusal
+  it feeds is the unsafe direction.
+
+The forcing is checked twice:
+- **Before anything spawns.** The switches must be thrown, or the start
+  stops before a server can start.
+- **After the build.** No MCP client, hook, grant, mailbox or unlisted tool
+  may be attached.
+
+`mecha-cli/tests/driven_run.rs` exercises it through the real binary, where
+the kind override is live. The driven-draft marking on the owner's queue
+(the outbox bullet above) is not built: it has no reachable case while the
+allowlist registers no sender.
 
 ## 8. Open, and named
 

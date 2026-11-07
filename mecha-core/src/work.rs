@@ -326,7 +326,7 @@ pub fn ensure_outside_mecha_home(workspace: &Path) -> Result<()> {
 /// otherwise its deepest existing ancestor canonicalized, with the rest
 /// appended and its `.` and `..` taken as written. Lexical alone when no
 /// ancestor exists.
-fn as_it_would_resolve(path: &Path) -> PathBuf {
+pub(crate) fn as_it_would_resolve(path: &Path) -> PathBuf {
     use std::path::Component;
     if let Ok(c) = path.canonicalize() {
         return c;

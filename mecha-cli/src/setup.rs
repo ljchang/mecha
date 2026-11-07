@@ -59,6 +59,9 @@ pub struct Prepared {
     /// when the lever is off or there is no store: recorded and empty, not
     /// unknown.
     pub rules: mecha_core::learning::RulesCarried,
+    /// What a driven run forced and found (D1b), for the run record;
+    /// `None` on every run that is not driven.
+    pub driven: Option<mecha_core::driven::Forced>,
 }
 
 /// Everything except the model connection. Split out so `mecha tools` can list
@@ -106,6 +109,8 @@ pub struct PreparedTools {
     /// closing its own task. See [`posture_for`].
     pub posture: mecha_core::closure::RunPosture,
     pub _mcp: Vec<Arc<McpClient>>,
+    /// What a driven run forced (D1b); `build` completes it.
+    pub driven: Option<mecha_core::driven::Forced>,
 }
 
 /// The posture a front-end's run gets, unless it names one
@@ -468,6 +473,7 @@ fn build(
 ) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
+    let mut driven = tools.driven;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
     let mut provider = mecha_core::provider::build(provider_cfg)?;
@@ -500,6 +506,7 @@ fn build(
     for line in refused {
         eprintln!("mecha: {line} — not granted");
     }
+    let grants_off = grants.is_off();
     let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
         grants,
@@ -529,6 +536,7 @@ fn build(
     // event name should fail on every start, not only on the runs that use it.
     let hooks = mecha_core::hooks::HookSet::from_config(&cfg.hooks)?;
     let hooks = (!opts.no_hooks && !hooks.is_empty()).then(|| Arc::new(hooks));
+    let hooks_attached = hooks.is_some();
     // Approval rules: validated again here (config load already did) so a
     // rule set built any other way fails on every start too. Installed on the
     // parent and on every child below, like hooks and for the same reason —
@@ -1087,6 +1095,47 @@ fn build(
         }
     }
 
+    // D1b's other direction: a driven run is refused if any surface it
+    // forced off is still attached. The switches were thrown on `opts` and
+    // the config forced in `prepare_tools`, so this should never fire; it is
+    // the check that a future path around them stops the start rather than
+    // running with the owner's servers, hooks, grants or mailbox, or a tool
+    // nobody named (§7: an allowlist, never a sweep).
+    if let Some(forced) = driven.as_mut() {
+        forced.shell_rule_loaded = policy.rules_for("shell").next().is_some();
+        let mut attached = Vec::new();
+        if !tools._mcp.is_empty() {
+            attached.push(format!("{} MCP server(s)", tools._mcp.len()));
+        }
+        if hooks_attached {
+            attached.push("hooks".to_string());
+        }
+        if !grants_off {
+            attached.push("grants".to_string());
+        }
+        if tools.mailbox.is_some() {
+            attached.push("the mailbox".to_string());
+        }
+        let names: Vec<String> = agent
+            .registry()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        let unlisted = mecha_core::driven::unlisted(names.iter().map(String::as_str));
+        if !unlisted.is_empty() {
+            attached.push(format!(
+                "tools outside the allowlist: {}",
+                unlisted.join(", ")
+            ));
+        }
+        if !attached.is_empty() {
+            anyhow::bail!(
+                "refusing a driven run: still attached — {}",
+                attached.join("; ")
+            );
+        }
+    }
+
     let levers_off = levers_off(opts, &cfg);
     Ok(Prepared {
         agent,
@@ -1101,6 +1150,7 @@ fn build(
         skill: tools.skill,
         mailbox: tools.mailbox,
         _mcp: tools._mcp,
+        driven,
     })
 }
 
@@ -1205,6 +1255,54 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::PastAppraisals => opts.no_past_appraisals = true,
         Lever::SuccessExamples => opts.no_success_examples = true,
     }
+}
+
+/// The surfaces a driven run drops (`docs/DRIVER-DESIGN.md` D1b), as levers:
+/// thrown through [`switch_off`], so the run record's `levers_off` names
+/// them by the same definitions `mecha eval`'s bare arm uses.
+///
+/// `Fallback` is not in the design's list and is here on the subagent
+/// argument (§7): a fallback answers a turn on a model that is not the
+/// arm's, which is both an egress nobody priced and a confound for D4's
+/// split between harness and model.
+pub const DRIVEN_OFF: [Lever; 6] = [
+    Lever::Mcp,
+    Lever::Hooks,
+    Lever::Grants,
+    Lever::Messages,
+    Lever::SystemRead,
+    Lever::Fallback,
+];
+
+/// Make `opts` a driven run's: no project layer, the [`DRIVEN_OFF`] levers
+/// thrown, and the tool surface narrowed to [`mecha_core::driven::TOOLS`]
+/// through `--tool`'s own narrowing. That narrowing, and no other mechanism,
+/// because the startup check that warns about an `[outbox] tools` name with
+/// no registered tool stays quiet for a name narrowed out this way, and
+/// every routed name in the owner's global file would otherwise warn on
+/// every driven start for a reason that is not a typo.
+///
+/// A caller's own `--tool` list narrows further, never wider. An
+/// intersection that leaves nothing is refused: an empty list means *every*
+/// tool to `--tool`, which is the opposite of what was asked.
+pub fn force_driven(opts: &mut GlobalOpts) -> Result<()> {
+    opts.global_config_only = true;
+    for lever in DRIVEN_OFF {
+        switch_off(opts, lever);
+    }
+    let tools: Vec<String> = mecha_core::driven::TOOLS
+        .iter()
+        .filter(|t| opts.tools.is_empty() || opts.tools.iter().any(|k| k == *t))
+        .map(|t| t.to_string())
+        .collect();
+    anyhow::ensure!(
+        !tools.is_empty(),
+        "a driven run's tools are {}, and `--tool` named none of them",
+        mecha_core::driven::TOOLS.join(", ")
+    );
+    opts.tools = tools;
+    opts.driven_run = true;
+    Ok(())
 }
 
 /// Which of `wanted` an active `--tool` allowlist leaves out.
@@ -1432,7 +1530,50 @@ async fn prepare_tools_carrying(
     carried_todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
 ) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    // A driven run is honoured through one door: a fresh one-shot `mecha
+    // run`, which forces its switches (`force_driven`) before it gets here
+    // (`docs/DRIVER-DESIGN.md` §6, D1b). Every other start under the mark is
+    // refused, so a verb nobody thought about cannot build an agent with
+    // the owner's surfaces attached and a driven label on its session.
+    let marked = mecha_core::driven::marked();
+    anyhow::ensure!(
+        marked || !opts.driven_run,
+        "a driven run needs `{}=driven` in its environment",
+        mecha_core::session::SESSION_KIND_ENV
+    );
+    anyhow::ensure!(
+        !marked || opts.driven_run,
+        "`{}=driven` is a driven run, and a driven run is a fresh one-shot `mecha run`; \
+         this command does not take it",
+        mecha_core::session::SESSION_KIND_ENV
+    );
     let mut cfg = load_config(opts)?;
+    // And its switches thrown *before* anything below can spawn a server or
+    // open a store: `build`'s audit of what ended up attached is the second
+    // check, and by then an owner's MCP server would already have started.
+    if opts.driven_run {
+        let off = levers_off(opts, &cfg);
+        let on: Vec<String> = DRIVEN_OFF
+            .iter()
+            .filter(|l| !off.contains(l))
+            .map(|l| format!("{l:?}"))
+            .collect();
+        anyhow::ensure!(
+            on.is_empty() && opts.global_config_only && !opts.tools.is_empty(),
+            "refusing a driven run: its switches are not thrown ({}{}{})",
+            on.join(", "),
+            if opts.global_config_only {
+                ""
+            } else {
+                " project layer;"
+            },
+            if opts.tools.is_empty() {
+                " no tool allowlist"
+            } else {
+                ""
+            }
+        );
+    }
 
     // --- flags override config ---
     if let Some(effort) = opts.effort {
@@ -1666,12 +1807,21 @@ async fn prepare_tools_carrying(
     if opts.read_only {
         cfg.tools.permission_mode = PermissionMode::ReadOnly;
     }
+    // The half of a driven run's forcing that is not a lever: the leak
+    // guard, `trifecta = "block"`, `permission_mode = "allow"`, and no
+    // subagent. After every flag is folded, so nothing later undoes it.
+    anyhow::ensure!(
+        !(opts.driven_run && opts.read_only),
+        "a driven run's approvals are `allow` inside its sandbox; `--read-only` would refuse \
+         every edit as a harness refusal"
+    );
+    let mut driven = opts.driven_run.then(|| mecha_core::driven::force(&mut cfg));
 
     let workspace = opts
         .workspace
         .clone()
         .or_else(|| cfg.tools.workspace.clone())
-        .unwrap_or(cwd);
+        .unwrap_or_else(|| cwd.clone());
     let workspace = workspace
         .canonicalize()
         .with_context(|| format!("workspace {} does not exist", workspace.display()))?;
@@ -1684,6 +1834,27 @@ async fn prepare_tools_carrying(
 
     // --- tools ---
     let sandbox = Arc::new(mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone()));
+    // Both directions of the driven mark are refused at start (D1b). A
+    // driven run whose sandbox can reach the network, or whose binds overlap
+    // the home, stops here; a run *not* marked driven whose workspace a
+    // driven marker covers stops too, expired marker or not, because every
+    // surface the mark removes is gated on the mark alone.
+    {
+        let home = mecha_core::work::mecha_home()?;
+        match driven.as_mut() {
+            Some(forced) => {
+                let why = mecha_core::driven::refusals(&cfg, &sandbox, &workspace, &home);
+                if !why.is_empty() {
+                    anyhow::bail!("refusing a driven run:\n  - {}", why.join("\n  - "));
+                }
+                (forced.project_configs, forced.project_configs_truncated) =
+                    mecha_core::driven::project_configs(&cwd, &workspace);
+                forced.marker =
+                    mecha_core::driven::live_task(&home, &workspace, chrono::Utc::now())?;
+            }
+            None => mecha_core::driven::refuse_unmarked(&home, &workspace)?,
+        }
+    }
     let mut registry = Registry::new().with_builtins(&cfg.tools, Arc::clone(&sandbox));
 
     // A concrete handle onto the todo tool, for a UI that renders the list
@@ -2244,14 +2415,17 @@ async fn prepare_tools_carrying(
         registry.insert(Arc::new(mecha_core::tool::request_access::RequestAccess));
     }
 
-    let approver: Arc<dyn Approver> =
-        if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
-            Arc::new(TerminalApprover::default())
-        } else {
-            Arc::new(ModeApprover {
-                mode: cfg.tools.permission_mode,
-            })
-        };
+    // A driven run's approver answers its own calls `allow` and refuses
+    // every question for a person: the only one there is the driver.
+    let approver: Arc<dyn Approver> = if driven.is_some() {
+        Arc::new(mecha_core::driven::DrivenApprover)
+    } else if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
+        Arc::new(TerminalApprover::default())
+    } else {
+        Arc::new(ModeApprover {
+            mode: cfg.tools.permission_mode,
+        })
+    };
     let (approver, denials) = scripted_refusals(approver)?;
 
     if let Some(profile) = opts.tool_profile {
@@ -2297,6 +2471,7 @@ async fn prepare_tools_carrying(
         compact_requested,
         posture,
         _mcp: clients,
+        driven,
     })
 }
 
@@ -4086,6 +4261,7 @@ mod tests {
                 compact_requested: None,
                 posture: mecha_core::closure::RunPosture::Unattended,
                 _mcp: Vec::new(),
+                driven: None,
             }
         };
         let plain = GlobalOpts::default();
