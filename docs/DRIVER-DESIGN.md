@@ -185,11 +185,28 @@ The shape:
     own documentation calls `RUN_DOMAINS` membership "a *proxy* for the
     consumer rather than the consumer itself" and names the residual it
     does not catch.
-  - Three tests: an owner-store `learn` refuses a driven reflection; a
-    store-agnostic reader (`learnable()`) never reports a driven reflection
-    as learnable, which is the direction the triage residual shows actually
-    rots; and a driven intervention under untrusted taint classifies
-    `Untrusted` and is learnable into neither store.
+  - **An edit cannot launder the driver out.** `learnable()` branches on
+    `provenance()`, and `provenance()` returns `Clean` for any reflection
+    with `edited_at` set, before the origin is consulted, because an edit is
+    how a reflection excluded for provenance is rescued: "an edit is a
+    promotion, and it has to be your own words". So a `Driven => false`
+    arm placed in the provenance match would hold only for an unedited
+    record, and editing a driven lesson would walk it into the owner's
+    store with no measured lift. The rule: both `learnable()` and
+    `learnable_into()` test the **recorded** origin
+    (`provenance_as_mined()`) for `Driven` *before* the edit promotion. An
+    edit cannot change who drove the run. Editing a driven reflection is
+    still the owner's act, and it rescues the lesson *within the driven
+    store*. The only door into the owner's store stays the promotion copy,
+    with its measured lift.
+  - Four tests: an owner-store `learn` refuses a driven reflection, **an
+    edited one included** (the case that tells the designs apart; an
+    unedited fixture passes vacuously); a store-agnostic reader
+    (`learnable()`) never reports a driven reflection as learnable, edited
+    or not, which is the direction the triage residual shows actually rots;
+    an edited driven reflection *is* learnable into the driven store; and a
+    driven intervention under untrusted taint classifies `Untrusted` and,
+    unedited, is learnable into neither store.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
   own documentation calls it "one gate away from being usable the day
   something can grade it". A driven run's hidden test is that grade. A
@@ -469,6 +486,17 @@ rather than trusting each run to be configured right:
   cannot grant escalation, and here the peer would be the driver. A model
   batch is announced to peers (below) by the driver, from outside the run,
   never by the run.
+- **Forced on: no sends at all.** The interlock fires only when *both*
+  `private` and `untrusted` are armed (`Taint::trifecta_armed`), so a
+  default-config run that reads files (arming `private`) keeps `http_fetch`
+  callable until outside content also arrives, and the charter rides in the
+  system prompt where no taint sees it (§9, R8). The guard that refuses on
+  `private` alone is `block_sends_after_private`, which defaults to off. So
+  the driven mark forces it on and arms `private` at start, since the
+  charter in the prompt is private data, which together refuse every send,
+  `Blind` and `Chosen`, for the whole run. The pilot's tasks are offline
+  repository work and lose nothing. A later task that needs the network is
+  a ruling, not a default.
 - **Kept**: builtins (under the interlock as always), the owner's learned
   rules, skills and charter. The harness is measured as the owner runs it,
   minus the private surfaces.
@@ -604,12 +632,14 @@ passes vacuously.
   contents. A second egress is not priced by this ruling and predates it:
   the interlock cannot see the charter at all. `Taint::private` is armed
   from tool capabilities and folded owner material, never from a system
-  block, so a run is not armed by the charter it carries. A repository task
-  arms `private` at its first file read, after which `http_fetch` is refused
-  as `Chosen`; the window before that first read is open, in every owner
-  run as in a driven one, but a driven run's prompt was written by an
-  outside agent. Arming `private` at start for a driven run would close the
-  window, and that is a build question for D1b.
+  block, so a run is not armed by the charter it carries. And arming
+  `private` alone refuses nothing by default: the interlock needs
+  `untrusted` too, and `block_sends_after_private` is off. So in a
+  default-config run `http_fetch` stays callable, charter and all, until
+  outside content arrives. That is pre-existing for every owner run. For a
+  driven run, whose prompt an outside agent wrote, D1b closes it: the mark
+  forces `block_sends_after_private` on and arms `private` at start, so a
+  driven run sends nothing (§7).
 - **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
   owner's eye before its first ceiling run.
 - **R10, owed.** Whether driven trajectories enter training at all, and if
