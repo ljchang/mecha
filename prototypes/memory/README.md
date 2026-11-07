@@ -1132,3 +1132,29 @@ check accuracy, host withholding and hidden simulator score remain separate.
 Source/setting drift aborts; original stores are audited before and after.
 See `docs/MECHA-MEMORY-DESIGN.md` section 28 for the design and `docs/HISTORY.md`
 for measured results. The old outcome pilot is unchanged.
+
+## Separate comparison provenance (opt-in response protocol v4)
+
+`memory --experimental --db <explicit-v5-store> evaluate-outcome-recall` accepts
+`--response-format feasibility-provenance` alongside the existing response modes.
+All existing explicit action/contract/query/model/snapshot/endpoint/holds arguments
+still apply. `--prepare-only` freezes the pair without inference. This is a
+response/report version; it does not migrate the database.
+
+V4 asks for the same feasibility-first candidate checks, but requires model
+citations for every effective measurement, including alternatives ruled out and
+an abstaining comparison. Extra supplied citations are allowed. A superseded
+expectation can be omitted from the model's citation array without losing its host
+lineage. Missing active sources and inconsistent checks remain withholding.
+
+The original citation array and raw reply remain intact. `comparison_provenance`
+records every supplied source revision/hash/role, effective method-source mapping,
+model-omitted packet IDs and missing effective citation IDs. `reason_status` is
+`unverified_model_prose`: arithmetic and source membership cannot certify the
+explanation. Existing suboptimal-choice and unnecessary-abstention findings stay
+advisory. Full packet access/freshness checks still apply, including superseded
+material; this is not a fix for historical-outcome transitive freshness.
+
+The v1 default and v3 modes/rubrics/results are unchanged. V4 qualification uses
+authored HTTP replies, not a claim of better model reasoning. A new frozen
+multi-seed model comparison is the next experiment.

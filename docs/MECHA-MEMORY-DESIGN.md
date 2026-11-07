@@ -2,6 +2,12 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Implementation addendum, 2026-11-07:** §28's v3 constraint/abstention
+protocol and corrective diagnostic are implemented; §29's opt-in v4 separates
+host comparison provenance from model citations. V4 changes the citation contract,
+not demonstrated model capability. See `HISTORY.md` for qualification and the
+unchanged prior results; `HANDOFF.md` records current next work.
+
 **Implementation addendum, 2026-11-06:** the default-off prototype includes
 §19 recall views, §20 checked reconsideration, §21 bounded observation acquisition,
 and §22 their combined v3 development trial. The latter improved within-run

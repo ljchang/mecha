@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental outcome recall adds opt-in `feasibility-provenance` response
+  protocol v4. Complete host comparison provenance stays separate from exact
+  model citations; every effective measurement must still be cited and checked.
+  Superseded-source omissions remain visible, explanations remain unverified,
+  and source revocation still applies to the full packet. Existing modes and
+  historical scores are unchanged; no new database schema or action authority.
+
 - Experimental outcome recall adds opt-in feasibility-first responses and bounded
   reasoning. Per-option measurements, source attribution and hard-constraint checks
   are independently verified; inconsistent proposals are withheld without rewriting

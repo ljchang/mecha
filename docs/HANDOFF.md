@@ -31,64 +31,51 @@ replacement is deferred until v2 is solid. See the current-scope addendum in
 
 **Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
 `codex/mecha-memory-v2-prototype`. This is the clean prototype snapshot on GitHub
-main `6b709e08b`; do not push the older private prototype branch, whose history
+main `d2adb3742`; do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
-**2026-11-06 — constraint application and abstention diagnostic (`96f3c479f`).**
-The v5 durable read → decision → host simulation → outcome → feedback path and
-read-only source/outcome comparison remain implemented. Opt-in
-`prepare_pair_with_options` adds choice-first/feasibility-first response formats,
-explicit inclusive energy/quality constraints, empty-feasible-set abstention and
-bounded reasoning. `PreparedPair::finish` independently reconstructs values,
-provenance and checks; withholding preserves the raw model choice. Legacy
-`prepare_pair` v1 bytes/defaults remain unchanged. No persistence migration,
-new action, production appraisal integration or owner-knowledge change.
+**2026-11-07 — comparison provenance (prototype branch).**
+`ResponseFormat::FeasibilityProvenance` and CLI `--response-format
+feasibility-provenance` select outcome protocol v4 over the existing v5 synthetic
+store. `PreparedPair::finish` retains exact model citations and a separate
+`ComparisonProvenance`: every supplied revision/hash and role, method-effective
+source mapping, packet omissions and missing effective citations. V4 requires
+citations for all effective measurements, including rejected alternatives and
+abstentions. Superseded-only omission no longer vetoes an otherwise eligible
+proposal; missing active evidence and false candidate checks still do. Free-text
+reasons are explicitly unverified. Existing v1/v3 bytes/defaults and all-source
+guards remain unchanged. No persistence migration or new action executor.
 
-Exact product `96f3c479f` passed Spark qualification: **6,549 all-feature tests /0
-failed /28 ignored**, **6,264 default /0 /25**, **198 standalone**; formatting,
-strict all-target/all-feature Clippy, workspace/release builds. All **76 Python
-checks passed** against the installed release, including actual-CLI tests. The
-24-response scripted rehearsal verified actual HTTP prompts/settings/schema order
-with zero real inference. Independent task/final reviews have no major/medium
-findings. Eval inventory remains 36 cases /15 tags; unavailable sandbox backends
-are not qualified merely by aggregate counts.
-
-**Corrective model diagnostic: better choices, incomplete evidence records.**
-All 24 first responses completed: four authored contracts, seed 59, two evidence
-conditions and three treatments, no repairs. Choice-first, feasibility-first and
-feasibility-first with 2,048-token reasoning scored visible appropriateness
-**5/8, 7/8, 8/8** and required abstention **1/4, 3/4, 4/4** respectively; no
-unnecessary abstentions. Comparison citations were complete **8/8, 7/8, 7/8**;
-structured checks correct **7/8 and 8/8**. Host withholding was **3, 2, 1**,
-not successful model abstention. All 16 structured replies emitted checks first.
-The fastest structured condition still called energy 3 feasible under budget 1.
-Both structured conditions once omitted the superseded expectation from their
-citation array despite mentioning it in prose. No condition passed the complete
-predeclared gate. Combined strict support was **2/8, 6/8, 7/8**; supported prose alone cannot
-repair a contradictory structured choice. See HISTORY for the independent
-explanation audit, ambiguity sensitivity and costs.
-
-The initial run exposed a schema-order delivery defect, stopped with 22 completed
-responses and two uncertain dispatch slots, and remains separate. Corrective 24
-keeps total possible inference within the original 48-call ceiling but sacrifices
-replication; it is not a replacement for missing rows or a holdout result. Frozen
-preparations, source/projection hashes, databases and model settings were audited.
-The earlier 20-call outcome pilot remains unchanged in HISTORY.
+Spark qualification at product `611bbc048`: **6,587 all-feature tests /0 failed
+/28 ignored**, **6,294 default /0 /25**, **198 standalone**; formatting,
+strict all-target/all-feature Clippy and workspace/release builds passed. All
+**78 Python tests passed, zero skipped**, against the independently installed
+release, including eight authored HTTP replies across three v4 cases and a v3
+control, plus v4 pre-dispatch revocation with zero completions/no report.
+The checks retained exact raw replies/citations, full source/projection hashes,
+actual transmitted schema order and unchanged fixture stores. Zero real inference.
+The first all-feature attempt hit an unchanged mail-hook ETXTBSY launch error;
+its exact retry and the full unchanged rerun passed. Both logs are retained.
 
 Installed isolated Spark artifact:
-`~/.local/share/mecha-prototypes/memory-constraint-96f3c479f/bin/mecha`, SHA256
-`3139b5531c854e225c580f095e82119f21825b3cc90904a616b9e71af9001150`.
-Build/install digests, version, CLI behavior and actual transport were verified.
-Local/Spark artifacts: `results/memory-constraint-20261106/`; original stopped
-`pilot/` and completed `pilot-corrective/` must not be pooled.
+`~/.local/share/mecha-prototypes/memory-provenance-611bbc048/bin/mecha`, SHA256
+`e39b1beb17514d0b996c835e1f587d5d547008ea7e008689a6f0feb23d63cef5`.
+Build/install hashes, version and actual CLI behavior verified. Results:
+`results/memory-provenance-20261107/qualification/`. Python qualification source
+is `ccee4000d`; it adds tests only to product `611bbc048`. The previous measured
+model diagnostic remains in HISTORY and `results/memory-constraint-20261106/`.
 
-**Next:** close the evidence-record gap without silently repairing model answers,
-then freeze broader multi-seed cases to test whether the reasoning benefit holds
-at acceptable cost. Keep raw model citations separate from host-derived comparison
-provenance. Do not promote the diagnostic to production based on 8/8 choices alone.
+**Next:** freeze broader multi-seed cases to test whether the bounded-reasoning
+benefit holds under the new citation contract at acceptable cost. Score raw model
+citations, effective-source support, full packet omissions, explanation fidelity,
+choice quality and host withholding separately. Earlier 24-response results remain
+unchanged: 8/8 visible choices in one condition did not pass the complete gate.
+This increment establishes bookkeeping, not improved model capability.
+
 The transitive-freshness limitation remains: revising a consulted source makes
-its independently measured outcome ineligible. A provenance/support split must
-preserve access revocation and forgetting. No second planner/executor is needed.
+its independently measured outcome ineligible. Separating historical provenance
+from current support must preserve access revocation and forgetting. No second
+planner/executor is needed.
 
 Still open: reliable semantic evaluation, production action/appraisal integration,
 internal sensors, useful concept discovery/revision and rumination, production
@@ -99,14 +86,14 @@ per-field usage missingness remains open. No unrelated subsystem open item or
 production deployment claim was requalified by this memory-only increment.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#check-feasibility-before-choosing
-Research v0.20 published 2026-11-06, source
-`00ee7aa18883c61fbd6fa3a9190a024de4d95798`, deployment
-`appgdep_6aeead6d74448191929f985175dc3467` succeeded. All 61 prior IDs retained
-(62 current); internal links, revision order, inline scripts, unchanged SVG and
-dist mirror checked. Browser preview verified the new results table; native
-publication confirmed the matching source deployment. Shared production binaries,
-services, configuration, owner stores and nightly jobs were not changed.
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#comparison-provenance-is-separate-from-model-citations
+Research v0.21 published 2026-11-07, source
+`a66f331d8f14d00e5fe5c43b0dc5946426e2febb`, deployment
+`appgdep_6aeecb467c848191849dc83621106ed5` succeeded. All62 prior IDs retained
+(63 current); internal links,21 revision rows,inline scripts,unchanged SVG and
+dist mirror checked. Browser preview verified the new comparison table and ledger;
+native publication confirmed the matching source deployment. Shared production
+binaries, services, configuration, owner stores and nightly jobs were not changed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live

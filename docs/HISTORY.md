@@ -14,6 +14,62 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-07 — comparison provenance distinct from model citations (prototype branch).**
+Product `611bbc048` adds `ResponseFormat::FeasibilityProvenance` and CLI
+`--response-format feasibility-provenance`, selecting outcome protocol v4.
+`PreparedPair::finish` keeps exact model citations/prose/replies and independently
+builds `ComparisonProvenance` from the frozen packet and effective arithmetic.
+The audit retains all source revision references and original/projection hashes,
+effective/superseded/non-numeric roles, method-source mapping and omissions.
+`assess_effective_measurement_citations` requires each effective source, including
+rejected alternatives and abstention; the shared legacy entry point keeps its
+all-passages rule. Missing active sources and false typed checks remain vetoes.
+A superseded-only omission can now pass the v4 citation contract without adding
+anything to the model's citation array. The reason is `unverified_model_prose`;
+existing advisory suboptimal-choice/unnecessary-abstention findings remain.
+No persistence schema, dependency, executor or production integration changed.
+
+Meaningful old-behavior regressions preceded implementation. Local qualification
+passed 25 outcome and 28 experience tests plus CLI compile/format checks. Independent
+core, qualification and final reviews found no major/medium findings. One minor
+remains: Python checks request hashes against frozen preparation rather than
+recomputing the digest; source/projection digests are independently recomputed.
+
+Spark qualification at product `611bbc048`: **6,587 all-feature tests /0 failed
+/28 ignored**, **6,294 default /0 /25**, **198 standalone**; formatting,
+strict all-target/all-feature Clippy and workspace/release builds passed. All
+**78 Python tests passed, zero skipped**, against the independently installed
+release, including eight authored HTTP replies across three v4 cases and a v3
+control, plus v4 pre-dispatch revocation with zero completions/no report.
+The checks retained exact raw replies/citations, full source/projection hashes,
+actual transmitted schema order and unchanged fixture stores. Zero real inference.
+The first all-feature attempt hit an unchanged mail-hook ETXTBSY launch error;
+its exact retry and the full unchanged rerun passed. Both logs are retained.
+
+Installed isolated Spark artifact:
+`~/.local/share/mecha-prototypes/memory-provenance-611bbc048/bin/mecha`, SHA256
+`e39b1beb17514d0b996c835e1f587d5d547008ea7e008689a6f0feb23d63cef5`.
+Build/install hashes, version and actual CLI behavior verified. Results:
+`results/memory-provenance-20261107/qualification/`. Python qualification source
+is `ccee4000d`; it adds tests only to product `611bbc048`. The previous measured
+model diagnostic remains in HISTORY and `results/memory-constraint-20261106/`.
+
+
+The first all-feature run failed in the unchanged mail-hook timeout test while
+launching its temporary executable with ETXTBSY (Text file busy). The exact isolated
+test and the full unchanged suite then passed. Both logs remain in the results;
+no cause beyond the observed launch error was established, and no mail behavior
+was changed. Current eval inventory is 36 cases /15 tags. Aggregate test totals
+do not qualify absent sandbox backends.
+
+This increment made zero real model calls and did not rescore prior diagnostics.
+It establishes a separate citation contract and audit, not improved reasoning.
+The previous 24-response findings below remain unchanged. Source-revision
+transitive freshness, semantic explanation verification and broader multi-seed
+quality/cost measurement remain open. Production binaries, services/configuration,
+owner memory and nightly jobs were unchanged.
+
+
 **2026-11-06 — explicit constraints and genuine abstention (prototype branch).**
 Product `96f3c479f` adds opt-in outcome response protocol v3 via
 `PairOptions`, `ResponseFormat`, `prepare_pair_with_options` and CLI controls.

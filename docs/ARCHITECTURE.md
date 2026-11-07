@@ -13268,3 +13268,16 @@ now constructs the properties map in generation order. Qualify actual HTTP order
 and retain explicit order arrays/raw requests: recursively sorted audit exports
 erase the very property being tested. Response order does not prove hidden
 reasoning order.
+
+**Host comparison lineage is not a model citation claim.** Opt-in outcome protocol
+v4 records the full supplied packet's revision references and original/projection
+hashes separately from the model's unchanged citation array. Its citation gate
+requires the host-derived effective measurement sources, including ruled-out
+alternatives and abstentions. Superseded expectations and non-numeric actuals stay
+in the packet/audit and all-source guards even when not required for arithmetic.
+`assess_effective_measurement_citations` shares the arithmetic checker without
+forging a model Choice or filtering the request. V1/v3 retain their all-passages
+citation rule. `ComparisonProvenance` records omitted packet IDs and missing active
+IDs independently; it never fills model citations or verifies explanation entailment.
+V4 labels the reason `unverified_model_prose`. Existing advisory findings for
+suboptimal choices and unnecessary abstentions remain separate from hard vetoes.
