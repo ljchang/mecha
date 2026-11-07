@@ -2110,3 +2110,79 @@ fn held_mail_rule_passes_are_not_failures() {
     };
     assert!(report_status(&report).is_ok());
 }
+
+#[test]
+fn retrospective_json_keeps_provider_holds_and_failures_distinct_from_zero_matches() {
+    let empty = engine::ApplyReport::default();
+    let complete = test_account_report("campus", &empty);
+    assert_eq!(complete["status"], "complete");
+    assert_eq!(complete["matched_rows"], 0);
+    let held = engine::ApplyReport { notices: vec!["campus/notices: held: provider cannot prove header absence for list_id/header matchers".into()], ..Default::default() };
+    let report = test_account_report("campus", &held);
+    assert_eq!(report["status"], "held");
+    assert!(report["matched_rows"].is_null());
+    let failed = engine::ApplyReport {
+        candidate_failures: 1,
+        ..Default::default()
+    };
+    assert_eq!(test_account_report("campus", &failed)["status"], "failed");
+    assert!(test_account_report("campus", &failed)["matched_rows"].is_null());
+}
+
+#[test]
+fn retrospective_graph_positive_raw_headers_are_rows_and_unknown_is_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let rule = store.install("notice", "description='Fictional list notice'\n[match]\nlist_id=['news.example.com']\n[[action]]\ndo='archive'\n", &Default::default()).unwrap();
+    for positive in [true, false] {
+        let mut message = json!({"id":"message-alpha", "conversationId":"thread-alpha", "from":{"emailAddress":{"address":"sender@example.com"}}, "receivedDateTime":"2026-11-03T12:00:00Z", "isDraft":false});
+        if positive {
+            message["internetMessageHeaders"] =
+                json!([{"name":"List-Id","value":"News <news.example.com>"}]);
+        }
+        let email = crate::microsoft::graph_mail::parse_outlook_message(&message);
+        let c = candidate(
+            "campus",
+            "thread-alpha",
+            &[email],
+            &["owner@example.edu".into()],
+            None,
+        )
+        .unwrap();
+        assert_ne!(c.headers_complete, Some(true));
+        let proves_absence = provider_proves_header_absence(Provider::Outlook, HeaderRead::Full);
+        assert!(!engine::header_provider_hold(&rule, proves_absence));
+        let mut report = engine::ApplyReport::default();
+        match mecha_core::mail_rules::test_message(
+            &rule,
+            &c,
+            Some(false),
+            Utc::now(),
+            proves_absence,
+        )
+        .unwrap()
+        {
+            TestMessage::Rows(rows) => {
+                assert!(positive, "a visible match is rows");
+                report.rows = rows;
+            }
+            TestMessage::HeaderNotVisible => {
+                assert!(!positive, "only an unseen header is unknown");
+                report.unknown_header_messages += 1;
+            }
+        }
+        let rows = report.rows.clone();
+        assert_eq!(rows.len(), usize::from(positive));
+        assert!(rows
+            .iter()
+            .all(|r| r.outcome == Outcome::WouldHave && r.headers_partial));
+        let json = test_account_report("campus", &report);
+        assert_eq!(json["status"], "complete");
+        assert_eq!(json["matched_rows"], usize::from(positive));
+        assert!(json["holds"].as_array().unwrap().is_empty());
+        // "Matched nothing" and "could not see the header" are different
+        // readings: the unseen header is counted beside the matches.
+        assert_eq!(json["unknown_header_messages"], usize::from(!positive));
+    }
+    assert!(store.ledger().unwrap().is_empty());
+}

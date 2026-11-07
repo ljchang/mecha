@@ -1511,12 +1511,21 @@ pub enum SessionKind {
     /// the real store's readers like `Test`; admitted by default only in a
     /// home carrying `experiment::HOME_MARKER`.
     Experiment,
+    /// A run whose principal is another agent rather than the owner: a
+    /// stronger model driving mecha on real work, in the real home
+    /// (`docs/DRIVER-DESIGN.md`, D1). Worth studying, and not the owner's
+    /// usage, so every corpus reader hides it by default, as it hides
+    /// `Test`, and admits it only when asked by name. Unlike `Experiment`,
+    /// no home admits it by default: a driven run lives in the owner's
+    /// store, beside the sessions it must not be mistaken for.
+    Driven,
 }
 
-/// Environment variable that marks every session a process opens as
-/// [`SessionKind::Test`]. Any other value is ignored with a warning: the
-/// override exists so a test harness can label its own runs, not so a
-/// caller can claim a surface it is not.
+/// Environment variable that marks every session a process opens as one of
+/// the corpus marks: [`SessionKind::Test`], [`SessionKind::Experiment`] or
+/// [`SessionKind::Driven`]. Any other value is ignored with a warning: the
+/// override exists so a harness can label its own runs, not so a caller can
+/// claim a surface it is not.
 pub const SESSION_KIND_ENV: &str = "MECHA_SESSION_KIND";
 
 static KIND_ENV_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1538,7 +1547,7 @@ pub fn ignore_kind_env_for_tests() {
 }
 
 impl SessionKind {
-    pub const ALL: [SessionKind; 12] = [
+    pub const ALL: [SessionKind; 13] = [
         SessionKind::Run,
         SessionKind::Chat,
         SessionKind::Tui,
@@ -1551,6 +1560,7 @@ impl SessionKind {
         SessionKind::Slack,
         SessionKind::Test,
         SessionKind::Experiment,
+        SessionKind::Driven,
     ];
 
     /// The wire form — `serde`'s own `snake_case`, spelled out for callers
@@ -1569,6 +1579,7 @@ impl SessionKind {
             SessionKind::Slack => "slack",
             SessionKind::Test => "test",
             SessionKind::Experiment => "experiment",
+            SessionKind::Driven => "driven",
         }
     }
 
@@ -1578,9 +1589,10 @@ impl SessionKind {
         SessionKind::ALL.into_iter().find(|k| k.as_str() == s)
     }
 
-    /// [`SESSION_KIND_ENV`], read. `Some(Test)` when the variable says so,
-    /// `None` otherwise — the override only ever narrows toward `Test`, so
-    /// there is nothing else it could return.
+    /// [`SESSION_KIND_ENV`], read: one of the three corpus marks when the
+    /// variable names one, `None` otherwise. The override only ever narrows
+    /// toward a mark that every reader hides by default, so there is nothing
+    /// else it could return.
     pub fn test_override() -> Option<SessionKind> {
         // Unit tests are hermetic to a smoke-test mark exported in the shell
         // running them: a developer who set `MECHA_SESSION_KIND=test` for a
@@ -1593,14 +1605,18 @@ impl SessionKind {
         }
         match std::env::var(SESSION_KIND_ENV) {
             Ok(v) if v == SessionKind::Test.as_str() => Some(SessionKind::Test),
-            // The one other kind an environment may set: `mecha exp` marks
-            // the child runs it spawns into a trial home (D13). Both are
-            // marks a *process* puts on a session, not surfaces a person
-            // opened, which is why the list is these two and no more.
+            // `mecha exp` marks the child runs it spawns into a trial home
+            // (D13), and a driver marks the runs it opens on real work
+            // (`DRIVER-DESIGN.md` D1). All three are marks a *process* puts
+            // on a session, not surfaces a person opened, and each is hidden
+            // from every reader by default, which is why the list is these
+            // three and no more: a mark that a reader admitted by default
+            // would let the variable widen a population, not narrow it.
             Ok(v) if v == SessionKind::Experiment.as_str() => Some(SessionKind::Experiment),
+            Ok(v) if v == SessionKind::Driven.as_str() => Some(SessionKind::Driven),
             Ok(v) if !v.is_empty() => {
                 tracing::warn!(
-                    "{SESSION_KIND_ENV}={v:?} ignored: only `test` and `experiment` may override a session's kind"
+                    "{SESSION_KIND_ENV}={v:?} ignored: only `test`, `experiment` and `driven` may override a session's kind"
                 );
                 None
             }
@@ -3281,13 +3297,16 @@ mod tests {
             (meta("legacy", None), ()),
             (meta("test", Some(SessionKind::Test)), ()),
             (meta("exp", Some(SessionKind::Experiment)), ()),
+            (meta("driven", Some(SessionKind::Driven)), ()),
         ];
         let (admitted, skipped) = split_admitted(listing);
         let ids: Vec<_> = admitted.iter().map(|(m, _)| m.id.as_str()).collect();
         // Outside an experiment home (this test's), an experiment session is
         // contamination like a test one; an unmarked legacy session is work.
+        // A driven session is never mined or distilled by default, in any
+        // home: another agent was its principal (`DRIVER-DESIGN.md` D1).
         assert_eq!(ids, ["web", "legacy"]);
-        assert_eq!(skipped, 2);
+        assert_eq!(skipped, 3);
     }
 
     /// A rename is a record, and it has to survive the file it is written to.
@@ -5263,6 +5282,7 @@ mod tests {
                 SessionKind::Slack => 9,
                 SessionKind::Test => 10,
                 SessionKind::Experiment => 11,
+                SessionKind::Driven => 12,
             }
         }
         assert!(
@@ -5297,13 +5317,17 @@ mod tests {
     /// the (ignored) probe below through the test binary itself with the
     /// variable set, and grades the exit status.
     #[test]
-    fn the_env_override_narrows_to_test_or_experiment_and_never_widens_to_anything_else() {
+    fn the_env_override_narrows_to_a_corpus_mark_and_never_widens_to_anything_else() {
         let exe = std::env::current_exe().unwrap();
         for (value, expect) in [
             ("test", "test"),
-            // The second and last value an environment may set: what
-            // `mecha exp` marks its child runs with (D13).
+            // What `mecha exp` marks its child runs with (D13).
             ("experiment", "experiment"),
+            // The third and last: a driver's runs on real work
+            // (`DRIVER-DESIGN.md` D1).
+            ("driven", "driven"),
+            // A near miss is a surface claimed, not a mark: ignored.
+            ("drive", "run"),
             ("web", "run"),
             ("", "run"),
         ] {
@@ -5405,8 +5429,11 @@ mod tests {
         // the override's kind. `experiment` was added to the override (D13)
         // while this probe matched nothing, so its expectation still said
         // only `test` did — found when the probe first actually ran.
-        let expect_none =
-            matches!(expect, SessionKind::Test | SessionKind::Experiment).then_some(expect);
+        let expect_none = matches!(
+            expect,
+            SessionKind::Test | SessionKind::Experiment | SessionKind::Driven
+        )
+        .then_some(expect);
         assert_eq!(
             kind_of(&none.path),
             expect_none,

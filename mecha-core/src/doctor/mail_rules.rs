@@ -188,7 +188,7 @@ pub fn check_mail_rules(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> V
 pub fn check_mail_rule_shell(home: &Path, config: &crate::config::Config) -> Vec<Finding> {
     // Doctor does not probe backend readiness: Sandbox::preflight stops a run
     // whose configured sandbox fails, so shell cannot expose the store that way.
-    // The residual requires no sandbox or a writable mount reaching the store.
+    // Exposure includes store writes and the network path through serve.
     let root = RuleStore::root_under(home);
     let exposed = config.sandbox.kind == crate::sandbox::Backend::None
         || config
@@ -196,7 +196,8 @@ pub fn check_mail_rule_shell(home: &Path, config: &crate::config::Config) -> Vec
             .writable
             .iter()
             .any(|path| super::mount_reaches(path, &root));
-    if !exposed || !config.tools.registers("shell") {
+    let network = crate::sandbox::Sandbox::new(config.sandbox.clone()).can_reach_network();
+    if (!exposed && !network) || !config.tools.registers("shell") {
         return Vec::new();
     }
     let Ok(store) = RuleStore::open_existing(RuleStore::root_under(home)) else {
@@ -206,8 +207,18 @@ pub fn check_mail_rule_shell(home: &Path, config: &crate::config::Config) -> Vec
         return Vec::new();
     };
     rules::recorded_auto_groups(&approvals).into_iter().map(|(name, group)| {
-        attention(format!("{name} / {group:?}: auto while shell can write the rule store"),
-            "The actor gates are advisory when shell can write the rule store, including through a sandbox mount or its ancestor/alias. Configure a working sandbox with no writable exposure of the mecha home or rule store. This applies to Mailbox, Board and outbound groups alike; doctor checks global configuration only.")
+        let mut routes = Vec::new();
+        let mut details = Vec::new();
+        if exposed {
+            routes.push("shell can write the rule store");
+            details.push("The actor gates are advisory when shell can write the rule store, including through a sandbox mount or its ancestor/alias. Configure a working sandbox with no writable exposure of the mecha home or rule store.");
+        }
+        if network {
+            routes.push("shell can reach serve's loopback port");
+            details.push("Shell network access can reach serve's loopback port and launch CLI children attributed as owner. Use a sandbox with network off and a backend that closes network access.");
+        }
+        details.push("This applies to Mailbox, Board and outbound groups alike; doctor checks global configuration only.");
+        attention(format!("{name} / {group:?}: auto while {}", routes.join("; ")), details.join(" "))
     }).collect()
 }
 

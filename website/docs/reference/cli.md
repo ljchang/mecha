@@ -485,7 +485,7 @@ mecha sessions <list|show|path|stats|health|appraise|compare> [OPTIONS]
 | `appraise` | `--days <N>` | Only sessions started in the last N days. |
 | `appraise` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
 | `appraise` | `--json` | Emit JSON instead of a table. |
-| `list`, `appraise`, `health` | `--kind <KIND>` | Only sessions opened through this surface: `run`, `chat`, `tui`, `web`, `voice`, `task`, `trigger`, `frontdoor`, `mail`, `slack` or `test`. A transcript from before kinds were recorded matches no filter. |
+| `list`, `appraise`, `health` | `--kind <KIND>` | Only sessions opened through this surface: `run`, `chat`, `tui`, `web`, `voice`, `task`, `trigger`, `frontdoor`, `mail`, `slack`, `test`, `experiment` or `driven`. A transcript from before kinds were recorded matches no filter. Driven sessions (`MECHA_SESSION_KIND=driven`, another agent's runs on real work) are hidden unless asked for this way. |
 | `list`, `appraise`, `health` | `--include-tests` | Include smoke-test sessions (`MECHA_SESSION_KIND=test`); `--kind test` implies this. |
 | `appraise` | `--probe` | Resolve each intervention's agency by counterfactual replay. **Paid** — a model run per intervention. |
 | `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |

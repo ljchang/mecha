@@ -80,6 +80,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Experimental memory: pure typed action/branch guard coverage with separate rule applicability and met/unmet/unknown arms; synthetic qualification only, no action execution or authority.
 
+- **The mail rules page.** *Mail → Rules* (`#mail/rules`) lists each rule's
+  modes, activity and holds; a rule's page raises a group to automatic only
+  through an approval screen showing its files, tests it against 30 days of
+  mail, shows the ledger with Undo and Wrong match, and edits rule.toml. A
+  thread's *Make a rule…* starts a rule from its sender, in shadow.
+
+- **Mail-rule web backend.** CLI children support stdin rule creation, atomic
+  edits with immediate approval lapse, digest-bound mode changes, per-rule
+  pause and idempotent wrong-match corrections. List, show, ledger and
+  retrospective-test JSON expose modes, holds, correction rates and action
+  controls through feature-owned API routes. Doctor also reports automatic
+  rules exposed through a shell's network access to serve's loopback port.
+  The browser page follows separately.
+
+- **Outlook header rules act on a visible match.** A header rule matching on
+  `list_id` or `header.<Name>` with only non-outbound actions now acts on an
+  Outlook account when the header is visible and matches; a message whose
+  header is not visible is skipped without a ledger row. Ledger rows record
+  `headers_partial`. Rules with an outbound action, and description rules,
+  remain held on Outlook.
+
 - **Automatic mail-rule passes, opt-in.** Enable `mail_rules` with `mail` for
   five-minute header passes and an isolated post-classify hook. Timer overlap
   skips safely; typed failures fail the timer, and hook failures never fail

@@ -6,6 +6,9 @@
   import { LANES, laneOf, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups, batchKeyVerb } from './mail-desk.js';
   import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
   import MailBody from './MailBody.svelte';
+  import { features } from './features.svelte.js';
+  import { isShown } from './features.js';
+  import { offerRuleFrom } from './mail-rules-handoff.svelte.js';
 
   // Mail triage at a desk: lanes, a dense list and the open thread side by
   // side, driven from the keyboard. The phone keeps Mail.svelte; App.svelte
@@ -31,6 +34,17 @@
   // moment. The phone page has the same window.
 
   const INBOX = { id: 'inbox', label: 'Plain inbox', key: '5' };
+
+  // The rules page (#mail/rules) and its *Make a rule from this thread*:
+  // offered only while the feature is on (PANE_FEATURE sends a link home
+  // otherwise). The draft carries the row's headers; nothing installs
+  // until the owner presses Install there.
+  let { navigate = () => {} } = $props();
+  const rulesOn = $derived(isShown(features.rows, 'mail_rules'));
+  function makeRule(row) {
+    offerRuleFrom(row);
+    navigate('mail/rules');
+  }
 
   let lane = $state('respond');
   let cursor = $state(0);
@@ -514,6 +528,7 @@
         {#if heldCount}{heldCount} held{/if}{#if heldCount && sendingCount} · {/if}{#if sendingCount}{sendingCount} sending{/if}
       </span>
     {/if}
+    {#if rulesOn}<button class="ghost" onclick={() => navigate('mail/rules')}>Rules</button>{/if}
     <button class="ghost" onclick={() => (composing = true)}>Compose <kbd>c</kbd></button>
     <button class="ghost" onclick={() => (lane === 'inbox' ? loadInbox() : load())}>Refresh</button>
   </header>
@@ -666,6 +681,7 @@
               {#if cur.date}<span>· {ageOf(cur.date)} ago</span>{/if}
               {#if cur.deadline}<span class="chip due">due {cur.deadline}</span>{/if}
               {#each cur.tags ?? [] as tag}<span class="chip">#{tag}</span>{/each}
+              {#if rulesOn}<button class="ghost small makerule" onclick={() => makeRule(cur)}>Make a rule…</button>{/if}
             </div>
             {#if failed.has(keyOf(cur))}
               <div class="warn">The last action on this thread failed: {failed.get(keyOf(cur))}</div>
@@ -938,6 +954,7 @@
   .readscroll { flex: 1; min-height: 0; overflow-y: auto; box-sizing: border-box; padding: 22px 32px; display: flex; flex-direction: column; gap: 16px; }
   .reader h1 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; }
   .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted); }
+  .makerule { margin-left: auto; cursor: pointer; }
   .meta .who { color: #c9c9d3; }
   .suggest { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid #3a3558; border-radius: var(--radius); background: var(--accent-900); font-size: 14px; }
   .suggest strong { color: var(--accent-300); font-weight: 600; }

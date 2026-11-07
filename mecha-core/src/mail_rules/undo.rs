@@ -23,6 +23,16 @@ pub async fn undo(
     restorer: &dyn Restorer,
     now: DateTime<Utc>,
 ) -> Result<LedgerRow> {
+    undo_with_actor(store, row_id, restorer, now, None).await
+}
+
+pub async fn undo_with_actor(
+    store: &RuleStore,
+    row_id: &str,
+    restorer: &dyn Restorer,
+    now: DateTime<Utc>,
+    actor: Option<crate::closure::Actor>,
+) -> Result<LedgerRow> {
     let _lease = store.engine_lease()?;
     let (original, action, pending) = undo_plan(store, row_id)?;
     let intent = if let Some(pending) = pending {
@@ -36,6 +46,7 @@ pub async fn undo(
         intent.settlement = None;
         intent.correction_of = Some(original.id.clone());
         intent.wrong_match = false;
+        intent.actor = actor;
         intent.reason = format!("undo intent for {}", original.id);
         store
             .append_ledger(&intent)
@@ -44,7 +55,7 @@ pub async fn undo(
     };
     // Persist a safety brake before provider I/O, including when recovery resumes
     // an existing intent. No network await holds the short store writer lock.
-    apply_undo_brake(store, &original.rule)?;
+    apply_correction_brake(store, &original.rule)?;
     let restored = restorer.restore(&original.message, action).await;
     let correction = intent.settled(
         if restored.is_ok() {
@@ -68,7 +79,7 @@ pub async fn undo(
     Ok(correction)
 }
 
-fn apply_undo_brake(store: &RuleStore, rule_name: &str) -> Result<()> {
+pub(super) fn apply_correction_brake(store: &RuleStore, rule_name: &str) -> Result<()> {
     let targets = match store.get(rule_name) {
         Ok(rule) => engine::unacknowledged_brakes(&rule, &store.ledger()?, &store.approvals()?),
         // lower_modes invokes lapse_unreadable_locked: by the time it returns,
@@ -91,9 +102,7 @@ fn apply_undo_brake(store: &RuleStore, rule_name: &str) -> Result<()> {
             &owner_file_holds(),
             ApprovalReason::Brake,
         )
-        .context(
-            "undo intent recorded, but applying its safety brake failed; restore not attempted",
-        )?;
+        .context("correction recorded, but applying its safety brake failed")?;
     Ok(())
 }
 
@@ -133,7 +142,11 @@ fn undo_plan(
     );
     let corrections: Vec<_> = rows
         .iter()
-        .filter(|row| row.same_key(original) && row.correction_of.is_some())
+        .filter(|row| {
+            row.same_key(original)
+                && row.correction_of.is_some()
+                && row.outcome != Outcome::WrongMatch
+        })
         .collect();
     let mut pending = corrections
         .iter()

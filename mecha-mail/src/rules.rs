@@ -15,7 +15,7 @@ use mecha_core::{
         engine::{
             self, ActionResult, Candidate, Classified, Mailbox, Pass, Task, TaskSink, ThreadRead,
         },
-        Action, ActionVerb, FailureKind, GateStatus, LoadedRule, RuleStore,
+        Action, ActionVerb, FailureKind, GateStatus, LoadedRule, Outcome, RuleStore, TestMessage,
     },
     mail_triage::{self, rule_records},
     mcp::McpClient,
@@ -925,7 +925,14 @@ pub async fn undo(row_id: &str) -> Result<()> {
     let store = RuleStore::open_existing(RuleStore::root_under(&mecha_core::work::mecha_home()?))?;
     mecha_core::mail_rules::prepare_undo(&store, row_id)?;
     let mailbox = RuleMailbox::load(false, &store)?;
-    let row = mecha_core::mail_rules::undo(&store, row_id, &mailbox, Utc::now()).await?;
+    let row = mecha_core::mail_rules::undo_with_actor(
+        &store,
+        row_id,
+        &mailbox,
+        Utc::now(),
+        Some(mecha_core::closure::acting_actor_explained().0),
+    )
+    .await?;
     println!("{}", serde_json::to_string_pretty(&row)?);
     Ok(())
 }
@@ -942,14 +949,62 @@ pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
     );
     let mailbox = RuleMailbox::load(true, &store)?;
     let now = Utc::now();
-    let report = test_recent(&mailbox, &store, &rule, account, now).await?;
+    let mut accounts = Vec::new();
+    let mut report = engine::ApplyReport::default();
+    for name in mailbox.accounts(account)? {
+        // An account the rule's own `account` matcher excludes is not read,
+        // so it has no result to report — never "complete, 0 matches".
+        if !rule.definition.matcher.account.is_empty()
+            && !rule
+                .definition
+                .matcher
+                .account
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        let account_report = test_recent(&mailbox, &store, &rule, Some(&name), now).await?;
+        accounts.push(test_account_report(&name, &account_report));
+        report.read_failures += account_report.read_failures;
+        report.candidate_failures += account_report.candidate_failures;
+        report.unknown_header_messages += account_report.unknown_header_messages;
+        report.rows.extend(account_report.rows);
+        report.notices.extend(account_report.notices);
+    }
     println!(
         "{}",
-        serde_json::to_string_pretty(
-            &serde_json::json!({"dry_run":true, "window_days":30, "report":report})
-        )?
+        serde_json::to_string_pretty(&serde_json::json!({
+            "dry_run": true, "window_days": 30, "all_folders": true, "accounts": accounts, "report": report
+        }))?
     );
     report_status(&report)
+}
+
+/// An incomplete/held account has no match count. Known rows remain available
+/// beside its failures; a provider condition cannot masquerade as zero matches.
+fn test_account_report(name: &str, report: &engine::ApplyReport) -> serde_json::Value {
+    let failed = report.read_failures + report.candidate_failures;
+    let held = !report.notices.is_empty() || report.rows.iter().any(|r| r.outcome == Outcome::Held);
+    let count = report
+        .rows
+        .iter()
+        .filter(|r| r.outcome == Outcome::WouldHave)
+        .count();
+    serde_json::json!({
+        "account": name,
+        "status": if failed > 0 { "failed" } else if held { "held" } else { "complete" },
+        "matched_rows": if failed > 0 || held { None } else { Some(count) },
+        "would_have_rows": count,
+        "read_failures": report.read_failures,
+        "candidate_failures": report.candidate_failures,
+        // Messages the rule could not be checked against: the header was not
+        // visible on a reader that cannot prove absence. Beside matched_rows,
+        // never folded into it.
+        "unknown_header_messages": report.unknown_header_messages,
+        "holds": report.notices,
+        "rows": report.rows,
+    })
 }
 
 /// Explicit provider commands refuse when off; unattended apply instead skips.
@@ -981,10 +1036,18 @@ async fn test_recent(
     let since = now - chrono::Duration::days(30);
     let mut report = engine::ApplyReport::default();
     for name in mailbox.accounts(selected)? {
-        if !mailbox.proves_header_absence(&name)
-            && (!rule.definition.matcher.list_id.is_empty()
-                || !rule.definition.matcher.header.is_empty())
+        if !rule.definition.matcher.account.is_empty()
+            && !rule
+                .definition
+                .matcher
+                .account
+                .iter()
+                .any(|account| account.eq_ignore_ascii_case(&name))
         {
+            continue;
+        }
+
+        if engine::header_provider_hold(rule, mailbox.proves_header_absence(&name)) {
             report.notices.push(format!(
                 "{name}/{}: held: provider cannot prove header absence for list_id/header matchers",
                 rule.name
@@ -1068,19 +1131,30 @@ async fn test_recent(
                         .provider_arrival_at
                         .context("provider arrival unknown")?;
                     if arrival < since || arrival > now {
-                        return Ok(Vec::new());
+                        return Ok(TestMessage::Rows(Vec::new()));
                     }
                     match email.direction(&owners) {
-                        Some(MailDirection::Sent | MailDirection::Draft) => return Ok(Vec::new()),
+                        Some(MailDirection::Sent | MailDirection::Draft) => {
+                            return Ok(TestMessage::Rows(Vec::new()))
+                        }
                         Some(MailDirection::Inbound) => (),
                         None => bail!("message direction unknown"),
                     }
                     let candidate = candidate(&name, &hit.thread_id, &[email], &owners, None)
                         .map_err(anyhow::Error::msg)?;
-                    mecha_core::mail_rules::test_match(rule, &candidate, in_inbox, now)
+                    mecha_core::mail_rules::test_message(
+                        rule,
+                        &candidate,
+                        in_inbox,
+                        now,
+                        mailbox.proves_header_absence(&name),
+                    )
                 });
             match result {
-                Ok(rows) => report.rows.extend(rows),
+                Ok(TestMessage::Rows(rows)) => report.rows.extend(rows),
+                // Unknown is not a known negative: counted, so a run that never
+                // saw the header cannot read as "matched nothing".
+                Ok(TestMessage::HeaderNotVisible) => report.unknown_header_messages += 1,
                 Err(error) => {
                     report.read_failures += 1;
                     report

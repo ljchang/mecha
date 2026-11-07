@@ -186,6 +186,9 @@ enum RulesCommand {
         rule: String,
         #[arg(long)]
         account: Option<String>,
+        /// Machine report (also the default for compatibility).
+        #[arg(long)]
+        json: bool,
     },
     /// Restore a completed mailbox action by its exact ledger row id.
     Undo { row_id: String },
@@ -243,7 +246,12 @@ async fn run(cli: Cli) -> Result<()> {
                 },
         }) => mecha_mail::rules::apply(account.as_deref(), after_classify, dry_run, rules).await,
         Some(Command::Rules {
-            command: RulesCommand::Test { rule, account },
+            command:
+                RulesCommand::Test {
+                    rule,
+                    account,
+                    json: _,
+                },
         }) => mecha_mail::rules::test(&rule, account.as_deref()).await,
         Some(Command::Rules {
             command: RulesCommand::Undo { row_id },

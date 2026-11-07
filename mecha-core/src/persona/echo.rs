@@ -131,7 +131,8 @@ pub fn session_echoes(path: &Path) -> Result<Vec<f64>> {
 }
 
 /// Whether a session counts as the owner's own chat: not a test run
-/// (`MECHA_SESSION_KIND=test`) and not one the owner withdrew, which
+/// (`MECHA_SESSION_KIND=test`), not a driven run (another agent was the
+/// principal, `DRIVER-DESIGN.md` D1), and not one the owner withdrew, which
 /// `sessions mark` files as an experiment so every reader hides it
 /// (`runlog::Admission`'s rule). A reading of her chats that read its own
 /// tests would measure the instrument (review of #808).
@@ -139,7 +140,7 @@ pub fn is_owner_chat(meta: &crate::session::SessionMeta) -> bool {
     use crate::session::SessionKind;
     !matches!(
         meta.kind,
-        Some(SessionKind::Test) | Some(SessionKind::Experiment)
+        Some(SessionKind::Test) | Some(SessionKind::Experiment) | Some(SessionKind::Driven)
     )
 }
 

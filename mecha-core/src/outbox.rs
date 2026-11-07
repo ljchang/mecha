@@ -1033,8 +1033,13 @@ impl OutboxStore {
         // own tests.
         if let Some(window) = self.forecasting {
             if crate::forecast::forecasts(&item) {
-                let test = crate::session::SessionKind::test_override()
-                    == Some(crate::session::SessionKind::Test);
+                // A driven run's draft is set aside like a smoke run's:
+                // another agent staged it, so it is no evidence of how the
+                // owner acts (`forecast::Forecast::test`).
+                let test = matches!(
+                    crate::session::SessionKind::test_override(),
+                    Some(crate::session::SessionKind::Test | crate::session::SessionKind::Driven)
+                );
                 let history = if test {
                     None
                 } else {

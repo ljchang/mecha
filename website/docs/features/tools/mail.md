@@ -764,6 +764,68 @@ thread that has scrolled out of that window is retried from the store when it
 comes due, so a busy inbox cannot strand it. `mecha mail list` shows when each
 failure is next tried.
 
+## Mail rules: recurring chores with no model in them
+
+A mail rule matches mail by its headers — sender, sender domain, mailing
+list id, subject, account — and does something reversible with it: archive,
+mark read or unread, tag, add to the digest, or trash. It is a file you
+write (`~/.mecha/mail-rules/rules/<name>/rule.toml`), never a prompt, and no
+model reads the mail it matches. The feature is off until you turn it on:
+
+```bash
+mecha features enable mail_rules
+cp scripts/mecha-mail-rules.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now mecha-mail-rules.timer
+```
+
+The timer runs the header rules every five minutes, and once more after each
+classification sweep.
+
+**Every rule starts in shadow.** A new rule records what it *would* have
+done, in its ledger, and touches nothing. Each kind of action (mailbox,
+private record, report, board) has its own mode — `off`, `shadow`, `propose`
+or `auto` — and raising one to `auto` shows you the rule's files and asks
+you to approve exactly those. Any later edit to the rule, yours included,
+drops the automatic groups back until you approve again, so an approval
+always means the files you saw.
+
+**The rules page** is *Mail → Rules* (`#mail/rules`) in the web app, on a
+phone or at a desk:
+
+- the list: each rule's modes, what it did this week, failures, and why a
+  rule is held when it is;
+- a rule: its modes, a **Test** against the last 30 days of mail (every
+  folder, read-only), the ledger, and the definition to edit;
+- the ledger: one row per action, with **Undo** on mailbox actions (an
+  archive goes back to the inbox, a trash is restored) and **Wrong match**
+  on a header-rule row (not an attempt still pending, not a row already
+  undone, and once per action) — which records that the matcher is wrong, counts
+  toward the rule's brake, and points you at the edit that fixes it;
+- **Make a rule…** in a thread's actions, which opens a new rule prefilled
+  from the sender's domain with archive suggested; nothing is installed
+  until you press Install, and it installs in shadow.
+
+The same verbs are on the command line — `mecha mail rule add | list | show
+| mode | test | ledger | undo | wrong-match | edit | pause | pause-all` — and
+the page can do nothing they cannot: every button runs one of them.
+
+**Pause** lowers a rule's groups to shadow at once; **Pause all** does it for
+every rule. Resuming is a raise, with its approval screen.
+
+**Outlook and mailing-list headers.** Microsoft Graph returns a message's
+headers incompletely, so mecha cannot tell that a header is *absent*. A rule
+matching on `list_id` or a custom header still acts on an Outlook message
+when the header is visibly there and matches — those ledger rows say
+"matched on a partial header set" — and skips a message whose header it
+cannot see, which is what would have happened with no rule. Gmail is
+unaffected.
+
+**Brakes.** A rule that fails repeatedly, or whose actions you undo or mark
+as wrong too often, steps itself down and says why on the page and in
+`mecha doctor`. `mecha doctor` also warns while any rule is automatic and a
+model's `shell` could reach the rule store or the web server — the
+[sandbox](/docs/features/security/sandbox) is what closes that.
+
 ## Signing in
 
 ```bash

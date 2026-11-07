@@ -2128,14 +2128,29 @@ async fn unsupported_dispatch_reports_a_hold_without_closing_the_action() {
 }
 
 fn header_capability_fixture(header_key: &str, positive: bool, proves_absence: bool) -> Fixture {
+    header_capability_fixture_actions(header_key, positive, proves_absence, DIGEST)
+}
+
+fn header_capability_fixture_actions(
+    header_key: &str,
+    positive: bool,
+    proves_absence: bool,
+    actions: &str,
+) -> Fixture {
     let mut f = Fixture::new();
     let key = if header_key == "list_id" {
         "list_id = ['news.example.com']"
     } else {
         "header.X-Notice = ['invoice']"
     };
-    let raw = f.store.install("raw", &format!("description = 'Review notice'\n[match]\nfrom = ['sender@example.com']\n{key}\n[[action]]\ndo = 'digest'"), &BTreeMap::new()).unwrap();
-    f.mode(&raw, ActionGroup::PrivateRecord, Mode::Auto);
+    let raw = f.store.install("raw", &format!("description = 'Review notice'\n[match]\nfrom = ['sender@example.com']\n{key}\n{actions}"), &BTreeMap::new()).unwrap();
+    if raw
+        .definition
+        .groups()
+        .contains(&ActionGroup::PrivateRecord)
+    {
+        f.mode(&raw, ActionGroup::PrivateRecord, Mode::Auto);
+    }
     let archive = f.rule("archive", ARCHIVE);
     f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
     if !proves_absence {
@@ -2163,10 +2178,15 @@ fn header_capability_fixture(header_key: &str, positive: bool, proves_absence: b
 }
 
 #[tokio::test]
-async fn truncated_header_provider_holds_the_rule_without_blocking_other_rules() {
+async fn truncated_header_provider_holds_outbound_rules_without_blocking_other_rules() {
     for key in ["list_id", "header"] {
         for positive in [false, true] {
-            let f = header_capability_fixture(key, positive, false);
+            let f = header_capability_fixture_actions(
+                key,
+                positive,
+                false,
+                "[[action]]\ndo = 'forward'\nto = ['finance@example.edu']\n",
+            );
             for _ in 0..2 {
                 let report = f.run(None).await;
                 assert_eq!(report.rows.len(), 2);
@@ -2231,8 +2251,13 @@ async fn complete_header_provider_retains_matching_deferral_and_known_negatives(
 
 #[tokio::test]
 async fn header_capability_hold_is_account_scoped_and_preserves_old_deferred_work() {
-    let mut f = header_capability_fixture("list_id", true, true);
-    f.run(None).await; // Older pass queued both the digest and removal.
+    let mut f = header_capability_fixture_actions(
+        "list_id",
+        true,
+        true,
+        "[[action]]\ndo = 'forward'\nto = ['finance@example.edu']\n",
+    );
+    f.run(None).await; // Older pass queued both the outbound action and removal.
     f.mail.partial_header_accounts.insert("campus".into());
     f.options.pass = Pass::AfterClassify;
     let report = f.run(None).await;
@@ -2257,7 +2282,12 @@ async fn header_capability_hold_is_account_scoped_and_preserves_old_deferred_wor
         before
     );
 
-    let f = header_capability_fixture("list_id", true, false);
+    let f = header_capability_fixture_actions(
+        "list_id",
+        true,
+        false,
+        "[[action]]\ndo = 'forward'\nto = ['finance@example.edu']\n",
+    );
     let mut other = f.mail.candidates.lock().unwrap()[0].clone();
     other.message.account = "project".into();
     other.message.thread_id = "other-thread".into();
@@ -2509,4 +2539,182 @@ async fn expiry_report_reuses_a_row_persisted_before_queue_rewrite() {
         serde_json::to_value(&plan.rows).unwrap(),
         serde_json::to_value(&live.rows).unwrap()
     );
+}
+
+#[tokio::test]
+async fn p3_partial_headers_positive_archive_acts_and_unknown_writes_nothing() {
+    for raw_key in [
+        "list_id = ['news.example.com']",
+        "header.X-Notice = ['update']",
+    ] {
+        let mut f = Fixture::new();
+        f.mail.partial_header_accounts.insert("campus".into());
+        let rule = f
+            .store
+            .install(
+                "raw",
+                &format!("description = 'Visible header notice'\n[match]\n{raw_key}\n{ARCHIVE}"),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        f.mode(&rule, ActionGroup::Mailbox, Mode::Auto);
+        f.mail.candidates.lock().unwrap()[0].headers_complete = None;
+        let report = f.run(None).await;
+        assert_eq!(report.rows.len(), 1, "a visible positive header must act");
+        assert_eq!(report.rows[0].outcome, Outcome::Done);
+        assert_eq!(
+            serde_json::to_value(&report.rows[0]).unwrap()["headers_partial"],
+            true
+        );
+        assert_eq!(report.handled.len(), 1);
+        assert!(report.notices.is_empty());
+        let before = f.store.ledger().unwrap().len();
+        f.mail.next("unknown");
+        {
+            let mut candidates = f.mail.candidates.lock().unwrap();
+            candidates[0].list_id = None;
+            candidates[0].headers.clear();
+        }
+        let report = f.run(None).await;
+        assert!(report.rows.is_empty());
+        assert!(report.notices.is_empty());
+        assert!(report.handled.is_empty());
+        assert!(report.deferred.is_empty());
+        assert_eq!(f.store.ledger().unwrap().len(), before);
+        assert!(f.store.deferred().unwrap().is_empty());
+        assert_eq!(*f.mail.calls.lock().unwrap(), ["Archive", "Handled"]);
+    }
+}
+
+#[tokio::test]
+async fn p3_partial_headers_unknown_is_absent_before_deferral_and_handled_decisions() {
+    for key in ["list_id", "header"] {
+        let f = header_capability_fixture(key, false, false);
+        let report = f.run(None).await;
+        assert!(
+            report.notices.is_empty(),
+            "non-outbound unknown is not a standing hold"
+        );
+        assert_eq!(report.rows.len(), 2);
+        assert!(report
+            .rows
+            .iter()
+            .all(|row| row.rule == "archive" && row.outcome == Outcome::Done));
+        assert_eq!(report.handled.len(), 2);
+        assert!(report.deferred.is_empty());
+        assert!(f.store.deferred().unwrap().is_empty());
+        assert!(f
+            .store
+            .ledger()
+            .unwrap()
+            .iter()
+            .all(|row| row.rule != "raw"));
+    }
+}
+
+#[tokio::test]
+async fn p3_partial_headers_unknown_does_not_admit_descriptions_or_settle_queued_positives() {
+    let mut f = header_capability_fixture("list_id", true, false);
+    f.run(None).await;
+    assert_eq!(f.store.deferred().unwrap().len(), 2);
+    f.options.pass = Pass::AfterClassify;
+    for c in f.mail.candidates.lock().unwrap().iter_mut() {
+        c.list_id = None;
+        c.headers.clear();
+    }
+    let report = f.run(None).await;
+    assert!(report.rows.iter().all(|r| r.rule == "archive"));
+    assert_eq!(
+        report
+            .rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Done)
+            .count(),
+        2,
+        "the deferred archive runs once the unknown raw rule is absent"
+    );
+    // Handled markers are a header-pass write; classification already ran.
+    assert!(report.handled.is_empty());
+    let queue = f.store.deferred().unwrap();
+    assert_eq!(queue.len(), 2);
+    assert!(queue.iter().all(|e| e.actions.len() == 1
+        && e.actions[0].rule == "raw"
+        && e.actions[0].headers_partial));
+    assert!(f.store.ledger().unwrap().iter().all(|r| r.rule != "raw"));
+
+    let mut f = Fixture::new();
+    f.mail.partial_header_accounts.insert("campus".into());
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        cs[0].headers_complete = None;
+        cs[0].list_id = None;
+    }
+    for n in 0..13 {
+        f.store.install(&format!("described-{n}"), "description='Fictional receipt'\n[match]\nlist_id=['news.example.com']\ndescribe='A receipt'\n[[action]]\ndo='digest'\n", &BTreeMap::new()).unwrap();
+    }
+    let archive = f.rule("archive", ARCHIVE);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    let report = f.run(None).await;
+    // Description rules keep the account hold: list admission and the entry
+    // cap are decided before a message is read, so a per-message exclusion
+    // would let thirteen of them bypass the cap.
+    assert!(report.list_cap.is_empty(), "held rules are not admitted");
+    assert_eq!(report.notices.len(), 13);
+    assert!(report
+        .notices
+        .iter()
+        .all(|n| n.contains("held: provider cannot prove header absence")));
+    assert!(report.deferred.is_empty());
+    assert_eq!(report.handled.len(), 1);
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(report.rows[0].rule, "archive");
+}
+
+#[test]
+fn partial_header_relief_is_for_non_outbound_header_rules_only() {
+    let f = Fixture::new();
+    let install = |name: &str, body: &str| f.store.install(name, body, &BTreeMap::new()).unwrap();
+    let header = install(
+        "h",
+        &format!("description='Notice'\n[match]\nlist_id=['news.example.com']\n{ARCHIVE}"),
+    );
+    let described = install("d", "description='Notice'\n[match]\nlist_id=['news.example.com']\ndescribe='A notice'\n[[action]]\ndo='archive'\n");
+    let outbound = install("o", "description='Notice'\n[match]\nlist_id=['news.example.com']\n[[action]]\ndo='forward'\nto=['finance@example.edu']\n");
+    let plain = install(
+        "p",
+        &format!("description='Notice'\n[match]\nfrom_domain=['example.com']\n{ARCHIVE}"),
+    );
+    assert!(!super::header_provider_hold(&header, false));
+    assert!(super::partial_header_rule(&header, false));
+    assert!(super::header_provider_hold(&described, false));
+    assert!(super::header_provider_hold(&outbound, false));
+    for rule in [&header, &described, &outbound, &plain] {
+        assert!(
+            !super::header_provider_hold(rule, true),
+            "full-header readers never hold"
+        );
+        assert!(!super::partial_header_rule(rule, true));
+    }
+    assert!(!super::header_provider_hold(&plain, false));
+    assert!(!super::partial_header_rule(&plain, false));
+}
+
+#[tokio::test]
+async fn p3_partial_headers_positive_non_outbound_defers_and_executes_like_full_headers() {
+    for key in ["list_id", "header"] {
+        let mut f = header_capability_fixture(key, true, false);
+        let report = f.run(None).await;
+        assert!(report.notices.is_empty());
+        assert!(report.rows.is_empty());
+        assert_eq!(f.store.deferred().unwrap().len(), 2);
+        f.options.pass = Pass::AfterClassify;
+        let report = f.run(None).await;
+        assert_eq!(report.rows.len(), 4);
+        assert!(report.rows.iter().all(|row| row.outcome == Outcome::Done));
+        assert!(report
+            .rows
+            .iter()
+            .all(|row| row.headers_partial == (row.rule == "raw")));
+        assert!(f.store.deferred().unwrap().is_empty());
+    }
 }

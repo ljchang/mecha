@@ -448,7 +448,12 @@ fn a_smoke_runs_forecast_is_set_aside() {
 #[test]
 fn a_smoke_runs_staging_marks_its_forecast_and_an_ordinary_one_does_not() {
     let exe = std::env::current_exe().unwrap();
-    for (kind, expect) in [(Some("test"), "true"), (None, "false")] {
+    // A driven run's draft is set aside the same way (`DRIVER-DESIGN.md` D1).
+    for (kind, expect) in [
+        (Some("test"), "true"),
+        (Some("driven"), "true"),
+        (None, "false"),
+    ] {
         let mut cmd = std::process::Command::new(&exe);
         cmd.args([
             "forecast::tests::smoke_mark_probe",
