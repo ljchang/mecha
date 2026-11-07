@@ -123,17 +123,20 @@ The shape:
   *and* the driven store's; that load is the default for a real-home run
   only. An owner run never opens the driven store. `Driven` stays in
   `Situation::MARK_KINDS`, because nothing needs it as a scope key.
-- **The rule cap applies to the union, not to each store.**
-  `MAX_ACTIVE_RULES_PER_DOMAIN` is per store, and its startup warning opens
-  one store, so a run carrying both could render twice the cap in one
-  domain, past the adherence cliff that cap exists for, with nothing
+- **The rule caps apply to the union, not to each store.** There are two
+  caps and both are per store: `MAX_ACTIVE_RULES_PER_DOMAIN`, whose startup
+  warning opens one store, and `RULES_CHAR_BUDGET`, checked only at
+  consolidation and only as a warning, so nothing checks the rendered size
+  at prefix-build time. A run carrying both stores could render twice
+  either cap in one domain, past the adherence cliff that cap exists for, with nothing
   warning. That would confound §4: a harness-affordance verdict and a
   degraded-prefix verdict would look the same, and D2's measurement would
   read the lift of a longer prompt. So at render, driven rules take only
-  the room the owner's active rules leave in their domain, and the owner's
-  rules are never displaced. A driven rule with no room does not render, and
-  the positive check below then fails its trial loudly rather than reading
-  a zero. When the mark is set, the startup warning asks the union.
+  the room the owner's active rules leave in their domain, in both counts
+  and characters, and the owner's rules are never displaced. A driven rule
+  with no room does not render, and the positive check below then fails its
+  trial loudly rather than reading a zero. When the mark is set, the startup
+  warning asks the union, for each cap.
 - **The mark narrows alone, and adds only with a second factor.** Every
   other reader of `MECHA_SESSION_KIND` treats it as narrowing: it hides a
   session, or (D1b) turns surfaces off. Loading the driven store is the one
@@ -294,7 +297,17 @@ The shape:
   Instead, the runner composes each arm's `learning/` before the trial:
   the control's holds the owner's rules, and the treatment's holds the
   owner's rules plus the driven rule or rules under test. `trial_env`
-  already seeds one `learning/`, so no loader learns a new path. **A
+  already seeds one `learning/`, so no loader learns a new path. **The room
+  computation runs at seed time.** `driven` is a field on a reflection, not
+  on a rule, so once one `learning/` holds both, nothing in it says which
+  rule is driven, and the render-time room rule above cannot fire inside
+  the trial. Without this the failure is asymmetric: when the owner's rules
+  are near either cap in the rule's domain, the treatment arm would carry a
+  rule that a real driven run would drop for want of room, and report a
+  lift production can never deliver. So the runner seeds the treatment arm
+  with exactly the set a real driven run would render in that domain. A
+  rule under test that would not fit is not seeded, and that trial is
+  refused before it runs, because there is nothing to measure. **A
   positive check guards against a vacuous null.** The treatment arm's run
   records must show the rule under test carried in the prefix (the run
   record's rules-carried set), and, where the rule has goal lessons, those
@@ -565,7 +578,17 @@ the interlock's egress narrowing depends on. It could add
 not reach. Or it could set `[security] block_sends_after_private = false`,
 the one switch D1b forces on.
 
-**So a driven run reads no project layer at all.** Forcing table by table
+**So a driven run reads no project layer at all**, through the mechanism
+that already exists for it. `GlobalOpts::global_config_only` routes
+`load_config` to `Config::load_global()`, and its doc comment gives this
+reasoning: "A scheduled unattended run must not take its MCP servers, hooks
+or tool surface from whatever repository the daemon happens to have been
+started in". The trigger runner and the Slack and web doors already set it.
+It is `#[arg(skip)]`, settable only by a front-end that builds `GlobalOpts`
+itself, and the driver invokes the real `mecha run`, so the driven mark
+forces it rather than a flag. *Recording* a suppressed `mecha.toml` is the
+new half: `global_config_only` does not note one, and without the record a
+pin that carries one looks identical to a pin that does not. Forcing table by table
 would be a list, and lists here go stale (D2's reader enumeration came up
 short twice). A pinned historical tree's config is neither the owner's nor
 the run's to choose. A driven run loads the owner's global file and no
@@ -625,7 +648,14 @@ rather than trusting each run to be configured right:
   list in this design to come up short (config tables, `learnable()`
   readers, layers, and now tools), so the rule is a closed allowlist: a
   driven run registers only the builtins whose effects stay inside its jail
-  (the file, search and edit tools, `shell` under the sandbox, `code`).
+  (the file, search and edit tools, `shell` under the sandbox, `code`), and
+  three harness tools that `opts.tools` would otherwise narrow away with
+  everything else: `skill` (whose registration also gates the skills prompt
+  block, so without it skills are off wholesale, contradicting "Kept"
+  below), `compact` (model-invoked compaction), and `todo` (how a plan is
+  declared, and so what `step.rs` and `Lever::StepChecks` act on). Long
+  multi-turn repository work is the thing §0 says is unmeasured, and those
+  two are what it exercises.
   **`web_search` and `http_fetch` are left out, not kept and refused.**
   With the forced send guard every call to either would be refused, and a
   tool registered only to refuse is the full-clone argument's cost in its
@@ -641,8 +671,9 @@ rather than trusting each run to be configured right:
   have let it in. **The allowlist is implemented through `opts.tools`**, the
   same narrowing a front-end's tool list uses. The startup check that warns
   "`[outbox] routes` a name which is not a registered tool ... this routing
-  protects nothing" is deliberately unconditional, and it stays quiet only
-  for a name narrowed out that way. Any other mechanism would make every
+  protects nothing" stays quiet for a name narrowed out that way, one of its
+  two exemptions (the other is a routed server that is down). Any other
+  mechanism would make every
   routed name in the owner's global `[outbox] tools` warn on every driven
   start, for a reason that is not a typo.
   The run record's `features_on` already sits beside `levers_off`, and the
