@@ -13057,3 +13057,27 @@ refused, wrong-model and oversized results terminate without a repair call. The
 stored final decision is always private/untrusted and advisory; the next real
 outcome requires a separate host observation. Generic v3 JSON finish cannot bypass
 v4 evaluation. Earlier stores are never implicitly migrated or downgraded.
+
+**A recommendation and its execution have separate durable authority.** Explicit
+v5 adds `memory::durable_action` and the closed `memory_action_runtime` fixture.
+`authenticated_recommendation` reconstructs the saved request/response/check before
+binding or reserving an action. The host supplies only a closed fixture/version/state;
+model text cannot choose a tool or path. One reservation returns one opaque live
+permit, consumed by execution and settlement. A lost permit is never reconstructed
+from an indeterminate row. This is at-most-once dispatch, not exactly-once effects.
+The execution guard rechecks current sources and cancellation immediately before
+its finite handler, without holding a transaction over the effect.
+
+**Evaluate the actual outcome without rewriting the expectation.** Action outcome
+and deterministic feedback are separate source-linked revisions. Fixture measurements
+come from the host table, while `expected_from_evidence` preserves the original
+source claims. Refused/unknown observations carry no numeric measurements; they do
+not count as measured failures. `StepFeedback` checks resource/quality constraints
+without inventing a GoalRef or reusing model-call count fields. After outcome
+settlement, feedback can resume without another action; cancellation blocks that
+later work while permitting retention of an already-started real handler result.
+Forgetting expands any action sibling to the whole read/model/action closure and
+suppresses capture keys before clearing operational references. Ordinary recall
+returns historical untrusted evidence, never current execution permission or an
+automatically adopted lesson. Production appraisal and external actions remain
+outside this synthetic-only runtime.

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Experimental memory adds an explicit v5 synthetic-action store and
+  `init-action` / `durable-act bind/run/status/cancel`. A separately authorized
+  fixed simulator can consume one authenticated recommendation, retain actual
+  measurements independently of source expectations, and save deterministic
+  step feedback for later recall. Unresolved actions are never replayed;
+  cancellation, source restrictions and forgetting remain enforced. This adds
+  no production action executor or automatic learning.
+
 - Experimental memory adds an explicit v4 model-decision store and
   `init-model` / `durable-decide bind/run/status/cancel`. A successful guarded
   synthetic measurement read can support one initial model attempt and one

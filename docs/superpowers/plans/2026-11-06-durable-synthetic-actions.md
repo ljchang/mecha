@@ -5,7 +5,7 @@
 **Goal:** Extend the approved durable decision loop through one host-executed synthetic action, an independent observed outcome, deterministic feedback and later recall.
 **Architecture:** An explicit v5 store adds one action lifecycle per finalized model decision. A closed core fixture handler supplies actual measurements; the runtime checks the sealed recommendation before execution and stores outcome and feedback separately. CLI remains a thin, explicit synthetic adapter.
 **Tech Stack:** Existing Rust, SQLite, serde and prototype CLI; no new dependency or provider.
-**Spec:** The approved next increment in docs/HANDOFF.md and docs/MECHA-MEMORY-DESIGN.md; this plan specifies its bounded implementation.
+**Spec:** docs/MECHA-MEMORY-DESIGN.md section 26 and the approved next increment in docs/HANDOFF.md; this plan specifies its bounded implementation.
 
 ## Global Constraints
 
@@ -31,9 +31,9 @@
 **Files:** new mecha-core/src/memory/durable_action.rs and tests; memory/{durable_decision,durable,sql,forget,mod}.rs minimal version/closure changes.
 **Interfaces:** Public opaque ActionReceipt::id(), ActionPhase {Ready,Indeterminate,Observed,Finalized,Cancelled,Forgotten}, ActionStatus with model_id, cancelled and spec/observation/feedback RevisionRefs, ActionGuard::check(). Memory::create_durable_action, durable_action_reopen/status/spec/observation/feedback/cancel. Crate-private bind_action(model receipt, spec Value, access), reserve_action, action_guard, settle_action(live permit, host outcome Value, access), finalize_action(feedback Value). Exact signatures follow existing durable_model conventions; send interface details immediately to runtime worker before implementing bodies.
 One binding per model decision, full dependency linkage back to model/read siblings. Bind only finalized current model workflow; semantic recommendation validation is runtime-owned. Payload limits 24000 bytes each. Source freshness/auth verified on bind/reserve/guard/settle/finalize; status readable under bound access after revocation. Public arbitrary JSON cannot settle an outcome. Cancelled observed action cannot finalize further feedback. Reuse final content without another execution.
-- [ ] Add meaningful failing lifecycle tests, including actual observation after cancellation, sibling erasure and no replay.
-- [ ] Implement explicit v5 schema and operations without changing existing semantics.
-- [ ] Run focused tests and self-review; commit assigned files and report evidence.
+- [x] Add meaningful failing lifecycle tests, including actual observation after cancellation, sibling erasure and no replay.
+- [x] Implement explicit v5 schema and operations without changing existing semantics.
+- [x] Run focused tests and self-review; commit assigned files and report evidence.
 
 ### Task 2: Core runtime and thin CLI
 
@@ -41,9 +41,9 @@ One binding per model decision, full dependency linkage back to model/read sibli
 **Interfaces:** public strict ActionSpec binds a closed fixture version/state, with no executable text; bind(&mut Memory,&ModelReceipt,ActionSpec,&Access), advance/run over ActionReceipt and Access, and status retrieval through store APIs. Use a finite host fixture table for Nori/Arden/Quill, independent from source measurement values. Expose a small host-only boundary usable by process tests; never expose arbitrary model-directed tool execution. Coordinate signatures with store and qualification workers before implementation.
 Recompute/verify final decision against retained response and sealed original source using existing decision helper, including request identity; only Recommend can bind. Keep expected_from_evidence optional and distinctly named. Outcome states distinguish observed/refused/unknown; only observed numeric values generate Passed/Failed against original resource/quality constraints, not model self-report. Pure feedback settlement after observed outcome is resumable. Outcome is an Evidence::Observation dependent on action and decision; generic recall should recover it as untrusted source-linked evidence.
 CLI explicit init-action and durable-act bind/run/status/cancel commands under --experimental and --synthetic-input. Run uses only closed fixture execution, no endpoint/provider. Reuse final result without reacquisition or model inference. No new production Config fields.
-- [ ] Write failing runtime and CLI tests for bad decision, actual vs expected values, recovery and no hidden provider.
-- [ ] Implement runtime/CLI and source-linked recall projection; preserve existing functions.
-- [ ] Run focused tests and self-review; commit assigned files and report evidence.
+- [x] Write failing runtime and CLI tests for bad decision, actual vs expected values, recovery and no hidden provider.
+- [x] Implement runtime/CLI and source-linked recall projection; preserve existing functions.
+- [x] Run focused tests and self-review; commit assigned files and report evidence.
 
 ### Task 3: Independent qualification
 

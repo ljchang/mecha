@@ -972,3 +972,61 @@ with sixteen initial allowances and at most sixteen revisions. It independently
 scores source-supported optimum, appropriate abstention, host withholding, errors,
 citations and actual available usage separately. Results do not measure general
 retrieval quality, policy learning, or benefit on real tasks.
+
+## Durable synthetic actions (explicit schema v5)
+
+Create a new database with `memory --experimental --db NEW.memory-prototype.sqlite
+init-action --domain synthetic-demo --synthetic-input`. Earlier schemas are not
+migrated. Import only synthetic source records, perform the existing guarded read,
+and finish a `durable-decide` workflow in this v5 store first. The source envelope
+and model contract must both name the closed workload `durable-action-fixture-v1`.
+A recommendation is still advisory until the host binds an explicit fixture:
+
+```sh
+mecha memory --experimental --db /tmp/new.memory-prototype.sqlite durable-act \
+  --synthetic-input --domain synthetic-demo --scope fixture-mail bind \
+  --model MODEL_WORKFLOW_ID \
+  --spec '{"fixture":"measurements_v1","state":"baseline"}'
+
+mecha memory --experimental --db /tmp/new.memory-prototype.sqlite durable-act \
+  --synthetic-input --domain synthetic-demo --scope fixture-mail run --task ACTION_ID
+```
+
+`--model` here is the saved model workflow ID, not a provider/model name.
+`status` and `cancel` accept the same action ID. There is no endpoint argument,
+provider discovery or inference in `durable-act`. The closed fixture state is
+`baseline`, `refused` or `unknown`; neither a tool/path nor a method can be supplied
+in its spec. The method is independently authenticated from the saved model reply,
+request, source measurements and host check. Abstained/withheld/failed decisions
+cannot bind an action.
+
+`memory_action_runtime::reserve` returns an opaque live `PendingAction`;
+`execute` consumes it and returns an opaque actual `ExecutedAction`; `settle`
+retains that result. This boundary permits interruption/recovery tests without a
+model-directed execution callback or production fault-injection flags. `advance`
+performs one resumable action-or-feedback step, and `run` drives at most two steps.
+A lost reserved action remains indeterminate and spent. A saved outcome can resume
+pure feedback without another action. Cancellation may retain an already-completed
+handler result but blocks further evaluation; changed/restricted/forgotten sources
+refuse late content.
+
+The simulator supplies fixed actual measurements independently of source claims:
+Nori `(minutes=4, energy=9, quality=8)`, Arden `(8,3,9)`, Quill `(6,5,6)`.
+`expected_from_evidence` remains a separate optional field, not a numeric model
+prediction. Feedback checks actual energy/quality against the original contract;
+it does not establish optimality or free-text rationale correctness. Unknown and
+refused outcomes have no fabricated measurements and produce `Pending`/`Refused`,
+not a measured policy failure. Saved `StepFeedback` has no invented task-board goal
+and does not repurpose model-call count fields.
+
+The outcome is source-linked evidence that ordinary recall can return under its
+current authorization and dependency rules. This does not wire v2 into production
+appraisal, promote a lesson, execute external tools or demonstrate learning gains.
+Forgetting a lifecycle sibling erases the read/model/action content and suppresses
+its capture keys; exported trial reports remain outside database erasure.
+
+The deterministic qualification runner is `durable_action_trial.py --binary
+/path/to/feature-enabled/mecha --output /new/output/directory`. It uses an authored
+loopback response server and reports scripted HTTP requests separately from zero
+real model inference calls. Its expected-versus-actual mismatch, pass, refusal,
+unknown and abstention cases exercise the actual CLI, restart and later recall.

@@ -149,6 +149,8 @@ jobs:
       - name: Test experimental memory
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         run: cargo test --workspace --locked --features memory-prototype
+        env:
+          MECHA_SESSION_KIND: test
 
   no-logs:
     # No logs, recordings or run output in a public repository (owner's
