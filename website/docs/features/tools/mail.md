@@ -764,13 +764,15 @@ thread that has scrolled out of that window is retried from the store when it
 comes due, so a busy inbox cannot strand it. `mecha mail list` shows when each
 failure is next tried.
 
-## Mail rules: recurring chores with no model in them
+## Mail rules: recurring chores
 
-A mail rule matches mail by its headers — sender, sender domain, mailing
-list id, subject, account — and does something reversible with it: archive,
+A mail rule matches mail and does something reversible with it: archive,
 mark read or unread, tag, add to the digest, or trash. It is a file you
-write (`~/.mecha/mail-rules/rules/<name>/rule.toml`), never a prompt, and no
-model reads the mail it matches. The feature is off until you turn it on:
+write (`~/.mecha/mail-rules/rules/<name>/rule.toml`), never a prompt. A
+**header rule** matches by sender, sender domain, mailing list id, subject or
+account, and no model reads the mail it matches. A **description rule**
+matches by what a message says, in your words (below). The feature is off
+until you turn it on:
 
 ```bash
 mecha features enable mail_rules
@@ -798,9 +800,11 @@ phone or at a desk:
   folder, read-only), the ledger, and the definition to edit;
 - the ledger: one row per action, with **Undo** on mailbox actions (an
   archive goes back to the inbox, a trash is restored) and **Wrong match**
-  on a header-rule row (not an attempt still pending, not a row already
+  on a matched row (not an attempt still pending, not a row already
   undone, and once per action) — which records that the matcher is wrong, counts
-  toward the rule's brake, and points you at the edit that fixes it;
+  toward the rule's brake, and points you at the edit that fixes it; on a
+  description rule's row it also tells the classifier, as a correction to
+  that thread;
 - **Make a rule…** in a thread's actions, which opens a new rule prefilled
   from the sender's domain with archive suggested; nothing is installed
   until you press Install, and it installs in shadow.
@@ -808,6 +812,35 @@ phone or at a desk:
 The same verbs are on the command line — `mecha mail rule add | list | show
 | mode | test | ledger | undo | wrong-match | edit | pause | pause-all` — and
 the page can do nothing they cannot: every button runs one of them.
+
+**Description rules.** Give `[match]` a `describe` sentence (or pick
+*Description* in the new-rule form):
+
+```toml
+description = "Room bookings"
+[match]
+describe = "Confirmations that a room booking went through"
+from_domain = ["example.edu"]   # optional: only mail from here can match
+[[action]]
+do = "archive"
+```
+
+The classifier that already reads each new thread is also asked whether it
+is one of your descriptions, and must quote the words in the message that
+show it; a match whose words are not in the message is dropped. The quote is
+what the ledger shows as *matched because*. Description rules act at each
+classification sweep, not on the five-minute timer, and the description is
+at most 500 characters. Newsletters and list mail, which normally skip the
+classifier, are read for a description rule only when its other conditions
+fit. A description rule's other conditions may use sender, sender domain,
+account, subject and attachments; one that names a recipient, list id or
+custom header is held, and its page says so. Once approved, a description
+rule can archive, mark read or unread, tag and add to the digest by itself;
+**trash and spam always ask you first**, since a stranger can write mail
+that resembles a description. Tasks, replies and forwards from a description
+rule stay in shadow for now. The classifier's lists hold at most 12
+description entries (a rule with both shadow and active groups takes two),
+and adding one more is refused with the rules to lower.
 
 **Pause** lowers a rule's groups to shadow at once; **Pause all** does it for
 every rule. Resuming is a raise, with its approval screen.

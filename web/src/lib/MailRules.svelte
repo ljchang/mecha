@@ -470,12 +470,13 @@
         <header><h3>What it matches</h3><p class="tf-help">One key here; edit the text below to combine keys (they AND together; a comma list ORs).</p></header>
         <div class="tf-row stack">
           <div class="tf-seg" role="radiogroup" aria-label="Match on">
-            {#each [['from_domain', 'Domain'], ['from', 'Sender'], ['list_id', 'List id'], ['subject_contains', 'Subject']] as [k, label]}
+            {#each [['from_domain', 'Domain'], ['from', 'Sender'], ['list_id', 'List id'], ['subject_contains', 'Subject'], ['describe', 'Description']] as [k, label]}
               <button class:on={draft.match === k} role="radio" aria-checked={draft.match === k} onclick={() => (draft.match = k)}>{label}</button>
             {/each}
           </div>
-          <input class="tf-text mono" aria-label="Match value" placeholder={draft.match === 'list_id' ? 'news.example.com' : draft.match === 'from' ? 'sender@example.com' : draft.match === 'subject_contains' ? 'weekly digest' : 'example.com'} bind:value={draft[draft.match]} />
+          <input class="tf-text mono" aria-label="Match value" placeholder={draft.match === 'list_id' ? 'news.example.com' : draft.match === 'from' ? 'sender@example.com' : draft.match === 'subject_contains' ? 'weekly digest' : draft.match === 'describe' ? 'Confirmations of a room booking' : 'example.com'} bind:value={draft[draft.match]} />
           {#if draft.match === 'list_id'}<p class="tf-help">The list id is in the message's List-Id header; the mail views do not show it, so type it here.</p>{/if}
+          {#if draft.match === 'describe'}<p class="tf-help">Say in your own words what kind of mail this is. The classifier checks each new thread against it at its next pass and must quote the words that show a match. Mail a description matches can be archived, tagged or marked read automatically once approved; trash and spam always ask you first.</p>{/if}
         </div>
       </section>
       <section class="tf-sec">

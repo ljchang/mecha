@@ -5,6 +5,7 @@
 
 mod approvals;
 mod definition;
+pub mod describe;
 pub mod engine;
 mod headers;
 mod ledger;

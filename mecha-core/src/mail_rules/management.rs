@@ -126,8 +126,12 @@ pub fn rule_views(store: &RuleStore) -> Result<Vec<RuleView>> {
                     });
                     modes.insert(group, mode);
                 }
-                all_modes.insert(name, modes);
-                rules.push(rule);
+                if super::describe::precondition_unreadable(&rule.definition) {
+                    view.holds.push(super::describe::PRECONDITION_HOLD.into());
+                } else {
+                    all_modes.insert(name, modes);
+                    rules.push(rule);
+                }
             }
             Err(error) => {
                 view.load_error = Some(format!("{error:#}"));
@@ -156,8 +160,10 @@ pub fn rule_views(store: &RuleStore) -> Result<Vec<RuleView>> {
     let omitted = engine::list_cap(&rules, &all_modes);
     for view in &mut views {
         if omitted.contains(&view.name) {
-            view.holds
-                .push("held: list cap (12 entries); lower or disable another rule".into());
+            view.holds.push(format!(
+                "held: list cap ({} entries); lower or disable another rule",
+                super::describe::LIST_CAP
+            ));
         }
     }
     Ok(views)
@@ -341,7 +347,7 @@ pub fn test_match_with_header_capability(
 ) -> Result<Vec<LedgerRow>> {
     ensure!(
         !rule.definition.is_description(),
-        "description rule testing requires P4; only header rules can be tested"
+        "testing a description rule against past mail is not built yet; only header rules can be tested"
     );
     if engine::header_provider_hold(rule, proves_absence)
         || engine::absent_on_partial_headers(rule, candidate, proves_absence)
@@ -416,13 +422,20 @@ pub(super) fn wrong_match_original<'a>(
     let mut found = rows.iter().filter(|row| row.id == id);
     let row = found.next().context("unknown ledger row id")?;
     ensure!(found.next().is_none(), "ledger row id is ambiguous");
+    // A row's evidence kind must be its rule's: a header row reads no verdict,
+    // a description row says what its verdict read. A rule whose kind changed
+    // since the row was written is corrected by an edit, not this.
+    let description = store.get(&row.rule)?.definition.is_description();
     ensure!(
-        !store.get(&row.rule)?.definition.is_description(),
-        "description rules arrive in P4"
-    );
-    ensure!(
-        row.verdict_input == VerdictInput::NotApplicable,
-        "description rules arrive in P4"
+        if description {
+            matches!(
+                row.verdict_input,
+                VerdictInput::Snippet | VerdictInput::FullBody
+            )
+        } else {
+            row.verdict_input == VerdictInput::NotApplicable
+        },
+        "this row's evidence is not the rule's current kind; edit the rule instead"
     );
     // A `pending` row is an attempt, not an action: its settlement row is the
     // one to correct, and accepting both would give one action two corrections.
@@ -437,7 +450,7 @@ pub(super) fn wrong_match_original<'a>(
                     | Outcome::Undone
                     | Outcome::WrongMatch
             ),
-        "wrong-match requires an original header action row"
+        "wrong-match requires an original action row"
     );
     row.validate_key()?;
     Ok(row)
@@ -488,6 +501,9 @@ pub enum ModeError {
     ConfirmationRequired,
     #[error("a raise from the page requires the approval digest shown; reload")]
     DigestRequired,
+    /// §4.2's admission check: the description lists are full.
+    #[error("{0}")]
+    ListCap(String),
 }
 impl ModeError {
     pub fn code(&self) -> &'static str {
@@ -497,6 +513,7 @@ impl ModeError {
             Self::Ceiling => "mode_ceiling",
             Self::ConfirmationRequired => "confirmation_required",
             Self::DigestRequired => "digest_required",
+            Self::ListCap(_) => "list_cap",
         }
     }
 }

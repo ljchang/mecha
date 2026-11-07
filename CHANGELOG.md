@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mail rules can match on what a message says.** A rule with
+  `match.describe` (or *Description* in the new-rule form) is checked by the
+  classifier at each classify pass, which must quote the words in the message
+  that show a match; quotes not in the message are dropped. Such a rule starts
+  in shadow and, once approved, can archive, mark read or unread, tag and add
+  to the digest automatically; trash and spam always ask first, and tasks and
+  sends wait for the next phase. Newsletters and list mail are read for a
+  description rule only when the rule could apply. Wrong match on such a row
+  also corrects the classifier. At most 12 description list entries are
+  admitted.
+
 - **The mail rules page.** *Mail → Rules* (`#mail/rules`) lists each rule's
   modes, activity and holds; a rule's page raises a group to automatic only
   through an approval screen showing its files, tests it against 30 days of

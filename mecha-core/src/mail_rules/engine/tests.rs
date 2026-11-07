@@ -102,6 +102,7 @@ impl Fake {
                 classified: Some(Classified {
                     at: now,
                     deadline: NaiveDate::from_ymd_opt(2026, 12, 1),
+                    rules: None,
                 }),
             }]),
             calls: Mutex::new(Vec::new()),
@@ -614,7 +615,7 @@ async fn per_rule_and_global_caps_hold_tasks_but_not_mailbox() {
 #[tokio::test]
 async fn list_cap_is_visible_without_any_action_or_permission_change() {
     let f = Fixture::new();
-    for index in 0..13 {
+    for index in 0..12 {
         f.store
             .install(
                 &format!("description-{index}"),
@@ -623,6 +624,15 @@ async fn list_cap_is_visible_without_any_action_or_permission_change() {
             )
             .unwrap();
     }
+    // Admission refuses a thirteenth; a hand-made one is discovered by the
+    // loader and held rather than admitted because its files exist (§4.2).
+    let hand = f.store.root().join("rules").join("description-12");
+    crate::create_private_dir(&hand).unwrap();
+    std::fs::write(
+        hand.join("rule.toml"),
+        "description = 'Notice'\n[match]\ndescribe = 'A notice'\n[[action]]\ndo = 'task'\n",
+    )
+    .unwrap();
     let before = f.store.approvals().unwrap().len();
     let report = f.run(None).await;
     assert_eq!(report.list_cap, vec!["description-0"]);
@@ -1362,6 +1372,7 @@ async fn expired_occasions_cannot_be_reenqueued_or_dispatched() {
         f.mail.candidates.lock().unwrap()[0].classified = fresh_verdict.then_some(Classified {
             at: now,
             deadline: None,
+            rules: None,
         });
         let sink = Sink::default();
         let report = f.run(Some(&sink)).await;
@@ -2515,7 +2526,7 @@ fn retrospective_match_refuses_description_rules() {
         test_match(&rule, &candidate, Some(true), f.options.clock.now())
             .unwrap_err()
             .to_string()
-            .contains("P4")
+            .contains("not built yet")
     );
 }
 
@@ -2815,4 +2826,306 @@ async fn a_repeated_deferred_observation_settles_as_itself_and_adds_no_row() {
     // A dry run reports what a live pass would, already recorded or not.
     f.options.dry_run = true;
     assert_eq!(f.run(None).await.rows.len(), 1);
+}
+
+// ---- description rules (P4a) ----
+
+use crate::mail_triage::rule_frame::{Considered, RuleHit, RuleInput, RuleList, RuleRecord};
+
+fn described_rule(f: &Fixture, name: &str, extra_match: &str, actions: &str) -> LoadedRule {
+    f.store
+        .install(
+            name,
+            &format!(
+                "description = 'Bookings'\n[match]\ndescribe = 'Room booking confirmations'\n{extra_match}{actions}"
+            ),
+            &BTreeMap::new(),
+        )
+        .unwrap()
+}
+
+/// What the classifier stored for the fixture's message about `rule`.
+fn told(f: &Fixture, rule: &LoadedRule, list: RuleList, named: bool, input: RuleInput) {
+    let matcher = rule
+        .match_digest(ActionGroup::Mailbox, GateStatus::Passing)
+        .unwrap()
+        .matcher;
+    let hit = RuleHit {
+        name: rule.name.clone(),
+        quote: "booking for Friday".into(),
+    };
+    let mut cs = f.mail.candidates.lock().unwrap();
+    cs[0].classified.as_mut().unwrap().rules = Some(RuleRecord {
+        input,
+        considered: vec![Considered {
+            name: rule.name.clone(),
+            list,
+            matcher,
+        }],
+        active: (named && list == RuleList::Active).then(|| hit.clone()),
+        shadow: if named && list == RuleList::Shadow {
+            vec![hit]
+        } else {
+            Vec::new()
+        },
+        refused: Vec::new(),
+    });
+}
+
+#[tokio::test]
+async fn a_description_match_writes_one_would_have_row_after_classify_with_its_quote() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", ARCHIVE);
+    // The header timer never evaluates a description rule.
+    assert!(f.run(None).await.rows.is_empty());
+    f.options.pass = Pass::AfterClassify;
+    // Classified, but no description verdict: nothing is known, so nothing.
+    assert!(f.run(None).await.rows.is_empty());
+    told(&f, &r, RuleList::Shadow, false, RuleInput::Snippet);
+    assert!(
+        f.run(None).await.rows.is_empty(),
+        "asked and not named is no match, and no row"
+    );
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    for _ in 0..3 {
+        f.run(None).await;
+    }
+    let rows = f.store.ledger().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert_eq!(rows[0].outcome, Outcome::WouldHave);
+    assert_eq!(rows[0].verdict_input, VerdictInput::Snippet);
+    assert!(rows[0].matched_because.contains("booking for Friday"));
+    assert!(f.mail.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn only_the_active_list_can_authorise_an_active_action() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", ARCHIVE);
+    f.mode(&r, ActionGroup::Mailbox, Mode::Auto);
+    f.options.pass = Pass::AfterClassify;
+    // Named only from the shadow list (asked while the group was shadow).
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    assert!(f.run(None).await.rows.is_empty());
+    assert!(f.mail.calls.lock().unwrap().is_empty());
+    told(&f, &r, RuleList::Active, true, RuleInput::FullBody);
+    let report = f.run(None).await;
+    assert_eq!(report.rows[0].outcome, Outcome::Done, "{:#?}", report.rows);
+    assert_eq!(report.rows[0].verdict_input, VerdictInput::FullBody);
+    assert_eq!(*f.mail.calls.lock().unwrap(), vec!["Archive"]);
+}
+
+#[tokio::test]
+async fn a_verdict_about_an_edited_description_is_not_evidence_for_the_new_one() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", ARCHIVE);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    std::fs::write(
+        r.directory.join("rule.toml"),
+        "description = 'Bookings'\n[match]\ndescribe = 'Invoices for room bookings'\n[[action]]\ndo = 'archive'\n",
+    )
+    .unwrap();
+    assert!(f.run(None).await.rows.is_empty());
+}
+
+#[tokio::test]
+async fn header_preconditions_still_bind_a_description_rule() {
+    let mut f = Fixture::new();
+    let r = described_rule(
+        &f,
+        "bookings",
+        "from_domain = ['elsewhere.example']\n",
+        ARCHIVE,
+    );
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    assert!(f.run(None).await.rows.is_empty());
+}
+
+#[tokio::test]
+async fn a_precondition_the_sweep_cannot_read_holds_the_rule_visibly() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "to = ['owner@example.edu']\n", ARCHIVE);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    let report = f.run(None).await;
+    assert!(report.rows.is_empty());
+    assert!(report
+        .notices
+        .iter()
+        .any(|n| n.starts_with("bookings: held:")));
+    let views = rule_views(&f.store).unwrap();
+    assert!(views[0].holds.iter().any(|h| h.contains("classify sweep")));
+}
+
+#[tokio::test]
+async fn description_ceilings_follow_the_group() {
+    let f = Fixture::new();
+    let archive = described_rule(&f, "archive", "", ARCHIVE);
+    let trash = described_rule(&f, "trash", "", "[[action]]\ndo = 'trash'\n");
+    let task = described_rule(&f, "task", "", TASK);
+    let forward = described_rule(
+        &f,
+        "forward",
+        "from = ['sender@example.com']\n",
+        "[[action]]\ndo = 'forward'\nto = ['finance@example.edu']\n",
+    );
+    assert_eq!(
+        approvals::mode_ceiling(&archive, ActionGroup::Mailbox),
+        Mode::Auto
+    );
+    assert_eq!(
+        approvals::mode_ceiling(&trash, ActionGroup::Mailbox),
+        Mode::Propose
+    );
+    assert_eq!(
+        approvals::mode_ceiling(&task, ActionGroup::Board),
+        Mode::Shadow
+    );
+    assert_eq!(
+        approvals::mode_ceiling(&forward, ActionGroup::VerbatimForward),
+        Mode::Shadow
+    );
+}
+
+#[test]
+fn the_frame_lists_by_mode_and_priority_and_asks_only_the_eligible() {
+    use super::super::describe::{ClassifierRules, Envelope};
+    let f = Fixture::new();
+    let late = f
+        .store
+        .install(
+            "a-late",
+            "description = 'Late'\npriority = 200\n[match]\ndescribe = 'Seminar notices'\n[[action]]\ndo = 'archive'\n",
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    f.mode(&late, ActionGroup::Mailbox, Mode::Auto);
+    f.store
+        .install(
+            "z-early",
+            "description = 'Early'\npriority = 5\n[match]\ndescribe = 'Booking notices'\nfrom_domain = ['example.com']\n[[action]]\ndo = 'archive'\n[[action]]\ndo = 'forward'\nto = ['office@example.edu']\n",
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    described_rule(&f, "held", "list_id = ['news.example.com']\n", ARCHIVE);
+    f.rule("header-only", ARCHIVE);
+    let rules = ClassifierRules::load(&f.store).unwrap();
+    assert_eq!(
+        rules
+            .frame
+            .active
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a-late"]
+    );
+    assert_eq!(
+        rules
+            .frame
+            .shadow
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["z-early"]
+    );
+    assert!(
+        rules.held.iter().any(|h| h.starts_with("held: held:")),
+        "{:?}",
+        rules.held
+    );
+    let here = rules.ask(&Envelope {
+        account: "campus",
+        from: "someone@example.com",
+        subject: "Friday",
+        has_attachment: None,
+    });
+    assert_eq!(here.active, vec!["a-late".to_string()]);
+    assert_eq!(here.shadow, vec!["z-early".to_string()]);
+    let elsewhere = rules.ask(&Envelope {
+        account: "campus",
+        from: "someone@other.example",
+        subject: "Friday",
+        has_attachment: None,
+    });
+    assert!(elsewhere.shadow.is_empty(), "its precondition disproves it");
+    // A shadow forward still needs full-body evidence; an archive does not.
+    let named = |name: &str| crate::mail_triage::rule_frame::RuleReading {
+        shadow: vec![RuleHit {
+            name: name.into(),
+            quote: "Friday notice".into(),
+        }],
+        ..Default::default()
+    };
+    assert!(rules.escalates(&named("z-early")));
+    assert!(!rules.escalates(&named("a-late")));
+}
+
+#[test]
+fn admission_refuses_what_would_overfill_the_lists_and_never_a_lowering() {
+    let f = Fixture::new();
+    for i in 0..12 {
+        described_rule(&f, &format!("d{i:02}"), "", ARCHIVE);
+    }
+    let refused = f
+        .store
+        .install(
+            "d12",
+            "description = 'One more'\n[match]\ndescribe = 'More notices'\n[[action]]\ndo = 'archive'\n",
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("limited to 12"),
+        "{refused:#}"
+    );
+    assert!(f.store.get("d12").is_err(), "nothing was written");
+    // A header rule takes no list entry.
+    f.rule("header-only", ARCHIVE);
+    // Moving a one-group rule from shadow to auto keeps its one entry.
+    let one = f.store.get("d00").unwrap();
+    f.mode(&one, ActionGroup::Mailbox, Mode::Auto);
+    // A rule with two groups gains an active entry if one is raised alone.
+    f.mode(&one, ActionGroup::Mailbox, Mode::Shadow);
+    let two_text = "description = 'Bookings'\n[match]\ndescribe = 'Room booking confirmations'\n[[action]]\ndo = 'archive'\n[[action]]\ndo = 'tag'\ntag = 'rooms'\n";
+    let report = f.store.edit("d01", two_text);
+    assert!(report.is_ok(), "an edit that adds no entry is admitted");
+    let two = f.store.get("d01").unwrap();
+    let raised = f.store.change_mode(
+        "d01",
+        ActionGroup::Mailbox,
+        Mode::Auto,
+        Some(Actor::Owner),
+        &two.approval_digest,
+        &P1Holds {
+            origin_gate: GateStatus::Passing,
+        },
+    );
+    let error = raised.unwrap_err();
+    assert!(
+        matches!(
+            error.downcast_ref::<ModeError>(),
+            Some(ModeError::ListCap(_))
+        ),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_description_row_can_be_marked_a_wrong_match_and_counts_toward_the_brake() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", ARCHIVE);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    f.run(None).await;
+    let row = f.store.ledger().unwrap()[0].clone();
+    let views = ledger_views(&f.store, Some("bookings"), 10).unwrap();
+    assert_eq!(views[0]["wrong_match_allowed"], true);
+    let report = f.store.wrong_match(&row.id, Actor::Owner).unwrap();
+    assert!(report.changed);
+    assert_eq!(
+        brake_evidence("bookings", &f.store.ledger().unwrap()).wrong_matches,
+        1
+    );
 }

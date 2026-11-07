@@ -176,8 +176,55 @@ impl LedgerRow {
     ) -> Result<Self> {
         ensure!(
             !rule.definition.is_description(),
-            "P1 does not evaluate description rules"
+            "a description rule's row records what its verdict read"
         );
+        Self::action(
+            rule,
+            action,
+            message,
+            mode,
+            gate,
+            outcome,
+            at,
+            VerdictInput::NotApplicable,
+        )
+    }
+
+    /// A description rule's row: `input` is what the main pass's matching
+    /// verdict read, never inferred from the rule's actions (§4.2).
+    #[allow(clippy::too_many_arguments)]
+    pub fn described(
+        rule: &LoadedRule,
+        action: usize,
+        message: MessageRef,
+        mode: Mode,
+        gate: GateStatus,
+        outcome: Outcome,
+        at: DateTime<Utc>,
+        input: VerdictInput,
+    ) -> Result<Self> {
+        ensure!(
+            rule.definition.is_description(),
+            "a header rule's row reads no verdict"
+        );
+        ensure!(
+            input != VerdictInput::NotApplicable,
+            "a description verdict read a snippet or the full body"
+        );
+        Self::action(rule, action, message, mode, gate, outcome, at, input)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn action(
+        rule: &LoadedRule,
+        action: usize,
+        message: MessageRef,
+        mode: Mode,
+        gate: GateStatus,
+        outcome: Outcome,
+        at: DateTime<Utc>,
+        verdict_input: VerdictInput,
+    ) -> Result<Self> {
         let definition = rule
             .definition
             .actions
@@ -193,7 +240,7 @@ impl LedgerRow {
             group,
             mode,
             match_digest: rule.match_digest(group, gate)?,
-            verdict_input: VerdictInput::NotApplicable,
+            verdict_input,
             outcome,
             closes: outcome.closes(group),
             settlement: None,

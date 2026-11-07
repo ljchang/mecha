@@ -4859,6 +4859,34 @@ run's report and appends any outcome whose id the ledger lacks, so a fresh id
 there would bring the growth back under a false "no longer matches" reason,
 and a dry run must show what a live pass would.
 
+**Description rules are answered by the classifier and acted on by the
+engine (P4a).** `mail_rules::describe::ClassifierRules` reads the store once
+per classify sweep: the admitted description rules, in an active list (a
+group in `propose`/`auto` with readable activation) and a shadow list,
+priority then name, capped at `LIST_CAP` (12) entries. It judges each
+message's eligibility with the engine's own `header_match` over the sweep's
+envelope (sender, account, subject, attachment flag), Unknown ineligible. A
+rule whose preconditions use `to`, `list_id` or raw headers is held instead
+(`PRECONDITION_HOLD`), in the frame, the engine, the views and doctor alike.
+`mail_triage::classify_asking` adds the frame only when some rule is eligible,
+so a prompt with nothing to ask is byte-identical to one without rules; the
+constrained enums carry only eligible names, and `rule_frame::read_answer`
+grounds every quote against the text the model was shown (8–300 characters),
+refusing an ineligible name. The triage record's `rules` field stores the
+grounded hits, the refusals, what the verdict read (`snippet`/`full_body`),
+and every rule asked about with its matcher digest. The engine, after
+classify only, treats a description rule as matched when that record names
+it under its *current* matcher and its header preconditions are not
+disproved on the full message; only an active-list name authorises an active
+group, and a shadow-list name writes would-have rows alone. Rows are written
+by `LedgerRow::described`, never `header`, carrying the record's input and the
+quote in `matched_because`. A bulk thread the pre-filter took is asked about
+for the rules alone when a rule is eligible (owner ruling 2026-11-07), keeping
+its `ignore`. Admission (`RuleStore::admit_locked`) refuses an install, edit
+or raise that would add entries past the cap; lowerings are never checked.
+Until P4b, a description rule's Board and outbound groups are capped at
+`shadow` and its Mailbox group at `propose` when it contains `trash`.
+
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound
 action defer removals regardless of priority. Owed actions enter the store's
