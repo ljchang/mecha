@@ -303,6 +303,14 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
             reason: "not yet supported in P1".into(),
         });
     }
+    if super::describe::precondition_unreadable(&rule.definition) {
+        // Not evaluated at all (see the view's hold): refusing the raise on
+        // the approval screen beats approving a rule that cannot run.
+        holds.push(ModeHold {
+            ceiling: Mode::Shadow,
+            reason: super::describe::PRECONDITION_HOLD.into(),
+        });
+    }
     if rule.definition.is_description() {
         if group.is_outbound() || group == ActionGroup::Board {
             // §4.2: a description match is a candidate, never a decision,
@@ -324,8 +332,10 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
             // sender can write mail to resemble it; trash would bury it.
             holds.push(ModeHold {
                 ceiling: Mode::Propose,
-                reason: "trash on a description match proposes; put trash in a header rule to                          run it automatically"
-                    .into(),
+                reason:
+                    "trash on a description match proposes; put trash in a header rule to run it \
+                         automatically"
+                        .into(),
             });
         }
     }

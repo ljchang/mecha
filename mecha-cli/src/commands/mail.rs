@@ -1287,7 +1287,12 @@ async fn classify(
         // `full_body`: a thread retried from the store has no snippet to start
         // from, so it is read whole up front and needs no second pass.
         let has_attachment = match &item {
-            Work::Row(row) => row["has_attachments"].as_bool(),
+            // `attachment_presence`, never `has_attachments`: the flag reads
+            // "cannot tell" as false, and a known negative would let a rule
+            // that may not apply take the single `rule` slot (or hide one
+            // that does). A listing from an older mail binary has no field,
+            // which is unknown, so such rules are not asked.
+            Work::Row(row) => row["attachment_presence"].as_bool(),
             Work::Stored(_) => None,
         };
         let (mut thread, bulk, full_body) = match item {
@@ -2548,12 +2553,19 @@ fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
         }
     }
 
+    // A thread whose only correction is a description rule's wrong match had
+    // its triage verdict right: it is not a corrected thread. `by_field`
+    // still counts every correction, `rule` included.
     let corrected: Vec<&Record> = records
         .iter()
-        .filter(|r| !r.corrections.is_empty())
+        .filter(|r| {
+            r.corrections
+                .iter()
+                .any(mecha_core::mail_triage::reflectable)
+        })
         .collect();
     let mut by_field: std::collections::BTreeMap<&str, usize> = Default::default();
-    for r in &corrected {
+    for r in records.iter().filter(|r| !r.corrections.is_empty()) {
         for c in &r.corrections {
             *by_field.entry(c.field.as_str()).or_default() += 1;
         }
@@ -2637,7 +2649,11 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
         if account.is_some_and(|a| a != r.account) {
             continue;
         }
-        for c in &r.corrections {
+        for c in r
+            .corrections
+            .iter()
+            .filter(|c| mecha_core::mail_triage::reflectable(c))
+        {
             if !mined.contains(&mecha_core::mail_triage::correction_key(
                 &r.account,
                 &r.thread_id,

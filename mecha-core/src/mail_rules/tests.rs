@@ -103,12 +103,13 @@ fn loader_parses_all_matchers_and_holds_a_description_whose_preconditions_the_sw
     assert_eq!(rule.definition.daily_cap, 20);
     assert!(rule.definition.is_description());
     assert_eq!(rule.definition.matcher.header["X-Notice"], ["yes"]);
-    // P4a: a description rule's Mailbox group may rise, but this one's
-    // preconditions read headers the classify sweep never sees, so it is held
-    // from evaluation altogether, and says so, rather than being guessed at.
+    // P4a: this description rule's preconditions read headers the classify
+    // sweep never sees, so it is held from evaluation altogether, and says
+    // so, rather than being guessed at.
+    // Its raise is refused on the approval screen with the same reason.
     assert_eq!(
         approvals::mode_ceiling(&rule, ActionGroup::Mailbox),
-        Mode::Auto
+        Mode::Shadow
     );
     assert!(describe::precondition_unreadable(&rule.definition));
     let views = rule_views(&store).unwrap();

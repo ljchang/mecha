@@ -324,7 +324,7 @@ pub(super) fn extend_schema(schema: &mut serde_json::Value, ask: &RuleAsk<'_>) {
         ask.active.iter().map(|n| serde_json::json!(n)).collect();
     active.push(serde_json::json!("none"));
     let shadow = if ask.shadow.is_empty() {
-        serde_json::json!({"type": "array", "maxItems": 0})
+        serde_json::json!({"type": "array", "maxItems": 0, "items": {"type": "object"}})
     } else {
         serde_json::json!({"type": "array", "items": {"type": "object",
             "additionalProperties": false,
@@ -749,5 +749,77 @@ mod tests {
         let shot = super::super::FewShot::from_record(&got).unwrap();
         assert!(shot.changes.contains("rule"), "{}", shot.changes);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct Capture(std::sync::Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Capture {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "capture"
+        }
+        fn default_model(&self) -> &str {
+            "capture-1"
+        }
+        async fn complete(
+            &self,
+            request: &crate::message::CompletionRequest,
+            _: Option<&crate::provider::StreamSink>,
+        ) -> anyhow::Result<crate::message::CompletionResponse> {
+            self.0.lock().unwrap().push(request.messages[0].text());
+            Ok(crate::message::CompletionResponse {
+                message: crate::message::Message::assistant(vec![crate::message::Block::Text {
+                    text: r#"{"reasoning":"x","bucket":"ignore","urgency":"none","one_line":"x","tags":[],"proposed":"none","deadline":null,"deadline_quote":null,"request_type":null}"#.into(),
+                }]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: crate::message::Usage::default(),
+                refusal: None,
+                model: "capture-1".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_nothing_eligible_sends_exactly_the_prompt_without_rules() {
+        // Review of #854: the case the sweep actually hits is a non-empty
+        // frame whose rules all fail this message's preconditions.
+        let p = Capture(Default::default());
+        let t = thread();
+        let frame = frame();
+        let nothing = RuleAsk {
+            frame: &frame,
+            active: vec![],
+            shadow: vec![],
+        };
+        let (_, reading) =
+            super::super::classify_asking(&p, "m", &t, "2026-11-07", &[], None, Some(&nothing))
+                .await
+                .unwrap();
+        assert!(reading.is_none());
+        super::super::classify_with(&p, "m", &t, "2026-11-07", &[], None)
+            .await
+            .unwrap();
+        let sent = p.0.lock().unwrap();
+        assert_eq!(sent[0], sent[1]);
+        assert!(!sent[0].contains("DESCRIPTIONS"));
+    }
+
+    #[test]
+    fn a_rule_correction_teaches_the_examples_but_never_the_reflector() {
+        let rule = super::super::Correction {
+            field: "rule".into(),
+            was: "bookings".into(),
+            now: "none".into(),
+            at: "2026-11-07T10:00:00Z".into(),
+        };
+        let bucket = super::super::Correction {
+            field: "bucket".into(),
+            ..rule.clone()
+        };
+        assert!(!super::super::reflectable(&rule));
+        assert!(super::super::reflectable(&bucket));
     }
 }

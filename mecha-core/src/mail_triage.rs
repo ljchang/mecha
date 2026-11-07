@@ -3665,6 +3665,15 @@ pub fn resolve_thread_id<'a>(
 /// Thread, field and timestamp. Per *correction* rather than per thread,
 /// because a thread corrected twice is two lessons and the second is often the
 /// more interesting one — it says the first correction was not enough.
+/// Whether `mecha mail reflect` may mine this correction into a learned
+/// triage rule. A description rule's wrong match (`rule`) is not a triage
+/// lesson: §10 of MAIL-RULES-DESIGN.md sends it to the correction examples
+/// only, and a reflector asked for a triage directive from it would invent
+/// one about buckets and put it in every future classifier prompt.
+pub fn reflectable(c: &Correction) -> bool {
+    c.field != "rule"
+}
+
 pub fn correction_key(account: &str, thread_id: &str, c: &Correction) -> String {
     format!("{account}/{thread_id}#{}@{}", c.field, c.at)
 }
@@ -4027,7 +4036,10 @@ pub async fn classify_asking(
     rules: Option<&str>,
     ask: Option<&rule_frame::RuleAsk<'_>>,
 ) -> Result<(Verdict, Option<rule_frame::RuleReading>)> {
-    let ask = ask.filter(|a| !a.frame.is_empty());
+    // Ask only when some rule could answer: a frame whose every answer is
+    // fixed at `none` decides nothing, and leaving it out keeps the prompt
+    // byte-identical to one without rules.
+    let ask = ask.filter(|a| !a.frame.is_empty() && a.any_eligible());
     let prompt = classifier_prompt_asking(
         thread,
         today,
