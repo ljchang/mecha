@@ -592,8 +592,8 @@ impl Command {
         use commands::{exp, frontdoor, harness, mail, questions, sessions, tasks};
         match self {
             #[cfg(feature = "memory-prototype")]
-            // Memory uses explicit isolated inference only for evaluate-model;
-            // never resolve a default provider or load global configuration here.
+            // Memory commands with explicit local endpoint/model arguments manage
+            // resident-only inference themselves, outside generic provider setup.
             Command::Memory(_) => false,
             Command::Run(_)
             | Command::Batch(_)
@@ -728,8 +728,8 @@ impl Command {
     fn runs_a_model(&self) -> bool {
         match self {
             #[cfg(feature = "memory-prototype")]
-            // Memory uses explicit isolated inference only for evaluate-model;
-            // never resolve a default provider or load global configuration here.
+            // Memory commands with explicit local endpoint/model arguments manage
+            // resident-only inference themselves, outside generic provider setup.
             Command::Memory(_) => false,
             Command::Run(_)
             | Command::Chat(_)

@@ -164,9 +164,13 @@ jobs:
           # invokes; keep every other warning fatal, as in the workspace.
           RUSTFLAGS: -D warnings -A dead_code
 
+      - name: Build experimental memory CLI
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo build -p mecha-cli --locked --features memory-prototype
+
       - name: Test memory Python pilots
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
-        run: python3 -m unittest discover -s prototypes/memory -p 'test_*.py'
+        run: python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha
         env:
           MECHA_SESSION_KIND: test
 

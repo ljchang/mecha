@@ -12824,9 +12824,9 @@ live controls include both a correct and an incorrect incoming weekday.
 ## Experimental memory prototype
 
 `memory` is default-off and qualified for synthetic data only. The core owns
-capture/retrieval/evaluation; CLI adapters discover no live stores. The explicit
-`evaluate-model`, `distill-concept`, and `evaluate-plans` commands use an
-already-resident local model; other memory commands make no model calls. The explicit `run --memory-context` adapter uses
+capture/retrieval/evaluation; CLI adapters discover no live stores. Commands with explicit local endpoint/model arguments manage their own
+resident-only inference; they bypass generic/default-provider setup and never
+load global configuration for that inference. The explicit `run --memory-context` adapter uses
 ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
