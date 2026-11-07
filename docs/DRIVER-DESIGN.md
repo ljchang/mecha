@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R9 and R10 owed; R7 a recommended config entry). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R9 and R10 owed; R7 the owner's config and a precondition of a driven run). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -467,7 +467,7 @@ abliterated build in the catalog, `qwen3.8-27b-abliterated`, is left out:
 it is a third flavour of the `qwen3.8-27b` family, and it tells the panel
 nothing that the base does not.
 
-**D4. Three harness-side verdicts, not one, and a residual.** "Harness or model" is not
+**D4. Four verdicts, not two, and a residual.** "Harness or model" is not
 binary. The R12 `open()` shim was a harness change made because of a model
 habit:
 
@@ -554,10 +554,15 @@ waits for that work.
 
 ## 6. The principal, and the seam for appraisal
 
-**The pilot's driven run is `mecha run`, one-shot.** It registers none of
-the front-end tools (`ask_user`, `show_file`, `recall`), which the TUI and
-the web and eval doors insert *after* `setup::prepare` returns and which
-consult no narrowing. It also has no steering queue and no asker. So the
+**The pilot's driven run is a fresh `mecha run`, one-shot, and never
+`--resume`.** A fresh one-shot registers none of the front-end tools
+(`ask_user`, `show_file`, `recall`). On resume it does: `commands/run.rs`
+calls `register_recall` under `if args.resume.is_some()`, straight into the
+registry with no narrowing consulted. So a driven run refuses `--resume`,
+and a second attempt at a task is a fresh run, never a resumed one. The
+TUI and the web and eval doors insert those tools *after* `setup::prepare`
+returns, consulting no narrowing. A fresh `mecha run` also has no steering
+queue and no asker. So the
 three principal verbs below are out of the pilot: the driver writes the
 prompt and grades the artifact, and nothing in between. A later ruling that
 wants a multi-turn driven run names the surface that provides them, and
@@ -656,9 +661,14 @@ rather than trusting each run to be configured right:
   `TRIFECTA.md` documents `ask` as an owner opt-in. An escalation is a
   question to a person, and a driven run has none: §6 makes the driver the
   answerer, which is exactly the influence channel D1b drops the mailbox to
-  close. On a headless approver it is worse, because the dispatch's own
-  comment records that `trifecta = "ask"` silently equalled `"allow"` on
-  every headless surface. With all three forced, every send, `Blind` and
+  close. On a headless approver `ask` is already safe: the old hole, where a
+  bool that forced `approve` made `ask` equal `allow` on every headless
+  surface, was fixed by routing to `Approver::escalate`, whose trait default
+  returns `Blocked`, and `ModeApprover` does not override it. The residual
+  is an *interactive* `mecha run` under `ask`, where the question goes to
+  whoever is at the terminal, and for a driven run that is the driver.
+  `Allow` waives the injection interlock outright. Forcing `block` closes
+  both. With all three forced, every send, `Blind` and
   `Chosen`, is refused for the whole run. The pilot's tasks are offline
   repository work and lose nothing. A later task that needs the network is
   a ruling, not a default.
@@ -696,8 +706,9 @@ rather than trusting each run to be configured right:
   have let it in. **The allowlist is `opts.tools` *plus* "registers no
   front-end tool"**, because the second does not follow from the first:
   `ask_user`, `show_file` and `recall` are inserted after `prepare` and
-  consult nothing, and none has a `Lever`. `mecha run` registers none of
-  them, so the pilot pays nothing, and a later multi-turn surface admits one
+  consult nothing, and none has a `Lever`. A fresh `mecha run` registers
+  none of them, and a driven run refuses `--resume`, which would register
+  `recall` (§6). So the pilot pays nothing, and a later multi-turn surface admits one
   only by name (§6). `ask_user` in a driven run would be the very influence
   channel D1b drops the mailbox to close. **The `opts.tools` half**, the
   same narrowing a front-end's tool list uses. The startup check that warns
@@ -814,8 +825,9 @@ passes vacuously.
   `SandboxConfig::env` for the variables. In a driven run both come from
   the owner's global file only, because a driven run reads no project layer
   (above), so they are the owner's own config, read-only, and untouched by
-  `Lever::Grants`. R7 is therefore a
-  recommended config entry, not an open question (§8, §9).
+  `Lever::Grants`. R7 is therefore settled config the owner writes, not an
+  open question, and it is a precondition: D1b refuses a driven start
+  whose sandbox can reach the network (§8, §9).
 - **No push, ever, and true of the clone itself.** `git clone` always
   writes `remote.origin.url`, and from a local source a push needs neither
   credentials nor network: `git push origin HEAD:refs/heads/x` writes
