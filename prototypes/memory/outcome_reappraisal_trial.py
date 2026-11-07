@@ -6,6 +6,7 @@ creates actions, retries inference, loads models or resumes an output directory.
 The offline simulator rubric is deliberately separate from model-visible inputs.
 """
 import argparse
+from contextlib import closing
 import hashlib
 import ipaddress
 import json
@@ -267,7 +268,7 @@ def settings_identity(state):
 
 def database_state(path):
     # mode=ro forbids data mutation; dump hashes include every table, including lifecycle rows.
-    with sqlite3.connect(path.as_uri()+'?mode=ro', uri=True) as connection:
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as connection:
         digest = hashlib.sha256(); tables = {}
         for line in connection.iterdump():
             digest.update((line+'\n').encode())

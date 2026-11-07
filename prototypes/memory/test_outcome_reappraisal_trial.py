@@ -1,4 +1,5 @@
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 import tempfile
@@ -148,6 +149,25 @@ class RubricTests(unittest.TestCase):
         with self.assertRaises(ValueError): trial.summarize(pairs, 'scripted')
 
 
+class DatabaseAuditTests(unittest.TestCase):
+    def test_read_only_audit_closes_connections(self):
+        import gc
+        import sqlite3
+        import warnings
+        from contextlib import closing
+        with tempfile.TemporaryDirectory() as temp:
+            db = Path(temp)/'audit.sqlite'
+            with closing(sqlite3.connect(db)) as connection:
+                connection.execute('CREATE TABLE sentinel(value TEXT)')
+                connection.commit()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always', ResourceWarning)
+                state = trial.database_state(db)
+                gc.collect()
+            self.assertEqual(state['table_counts'], {'sentinel': 0})
+            self.assertEqual([w for w in caught if issubclass(w.category, ResourceWarning)], [])
+
+
 class RunnerTests(unittest.TestCase):
     def fake(self, fail_at=None, drift=False):
         self.calls = []
@@ -289,7 +309,7 @@ class ActualCliQualification(unittest.TestCase):
         original = Path(os.environ['MECHA_OUTCOME_QUALIFICATION_DB']).resolve(strict=True)
         self.original = original
         self.original_before = trial.database_state(original)
-        with sqlite3.connect(original.as_uri()+'?mode=ro', uri=True) as source, sqlite3.connect(self.db) as target:
+        with closing(sqlite3.connect(original.as_uri()+'?mode=ro', uri=True)) as source, closing(sqlite3.connect(self.db)) as target:
             source.backup(target)
         self.binary = Path(os.environ['MECHA_OUTCOME_QUALIFICATION_BINARY']).resolve(strict=True)
         self.action = os.environ['MECHA_OUTCOME_QUALIFICATION_ACTION']
@@ -345,7 +365,7 @@ class ActualCliQualification(unittest.TestCase):
                                           text=True, capture_output=True, timeout=30)
         self.assertEqual(prepared_process.returncode, 0, prepared_process.stderr)
         prepared = trial.decode(prepared_process.stdout)
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             before_actions = c.execute('SELECT * FROM durable_action ORDER BY id').fetchall()
         self.server.discovery_release.clear()
         process = subprocess.Popen(self.base()+['--snapshot', trial.encode(prepared['snapshot']),
@@ -353,7 +373,7 @@ class ActualCliQualification(unittest.TestCase):
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             self.assertTrue(self.server.discovery_entered.wait(30), 'CLI never entered awaited resident discovery')
-            with sqlite3.connect(self.db) as c:
+            with closing(sqlite3.connect(self.db)) as c, c:
                 c.execute('INSERT INTO restriction VALUES (?)', (prepared['read']['observation']['object'],))
             self.server.discovery_release.set()
             stdout, stderr = process.communicate(timeout=30)
@@ -364,7 +384,7 @@ class ActualCliQualification(unittest.TestCase):
         self.assertNotEqual(process.returncode, 0, stderr)
         self.assertEqual(stdout.strip(), '', 'invalidation exposed source-bearing report/reply')
         self.assertEqual(self.server.requests, [], 'revoked source reached completion dispatch')
-        with sqlite3.connect(self.db) as c:
+        with closing(sqlite3.connect(self.db)) as c, c:
             self.assertEqual(c.execute('SELECT * FROM durable_action ORDER BY id').fetchall(), before_actions)
 
 
