@@ -141,15 +141,34 @@ had 18/19 passages against a 16-passage bound). Dependable stopping remains open
 new default-off notice had no artifact-success gain. Preserve fixed comparisons
 and test fresh task schemas before expanding concepts or rumination.
 
-The explicit v7 situated-interpretation path is now implemented: shared parsing
-and claim admission, a separate source-linked hypothesis store, host-only needs
-assessment and opt-in current/historical interpretation retrieval through ordinary
-GoalMemory. Authored Agent integration passes changed-goal reappraisal and source
-withdrawal. Final qualification and the equal-source model comparison are in progress;
-see the situated plan and HISTORY for the completed evidence when available.
-Default writers and historical graph orchestration have not switched. Automatic
-needs-driven goal reprioritization, useful concept revision and rumination remain
-open; private sensor values and rationales never enter the interpretation prompt.
+**Situated appraisal, source `02cfe11cc`:** explicit v7 source-linked hypotheses,
+shared generation machinery, host-only needs assessment and opt-in current/historical
+GoalMemory retrieval are implemented and qualified. Ordinary Agent integration
+passes changed-goal reappraisal, source withdrawal and needs-request invariance.
+Spark: 6,330 default / 6,735 memory-enabled tests pass, zero failures (25/29 ignored),
+strict Clippy/build/fmt pass, standalone 241+4, Python 101/zero skips, coordinator 16.
+The fixed equal-source comparison retained 46 calls: correct artifacts 3/4 source-only
+versus 4/4 with interpretation; normal completion 1/4 versus 4/4; all eight captures
+succeeded. One control saved no output; two others saved correctly but exhausted
+their budgets. Generation-inclusive treatment used 3.26x output tokens. This is a
+tiny development result, not a general benefit or efficiency claim. HISTORY retains
+all denominators, model-quality gaps and the independent audit.
+
+**Next appraisal priority: semantic faithfulness.** Independent review found
+unsupported historical explanations in all four prose drafts, some hedged; one
+retained claim inferred a route selection from a two-byte write although the actual
+artifact was `[]`. Current quote/ID checks cannot detect this entailment failure.
+The generator saw only the check verdict/digest and write receipt, not artifact
+contents. Keep automatic use off; qualify bounded action/outcome evidence and an
+independent factual-support check. Separate recorded events from prospective choices
+and causal hypotheses, retaining unknowns rather than filling them with a story.
+Measure correct abstention/withholding on fresh cases before broadening consumption.
+Only two of four drafts retained a structured goal judgment, and one invalid quote
+was dropped. Goal-identifier reliability, scope and counterexamples also remain open. Automatic needs-driven goal/context orchestration remains open;
+private readings and rationales stay outside prompts. Default graph writers and old
+orchestration have not switched. Retire duplication only after consumer parity and
+measured benefit. Safe failed-lookup capture and longer-episode qualification above
+remain the next reliability work; useful concepts and rumination are later milestones.
 
 The transitive-freshness limitation remains: revising a consulted source makes
 its independently measured outcome ineligible. Separating historical provenance
@@ -157,7 +176,7 @@ from current support must preserve access revocation and forgetting. No second
 planner/executor is needed.
 
 Still open: reliable semantic evaluation, production action/appraisal integration,
-internal sensors, useful concept discovery/revision and rumination, production
+automatic needs-driven context orchestration, useful concept discovery/revision and rumination, production
 private-data/encryption/source-fidelity qualification, retention/recovery,
 corpus-scale/identity/vector retrieval and an authorized personal-knowledge bridge.
 Nightly migration and merging mecha-graph remain deferred. Generic provider
@@ -178,13 +197,14 @@ provenance gap corrected by admission and historical-binding refusal in
 `12e2432c4`; nested program capture remains unsupported.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#appraisal-integration-the-next-working-mvp
-Research v0.27 published 2026-11-07, source
-`98f6df400c4ab829b661fb6ed0521eb220161499`, deployment
-`appgdep_6aef54a7ea648191a727a704dc366286` succeeded. All 65 prior IDs retained;
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#situated-appraisal-one-episode-different-goals
+Research v0.32 published 2026-11-07, source
+`be8850fbf041e61fa29734446651ee3f0057a594`, deployment
+`appgdep_6aef9ecf526481918a66b9c10a59330b` succeeded. All 68 prior IDs retained;
 internal links, scripts, unchanged SVG, dist mirrors and version markers checked.
-Native deployment verified publication. Browser verification of this text-only
-update was unavailable; the preceding v0.26 browser check remains separate evidence.
+Desktop/mobile browser checks verified changed goal and architecture content,
+40 rendered math containers, mobile navigation and no horizontal overflow.
+The final comparison and semantic limitations were verified in the rendered page.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

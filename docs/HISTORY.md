@@ -14,6 +14,81 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Situated interpretation workflow (2026-11-07, prototype branch)
+
+Source `02cfe11cc` adds explicit v7 interpretation records beside immutable
+native episode evidence. `prepare_interpretation` authenticates capture receipts;
+`memory_situated_appraisal::generate` reuses shared parsing, provider envelopes
+and qualified grounding; `retain_interpretation` rechecks sources and saves exact
+revision/field claim locators. No transaction spans inference. Legacy graph
+frames and historical appraisal identity remain unchanged. Explicit
+`GoalMemory::with_interpretations` returns host-assigned SelectedCurrent and
+HistoricalDependency roles; default readers withhold interpreted descendants.
+Recapture preserves complete dependencies and withdrawal remains effective.
+V7 projection descriptors avoid duplicating original text, without changing v6
+serialization or increasing the 20,000-byte contextual budget.
+
+`NeedsInput::assess` preserves reading states, observed zero, withdrawal and
+freshness as nonserializable host assessment. Generation receives no private
+sensor values or rationales. The authored ordinary-Agent example proves identical
+provider requests under needs-only changes, changed-goal reappraisal after reopen,
+independent artifact checks, untrusted/private taint and source revocation.
+Actual Spark packets were 7,305 and 19,328 bytes. This does not implement automatic
+needs-driven goal selection, production autocapture, concept learning or rumination.
+
+Scoped and final reviews corrected missing durable citation locators, timestamp
+normalization, served-model identity and cancellation propagation. The last defect
+connected an outer-cancelled provider to an unrelated native RunContext token:
+the recorder waited for the loop to drain partial output, while that loop waited
+for its separate 180-second timer. A parent-linked child token fixes it without
+cancelling later tasks on an individual deadline. The blocked-provider regression
+failed on old behavior, then retained native partial text, audit and cancellation
+outcome promptly. All review findings at major/medium severity are resolved.
+
+Spark workspace/all-target build, final formatting and strict all-target/all-feature
+Clippy passed. Default tests: 6,330 passed, zero failed, 25 ignored; memory-enabled:
+6,735 passed, zero failed, 29 ignored; each comprised 62 suites. Standalone memory:
+241 unit plus four integration tests. Python CI passed 101 tests with zero skips;
+the supplemental coordinator suite passed 16. Its first invocation used the wrong
+discovery directory and ran zero tests; that failed invocation is retained beside
+the corrected run. Both examples build and the actual authored workflow passes.
+Current GitHub checks are recorded on draft PR #846, separately from these runs.
+
+The frozen `situated-interpretation-pair-v1` comparison retained four generated
+interpretations and eight planning tasks (46 provider calls) on the resident local
+model. Two goals and two seeds share identical original facts, prompts, tools and
+budgets between paired arms; only treatment stores and retrieves an interpretation.
+All four treatment runs received it; no source-only run did. Exact artifact scores
+were source-only 3/4 versus treatment 4/4. Normal completion was 1/4 versus 4/4.
+The failed source-only calibration-preservation run exhausted six turns without
+saving output; both speed-goal controls saved correct output but exhausted their
+budget. No incorrect route was saved. All eight planning captures succeeded and
+all original source hashes and request controls passed the audit.
+
+Generation admitted 17 of 18 offered claims; one quote not present in its referent
+was dropped. Two drafts retained a goal judgment and two retained none, including
+one unresolved goal identifier. Independent semantic review found historical explanations beyond the recorded
+evidence in all four prose drafts, including hedged speculation. In fast-r0, a retained claim inferred that Ilex had been
+selected from a successful two-byte file-write receipt, although the recorded
+artifact was the empty array `[]`. Quote membership did not establish entailment.
+The goal-appropriate recommendation can be correct while its historical explanation
+is invented; these measurements do not qualify reliable situated meaning. Keep
+this path default-off and address semantic faithfulness before broader use.
+Source planning used 24 calls, 72,729 input and 1,261 output tokens. Treatment
+planning used 18 calls, 73,597 input and 1,050 output tokens; generation added four
+calls, 6,807 input and 3,061 output tokens. Generation-inclusive treatment therefore
+cost 80,404 input and 4,111 output tokens (3.26 times control output), despite fewer
+planning calls. The model-visible packet contained the check verdict/digest and write receipt,
+not the actual empty artifact contents. All four prospective route recommendations
+fit the current goal, but one prediction risked reverting to the historical goal.
+This tiny reused development fixture supports a bounded completion observation,
+not generalization, an efficiency win or autonomous learning. All raw
+outputs, frozen protocol, independent audit and qualification logs are retained in
+`results/memory-situated-20261107/`; binary SHA256
+`51defee5b74e4831e4c00948e094aac143504471bf0aeaf00babaa3a7610dc06`.
+Production services, owner data, graph writers and nightly jobs remain unchanged.
+
+
 ### Budget finalization experiment and CI recovery (2026-11-07, prototype branch)
 
 `RunContext::with_budget_notice` adds default-off advice before the request with

@@ -81,15 +81,16 @@ withholds dependent interpretations and captured descendants.
 `Memory::create_situated` creates a new v7 store; it does not migrate v6 files.
 `prepare_interpretation` authenticates the original capture and produces a
 bounded source packet. `memory_situated_appraisal::generate` generates without
-holding a database transaction. `retain_interpretation` rechecks source authority,
-quotes, criterion, model identity and limits before saving the hypothesis and
+holding a database transaction and verifies the served model identity.
+`retain_interpretation` rechecks source authority,
+quotes, criterion and draft limits before saving the hypothesis and
 its exact revision/field citation map. These checks establish source membership,
 not semantic truth. Every supplied source remains a dependency, even if uncited.
 
 Default readers withhold interpretations and interpreted descendants. A host
 explicitly opts into `GoalMemory::with_interpretations` using the exact current
-context. Returned hypotheses are marked `selected_current` or
-`historical_dependency`; old meanings retain their original criteria. Both are
+context. Returned hypotheses are marked `SelectedCurrent` or
+`HistoricalDependency`; old meanings retain their original criteria. Both are
 private, untrusted evidence, never action permission or accepted learned rules.
 V7 projections reference existing original evidence instead of copying its text;
 this preserves complete lineage within the unchanged contextual byte budget.
