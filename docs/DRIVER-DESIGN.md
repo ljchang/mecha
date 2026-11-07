@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R9 and R10 owed; R7 the owner's config and a precondition of a driven run). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R9, R10 and R11 owed; R7 the owner's config and a precondition of a driven run). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -351,7 +351,20 @@ deliberate act, the widening R6 closed against a lost mark. So promotion
 shows the copy's scope beside its text and lift, and the copy's scope is
 set by the owner at promotion, offered as the narrowest region the
 measurement supports (the owner's checkout the tasks were drawn from),
-never the driven batch's carried scope. The existing
+never the driven batch's carried scope. **The same holds for the rule's
+goal associations.** `goal_lessons` joins a rule's `sources` (reflection
+ids) against the reflections of the store it reads. Copied with its sources
+intact, a promoted rule resolves them against the owner's store, where the
+driven reflections do not live, and silently contributes no goal lessons,
+although its measured lift required those lessons to have been served (the
+positive check above). Copying the source reflections instead would put a
+driven reflection in the owner's store as a matter of routine, which is
+what the store boundary exists to prevent. So promotion re-derives the goal
+associations as it re-derives the scope: shown to the owner beside the text,
+scope and lift, set at promotion, never carried. And the positive check
+covers the promoted copy, not only the trial arm: before promotion
+completes, a trial seeded with the owner's store plus the copy must show the
+copy carried and its goal lessons served. The existing
 self-accept gate for learned rules does not extend to promotion, because
 that gate measures on the owner's own sessions and a driven task is not one.
 Whether promotion can later earn a gate of its own is a question for once
@@ -806,16 +819,38 @@ every `shell`, `fs_write` and `fs_edit` approval goes to whoever is at the
 terminal, which is the driver. That is the influence channel D1b drops the
 mailbox and `ask_user` to close, and broader than the trifecta residual,
 since it covers every destructive call. Non-interactive `Ask` gives a
-`ModeApprover` that refuses every non-read-only call as "needs approval and
-this run is non-interactive", so every `cargo build` and every edit would be
-a harness refusal for D4 to attribute. `mecha eval` answers the same
+`ModeApprover` that refuses every non-read-only call no `[[policy]]` `allow`
+rule covers, as "needs approval and this run is non-interactive", so
+without such rules every `cargo build` and every edit would be a harness
+refusal for D4 to attribute. `mecha eval` answers the same
 question by its own explicit line, and a driven run does too: inside a jail
 with no network, no sends, a closed tool allowlist and a clone with no
 remote, the run's own actions need no approval. The owner's `[[policy]]`
 `forbid` rules still apply, because the approval rules only narrow, so a
-command the owner forbids stays forbidden. **What D1b forces is recorded on
+command the owner forbids stays forbidden.
+
+**`prompt` is the third state, and the mode does not reach it.** A
+`RuleDecision::Prompt` goes to `Approver::consult`, deliberately not to
+`approve` ("a standing yes on the tool is exactly what a `prompt` rule must
+not be answered by"). `ModeApprover` does not override `consult`, so it
+returns the trait default, `Blocked`, in every mode. A driven `shell` call
+reaches it two ways: an owner `prompt` rule a repository command matches,
+and, with no rule at all, `[approval] strict_inline_eval`, on by default,
+which floors any segment whose head runs its arguments (`timeout`, `env`,
+`make`, `xargs`, `find -exec`, `sh -c`, `bash -c`) at `prompt`. So
+`timeout 600 cargo test` is refused. A yes is not the answer: answering a
+`prompt` from policy is exactly what that ruling exists to stop. So in a
+driven run **`prompt` is treated as `forbid`**. That is narrowing and fails
+closed, and it is recorded on the run. The refusal text is written for a
+driven run, never addressed to an owner who is not there. And D4 tags
+every row whose run hit such a refusal as an **approval-floor refusal**,
+counted apart and never read as a model gap. Whether to relax
+`strict_inline_eval` inside the confined jail instead, which would loosen a
+guard, is R11, owed. The pilot measures how often the floor bites before
+anyone weighs that. **What D1b forces is recorded on
 the run.** `block_sends_after_private`, `private` armed at start,
-`trifecta = "block"` and `permission_mode = "allow"` are not
+`trifecta = "block"`, `permission_mode = "allow"` and `prompt` as
+`forbid` are not
 `harness::Lever`s, so they would not appear in the session record's
 `levers_off`, and a later reader could not tell they were in force. The run
 record carries them beside the levers. None confounds §4, being constant
@@ -1008,6 +1043,12 @@ passes vacuously.
   driven run, whose prompt an outside agent wrote, D1b closes it: the mark
   forces `block_sends_after_private` on, arms `private` at start and forces
   `trifecta = "block"`, so a driven run sends nothing (§7).
+- **R11, owed.** Whether `[approval] strict_inline_eval` may be relaxed
+  inside a driven run's confined jail, so that `timeout`, `bash -c` and
+  `make` wrappers around allowlisted commands are not refused. Until then,
+  `prompt` is `forbid` in a driven run and those rows are tagged
+  approval-floor refusals (§7). Recommended: keep the floor, and decide from
+  the pilot's count.
 - **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
   owner's eye before its first ceiling run.
 - **R10, owed.** Whether driven trajectories enter training at all, and if
