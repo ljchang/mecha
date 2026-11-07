@@ -2300,7 +2300,12 @@ implementation and not owner rulings:
   fills the open rule's editor, which Save would write. A dismissed sheet
   stays closed, and a test result shows only on the rule it tested, since
   a raise is decided on that count. A reload after Pause, Undo or a mode
-  change keeps an unsaved definition edit. These
+  change keeps an unsaved definition edit.
+- What a Save and Pause all report is worded in `mail-rules.js`
+  (`editNotice`, `pauseAllNotice`), where the node checks pin it. A lapse
+  is reported even when the bytes did not move, because an outside edit
+  since approval lapses on Save. Pause all names each entry it could not
+  lower. A recorded wrong match takes the owner to the definition. These
   live in the component, where the node checks cannot reach. They were
   driven in headless Chromium with delayed responses, and nothing pins them
   in CI. The same holds for the choice that makes re-approving a braked group

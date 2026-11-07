@@ -2331,7 +2331,7 @@ export const lorasVideo = {
 // (`mail_rules::RuleView`, `presentation::ledger_views`), read off P3-1's
 // structs. Two rules over the cast's own mail: Fairhaven's IT notices are
 // archived on their own, and the library's hold notices are tagged in shadow.
-const ruleStats = (matched, automatic, undoRate) => [
+const ruleStats = (matched, automatic, undoRate, shadow = false) => [
   {
     verdict_input: 'not_applicable',
     matched_actions: matched,
@@ -2343,7 +2343,8 @@ const ruleStats = (matched, automatic, undoRate) => [
     undo_rate: automatic ? undoRate : null,
     wrong_match_rate: matched ? 0 : null,
     correction_rate: matched ? undoRate : null,
-    shadow_upper_bound: false,
+    // The store sets this on a shadow group: its rates are an upper bound.
+    shadow_upper_bound: shadow,
   },
 ];
 const itToml =
@@ -2392,7 +2393,7 @@ const holdsRule = {
       activated_at: null,
       holds: [],
       match_digest: { matcher: 'demo-holds' },
-      statistics: ruleStats(2, 0, null),
+      statistics: ruleStats(2, 0, null, true),
     },
   ],
 };

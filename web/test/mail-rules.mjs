@@ -25,6 +25,8 @@ import {
   draftToml,
   draftProblem,
   errorOf,
+  editNotice,
+  pauseAllNotice,
   when,
   RULES_ENDPOINTS,
 } from '../src/lib/mail-rules.js';
@@ -151,6 +153,16 @@ t('an empty subject from a test row is "(no subject)", not a blank', messageLine
 t('an empty sender is never shown blank', messageLine({ sender: '', subject: 'Hi' }).who === 'unknown sender');
 const unreadable = digestSections([{ id: 'x', group: 'mailbox', match_digest: { keys: 'any' }, outcome: 'done' }], [{ group: 'mailbox', match_digest: null }]);
 t('a group with no current digest files nothing under "before the matcher changed"', unreadable.current.length === 1 && unreadable.earlier.length === 0);
+
+// ---- review of #850, pass 4: replies say what the store did ----
+const outside = editNotice({ changed_files: [], lapsed_groups: ['mailbox'] });
+t('a save that changed no bytes but lapsed an approval says so, never "no change"', outside.tone === 'held' && /lapsed for Mailbox/.test(outside.text) && !/No change/.test(outside.text));
+t('a save that changed bytes and lapsed says both', /^Saved\. Approval lapsed/.test(editNotice({ changed_files: ['rule.toml'], lapsed_groups: ['report'] }).text));
+t('no bytes and no lapse is no change', editNotice({ changed_files: [], lapsed_groups: [] }).text === 'No change to save.');
+t('a plain save is saved', editNotice({ changed_files: ['rule.toml'], lapsed_groups: [] }).text === 'Saved.');
+const skipped = pauseAllNotice({ groups: 3, notices: ['broken-rule: unreadable, not paused'] });
+t('pause all names what it could not pause', skipped.tone === 'bad' && /broken-rule/.test(skipped.text));
+t('pause all with nothing skipped is plain', pauseAllNotice({ groups: 1, notices: [] }).text === 'Paused 1 group to shadow.');
 
 // ---- when ----
 const now = new Date('2026-11-06T15:00:00');

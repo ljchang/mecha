@@ -36,6 +36,8 @@
     draftProblem,
     nameProblem,
     errorOf,
+    editNotice,
+    pauseAllNotice,
     when,
     DRAFT_VERBS,
   } from './mail-rules.js';
@@ -244,8 +246,8 @@
     confirmPauseAll = false;
     busy = true;
     try {
-      const r = await call('/api/mail/rules/pause-all');
-      say(`Paused every rule: ${r.groups ?? 0} group${r.groups === 1 ? '' : 's'} to shadow.`);
+      const n = pauseAllNotice(await call('/api/mail/rules/pause-all'));
+      say(n.text, n.tone);
     } catch (e) {
       say(e.message, 'bad');
     }
@@ -260,10 +262,8 @@
     editError = null;
     try {
       const r = await call(`/api/mail/rules/${enc(name)}/edit`, { rule_toml: editText });
-      if (!r.changed_files?.length) say('No change to save.');
-      else if (r.lapsed_groups?.length)
-        say(`Saved. Approval lapsed for ${r.lapsed_groups.map(groupLabel).join(', ')}: the files changed, so raise again to approve them.`, 'held');
-      else say('Saved.');
+      const n = editNotice(r);
+      say(n.text, n.tone);
       await loadRule(name, { afterSave: true });
     } catch (e) {
       editError = e.message;
@@ -306,7 +306,12 @@
     busy = true;
     try {
       const r = await call('/api/mail/rules/wrong-match', { row_id: row.id });
-      say(r.message ?? 'Recorded.', 'held');
+      say(`${r.message ?? 'Recorded.'} Change the matcher in the definition so it stops matching.`, 'held');
+      busy = false;
+      await loadRule();
+      // A wrong match is fixed in the definition: take the owner there.
+      editDefinition();
+      return;
     } catch (e) {
       say(e.message, 'bad');
     }

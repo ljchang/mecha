@@ -279,6 +279,33 @@ export function draftProblem(name, d) {
 }
 
 /**
+ * What a Save reports. A lapse leads: the store records one even when the
+ * bytes did not move (an outside edit since approval), so "no change" is
+ * said only when nothing lapsed either.
+ */
+export function editNotice(r) {
+  const lapsed = r?.lapsed_groups ?? [];
+  if (lapsed.length)
+    return {
+      text: `${r.changed_files?.length ? 'Saved. ' : ''}Approval lapsed for ${lapsed.map(groupLabel).join(', ')}: the files changed since they were approved, so raise again to approve them.`,
+      tone: 'held',
+    };
+  if (!r?.changed_files?.length) return { text: 'No change to save.', tone: 'ok' };
+  return { text: 'Saved.', tone: 'ok' };
+}
+
+/**
+ * What Pause all reports. Every entry it could not lower is named, because
+ * that is a rule still running at the mode it was set to.
+ */
+export function pauseAllNotice(r) {
+  const n = r?.groups ?? 0;
+  const head = `Paused ${n} group${n === 1 ? '' : 's'} to shadow.`;
+  const notices = r?.notices ?? [];
+  return notices.length ? { text: `${head} Not paused: ${notices.join('; ')}`, tone: 'bad' } : { text: head, tone: 'ok' };
+}
+
+/**
  * The server's refusal: `{code, message, body}` from the typed JSON
  * (`{ok:false, error:{code,message}}`, 409), else the plain stderr line the
  * route returned, else the status. `code` is what the page branches on —
