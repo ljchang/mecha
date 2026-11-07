@@ -58,22 +58,16 @@ impl Memory {
         access: &Access,
     ) -> Result<Vec<RecallHit>> {
         let tx = self.conn.unchecked_transaction()?;
-        let mut hits = self.recall_in(query, mention, access, &tx)?;
+        let selection = SourceChecks::new(self.source_guard.as_deref());
+        let mut hits = self.recall_in(query, mention, access, &tx, Some(&selection))?;
+        let final_checks = SourceChecks::new(self.source_guard.as_deref());
         let mut checked = Vec::new();
         for hit in hits.hits {
-            let mut valid = authorized_with_guard(
-                &tx,
-                &hit.anchor.reference,
-                access,
-                self.source_guard.as_deref(),
-            )?;
+            let mut valid =
+                authorized_with_guard(&tx, &hit.anchor.reference, access, Some(&final_checks))?;
             for neighbor in &hit.context {
-                valid &= authorized_with_guard(
-                    &tx,
-                    &neighbor.reference,
-                    access,
-                    self.source_guard.as_deref(),
-                )?;
+                valid &=
+                    authorized_with_guard(&tx, &neighbor.reference, access, Some(&final_checks))?;
             }
             if valid {
                 checked.push(hit);
@@ -91,6 +85,7 @@ impl Memory {
         mention: Option<&str>,
         access: &Access,
         tx: &Connection,
+        guard: Option<&dyn host_capture::ExternalSourceGuard>,
     ) -> Result<RecallBatch> {
         self.check_access(access)?;
         ensure!(
@@ -139,13 +134,7 @@ impl Memory {
         // FTS5's built-in rank uses collection-wide statistics. A WHERE
         // clause on the persistent index cannot isolate historical/scope
         // statistics, so score a disposable eligible-corpus index in RAM.
-        let scorer = eligible_index(
-            tx,
-            &query,
-            access,
-            mention.is_some(),
-            self.source_guard.as_deref(),
-        )?;
+        let scorer = eligible_index(tx, &query, access, mention.is_some(), guard)?;
         let sql = if mention.is_some() {
             "SELECT revision,object_id,seq,bm25(evidence) FROM evidence
              WHERE evidence MATCH ?1 AND revision IN
@@ -175,16 +164,7 @@ impl Memory {
             let Some(record) = lookup(tx, &reference)? else {
                 continue;
             };
-            let Some(anchor) = eligible(
-                tx,
-                reference,
-                seq,
-                record,
-                &query,
-                access,
-                self.source_guard.as_deref(),
-            )?
-            else {
+            let Some(anchor) = eligible(tx, reference, seq, record, &query, access, guard)? else {
                 continue;
             };
             let size = serde_json::to_vec(&anchor)?.len();
@@ -248,15 +228,7 @@ impl Memory {
             for row in rows {
                 let (reference, seq, payload) = row?;
                 let record = serde_json::from_str(&payload)?;
-                let Some(neighbor) = eligible(
-                    tx,
-                    reference,
-                    seq,
-                    record,
-                    &query,
-                    access,
-                    self.source_guard.as_deref(),
-                )?
+                let Some(neighbor) = eligible(tx, reference, seq, record, &query, access, guard)?
                 else {
                     continue;
                 };

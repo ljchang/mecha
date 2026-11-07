@@ -351,12 +351,211 @@ impl ExternalSourceGuard for ChangingGuard {
         }
     }
 }
+
+#[derive(Default)]
+struct CountingGuard {
+    calls: std::sync::Mutex<Vec<ExternalBinding>>,
+    denied: std::sync::Mutex<Option<ExternalBinding>>,
+}
+impl CountingGuard {
+    fn take_calls(&self) -> Vec<ExternalBinding> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+}
+impl ExternalSourceGuard for CountingGuard {
+    fn check(&self, binding: &ExternalBinding) -> SourceStatus {
+        self.calls.lock().unwrap().push(binding.clone());
+        if self.denied.lock().unwrap().as_ref() == Some(binding) {
+            SourceStatus::Withheld
+        } else {
+            SourceStatus::Checked
+        }
+    }
+}
+
+#[test]
+fn source_checks_are_bounded_per_binding_and_refresh_between_operations() {
+    let (path, mut db, _state) = fixture();
+    let mut capture = input();
+    let original = capture.originals[0].clone();
+    capture.originals = (0..16)
+        .map(|index| {
+            let mut passage = original.clone();
+            passage.source.id = format!("passage-{index}");
+            passage.line = index + 1;
+            passage
+        })
+        .collect();
+    let binding = capture.binding.clone();
+    let receipt = db.admit_host_capture(capture, &access()).unwrap();
+    let guard = Arc::new(CountingGuard::default());
+    let db = db.with_source_guard(guard.clone());
+    assert!(db.read(&receipt.projection, &access()).unwrap().is_some());
+    let read_checks = guard.take_calls().len();
+    let query = Query {
+        text: "criterion_text".into(),
+        known_at: db.snapshot().unwrap(),
+        valid_at: None,
+        include_possible: true,
+        limit: 20,
+    };
+    assert_eq!(db.search(&query, &access()).unwrap().len(), 1);
+    let search_checks = guard.take_calls().len();
+    assert_eq!(
+        db.recall(&recall(&db, "criterion_text"), &access())
+            .unwrap()
+            .len(),
+        1
+    );
+    let recall_checks = guard.take_calls().len();
+    let request = context::ContextRequest {
+        query: "criterion_text".into(),
+        bindings: vec![],
+    };
+    let packet = db
+        .context(&request, &policy(&db, "criterion_text"), &situation())
+        .unwrap();
+    assert_eq!(
+        packet.records.len(),
+        17,
+        "the complete provenance closure survives"
+    );
+    let context_checks = guard.take_calls().len();
+    eprintln!("source checks: read={read_checks}, search={search_checks}, recall={recall_checks}, context={context_checks}");
+    assert_eq!(
+        [read_checks, search_checks, recall_checks, context_checks],
+        [1, 2, 2, 2]
+    );
+
+    // No positive verdict may survive its operation, even on the same reader.
+    *guard.denied.lock().unwrap() = Some(binding);
+    assert!(db.read(&receipt.projection, &access()).unwrap().is_none());
+    assert!(db.search(&query, &access()).unwrap().is_empty());
+    assert!(db
+        .recall(&recall(&db, "criterion_text"), &access())
+        .unwrap()
+        .is_empty());
+    assert!(db
+        .context(&request, &policy(&db, "criterion_text"), &situation())
+        .unwrap()
+        .records
+        .is_empty());
+    drop(db);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn source_check_keys_keep_authority_locator_and_revision_distinct() {
+    let (path, mut db, _state) = fixture();
+    let base = input().binding;
+    let mut authority = base.clone();
+    authority.authority = "host-v2".into();
+    let mut locator = base.clone();
+    locator.locator = "1".repeat(64);
+    let mut revision = base.clone();
+    revision.revision = "2".repeat(64);
+    let bindings = [base, authority, locator, revision];
+    let mut previous = None;
+    for (index, binding) in bindings.iter().enumerate() {
+        let mut capture = input();
+        capture.identity.session_id = format!("session-{index}");
+        capture.originals[0].source.id = format!("source-{index}");
+        capture.binding = binding.clone();
+        capture.consulted = previous.into_iter().collect();
+        previous = Some(
+            db.admit_host_capture(capture, &access())
+                .unwrap()
+                .projection,
+        );
+    }
+    let projection = previous.unwrap();
+    let guard = Arc::new(CountingGuard::default());
+    let db = db.with_source_guard(guard.clone());
+    assert!(db.read(&projection, &access()).unwrap().is_some());
+    let calls = guard.take_calls();
+    for binding in &bindings {
+        assert_eq!(calls.iter().filter(|call| *call == binding).count(), 1);
+    }
+    assert_eq!(calls.len(), 4);
+    let packet = db
+        .context(
+            &context::ContextRequest {
+                query: "criterion_text".into(),
+                bindings: vec![],
+            },
+            &policy(&db, "criterion_text"),
+            &situation(),
+        )
+        .unwrap();
+    assert_eq!(packet.records.len(), 8);
+    let calls = guard.take_calls();
+    for binding in &bindings {
+        assert_eq!(calls.iter().filter(|call| *call == binding).count(), 2);
+    }
+    assert_eq!(calls.len(), 8);
+    // A collision in any component could reuse another binding's positive
+    // verdict and return the transitive descendant despite this withdrawal.
+    for binding in &bindings {
+        *guard.denied.lock().unwrap() = Some(binding.clone());
+        assert!(db.read(&projection, &access()).unwrap().is_none());
+    }
+    drop(db);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn source_selection_followup_shares_checks_but_rechecks_before_return() {
+    let (path, mut db, _state) = fixture();
+    let mut capture = input();
+    let mut second = capture.originals[0].clone();
+    second.source.id = "followup-passage".into();
+    second.line = 2;
+    second.text = "CSV destination details".into();
+    capture.originals.push(second);
+    let receipt = db.admit_host_capture(capture, &access()).unwrap();
+    let request = context::ContextRequest {
+        query: "synthetic".into(),
+        bindings: vec![context::SourceSelection {
+            source: receipt.originals[0].clone(),
+            field: String::new(),
+            quote: "CSV".into(),
+            query: "destination".into(),
+        }],
+    };
+    let guard = Arc::new(CountingGuard::default());
+    let db = db.with_source_guard(guard.clone());
+    let packet = db
+        .context(&request, &policy(&db, "synthetic"), &situation())
+        .unwrap();
+    assert!(
+        packet
+            .records
+            .iter()
+            .any(|hit| hit.reference == receipt.originals[1]),
+        "follow-up must retrieve the passage absent from the initial query"
+    );
+    assert_eq!(packet.bindings.len(), 1);
+    assert_eq!(packet.bindings[0].mention, "CSV");
+    assert_eq!(guard.take_calls().len(), 2);
+
+    let guard = Arc::new(ChangingGuard(std::sync::atomic::AtomicUsize::new(0), 1));
+    let db = db.with_source_guard(guard.clone());
+    let packet = db
+        .context(&request, &policy(&db, "synthetic"), &situation())
+        .unwrap();
+    assert!(packet.records.is_empty());
+    assert!(packet.bindings.is_empty());
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
+    drop(db);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
 #[test]
 fn final_checks_remove_capture_revoked_after_search_selection_and_recall_ranking() {
     let (_path, mut db, _state) = fixture();
     db.admit_host_capture(input(), &access()).unwrap();
-    // One matching projection has a two-member closure. The first two checks
-    // admit selection, and authority disappears before the final pass.
+    // Selection checks a shared binding once, then a separate fresh check
+    // must notice authority disappearing before the final return.
     let query = Query {
         text: "criterion_text".into(),
         known_at: db.snapshot().unwrap(),
@@ -364,27 +563,25 @@ fn final_checks_remove_capture_revoked_after_search_selection_and_recall_ranking
         include_possible: true,
         limit: 10,
     };
-    let db = db.with_source_guard(Arc::new(ChangingGuard(
-        std::sync::atomic::AtomicUsize::new(0),
-        2,
-    )));
+    let guard = Arc::new(ChangingGuard(std::sync::atomic::AtomicUsize::new(0), 1));
+    let db = db.with_source_guard(guard.clone());
     assert!(db.search(&query, &access()).unwrap().is_empty());
-    // Eligible-index construction checks all three closure memberships (one
-    // original plus projection+original); candidate validation adds two more.
-    let db = db.with_source_guard(Arc::new(ChangingGuard(
-        std::sync::atomic::AtomicUsize::new(0),
-        5,
-    )));
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
+    // Index construction and candidate selection share a phase; the final
+    // return must not reuse that phase's positive source verdict.
+    let guard = Arc::new(ChangingGuard(std::sync::atomic::AtomicUsize::new(0), 1));
+    let db = db.with_source_guard(guard.clone());
     assert!(db
         .recall(&recall(&db, "criterion_text"), &access())
         .unwrap()
         .is_empty());
-    let db = db.with_source_guard(Arc::new(ChangingGuard(
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
+    let guard = Arc::new(ChangingGuard(
         std::sync::atomic::AtomicUsize::new(0),
-        // Context also checks bundle authorization and every dependency:
-        // keep authority through those five extra checks, then revoke.
-        10,
-    )));
+        // Assembly shares selection's phase, never the final return's phase.
+        1,
+    ));
+    let db = db.with_source_guard(guard.clone());
     let packet = db
         .context(
             &context::ContextRequest {
@@ -397,6 +594,7 @@ fn final_checks_remove_capture_revoked_after_search_selection_and_recall_ranking
         .unwrap();
     assert!(packet.records.is_empty());
     assert!(packet.bindings.is_empty());
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
 }
 #[test]
 fn withheld_bridge_records_do_not_change_eligible_ranking_statistics() {

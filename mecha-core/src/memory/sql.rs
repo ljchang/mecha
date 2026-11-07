@@ -187,6 +187,42 @@ pub(super) fn required_scopes(conn: &Connection, revision: &str) -> Result<BTree
     let rows = s.query_map([revision], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+/// Reuse exact source verdicts only within one read phase. Selection and final
+/// return validation must construct separate instances over the original guard;
+/// the SQLite transaction does not snapshot external files. Never cache DB scope,
+/// restriction or head checks here, nor retain this object across operations.
+pub(super) struct SourceChecks<'a> {
+    guard: Option<&'a dyn host_capture::ExternalSourceGuard>,
+    statuses: std::sync::Mutex<
+        std::collections::BTreeMap<(String, String, String), host_capture::SourceStatus>,
+    >,
+}
+impl<'a> SourceChecks<'a> {
+    pub(super) fn new(guard: Option<&'a dyn host_capture::ExternalSourceGuard>) -> Self {
+        Self {
+            guard,
+            statuses: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+}
+impl host_capture::ExternalSourceGuard for SourceChecks<'_> {
+    fn check(&self, binding: &host_capture::ExternalBinding) -> host_capture::SourceStatus {
+        let Ok(mut statuses) = self.statuses.lock() else {
+            return host_capture::SourceStatus::Unavailable;
+        };
+        let key = (
+            binding.authority.clone(),
+            binding.locator.clone(),
+            binding.revision.clone(),
+        );
+        *statuses.entry(key).or_insert_with(|| {
+            self.guard
+                .map_or(host_capture::SourceStatus::Unavailable, |guard| {
+                    guard.check(binding)
+                })
+        })
+    }
+}
 pub(super) fn authorized(
     conn: &Connection,
     reference: &RevisionRef,
@@ -201,6 +237,8 @@ pub(super) fn authorized_with_guard(
     guard: Option<&dyn host_capture::ExternalSourceGuard>,
 ) -> Result<bool> {
     let bindings = host_capture::has_bindings(conn)?;
+    let checks = SourceChecks::new(guard);
+    let guard: Option<&dyn host_capture::ExternalSourceGuard> = Some(&checks);
     for input in closure(conn, reference)? {
         if bindings {
             let binding = conn.query_row("SELECT authority,locator,binding_revision FROM external_binding WHERE revision=?1", [&input.revision], |r| Ok(host_capture::ExternalBinding { authority:r.get(0)?,locator:r.get(1)?,revision:r.get(2)? })).optional();

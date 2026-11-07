@@ -340,11 +340,12 @@ impl Memory {
                 r.get::<_, String>(3)?,
             ))
         })?;
+        let selection = SourceChecks::new(self.source_guard.as_deref());
         let mut hits = Vec::new();
         for row in rows {
             let (revision, object, seq, payload) = row?;
             let reference = RevisionRef { object, revision };
-            if !authorized_with_guard(&tx, &reference, access, self.source_guard.as_deref())?
+            if !authorized_with_guard(&tx, &reference, access, Some(&selection))?
                 || !fresh(&tx, &reference, query.known_at.sequence)?
             {
                 continue;
@@ -377,9 +378,11 @@ impl Memory {
             }
         }
         drop(statement);
+        // Recheck external authority after selection with an independent cache.
+        let final_checks = SourceChecks::new(self.source_guard.as_deref());
         let mut checked = Vec::new();
         for hit in hits {
-            if authorized_with_guard(&tx, &hit.reference, access, self.source_guard.as_deref())? {
+            if authorized_with_guard(&tx, &hit.reference, access, Some(&final_checks))? {
                 checked.push(hit);
             }
         }

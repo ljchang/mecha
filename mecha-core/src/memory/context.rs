@@ -115,7 +115,8 @@ impl Memory {
             .transpose()?;
         let valid_at = policy.valid_at.as_deref().map(normalize_time).transpose()?;
         let tx = self.conn.unchecked_transaction()?;
-        let batch = self.recall_in(&query, None, &policy.access, &tx)?;
+        let selection_checks = SourceChecks::new(self.source_guard.as_deref());
+        let batch = self.recall_in(&query, None, &policy.access, &tx, Some(&selection_checks))?;
         let hits = batch.hits;
         let initial: Vec<_> = hits
             .iter()
@@ -135,7 +136,7 @@ impl Memory {
             &policy.access,
             empty(),
             &initial,
-            self.source_guard.as_deref(),
+            Some(&selection_checks),
         )?;
         if request.bindings.is_empty() {
             let first = final_packet(&tx, first, &policy.access, self.source_guard.as_deref())?;
@@ -193,7 +194,13 @@ impl Memory {
             let mut follow = query.clone();
             follow.text.clone_from(&selection.query);
             let expression = mention_expression(&binding.mention)?;
-            let hits = self.recall_in(&follow, Some(&expression), &policy.access, &tx)?;
+            let hits = self.recall_in(
+                &follow,
+                Some(&expression),
+                &policy.access,
+                &tx,
+                Some(&selection_checks),
+            )?;
             packet.budget_omitted |= hits.budget_omitted;
             candidates.extend(hits.hits.into_iter().map(|h| h.anchor));
         }
@@ -204,7 +211,7 @@ impl Memory {
             &policy.access,
             packet,
             &candidates,
-            self.source_guard.as_deref(),
+            Some(&selection_checks),
         )?;
         ensure!(
             packet
@@ -432,8 +439,10 @@ fn final_packet(
     access: &Access,
     guard: Option<&dyn host_capture::ExternalSourceGuard>,
 ) -> Result<ContextPacket> {
+    // Never reuse selection verdicts here: external authority may have changed.
+    let final_checks = SourceChecks::new(guard);
     for hit in &packet.records {
-        if !authorized_with_guard(conn, &hit.reference, access, guard)? {
+        if !authorized_with_guard(conn, &hit.reference, access, Some(&final_checks))? {
             packet.records.clear();
             packet.bindings.clear();
             break;

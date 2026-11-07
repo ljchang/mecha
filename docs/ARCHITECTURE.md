@@ -12852,6 +12852,12 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   silently authorize concept promotion or legacy durable operations. Missing v6
   schema must fail closed rather than look like an older unguarded database.
   These are bounded point-in-time checks, not an atomic filesystem/SQLite snapshot.
+  Read phases memoize only exact external binding verdicts (authority, locator,
+  revision), not database scope/restriction checks. Selection and final return
+  validation use separate `SourceChecks` over the original guard; a transaction-
+  wide positive cache would hide source withdrawal during ranking/assembly.
+  No cache survives a public read operation. This avoids repeatedly hashing one
+  episode for each of its passages while preserving fresh final authorization.
 - **Recalled text keeps its original authority when captured again.** A native
   memory result can copy an earlier episode into a later transcript. Capture must
   derive or validate those returned revision references, and every separately
