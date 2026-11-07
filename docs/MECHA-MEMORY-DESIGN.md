@@ -2320,3 +2320,58 @@ any lifecycle sibling erases the complete dependent lifecycle and suppresses its
 capture keys. Reports exported outside the database remain outside this erasure
 boundary. Qualification separates scripted process tests and fixture executions from
 new model inference, learning gains and broad generalization claims.
+
+
+## 27. Reappraise a recalled actual outcome under a new goal
+
+2026-11-06. Extend the synthetic prototype with a read-only paired evaluation,
+not another durable executor. Both arms retain the same original measurement
+source; only SourceAndOutcome sees the actual outcome recalled from the completed
+v5 action. SourceOnly is not the older no-observations arm. No source is rewritten,
+no outcome is reimported as fabricated measurements, and no new action executes.
+
+Preparation binds an explicit existing action, current finite Contract, Access
+and bounded RecallQuery at one snapshot. Follow the action's model/read links to
+recover original read bytes and provenance. Recall through Memory::recall, retain
+raw hits/ranks/controls, and require the action observation's exact revision and
+bytes to appear. A miss fails preparation rather than silently using direct lookup.
+Validate the observation against the operational action/spec and same-workload,
+fixture/state/choice binding; a generic Evidence record with matching prose cannot
+become a host result. Never consult the simulator effect table during preparation,
+prompting or checking. Restriction, forgetting, source revision or cancellation
+invalidates pending use; retain the existing transitive freshness rule.
+
+The versioned decision-support policy is explicit: for the same deterministic
+workload, a retained numeric actual observation supersedes the corresponding
+source expectation in current arithmetic. Keep both originals visible and separately
+hashed; source expectations are labeled as such. Unknown/refused outcomes have no
+numeric override. Historical appraisal/Failed labels, old recommendations and gold
+choices are excluded from model-visible projections. Stable passage IDs enumerate
+all visible evidence, not correct choices. Cite originals and actuals used in the
+comparison. Arithmetic may share the existing checker through a typed helper,
+without changing earlier prompt/schema bytes or classifying expectations as facts.
+
+A prepared pair has opaque source/access bindings and a guard rechecked after
+provider-discovery awaits, immediately before each call and after inference. No
+transaction spans inference. One first-response call per arm, no reconsideration;
+malformed/refused/wrong-model/truncated replies remain failed rows. Reports retain
+requests, raw replies, optional usage, timings, source/projection hashes and checks.
+Final recommendations are advisory, private/untrusted and executed:false. Exported
+reports are point-in-time artifacts, not revocable durable execution receipts.
+
+The fixed development pilot reuses the prior mismatch action: source Nori(4,2,8),
+Arden(8,3,9), Quill(6,5,7), actual Nori(4,9,8), tuple=(minutes,energy,quality).
+Minimize-minutes contracts (budget,minimum-quality) are (4,7),(10,7),(2,7),(4,9),
+with expected source-only/outcome-supported choices Nori/Arden, Nori/Nori,
+Nori/abstain, Arden/Arden. A separate (5,7) incomplete-knowledge diagnostic expects
+Nori/Quill under visible evidence, although hidden simulator quality6 makes Quill
+infeasible. Offline oracle scoring must not confuse missing information with a
+reasoning failure, and oracle data never enters a request.
+
+Freeze the five contracts, original artifacts, recall results, projections, exact
+requests, model controls and independent rubric before calls. Two predetermined
+seeds7 and19, counterbalanced arm order, yield20 first-response calls. Equal call
+allowance does not mean equal token cost; report actual usage, unknown usage,
+latency and failures. Use an already resident local model without switching/loading
+it. These cases are development diagnostics, not a holdout or generalization claim.
+A held-out source/outcome configuration remains separate follow-up work.
