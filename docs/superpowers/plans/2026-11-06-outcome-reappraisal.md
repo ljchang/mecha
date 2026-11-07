@@ -38,12 +38,12 @@ CLI name evaluate-outcome-recall, under memory --experimental --db. Required --s
 
 ### Task 2: Independent pilot and qualification
 
-**Files:** prototypes/memory/outcome_reappraisal_trial.py, test_outcome_reappraisal_trial.py; optional mecha-core/tests or mecha-cli/tests new independent qualification files. No product module edits.
+**Files:** prototypes/memory/outcome_reappraisal_trial.py, test_outcome_reappraisal_trial.py; optional mecha-core/tests or mecha-cli/tests new independent qualification files; .github/workflows/ci.yml to execute the standalone harness and Python test discovery on the existing pinned Ubuntu leg. No product module edits.
 **Interfaces:** Consume Task1 CLI prepare-only/run JSON and existing retained mismatch database from prior durable_action_trial; explicit --binary --db --action --endpoint --model --holds-dir --output. Runner must not execute any new action or reconstruct the saved source/outcome. Shared output manifest and per-call progress artifacts.
 - [ ] Freeze five cases and two seeds from spec, independent source-supported and simulator oracles; reject malformed/duplicate responses and distinguish correct model abstention from host withholding.
 - [ ] Use prepare-only for every pair before model calls; record database/source/observation hashes, raw recalls, prompts, contracts, model settings and planned order. Refuse existing output directory; record incomplete matrices on failures. Runtime-prepared requests must equal frozen requests or stop. Exclude oracle fields from model input.
 - [ ] Add regression tests for contrast, hidden-information diagnostic, missing data, failed/truncated replies, usage missingness, partial runs and no action writes. Scripted actual-CLI test proves pairing/guards/reporting with zero real inference. No worker real model calls.
-- [ ] Run tests and self-review; commit assigned files and report. Parent runs at most20 real calls only after independent review.
+- [ ] Add pinned-Ubuntu CI steps for cargo test --locked in prototypes/memory and python3 -m unittest discover -s prototypes/memory -p 'test_*.py', with MECHA_SESSION_KIND=test. Run these checks and self-review; commit assigned files and report. Parent runs at most20 real calls only after independent review.
 
 ### Task 3: Parent integration and publication
 
