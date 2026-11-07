@@ -2294,10 +2294,13 @@ implementation and not owner rulings:
   exported as `RULES_ENDPOINTS` for the docs demo's `check-demo.mjs`, which
   cannot see calls made through the page's fetch wrappers; the demo answers
   reads from fictional fixtures and declines every change.
-- Two of the page's slots are written from slow requests: a thread read
-  and a test, which may run for minutes. Each answer lands only where it
-  was asked for. A dismissed sheet stays closed, and a test result shows
-  only on the rule it tested, since a raise is decided on that count. These
+- Three of the page's slots are written from slow requests: a rule's load,
+  a thread read, and a test, which may run for minutes. Each answer lands
+  only where it was asked for. A late load for the rule just left never
+  fills the open rule's editor, which Save would write. A dismissed sheet
+  stays closed, and a test result shows only on the rule it tested, since
+  a raise is decided on that count. A reload after Pause, Undo or a mode
+  change keeps an unsaved definition edit. These
   live in the component, where the node checks cannot reach. They were
   driven in headless Chromium with delayed responses, and nothing pins them
   in CI. The same holds for the choice that makes re-approving a braked group

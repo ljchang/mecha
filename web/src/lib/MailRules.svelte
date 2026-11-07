@@ -116,19 +116,30 @@
     }
   }
 
-  async function loadRule(n = name) {
+  // Like the test and the thread sheet, a rule's load answers only the rule
+  // still open: a late answer for the rule just left would put its
+  // definition under this one's name, and Save would write it there.
+  // A reload of the same rule keeps an unsaved edit, unless it follows a save.
+  let ruleSeq = 0;
+  async function loadRule(n = name, { afterSave = false } = {}) {
+    const seq = ++ruleSeq;
+    const mine = () => ruleSeq === seq && name === n;
     detailError = null;
     try {
       const [d, l] = await Promise.all([
         get(`/api/mail/rules/${enc(n)}`),
         get(`/api/mail/rules/ledger?rule=${enc(n)}&limit=${LEDGER_LIMIT}`),
       ]);
+      if (!mine()) return;
+      const unsaved = !afterSave && detail?.name === n && editText !== (detail.rule_toml ?? '');
       detail = d;
       ledger = l;
-      editText = d.rule_toml ?? '';
-      editError = null;
+      if (!unsaved) {
+        editText = d.rule_toml ?? '';
+        editError = null;
+      }
     } catch (e) {
-      detailError = e.message;
+      if (mine()) detailError = e.message;
     }
   }
 
@@ -243,6 +254,8 @@
   }
 
   async function saveEdit() {
+    // The editor holds the open rule's file, and only that rule is written.
+    if (detail?.name !== name) return;
     busy = true;
     editError = null;
     try {
@@ -251,7 +264,7 @@
       else if (r.lapsed_groups?.length)
         say(`Saved. Approval lapsed for ${r.lapsed_groups.map(groupLabel).join(', ')}: the files changed, so raise again to approve them.`, 'held');
       else say('Saved.');
-      await loadRule();
+      await loadRule(name, { afterSave: true });
     } catch (e) {
       editError = e.message;
     }

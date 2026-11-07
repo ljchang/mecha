@@ -259,7 +259,7 @@ export function draftToml(d) {
   const value = (d[d.match] ?? '').trim();
   if (value) lines.push(`${d.match} = ${tomlList(value)}`);
   lines.push('', '[[action]]', `do = ${tomlString(d.verb)}`);
-  if (d.verb === 'tag') lines.push(`tag = ${tomlString(d.tag || 'rule')}`);
+  if (d.verb === 'tag') lines.push(`tag = ${tomlString(d.tag ?? '')}`);
   return `${lines.join('\n')}\n`;
 }
 
@@ -272,7 +272,10 @@ export function nameProblem(name) {
 
 /** What is wrong with a guided draft before it is sent, or null. The store decides the rest. */
 export function draftProblem(name, d) {
-  return nameProblem(name) ?? ((d[d.match] ?? '').trim() ? null : 'Give the rule something to match on.');
+  if (nameProblem(name)) return nameProblem(name);
+  if (!(d[d.match] ?? '').trim()) return 'Give the rule something to match on.';
+  if (d.verb === 'tag' && !(d.tag ?? '').trim()) return 'Name the tag this rule applies.';
+  return null;
 }
 
 /**

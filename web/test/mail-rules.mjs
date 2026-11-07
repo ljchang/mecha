@@ -129,6 +129,7 @@ t('a bad name is refused before sending', draftProblem('Bad Name', pre) !== null
 t('a reserved name is refused before sending', /reserved/.test(draftProblem('ledger', pre)));
 t('a draft with nothing to match is refused', draftProblem('ok', { ...pre, from_domain: '' }) !== null);
 t('a good draft passes', draftProblem('lists-example-edu', pre) === null);
+t('a tag action with no tag is refused, never given a default', draftProblem('ok', { ...pre, verb: 'tag', tag: ' ' }) !== null);
 
 // ---- refusals ----
 const stale = errorOf(409, JSON.stringify({ ok: false, error: { code: 'stale_digest', message: 'the rule changed since it was shown; reload' } }));
