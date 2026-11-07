@@ -13,6 +13,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import threading
+from urllib.parse import urlsplit
 
 PROTOCOL = 'durable-synthetic-action-qualification-v1'
 MODEL = 'synthetic-scripted-action-no-inference'
@@ -57,7 +58,7 @@ class ScriptedProvider(BaseHTTPRequestHandler):
         self.send_json(dict(data=[dict(id=MODEL,status=dict(value='loaded'))]))
 
     def do_POST(self):
-        if self.path != '/v1/chat/completions':
+        if urlsplit(self.path).path != '/v1/chat/completions':
             self.send_error(404)
             return
         request=json.loads(self.rfile.read(int(self.headers['Content-Length'])))

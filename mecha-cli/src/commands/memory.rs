@@ -1323,7 +1323,8 @@ impl LocalMemoryModel {
                 StructuredOutput::Disabled
             },
             ..Default::default()
-        })?;
+        })?
+        .without_autoload();
         Ok(Self {
             provider,
             holds: Holds::new(holds_dir),
@@ -1412,6 +1413,92 @@ impl LocalMemoryModel {
             },
             reasoning_chars,
         ))
+    }
+}
+
+#[cfg(test)]
+mod local_model_tests {
+    use super::LocalMemoryModel;
+    use axum::{http::StatusCode, Json, Router};
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    async fn call_resident_model(status: StatusCode) -> (anyhow::Result<String>, Vec<String>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let requests = seen.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push(format!(
+                    "{} {}",
+                    request.method(),
+                    request.uri()
+                ));
+                match request.uri().path() {
+                    "/props" => (StatusCode::OK, Json(json!({"role": "router"}))),
+                    "/models" => (
+                        StatusCode::OK,
+                        Json(json!({"data": [{"id": "fixture-model", "status": {"value": "loaded"}}]})),
+                    ),
+                    "/v1/chat/completions" if status == StatusCode::OK => (
+                        status,
+                        Json(json!({"model": "fixture-model", "choices": [{"message": {"role": "assistant", "content": "fixture reply"}, "finish_reason": "stop"}]})),
+                    ),
+                    "/v1/chat/completions" => (
+                        status,
+                        Json(json!({"error": {"message": "model is no longer loaded", "type": "unavailable_error"}})),
+                    ),
+                    _ => (StatusCode::NOT_FOUND, Json(json!({}))),
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let holds =
+            std::env::temp_dir().join(format!("mecha-memory-local-{}", uuid::Uuid::new_v4()));
+        let model =
+            LocalMemoryModel::new(&endpoint, "fixture-model", holds.clone(), 42, false).unwrap();
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            model.complete("authored fixture question".into(), None),
+        )
+        .await;
+        server.abort();
+        std::fs::remove_dir_all(holds).unwrap();
+        let requests = seen.lock().unwrap().clone();
+        (
+            reply.expect("local request should finish").map(|r| r.text),
+            requests,
+        )
+    }
+
+    #[tokio::test]
+    async fn resident_inference_disables_autoload_on_the_actual_post() {
+        let (reply, requests) = call_resident_model(StatusCode::OK).await;
+        assert_eq!(reply.unwrap(), "fixture reply");
+        assert_eq!(
+            requests,
+            [
+                "GET /props",
+                "GET /models",
+                "POST /v1/chat/completions?autoload=false"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_after_resident_check_refuses_without_retry_or_load() {
+        let (reply, requests) = call_resident_model(StatusCode::SERVICE_UNAVAILABLE).await;
+        assert!(reply.unwrap_err().to_string().contains("503"));
+        assert_eq!(
+            requests,
+            [
+                "GET /props",
+                "GET /models",
+                "POST /v1/chat/completions?autoload=false"
+            ]
+        );
     }
 }
 

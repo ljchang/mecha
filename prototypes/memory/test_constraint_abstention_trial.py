@@ -151,6 +151,34 @@ class ScoringTests(unittest.TestCase):
 
 
 class QualificationHttpTests(unittest.TestCase):
+    def test_authored_providers_accept_no_autoload_completion_query(self):
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        import durable_action_trial as action
+        import memory_benefit_trial as benefit
+        import test_outcome_reappraisal_trial as outcome
+        for provider in (action.ScriptedProvider, t.QualificationProvider,
+                         benefit.QualificationProvider, outcome.ScriptedProvider):
+            with self.subTest(provider=provider):
+                server=ThreadingHTTPServer(('127.0.0.1',0),provider)
+                server.requests=[];server.raw_requests=[];server.schema_orders=[]
+                server.choice='Arden';server.answers=[dict(choice='Arden')]
+                worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+                try:
+                    state=outcome.trial.frozen_cases()[0]['contract']
+                    body=dict(messages=[dict(role='user',content='Current state: '+json.dumps(state)+'\nAvailable methods: authored')],
+                              response_format=dict(schema=dict(properties=dict(choice=dict(type='string')))))
+                    request=urllib.request.Request(
+                        f'http://127.0.0.1:{server.server_port}/v1/chat/completions?autoload=false',
+                        data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
+                    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with opener.open(request,timeout=5) as response:reply=json.load(response)
+                    self.assertIn('choice',json.loads(reply['choices'][0]['message']['content']))
+                    self.assertEqual(server.requests,[body])
+                finally:
+                    server.shutdown();server.server_close();worker.join(timeout=5)
+
     def test_failed_returned_report_is_retained_before_queue_error(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);returned=dict(rows=[dict(call=dict(error='router discovery failed'))])

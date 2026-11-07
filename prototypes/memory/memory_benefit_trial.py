@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+from urllib.parse import urlsplit
 from http.server import ThreadingHTTPServer
 import outcome_reappraisal_trial as old
 import durable_action_trial as action
@@ -511,7 +512,7 @@ class QualificationProvider(action.ScriptedProvider):
             super().do_GET()
 
     def do_POST(self):
-        if self.path != '/v1/chat/completions':
+        if urlsplit(self.path).path != '/v1/chat/completions':
             self.send_error(404);return
         raw=self.rfile.read(int(self.headers['Content-Length'])).decode()
         request=decode(raw)

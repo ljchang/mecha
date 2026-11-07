@@ -14,6 +14,25 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Prototype CLI request-level no-autoload (2026-11-07, review follow-up)
+
+Automated review found that the older `LocalMemoryModel` checked residency but
+left automatic loading enabled on its subsequent POST. It now opts into
+`OpenAiCompatible::without_autoload`, matching `LocalTrialProvider`. The hold
+and precheck remain useful, but the request itself enforces refusal after an
+eviction. Ordinary provider defaults are unchanged. Actual-loopback regressions
+failed against the old URL and passed for both a successful authored reply and
+a one-request 503 refusal without retry/load. The four authored Python fixture
+routes now parse the URL path, preserving the request body and frozen scoring.
+The constructor audit found no other missing prototype opt-in; independent
+scoped review found the medium addressed. Spark build, formatting and strict
+Clippy passed, alongside both transport regressions, 92 CLI-backed Python tests
+with zero skips, and the 24/48-request authored constraint/benefit workflows.
+These focused checks cover the follow-up; the full workspace counts below
+belong to the preceding planning-repair source. No real-model comparison was repeated:
+its provider was already protected. Qualification logs are retained separately
+under `results/memory-planning-checks-20261107/cli-noautoload-qualification/`.
+
 ### Planning-check registration repair (2026-11-07, prototype branch)
 
 `Agent::run_in` now creates the command-check queue only when checks are enabled

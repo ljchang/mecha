@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from urllib.parse import urlsplit
 
 import outcome_reappraisal_trial as trial
 
@@ -277,7 +278,7 @@ class ScriptedProvider(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        if self.path != '/v1/chat/completions':
+        if urlsplit(self.path).path != '/v1/chat/completions':
             self.send_error(404)
             return
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))

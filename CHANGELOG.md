@@ -496,6 +496,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Experimental memory CLI inference now refuses router autoload on each request,
+  preserving its no-load/no-switch promise if a model disappears after the
+  residency check. Normal provider behavior is unchanged.
+
 - Plan checks no longer dispatch a nonexistent shell in runs without that tool.
   Newly completed checked steps explicitly remain unverified when execution is
   unavailable or disabled. Registered checks retain ordinary security guards.

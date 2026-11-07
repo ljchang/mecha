@@ -139,6 +139,18 @@ repeat is not a causal or generalization result; see
 `results/memory-planning-checks-20261107/`. This small ordinary-planning change is
 outside the memory feature gate; no installed production binary is changed.
 
+**CLI review follow-up:** `LocalMemoryModel::new` now opts into
+`without_autoload()` as `LocalTrialProvider` already did. A resident check plus a
+hold cannot prevent eviction before POST; the request must refuse loading. Two
+actual-HTTP regressions fail on the old URL and pass with the flag, including a
+single-request 503 refusal. Four authored fixture routes accept the query without
+changing bodies or scores. Independent scoped review found the medium addressed. Spark workspace build,
+strict Clippy, two HTTP regressions, 92 CLI-backed Python tests (zero skips), and
+the 24/48-request authored constraint/benefit workflows passed with no inference.
+Fresh GitHub qualification remains separately recorded on PR #846. The full workspace
+counts above belong to the planning repair at `838ceadbc`; the real comparison
+already used the protected provider and is unchanged.
+
 **Next MVP gaps:** qualify bounded evidence segmentation for longer failed
 episodes rather than raising limits to make a cohort pass. In the first
 comparison, 18/19 eligible passages exceeded the bridge's 16-passage bound.

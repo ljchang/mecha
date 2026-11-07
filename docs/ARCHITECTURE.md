@@ -12908,8 +12908,12 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   recall in the planned denominator. A copied source authority retains original
   immutable evidence paths outside the workspace; never copy prior answer files
   into that workspace. Correct abstention and completed task artifacts are
-  separate measurements. The local trial provider uses shared model holds plus
-  an opt-in no-autoload request; the ordinary provider default stays unchanged.
+  separate measurements. Both `LocalTrialProvider` and the experimental CLI's
+  `LocalMemoryModel` use shared model holds plus an opt-in no-autoload POST.
+  A prior residency check cannot prevent eviction before the request; the
+  request itself must refuse loading. The ordinary provider default stays
+  unchanged. Authored HTTP fixtures accept the completion URL's query while
+  preserving the recorded request body and frozen scoring contracts.
 
 - **A JSONL record is source evidence, not reconstructed conversation state.**
   The session adapter preserves exact lines and unknown record types; only
