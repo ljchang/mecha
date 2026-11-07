@@ -212,6 +212,17 @@ impl RuleDefinition {
     pub fn parse(text: &str) -> Result<Self> {
         let rule: Self = toml::from_str(text)?;
         ensure!(!rule.actions.is_empty(), "a rule needs an action");
+        if let Some(describe) = &rule.matcher.describe {
+            ensure!(
+                !describe.trim().is_empty(),
+                "match.describe must say what mail it is for"
+            );
+            ensure!(
+                describe.chars().count() <= super::describe::DESCRIBE_MAX_CHARS,
+                "match.describe is limited to {} characters; it rides in every classification",
+                super::describe::DESCRIBE_MAX_CHARS
+            );
+        }
         for (header, values) in &rule.matcher.header {
             ensure!(
                 !values.is_empty(),

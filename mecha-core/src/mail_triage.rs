@@ -41,6 +41,7 @@
 
 pub mod rule_records;
 
+pub mod rule_frame;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -641,7 +642,8 @@ pub const REQUEST_TYPES: &[&str] = &[
 /// from it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Correction {
-    /// `bucket`, `urgency`, `proposed`, `request_type` or `deadline`.
+    /// `bucket`, `urgency`, `proposed`, `request_type`, `deadline`, or
+    /// `rule` (a description rule's wrong match, MAIL-RULES-DESIGN.md §10).
     pub field: String,
     pub was: String,
     pub now: String,
@@ -909,6 +911,13 @@ pub struct Record {
     /// without this flag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_whole: bool,
+    /// The description-rule verdict for this thread's message, when any
+    /// description rule was in the classifier's frame (MAIL-RULES-DESIGN.md
+    /// §4.2). Absent means no rule was asked, never "no rule matched".
+    /// **The quotes inside are the sender's prose**, for a human's ledger;
+    /// no privileged run reads them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<rule_frame::RuleRecord>,
     /// Every field a human corrected, oldest first.
     ///
     /// **Appended, never overwritten.** A correction that was itself wrong is
@@ -1375,6 +1384,7 @@ impl TriageStore {
             escalated_changed: Vec::new(),
             escalated_from: None,
             read_whole: false,
+            rules: None,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -1476,6 +1486,38 @@ impl TriageStore {
         Ok(Some(made))
     }
 
+    /// The owner's *wrong match* on a description rule's row (MAIL-RULES-DESIGN.md
+    /// §10): a field-level correction, `rule: <name> → none`, so it joins the
+    /// classifier's correction examples like any other. Idempotent per rule,
+    /// so a retried wrong-match records it once. `Ok(false)` when the thread
+    /// has no record here or the correction is already recorded.
+    pub fn correct_rule(
+        &self,
+        account: &str,
+        thread_id: &str,
+        rule: &str,
+        at: &str,
+    ) -> Result<bool> {
+        let Some(mut rec) = self.get(account, thread_id) else {
+            return Ok(false);
+        };
+        if rec
+            .corrections
+            .iter()
+            .any(|c| c.field == "rule" && c.was == rule && c.now == "none")
+        {
+            return Ok(false);
+        }
+        rec.corrections.push(Correction {
+            field: "rule".into(),
+            was: rule.into(),
+            now: "none".into(),
+            at: at.into(),
+        });
+        self.put(&rec)?;
+        Ok(true)
+    }
+
     pub fn mark(&self, account: &str, thread_id: &str, action: &str, state: &str) -> Result<bool> {
         let Some(mut rec) = self.get(account, thread_id) else {
             return Ok(false);
@@ -1532,6 +1574,7 @@ mod tests {
             escalated_changed: Vec::new(),
             escalated_from: None,
             read_whole: false,
+            rules: None,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -3617,6 +3660,15 @@ pub fn resolve_thread_id<'a>(
     }
 }
 
+/// Whether `mecha mail reflect` may mine this correction into a learned
+/// triage rule. A description rule's wrong match (`rule`) is not a triage
+/// lesson: §10 of MAIL-RULES-DESIGN.md sends it to the correction examples
+/// only, and a reflector asked for a triage directive from it would invent
+/// one about buckets and put it in every future classifier prompt.
+pub fn reflectable(c: &Correction) -> bool {
+    c.field != "rule"
+}
+
 /// A stable key for one correction, for the mining ledger.
 ///
 /// Thread, field and timestamp. Per *correction* rather than per thread,
@@ -3785,7 +3837,20 @@ fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
     classifier_prompt_with(t, today, "", "")
 }
 
+#[cfg(test)]
 fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &str) -> String {
+    classifier_prompt_asking(t, today, few_shot, rules, None)
+}
+
+/// The prompt, with the description rules' frame when there is one. With no
+/// frame (or an empty one) the bytes are exactly [`classifier_prompt_with`]'s.
+fn classifier_prompt_asking(
+    t: &ThreadInput,
+    today: &str,
+    few_shot: &str,
+    rules: &str,
+    ask: Option<&rule_frame::RuleAsk<'_>>,
+) -> String {
     format!(
         "You are triaging one email thread for its recipient. Today is {today}.\n\
          \n\
@@ -3830,8 +3895,9 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
          Reply with one JSON object and nothing else. Reason first:\n\
          {{\"reasoning\": \"<why>\", \"bucket\": \"...\", \"urgency\": \"...\", \
          \"one_line\": \"...\", \"tags\": [...], \"proposed\": \"...\", \
-         \"deadline\": null, \"deadline_quote\": null, \"request_type\": null}}\n\
+         \"deadline\": null, \"deadline_quote\": null, \"request_type\": null{rule_fields}}}\n\
          \n\
+         {rule_frame}\
          {rules}\
          {few_shot}\
          BEGIN MESSAGE DATA\n\
@@ -3840,7 +3906,13 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
          Subject: {subject}\n\
          \n\
          {body}\n\
-         END MESSAGE DATA\n",
+         END MESSAGE DATA\n\
+         {rule_suffix}",
+        rule_fields = rule_frame::example_fields(ask),
+        rule_frame = ask
+            .map(|a| rule_frame::frame_block(a.frame))
+            .unwrap_or_default(),
+        rule_suffix = ask.map(rule_frame::eligible_suffix).unwrap_or_default(),
         tags = TAGS.join(", "),
         types = REQUEST_TYPES.join(", "),
         few_shot = few_shot,
@@ -3851,6 +3923,13 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
         subject = t.subject,
         body = t.body,
     )
+}
+
+/// The reply's JSON object, by the same bounds [`parse_verdict`] uses.
+fn json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end > start).then(|| &text[start..=end])
 }
 
 /// Pull the JSON object out of a reply and drop anything outside the closed
@@ -3939,11 +4018,34 @@ pub async fn classify_with(
     examples: &[FewShot],
     rules: Option<&str>,
 ) -> Result<Verdict> {
-    let prompt = classifier_prompt_with(
+    classify_asking(provider, model, thread, today, examples, rules, None)
+        .await
+        .map(|(verdict, _)| verdict)
+}
+
+/// [`classify_with`], also asking about the owner's description rules
+/// (MAIL-RULES-DESIGN.md §4.2) in the same call. The reading is grounded
+/// against exactly the text the model was shown; `None` when no frame was
+/// given or it was empty.
+pub async fn classify_asking(
+    provider: &dyn crate::provider::Provider,
+    model: &str,
+    thread: &ThreadInput,
+    today: &str,
+    examples: &[FewShot],
+    rules: Option<&str>,
+    ask: Option<&rule_frame::RuleAsk<'_>>,
+) -> Result<(Verdict, Option<rule_frame::RuleReading>)> {
+    // Ask only when some rule could answer: a frame whose every answer is
+    // fixed at `none` decides nothing, and leaving it out keeps the prompt
+    // byte-identical to one without rules.
+    let ask = ask.filter(|a| !a.frame.is_empty() && a.any_eligible());
+    let prompt = classifier_prompt_asking(
         thread,
         today,
         &few_shot_block(examples),
         rules.unwrap_or_default(),
+        ask,
     );
     let mut attempt = prompt.clone();
     let mut last_error = String::new();
@@ -3954,7 +4056,13 @@ pub async fn classify_with(
         // with, and caching other people's mail across calls is a property
         // nobody asked for.
         let request = crate::quarantine::QuarantinedPass::new(model, 4096)
-            .response_schema(provider.structured_output().then(verdict_schema))
+            .response_schema(provider.structured_output().then(|| {
+                let mut schema = verdict_schema();
+                if let Some(ask) = ask {
+                    rule_frame::extend_schema(&mut schema, ask);
+                }
+                schema
+            }))
             .ask(attempt.clone());
         let response = provider.complete(&request, None).await?;
 
@@ -3974,10 +4082,16 @@ pub async fn classify_with(
 
         match parse_verdict(&text) {
             Ok(mut v) => {
-                // The one check that needs the text the model was shown, so
-                // it lives here and not in `parse_verdict`.
+                // The checks that need the text the model was shown, so they
+                // live here and not in `parse_verdict`.
                 ground_deadline(&mut v, thread);
-                return Ok(v);
+                let reading = ask.map(|ask| {
+                    let answer = json_object(&text)
+                        .and_then(|o| serde_json::from_str(o).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    rule_frame::read_answer(&answer, ask, thread)
+                });
+                return Ok((v, reading));
             }
             Err(_) if truncated && text.trim().is_empty() => {
                 last_error = format!(

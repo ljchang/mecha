@@ -74,6 +74,21 @@ impl Drop for StoreLock {
 /// name there: a rule so named could be installed but never opened on the page.
 pub const RESERVED_RULE_NAMES: &[&str] = &["add", "ledger", "pause-all", "undo", "wrong-match"];
 
+/// What an admission check is asked about.
+enum Admission<'a> {
+    /// A new rule, installed in shadow.
+    Install(&'a LoadedRule),
+    /// An edited rule replacing the installed one.
+    Replace(&'a LoadedRule),
+    /// One group raised.
+    Raise {
+        rule: &'a LoadedRule,
+        group: ActionGroup,
+        from: Mode,
+        to: Mode,
+    },
+}
+
 impl RuleStore {
     pub fn root_under(home: &Path) -> PathBuf {
         home.join("mail-rules")
@@ -527,6 +542,7 @@ impl RuleStore {
                 write_new(&temp.join(name), text.as_bytes())?;
             }
             let rule = self.load_directory(name, &temp)?;
+            self.admit_locked(Admission::Install(&rule), &self.approvals()?)?;
             File::open(&temp)?.sync_all()?;
             for group in rule.definition.groups() {
                 self.append_approval_locked(&ApprovalRow {
@@ -581,6 +597,7 @@ impl RuleStore {
             }
             let candidate = self.load_directory(name, &temp)?;
             let mut approvals = self.approvals()?;
+            self.admit_locked(Admission::Replace(&candidate), &approvals)?;
             let ledger = self.ledger()?;
             let old = self.get(name);
             let targets = old
@@ -978,6 +995,15 @@ impl RuleStore {
                 decision.target = current;
                 return Ok(decision);
             }
+            self.admit_locked(
+                Admission::Raise {
+                    rule: &rule,
+                    group,
+                    from: recorded,
+                    to: decision.target,
+                },
+                &rows,
+            )?;
         }
         decision.write = decision.write || gate_mode(recorded, decision.target, actor)?.write;
         if decision.write {
@@ -999,6 +1025,81 @@ impl RuleStore {
             })?;
         }
         Ok(decision)
+    }
+
+    /// §4.2's admission check, under the writer lock and before any file or
+    /// mode row is written: an install, an edit that adds list membership, or
+    /// a raise that would put the description lists over
+    /// [`describe::LIST_CAP`] is refused, naming the count and the rules
+    /// whose demotion would make room. A store already over the cap (a hand
+    /// edit, a safety lowering) refuses only what would add to it; lowerings
+    /// are never checked, since they must always be able to stop actions.
+    fn admit_locked(&self, change: Admission<'_>, approvals: &[ApprovalRow]) -> Result<()> {
+        let ledger = self.ledger()?;
+        let mut rules: Vec<LoadedRule> = self
+            .rule_names()?
+            .iter()
+            .filter_map(|name| self.get(name).ok())
+            .collect();
+        let (before, _) = describe::entry_count(&rules, approvals, &ledger);
+        let mut after_approvals = approvals.to_vec();
+        let synthetic = |rule: &LoadedRule, group, from, to, actor, reason| ApprovalRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            rule: rule.name.clone(),
+            group,
+            at: Some(Utc::now()),
+            from_mode: from,
+            to_mode: to,
+            actor,
+            actor_readable: true,
+            digests: rule.approval_digest.clone(),
+            reason,
+        };
+        let name = match change {
+            Admission::Install(rule) => {
+                for group in rule.definition.groups() {
+                    after_approvals.push(synthetic(
+                        rule,
+                        group,
+                        Mode::Shadow,
+                        Mode::Shadow,
+                        crate::closure::Actor::Unknown,
+                        ApprovalReason::Install,
+                    ));
+                }
+                rules.retain(|r| r.name != rule.name);
+                rules.push(rule.clone());
+                &rule.name
+            }
+            Admission::Replace(rule) => {
+                rules.retain(|r| r.name != rule.name);
+                rules.push(rule.clone());
+                &rule.name
+            }
+            Admission::Raise {
+                rule,
+                group,
+                from,
+                to,
+            } => {
+                after_approvals.push(synthetic(
+                    rule,
+                    group,
+                    from,
+                    to,
+                    crate::closure::Actor::Owner,
+                    ApprovalReason::Owner,
+                ));
+                rules.retain(|r| r.name != rule.name);
+                rules.push(rule.clone());
+                &rule.name
+            }
+        };
+        let (after, shares) = describe::entry_count(&rules, &after_approvals, &ledger);
+        if after > describe::LIST_CAP && after > before {
+            return Err(ModeError::ListCap(describe::over_cap(after, &shares, name)).into());
+        }
+        Ok(())
     }
 
     fn approval_groups(

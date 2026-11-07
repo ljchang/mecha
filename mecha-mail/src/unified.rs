@@ -1129,6 +1129,9 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
                 "unread_scope": "owner_mailbox",
                 "recipient_read_status": "unknown",
                 "has_attachments": e.has_attachments,
+                // The fact, not the best-effort flag: null when the MIME tree
+                // could not be read, so "cannot tell" never reads as "none".
+                "attachment_presence": e.attachment_presence,
                 // The deterministic bulk signal, surfaced so the triage
                 // pre-filter can dispose of a thread without a model call.
                 // A property of the message rather than a judgement about it,
@@ -3247,6 +3250,31 @@ mod tests {
         assert_eq!(rows[0]["subject"], "new");
         assert_eq!(rows[0]["account"], "campus");
         assert_eq!(rows[1]["account"], "personal");
+    }
+
+    #[test]
+    fn a_row_carries_attachment_presence_with_unknown_kept_unknown() {
+        // Review of #854: the classify sweep judges `has_attachment` from
+        // this row, and the best-effort flag reads "cannot tell" as false.
+        let mut unknown = email("a@x.com", &[], &[], "unknown");
+        unknown.has_attachments = false;
+        unknown.attachment_presence = None;
+        let mut known = email("b@y.com", &[], &[], "known");
+        known.attachment_presence = Some(false);
+        let out = render_rows(vec![
+            (Provider::Google, "personal".into(), unknown),
+            (Provider::Google, "personal".into(), known),
+        ]);
+        let rows: Vec<Value> = serde_json::from_str(&out).unwrap();
+        let by = |subject: &str| {
+            rows.iter()
+                .find(|r| r["subject"] == subject)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(by("unknown")["attachment_presence"], Value::Null);
+        assert_eq!(by("unknown")["has_attachments"], false);
+        assert_eq!(by("known")["attachment_presence"], false);
     }
 
     #[test]

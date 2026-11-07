@@ -1252,9 +1252,18 @@ async fn classify(
         );
     }
     eprintln!("classifying with {model} ({provider_name})");
+    // The owner's description rules (MAIL-RULES-DESIGN.md §4.2), asked in the
+    // same quarantined call. Read once: a rule edited mid-sweep is asked
+    // about next sweep, and the record says which matcher each answer is for.
+    let described = super::mail_rule::classifier_rules();
 
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
+    // Model calls the description rules added, reported apart so neither
+    // `prefiltered` ("disposed without a model") nor `escalated` (triage's own
+    // second pass) is made false by them.
+    let mut rules_only = 0u32;
+    let mut rules_body = 0u32;
     // Every failure is written the moment it happens, counted against its
     // thread (`fail_now`) — a sweep that dies late (an error, the unit's
     // start timeout) must not leave a failed thread with no `failed` record,
@@ -1282,6 +1291,15 @@ async fn classify(
     for item in work {
         // `full_body`: a thread retried from the store has no snippet to start
         // from, so it is read whole up front and needs no second pass.
+        let has_attachment = match &item {
+            // `attachment_presence`, never `has_attachments`: the flag reads
+            // "cannot tell" as false, and a known negative would let a rule
+            // that may not apply take the single `rule` slot (or hide one
+            // that does). A listing from an older mail binary has no field,
+            // which is unknown, so such rules are not asked.
+            Work::Row(row) => row["attachment_presence"].as_bool(),
+            Work::Stored(_) => None,
+        };
         let (mut thread, bulk, full_body) = match item {
             Work::Row(row) => (
                 row_to_input(row),
@@ -1315,13 +1333,64 @@ async fn classify(
             }
         };
 
+        // Which description rules may answer for this message: those whose
+        // header preconditions its envelope proves. None eligible, no ask —
+        // the prompt is then exactly the one without rules.
+        let ask = described
+            .as_ref()
+            .map(|d| {
+                d.ask(&mecha_core::mail_rules::describe::Envelope {
+                    account: &thread.account,
+                    from: &thread.from,
+                    subject: &thread.subject,
+                    has_attachment,
+                })
+            })
+            .filter(|a| a.any_eligible());
+
         // Ahead of the model, never instead of it for anything in doubt.
         // About half a real mailbox is bulk or an automated sender, and
         // spending a classifier call on a shipping notification is the cost
         // this removes. The rule only ever produces `ignore` and reads only
         // the envelope — see `mail_triage::prefilter`.
         if let Some((v, rule)) = mecha_core::mail_triage::prefilter(&thread, bulk) {
-            if let Err(e) = store.put(&record(&thread, Some(v), None)) {
+            let mut rec = record(&thread, Some(v), None);
+            // Owner ruling 2026-11-07: a bulk thread a description rule could
+            // match is read by the classifier for the rules alone. Its triage
+            // reading stays the pre-filter's `ignore`; only the rule answer
+            // is kept, and a failure costs the rules, never the record.
+            if let (Some(ask), Some(d)) = (&ask, &described) {
+                let asked = ask_rules_only(
+                    provider.as_ref(),
+                    &model,
+                    &mut thread,
+                    &today,
+                    &examples,
+                    learned.as_deref(),
+                    ask,
+                    d,
+                    get_thread.map(|t| (t.as_ref(), &ctx)),
+                    full_body,
+                )
+                .await;
+                rules_only += 1;
+                match asked {
+                    Ok(rules) => {
+                        if !full_body
+                            && rules.input
+                                == mecha_core::mail_triage::rule_frame::RuleInput::FullBody
+                        {
+                            rules_body += 1;
+                        }
+                        rec.rules = Some(rules)
+                    }
+                    Err(e) => eprintln!(
+                        "      (description rules not read for {}: {e:#})",
+                        thread.thread_id
+                    ),
+                }
+            }
+            if let Err(e) = store.put(&rec) {
                 eprintln!("  ! {} — {e}", thread.thread_id);
                 failed += 1;
                 // Fails the run at the end, like every other write here.
@@ -1329,21 +1398,46 @@ async fn classify(
             } else {
                 prefiltered += 1;
                 if global.verbose {
-                    println!("  · {} — {} (no model)", thread.subject, rule.as_str());
+                    println!(
+                        "  · {} — {} ({})",
+                        thread.subject,
+                        rule.as_str(),
+                        if rec.rules.is_some() {
+                            "no model for triage; read for description rules"
+                        } else {
+                            "no model"
+                        }
+                    );
                 }
             }
             continue;
         }
 
-        let verdict = mecha_core::mail_triage::classify_with(
+        let first = mecha_core::mail_triage::classify_asking(
             provider.as_ref(),
             &model,
             &thread,
             &today,
             &examples,
             learned.as_deref(),
+            ask.as_ref(),
         )
         .await;
+        let (verdict, mut reading) = match first {
+            Ok((v, reading)) => (Ok(v), reading),
+            Err(e) => (Err(e), None),
+        };
+        let mut rule_input = if full_body {
+            mecha_core::mail_triage::rule_frame::RuleInput::FullBody
+        } else {
+            mecha_core::mail_triage::rule_frame::RuleInput::Snippet
+        };
+        // A match on a rule with a send forces the full body before the rule
+        // verdicts are final (§4.2), per thread and across rules. It changes
+        // only the rule answer: the triage verdict escalates on its own rule
+        // alone, so its measurement stays its own.
+        let rules_need_body =
+            matches!((&reading, &described), (Some(r), Some(d)) if d.escalates(r));
 
         // The second pass. Only where the answer changes what happens — see
         // `needs_body` — and only when the whole thread can actually be
@@ -1353,6 +1447,36 @@ async fn classify(
         let mut did_escalate = false;
         let mut changed: Vec<String> = Vec::new();
         let verdict = match (&verdict, &get_thread) {
+            (Ok(v), Some(tool)) if !needs_body(v) && rules_need_body && !full_body => {
+                match fetch_body(tool.as_ref(), &ctx, &thread).await {
+                    Ok(body) => {
+                        thread.body = body;
+                        match mecha_core::mail_triage::classify_asking(
+                            provider.as_ref(),
+                            &model,
+                            &thread,
+                            &today,
+                            &examples,
+                            learned.as_deref(),
+                            ask.as_ref(),
+                        )
+                        .await
+                        {
+                            Ok((_, second)) => {
+                                reading = second;
+                                rule_input =
+                                    mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
+                                rules_body += 1;
+                            }
+                            Err(e) => eprintln!(
+                                "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                            ),
+                        }
+                    }
+                    Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
+                }
+                verdict
+            }
             (Ok(v), Some(tool)) if needs_body(v) && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
@@ -1364,17 +1488,21 @@ async fn classify(
                         // verdict from a prompt that had never seen a single
                         // correction, including one made about this very kind
                         // of mail.
-                        match mecha_core::mail_triage::classify_with(
+                        match mecha_core::mail_triage::classify_asking(
                             provider.as_ref(),
                             &model,
                             &thread,
                             &today,
                             &examples,
                             learned.as_deref(),
+                            ask.as_ref(),
                         )
                         .await
                         {
-                            Ok(second) => {
+                            Ok((second, second_reading)) => {
+                                reading = second_reading;
+                                rule_input =
+                                    mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
                                 escalated += 1;
                                 did_escalate = true;
                                 changed = changed_fields(v, &second);
@@ -1414,6 +1542,14 @@ async fn classify(
                 r.read_whole = full_body;
                 r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
+                if let (Some(ask), Some(reading)) = (&ask, reading) {
+                    if let Some(hit) = &reading.active {
+                        println!("      rule: {}", hit.name);
+                    }
+                    r.rules = Some(mecha_core::mail_triage::rule_frame::RuleRecord::new(
+                        ask, reading, rule_input,
+                    ));
+                }
                 r
             }
             // A failure is a row and a human's problem. It never falls back to
@@ -1574,9 +1710,19 @@ async fn classify(
     // nobody can grade.
     println!(
         "\n{ok} classified ({escalated} read in full on a second pass{}), \
-         {prefiltered} disposed without a model, {failed} failed",
+         {prefiltered} disposed without a model{}, {failed} failed{}",
         if requeued_ok > 0 {
             format!(", {requeued_ok} retried whole from the store")
+        } else {
+            String::new()
+        },
+        if rules_only > 0 {
+            format!(" for triage ({rules_only} of them read by the model for description rules)")
+        } else {
+            String::new()
+        },
+        if rules_body > 0 {
+            format!("; {rules_body} read in full for description rules")
         } else {
             String::new()
         }
@@ -1613,6 +1759,72 @@ async fn classify(
 /// renders oldest-first and the newest message is the one asking for
 /// something — truncating the front of a long thread keeps the part a reply
 /// would answer.
+/// The rule answer alone for a thread the pre-filter disposed of (owner
+/// ruling 2026-11-07): the same quarantined call and frame as any thread, so
+/// the evidence means the same thing; its triage fields are discarded. A
+/// match on a rule with a send reads the full body, as everywhere.
+#[allow(clippy::too_many_arguments)]
+async fn ask_rules_only(
+    provider: &dyn mecha_core::provider::Provider,
+    model: &str,
+    thread: &mut ThreadInput,
+    today: &str,
+    examples: &[mecha_core::mail_triage::FewShot],
+    learned: Option<&str>,
+    ask: &mecha_core::mail_triage::rule_frame::RuleAsk<'_>,
+    described: &mecha_core::mail_rules::describe::ClassifierRules,
+    get_thread: Option<(&dyn mecha_core::tool::Tool, &mecha_core::tool::ToolCtx)>,
+    full_body: bool,
+) -> Result<mecha_core::mail_triage::rule_frame::RuleRecord> {
+    use mecha_core::mail_triage::rule_frame::{RuleInput, RuleRecord};
+    let (_, reading) = mecha_core::mail_triage::classify_asking(
+        provider,
+        model,
+        thread,
+        today,
+        examples,
+        learned,
+        Some(ask),
+    )
+    .await?;
+    let mut reading = reading.unwrap_or_default();
+    let mut input = if full_body {
+        RuleInput::FullBody
+    } else {
+        RuleInput::Snippet
+    };
+    if !full_body && described.escalates(&reading) {
+        if let Some((tool, ctx)) = get_thread {
+            match fetch_body(tool, ctx, thread).await {
+                Ok(body) => {
+                    thread.body = body;
+                    match mecha_core::mail_triage::classify_asking(
+                        provider,
+                        model,
+                        thread,
+                        today,
+                        examples,
+                        learned,
+                        Some(ask),
+                    )
+                    .await
+                    {
+                        Ok((_, second)) => {
+                            reading = second.unwrap_or_default();
+                            input = RuleInput::FullBody;
+                        }
+                        Err(e) => eprintln!(
+                            "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                        ),
+                    }
+                }
+                Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
+            }
+        }
+    }
+    Ok(RuleRecord::new(ask, reading, input))
+}
+
 async fn fetch_body(
     tool: &dyn mecha_core::tool::Tool,
     ctx: &mecha_core::tool::ToolCtx,
@@ -1802,6 +2014,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         escalated_changed: Vec::new(),
         escalated_from: None,
         read_whole: false,
+        rules: None,
         corrections: Vec::new(),
         acted: None,
         acted_at: None,
@@ -2374,12 +2587,19 @@ fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
         }
     }
 
+    // A thread whose only correction is a description rule's wrong match had
+    // its triage verdict right: it is not a corrected thread. `by_field`
+    // still counts every correction, `rule` included.
     let corrected: Vec<&Record> = records
         .iter()
-        .filter(|r| !r.corrections.is_empty())
+        .filter(|r| {
+            r.corrections
+                .iter()
+                .any(mecha_core::mail_triage::reflectable)
+        })
         .collect();
     let mut by_field: std::collections::BTreeMap<&str, usize> = Default::default();
-    for r in &corrected {
+    for r in records.iter().filter(|r| !r.corrections.is_empty()) {
         for c in &r.corrections {
             *by_field.entry(c.field.as_str()).or_default() += 1;
         }
@@ -2463,7 +2683,11 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
         if account.is_some_and(|a| a != r.account) {
             continue;
         }
-        for c in &r.corrections {
+        for c in r
+            .corrections
+            .iter()
+            .filter(|c| mecha_core::mail_triage::reflectable(c))
+        {
             if !mined.contains(&mecha_core::mail_triage::correction_key(
                 &r.account,
                 &r.thread_id,

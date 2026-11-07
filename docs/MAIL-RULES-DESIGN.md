@@ -2313,6 +2313,75 @@ implementation and not owner rulings:
   `--require-digest` is the gate behind that choice. If it regresses, the
   owner sees a `digest_required` refusal, never an unreviewed raise.
 
+**P4a implemented (2026-11-07): description rules over recoverable actions.**
+P4 is delivered in two parts, by the orchestrating session's choice rather
+than an owner ruling: P4a evaluates `match.describe` in the classify pass for
+the Mailbox, Private record and Report groups; P4b adds the confirmation pass,
+template `reply`, verbatim `forward` and the send guards and brakes. Until P4b,
+a description rule's Board and outbound groups are held at `shadow` ("wait for
+the confirmation pass"): they write would-have rows from the main pass alone,
+under a match digest with no confirmation version, so P4b's rows stand apart
+from them automatically (§4.2's digest rule).
+
+**Owner ruling (2026-11-07), bulk mail.** A thread the pre-filter disposes of
+(an unsubscribe header) is read by the classifier only when at least one
+admitted description rule's header preconditions fit its envelope, and then
+for the rule answer alone: its stored triage verdict stays the pre-filter's
+`ignore`. Without this, description rules would be blind to about half of
+incoming mail.
+
+Implementation choices where this document was silent, none of them an owner
+ruling:
+
+- **The sweep asks only when a rule could answer.** The classifier gets the
+  frame only for a message with at least one eligible rule; otherwise its
+  prompt is byte-identical to the one without rules. A frame whose every
+  answer is fixed at `none` costs tokens and decides nothing. When asked, the
+  frame is the whole admitted set in both lists, in priority then name order,
+  with the eligible names after the message, as §4.2 specifies.
+- **Header preconditions are judged on the sweep's envelope.** The sweep holds
+  the inbox listing: sender, account, subject and attachment flag. Eligibility
+  uses the engine's own `header_match` over those facts, and Unknown is not
+  eligible. A description rule whose precondition uses `to`, `list_id` or a
+  raw header is **held** visibly (`held: a description rule's header
+  conditions may use only …`) rather than evaluated on a guess: §4.2 forbids a
+  rule that cannot apply from taking the single `rule` slot. Lifting the hold
+  means carrying those headers into the sweep. The engine re-checks every
+  precondition against the full message after classify, and that check is the
+  authority for what runs.
+- **The record says which matcher each answer is for.** The triage record's
+  new `rules` field lists every rule asked about, with its list and its
+  matcher digest at the time, plus the grounded hits and the refusals. A rule
+  edited since is not answered by the record, so it writes no row until its
+  thread is classified again; a rule not asked about is unknown, never "no
+  match".
+- **Rule-forced escalation changes only the rule answer.** A match on a rule
+  with a send in a non-off group reads the full body (§4.2). The stored triage
+  verdict still escalates only on its own rule (`needs_body`), so the
+  escalation measurement in `Record::escalated` stays its own.
+- **Grounding.** Quotes must be a literal span of the subject and text the
+  model was shown, between 8 and 300 characters. A name not eligible for the
+  message is refused. Refusals are recorded with their reason. The quote
+  becomes the ledger row's `matched_because.quote` and is shown on the page;
+  it is the sender's prose. P2's digest must not hand it to the briefing's
+  model run.
+- **Trash on a description rule** caps that rule's whole Mailbox group at
+  `propose` (§5.5), since modes are per group. To archive automatically, put
+  trash in its own rule.
+- **Admission.** Install, an edit and a raise refuse to take the description
+  lists over 12 entries, naming the count and the rules to lower. A store
+  already over the cap refuses only what would add to it. Lowerings are never
+  checked.
+- **`match.describe`** must be non-empty and at most 500 characters. The frame
+  renders it on one line.
+- **Wrong match on a description row** (§10) records the ledger outcome,
+  counts toward the wrong-match brake, and writes `rule: <name> → none` to the
+  thread's triage record, idempotently, so it joins the correction examples.
+  A row whose evidence kind no longer matches its rule (a header row on a rule
+  since edited into a description rule) is refused: edit the rule instead.
+- Description-rule testing against past mail, with its cost shown, is a
+  separate PR (P4a-2). Until then the Test button reports the store's refusal.
+
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
 

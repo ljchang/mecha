@@ -9,6 +9,30 @@ use chrono_tz::Tz;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+/// A description rule's grounded match on one message, as the engine reads
+/// it from the stored verdict.
+#[derive(Debug, Clone)]
+struct Described {
+    /// The quote, when the active list named the rule.
+    active: Option<String>,
+    /// The quote, when the shadow list named it.
+    shadow: Option<String>,
+    input: VerdictInput,
+}
+
+impl Described {
+    /// Shadow rows use the shadow quote when there is one (§4.2); active rows
+    /// only ever reach here with an active quote.
+    fn quote(&self, mode: Mode) -> &str {
+        if mode == Mode::Shadow {
+            self.shadow.as_deref().or(self.active.as_deref())
+        } else {
+            self.active.as_deref()
+        }
+        .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pass {
     Headers,
@@ -40,6 +64,9 @@ pub struct Candidate {
 pub struct Classified {
     pub at: DateTime<Utc>,
     pub deadline: Option<NaiveDate>,
+    /// The description-rule verdict stored with this classification. Absent
+    /// means no description rule was asked about this message.
+    pub rules: Option<crate::mail_triage::rule_frame::RuleRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -787,19 +814,91 @@ impl Run<'_> {
         c: &Candidate,
         mode: Mode,
     ) -> Result<LedgerRow> {
-        let mut row = LedgerRow::header(
-            rule,
-            index,
-            c.message.clone(),
-            mode,
-            self.mailbox.origin_gate(rule),
-            Outcome::WouldHave,
-            self.options.clock.now(),
-        )?;
-        row.matched_because = serde_json::to_string(&rule.definition.matcher)?;
+        self.snapshot_described(rule, index, c, mode, None)
+    }
+    fn snapshot_described(
+        &self,
+        rule: &LoadedRule,
+        index: usize,
+        c: &Candidate,
+        mode: Mode,
+        described: Option<&Described>,
+    ) -> Result<LedgerRow> {
+        let gate = self.mailbox.origin_gate(rule);
+        let at = self.options.clock.now();
+        let mut row = match described {
+            None => LedgerRow::header(
+                rule,
+                index,
+                c.message.clone(),
+                mode,
+                gate,
+                Outcome::WouldHave,
+                at,
+            )?,
+            Some(d) => LedgerRow::described(
+                rule,
+                index,
+                c.message.clone(),
+                mode,
+                gate,
+                Outcome::WouldHave,
+                at,
+                d.input,
+            )?,
+        };
+        let mut because = serde_json::to_value(&rule.definition.matcher)?;
+        if let Some(d) = described {
+            // The sender's words the classifier cited, grounded against what
+            // it read: a human's "matched because", never a privileged run's.
+            because["quote"] = serde_json::json!(d.quote(mode));
+        }
+        row.matched_because = serde_json::to_string(&because)?;
         row.headers_partial =
             partial_header_rule(rule, self.mailbox.proves_header_absence(&c.message.account));
         Ok(row)
+    }
+
+    /// What the stored verdict says about one description rule for this
+    /// message, or `None` when it says nothing: the rule was not asked about,
+    /// was asked under a matcher since edited, or was not named. Only a name
+    /// from the active list can authorise an active action (§4.2).
+    fn described(rule: &LoadedRule, c: &Candidate) -> Result<Option<Described>> {
+        use crate::mail_triage::rule_frame::{RuleInput, RuleList};
+        let Some(record) = c.classified.as_ref().and_then(|v| v.rules.as_ref()) else {
+            return Ok(None);
+        };
+        let matcher = rule
+            .match_digest(ActionGroup::Mailbox, GateStatus::Passing)?
+            .matcher;
+        let asked = |list| {
+            record
+                .considered
+                .iter()
+                .any(|k| k.name == rule.name && k.list == list && k.matcher == matcher)
+        };
+        let active = record
+            .active
+            .as_ref()
+            .filter(|hit| hit.name == rule.name && asked(RuleList::Active))
+            .map(|hit| hit.quote.clone());
+        let shadow = record
+            .shadow
+            .iter()
+            .find(|hit| hit.name == rule.name && asked(RuleList::Shadow))
+            .map(|hit| hit.quote.clone());
+        if active.is_none() && shadow.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Described {
+            active,
+            shadow,
+            input: match record.input {
+                RuleInput::Snippet => VerdictInput::Snippet,
+                RuleInput::FullBody => VerdictInput::FullBody,
+                RuleInput::Unknown => VerdictInput::Unknown,
+            },
+        }))
     }
     async fn apply_thread(&mut self, rules: &[LoadedRule], c: &Candidate) -> Result<()> {
         // Exclude before list admission, description obligations, matched-set
@@ -822,11 +921,32 @@ impl Run<'_> {
             self.check_inputs(rule)?;
             modes.insert(rule.name.clone(), self.modes(rule)?);
         }
-        let held = list_cap(rules, &modes);
-        self.report.list_cap.extend(held.iter().cloned());
-        let descriptions = rules
+        let unreadable: BTreeSet<String> = rules
             .iter()
-            .any(|r| r.definition.is_description() && modes[&r.name].values().any(evaluates));
+            .filter(|r| super::describe::precondition_unreadable(&r.definition))
+            .map(|r| r.name.clone())
+            .collect();
+        for name in &unreadable {
+            let notice = format!("{name}: {}", super::describe::PRECONDITION_HOLD);
+            if !self.report.notices.contains(&notice) {
+                self.report.notices.push(notice);
+            }
+        }
+        let admissible: Vec<_> = rules
+            .iter()
+            .filter(|r| !unreadable.contains(&r.name))
+            .cloned()
+            .collect();
+        let mut held = list_cap(&admissible, &modes);
+        self.report.list_cap.extend(held.iter().cloned());
+        held.extend(unreadable);
+        // A held description rule is not evaluated, so it owes classify
+        // nothing and defers no other rule's removal.
+        let descriptions = rules.iter().any(|r| {
+            r.definition.is_description()
+                && !held.contains(&r.name)
+                && modes[&r.name].values().any(evaluates)
+        });
         let matched: Vec<_> = rules
             .iter()
             .filter(|r| {
@@ -854,6 +974,27 @@ impl Run<'_> {
         let defer_removal = descriptions || owes_verdict;
         let outbound = outbound_owner(&matched, &modes);
         let classified = classified(c);
+        // Description rules join after classification, from the verdict
+        // stored for this very message (`classified` holds only when the
+        // record is at least as new as its newest inbound message), and only
+        // when their header preconditions do not disprove it.
+        let mut described = BTreeMap::new();
+        if self.options.pass == Pass::AfterClassify && classified {
+            for rule in rules.iter().filter(|r| {
+                r.definition.is_description()
+                    && !held.contains(&r.name)
+                    && modes[&r.name].values().any(evaluates)
+                    && header_match(&r.definition.matcher, c) != HeaderMatch::NoMatch
+            }) {
+                if let Some(d) = Self::described(rule, c)? {
+                    described.insert(rule.name.clone(), d);
+                }
+            }
+        }
+        let acting: Vec<&LoadedRule> = rules
+            .iter()
+            .filter(|r| matched.iter().any(|m| m.name == r.name) || described.contains_key(&r.name))
+            .collect();
         let mut deferred = Vec::new();
         for rule in &matched {
             for (index, action) in rule.definition.actions.iter().enumerate() {
@@ -902,8 +1043,9 @@ impl Run<'_> {
             self.report.deferred.push(c.message.thread_id.clone());
         }
         let mut handled = false;
-        for rule in matched {
+        for rule in acting {
             let current = self.modes(rule)?;
+            let described = described.get(&rule.name);
             let mut pending = Vec::new();
             let mut planned = Vec::new();
             let mut reservations = Vec::new();
@@ -932,7 +1074,14 @@ impl Run<'_> {
                 {
                     continue;
                 }
-                let mut row = self.snapshot(rule, index, c, mode)?;
+                if described.is_some_and(|d| d.active.is_none())
+                    && mode.rank() >= Mode::Propose.rank()
+                {
+                    // Named only in the shadow list: measurement, never an
+                    // active action, and no row for this group.
+                    continue;
+                }
+                let mut row = self.snapshot_described(rule, index, c, mode, described)?;
                 let unknown = header_match(&rule.definition.matcher, c) == HeaderMatch::Unknown;
                 let removal = matches!(
                     action.verb,
@@ -1280,8 +1429,9 @@ fn outbound_owner(
         .map(|rule| rule.name.clone())
 }
 
-// The loader currently admits no description execution. Still expose the
-// specified capacity hold so P4 cannot silently inherit an unbounded frame.
+/// §4.2's over-cap hold: shadow-only rules first, then `propose`, then
+/// `auto`, each in priority then name order, until the entries fit
+/// [`super::describe::LIST_CAP`]. A held rule is not evaluated at all.
 pub fn list_cap(
     rules: &[LoadedRule],
     modes: &BTreeMap<String, BTreeMap<ActionGroup, ResolvedMode>>,
@@ -1291,10 +1441,10 @@ pub fn list_cap(
         .filter(|r| r.definition.is_description())
         .map(|r| {
             let ms = &modes[&r.name];
-            let shadow = ms.values().any(|m| m.effective == Mode::Shadow);
-            let active = ms
-                .values()
-                .any(|m| m.effective.rank() >= Mode::Propose.rank());
+            // The frame's own reading of which lists a rule is in, so the cap
+            // never charges an entry the frame would not render (an active
+            // mode with unknown activation is neither asked nor counted).
+            let (active, shadow) = super::describe::lists(ms);
             (
                 ms.values()
                     .map(|m| m.effective.rank())
@@ -1310,7 +1460,7 @@ pub fn list_cap(
     let mut total: usize = entries.iter().map(|e| e.3).sum();
     let mut held = BTreeSet::new();
     for (_, _, name, cost) in entries {
-        if total <= 12 {
+        if total <= super::describe::LIST_CAP {
             break;
         }
         if cost > 0 {
@@ -1667,7 +1817,10 @@ pub async fn apply(
     run.report.list_cap.sort();
     run.report.list_cap.dedup();
     for name in &run.report.list_cap {
-        run.report.notices.push(format!("{name}: held: list cap (12 entries); reduce description list membership through an owner mode change"));
+        run.report.notices.push(format!(
+            "{name}: held: list cap ({} entries); lower or turn off another description rule",
+            super::describe::LIST_CAP
+        ));
     }
     run.report.notices.sort();
     run.report.notices.dedup();

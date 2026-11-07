@@ -374,11 +374,23 @@ async fn run_inner(cmd: Cmd) -> Result<()> {
         }
         Cmd::WrongMatch { row_id, json } => {
             let (actor, why) = acting_actor_explained();
-            let report = existing()?.wrong_match(&row_id, actor)?;
+            let store = existing()?;
+            let report = store.wrong_match(&row_id, actor)?;
+            // §10: a description rule's wrong match also teaches the
+            // classifier. Retried on every call, idempotently, so a failure
+            // here after the ledger row landed is repaired by running again.
+            let taught = description_correction(&store, &row_id)?;
             if json {
-                print_json(&report)?;
+                // `taught`: whether this call recorded the correction for the
+                // classifier (false for a header row, or one already recorded).
+                let mut value = serde_json::to_value(&report)?;
+                value["taught"] = serde_json::json!(taught);
+                print_json(&value)?;
             } else {
                 println!("{}", report.message);
+                if taught {
+                    println!("Recorded for the classifier as a correction to this thread.");
+                }
                 if let Some(why) = why {
                     println!("Actor reading: {why}");
                 }
@@ -677,6 +689,82 @@ pub(super) struct HookReport {
 
 /// Called only after classify has made its verdicts durable. Its result never
 /// decides classify's exit status, including a missing sibling or unreadable config.
+/// Record a description rule's wrong match on its thread's triage record.
+/// A header row records nothing there (§10): the classifier never made it.
+fn description_correction(store: &RuleStore, row_id: &str) -> Result<bool> {
+    let ledger = store.ledger()?;
+    let Some(row) = ledger.iter().find(|r| r.id == row_id) else {
+        return Ok(false);
+    };
+    if !matches!(
+        row.verdict_input,
+        rules::VerdictInput::Snippet | rules::VerdictInput::FullBody
+    ) {
+        return Ok(false);
+    }
+    let triage = mecha_core::mail_triage::TriageStore::open(
+        mecha_core::mail_triage::TriageStore::default_root()?,
+    )?;
+    triage
+        .correct_rule(
+            &row.message.account,
+            &row.message.thread_id,
+            &row.rule,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .context(
+            "the wrong match is recorded; recording it for the classifier failed — run it again",
+        )
+}
+
+/// The description rules a classify sweep asks about (MAIL-RULES-DESIGN.md
+/// §4.2), read once at its start. `None` when mail rules are off, no store
+/// exists, or no description rule is admitted. A store that cannot be read
+/// costs the sweep its rules, never its triage: classification still runs,
+/// and the engine and doctor report the store.
+pub(super) fn classifier_rules() -> Option<rules::describe::ClassifierRules> {
+    let config = match mecha_core::config::Config::load_global() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("description rules not asked: global config unreadable: {error:#}");
+            return None;
+        }
+    };
+    if rules::disabled_reason(&config).is_some() {
+        return None;
+    }
+    let root = RuleStore::root_under(&mecha_core::work::mecha_home().ok()?);
+    if !root.exists() {
+        return None;
+    }
+    let loaded = RuleStore::open_existing(root)
+        .and_then(|store| rules::describe::ClassifierRules::load(&store));
+    let described = match loaded {
+        Ok(described) => described,
+        Err(error) => {
+            eprintln!("description rules not asked: rule store unreadable: {error:#}");
+            return None;
+        }
+    };
+    for line in &described.held {
+        eprintln!("description rule {line}");
+    }
+    if described.is_empty() {
+        return None;
+    }
+    eprintln!(
+        "{} active and {} shadow description rule entr{} in the classifier's prompt",
+        described.frame.active.len(),
+        described.frame.shadow.len(),
+        if described.frame.active.len() + described.frame.shadow.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    );
+    Some(described)
+}
+
 pub(super) async fn after_classify(account: Option<&str>) {
     let result = match (
         mecha_core::config::Config::load_global(),
