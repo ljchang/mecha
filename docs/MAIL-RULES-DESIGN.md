@@ -2294,6 +2294,16 @@ implementation and not owner rulings:
   exported as `RULES_ENDPOINTS` for the docs demo's `check-demo.mjs`, which
   cannot see calls made through the page's fetch wrappers; the demo answers
   reads from fictional fixtures and declines every change.
+- Two of the page's slots are written from slow requests: a thread read
+  and a test, which may run for minutes. Each answer lands only where it
+  was asked for. A dismissed sheet stays closed, and a test result shows
+  only on the rule it tested, since a raise is decided on that count. These
+  live in the component, where the node checks cannot reach. They were
+  driven in headless Chromium with delayed responses, and nothing pins them
+  in CI. The same holds for the choice that makes re-approving a braked group
+  a raise: `setMode` judges against `effective_mode`. The server's
+  `--require-digest` is the gate behind that choice. If it regresses, the
+  owner sees a `digest_required` refusal, never an unreviewed raise.
 
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.

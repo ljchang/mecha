@@ -12,6 +12,9 @@
   import { apiFetch as fetch } from './api.js';
   import { parseThread } from './mail-thread.js';
   import MailBody from './MailBody.svelte';
+  // The page's buttons are the settings form's (.tf-*): import them here
+  // rather than lean on another component having pulled them into the bundle.
+  import './form.css';
   import { takeRuleOffer } from './mail-rules-handoff.svelte.js';
   import {
     GROUPS,
@@ -66,6 +69,11 @@
 
   // ledger row being read, and its thread
   let peek = $state(null); // { row, status, text }
+  // Which request may still write `peek` / `testing`. Plain counters, not
+  // $state: an object put in $state comes back as a proxy, so identity
+  // checks against it never match.
+  let peekSeq = 0;
+  let testSeq = 0;
 
   // new rule
   let draft = $state(prefillFromThread({}));
@@ -258,9 +266,10 @@
     busy = true;
     try {
       await call('/api/mail/rules/add', { name: draftName, rule_toml: draftText });
-      say(`Installed ${draftName} in shadow. It records what it would have done; nothing acts until you raise it.`);
       busy = false;
+      // openRule clears the notice (a navigation), so say it after.
       openRule(draftName);
+      say(`Installed ${draftName} in shadow. It records what it would have done; nothing acts until you raise it.`);
       return;
     } catch (e) {
       draftError = e.message;
@@ -292,25 +301,38 @@
     await loadRule();
   }
 
+  // A test runs for minutes and the owner may open another rule meanwhile:
+  // its answer lands only on the rule it tested, never under another name,
+  // because that count is what a raise is decided on.
   async function runTest() {
+    const forRule = name;
+    const seq = ++testSeq;
     testing = { status: 'running' };
+    const mine = () => testSeq === seq && name === forRule && screen === 'rule';
     try {
-      testing = { status: 'done', result: await call(`/api/mail/rules/${enc(name)}/test`, {}) };
+      const result = await call(`/api/mail/rules/${enc(forRule)}/test`, {});
+      if (mine()) testing = { status: 'done', result };
     } catch (e) {
+      if (!mine()) return;
       // A held or failed account answers 409 with its report: keep it.
       testing = e.body?.accounts ? { status: 'done', result: e.body } : { status: 'error', text: e.message };
     }
   }
 
+  // A read answers only the sheet that asked for it: dismissed, or replaced by
+  // another row's, the late answer is dropped rather than reopening a sheet.
   async function openPeek(row) {
+    const seq = ++peekSeq;
     peek = { row, status: 'loading', text: '' };
+    // A dismissed sheet is null, and stays closed when the read lands.
+    const mine = () => peekSeq === seq && peek !== null;
     try {
       const q = new URLSearchParams({ thread: row.thread_id, account: row.account });
       const res = await fetch(`/api/mail/read?${q}`);
       const text = await res.text();
-      peek = { row, status: res.ok ? 'ok' : 'error', text: res.ok ? text : text.trim() || `HTTP ${res.status}` };
+      if (mine()) peek = { row, status: res.ok ? 'ok' : 'error', text: res.ok ? text : text.trim() || `HTTP ${res.status}` };
     } catch (e) {
-      peek = { row, status: 'error', text: String(e) };
+      if (mine()) peek = { row, status: 'error', text: String(e) };
     }
   }
 
@@ -327,6 +349,8 @@
   // kind (§6.2) — never a count of the rows the ledger window happens to hold.
   const approvalBuckets = $derived(approval ? measuredBuckets(groups.find((g) => g.group === approval.group)) : []);
   const parsedPeek = $derived(peek?.status === 'ok' ? parseThread(peek.text) : null);
+  // The read's own subject once it is in; the ledger's (or its pointer) until then.
+  const peekTitle = $derived(parsedPeek?.header.find(([k]) => k === 'subject')?.[1] || (peek ? messageLine(peek.row).what : ''));
 </script>
 
 <svelte:window onkeydown={(e) => {
@@ -531,7 +555,8 @@
                 <strong>{a.account}</strong>
                 {#if a.status === 'complete'}<span>{a.matched_rows} would have matched</span>
                 {:else if a.status === 'held'}<span class="heldword">held — no count</span>
-                {:else}<span class="bad">incomplete — {a.read_failures + a.candidate_failures} read{a.read_failures + a.candidate_failures === 1 ? '' : 's'} failed</span>{/if}
+                {:else if a.status === 'failed'}<span class="bad">incomplete — {a.read_failures + a.candidate_failures} read{a.read_failures + a.candidate_failures === 1 ? '' : 's'} failed</span>
+                {:else}<span class="bad">unknown — no count</span>{/if}
               </div>
               {#if a.unknown_header_messages}
                 <!-- Unknown is not a non-match (the 2026-11-06 ruling): say how
@@ -653,7 +678,7 @@
   <div class="sheetwrap" role="presentation" onclick={(e) => e.target === e.currentTarget && (peek = null)}>
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Thread">
       <div class="sheettop">
-        <h2 class="grow">{messageLine(peek.row).what}</h2>
+        <h2 class="grow">{peekTitle}</h2>
         <button class="x" aria-label="Close" onclick={() => (peek = null)}>✕</button>
       </div>
       <!-- Third-party text: rendered as text nodes only, never markup. -->

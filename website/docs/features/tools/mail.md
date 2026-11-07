@@ -798,7 +798,8 @@ phone or at a desk:
   folder, read-only), the ledger, and the definition to edit;
 - the ledger: one row per action, with **Undo** on mailbox actions (an
   archive goes back to the inbox, a trash is restored) and **Wrong match**
-  on any header-rule row — which records that the matcher is wrong, counts
+  on a header-rule row (not an attempt still pending, not a row already
+  undone, and once per action) — which records that the matcher is wrong, counts
   toward the rule's brake, and points you at the edit that fixes it;
 - **Make a rule…** in a thread's actions, which opens a new rule prefilled
   from the sender's domain with archive suggested; nothing is installed

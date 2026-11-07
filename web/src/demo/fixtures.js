@@ -2163,7 +2163,7 @@ export const features = {
     on('incognito', 'Incognito chat', 'provider `local`', { part_of: 'web' }),
     on('slack', 'Slack remote control', 'tokens stored'),
     on('mail', 'Mail and calendar', '[[mcp]] `mail`, 2 account(s)'),
-    on('mail_rules', 'Mail rules', '2 rules', { part_of: null, requires: ['mail'] }),
+    on('mail_rules', 'Automatic mail rules', '2 rules', { part_of: null, requires: ['mail'] }),
     on('docs', 'Google Docs, Sheets and Slides', '[[mcp]] `docs`, 1 account(s)'),
     on('graph', 'Knowledge graph', '[[mcp]] `graph`'),
     on('tasks', 'Task board', "rides the graph's kg_task_* tools", { part_of: 'graph' }),
@@ -2426,6 +2426,19 @@ const ledgerRow = (id, rule, at, subject, outcome, extra = {}) => ({
   wrong_match_allowed: outcome === 'done' || outcome === 'would_have',
   ...extra,
 });
+// Each ledger row's thread, so the read-only sheet shows the message the row
+// is about rather than the demo's fallback thread.
+const ruleThread = (id, sender, subject, body) => {
+  mailRead[`thr-${id}`] = { subject, meta: `${sender} · work · 2026-03-12 09:00`, body };
+};
+ruleThread('r7101', 'Fairhaven IT <it-notices@fairhaven.example.edu>', 'Scheduled maintenance: VPN, Saturday 06:00',
+  'The campus VPN will be unavailable on Saturday from 06:00 to 08:00 while we apply updates.\n\nNo action is needed.');
+ruleThread('r7100', 'Fairhaven IT <it-notices@fairhaven.example.edu>', 'Password expiry reminder',
+  'Your campus password expires in 14 days. You can change it at any time from the account portal.');
+ruleThread('r7099', 'Fairhaven IT <it-notices@fairhaven.example.edu>', 'Printer queue migration complete',
+  'All department printers now use the new print queue. Saved printers will update on their own.');
+ruleThread('r7098', 'Fairhaven Library <holds@fairhaven-library.example.org>', 'Your hold is ready: Memory and the Brain',
+  'Your hold is ready for pickup at the main desk and will be kept for seven days.');
 export const mailRulesLedger = {
   'it-notices': [
     ledgerRow('r7101', 'it-notices', '2026-03-12T14:05:00Z', 'Scheduled maintenance: VPN, Saturday 06:00', 'done'),
