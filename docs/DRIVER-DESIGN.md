@@ -196,11 +196,16 @@ The shape:
   `admitted_by_default`. **The outbox pass did not**, and #848 adds it: on
   `main` before #848, the outbox pass selects drafts by
   `mineable_as_writing()` (the owner's edit and release) and never resolves
-  the staging session, so a draft a test or driven session staged, which the
-  owner then edited and sent, is mined into the owner's `writing` domain.
+  the staging session. That covers both of its selectors: the owner's edit
+  and release (`mineable_as_writing()`), and a rejection with the owner's
+  words (`rejection_reason()`), which is gated on who rejected and never on
+  who staged. So a draft a test or driven session staged, which the owner
+  then edited and sent or rejected with a reason, is mined into the owner's
+  `writing` domain.
   It is the one path by which a driven intervention would reach the
   *owner's* store. #848's `staged_by_refused` joins `item.session_id` to the
-  listing, passes over a draft whose session the admission refuses, and
+  listing after both selectors, passes over a draft whose session the
+  admission refuses, and
   treats a session it cannot resolve as unknown, never clean. A separate
   pass reads only driven
   sessions and writes only the driven store. The two passes share code and
@@ -250,15 +255,18 @@ The shape:
     driven reflection under some other reason. It gets a reason of its own,
     `driven`, so a readout never reports a driven lesson as excluded for
     taint. Every reader fails *closed* under "refuse driven first", so the
-    security direction holds. But `goal_lessons` is a
-    run-facing path: it feeds `ToolCtx::goal_lessons` and so a run's goal
-    context. Over the driven store, "refuse first" would silently keep a
-    driven rule's goal lessons from the very driven runs §2 says load it.
-    So `goal_lessons` takes the store it reads and calls
-    `learnable_into(StoreKind::Driven)` over the driven store, exactly as
-    consolidation does. Its output joins the positive check below, because
-    that check keys on the rules-carried set, a different path, and would not
-    see goal lessons go missing.
+    security direction holds. `goal_lessons` is the run-facing one: it feeds
+    `ToolCtx::goal_lessons` and so `goal_context`. **In v1, driven rules
+    carry no goal lessons, by decision.** `goal_lessons` resolves a rule's
+    lessons out of the store it reads and re-gates each source reflection on
+    `provenance() == Clean` and learnability, so a driven rule's lessons
+    could be served only by loosening that gate a second time, in a
+    run-facing path, for a lesson whose text another agent's run produced.
+    `goal_lessons` therefore stays closed to driven reflections everywhere,
+    in production and in trials alike, so the two agree: a driven rule's
+    lift is measured without goal lessons, and production delivers it
+    without them. A later design can open this path, with its own gate and
+    its own test.
   - **The destination enters the type.** A new
     `learnable_into(&self, store: StoreKind)` is the only place a driven
     reflection is admitted, for `StoreKind::Driven` alone, and there it
@@ -340,10 +348,9 @@ The shape:
   refused before it runs, because there is nothing to measure. **A
   positive check guards against a vacuous null.** The treatment arm's run
   records must show the rule under test carried in the prefix (the run
-  record's rules-carried set), and, where the rule has goal lessons, those
-  lessons served into the run's goal context, which is a separate path that
-  the rules-carried set does not see. A trial missing either is a failed
-  trial, never a measured zero, because a store that failed to load reads
+  record's rules-carried set). Driven rules carry no goal lessons in v1
+  (above), so there is no second path to check, and trial and production
+  agree. A trial missing the rule is a failed trial, never a measured zero, because a store that failed to load reads
   exactly like an absence of lift. This measures an outcome, where
   `counterfactual.rs` can only ask whether a trajectory changed.
 
@@ -370,11 +377,13 @@ although its measured lift required those lessons to have been served (the
 positive check above). Copying the source reflections instead would put a
 driven reflection in the owner's store as a matter of routine, which is
 what the store boundary exists to prevent. So promotion re-derives the goal
-associations as it re-derives the scope: shown to the owner beside the text,
-scope and lift, set at promotion, never carried. And the positive check
-covers the promoted copy, not only the trial arm: before promotion
+associations as it re-derives the scope. In v1 a driven rule carries no
+goal lessons, so the copy arrives with none, and the owner may attach goal
+associations afterwards, from the owner's own reflections, as an ordinary
+owner edit. That matches what its lift was measured with. And the positive
+check covers the promoted copy, not only the trial arm: before promotion
 completes, a trial seeded with the owner's store plus the copy must show the
-copy carried and its goal lessons served. The existing
+copy carried. The existing
 self-accept gate for learned rules does not extend to promotion, because
 that gate measures on the owner's own sessions and a driven task is not one.
 Whether promotion can later earn a gate of its own is a question for once
