@@ -94,13 +94,43 @@ strict all-feature Clippy, serial default 6302/0/25 and memory-enabled 6649/0/29
 (passed/failed/ignored), plus the retained two-artifact connected demonstration.
 The standalone memory suite passed 221 unit and four integration tests.
 
-**Next MVP qualification:** run this connected workflow with real models on a
-fresh frozen natural-language task set, with independently checked outcomes and
-memory-withheld controls. Use fast inference as baseline; report current-criterion
-adherence, abstention, useful recall and cost, including ceilings/no gain. The
-completed numeric diagnostic and authored bridge are different evidence.
+**Native model comparison:** `memory_bridge_trial::run_trial` and the explicit
+local-provider example now execute bounded ordinary tasks through the bridge;
+`bridge_model_trial.py` freezes eight experience/later-task pairs (24 planned agent
+runs). Both later arms have identical task contracts and tools; only the guarded
+source store differs. The coordinator checks actual requested controls against
+the manifest, preserves all failed/unstarted slots, and scores correct abstention
+separately from task completion. Provider setup shares the execution deadline;
+failed stream fragments remain in a bounded host-only audit. Independent source
+review has no unresolved major/medium findings. Native authored-HTTP preflight
+passed all 24 captures and seven probes (102 scripted requests, zero real-model
+inference). Full Spark qualification passed workspace/all-target build, fmt,
+strict all-target/all-feature Clippy, serial default tests (6303 passed, 0 failed,
+25 ignored) and serial memory-enabled tests (6667 passed, 0 failed,29 ignored).
+The frozen real-model comparison finished all 24 planned runs (112 model calls).
+Exact later-artifact checks passed 6/8 with memory versus 4/8 without it; the two
+improvements supplied a prior calibration parameter, while controls appropriately
+abstained. This is information availability, not better evidence-relative judgment
+or an appraisal-specific effect. All 8 initial sources stayed unchanged; 22/24
+captures succeeded. Three runs exhausted their turn budget, so the run-completion
+gate failed despite passing protocol-integrity checks. Both multiline-r0 outputs
+preserved text but added an `active` field: the exact grader rejected it although
+the criterion did not explicitly exclude extra fields. Preserve these original
+scores and their ambiguity; do not reclassify or rerun them as a repaired result.
 
-Then implement §31 C: share bounded episode assembly with the existing
+**Next MVP repair:** make todo/plan checks capability-aware. `TodoTool` converts a
+completed step's check into a shell dispatch even when the trial registry contains
+no shell; the two withdrawal-r1 traces each contain two harness-generated refused
+checks and no output artifact. Keep unavailable verification explicitly unverified
+without queueing a nonexistent tool; preserve the existing jail and permissions.
+Their 18/19 eligible passages also exceed the bridge's 16-passage capture bound.
+Separately qualify bounded evidence segmentation for longer failed episodes rather
+than raising limits to make this cohort pass. Calibration-r1 control exhausted
+through repeated empty queries/missing-file searches but wrote valid abstention.
+Tighten future fixture schemas before a separately versioned comparison. No new
+concept/rumination expansion until this ordinary-task path is dependable.
+
+After these reliability repairs, implement §31 C: share bounded episode assembly with the existing
 interpretation/distillation path, separate the agent interpretation producer from
 graph export, and compare grounding/scope/cost/consumer eligibility before switching
 default writers or retiring old orchestration. Keep Clean-only interpretation

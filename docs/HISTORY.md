@@ -14,6 +14,67 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Native bridge comparison harness (2026-11-07, prototype branch)
+
+`memory_bridge_trial::run_trial` connects a real provider to the already-qualified
+ordinary-tool/appraisal/capture path. The thin example fixes task budgets and
+shares one deadline across model setup and execution. `LocalTrialProvider` holds
+the resident model and opts into no-autoload POST requests; default OpenAI-compatible
+provider behavior stays unchanged. Host audits retain effective requests,
+responses, errors and bounded streamed fragments without converting failed
+partials into completed actions. Unknown usage remains unknown.
+
+The Python coordinator freezes source/binary/input/oracle hashes and all planned
+slots, copies closed source memory and authority into fresh later processes,
+checks original source hashes, and evaluates current task artifacts independently.
+Frozen-control checks compare actual requests against expectations as well as
+against the paired arm. Local native authored-HTTP preflight passed 24 captures
+and seven probes, including source withdrawal, path isolation and abrupt SSE EOF;
+102 scripted requests were made, with zero real-model inference. The initial
+fixture incorrectly returned nonstream JSON to streaming requests; its eight
+failed initial runs and sixteen unstarted later slots remain retained. This is
+integration evidence, separate from the forthcoming model comparison.
+
+The same reviewed source passed Spark workspace/all-target build, formatting,
+strict all-target/all-feature Clippy, 6303 default tests (zero failures, 25 ignored)
+and 6667 memory-enabled tests (zero failures, 29 ignored), with serial test
+scheduling. Local Python qualification passed 13 targeted coordinator tests and
+91 existing tests (four skips). A first Clippy failure required the executable's
+argument pairing to use fixed-size array chunks; the failed log is retained.
+Actual-owner-corpus privacy checking passed before inference.
+
+The frozen Spark run used the already-resident `qwen3.6-35b-a3b-uncensored`
+(router build `b1915-27637851`), fast mode, temperature 0.6 and two fixed seeds.
+All 24 planned runs were attempted, with 112 requests and no inference retries.
+Initial artifacts passed 7/8; later exact checks passed 6/8 with memory versus 4/8
+with an empty store. Both improvements were calibration-parameter availability;
+controls correctly requested missing information. Descriptive correctness-or-
+appropriate-abstention was 6/8 in each later arm, not an appraisal-quality gain.
+The four changed-criterion runs passed without consulting memory, so they do not
+establish retrieved reappraisal. Actual nonempty recall occurred only in the two
+calibration memory runs. All eight original source snapshots remained unchanged;
+protocol controls and before/after router properties matched.
+
+Three runs exhausted eight turns; 22/24 experiences were captured. Withdrawal-r1
+in both arms exposed a real harness/tool mismatch: completed todo checks generated
+shell dispatches although the fixed registry had no shell. Their 18/19 eligible
+passages exceeded the unchanged 16-passage capture bound. Calibration-r1 control
+instead spent turns on empty recall and missing-file searches, writing correct
+abstention on its final turn. The complete experiment is retained even though
+its all-runs-completed gate failed. Two multiline-r0 exact-check failures were
+extra `active` fields, not corrupted newlines; the frozen criterion did not
+explicitly exclude that field. This grading ambiguity is recorded without
+changing original scores. One initial calibration artifact used the row id in
+place of its label and was retained, not regenerated.
+
+Later memory/control totals were 38/42 calls, 74030/80506 input tokens,
+3134/3200 output tokens and 40.94/41.92 cumulative wall seconds. All usage was
+reported. These small authored cases and shared-server timings do not establish
+speed, generalization, concept learning or production readiness. Raw artifacts,
+failed attempts, independent interpretation audit and source hashes remain under
+`results/memory-bridge-model-20261107/` on the operator's machines.
+
+
 ### Source authorization work per retrieval (2026-11-07)
 
 PR #846 review found repeated external source reads and hashes for passages that

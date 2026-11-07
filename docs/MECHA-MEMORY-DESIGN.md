@@ -2703,6 +2703,26 @@ ceiling effects/no gain honestly. This milestone demonstrates an opt-in agent-me
 workflow; production rollout and useful learned concepts/rumination have separate
 exit gates. Do not claim a complete research vision from this smaller MVP.
 
+**Implemented qualification harness (2026-11-07).** The native
+`memory_bridge_trial` example and `prototypes/memory/bridge_model_trial.py`
+implement the separately frozen model comparison. Four authored development
+cases with two replicates produce eight initial runs and sixteen paired later
+runs: prior calibration, quoted newlines, changed criterion, and withdrawn
+calibration. An empty valid store retains the same tools as the memory arm.
+All planned slots remain in the denominator; source-capture refusal does not
+trigger another initial run. The grader's task answer is the same in both arms,
+with evidence-appropriate abstention measured separately. Requested model
+settings are checked for every audited request; observation metadata is frozen
+without claiming that a model alias proves immutable weights. Authored HTTP
+preflight and real-model results remain separate evidence in HISTORY and the
+prototype README. The first frozen run made all 24 attempts/112 calls: later exact
+checks passed 6/8 with memory versus 4/8 with empty stores, entirely from calibration
+information availability. It exposed unavailable todo-check tools, three exhausted
+runs, two passage-limit capture refusals and one pair with ambiguous output-schema
+wording. Those original results remain unchanged. Repair task-loop reliability
+before interpretation expansion; no production writer or interpretation policy
+is switched.
+
 ### 31.6 Retirement policy
 
 Consolidate shared evidence assembly first. Remove an old producer only after its

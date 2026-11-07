@@ -128,6 +128,8 @@ pub mod memory;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_action_runtime;
 #[cfg(feature = "memory-prototype")]
+pub mod memory_bridge_trial;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_decision_runtime;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_experience_bridge;
@@ -135,6 +137,8 @@ pub mod memory_experience_bridge;
 pub mod memory_outcome_reappraisal;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_runtime;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_trial_provider;
 pub mod message;
 pub mod on_demand;
 pub mod onboarding;

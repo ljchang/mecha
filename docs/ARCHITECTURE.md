@@ -12892,6 +12892,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   example exercises ordinary `Agent::run_in` tools, not another action executor;
   its assertions establish integration contracts, not a measured memory benefit.
 
+- **Compare equal task contracts, not selected successful runs.**
+  `memory_bridge_trial::run_trial` uses the ordinary executor with host-only
+  gold, authority and audit files. Both later arms register actual `GoalMemory`;
+  the control has an empty valid store. `bridge_model_trial.py` freezes inputs
+  before inference and retains capture failures, transport failures and unused
+  recall in the planned denominator. A copied source authority retains original
+  immutable evidence paths outside the workspace; never copy prior answer files
+  into that workspace. Correct abstention and completed task artifacts are
+  separate measurements. The local trial provider uses shared model holds plus
+  an opt-in no-autoload request; the ordinary provider default stays unchanged.
+
 - **A JSONL record is source evidence, not reconstructed conversation state.**
   The session adapter preserves exact lines and unknown record types; only
   original known message text is indexed. Indexing a rewrite as another

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A bounded synthetic native-memory comparison runs paired ordinary tasks with
+  recalled experience or an empty store. It retains independently checked
+  artifacts, capture failures, provenance, model calls, token usage and latency, with frozen
+  inputs and no automatic model load or inference retry. Production memory
+  capture remains disabled.
+
 - An opt-in synthetic appraisal bridge connects ordinary task execution,
   independent artifact checks and existing appraisal to source-linked v6 memory.
   An explicit example reopens memory in another process under a changed task

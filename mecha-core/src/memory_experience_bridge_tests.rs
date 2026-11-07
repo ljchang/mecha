@@ -838,3 +838,23 @@ async fn previously_issued_program_bindings_are_withheld_by_read_and_goalmemory(
     unsupported_program_capture(crate::tool::code::NAME, false, true).await;
     unsupported_program_capture("synthetic_delegate", true, true).await;
 }
+
+#[test]
+fn host_checker_uses_frozen_gold_independently_of_capture() {
+    let f = captured();
+    assert_eq!(
+        f.authority.check_artifact(&f.confirmation).unwrap().verdict,
+        CheckVerdict::Passed
+    );
+    fs::write(&f.artifact, b"[{}]").unwrap();
+    assert_eq!(
+        f.authority.check_artifact(&f.confirmation).unwrap().verdict,
+        CheckVerdict::Failed
+    );
+    fs::remove_file(&f.artifact).unwrap();
+    assert_eq!(
+        f.authority.check_artifact(&f.confirmation).unwrap().verdict,
+        CheckVerdict::Unavailable
+    );
+    assert!(f.authority.check_artifact(&"0".repeat(64)).is_err());
+}

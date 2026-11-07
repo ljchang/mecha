@@ -699,6 +699,13 @@ impl LocalAuthority {
             Ok(id)
         })())
     }
+    /// Independently check the frozen artifact; grants no model authority.
+    pub fn check_artifact(&self, confirmation: &str) -> Result<ArtifactCheck> {
+        safe((|| {
+            let (frozen, _) = self.frozen(confirmation)?;
+            Ok(artifact_check(&frozen.artifact, &frozen.expected_rows))
+        })())
+    }
     pub fn capture(
         &self,
         memory: &mut Memory,

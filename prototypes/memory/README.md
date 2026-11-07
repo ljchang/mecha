@@ -57,8 +57,68 @@ service. Existing v1–v5 files and CLI experiments remain separate. The v6 read
 rejects intermediate v6 files lacking the complete-lineage format marker; create
 a fresh synthetic demo rather than migrating those development artifacts. It
 supports guarded evidence recall; unsupported concept/durable producers do not
-gain authority from it. Interpretation generation, model-based transfer tests
-and production/private-data qualification remain separate work.
+gain authority from it. Interpretation generation and production/private-data qualification remain
+separate work. The bounded model comparison below measures this bridge directly.
+
+## Bounded native model comparison
+
+`memory_bridge_trial` runs one synthetic task per process through the same
+native agent loop. `bridge_model_trial.py` freezes four development cases and
+two replicates: eight initial experiences and sixteen later tasks, paired between
+memory available and an empty valid memory store. Both later arms retain the same
+prompt, inputs, current criterion, tools, budgets and hidden grader output.
+These are 24 planned **agent runs**, potentially making several model requests.
+
+Build and qualify the actual executable with authored HTTP responses first:
+
+```sh
+cargo build -p mecha-core --features memory-prototype --example memory_bridge_trial
+python3 prototypes/memory/bridge_model_trial.py \
+  --binary "$PWD/target/debug/examples/memory_bridge_trial" \
+  --output /tmp/mecha-bridge-scripted-new --preflight
+```
+
+For the real comparison, supply the already resident model and the same holds
+directory used by the local Mecha router controller:
+
+```sh
+python3 prototypes/memory/bridge_model_trial.py \
+  --binary "$PWD/target/debug/examples/memory_bridge_trial" \
+  --output /tmp/mecha-bridge-real-new \
+  --endpoint http://127.0.0.1:8080 --model RESIDENT_MODEL \
+  --holds-dir /absolute/mecha-home/holds
+```
+
+The explicit local provider requests fast mode, temperature 0.6 and a frozen
+seed; it has no automatic model load, switch, fallback or inference retry.
+It yields to a requested switch. Each task has eight turns, at most 4096 output
+tokens per request, 16384 total output tokens and a 600-second deadline. Unknown
+usage remains unknown and conservatively consumes the requested allowance.
+
+A completed first experience is copied into a separate later-run store and
+host authority; its original transcript and artifact remain outside the later
+workspace. Withdrawal changes only the copied authority. The coordinator freezes
+source, binary, helper, inputs and grader hashes; records all planned slots;
+checks original files remain unchanged; and refuses resume or replacement of an
+interrupted comparison. Failed captures leave the later tasks explicitly
+unstarted in their original denominator. Wrong artifacts and failed capture are
+separate results; neither is silently repaired or excluded.
+
+Report task correctness separately from evidence-appropriate abstention: an
+empty-store run may correctly request a missing calibration parameter without
+completing that task. These small authored cases measure information use and
+workflow reliability, not generalization, learned concepts, or an appraisal-only
+causal effect. Scripted preflight is integration evidence, never model benefit.
+
+The first frozen real run (7 November 2026) completed all 24 attempts and 112
+model calls. Exact later artifacts passed 6/8 with memory versus 4/8 without it;
+both improvements supplied prior calibration information, while controls
+appropriately abstained. This is not an appraisal-specific effect. Three runs
+exhausted their turn budget and two exceeded capture's passage bound. Todo checks
+also exposed an unavailable-shell dispatch in the fixed registry. Two other exact
+failures reflect an extra output field under ambiguous schema wording. Preserve
+these results; see [HISTORY](../../docs/HISTORY.md) and [HANDOFF](../../docs/HANDOFF.md) for the diagnosis and
+next repair. This prototype is not yet a dependable production memory loop.
 
 ## Main Mecha CLI
 
