@@ -37,6 +37,7 @@ pub enum Outcome {
     Edited,
     Rejected,
     Undone,
+    WrongMatch,
     Expired,
     Failed,
     Skipped,
@@ -59,6 +60,7 @@ impl Outcome {
             | Self::ReleasedUnchanged
             | Self::Edited
             | Self::Rejected
+            | Self::WrongMatch
             | Self::Undone
             | Self::Expired
             | Self::Unknown => true,
@@ -122,6 +124,13 @@ pub struct LedgerRow {
     /// Fresh provider membership for retrospective tests; absent on historical rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_inbox: Option<bool>,
+    /// Provider arrival for retrospective rows, not sender Date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_at: Option<DateTime<Utc>>,
+    /// Positive raw-header evidence on a reader that cannot prove absence.
+    /// Historical or unrecognized values must never claim partial-header proof.
+    #[serde(default, deserialize_with = "wire")]
+    pub headers_partial: bool,
     #[serde(default)]
     pub matched_because: String,
     #[serde(default)]
@@ -132,6 +141,9 @@ pub struct LedgerRow {
     pub wrong_match: bool,
     #[serde(default)]
     pub affected_groups: Vec<ActionGroup>,
+    /// Missing on historical rows; unknown attribution is never the owner.
+    #[serde(default, deserialize_with = "wire")]
+    pub actor: Option<crate::closure::Actor>,
 }
 
 impl LedgerRow {
@@ -187,11 +199,14 @@ impl LedgerRow {
             settlement: None,
             correction_of: None,
             in_inbox: None,
+            received_at: None,
+            headers_partial: false,
             matched_because: String::new(),
             reason: String::new(),
             failure_kind: FailureKind::Unknown,
             wrong_match: false,
             affected_groups: Vec::new(),
+            actor: None,
         })
     }
 
@@ -211,6 +226,7 @@ impl LedgerRow {
                 Outcome::Pending
                     | Outcome::UndoPending
                     | Outcome::ApprovalLapsed
+                    | Outcome::WrongMatch
                     | Outcome::Unknown
             ),
             "invalid settlement outcome"
@@ -288,7 +304,10 @@ impl LedgerRow {
                 Outcome::Pending => {
                     !matches!(
                         self.outcome,
-                        Outcome::Pending | Outcome::UndoPending | Outcome::ApprovalLapsed
+                        Outcome::Pending
+                            | Outcome::UndoPending
+                            | Outcome::ApprovalLapsed
+                            | Outcome::WrongMatch
                     ) && self.correction_of == pending.correction_of
                 }
                 Outcome::UndoPending => {

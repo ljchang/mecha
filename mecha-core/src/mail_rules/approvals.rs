@@ -221,7 +221,7 @@ pub fn gate_mode(current: Mode, requested: Mode, actor: Option<Actor>) -> Result
     }
     ensure!(
         target.rank() <= current.rank() || owner,
-        "raising a mail rule requires Actor::Owner"
+        super::ModeError::OwnerRequired
     );
     Ok(ModeDecision {
         requested,

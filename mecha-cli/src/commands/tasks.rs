@@ -944,19 +944,14 @@ fn hook_dir() -> std::path::PathBuf {
 /// Homes that cannot be named are an error, not an empty set — an empty set
 /// would switch rule 1 off without a word (review of #294).
 pub(crate) fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
-    let mut dirs = Vec::new();
-    for home in mecha_core::work::guard_homes()? {
-        dirs.push(markers_dir_under(&home));
-        dirs.push(mecha_core::trigger::TriggerStore::locks_dir_under(&home));
-    }
-    if let Ok(root) = mecha_core::trigger::TriggerStore::default_root() {
-        dirs.push(root.join("locks"));
-    }
-    live_run_pids_in(&dirs)
+    // One reading for every actor gate, the mail binary's included.
+    mecha_core::closure::live_run_pids()
 }
 
 /// The live pids across every marker directory in `dirs`; a directory that
 /// exists and cannot be read is an error, not an empty one (review of #294).
+/// Test-only: the live reading is `mecha_core::closure::live_run_pids`.
+#[cfg(test)]
 fn live_run_pids_in(dirs: &[std::path::PathBuf]) -> Result<std::collections::HashSet<u32>> {
     let mut pids = std::collections::HashSet::new();
     for d in dirs {
