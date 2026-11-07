@@ -132,6 +132,33 @@ class ScoringTests(unittest.TestCase):
             with self.assertRaises(ValueError):t.validate_preparation(bad,c,dict(action='action'),treatment)
 
 
+
+class QualificationHttpTests(unittest.TestCase):
+    def test_failed_returned_report_is_retained_before_queue_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);returned=dict(rows=[dict(call=dict(error='router discovery failed'))])
+            with self.assertRaisesRegex(ValueError,'failed-pair-report.json'):
+                t.check_authored_queue(returned,[{'choice':'Arden'}],root)
+            self.assertEqual(t.decode((root/'failed-pair-report.json').read_text()),returned)
+            t.check_authored_queue(returned,[],root)
+
+    def test_router_discovery_and_model_specific_props_over_real_http(self):
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        server=ThreadingHTTPServer(('127.0.0.1',0),t.QualificationProvider)
+        worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+        try:
+            opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            endpoint=f'http://127.0.0.1:{server.server_port}'
+            with opener.open(endpoint+'/props',timeout=5) as response:bare=json.load(response)
+            self.assertEqual(bare.get('role'),'router')
+            with opener.open(endpoint+'/props?model=synthetic&autoload=false',timeout=5) as response:model=json.load(response)
+            self.assertEqual(model['default_generation_settings'],{})
+            self.assertEqual(model['model_path'],'authored-scripted-no-model')
+        finally:
+            server.shutdown();server.server_close();worker.join(timeout=5)
+
 class RunnerTests(unittest.TestCase):
     def run_fake(self,root,interrupt=False,drift=False):
         binary=root/'binary';binary.write_text('binary');holds=root/'holds';holds.mkdir();fixtures={}

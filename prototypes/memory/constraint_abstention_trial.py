@@ -397,7 +397,7 @@ def audit_http_requests(expected,recorded):
 class QualificationProvider(action.ScriptedProvider):
     """Authored queue, never a model; request bytes remain available for audit."""
     def do_GET(self):
-        if self.path.startswith('/props'):
+        if self.path.startswith('/props?'):
             self.send_json(dict(model_path='authored-scripted-no-model',default_generation_settings={}))
         else:
             super().do_GET()
@@ -414,6 +414,14 @@ class QualificationProvider(action.ScriptedProvider):
             choices=[dict(index=0,message=dict(role='assistant',content=encode(answer)),finish_reason='stop')],
             usage=dict(prompt_tokens=0,completion_tokens=0,total_tokens=0)))
 
+
+
+def check_authored_queue(report,answers,root):
+    if answers:
+        # This report was actually returned by the CLI. A source invalidation
+        # exits without one and cannot reach this branch or expose new content.
+        write_json(root/'failed-pair-report.json',report)
+        raise ValueError('CLI did not consume both authored replies; see failed-pair-report.json')
 
 def qualify_scripted(binary, fixtures, output):
     """Exercise all48 actual CLI slots with preauthored replies and zero inference."""
@@ -442,7 +450,8 @@ def qualify_scripted(binary, fixtures, output):
                 citations=[p['id'] for p in request['passages']],reason='Authored qualification response; no model inference.')
             if response_format(treatment)=='feasibility_first':answer['candidate_checks']=expected_checks(case,arm,request)
             server.answers.append(answer)
-        report=old.invoke_cli(argv,**kwargs);require(not server.answers,'CLI did not consume both authored replies')
+        report=old.invoke_cli(argv,**kwargs)
+        check_authored_queue(report,server.answers,root)
         return report
     try:
         summary=run_trial(binary=binary,fixtures=fixtures,endpoint=endpoint,model=action.MODEL,
