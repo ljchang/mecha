@@ -2453,3 +2453,26 @@ Citation omissions keep both structured conditions below the complete acceptance
 gate; the fast structured arm also has one false feasibility check. See HISTORY
 for explanation support, costs and qualification. The one-seed result does not
 establish generalization or production readiness.
+
+## 29. Comparison provenance and model support
+
+2026-11-07. A complete host evidence packet and the citations a model declares
+are different records. The v3 diagnostic exposed omissions of superseded source
+expectations even when the effective measurements and typed checks were correct.
+Introduce an opt-in v4 feasibility-provenance mode; keep v1/v3 and their results
+unchanged. The model must cite every effective measurement, including alternatives
+ruled out. It may also cite superseded or non-numeric material. Missing active
+evidence, fabricated citations and inconsistent candidate checks still fail closed.
+
+The host separately retains every supplied source's revision and original/projection
+hashes, each source's arithmetic role, the effective source for each method, and
+exact omissions from the model's citation list. Host provenance is never appended
+to model citations. The explanation remains explicitly unverified model prose;
+arithmetic admissibility does not establish entailment or authorize execution.
+Existing source guards, override policy and advisory optimization/abstention
+findings remain unchanged. No persistence migration or second executor is needed.
+
+First qualify the bookkeeping with authored replies over the actual CLI transport.
+This changes the citation contract, not demonstrated model capability. Broader
+multi-seed model evaluation requires a new frozen schedule and separate scoring;
+never regrade the prior 24 responses as evidence of an improvement.
