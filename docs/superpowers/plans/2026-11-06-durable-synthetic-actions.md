@@ -49,13 +49,13 @@ CLI explicit init-action and durable-act bind/run/status/cancel commands under -
 
 **Files:** new mecha-core/tests/memory_durable_action.rs; optional CLI process tests and prototypes/memory/durable_action_trial.py plus tests.
 **Interfaces:** Consume public store/runtime APIs from workers; no product module edits. Coordinate contract directly before writing tests.
-- [ ] Implement process loss/concurrency, no-action states, changed/restricted/forgotten sources and cancellation-at-boundary tests; verify actual handler counts.
-- [ ] Build a deterministic end-to-end CLI trial using scripted model replies in test setup or an explicitly selected existing frozen model artifact, never invented evidence of fresh model inference. Demonstrate source-expectation mismatch, actual outcome, feedback and later recall; report zero new model calls if none occur.
-- [ ] Independently audit dependencies, feedback arithmetic and recall accessibility; report commands and limits.
+- [x] Implement process loss/concurrency, no-action states, changed/restricted/forgotten sources and cancellation-at-boundary tests; verify actual handler counts.
+- [x] Build a deterministic end-to-end CLI trial using scripted model replies in test setup or an explicitly selected existing frozen model artifact, never invented evidence of fresh model inference. Demonstrate source-expectation mismatch, actual outcome, feedback and later recall; report zero new model calls if none occur.
+- [x] Independently audit dependencies, feedback arithmetic and recall accessibility; report commands and limits.
 
 ### Task 4: Integrate, qualify and publish (parent)
 
-- [ ] Review each task for spec/quality, integrate commits, then independent whole-increment review.
-- [ ] Run fmt, strict all-feature Clippy, workspace tests and build; isolate any Spark install and verify exact artifact behavior.
+- [x] Review each task for spec/quality, integrate commits, then independent whole-increment review.
+- [x] Run fmt, strict all-feature Clippy, workspace tests and build; isolate any Spark install and verify exact artifact behavior.
 - [ ] Update design/architecture/changelog and run repository handoff procedure. Update existing draft PR846, inspect automatic review, keep unmerged.
-- [ ] Update living Site with verified implementation, measurements, limitations and next step; verify deployed content.
+- [x] Update living Site with verified implementation, measurements, limitations and next step; verify deployed content.

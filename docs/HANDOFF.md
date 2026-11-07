@@ -34,86 +34,77 @@ replacement is deferred until v2 is solid. See the current-scope addendum in
 main `6b709e08b`; do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
-**2026-11-06 — durable model decision runtime implemented (`3ed543a17`).**
-Explicit `Memory::create_durable_model` creates schema v4 without migrating earlier
-stores. `memory::durable_decision` holds separate initial/revision reservations and
-revision-backed requests, raw responses, host checks and advisory final decisions.
-`memory_decision_runtime::bind/advance/decide` seals an already successful guarded
-synthetic read and typed contract; the shared `memory::decision` arithmetic checker
-can request one reconsideration. A settled response resumes without inference;
-an unresolved reserved call stays spent/indeterminate. The thin CLI exposes
-`init-model` and `durable-decide bind/run/status/cancel`, with resident-local model
-preflight and an opaque current-source/cancellation guard after the await.
+**2026-11-06 — durable synthetic action loop implemented (`4379eef50`).**
+Explicit `Memory::create_durable_action` creates schema v5. The new
+`memory_action_runtime::{bind,reserve,settle,advance,run}` authenticates a retained
+recommendation, binds one host-selected closed fixture, reserves before execution,
+and retains independent actual measurements followed by deterministic
+`planning::StepFeedback`. The CLI exposes `init-action` and
+`durable-act bind/run/status/cancel`. This is default-off, synthetic-only and not
+connected to the production executor or appraisal loop. See design section 26 and
+`prototypes/memory/README.md` for the exact CLI surface.
 
-Cancellation may retain a started response, but cannot permit further evaluation,
-retry or finalization. Revised/restricted sources deny content while status and
-cancellation remain usable; forgetting cascades through the read/model closure and
-suppresses same-key recapture. Malformed/refused/wrong-model/oversized replies are
-terminal failures. No recommendation executes a method or becomes an observed
-outcome. The v3 supplied-JSON `finish` surface is unavailable in v4. Generic recall
-still returns historical records rather than current-state permission joins.
+Interrupted reservations stay spent/indeterminate; settled observations resume
+feedback without executing again. Cancellation can retain a real started outcome
+but cannot permit further work. Current-source/access guards, complete dependency
+erasure and capture-key suppression cover the read/model/action closure. Expected
+source values, actual observations and goal feedback remain separate. Refused and
+unknown results have no fabricated numeric measurements.
 
-Three isolated subagents implemented store, pure decisions and independent
-qualification. Parent integrated runtime/CLI/CI and owns publication. Independent
-final review found no outstanding major/medium issues after regression fixes for
-status after source revocation and malformed pilot reply reporting. Pinned Ubuntu
-CI now executes `cargo test --workspace --locked --features memory-prototype`;
-the previous PR review correctly noted all-feature lint alone did not run these tests.
+Verified at `4379eef50`: Spark all-feature workspace tests **6530 passed /0 failed
+/28 ignored**; default workspace tests **6264 /0 /25**. Formatting, strict
+all-target/all-feature Clippy, all-target workspace/release builds and current privacy gate
+passed. Independent store/runtime and whole-increment reviews found no actionable
+findings. Ten new process/lifecycle tests and two CLI tests passed; process kills
+before execution, after execution and after settlement retained controlled handler
+counts 0→0, 1→1 and 1→1 across reopening; concurrent reservations completed one
+handler. Eval inventory is 36 cases /15 tags. Unavailable sandbox backends are not
+claimed qualified by these aggregate counts.
 
-Qualification at exact source `3ed543a17`: **6500 all-feature workspace tests
-passed /0 failed /27 ignored**, strict all-target/all-feature Clippy, all-target
-workspace and release builds, fmt and the current privacy gate passed on Spark.
-Local integrated runtime 2/2, public process/lifecycle 6/6 (plus one parent-spawned
-ignored helper), CLI 4/4 and Python pilot 8/8 passed. Mac CLI loopback qualification
-needed a sandbox exception for its temporary listener; its rerun passed. Eval
-inventory remains 36 cases /15 tags. These counts measure software, not reasoning.
+Both the local and installed Spark standalone actual-CLI audits passed **5/5 cases**, using six authored
+HTTP responses and **zero real model inference**: mismatched expectation versus
+actual measurement, pass, refused, unknown and abstention. Source energy 2 remains
+beside actual energy 9, correctly failing budget 5. The audit checked recursive
+provenance, feedback arithmetic and exact outcome recall. Logs/artifacts:
+`results/memory-durable-action-20261106/` and
+`results/memory-durable-action-qualification-20261106/`. Prior real-model pilot
+results are historical evidence in HISTORY, not new action-performance results.
 
-The paired synthetic pilot completed all 16 workflows and 19 calls: no-memory
-abstained 8/8; observed initial supported optimum 5/6 became 6/6 after one allowed
-reconsideration. Missing-alternative/no-feasible cases still failed model abstention
-(0/2) and were both host-withheld. Three revisions total; no call/format failures.
-The energy-bound explanation contradicts itself despite its correct structured
-choice. No equal-cost, generalization or actual-action-success claim. Usage:
-6009 input /2283 output tokens; summed call time 32.2s, CLI workflow time 37.9s.
-Artifacts: `results/memory-durable-model-pilot-20261106/`; build/test/privacy logs:
-`results/memory-durable-model-20261106/`. Independent read-only audit verified all 16 databases, 153 revisions, 24 frozen
-source/contract/provenance files, exact requests/results, bindings and source-only
-assessments. Final rationale review: 13/16 supported, including 5/6 emitted
-recommendations; two withheld proposals and one contradictory rationale failed.
+The isolated Spark install is
+`~/.local/share/mecha-prototypes/memory-action-20261106/bin/mecha`, implementation
+`4379eef50bb7b1c2ba0bdc74952ac8af02cd5b05`, SHA256
+`7bdad7c2b6096d9fb5882a5c9a15a30a9a8e855e0e6df74b6817cd202f3eede5`.
+Verified its version, new CLI surface and all five scripted cases from the actual
+installed release binary. Spark artifacts:
+`results/memory-durable-action-spark-20261106/`. Later documentation-only commits
+do not change qualified product bytes.
 
-Isolated installed Spark binary:
-`~/.local/share/mecha-prototypes/memory-model-20261106/bin/mecha`, source
-`3ed543a17a6b4d80bb24d4fb6a82f39f448ea7bb`; SHA256
-`a8e1f700fd886fbc7767ecb336ee902c2a08786a5cc46a08a4f6471fc1f81cea`.
-Verified by its version, new CLI surface, digest and actual paired workflow run.
-The shared main binary, service/configuration, owner store and nightly jobs were
-not changed. Subsequent documentation-only commits advance HEAD without changing
-these qualified implementation bytes.
+**Next:** qualify a later decision under changed goals using these actual outcomes,
+compared with an otherwise matched no-outcome condition. Keep software durability
+and model decision improvement separate. Address the currently conservative
+transitive-freshness rule in a focused design: revising a consulted source also
+makes its independently measured outcome ineligible for recall. Separating
+historical provenance from current evidential support must preserve access
+revocation and forgetting. No second planner/executor is needed.
 
-**Next:** specify the smallest host-executed synthetic action that consumes a
-currently valid recommendation, uses normal runtime guards, and retains a separate
-actual outcome. Project the result into existing appraisal/step feedback, then test
-later recall under changed goals. Do not build a second planner/executor or grade
-success from model prose. This slice remains a fixed three-method arithmetic
-contract, not a general semantic validator or a completed memory MVP.
-
-Still open: reliable semantic evaluation, live appraisal/action/outcome integration,
+Still open: reliable semantic evaluation, production action/appraisal integration,
 internal sensors, useful concept discovery/revision and rumination, production
-encryption/source fidelity, retention/recovery, corpus-scale/identity/vector retrieval,
-and an authorized personal-knowledge bridge. Nightly migration and merging
-mecha-graph remain deferred. Generic provider per-field usage missingness remains
-open. Prior model comparisons and isolated binaries are recorded in HISTORY, not
-new measurements of this runtime. Other subsystem deployment claims below were not
-requalified by this memory-only session.
+private-data/encryption/source-fidelity qualification, retention/recovery,
+corpus-scale/identity/vector retrieval and an authorized personal-knowledge bridge.
+Nightly migration and merging mecha-graph remain deferred. Generic provider
+per-field usage missingness remains open. No open item outside this initial memory
+block was resolved by the increment; other subsystem deployment claims below were
+not requalified by this memory-only session.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#implementation-roadmap
-Research v0.17 published 2026-11-06, source
-`55945a2a9539583fb5516a70cfc9972ff8e1d4f0`, deployment
-`appgdep_6aee51ee3ff48191b146d84aba30097d` succeeded. All 58 prior IDs retained
-(59 current), learning-loop SVG unchanged, internal links/revision table/inline
-scripts/dist checked. Browser preview verified the recovery table; native Site
-publication confirms the final results and limits are deployed.
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#from-a-recommendation-to-an-observed-outcome
+Research v0.18 published 2026-11-06, source
+`c060b83d49ba14601d4d8057f48274ce012ca552`, deployment
+`appgdep_6aee6c9ca1bc8191bb2625a74da84ec6` succeeded. All 59 prior IDs retained
+(60 current); internal links, revision table, inline scripts and dist mirror
+checked. Browser preview verified the new outcome section; native publication
+confirmed the matching source was deployed. Shared production binaries, services,
+configuration, owner stores and nightly jobs were not changed.
 
 **2026-10-03 — Breeze is the voice, live; what is open (mecha-69).**
 #523, #525, #527, #528 and #529 are in HISTORY under 2026-10-03, live

@@ -11,8 +11,9 @@ structured decisions 9/24 to 24/24 and independently supported rationale plus de
 `59ee1882b`: explicit v3 lifecycle, guarded synthetic acquisition and restart/crash
 checks. That read adapter makes no model calls. §25 now adds an explicit v4 durable
 model-decision runtime at `3ed543a17`, with raw responses saved before source-only
-assessment and one optional revision. Actual action/outcome and appraisal feedback
-remain next. See `HANDOFF.md` for current
+assessment and one optional revision. §26 now adds a closed host-simulated action,
+independent outcome and retained StepFeedback at `4379eef50`. Later decision gains
+and production appraisal integration remain unqualified. See `HANDOFF.md` for current
 state and `HISTORY.md` for verified work; earlier proposals/results remain below.
 
 **Owner decision — independent systems for now (2026-11-05):** mecha-graph

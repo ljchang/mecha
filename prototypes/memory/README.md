@@ -1030,3 +1030,7 @@ The deterministic qualification runner is `durable_action_trial.py --binary
 loopback response server and reports scripted HTTP requests separately from zero
 real model inference calls. Its expected-versus-actual mismatch, pass, refusal,
 unknown and abstention cases exercise the actual CLI, restart and later recall.
+
+Current freshness is transitive: revising a consulted source makes its dependent
+actual outcome and feedback ineligible too. This prototype does not yet separate
+historical causal provenance from present evidential support.

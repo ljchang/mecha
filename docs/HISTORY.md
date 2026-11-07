@@ -14,6 +14,43 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-11-06 — durable synthetic actions and independent outcomes (prototype branch).**
+Implementation `4379eef50` adds explicit schema v5 and
+`memory_action_runtime::{bind,reserve,PendingAction::execute,settle,advance,run}`.
+The host binds a closed finite fixture to an authenticated retained recommendation;
+a unique durable reservation precedes execution. Opaque non-cloneable permits
+prevent replay after process loss. Independent actual measurements, source
+expectations and `planning::StepFeedback` are retained separately with complete
+read/model/source ancestry. No model call, arbitrary executable input or production
+appraisal/task-board mutation is part of action execution. Cancellation may retain
+an already executed result; revoked/changed/forgotten sources deny late content.
+Pure feedback completion resumes from a saved outcome. The v5 CLI is explicit and
+synthetic-only; earlier stores are not implicitly migrated.
+
+Three isolated worker lanes and independent store, runtime and final reviews found
+no outstanding findings. Spark qualification at the exact implementation passed
+6530 all-feature tests (0 failed, 28 ignored), 6264 default tests (0 failed,
+25 ignored), strict Clippy, formatting, workspace/release builds and the current privacy
+gate. Ten process/lifecycle and two actual-binary tests cover real child termination,
+concurrency, access, cancellation, erasure and recall. Controlled completion markers
+remain 0→0, 1→1 and 1→1 across the three crash boundaries; concurrent reservation
+completes one handler. This does not establish exactly-once arbitrary external effects.
+The standalone local and installed Spark CLI audits each pass five cases using six authored HTTP replies
+and zero real inference. The mismatch preserves source energy 2 and observed energy
+9 and fails budget 5; pass/refused/unknown/abstain keep distinct semantics. Recursive
+dependency and recall checks passed. Logs and artifacts are under local
+`results/memory-durable-action-20261106/` and
+`results/memory-durable-action-qualification-20261106/`.
+
+The new observation is independent in measurement origin, but current transitive
+freshness still makes it ineligible when a consulted source is revised. That
+explicit limitation is not evidence of learned correction. Later model decisions,
+production appraisal, useful concept learning and private-data qualification remain
+open. The CI memory arm now exports `MECHA_SESSION_KIND=test`, closing the earlier
+minor automated-review note. The living owner-private research Site v0.18 records
+these results and limits; no main deployment or owner-data migration occurred.
+
+
 **2026-11-06 — durable synthetic model decisions (prototype branch).**
 `3ed543a17` integrates explicit v4 model attempts with the guarded-read lifecycle:
 separate original/revision request, raw result and assessment, sealed source/task
