@@ -131,9 +131,16 @@ The shape:
   relabelled every session a live run wrote. `Experiment` already shows the
   fix, because the env mark alone admits nothing and admission also needs
   `experiment::HOME_MARKER`, which sits in the home and outside every jail.
-  So the driven store loads only when the mark *and* a driven marker are
-  both present, and **the marker sits under the mecha home, never in the
-  workspace**. A marker in the task clone would be inside the run's own path
+  So the driven store loads only when the mark is set *and* a live driven
+  marker **names a task clone that contains the run's workspace**. A marker
+  that merely exists is not a second factor: with a batch of tasks in
+  flight, a sticky `MECHA_SESSION_KIND=driven` export in any shell would
+  satisfy it and load the driven store into a run in the owner's own
+  workspace, which is the incident this bullet cites. The load and D1b's
+  refusal are then one rule, that the marker and the run's workspace must
+  agree: disagreement loads nothing, and an unmarked run whose workspace a
+  marker covers is refused. **The marker sits under the mecha home, never in
+  the workspace.** A marker in the task clone would be inside the run's own path
   jail, where the model can write it, and it would outlive the run. Task
   setup, which is the harness and not the model or the driver, writes one
   marker per task under the home, naming the task clone it covers and the
@@ -244,6 +251,23 @@ The shape:
     4. an edited driven reflection is `learnable_into(StoreKind::Driven)`;
     5. a driven reflection under untrusted taint, unedited, is learnable
        into neither store.
+
+    Those five measure the *second* guard. **The primary guard, the store
+    boundary, gets its own tests**, because it is what keeps a driven rule
+    out of the owner's prefix:
+    6. an owner run with a live marker present for another clone never
+       opens the driven store;
+    7. a marked run with no marker, a marked run whose marker names a
+       different clone, and a marked run whose marker is past its deadline
+       each load nothing;
+    8. the driven mining pass writes only the driven store, and `reflect`'s
+       owner pass still skips driven sessions, its outbox pass included.
+
+    Each runs in a child process that opts in to the kind override the way
+    the kind probe does (§7's build trap): written the obvious way, under
+    `cfg(test)` `test_override()` returns `None` and the test passes
+    vacuously. Each is written to fail on the old behaviour, a load keyed on
+    the mark alone.
 - **The grade is the gate `Derived` was waiting for.** `Origin::Derived`'s
   own documentation calls it "one gate away from being usable the day
   something can grade it". A driven run's hidden test is that grade. A
@@ -517,7 +541,8 @@ in both directions. **The task tree is an exposure path too.** Only the
 skills layer and the approval rules are narrowing-only; below
 `LayerTrust::Global`, `merge_text` narrows one table (`[[grant]]`) and three
 `[[mcp]]` fields (`trust_result_claims`, `personas`, `effects`), and at
-`LayerTrust::Project` thirteen tables. Neither `[[mcp]]` as a table nor
+`LayerTrust::Project` a larger set (counted by the build, not here: a
+number in this document is a claim about one commit). Neither `[[mcp]]` as a table nor
 `[[hook]]` is among them, **and neither are `[sandbox]` nor `[security]`**,
 both full tables. `Config::load_global`'s own doc comment says a project
 `mecha.toml` "can name MCP servers to spawn, hooks to execute". A driven run
@@ -589,10 +614,18 @@ rather than trusting each run to be configured right:
   list in this design to come up short (config tables, `learnable()`
   readers, layers, and now tools), so the rule is a closed allowlist: a
   driven run registers only the builtins whose effects stay inside its jail
-  (the file, search and edit tools, `shell` under the sandbox, `code`), and
-  `web_search` and `http_fetch`, which the forced send guard refuses anyway.
-  Every other tool, feature-gated or MCP, is absent from a driven run unless
-  this document names it. A tool added later is then out of driven runs by
+  (the file, search and edit tools, `shell` under the sandbox, `code`).
+  **`web_search` and `http_fetch` are left out, not kept and refused.**
+  With the forced send guard every call to either would be refused, and a
+  tool registered only to refuse is the full-clone argument's cost in its
+  purest form: schema bytes at the front of the prefix, and a harness
+  refusal turn for D4 to attribute, with refusal text addressed to an owner
+  who is not there. Leaving them out costs the offline pilot nothing, and it
+  makes "a task that needs the network is a ruling" true by construction
+  rather than by a guard. Keeping them would be a *measurement* choice (does
+  the model waste turns reaching for the network), and would have to be
+  named as one. Every other tool, feature-gated or MCP, is absent from a
+  driven run unless this document names it. A tool added later is then out of driven runs by
   default, failing closed, where a sweep over levers would have let it in.
   The run record's `features_on` already sits beside `levers_off`, and the
   registered tool list is recorded with them.
