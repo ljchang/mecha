@@ -680,7 +680,6 @@ mod tests {
 
     struct CancelledProvider {
         cancel: CancellationToken,
-        entered: CancellationToken,
     }
     #[async_trait::async_trait]
     impl Provider for CancelledProvider {
@@ -701,7 +700,6 @@ mod tests {
             sink.context("native streaming sink missing")?.send(
                 crate::provider::StreamEvent::TextDelta("PARTIAL_BEFORE_CANCELLATION".into()),
             )?;
-            self.entered.cancel();
             self.cancel.cancelled().await;
             anyhow::bail!("provider observed caller cancellation")
         }
@@ -717,12 +715,10 @@ mod tests {
         )
         .unwrap();
         let cancel = CancellationToken::new();
-        let entered = CancellationToken::new();
         let audit = root.join("cancelled-provider.jsonl");
         let provider = crate::memory_bridge_trial::recorded_provider(
             Box::new(CancelledProvider {
                 cancel: cancel.clone(),
-                entered: entered.clone(),
             }),
             &audit,
             16384,
@@ -733,7 +729,16 @@ mod tests {
         let run = run_planning_task(&fixture, &context, false, &task_root, provider, &cancel);
         let outcome = tokio::time::timeout(Duration::from_secs(3), async {
             let (report, ()) = tokio::join!(run, async {
-                entered.cancelled().await;
+                // The inner provider queues into Recorder, not directly into
+                // the native loop. Wait for Recorder's synchronous audit-and-
+                // forward step before cancelling; an inner send alone races
+                // dropping that still-unforwarded queue.
+                while !fs::read_to_string(&audit)
+                    .unwrap()
+                    .contains("PARTIAL_BEFORE_CANCELLATION")
+                {
+                    tokio::task::yield_now().await;
+                }
                 cancel.cancel();
             });
             report

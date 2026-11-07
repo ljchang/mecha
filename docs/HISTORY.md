@@ -43,7 +43,12 @@ the recorder waited for the loop to drain partial output, while that loop waited
 for its separate 180-second timer. A parent-linked child token fixes it without
 cancelling later tasks on an individual deadline. The blocked-provider regression
 failed on old behavior, then retained native partial text, audit and cancellation
-outcome promptly. All review findings at major/medium severity are resolved.
+outcome promptly. A later combined-main run and GitHub CI exposed a race in that
+test: its signal meant queued inside Recorder, not forwarded to the native loop.
+The regression now waits for the synchronous audit-and-forward boundary before
+cancelling, preserving its deadline and transcript assertions. Cancellation can
+preserve delivered output; it cannot promise upstream buffered bytes survive a
+dropped provider future. All review findings at major/medium severity are resolved.
 
 Spark workspace/all-target build, final formatting and strict all-target/all-feature
 Clippy passed. Default tests: 6,330 passed, zero failed, 25 ignored; memory-enabled:
