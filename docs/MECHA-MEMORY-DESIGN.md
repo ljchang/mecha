@@ -2340,8 +2340,10 @@ bytes to appear. A miss fails preparation rather than silently using direct look
 Validate the observation against the operational action/spec and same-workload,
 fixture/state/choice binding; a generic Evidence record with matching prose cannot
 become a host result. Never consult the simulator effect table during preparation,
-prompting or checking. Restriction, forgetting, source revision or cancellation
-invalidates pending use; retain the existing transitive freshness rule.
+prompting or checking. Restriction, forgetting or source revision invalidates
+pending use; retain the existing transitive freshness rule. Already-cancelled or
+unfinalized actions are ineligible; finalized actions remain terminal and cannot
+be cancelled through the supported API.
 
 The versioned decision-support policy is explicit: for the same deterministic
 workload, a retained numeric actual observation supersedes the corresponding
