@@ -1,6 +1,6 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
-**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8; R9, R10 and R11 owed; R7 the owner's config and a precondition of a driven run). D1 is
+**Status: 2026-11-06, designed and ruled (§9, R1–R6 and R8–R11, all ruled; R7 is the owner's config and a precondition of a driven run). D1 is
 built in #848, not yet merged; nothing else is built.**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
@@ -431,8 +431,8 @@ the silently-degrading guard, admitting every prompt clean on a machine with
 no store. So D3b runs with `CHECK_PRIVATE_REQUIRE=1`, and the task's
 admission record carries the fact that the check ran against a present
 store. The pins' trees were already scrubbed by the history rewrites;
-the prompt is the one new text. Whether prompts also need the owner's eye
-before a ceiling run is R9, owed.
+the prompt is the one new text. Prompts do not need the owner's eye before a
+ceiling run (R9).
 
 Task selection is seeded (`sample.rs`) and stratified by size (lines
 changed) and by subsystem. `sample.rs` offers uniform draws only
@@ -577,10 +577,8 @@ waits for that work.
    trajectory, so nothing here loosens §4. **What R8 does not cover:** R8
    ruled on the charter reaching the ceiling's provider, which is one
    request, scoped and revocable. Weights are none of those, and §4 says
-   private data is memorised. Whether driven trajectories enter training at
-   all, and whether they are rendered without the owner's charter and
-   learned-rule blocks, is R10, owed. The recommendation is to render them
-   without both.
+   private data is memorised. Driven trajectories may enter training,
+   rendered without the owner's charter and learned-rule blocks (R10).
 3. **Eval cases.** These are failure shapes that are not about one task
    (a compaction that dropped the plan, a retry loop that `boredom` did not
    name) and that `eval/cases.jsonl` can hold deterministically.
@@ -881,10 +879,8 @@ driven run **`prompt` is treated as `forbid`**. That is narrowing and fails
 closed, and it is recorded on the run. The refusal text is written for a
 driven run, never addressed to an owner who is not there. And D4 tags
 every row whose run hit such a refusal as an **approval-floor refusal**,
-counted apart and never read as a model gap. Whether to relax
-`strict_inline_eval` inside the confined jail instead, which would loosen a
-guard, is R11, owed. The pilot measures how often the floor bites before
-anyone weighs that. **What D1b forces is recorded on
+counted apart and never read as a model gap. The owner ruled to keep the floor
+(R11); the pilot's count is the evidence if that is ever reopened. **What D1b forces is recorded on
 the run.** `block_sends_after_private`, `private` armed at start,
 `trifecta = "block"`, `permission_mode = "allow"` and `prompt` as
 `forbid` are not
@@ -1094,20 +1090,22 @@ passes vacuously.
   driven run, whose prompt an outside agent wrote, D1b closes it: the mark
   forces `block_sends_after_private` on, arms `private` at start and forces
   `trifecta = "block"`, so a driven run sends nothing (§7).
-- **R11, owed.** Whether `[approval] strict_inline_eval` may be relaxed
-  inside a driven run's confined jail, so that `timeout`, `bash -c` and
-  `make` wrappers around allowlisted commands are not refused. The question
-  arises only when the owner's file names `shell` rules (§7); with none, the
-  floor is unreachable and the run records that. Until then,
-  `prompt` is `forbid` in a driven run and those rows are tagged
-  approval-floor refusals (§7). Recommended: keep the floor, and decide from
-  the pilot's count.
-- **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
-  owner's eye before its first ceiling run.
-- **R10, owed.** Whether driven trajectories enter training at all, and if
-  so whether they are rendered without the owner's charter and learned-rule
-  blocks (§5.2). Recommended: rendered without both, since weights memorise
-  and R8 priced only a request.
+- **R9. The driver picks and writes the prompts** (owner, 2026-11-06). No
+  owner review before a ceiling run. Each prompt is still written fresh,
+  quotes no PR or issue text, and passes D3b's scrub under
+  `CHECK_PRIVATE_REQUIRE=1` before its task is admitted.
+- **R10. Yes, driven trajectories may enter training** (owner,
+  2026-11-06), **rendered without the owner's charter and learned-rule
+  blocks** (§5.2), because weights memorise and R8 priced only a request.
+  `POST-TRAINING-RESEARCH.md` §4's recorded-taint filter applies unchanged:
+  only a trajectory with clean recorded taint enters.
+- **R11. Keep the floor** (owner, 2026-11-06). `[approval]
+  strict_inline_eval` stays on inside a driven run. Where it is reachable
+  (the owner's file names `shell` rules, §7), `prompt` is `forbid` in a
+  driven run and those rows are tagged approval-floor refusals, counted
+  apart and never read as model gaps. With no `shell` rule loaded, the floor
+  is unreachable and the run records that. The pilot's count is the
+  evidence if the question is ever reopened.
 
 ## 10. Deliberately out of scope
 
