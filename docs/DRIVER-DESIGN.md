@@ -323,7 +323,7 @@ where they must pass every time. (Here *r* is repeats; *k* is D5's fork
 turn, and a trial's seed count is spelled out.) The failure on the pin must also be the
 one the test asserts, not a build error or an unrelated panic. A grade that
 passes on the pin cannot tell a fix from no fix. A grade that is flaky on
-the merge would charge its noise to the model. A race test needs *k*
+the merge would charge its noise to the model. A race test needs *r*
 because it fails only sometimes. The first prototype, #525 (one write per
 record, a concurrent-writer test), failed 5/5 on the pin with "a merged or
 torn line" and passed 5/5 on the merge.
@@ -471,10 +471,19 @@ is where the private surfaces live: `[[mcp]]` (the knowledge graph's `kg_*`
 tools, mail and calendar), `[[hook]]`, `[[grant]]`, which is
 global-file-only because it is the jail's way out, and `[messages]`, the
 owner's mailbox between live sessions, where taint travels with a message
-in both directions. Project layers are
-narrowing-only, so the worktree's own `mecha.toml` is not the exposure; the
-owner's own file is. An outside agent, driving prompts written from PR and
-issue text, should not hold the owner's graph or run the owner's hooks.
+in both directions. **The worktree is an exposure path too.** Only the
+skills layer and the approval rules are narrowing-only; below
+`LayerTrust::Global`, `merge_text` narrows four tables, and `[[mcp]]` and
+`[[hook]]` are not among them. `Config::load_global`'s own doc comment says
+a project `mecha.toml` "can name MCP servers to spawn, hooks to execute". A
+driven run is jailed to a worktree at an arbitrary historical pin, so a
+`mecha.toml` in that tree could attach a server or a hook, and only the
+forcing below closes it. That is the reason to force surfaces off by lever
+rather than trust any layer to be configured right, and it is the test for
+a surface added later: if any layer can attach it, the driven mark forces
+it off. An outside agent, driving prompts written from PR and issue text,
+should hold neither the owner's graph nor a server a pinned tree names, and
+should run no one's hooks.
 
 So the driven mark forces those four off **structurally**, from the same
 `harness::Lever` definitions `mecha eval` uses (`RunConfig::levers_off`),
@@ -510,8 +519,12 @@ rather than trusting each run to be configured right:
   transcript a D5 fork replays (§9, R8).
 - **Kept on purpose: the outbox.** With the outbox on, a routed call stages
   rather than executes. Turning it off would make a routed call run
-  directly, and staging is the safer of the two. A driven draft is set
-  aside from the forecast (D1), and **it is marked on the owner's queue.**
+  directly, and staging is the safer of the two. This does not contradict
+  "no sends at all" above: the leak guard runs only on an unrouted call
+  (`if !routed && (injection_risk || leak_risk)` in the dispatch), so a
+  routed call stages instead of reaching it, and nothing leaves until the
+  owner releases it. A driven draft is set aside from the forecast (D1), and
+  **it is marked on the owner's queue.**
   It stages into the real home's outbox beside the owner's own drafts, and
   releasing one is a real send, so a draft whose prompt an outside agent
   wrote must not sit unmarked there. That is R6's argument, one store over.
