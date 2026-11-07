@@ -717,7 +717,7 @@ fn mail_rule_p3_refusals_leave_inputs_and_permissions_intact() {
 }
 
 #[test]
-fn mail_rule_p3_wrong_match_cli_records_correction_and_refuses_description() {
+fn mail_rule_p3_wrong_match_cli_records_correction_and_teaches_only_from_description_rows() {
     let f = Fixture::new();
     let store = f.store();
     let rule = f.rule();
@@ -754,9 +754,60 @@ fn mail_rule_p3_wrong_match_cli_records_correction_and_refuses_description() {
         .status
         .success());
     store.edit(&rule.name, "description='Fictional description'\n[match]\ndescribe='Fictional notices'\n[[action]]\ndo='archive'\n").unwrap();
+    // A header row on a rule since edited into a description rule is not
+    // that rule's evidence: refused, and the edit is the remedy.
     let description = f.run(&["wrong-match", "--json", &row.id]);
     assert!(!description.status.success());
-    assert!(String::from_utf8_lossy(&description.stderr).contains("description rules arrive in P4"));
+    assert!(String::from_utf8_lossy(&description.stderr).contains("not the rule's current kind"));
+
+    // P4a: a description row's wrong match also corrects the classifier, once.
+    let triage =
+        mecha_core::mail_triage::TriageStore::open(f.root.join("home/mail-triage")).unwrap();
+    let mut record: mecha_core::mail_triage::Record = serde_json::from_value(serde_json::json!({
+        "thread_id": "thread-b", "account": "campus", "subject": "Fictional booking",
+        "from": "robot@example.com", "state": "classified", "classified_at": "2026-11-07T10:00:00Z"
+    }))
+    .unwrap();
+    record.verdict = None;
+    triage.put(&record).unwrap();
+    let described = store.get(&rule.name).unwrap();
+    let mut drow = LedgerRow::described(
+        &described,
+        0,
+        MessageRef {
+            account: "campus".into(),
+            provider_message_id: "message-b".into(),
+            thread_id: "thread-b".into(),
+            sender: "robot@example.com".into(),
+            subject: "Fictional booking".into(),
+            ..Default::default()
+        },
+        Mode::Shadow,
+        GateStatus::Passing,
+        Outcome::WouldHave,
+        chrono::Utc::now(),
+        mecha_core::mail_rules::VerdictInput::Snippet,
+    )
+    .unwrap();
+    drow.closes = false;
+    drow.matched_because = r#"{"quote":"your booking"}"#.into();
+    store.append_ledger(&drow).unwrap();
+    let first = f.run(&["wrong-match", "--json", "--", &drow.id]);
+    success(&first);
+    assert_eq!(json_output(&first)["taught"], true);
+    let again = f.run(&["wrong-match", "--json", "--", &drow.id]);
+    success(&again);
+    assert_eq!(json_output(&again)["taught"], false);
+    let corrections = triage.get("campus", "thread-b").unwrap().corrections;
+    assert_eq!(corrections.len(), 1, "{corrections:?}");
+    assert_eq!(
+        (
+            corrections[0].field.as_str(),
+            corrections[0].was.as_str(),
+            corrections[0].now.as_str()
+        ),
+        ("rule", rule.name.as_str(), "none")
+    );
 }
 
 #[test]

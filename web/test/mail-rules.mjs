@@ -164,6 +164,16 @@ const skipped = pauseAllNotice({ groups: 3, notices: ['broken-rule: unreadable, 
 t('pause all names what it could not pause', skipped.tone === 'bad' && /broken-rule/.test(skipped.text));
 t('pause all with nothing skipped is plain', pauseAllNotice({ groups: 1, notices: [] }).text === 'Paused 1 group to shadow.');
 
+// ---- description rules (P4a) ----
+const described = matchedBecause({ matched_because: JSON.stringify({ from_domain: ['example.edu'], describe: 'Room booking confirmations', quote: 'your booking for Friday' }) });
+t('a description row leads with the quoted words', described === '“your booking for Friday” · from domain: example.edu');
+t('the owner’s own sentence is not repeated as a reason', !/Room booking/.test(described));
+const ddraft = { ...pre, match: 'describe', describe: 'Confirmations, of a room booking' };
+t('a description is one TOML string, never split on commas', draftToml(ddraft).includes('describe = "Confirmations, of a room booking"'));
+t('a description draft passes', draftProblem('bookings', ddraft) === null);
+t('an empty description is refused', draftProblem('bookings', { ...ddraft, describe: '  ' }) !== null);
+t('an over-long description is refused before sending', /at most/.test(draftProblem('bookings', { ...ddraft, describe: 'x'.repeat(501) })));
+
 // ---- when ----
 const now = new Date('2026-11-06T15:00:00');
 t('no time is a dash', when(null, now) === '—' && when('nonsense', now) === '—');

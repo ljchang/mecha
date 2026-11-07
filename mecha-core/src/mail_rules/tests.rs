@@ -92,7 +92,7 @@ fn thread(row: &LedgerRow) -> ThreadKey {
 }
 
 #[test]
-fn loader_parses_all_matchers_and_defaults_without_evaluating_descriptions() {
+fn loader_parses_all_matchers_and_holds_a_description_whose_preconditions_the_sweep_cannot_read() {
     let home = Home::new();
     let store = home.store();
     let rule = install(
@@ -103,23 +103,20 @@ fn loader_parses_all_matchers_and_defaults_without_evaluating_descriptions() {
     assert_eq!(rule.definition.daily_cap, 20);
     assert!(rule.definition.is_description());
     assert_eq!(rule.definition.matcher.header["X-Notice"], ["yes"]);
-    let decision = store
-        .change_mode(
-            "notices",
-            ActionGroup::Mailbox,
-            Mode::Auto,
-            Some(Actor::Owner),
-            &rule.approval_digest,
-            &owner_holds(),
-        )
-        .unwrap();
-    assert!(decision.refused);
-    assert!(!decision.write);
-    assert_eq!(decision.target, Mode::Shadow);
-    assert!(decision
+    // P4a: this description rule's preconditions read headers the classify
+    // sweep never sees, so it is held from evaluation altogether, and says
+    // so, rather than being guessed at.
+    // Its raise is refused on the approval screen with the same reason.
+    assert_eq!(
+        approvals::mode_ceiling(&rule, ActionGroup::Mailbox),
+        Mode::Shadow
+    );
+    assert!(describe::precondition_unreadable(&rule.definition));
+    let views = rule_views(&store).unwrap();
+    assert!(views[0]
         .holds
         .iter()
-        .any(|hold| hold.ceiling == Mode::Shadow && !hold.reason.is_empty()));
+        .any(|h| h == describe::PRECONDITION_HOLD));
     let resolved = resolve_mode(
         &rule,
         ActionGroup::Mailbox,
@@ -128,7 +125,6 @@ fn loader_parses_all_matchers_and_defaults_without_evaluating_descriptions() {
     );
     assert_eq!(resolved.recorded, Mode::Shadow);
     assert_eq!(resolved.effective, Mode::Shadow);
-    assert!(!resolved.holds.is_empty());
     assert!(LedgerRow::header(
         &rule,
         0,
@@ -3648,7 +3644,7 @@ fn mail_rules_p3_wrong_match_is_one_correction_per_action_and_never_on_an_attemp
 }
 
 #[test]
-fn mail_rules_p3_wrong_match_refuses_description_and_brakes_once_per_thread() {
+fn mail_rules_p3_wrong_match_refuses_a_row_of_another_kind_and_brakes_once_per_thread() {
     let home = Home::new();
     let store = home.store();
     let rule = install(&store, &archive());
@@ -3683,7 +3679,7 @@ fn mail_rules_p3_wrong_match_refuses_description_and_brakes_once_per_thread() {
         .wrong_match(&ids[4], Actor::Owner)
         .unwrap_err()
         .to_string()
-        .contains("description rules arrive in P4"));
+        .contains("not the rule's current kind"));
     assert!(store.wrong_match("missing", Actor::Owner).is_err());
 }
 

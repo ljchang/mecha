@@ -239,6 +239,7 @@ fn candidate(
                     .deadline
                     .as_deref()
                     .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()),
+                rules: r.rules.clone(),
             })
         });
     Ok(Candidate {
@@ -945,7 +946,7 @@ pub async fn test(name: &str, account: Option<&str>) -> Result<()> {
     let rule = store.get(name)?;
     ensure!(
         !rule.definition.is_description(),
-        "description rule testing requires P4; only header rules can be tested"
+        "testing a description rule against past mail is not built yet; only header rules can be tested"
     );
     let mailbox = RuleMailbox::load(true, &store)?;
     let now = Utc::now();
@@ -1031,7 +1032,7 @@ async fn test_recent(
     );
     ensure!(
         !rule.definition.is_description(),
-        "description rule testing requires P4"
+        "testing a description rule against past mail is not built yet"
     );
     let since = now - chrono::Duration::days(30);
     let mut report = engine::ApplyReport::default();

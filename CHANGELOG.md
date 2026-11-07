@@ -9,114 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The synthetic memory prototype supports explicit v7 stores with source-linked,
-  provisional interpretations of an episode under different confirmed goals.
-  An opt-in planning reader distinguishes current interpretations from historical
-  dependencies; default readers and privileged learning remain unchanged. Shared
-  interpretation parsing and grounding preserve the existing graph follow-up,
-  while private needs assessment remains outside model prompts and reader memory.
-
-- The synthetic memory trial can opt into a turn-budget notice before its last
-  two model turns, preserving ordinary tools, guards and hard limits. A separate
-  paired diagnostic records completion, notice exposure and premature abstention.
-  New episode captures distinguish harness advice from owner requests; raw
-  transcripts and existing stored episodes remain unchanged.
-
-- A bounded synthetic native-memory comparison runs paired ordinary tasks with
-  recalled experience or an empty store. It retains independently checked
-  artifacts, capture failures, provenance, model calls, token usage and latency, with frozen
-  inputs and no automatic model load or inference retry. Production memory
-  capture remains disabled.
-
-- An opt-in synthetic appraisal bridge connects ordinary task execution,
-  independent artifact checks and existing appraisal to source-linked v6 memory.
-  An explicit example reopens memory in another process under a changed task
-  criterion. Current source checks guard recall; capture retries do not replay
-  actions, and host sensor data stays outside reader memory. This is authored
-  integration qualification, not automatic production capture or a learning claim.
-
-- A separately versioned, synthetic 48-response memory-benefit diagnostic compares
-  source-only and recalled-outcome decisions with frozen inputs, independent
-  scoring, authored transport qualification and no retries. It leaves earlier
-  experiments and production behavior unchanged.
-
-- Experimental outcome recall adds opt-in `feasibility-provenance` response
-  protocol v4. Complete host comparison provenance stays separate from exact
-  model citations; every effective measurement must still be cited and checked.
-  Superseded-source omissions remain visible, explanations remain unverified,
-  and source revocation still applies to the full packet. Existing modes and
-  historical scores are unchanged; no new database schema or action authority.
-
-- Experimental outcome recall adds opt-in feasibility-first responses and bounded
-  reasoning. Per-option measurements, source attribution and hard-constraint checks
-  are independently verified; inconsistent proposals are withheld without rewriting
-  the model answer. Legacy requests remain unchanged. A separate frozen diagnostic
-  distinguishes genuine abstention from host withholding.
-
-- Experimental memory adds a read-only outcome-recall comparison. Original source
-  expectations and an actual retained outcome stay separate while two matched
-  model conditions evaluate a new goal. Frozen retrieval, current-source guards
-  and independent scoring keep historical feedback distinct from current advice;
-  this does not execute another action or enable production memory.
-
-- Experimental memory adds an explicit v5 synthetic-action store and
-  `init-action` / `durable-act bind/run/status/cancel`. A separately authorized
-  fixed simulator can consume one authenticated recommendation, retain actual
-  measurements independently of source expectations, and save deterministic
-  step feedback for later recall. Unresolved actions are never replayed;
-  cancellation, source restrictions and forgetting remain enforced. This adds
-  no production action executor or automatic learning.
-
-- Experimental memory adds an explicit v4 model-decision store and
-  `init-model` / `durable-decide bind/run/status/cancel`. A successful guarded
-  synthetic measurement read can support one initial model attempt and one
-  source-checked reconsideration. Responses are retained before assessment;
-  restart reuses settled responses and never replays unresolved calls. Decisions
-  remain advisory, and cancellation/forgetting/current-source checks apply.
-
-- Experimental memory adds a separate v3 durable-read store and explicit
-  start/resume/status/cancel/finish commands. One host-bound synthetic file read
-  uses ordinary Mecha guards; reservations survive crashes, settled results are
-  reused, and unresolved reads are never silently repeated. Cancellation and
-  forgetting invalidate later commits. Supplied final proposals remain untrusted;
-  this does not activate automatic chat memory or model reasoning.
-
-- Experimental `workflow-trial --observe --reconsider` reuses the bounded
-  source-only reconsideration step after acquisition. Original drafts, failed
-  attempts and checks remain recorded; the same evidence receipt is rechecked
-  at commit. Earlier protocols remain available; synthetic development only.
-
-- Experimental memory adds `workflow-trial --observe`: one bounded missing
-  measurement request, a persisted observed/unavailable result, and a fresh
-  checked decision. Paired control cases retain missing evidence; corrected
-  observations preserve history. Query citations are enumerated; final decisions
-  receive a source-only missing-evidence/feasibility check. Synthetic source-selected
-  evaluation only.
-
-- Experimental memory adds `workflow-trial --checked`: paired initial decisions,
-  source-grounded constraint/evidence checks and at most one reconsideration on
-  fresh synthetic cases. Unsupported final proposals are recorded as host-withheld
-  no-action outcomes, separately from model abstention and task success. No live
-  data, schema migration or production action authority.
-
-- Experimental memory adds `workflow-trial --recall-views` for deterministic
-  measurement/scoped-appraisal comparisons and `--unseen` for a fixed follow-up
-  with new synthetic values, missing evidence and a corrected source. Original
-  source records and the baseline protocol remain intact; no production actions.
-
-- Experimental memory adds a synthetic `workflow-trial`: persisted event,
-  proposed decision and host-observed outcome traces, then a matched
-  no-memory/retrieved/oracle decision comparison after reopening SQLite.
-  All consulted sources are rechecked before an atomic trace write; partial
-  JSONL progress survives failed model calls. No production actions or data.
-
-- Experimental memory plan diagnostic adds opt-in direct coverage judgments and
-  reasoning-enabled comparisons, with source receipts and count-only reasoning
-  audit. No actions execute; source membership is not semantic validation.
-
-- Experimental memory: add tool-free, source-linked extraction of synthetic plan actions, conditions and branches, with provenance checks and separate semantic/guard-coverage diagnostics. No actions execute.
-
-- Experimental memory: pure typed action/branch guard coverage with separate rule applicability and met/unmet/unknown arms; synthetic qualification only, no action execution or authority.
+- **Mail rules can match on what a message says.** A rule with
+  `match.describe` (or *Description* in the new-rule form) is checked by the
+  classifier at each classify pass, which must quote the words in the message
+  that show a match; quotes not in the message are dropped. Such a rule starts
+  in shadow and, once approved, can archive, mark read or unread, tag and add
+  to the digest automatically; trash and spam always ask first, and tasks and
+  sends wait for the next phase. Newsletters and list mail are read for a
+  description rule only when the rule could apply. Wrong match on such a row
+  also corrects the classifier. At most 12 description list entries are
+  admitted.
 
 - **The mail rules page.** *Mail → Rules* (`#mail/rules`) lists each rule's
   modes, activity and holds; a rule's page raises a group to automatic only
@@ -469,6 +371,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the CPU there, adding ~13 s to a new prompt. There is no idle reset on
   a Mac; `[image] unload_after_secs` still unloads. `mecha setup engine
   --adopt` is still Linux-only.
+
+- The synthetic memory prototype supports explicit v7 stores with source-linked,
+  provisional interpretations of an episode under different confirmed goals.
+  An opt-in planning reader distinguishes current interpretations from historical
+  dependencies; default readers and privileged learning remain unchanged. Shared
+  interpretation parsing and grounding preserve the existing graph follow-up,
+  while private needs assessment remains outside model prompts and reader memory.
+
+- The synthetic memory trial can opt into a turn-budget notice before its last
+  two model turns, preserving ordinary tools, guards and hard limits. A separate
+  paired diagnostic records completion, notice exposure and premature abstention.
+  New episode captures distinguish harness advice from owner requests; raw
+  transcripts and existing stored episodes remain unchanged.
+
+- A bounded synthetic native-memory comparison runs paired ordinary tasks with
+  recalled experience or an empty store. It retains independently checked
+  artifacts, capture failures, provenance, model calls, token usage and latency, with frozen
+  inputs and no automatic model load or inference retry. Production memory
+  capture remains disabled.
+
+- An opt-in synthetic appraisal bridge connects ordinary task execution,
+  independent artifact checks and existing appraisal to source-linked v6 memory.
+  An explicit example reopens memory in another process under a changed task
+  criterion. Current source checks guard recall; capture retries do not replay
+  actions, and host sensor data stays outside reader memory. This is authored
+  integration qualification, not automatic production capture or a learning claim.
+
+- A separately versioned, synthetic 48-response memory-benefit diagnostic compares
+  source-only and recalled-outcome decisions with frozen inputs, independent
+  scoring, authored transport qualification and no retries. It leaves earlier
+  experiments and production behavior unchanged.
+
+- Experimental outcome recall adds opt-in `feasibility-provenance` response
+  protocol v4. Complete host comparison provenance stays separate from exact
+  model citations; every effective measurement must still be cited and checked.
+  Superseded-source omissions remain visible, explanations remain unverified,
+  and source revocation still applies to the full packet. Existing modes and
+  historical scores are unchanged; no new database schema or action authority.
+
+- Experimental outcome recall adds opt-in feasibility-first responses and bounded
+  reasoning. Per-option measurements, source attribution and hard-constraint checks
+  are independently verified; inconsistent proposals are withheld without rewriting
+  the model answer. Legacy requests remain unchanged. A separate frozen diagnostic
+  distinguishes genuine abstention from host withholding.
+
+- Experimental memory adds a read-only outcome-recall comparison. Original source
+  expectations and an actual retained outcome stay separate while two matched
+  model conditions evaluate a new goal. Frozen retrieval, current-source guards
+  and independent scoring keep historical feedback distinct from current advice;
+  this does not execute another action or enable production memory.
+
+- Experimental memory adds an explicit v5 synthetic-action store and
+  `init-action` / `durable-act bind/run/status/cancel`. A separately authorized
+  fixed simulator can consume one authenticated recommendation, retain actual
+  measurements independently of source expectations, and save deterministic
+  step feedback for later recall. Unresolved actions are never replayed;
+  cancellation, source restrictions and forgetting remain enforced. This adds
+  no production action executor or automatic learning.
+
+- Experimental memory adds an explicit v4 model-decision store and
+  `init-model` / `durable-decide bind/run/status/cancel`. A successful guarded
+  synthetic measurement read can support one initial model attempt and one
+  source-checked reconsideration. Responses are retained before assessment;
+  restart reuses settled responses and never replays unresolved calls. Decisions
+  remain advisory, and cancellation/forgetting/current-source checks apply.
+
+- Experimental memory adds a separate v3 durable-read store and explicit
+  start/resume/status/cancel/finish commands. One host-bound synthetic file read
+  uses ordinary Mecha guards; reservations survive crashes, settled results are
+  reused, and unresolved reads are never silently repeated. Cancellation and
+  forgetting invalidate later commits. Supplied final proposals remain untrusted;
+  this does not activate automatic chat memory or model reasoning.
+
+- Experimental `workflow-trial --observe --reconsider` reuses the bounded
+  source-only reconsideration step after acquisition. Original drafts, failed
+  attempts and checks remain recorded; the same evidence receipt is rechecked
+  at commit. Earlier protocols remain available; synthetic development only.
+
+- Experimental memory adds `workflow-trial --observe`: one bounded missing
+  measurement request, a persisted observed/unavailable result, and a fresh
+  checked decision. Paired control cases retain missing evidence; corrected
+  observations preserve history. Query citations are enumerated; final decisions
+  receive a source-only missing-evidence/feasibility check. Synthetic source-selected
+  evaluation only.
+
+- Experimental memory adds `workflow-trial --checked`: paired initial decisions,
+  source-grounded constraint/evidence checks and at most one reconsideration on
+  fresh synthetic cases. Unsupported final proposals are recorded as host-withheld
+  no-action outcomes, separately from model abstention and task success. No live
+  data, schema migration or production action authority.
+
+- Experimental memory adds `workflow-trial --recall-views` for deterministic
+  measurement/scoped-appraisal comparisons and `--unseen` for a fixed follow-up
+  with new synthetic values, missing evidence and a corrected source. Original
+  source records and the baseline protocol remain intact; no production actions.
+
+- Experimental memory adds a synthetic `workflow-trial`: persisted event,
+  proposed decision and host-observed outcome traces, then a matched
+  no-memory/retrieved/oracle decision comparison after reopening SQLite.
+  All consulted sources are rechecked before an atomic trace write; partial
+  JSONL progress survives failed model calls. No production actions or data.
+
+- Experimental memory plan diagnostic adds opt-in direct coverage judgments and
+  reasoning-enabled comparisons, with source receipts and count-only reasoning
+  audit. No actions execute; source membership is not semantic validation.
+
+- Experimental memory: add tool-free, source-linked extraction of synthetic plan actions, conditions and branches, with provenance checks and separate semantic/guard-coverage diagnostics. No actions execute.
+
+- Experimental memory: pure typed action/branch guard coverage with separate rule applicability and met/unmet/unknown arms; synthetic qualification only, no action execution or authority.
 
 ### Changed
 

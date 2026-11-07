@@ -719,6 +719,7 @@ async fn check_graph_brake(sink: &GraphSink, description: &str, outage: bool) {
                 c.classified = Some(Classified {
                     at: now,
                     deadline: None,
+                    rules: None,
                 });
                 c
             })
@@ -1229,6 +1230,7 @@ async fn graph_fate_unknown_reserves_both_caps(graph: &GraphSink) {
             c.classified = Some(Classified {
                 at: now,
                 deadline: None,
+                rules: None,
             });
             FixtureMailbox(vec![c])
         };
@@ -1350,6 +1352,7 @@ async fn disabled_graph_is_not_configured_for_live_or_dry_runs() {
     c.classified = Some(Classified {
         at: now,
         deadline: None,
+        rules: None,
     });
     let mail = FixtureMailbox(vec![c]);
     let planned = PlannedSink;
@@ -1862,6 +1865,7 @@ async fn assert_graph_undispatched_retries(typed_refusal: bool) {
     c.classified = Some(Classified {
         at: now,
         deadline: None,
+        rules: None,
     });
     let mail = FixtureMailbox(vec![c]);
     let mut options = engine::EngineOptions {

@@ -174,7 +174,11 @@ export function matchedBecause(row) {
   }
   if (!m || typeof m !== 'object') return '';
   const parts = [];
+  // A description match leads with the sender's words the classifier cited,
+  // checked against the message; the owner's own sentence is on the rule.
+  if (typeof m.quote === 'string' && m.quote) parts.push(`“${m.quote}”`);
   for (const [k, v] of Object.entries(m)) {
+    if (k === 'quote' || k === 'describe') continue;
     if (k === 'header' && v && typeof v === 'object') {
       for (const [h, vals] of Object.entries(v)) if (vals?.length) parts.push(`${h}: ${vals.join(', ')}`);
     } else if (Array.isArray(v) && v.length) {
@@ -232,6 +236,7 @@ export function prefillFromThread({ from, subject } = {}) {
     from_domain: domain ?? '',
     list_id: '',
     subject_contains: '',
+    describe: '',
     verb: 'archive',
   };
 }
@@ -257,7 +262,8 @@ const tomlList = (csv) =>
 export function draftToml(d) {
   const lines = [`description = ${tomlString(d.description || 'New rule')}`, '', '[match]'];
   const value = (d[d.match] ?? '').trim();
-  if (value) lines.push(`${d.match} = ${tomlList(value)}`);
+  // A description is one sentence, never a list split on commas.
+  if (value) lines.push(`${d.match} = ${d.match === 'describe' ? tomlString(value) : tomlList(value)}`);
   lines.push('', '[[action]]', `do = ${tomlString(d.verb)}`);
   if (d.verb === 'tag') lines.push(`tag = ${tomlString(d.tag ?? '')}`);
   return `${lines.join('\n')}\n`;
@@ -271,9 +277,13 @@ export function nameProblem(name) {
 }
 
 /** What is wrong with a guided draft before it is sent, or null. The store decides the rest. */
+/** The store's ceiling on `match.describe` (mail_rules::describe::DESCRIBE_MAX_CHARS). */
+export const DESCRIBE_MAX = 500;
+
 export function draftProblem(name, d) {
   if (nameProblem(name)) return nameProblem(name);
   if (!(d[d.match] ?? '').trim()) return 'Give the rule something to match on.';
+  if (d.match === 'describe' && [...(d.describe ?? '').trim()].length > DESCRIBE_MAX) return `A description is at most ${DESCRIBE_MAX} characters; it rides in every classification.`;
   if (d.verb === 'tag' && !(d.tag ?? '').trim()) return 'Name the tag this rule applies.';
   return null;
 }
