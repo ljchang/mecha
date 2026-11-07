@@ -706,8 +706,8 @@ rather than trusting each run to be configured right:
   block, so without it skills are off wholesale, contradicting "Kept"
   below), `compact` (model-invoked compaction), and `todo` (how a plan is
   declared, and so what `step.rs` and `Lever::StepChecks` act on). Long
-  multi-turn repository work is the thing §0 says is unmeasured, and those
-  two are what it exercises.
+  multi-turn repository work is the thing §0 says is unmeasured, and
+  `compact` and `todo` are what it exercises.
   **`web_search` and `http_fetch` are left out, not kept and refused.**
   With the forced send guard every call to either would be refused, and a
   tool registered only to refuse is the full-clone argument's cost in its
@@ -798,12 +798,30 @@ loading nothing is the safe direction. Here an expired marker must still
 refuse: a task that overruns, or a stalled run on its second attempt, is
 exactly when a mark is most likely to have been lost. The false positive
 this costs is a refused unmarked run in a task-clone path, and nothing else
-is supposed to run there. **What D1b forces is recorded on the run.**
-`block_sends_after_private`, `private` armed at start and
-`trifecta = "block"` are not `harness::Lever`s, so they would not appear
-in the session record's `levers_off`, and a later reader could not tell the
-guard was armed. The run record carries them beside the levers. Neither
-confounds §4, being constant across arms. **The forecast's exclusion is
+is supposed to run there. **The approver is named too: the mark forces `permission_mode = "allow"`.**
+`setup::prepare` picks the approver from `[tools] permission_mode`, whose
+default is `Ask`, and both of its live branches land on a cost this section
+argues against elsewhere. Interactive `Ask` gives a `TerminalApprover`, so
+every `shell`, `fs_write` and `fs_edit` approval goes to whoever is at the
+terminal, which is the driver. That is the influence channel D1b drops the
+mailbox and `ask_user` to close, and broader than the trifecta residual,
+since it covers every destructive call. Non-interactive `Ask` gives a
+`ModeApprover` that refuses every non-read-only call as "needs approval and
+this run is non-interactive", so every `cargo build` and every edit would be
+a harness refusal for D4 to attribute. `mecha eval` answers the same
+question by its own explicit line, and a driven run does too: inside a jail
+with no network, no sends, a closed tool allowlist and a clone with no
+remote, the run's own actions need no approval. The owner's `[[policy]]`
+`forbid` rules still apply, because the approval rules only narrow, so a
+command the owner forbids stays forbidden. **What D1b forces is recorded on
+the run.** `block_sends_after_private`, `private` armed at start,
+`trifecta = "block"` and `permission_mode = "allow"` are not
+`harness::Lever`s, so they would not appear in the session record's
+`levers_off`, and a later reader could not tell they were in force. The run
+record carries them beside the levers. None confounds §4, being constant
+across arms, and the approver's mode is what decides whether a failed row
+is a model gap or an approver refusal, so it is recorded rather than left
+to the owner's file. **The forecast's exclusion is
 named, not inherited:** it keys on `test_override() == Some(Test)` and does
 not cover `Experiment`, so "follow the `Experiment` shape" does not reach it,
 and `Driven` is added at that site explicitly (done in #848). Both
@@ -876,7 +894,7 @@ passes vacuously.
   memory, per the cargo caps in OPERATIONS. (The pilot's *validation* runs
   are the driver's, outside any jail, and do share one target directory.)
 - **Cargo inside the jail**: the dependencies are vendored into the clone
-  by setup (§7). The measurement is **three facts, not one**, because
+  by setup (§7). The measurement is **four facts, not one**, because
   `Sandbox::bwrap_args` passes `--clearenv` with `PATH` pinned to the
   system directories and `HOME` set to the workspace. A confined
   `cargo build --offline` today ends in `cargo: command not found`, which is
