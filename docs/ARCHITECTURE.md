@@ -4853,6 +4853,11 @@ in the ledger on key, outcome, mode, match digest, `verdict_input`, reason and
 were never affected, since they count distinct keys; before this, one shadow
 match wrote about two thousand rows and filled the page's ledger window.
 Settlements and corrections are never observations and are always written.
+A repeat is still *reported*, as the row the ledger already holds: the
+after-classify settlement of a deferred snapshot finds its outcome in the
+run's report and appends any outcome whose id the ledger lacks, so a fresh id
+there would bring the growth back under a false "no longer matches" reason,
+and a dry run must show what a live pass would.
 
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound

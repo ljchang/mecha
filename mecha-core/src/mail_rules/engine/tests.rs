@@ -2790,3 +2790,29 @@ async fn an_already_handled_action_is_noted_once() {
         .count();
     assert_eq!(skipped, 2, "{rows:#?}");
 }
+
+#[tokio::test]
+async fn a_repeated_deferred_observation_settles_as_itself_and_adds_no_row() {
+    // Review of #853: a shadow task re-defers on every headers pass, and its
+    // settlement after classify reads the run's report. A repeat must still
+    // be found there, as the row the ledger already holds.
+    let mut f = Fixture::new();
+    f.rule("task", TASK);
+    for _ in 0..3 {
+        f.options.pass = Pass::Headers;
+        f.run(None).await;
+        f.options.pass = Pass::AfterClassify;
+        let report = f.run(None).await;
+        assert!(
+            report.rows.iter().all(|r| r.outcome == Outcome::WouldHave),
+            "{:#?}",
+            report.rows
+        );
+    }
+    let rows = f.store.ledger().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert!(f.store.deferred().unwrap().is_empty());
+    // A dry run reports what a live pass would, already recorded or not.
+    f.options.dry_run = true;
+    assert_eq!(f.run(None).await.rows.len(), 1);
+}
