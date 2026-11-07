@@ -329,6 +329,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A mail rule's ledger records each observation once.** A rule in shadow,
+  or a message that arrived before a rule was active, wrote a new ledger row
+  on every five-minute pass for as long as the message stayed in the inbox
+  window. Rates were unaffected; the ledger and its page are no longer
+  buried in repeats.
 - **Mail-rule review queues and timer diagnostics.** A broken or deleted rule
   definition no longer hides other lapses or proposal counts. Doctor skips
   unavailable systemd queries while still reporting missing or failed units.

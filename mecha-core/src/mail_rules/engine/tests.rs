@@ -2718,3 +2718,75 @@ async fn p3_partial_headers_positive_non_outbound_defers_and_executes_like_full_
         assert!(f.store.deferred().unwrap().is_empty());
     }
 }
+
+#[tokio::test]
+async fn an_observation_is_recorded_once_however_many_passes_see_it() {
+    // The header timer runs every five minutes over a seven-day window, so a
+    // shadow match or a pre-activation skip is seen ~2000 times. Recording
+    // each sighting buried the page's ledger window under one message.
+    let f = Fixture::new();
+    let r = f.rule("archive", &format!("{ARCHIVE}[[action]]\ndo = 'read'\n"));
+    for _ in 0..3 {
+        f.run(None).await;
+    }
+    let rows = f.store.ledger().unwrap();
+    assert_eq!(rows.len(), 2, "one would-have row per action: {rows:#?}");
+    assert!(rows.iter().all(|r| r.outcome == Outcome::WouldHave));
+
+    f.mode(&r, ActionGroup::Mailbox, Mode::Auto);
+    f.mail.candidates.lock().unwrap()[0].arrival_at = Some(Utc::now() - Duration::days(1));
+    for _ in 0..3 {
+        f.run(None).await;
+    }
+    let skipped: Vec<_> = f
+        .store
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.outcome == Outcome::Skipped)
+        .collect();
+    assert_eq!(skipped.len(), 2, "{skipped:#?}");
+    assert!(skipped
+        .iter()
+        .all(|r| r.reason == "before the rule was active"));
+
+    // A different observation of the same key is still a new fact: after an
+    // edit the match digest changes, and the would-have row is recorded anew.
+    f.mode(&r, ActionGroup::Mailbox, Mode::Shadow);
+    std::fs::write(
+        r.directory.join("rule.toml"),
+        "description = 'Review notice'\n[match]\nfrom_domain = ['example.com']\nsubject_contains = ['Sender']\n[[action]]\ndo = 'archive'\n[[action]]\ndo = 'read'\n",
+    )
+    .unwrap();
+    f.run(None).await;
+    f.run(None).await;
+    let would_have = f
+        .store
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.outcome == Outcome::WouldHave)
+        .count();
+    assert_eq!(would_have, 4);
+}
+
+#[tokio::test]
+async fn an_already_handled_action_is_noted_once() {
+    let f = Fixture::new();
+    let r = f.rule(
+        "read",
+        "[[action]]\ndo = 'read'\n[[action]]\ndo = 'tag'\ntag = 'notices'\n",
+    );
+    f.mode(&r, ActionGroup::Mailbox, Mode::Auto);
+    f.mode(&r, ActionGroup::PrivateRecord, Mode::Auto);
+    f.run(None).await;
+    for _ in 0..3 {
+        f.run(None).await;
+    }
+    let rows = f.store.ledger().unwrap();
+    let skipped = rows
+        .iter()
+        .filter(|r| r.outcome == Outcome::Skipped && r.reason == "action already handled")
+        .count();
+    assert_eq!(skipped, 2, "{rows:#?}");
+}

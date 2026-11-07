@@ -4845,6 +4845,15 @@ exact attempt; uncertain task creation stays held, while an interrupted
 mailbox/record action reopens. Unknown action failure kinds count toward the
 brake; positively identified outages and interruptions do not.
 
+**An observation is recorded once.** A `would_have` or unsettled `skipped`
+row closes no key, and the timer sees the same inbox message every five
+minutes for a week, so `Run::write` drops a repeat that matches a row already
+in the ledger on key, outcome, mode, match digest, `verdict_input`, reason and
+`headers_partial`. Any of those changing is a new fact and is written. Rates
+were never affected, since they count distinct keys; before this, one shadow
+match wrote about two thousand rows and filled the page's ledger window.
+Settlements and corrections are never observations and are always written.
+
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound
 action defer removals regardless of priority. Owed actions enter the store's
