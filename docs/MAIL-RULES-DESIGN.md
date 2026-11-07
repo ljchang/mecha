@@ -2404,6 +2404,10 @@ leaves `shadow` in this phase; its sends stay there until P4b-2.
 `Reflexion::learnable`'s comment gains the sentence naming the confirmation
 pass as why the triage exemption's premise still holds.
 
+Refusals (`rules.refused`, and the confirmation's own) are recorded with
+`RuleRefusal::label` text but not yet shown on the page; the description-rule
+test (P4a-2) is where they surface, beside the cost it reports.
+
 Implementation choices, not owner rulings: a failed confirmation call is
 recorded as failed and disagrees, never retried into agreement; a
 confirmation from another build's frame confirms nothing; the shadow

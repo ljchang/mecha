@@ -1297,7 +1297,7 @@ async fn classify(
             // that may not apply take the single `rule` slot (or hide one
             // that does). A listing from an older mail binary has no field,
             // which is unknown, so such rules are not asked.
-            Work::Row(row) => row["attachment_presence"].as_bool(),
+            Work::Row(row) => row[ATTACHMENT_PRESENCE].as_bool(),
             Work::Stored(_) => None,
         };
         let (mut thread, bulk, full_body) = match item {
@@ -1713,20 +1713,20 @@ async fn classify(
     // whether it is too aggressive — and a number nobody can see is a rule
     // nobody can grade.
     println!(
-        "\n{ok} classified ({escalated} read in full on a second pass{}), \
-         {prefiltered} disposed without a model{}, {failed} failed{}",
+        "\n{ok} classified ({escalated} read in full on a second pass{}{}), \
+         {prefiltered} disposed without a model{}, {failed} failed",
         if requeued_ok > 0 {
             format!(", {requeued_ok} retried whole from the store")
         } else {
             String::new()
         },
-        if rules_only > 0 {
-            format!(" for triage ({rules_only} of them read by the model for description rules)")
+        if rules_body > 0 {
+            format!(", {rules_body} read in full for description rules")
         } else {
             String::new()
         },
-        if rules_body > 0 {
-            format!("; {rules_body} read in full for description rules")
+        if rules_only > 0 {
+            format!(" for triage ({rules_only} of them read by the model for description rules)")
         } else {
             String::new()
         }
@@ -1763,6 +1763,12 @@ async fn classify(
 /// renders oldest-first and the newest message is the one asking for
 /// something — truncating the front of a long thread keeps the part a reply
 /// would answer.
+/// The `mail_recent` row key the sweep reads attachment presence from. A
+/// string key into another binary's output, so a test pins it to the writer:
+/// renamed on one side only, `as_bool()` would quietly read every row as
+/// unknown and every rule with `has_attachment` would stop being asked.
+const ATTACHMENT_PRESENCE: &str = "attachment_presence";
+
 /// The rule answer alone for a thread the pre-filter disposed of (owner
 /// ruling 2026-11-07): the same quarantined call and frame as any thread, so
 /// the evidence means the same thing; its triage fields are discarded. A
@@ -4211,6 +4217,20 @@ mod classify_exit_tests {
     }
 
     /// A clean fan-out is plain JSON and must stay exactly as it was.
+    #[test]
+    fn the_attachment_key_the_sweep_reads_is_the_one_mail_recent_writes() {
+        // Review of #854: nothing else joins the reader to the writer.
+        let writer = include_str!("../../../mecha-mail/src/unified.rs");
+        assert!(
+            writer.contains(&format!(
+                "\"{}\": e.attachment_presence",
+                super::ATTACHMENT_PRESENCE
+            )),
+            "mail_recent no longer writes `{}`",
+            super::ATTACHMENT_PRESENCE
+        );
+    }
+
     #[test]
     fn recent_rows_parse_without_a_note() {
         let (rows, note) = parse_recent(r#"[{"account":"campus"}]"#).unwrap();
