@@ -91,6 +91,18 @@ pub fn added_code() -> u32 {
     kept() + 1
 }
 
+/// Production code with a test-only branch in its body.
+pub fn home() -> u32 {
+    #[cfg(test)]
+    {
+        0
+    }
+    #[cfg(not(test))]
+    {
+        1
+    }
+}
+
 /// A test at the top of an ordinary source file.
 #[cfg(test)]
 #[test]
@@ -168,6 +180,11 @@ class CommittedBank(unittest.TestCase):
 
 
 class Regressions(unittest.TestCase):
+    def test_a_test_item_is_one_whose_leading_attributes_say_so(self):
+        self.assertTrue(mecha_history.is_test_item("/// doc\n#[cfg(test)]\n#[test]\nfn t() {}"))
+        self.assertFalse(mecha_history.is_test_item("pub fn f() {\n    #[cfg(test)]\n    { 0 }\n}"))
+        self.assertFalse(mecha_history.is_test_item("#[cfg(not(test))]\nfn f() {}"))
+
     def test_a_test_the_pin_already_fails_is_not_the_runs(self):
         self.assertEqual(mecha_history.counted(["a::slow"], ["a::slow"]),
                          (True, "passed (1 failing on the pin too, not counted)"))
@@ -231,8 +248,9 @@ class Source(unittest.TestCase):
             "prompt": "prompts/pr-1.md",
             "repair": [{"path": "demo/fixture.json", "from": self.merge}],
             "admission": {"state": "admitted"},
-            "baseline": {"failing": {"demo": []}},
+            "baseline": {"pin": None, "failing": {"demo": []}},
         }
+        self.task["baseline"]["pin"] = self.pin
         self.other = dict(self.task, id="pr-2", prompt="prompts/pr-2.md", admission={"state": "interface-named"})
         for t in (self.task, self.other):
             write(os.path.join(self.bank, t["prompt"]), "# Make it saturate\n\nThe sum wraps.\n")
@@ -291,7 +309,8 @@ class Source(unittest.TestCase):
             self.assertEqual([t["id"] for t in json.loads(self.source("list").stdout)], ["pr-1"], state)
 
     def test_a_task_without_the_pins_own_failures_on_record_is_not_offered(self):
-        for base in (None, {"failing": {}}, {"failing": {"other": []}}):
+        for base in (None, {"pin": self.pin, "failing": {}}, {"pin": self.pin, "failing": {"other": []}},
+                     {"failing": {"demo": []}}, {"pin": self.merge, "failing": {"demo": []}}):
             if base is None:
                 self.task.pop("baseline")
             else:
@@ -395,6 +414,8 @@ class Source(unittest.TestCase):
         self.assertIn("\nfn top_level_test() {", tail)
         self.assertIn("\n/// A test at the top of an ordinary source file.", tail)
         self.assertNotIn("added_code() -> u32", other)
+        # `#[cfg(test)]` in a body is not a test item (review of #852, pass 6).
+        self.assertEqual(other.count("pub fn home()"), 0, "the run's tree never had it, and it is not grafted")
         # A test module the PR added whole is grafted once, as one item.
         third = read(os.path.join(self.ws, "demo", "src", "third.rs"))
         self.assertEqual(third.count("fn a_new_module_test()"), 1, third)
@@ -433,6 +454,12 @@ class Source(unittest.TestCase):
         executable(os.path.join(fake, "bin", "cargo"), "#!/bin/sh\nexit 0\n")
         mecha_history.cargo(fake, self.ws, "test")
         self.assertEqual(os.listdir(os.path.join(self.ws, ".cargo")), ["config.toml"])
+        # A vendored crate changed by a build script mid-grade ends the grade.
+        os.makedirs(os.path.join(self.ws, "vendor", "dep"))
+        write(os.path.join(self.ws, "vendor", "dep", "mid.rs"), "x\n")
+        with self.assertRaises(mecha_history.TreeRefused):
+            mecha_history.cargo(fake, self.ws, "test")
+        shutil.rmtree(os.path.join(self.ws, "vendor"))
         # The vendored crates are compared, never trusted.
         os.makedirs(os.path.join(self.ws, "vendor", "dep", "src"))
         write(os.path.join(self.ws, "vendor", "dep", "src", "lib.rs"), "pub fn forged() {}\n")

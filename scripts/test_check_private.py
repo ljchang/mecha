@@ -146,6 +146,13 @@ class Guard(unittest.TestCase):
         open(doc, "w").write("# Count the bytes\n\nMake the change.\n")
         self.assertEqual(self.run_guard("--text", doc).returncode, 0)
 
+    def test_a_text_that_is_missing_or_unnamed_is_refused(self):
+        # check-prompts reads any non-zero exit as "not admitted".
+        for args in (["--text"], ["--text", os.path.join(self.repo, "absent.md")]):
+            r = self.run_guard(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("refusing", r.stdout)
+
     def test_a_committed_text_does_not_excuse_itself(self):
         # Checked after it lands, a prompt is in HEAD; its own copy must not
         # count as the repository already saying it (review of #852).

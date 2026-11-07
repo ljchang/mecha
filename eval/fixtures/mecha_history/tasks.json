@@ -93,6 +93,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "7a3f1263a902da018f26fe380575f1de38f49f0e",
         "failing": {
           "mecha-core": []
         }
@@ -139,6 +140,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "e9352db6244cdf98ab8960a0b2219cd1e0ca0fa7",
         "failing": {
           "mecha-core": [
             "imagegen::tests::a_persona_draws_itself_without_casting_itself"
@@ -200,6 +202,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "b6610c9d4fa54a8f27c5e9bb0e1e68955ff1102f",
         "failing": {
           "mecha-core": []
         }
@@ -246,6 +249,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "8ec8c1abec03590f4fa27d813cba9550945b8c36",
         "failing": {
           "mecha-core": [
             "imagegen::tests::a_persona_draws_itself_without_casting_itself"
@@ -284,6 +288,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "b439795712e525f4c064dffb5384e3fcd11abd76",
         "failing": {
           "mecha-cli": [],
           "mecha-core": []
@@ -321,6 +326,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
         "failing": {
           "mecha-cli": [],
           "mecha-core": []
@@ -382,6 +388,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "2188ea4aae1b44ee7ab41717e7e3dc849b17eb9b",
         "failing": {
           "mecha-core": []
         }
@@ -428,6 +435,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "360a486f0e4d9a834344523f629b58fdec4a975a",
         "failing": {
           "mecha-core": [
             "imagegen::tests::a_persona_draws_itself_without_casting_itself"
@@ -476,6 +484,7 @@
         "r": 2,
         "date": "2026-11-07",
         "by": "baseline",
+        "pin": "2f495af5f27b0d004424026fa0cf3d73d27554cf",
         "failing": {
           "mecha-cli": []
         }

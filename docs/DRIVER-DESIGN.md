@@ -546,7 +546,7 @@ the text above:
   and an empty `.cargo-home/`, because a `[build] rustc` or a `runner` there
   chooses what prints the libtest lines it reads, and `.git/info/exclude`
   hides those files from `git status`. It also puts back the repaired
-  fixtures each time, and compares `vendor/` once. The one `git` it asks of
+  fixtures and compares `vendor/` each time. The one `git` it asks of
   the run's tree runs inside the jail, because the run owns `.git/config`,
   where an fsmonitor or a filter driver would run a program of its choosing
   under any `git` on the host. A tree with no place for the hidden tests (a file
@@ -560,7 +560,8 @@ the text above:
   `baseline <task> [r]` records the touched crates' unit tests that fail on
   the pin, in the grade's jail, over r runs. The grade does not count them,
   and it counts a grafted hidden test once, under the hidden check. A task
-  with no baseline on record is not offered. This is SWE-bench's
+  with no baseline on record, or one measured on another pin, is not
+  offered. This is SWE-bench's
   PASS_TO_PASS, measured rather than assumed.
 - **Where the bank stands (2026-11-07).** Admitted by `validate` (r = 5):
   421, 525, 813. Interface-named by `validate`, and admitted under the
