@@ -102,9 +102,18 @@ pub struct ShadowConfirmation {
     pub agrees: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
-    /// Why a "matches" was not kept, or that the call failed.
+    /// Why a "matches" was not kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<RuleRefusal>,
+    /// Whether the pass gave a verdict on this candidate at all. A call that
+    /// failed, or an answer that left the candidate out, says nothing about
+    /// it: "not confirmed", never "disagreed", so an outage is not counted as
+    /// a judgement in the measurement promotion is decided on.
+    #[serde(default)]
+    pub answered: bool,
+    /// The call failed. **Prose; a human's.**
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
 }
 
 impl Confirmation {
@@ -125,10 +134,23 @@ impl Confirmation {
             .then(|| {
                 self.shadow
                     .iter()
-                    .find(|s| s.name == rule)
+                    .find(|s| s.name == rule && s.answered && s.failed.is_none())
                     .map(|s| s.agrees)
             })
             .flatten()
+    }
+
+    /// What the active confirmation chose, under this build: a rule's name,
+    /// "none", or `None` when no active confirmation from this build exists.
+    pub fn active_choice(&self) -> Option<String> {
+        (self.version == *CONFIRMATION_VERSION)
+            .then_some(self.active.as_ref())
+            .flatten()
+            .map(|a| {
+                a.choice
+                    .as_ref()
+                    .map_or_else(|| "none".to_string(), |hit| hit.name.clone())
+            })
     }
 }
 
@@ -141,7 +163,7 @@ fn descriptions(entries: &[FrameEntry]) -> String {
                 "{}. {}: {}\n",
                 i + 1,
                 e.name,
-                e.describe.split_whitespace().collect::<Vec<_>>().join(" ")
+                super::rule_frame::one_line(&e.describe)
             )
         })
         .collect()
@@ -159,6 +181,13 @@ fn prompt(entries: &[FrameEntry], answer: &str, t: &ThreadInput) -> String {
     )
 }
 
+/// The main pass's allowance, for the main pass's reason: a reasoning model
+/// can spend the whole budget thinking and return empty content, and the
+/// local server's reasoning budget is 4096. A smaller allowance here would
+/// fail every confirmation, and a failed one disagrees: every automatic task
+/// would quietly become an offer.
+const MAX_TOKENS: u32 = 4096;
+
 async fn ask(
     provider: &dyn crate::provider::Provider,
     model: &str,
@@ -166,23 +195,34 @@ async fn ask(
     schema: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let mut last = String::new();
+    let mut attempt = prompt.clone();
     for round in 0..2 {
-        let request = crate::quarantine::QuarantinedPass::new(model, 2048)
+        let request = crate::quarantine::QuarantinedPass::new(model, MAX_TOKENS)
             .response_schema(provider.structured_output().then(|| schema.clone()))
-            .ask(if round == 0 {
-                prompt.clone()
-            } else {
-                format!("{prompt}\nReply with the JSON object alone — no prose, no code fence.")
-            });
+            .ask(attempt.clone());
         let response = provider.complete(&request, None).await?;
         if response.stop_reason == crate::message::StopReason::Refusal {
             anyhow::bail!("the confirmation pass refused the message");
         }
+        let truncated = response.stop_reason == crate::message::StopReason::MaxTokens;
         let text = response.message.text();
+        let empty = truncated && text.trim().is_empty();
         match super::json_object(&text).map(serde_json::from_str::<serde_json::Value>) {
             Some(Ok(v)) => return Ok(v),
+            // Truncation diagnosed as itself, as the main pass does.
+            _ if empty => {
+                last =
+                    format!("the model hit the {MAX_TOKENS} token budget before writing any answer")
+            }
             Some(Err(e)) => last = format!("{e}"),
             None => last = "no JSON object".into(),
+        }
+        if round == 0 {
+            attempt = if empty {
+                format!("{prompt}\nBe brief. Do not deliberate at length; write the JSON object immediately.")
+            } else {
+                format!("{prompt}\nReply with the JSON object alone — no prose, no code fence.")
+            };
         }
     }
     anyhow::bail!("the confirmation pass gave no readable answer: {last}")
@@ -271,15 +311,18 @@ pub async fn confirm_each(
                 agrees: false,
                 quote: None,
                 refused: None,
+                answered: false,
+                failed: None,
             };
             match &answer {
-                Err(_) => verdict.refused = Some(RuleRefusal::Unknown),
+                Err(e) => verdict.failed = Some(format!("{e:#}")),
                 Ok(answer) => {
                     let item = answer["verdicts"]
                         .as_array()
                         .into_iter()
                         .flatten()
                         .find(|v| v["name"].as_str().map(str::trim) == Some(name.as_str()));
+                    verdict.answered = item.is_some_and(|v| v["matches"].is_boolean());
                     if let Some(item) = item.filter(|v| v["matches"].as_bool() == Some(true)) {
                         match super::rule_frame::ground(item["quote"].as_str(), thread) {
                             Ok(quote) => {
@@ -318,6 +361,9 @@ mod tests {
             request: &CompletionRequest,
             _: Option<&crate::provider::StreamSink>,
         ) -> Result<CompletionResponse> {
+            // Review of #855: below the local server's reasoning budget every
+            // confirmation fails, and a failed one disagrees.
+            assert!(request.max_tokens >= 4096, "{}", request.max_tokens);
             // The frame carries no learned rules and no correction examples.
             let text = request.messages[0].text();
             assert!(!text.contains("CORRECTIONS") && !text.contains("learned"));
@@ -375,6 +421,12 @@ mod tests {
             ..c.clone()
         };
         assert!(!other_build.confirms_active("invoices"));
+        assert_eq!(
+            other_build.active_choice(),
+            None,
+            "another build's choice is not shown"
+        );
+        assert_eq!(c.active_choice().as_deref(), Some("invoices"));
 
         let p = Fixed(r#"{"reasoning":"x","rule":"invoices","quote":"wire the funds"}"#.into());
         let a = confirm_active(&p, "m", &thread(), &entries()).await;
@@ -405,8 +457,31 @@ mod tests {
         assert_eq!(c.shadow_verdict("invoices"), Some(true));
         assert_eq!(c.shadow_verdict("renewals"), Some(false));
         assert_eq!(c.shadow_verdict("unasked"), None);
+        // A failed call, or a candidate left out, says nothing: not
+        // confirmed, never disagreed.
         let failed = confirm_each(&Fixed("".into()), "m", &thread(), &entries()).await;
-        assert!(failed.iter().all(|v| !v.agrees && v.refused.is_some()));
+        assert!(failed.iter().all(|v| !v.agrees && v.failed.is_some()));
+        let c = Confirmation {
+            version: CONFIRMATION_VERSION.clone(),
+            shadow: failed,
+            ..Default::default()
+        };
+        assert_eq!(c.shadow_verdict("invoices"), None);
+        let partial = Fixed(
+            r#"{"reasoning":"x","verdicts":[{"name":"invoices","matches":false,"quote":null}]}"#
+                .into(),
+        );
+        let c = Confirmation {
+            version: CONFIRMATION_VERSION.clone(),
+            shadow: confirm_each(&partial, "m", &thread(), &entries()).await,
+            ..Default::default()
+        };
+        assert_eq!(c.shadow_verdict("invoices"), Some(false));
+        assert_eq!(
+            c.shadow_verdict("renewals"),
+            None,
+            "left out is not a verdict"
+        );
     }
 
     #[test]

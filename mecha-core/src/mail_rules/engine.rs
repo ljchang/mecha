@@ -905,14 +905,11 @@ impl Run<'_> {
         Ok(Some(Described {
             confirmed: confirmation.is_some_and(|c| c.confirms_active(&rule.name)),
             shadow_confirmed: confirmation.and_then(|c| c.shadow_verdict(&rule.name)),
+            // Under this build only, as `confirmed` is, so a row never says
+            // both "the pass chose X" and "unconfirmed" (review of #855).
             confirmation_choice: confirmation
-                .and_then(|c| c.active.as_ref())
                 .filter(|_| active.is_some())
-                .map(|a| {
-                    a.choice
-                        .as_ref()
-                        .map_or_else(|| "none".to_string(), |hit| hit.name.clone())
-                }),
+                .and_then(|c| c.active_choice()),
             active,
             shadow,
             input: match record.input {

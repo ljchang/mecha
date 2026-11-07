@@ -1450,7 +1450,9 @@ async fn classify(
             (Ok(v), Some(tool)) if !needs_body(v) && rules_need_body && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
-                        thread.body = body;
+                        // Kept, so a failed second pass leaves the text the
+                        // stored answer read — the confirmation pass reads it.
+                        let snippet = std::mem::replace(&mut thread.body, body);
                         match mecha_core::mail_triage::classify_asking(
                             provider.as_ref(),
                             &model,
@@ -1468,9 +1470,12 @@ async fn classify(
                                     mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
                                 rules_body += 1;
                             }
-                            Err(e) => eprintln!(
-                                "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
-                            ),
+                            Err(e) => {
+                                thread.body = snippet;
+                                eprintln!(
+                                    "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                                )
+                            }
                         }
                     }
                     Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
@@ -1480,7 +1485,7 @@ async fn classify(
             (Ok(v), Some(tool)) if needs_body(v) && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
-                        thread.body = body;
+                        let snippet = std::mem::replace(&mut thread.body, body);
                         // The same corrections and rules as the first pass.
                         // Escalation fires on `respond` or a named request
                         // kind — the threads the user cares most about — so a
@@ -1514,6 +1519,8 @@ async fn classify(
                             // The body pass failing is not the snippet pass
                             // being wrong.
                             Err(e) => {
+                                // And the text it read, for the confirmation.
+                                thread.body = snippet;
                                 eprintln!("      (second pass failed, keeping the first: {e:#})");
                                 verdict
                             }
@@ -1757,12 +1764,6 @@ async fn classify(
     Ok(())
 }
 
-/// The whole conversation, as text, for the second pass.
-///
-/// Capped at [`BODY_CHARS_MAX`] from the *end*, because `mail_get_thread`
-/// renders oldest-first and the newest message is the one asking for
-/// something — truncating the front of a long thread keeps the part a reply
-/// would answer.
 /// The `mail_recent` row key the sweep reads attachment presence from. A
 /// string key into another binary's output, so a test pins it to the writer:
 /// renamed on one side only, `as_bool()` would quietly read every row as
@@ -1807,7 +1808,7 @@ async fn ask_rules_only(
         if let Some((tool, ctx)) = get_thread {
             match fetch_body(tool, ctx, thread).await {
                 Ok(body) => {
-                    thread.body = body;
+                    let snippet = std::mem::replace(&mut thread.body, body);
                     match mecha_core::mail_triage::classify_asking(
                         provider,
                         model,
@@ -1823,9 +1824,12 @@ async fn ask_rules_only(
                             reading = second.unwrap_or_default();
                             input = RuleInput::FullBody;
                         }
-                        Err(e) => eprintln!(
-                            "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
-                        ),
+                        Err(e) => {
+                            thread.body = snippet;
+                            eprintln!(
+                                "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                            )
+                        }
                     }
                 }
                 Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
@@ -1874,6 +1878,12 @@ async fn confirm_reading(
     Some(out)
 }
 
+/// The whole conversation, as text, for the second pass.
+///
+/// Capped at [`BODY_CHARS_MAX`] from the *end*, because `mail_get_thread`
+/// renders oldest-first and the newest message is the one asking for
+/// something — truncating the front of a long thread keeps the part a reply
+/// would answer.
 async fn fetch_body(
     tool: &dyn mecha_core::tool::Tool,
     ctx: &mecha_core::tool::ToolCtx,

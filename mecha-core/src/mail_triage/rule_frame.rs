@@ -231,7 +231,7 @@ impl RuleRecord {
     }
 }
 
-fn one_line(text: &str) -> String {
+pub(super) fn one_line(text: &str) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     match flat.char_indices().nth(DESCRIBE_MAX_CHARS) {
         Some((cut, _)) => flat[..cut].to_string(),

@@ -3157,6 +3157,8 @@ fn confirmed(f: &Fixture, choice: Option<&str>, shadow: &[(&str, bool)]) {
                 agrees: *agrees,
                 quote: None,
                 refused: None,
+                answered: true,
+                failed: None,
             })
             .collect(),
     });
