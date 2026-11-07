@@ -835,11 +835,21 @@ command the owner forbids stays forbidden.
 not be answered by"). `ModeApprover` does not override `consult`, so it
 returns the trait default, `Blocked`, in every mode. A driven `shell` call
 reaches it two ways: an owner `prompt` rule a repository command matches,
-and, with no rule at all, `[approval] strict_inline_eval`, on by default,
-which floors any segment whose head runs its arguments (`timeout`, `env`,
-`make`, `xargs`, `find -exec`, `sh -c`, `bash -c`) at `prompt`. So
-`timeout 600 cargo test` is refused. A yes is not the answer: answering a
-`prompt` from policy is exactly what that ruling exists to stop. So in a
+and, **once any `[[policy]]` rule names `shell`**, `[approval]
+strict_inline_eval`, on by default, which floors any segment whose head
+runs its arguments (`timeout`, `env`, `make`, `xargs`, `find -exec`,
+`sh -c`, `bash -c`) at `prompt`. Then `timeout 600 cargo test` is refused.
+**With no `shell` rule loaded at all, the floor is unreachable:**
+`ExecPolicy::decide` returns `None` before either floor site when no rule
+names the tool (pinned by `no_rules_means_no_opinion_and_todays_behaviour`),
+the forced `allow` mode then answers every call, and every `shell` command
+in the jail runs unasked, `bash -c` included. That is acceptable inside a
+jail with no network and no sends, and it is the owner's config that decides
+which case a driven run is in. So D1b **records whether any `shell`
+`[[policy]]` rule was loaded**. An approval-floor count of zero is then
+distinguishable from a floor that was never reachable, because a dash is
+never a zero. Where the floor *is* reached, a yes is not the answer:
+answering a `prompt` from policy is exactly what that ruling exists to stop. So in a
 driven run **`prompt` is treated as `forbid`**. That is narrowing and fails
 closed, and it is recorded on the run. The refusal text is written for a
 driven run, never addressed to an owner who is not there. And D4 tags
@@ -1045,7 +1055,9 @@ passes vacuously.
   `trifecta = "block"`, so a driven run sends nothing (§7).
 - **R11, owed.** Whether `[approval] strict_inline_eval` may be relaxed
   inside a driven run's confined jail, so that `timeout`, `bash -c` and
-  `make` wrappers around allowlisted commands are not refused. Until then,
+  `make` wrappers around allowlisted commands are not refused. The question
+  arises only when the owner's file names `shell` rules (§7); with none, the
+  floor is unreachable and the run records that. Until then,
   `prompt` is `forbid` in a driven run and those rows are tagged
   approval-floor refusals (§7). Recommended: keep the floor, and decide from
   the pilot's count.
