@@ -13081,3 +13081,23 @@ suppresses capture keys before clearing operational references. Ordinary recall
 returns historical untrusted evidence, never current execution permission or an
 automatically adopted lesson. Production appraisal and external actions remain
 outside this synthetic-only runtime.
+
+**Reappraisal changes current interpretation without replacing the episode.**
+The outcome-recall pair keeps identical original source expectations in both arms;
+only one receives the actual retained action observation returned by bounded recall.
+Exact operational revision/content matching prevents a lookalike Evidence record
+from acquiring host-observation provenance. Missing retrieval is an error, never a
+silent direct-lookup fallback. The explicit same-workload fixture policy lets numeric
+actuals supersede expectations for decision arithmetic while preserving both records.
+This policy is not a universal truth hierarchy or automatic semantic belief adoption.
+Unknown/refused outcomes cannot supply numeric overrides, and historical feedback
+labels never become a current plan's feasibility judgment.
+
+**A frozen comparison is not permission to use revoked evidence.** Both arms use
+one frozen snapshot and exact auditable recall/projection; current source access,
+freshness and cancellation are rechecked after provider discovery and after inference.
+Invalidation stops the pair and returns no newly exposed source-dependent report;
+ordinary model failures remain failed rows. No transaction spans inference and no
+comparison writes a new action or changes source records. Source-supported scoring
+uses visible evidence only; hidden simulator outcomes belong to a separate offline
+score, so a missing measurement cannot masquerade as a reasoning failure.

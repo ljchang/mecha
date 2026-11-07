@@ -1034,3 +1034,49 @@ unknown and abstention cases exercise the actual CLI, restart and later recall.
 Current freshness is transitive: revising a consulted source makes its dependent
 actual outcome and feedback ineligible too. This prototype does not yet separate
 historical causal provenance from present evidential support.
+
+## Reappraising a recalled outcome (read-only paired evaluation)
+
+`evaluate-outcome-recall` compares the same original source expectations with and
+without one actual retained action observation. It requires a finalized synthetic
+v5 action and the same workload; it neither creates a new action nor revises the
+original episode. The actual observation must appear in bounded ordinary recall
+and match the authenticated operational revision and bytes. A recall miss fails
+preparation rather than silently substituting a direct lookup.
+
+```sh
+mecha memory --experimental --db /tmp/new.memory-prototype.sqlite \
+  evaluate-outcome-recall --synthetic-input --domain synthetic-demo \
+  --scope fixture-mail --action ACTION_ID \
+  --contract '{"workload":"durable-action-fixture-v1","objective":"minimize_minutes","energy_budget":4,"minimum_quality":7}' \
+  --query 'Nori' --model RESIDENT_MODEL --prepare-only
+```
+
+The contract is an explicit synthetic decision contract with the original workload
+and current energy/quality constraints. Save the exported snapshot and pass its
+JSON through `--snapshot` on every later preparation and run. Remove
+`--prepare-only` and supply explicit `--endpoint http://127.0.0.1:8080` and
+`--holds-dir /path/to/holds` to make one first-response call per arm. `--seed`
+defaults to 7; `--outcome-first` reverses the order. There is no repair call or
+implicit production configuration. Current source checks run again after model
+discovery and after each inference; source invalidation aborts the pair without a
+new source-bearing report. Ordinary model failures remain failed rows.
+
+Original expectations and actuals remain visibly distinct. For this same-workload
+fixture only, a numeric actual supersedes its expectation in current arithmetic.
+Refused/unknown outcomes supply no numeric override. Historical feedback and old
+recommendations do not enter either prompt. All comparison passages must be cited,
+including for a proposed abstention; a withheld proposal is not a correct model
+abstention. Returned reports are private, untrusted, advisory and `executed:false`.
+
+The independent `outcome_reappraisal_trial.py` runner consumes an existing saved
+mismatch database and action. It freezes five pairs at seeds 7 and 19 before
+calling the resident model, threads the exact snapshot through every invocation,
+compares full preparations including raw recall, and refuses reused output paths.
+It scores visible-evidence reasoning separately from hidden simulator performance;
+the fifth pair deliberately contains an unobserved error in an alternative's
+source quality. That diagnostic must not be described as a reasoning failure when
+the answer follows all visible evidence. The runner records cost, missing usage,
+failed or incomplete calls, and database content before/after. These development
+cases do not establish generalization or equal-token efficiency. This evaluation
+has no durable inference-resume contract and does not replay an interrupted pair.

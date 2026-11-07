@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental memory adds a read-only outcome-recall comparison. Original source
+  expectations and an actual retained outcome stay separate while two matched
+  model conditions evaluate a new goal. Frozen retrieval, current-source guards
+  and independent scoring keep historical feedback distinct from current advice;
+  this does not execute another action or enable production memory.
+
 - Experimental memory adds an explicit v5 synthetic-action store and
   `init-action` / `durable-act bind/run/status/cancel`. A separately authorized
   fixed simulator can consume one authenticated recommendation, retain actual
@@ -64,10 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Experimental memory: add tool-free, source-linked extraction of synthetic plan actions, conditions and branches, with provenance checks and separate semantic/guard-coverage diagnostics. No actions execute.
 
-
 - Experimental memory: pure typed action/branch guard coverage with separate rule applicability and met/unmet/unknown arms; synthetic qualification only, no action execution or authority.
-
-### Added
 
 - **Automatic mail-rule passes, opt-in.** Enable `mail_rules` with `mail` for
   five-minute header passes and an isolated post-classify hook. Timer overlap
