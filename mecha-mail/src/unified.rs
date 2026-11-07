@@ -354,7 +354,8 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                     "body_markdown": {"type": "string"},
                     "account": item_account("The account the thread lives in. Omit it and the account holding this thread_id is looked up."),
                     "message_id": {"type": "string", "description": "Reply to this specific message instead of the newest one."},
-                    "reply_all": {"type": "boolean", "default": false}
+                    "reply_all": {"type": "boolean", "default": false},
+                    "from_only": {"type": "boolean", "default": false, "description": "Address only the message's From address: never its Reply-To, never anyone else."}
                 },
                 "required": ["thread_id", "body_markdown"]
             },
@@ -1248,6 +1249,23 @@ pub(crate) fn reply_target<'a>(emails: &'a [Email], wanted: Option<&str>) -> Opt
 /// (or, when the target is the user's own message, its recipients), keep
 /// everyone on for reply-all, and never put the user's own address on the
 /// list. Returns `(to, cc, subject)`.
+/// Why a `from_only` reply cannot be made: it answers exactly the message's
+/// From, so it needs one that is not the owner's own, and never reply-all.
+pub(crate) fn from_only_refusal(
+    target: &Email,
+    self_address: Option<&str>,
+    reply_all: bool,
+) -> Option<String> {
+    if reply_all {
+        return Some("from_only and reply_all cannot both be set".into());
+    }
+    let from = target.from_address.trim();
+    if from.is_empty() || self_address.is_some_and(|a| a.eq_ignore_ascii_case(from)) {
+        return Some("from_only: the message has no sender to answer but you".into());
+    }
+    None
+}
+
 pub(crate) fn gmail_reply_fields(
     target: &Email,
     self_address: Option<&str>,
@@ -1770,16 +1788,32 @@ impl MailTools {
                         None => format!("thread {thread_id} has no messages"),
                     });
                 };
+                // A narrowing, never a widening: the reply answers one
+                // person, the message's From (MAIL-RULES-DESIGN.md §5.4).
+                // A mail rule's staged reply sets it.
+                let from_only = args
+                    .get("from_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if from_only {
+                    if let Some(why) =
+                        from_only_refusal(target, account.address.as_deref(), reply_all)
+                    {
+                        return refuse(why);
+                    }
+                }
 
                 let html = markdown_to_html(&body_md);
                 let result = match account.provider {
                     Provider::Outlook => {
                         let target_id = target.provider_id.clone();
+                        let only = from_only.then(|| target.from_address.trim().to_string());
                         with_token(&account.manager, |t| {
-                            let (target_id, html) = (target_id.clone(), html.clone());
+                            let (target_id, html, only) =
+                                (target_id.clone(), html.clone(), only.clone());
                             async move {
                                 OutlookProvider::new(t)
-                                    .reply(&target_id, &html, reply_all)
+                                    .reply(&target_id, &html, reply_all, only.as_deref())
                                     .await
                             }
                         })
@@ -3250,6 +3284,24 @@ mod tests {
         assert_eq!(rows[0]["subject"], "new");
         assert_eq!(rows[0]["account"], "campus");
         assert_eq!(rows[1]["account"], "personal");
+    }
+
+    #[test]
+    fn a_from_only_reply_answers_one_sender_who_is_not_you() {
+        let mut e = email("dana@example.com", &[], &[], "Booking");
+        e.reply_to = Some("elsewhere@example.net".into());
+        assert_eq!(
+            from_only_refusal(&e, Some("owner@example.edu"), false),
+            None
+        );
+        assert!(from_only_refusal(&e, Some("owner@example.edu"), true).is_some());
+        assert!(from_only_refusal(&e, Some("DANA@example.com"), false).is_some());
+        e.from_address = " ".into();
+        assert!(from_only_refusal(&e, None, false).is_some());
+        // Gmail's addressing never reads Reply-To: the From is the one recipient.
+        let e = email("dana@example.com", &[], &[], "Booking");
+        let (to, cc, _) = gmail_reply_fields(&e, Some("owner@example.edu"), false);
+        assert_eq!((to.as_str(), cc), ("dana@example.com", None));
     }
 
     #[test]

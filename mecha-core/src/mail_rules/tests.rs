@@ -138,7 +138,7 @@ fn loader_parses_all_matchers_and_holds_a_description_whose_preconditions_the_sw
 }
 
 #[test]
-fn all_action_groups_load_and_outbound_cannot_leave_shadow() {
+fn all_action_groups_load_and_only_a_template_reply_leaves_shadow() {
     let home = Home::new();
     let store = home.store();
     let text = text(
@@ -153,7 +153,23 @@ fn all_action_groups_load_and_outbound_cannot_leave_shadow() {
     ]);
     let rule = store.install("notices", &text, &files).unwrap();
     for group in rule.definition.groups() {
-        if group.is_outbound() {
+        if group == ActionGroup::FixedWords {
+            // P4b-2a: a template reply may be staged (propose), never sent
+            // unattended yet; auto is refused by the ceiling.
+            approve(&store, &rule, group, Mode::Propose);
+            let refused = store
+                .change_mode(
+                    &rule.name,
+                    group,
+                    Mode::Auto,
+                    Some(Actor::Owner),
+                    &rule.approval_digest,
+                    &owner_holds(),
+                )
+                .unwrap();
+            assert!(refused.refused);
+            assert_eq!(refused.target, Mode::Propose);
+        } else if group.is_outbound() {
             let before = fs::read(store.root().join("approvals.jsonl")).unwrap();
             let decision = store
                 .change_mode(
@@ -3775,6 +3791,7 @@ fn mail_rules_p3_retrospective_rows_include_envelope_and_provider_arrival_withou
         list_id: None,
         headers: BTreeMap::new(),
         classified: None,
+        sending: Default::default(),
     };
     let rows = test_match(&rule, &candidate, Some(false), now).unwrap();
     assert_eq!(rows.len(), 1);

@@ -4887,6 +4887,17 @@ or raise that would add entries past the cap; lowerings are never checked.
 A description rule's Mailbox group is capped at `propose` when it contains
 `trash`, and its outbound groups at `shadow` until P4b-2.
 
+**A rule's template reply is staged, never sent, in P4b-2a.** The Fixed words
+group is supported up to `propose`. `mail_rules::send` fills the closed
+slots and applies §5.4's refusals in every non-off mode, shadow included;
+the per-sender week reads the ledger. At dispatch the engine renders the
+template and calls `Mailbox::stage_reply`, which the mail binary implements
+as `OutboxStore::stage_by_harness` of the routed `mail_reply` tool with
+`from_only: true`; the `staged` row keeps `outbox_item`, and every pass
+begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
+`rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
+a model may also set; it can only remove recipients.
+
 **A description rule's task is decided by a pass with no learned rules in
 it (P4b-1).** `mail_triage::confirm` asks the candidates' descriptions alone,
 with an instruction compiled into the binary; the sweep stores its answer on

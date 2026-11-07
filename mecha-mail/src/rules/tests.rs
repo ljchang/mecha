@@ -21,6 +21,20 @@ fn candidate_uses_newest_inbound_and_refuses_missing_direction_or_dates() {
     .unwrap();
     assert_eq!(c.message.provider_message_id, "inbound");
     assert!(c.classified.is_none());
+    // A reply's guards: the owner has sent in this thread, and the facts it
+    // needs are the read's own (§5.4).
+    assert_eq!(c.sending.owner_participated, Some(true));
+    assert_eq!(c.sending.from_name, "Untrusted display name");
+    assert_eq!(c.sending.owners, vec!["owner@example.edu".to_string()]);
+    let alone = candidate(
+        "campus",
+        "thread-alpha",
+        &emails[..1],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(alone.sending.owner_participated, Some(false));
     assert!(candidate("campus", "thread-alpha", &emails, &[], None).is_err());
     let mut unknown = inbound;
     unknown.is_draft = None;

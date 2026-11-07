@@ -109,6 +109,16 @@ pub struct OutlookProvider {
     scripted_mailbox: Option<std::sync::Arc<std::sync::Mutex<tests::Mailbox>>>,
 }
 
+/// A reply's request body: the HTML, and, when `only` is given, exactly that
+/// recipient, which replaces whatever Graph would derive from the message.
+fn reply_body(body: &str, only: Option<&str>) -> Value {
+    let mut message = json!({"body": {"contentType": "HTML", "content": body}});
+    if let Some(to) = only {
+        message["toRecipients"] = json!([{"emailAddress": {"address": to}}]);
+    }
+    json!({"message": message})
+}
+
 impl OutlookProvider {
     pub fn new(access_token: String) -> Self {
         Self {
@@ -409,11 +419,14 @@ impl OutlookProvider {
     /// Reply to a message, in its conversation. Graph sets `In-Reply-To`,
     /// `References`, and `conversationId` itself — which is the whole reason
     /// this is a separate operation from [`Self::send_email`].
+    /// `only`: address exactly this recipient, never the message's
+    /// `replyTo` — Graph's reply would otherwise follow it.
     pub async fn reply(
         &self,
         message_id: &str,
         body: &str,
         reply_all: bool,
+        only: Option<&str>,
     ) -> Result<(), MailError> {
         let verb = if reply_all { "replyAll" } else { "reply" };
         let resp = send_with_retry(
@@ -421,7 +434,7 @@ impl OutlookProvider {
                 reqwest::Method::POST,
                 &format!("{GRAPH}/me/messages/{}/{verb}", urlencode(message_id)),
             )
-            .json(&json!({"message": {"body": {"contentType": "HTML", "content": body}}})),
+            .json(&reply_body(body, only)),
         )
         .await?;
         self.ok_or_err(resp).await
@@ -2218,6 +2231,18 @@ mod tests {
         parse_outlook_message(
             &json!({"id":"message-1", "conversationId":"thread-1", "internetMessageHeaders":headers}),
         )
+    }
+
+    #[test]
+    fn a_from_only_reply_names_its_one_recipient_and_a_plain_one_names_none() {
+        let only = reply_body("<p>x</p>", Some("dana@example.com"));
+        assert_eq!(
+            only["message"]["toRecipients"],
+            json!([{"emailAddress": {"address": "dana@example.com"}}])
+        );
+        assert!(reply_body("<p>x</p>", None)["message"]
+            .get("toRecipients")
+            .is_none());
     }
 
     #[test]

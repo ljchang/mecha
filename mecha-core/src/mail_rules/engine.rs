@@ -65,6 +65,32 @@ pub struct Candidate {
     pub list_id: Option<String>,
     pub headers: BTreeMap<String, Vec<String>>,
     pub classified: Option<Classified>,
+    /// What a reply's guards read (§5.4). Empty by default: a host that
+    /// cannot supply them gets no reply staged on their absence alone, since
+    /// each guard keys on a fact being present.
+    pub sending: SendFacts,
+}
+
+/// The facts a send's guards read that header matching does not.
+#[derive(Debug, Clone, Default)]
+pub struct SendFacts {
+    /// The `From` display name: prose, the sender's, for `{sender_first_name}`.
+    pub from_name: String,
+    /// Whether the owner has sent a message in the thread; None is unknown.
+    pub owner_participated: Option<bool>,
+    /// Every address the owner sends from: each account's own, plus aliases.
+    pub owners: Vec<String>,
+}
+
+/// Where a staged send stands in the outbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StagedFate {
+    Waiting,
+    ReleasedUnchanged,
+    Edited,
+    Rejected,
+    /// The item is gone, or unreadable: nothing is settled from it.
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +215,17 @@ pub trait Mailbox: Send + Sync {
     /// must leave this Unknown, which holds automatic Board actions.
     fn origin_gate(&self, _rule: &LoadedRule) -> GateStatus {
         GateStatus::Unknown
+    }
+    /// Stage a template reply in the owner's outbox, answering exactly the
+    /// candidate's authorised message, to its authenticated `From` only.
+    /// Returns the outbox item id. A host with no outbox holds, dispatching
+    /// nothing.
+    async fn stage_reply(&self, _candidate: &Candidate, _body: &str) -> Result<String, HeldReason> {
+        Err(HeldReason::NotDispatched("no outbox".into()))
+    }
+    /// Where a staged item stands now.
+    fn staged_fate(&self, _item: &str) -> StagedFate {
+        StagedFate::Unknown
     }
 }
 
@@ -814,6 +851,100 @@ impl Run<'_> {
             ClaimStatus::Claimed
         }
     }
+    /// §5.4's per-sender limit: this rule already answered this sender —
+    /// a reply staged, sent or still pending — within the last seven days.
+    fn answered_this_week(&self, rule: &LoadedRule, c: &Candidate) -> bool {
+        let Some(sender) = parsed_address(&c.message.sender) else {
+            return false;
+        };
+        let since = self.options.clock.now() - Duration::days(super::send::PER_SENDER_DAYS);
+        self.rows.iter().any(|r| {
+            r.rule == rule.name
+                && r.group == ActionGroup::FixedWords
+                && matches!(
+                    r.outcome,
+                    Outcome::Pending
+                        | Outcome::Staged
+                        | Outcome::Sent
+                        | Outcome::ReleasedUnchanged
+                        | Outcome::Edited
+                        | Outcome::Held
+                )
+                && r.at.is_some_and(|at| at >= since)
+                && parsed_address(&r.message.sender).is_some_and(|s| s == sender)
+        })
+    }
+
+    /// Render the rule's template for this message and stage it.
+    async fn stage_reply(
+        &self,
+        rule: &LoadedRule,
+        action: &Action,
+        c: &Candidate,
+    ) -> Result<String, HeldReason> {
+        let template = action
+            .template
+            .as_ref()
+            .and_then(|name| rule.files.get(name))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .ok_or_else(|| HeldReason::Other("template unreadable".into()))?;
+        let today = self
+            .options
+            .clock
+            .now()
+            .with_timezone(&self.options.timezone)
+            .format("%Y-%m-%d")
+            .to_string();
+        let body = super::send::render(template, &c.sending.from_name, &c.message.subject, &today);
+        self.mailbox.stage_reply(c, &body).await
+    }
+
+    /// Settle every staged send whose outbox item has been released or
+    /// rejected since: one closing row each, linked to the staged row and
+    /// its item, so the ledger shows what the owner did with it (§8).
+    fn settle_staged(&mut self) -> Result<()> {
+        let waiting: Vec<LedgerRow> = self
+            .rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Staged && r.outbox_item.is_some())
+            .filter(|staged| {
+                !self.rows.iter().any(|later| {
+                    later.correction_of.as_deref() == Some(staged.id.as_str())
+                        && matches!(
+                            later.outcome,
+                            Outcome::ReleasedUnchanged | Outcome::Edited | Outcome::Rejected
+                        )
+                })
+            })
+            .cloned()
+            .collect();
+        for staged in waiting {
+            let item = staged.outbox_item.clone().unwrap_or_default();
+            let outcome = match self.mailbox.staged_fate(&item) {
+                StagedFate::ReleasedUnchanged => Outcome::ReleasedUnchanged,
+                StagedFate::Edited => Outcome::Edited,
+                StagedFate::Rejected => Outcome::Rejected,
+                StagedFate::Waiting | StagedFate::Unknown => continue,
+            };
+            let mut row = staged.clone();
+            row.id = uuid::Uuid::new_v4().to_string();
+            row.at = Some(self.options.clock.now());
+            row.outcome = outcome;
+            row.closes = true;
+            row.settlement = None;
+            row.correction_of = Some(staged.id.clone());
+            row.reason = String::new();
+            if !self.options.dry_run {
+                self.store.append_ledger(&row)?;
+                self.sync_ledger()?;
+            } else {
+                self.remember_row(row.clone());
+            }
+            self.report_row(row);
+        }
+        Ok(())
+    }
+
     fn snapshot(
         &self,
         rule: &LoadedRule,
@@ -1019,6 +1150,20 @@ impl Run<'_> {
             .iter()
             .filter(|r| matched.iter().any(|m| m.name == r.name) || described.contains_key(&r.name))
             .collect();
+        // §4.3: the outbound slot goes to the first matched rule by priority
+        // with an active outbound group, description rules included — but a
+        // description rule only through its active-list name, since a shadow
+        // match never authorises an active action.
+        let slot_candidates: Vec<&LoadedRule> = acting
+            .iter()
+            .copied()
+            .filter(|r| described.get(&r.name).is_none_or(|d| d.active.is_some()))
+            .collect();
+        let outbound = if self.options.pass == Pass::AfterClassify {
+            outbound_owner(&slot_candidates, &modes)
+        } else {
+            outbound
+        };
         let mut deferred = Vec::new();
         for rule in &matched {
             for (index, action) in rule.definition.actions.iter().enumerate() {
@@ -1191,6 +1336,28 @@ impl Run<'_> {
                 if self.options.pass == Pass::AfterClassify && !classified {
                     continue;
                 }
+                // §5.4's refusals bind a reply in every non-off mode, shadow
+                // included, so a would-have rate never counts a reply the
+                // guards would refuse.
+                if action.group() == ActionGroup::FixedWords {
+                    if let Some(guard) =
+                        super::send::reply_refusal(c)
+                            .map(str::to_string)
+                            .or_else(|| {
+                                self.answered_this_week(rule, c).then(|| {
+                                    "this sender was answered by this rule in the last 7 days"
+                                        .to_string()
+                                })
+                            })
+                    {
+                        row.outcome = Outcome::Skipped;
+                        row.closes = false;
+                        row.reason = guard;
+                        self.write(row)?;
+                        rule_handled = false;
+                        continue;
+                    }
+                }
                 if mode == Mode::Shadow {
                     self.write(row)?;
                     rule_handled = false;
@@ -1307,6 +1474,7 @@ impl Run<'_> {
                         None
                     };
                     let mut not_dispatched = false;
+                    let mut staged_item = None;
                     let (outcome, reason, failure) = if inputs_changed {
                         (
                             Outcome::Skipped,
@@ -1343,6 +1511,28 @@ impl Run<'_> {
                             "automatic brake".into(),
                             FailureKind::Unknown,
                         )
+                    } else if mode == Mode::Propose && action.group() == ActionGroup::FixedWords {
+                        if self.options.dry_run {
+                            (
+                                Outcome::Staged,
+                                "dry run: planned".into(),
+                                FailureKind::Unknown,
+                            )
+                        } else {
+                            match self.stage_reply(rule, action, c).await {
+                                Ok(item) => {
+                                    staged_item = Some(item);
+                                    (Outcome::Staged, String::new(), FailureKind::Unknown)
+                                }
+                                Err(HeldReason::NotDispatched(reason)) => {
+                                    not_dispatched = true;
+                                    (Outcome::Skipped, reason, FailureKind::Environment)
+                                }
+                                Err(other) => {
+                                    (Outcome::Failed, other.to_string(), FailureKind::Action)
+                                }
+                            }
+                        }
                     } else if mode == Mode::Propose {
                         (
                             Outcome::Offered,
@@ -1427,6 +1617,7 @@ impl Run<'_> {
                     provisional.remove(&row.id);
                     settled.mode = mode;
                     settled.failure_kind = failure;
+                    settled.outbox_item = staged_item;
                     let evidence_before_write = self.rows.len();
                     if not_dispatched {
                         // A persisted Held closes by outcome even with closes=false.
@@ -1608,6 +1799,10 @@ pub async fn apply(
             .collect(),
         report: ApplyReport::default(),
     };
+    // What the owner did with staged sends since the last pass, before any
+    // new decision: a rejection must be on the ledger before the same rule
+    // considers the same thread again.
+    run.settle_staged()?;
     let recovery_approvals = store.approvals()?;
     for row in run.rows.clone() {
         if row.outcome != Outcome::Pending || !selected(&row.rule) {

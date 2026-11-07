@@ -311,31 +311,31 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
             reason: super::describe::PRECONDITION_HOLD.into(),
         });
     }
-    if rule.definition.is_description() {
-        if group.is_outbound() {
-            // Tasks are confirmed since P4b-1; sends wait for their guards.
-            holds.push(ModeHold {
-                ceiling: Mode::Shadow,
-                reason: "a description rule's sends wait for the send guards (P4b-2)".into(),
-            });
-        }
-        if group == ActionGroup::Mailbox
-            && rule
-                .definition
-                .actions
-                .iter()
-                .any(|a| a.verb == ActionVerb::Trash)
-        {
-            // §5.5: a description generalises to mail resembling it, and a
-            // sender can write mail to resemble it; trash would bury it.
-            holds.push(ModeHold {
-                ceiling: Mode::Propose,
-                reason:
-                    "trash on a description match proposes; put trash in a header rule to run it \
-                         automatically"
-                        .into(),
-            });
-        }
+    if rule.definition.is_description()
+        && group == ActionGroup::Mailbox
+        && rule
+            .definition
+            .actions
+            .iter()
+            .any(|a| a.verb == ActionVerb::Trash)
+    {
+        // §5.5: a description generalises to mail resembling it, and a
+        // sender can write mail to resemble it; trash would bury it.
+        holds.push(ModeHold {
+            ceiling: Mode::Propose,
+            reason: "trash on a description match proposes; put trash in a header rule to run it \
+                     automatically"
+                .into(),
+        });
+    }
+    if group == ActionGroup::FixedWords {
+        // P4b-2a: a template reply is staged for the owner; sending one
+        // unattended needs the automatic path's guards (P4b-2b).
+        holds.push(ModeHold {
+            ceiling: Mode::Propose,
+            reason: "template replies are staged in your outbox until automatic sending arrives"
+                .into(),
+        });
     }
     if group == ActionGroup::Report {
         holds.push(ModeHold {

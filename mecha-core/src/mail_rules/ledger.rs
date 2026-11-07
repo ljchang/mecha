@@ -144,6 +144,10 @@ pub struct LedgerRow {
     /// Missing on historical rows; unknown attribution is never the owner.
     #[serde(default, deserialize_with = "wire")]
     pub actor: Option<crate::closure::Actor>,
+    /// The outbox item a `staged` send waits in, and that its settlement
+    /// (`released unchanged`, `edited`, `rejected`) was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox_item: Option<String>,
 }
 
 impl LedgerRow {
@@ -254,6 +258,7 @@ impl LedgerRow {
             wrong_match: false,
             affected_groups: Vec::new(),
             actor: None,
+            outbox_item: None,
         })
     }
 

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mail rules can draft template replies.** A rule's `reply` action with a
+  `template` file is rendered (the sender's first name, the subject and the
+  date are the only slots) and staged in your outbox to release, edit or
+  reject; nothing is sent unattended yet. Replies are refused to automated
+  senders, mailing lists, your own addresses, conversations you have joined,
+  and anyone the rule answered in the last week, and the ledger says which.
+  `mail_reply` gains `from_only`, which answers only the message's From.
+
 - **Mail rules can match on what a message says.** A rule with
   `match.describe` (or *Description* in the new-rule form) is checked by the
   classifier at each classify pass, which must quote the words in the message

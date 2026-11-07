@@ -2426,6 +2426,47 @@ confirmation from another build's frame confirms nothing; the shadow
 confirmation of a rule with no gate-failing text (every rule until P7) is the
 only shadow case.
 
+**P4b-2a implemented (2026-11-07): template replies, staged.** A `reply` with
+a `template` (the Fixed words group) is now supported, for header and
+description rules, up to `propose`: a matched message's reply is rendered from
+the owner's template and **staged in the outbox** for the owner to release,
+edit or reject, never sent unattended. `auto` for sends is P4b-2b, with
+DMARC, the mode-level holds, caps staging, the send brake and the approval
+screen's outbox line. In this phase:
+
+- `mail_rules::send` holds the closed slots (`{sender_first_name}`,
+  `{subject}`, `{today}`, each stating what it strips) and §5.4's refusals. A
+  template naming anything else, or with a stray brace, does not load.
+- Refusals bind in every non-off mode, shadow included, so a would-have rate
+  never counts a reply the guards would refuse: `Auto-Submitted` other than
+  `no`; `Precedence: bulk | list | junk`; `List-Id` or `List-Unsubscribe`; a
+  `noreply`/`mailer-daemon`/`postmaster` sender; one of the owner's own
+  addresses; a conversation the owner has sent in; and one reply per sender
+  per rule per seven days. Each guard keys on its fact being present, and the
+  row says which fired (`skipped: <guard>`).
+- The staged item is a `mail_reply` call through the tool `[outbox] tools`
+  routes, with `from_only: true` — a new narrowing on `mail_reply` that
+  addresses only the message's `From` (on Graph, an explicit recipient in
+  place of the `replyTo` the reply endpoint would follow) and refuses with
+  `reply_all` or on the owner's own message. A rule with no routed
+  `mail_reply` stages nothing and says so. The store and route are the
+  global config's, the ones the review surfaces read.
+- The staged row records its `outbox_item`; each pass first settles staged
+  rows whose item the owner has since released or rejected, as `released
+  unchanged`, `edited` or `rejected`, linked by `correction_of`.
+- The outbound slot (§4.3) is chosen over every acting rule, a description
+  rule only through its active-list name.
+
+Implementation choices, not owner rulings: the staged reply names its
+message by RFC `Message-ID` within its thread, since Outlook's immutable id
+would not match `mail_reply`'s ordinary read; with no `Message-ID` an Outlook
+release refuses rather than guess. Being sender-written, this must be
+re-examined before P4b-2b sends unattended. Verbatim `forward` waits for a
+decision on its release path: staging it needs a model-callable forward tool
+or a harness-only release, and that choice is the owner's. The rules page
+creates rules from `rule.toml` alone, so a reply rule with its template file
+is installed from a directory with `mecha mail rule add DIR`.
+
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
 

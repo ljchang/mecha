@@ -13,9 +13,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 use mecha_core::{
     mail_rules::{
         engine::{
-            self, ActionResult, Candidate, Classified, Mailbox, Pass, Task, TaskSink, ThreadRead,
+            self, ActionResult, Candidate, Classified, Mailbox, Pass, SendFacts, StagedFate, Task,
+            TaskSink, ThreadRead,
         },
-        Action, ActionVerb, FailureKind, GateStatus, LoadedRule, Outcome, RuleStore, TestMessage,
+        Action, ActionVerb, FailureKind, GateStatus, HeldReason, LoadedRule, Outcome, RuleStore,
+        TestMessage,
     },
     mail_triage::{self, rule_records},
     mcp::McpClient,
@@ -268,6 +270,17 @@ fn candidate(
         list_id: email.list_id.clone(),
         headers: email.headers.clone(),
         classified,
+        sending: SendFacts {
+            from_name: email.from_name.clone(),
+            // Any message the owner sent in this thread, drafts excluded.
+            // Every message's direction is known by here (checked above).
+            owner_participated: Some(
+                emails
+                    .iter()
+                    .any(|e| e.direction(owners) == Some(MailDirection::Sent)),
+            ),
+            owners: owners.to_vec(),
+        },
     })
 }
 
@@ -388,6 +401,78 @@ fn provider_proves_header_absence(provider: Provider, read: HeaderRead) -> bool 
 
 #[async_trait]
 impl Mailbox for RuleMailbox {
+    async fn stage_reply(&self, candidate: &Candidate, body: &str) -> Result<String, HeldReason> {
+        // The same store and route the owner's review reads: the global
+        // config's `[outbox]`, never a project's layered one.
+        let config = mecha_core::config::Config::load_global()
+            .map_err(|e| HeldReason::NotDispatched(format!("global config unreadable: {e:#}")))?;
+        let tool = config
+            .outbox
+            .tools
+            .iter()
+            .find(|t| t.rsplit("__").next() == Some("mail_reply"))
+            .cloned()
+            .ok_or_else(|| {
+                HeldReason::NotDispatched(
+                    "mail_reply is not outbox-routed in [outbox] tools, so there is no way to \
+                     release a staged reply"
+                        .into(),
+                )
+            })?;
+        let root = match config.outbox.dir {
+            Some(dir) => dir,
+            None => mecha_core::outbox::OutboxStore::default_root()
+                .map_err(|e| HeldReason::NotDispatched(format!("{e:#}")))?,
+        };
+        let store = mecha_core::outbox::OutboxStore::open(root)
+            .map_err(|e| HeldReason::NotDispatched(format!("outbox unavailable: {e:#}")))?;
+        // The RFC Message-ID names the authorised message inside its thread
+        // on both providers (`reply_target`); Outlook's immutable provider
+        // id would not match a reply's ordinary read. Absent, the provider
+        // id is given and an Outlook release refuses rather than guess.
+        let message = if candidate.message.message_id.is_empty() {
+            candidate.message.provider_message_id.clone()
+        } else {
+            candidate.message.message_id.clone()
+        };
+        let item = store
+            .stage_by_harness(
+                &tool,
+                serde_json::json!({
+                    "thread_id": candidate.message.thread_id,
+                    "account": candidate.message.account,
+                    "message_id": message,
+                    "body_markdown": body,
+                    "from_only": true,
+                }),
+            )
+            .map_err(|e| HeldReason::NotDispatched(format!("staging failed: {e:#}")))?;
+        Ok(item.id)
+    }
+
+    fn staged_fate(&self, item: &str) -> StagedFate {
+        let Some(store) = mecha_core::config::Config::load_global()
+            .ok()
+            .and_then(|config| match config.outbox.dir {
+                Some(dir) => Some(dir),
+                None => mecha_core::outbox::OutboxStore::default_root().ok(),
+            })
+            .and_then(|root| mecha_core::outbox::OutboxStore::open(root).ok())
+        else {
+            return StagedFate::Unknown;
+        };
+        match store.item(item) {
+            Ok(item) => match item.status.as_str() {
+                "pending" => StagedFate::Waiting,
+                "rejected" => StagedFate::Rejected,
+                "sent" if item.edited() => StagedFate::Edited,
+                "sent" => StagedFate::ReleasedUnchanged,
+                _ => StagedFate::Unknown,
+            },
+            Err(_) => StagedFate::Unknown,
+        }
+    }
+
     fn proves_header_absence(&self, account: &str) -> bool {
         // The Gmail get_thread path requests full messages without a header
         // mask. Graph's internetMessageHeaders can never prove absence.

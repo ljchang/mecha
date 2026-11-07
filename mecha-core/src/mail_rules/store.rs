@@ -418,6 +418,11 @@ impl RuleStore {
                         "typed send template requires a Subject: line"
                     );
                 }
+                if action.group() == ActionGroup::FixedWords
+                    && action.template.as_ref() == Some(file)
+                {
+                    super::send::validate_template(std::str::from_utf8(&bytes)?)?;
+                }
                 files.insert(file.clone(), bytes);
             }
             if let Some(skill_name) = &action.draft_with {
@@ -1268,6 +1273,7 @@ impl RuleStore {
                 wrong_match: false,
                 affected_groups: affected.to_vec(),
                 actor: None,
+                outbox_item: None,
             };
             self.append("ledger.jsonl", &row)?;
         }

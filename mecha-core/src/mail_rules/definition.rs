@@ -35,7 +35,7 @@ impl ActionGroup {
     pub fn supported(self) -> bool {
         matches!(
             self,
-            Self::Mailbox | Self::PrivateRecord | Self::Report | Self::Board
+            Self::Mailbox | Self::PrivateRecord | Self::Report | Self::Board | Self::FixedWords
         )
     }
 }

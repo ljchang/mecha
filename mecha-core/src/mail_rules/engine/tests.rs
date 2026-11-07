@@ -74,6 +74,9 @@ struct Fake {
     in_window: bool,
     gate: GateStatus,
     on_effect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Staged replies' bodies, and what the owner did with each item.
+    staged: Mutex<Vec<String>>,
+    fates: Mutex<BTreeMap<String, StagedFate>>,
 }
 impl Fake {
     fn new(now: DateTime<Utc>) -> Self {
@@ -104,6 +107,11 @@ impl Fake {
                     deadline: NaiveDate::from_ymd_opt(2026, 12, 1),
                     rules: None,
                 }),
+                sending: SendFacts {
+                    from_name: "Sender Example".into(),
+                    owner_participated: Some(false),
+                    owners: vec!["owner@example.edu".into()],
+                },
             }]),
             calls: Mutex::new(Vec::new()),
             results: Mutex::new(Vec::new()),
@@ -115,6 +123,8 @@ impl Fake {
             in_window: true,
             gate: GateStatus::Passing,
             on_effect: Mutex::new(None),
+            staged: Mutex::new(Vec::new()),
+            fates: Mutex::new(BTreeMap::new()),
         }
     }
     fn effect(&self, name: String) -> ActionResult {
@@ -193,6 +203,19 @@ impl Mailbox for Fake {
     }
     fn origin_gate(&self, _: &LoadedRule) -> GateStatus {
         self.gate
+    }
+    async fn stage_reply(&self, _: &Candidate, body: &str) -> Result<String, HeldReason> {
+        let mut staged = self.staged.lock().unwrap();
+        staged.push(body.into());
+        Ok(format!("item-{}", staged.len()))
+    }
+    fn staged_fate(&self, item: &str) -> StagedFate {
+        self.fates
+            .lock()
+            .unwrap()
+            .get(item)
+            .copied()
+            .unwrap_or(StagedFate::Waiting)
     }
 }
 #[derive(Default)]
@@ -3525,4 +3548,196 @@ fn the_sweep_confirms_a_task_candidate_against_every_eligible_task_rule_and_noth
         names(rules.shadow_confirmation(&reading(None, &["d-shadow-task", "c-archive"]))),
         vec!["d-shadow-task"]
     );
+}
+
+// ---- template replies, staged (P4b-2a) ----
+
+const REPLY: &str = "[[action]]\ndo = 'reply'\ntemplate = 'reply.md'\n";
+
+fn reply_rule(f: &Fixture, name: &str, matcher: &str) -> LoadedRule {
+    f.store
+        .install(
+            name,
+            &format!("description = 'Office hours'\n[match]\n{matcher}\n{REPLY}"),
+            &BTreeMap::from([(
+                "reply.md".to_string(),
+                "Hi {sender_first_name}, thanks for {subject}. Office hours are Fridays."
+                    .to_string(),
+            )]),
+        )
+        .unwrap()
+}
+
+/// The fixture's message, as one a person wrote: no list headers.
+fn personal(f: &Fixture) {
+    let mut cs = f.mail.candidates.lock().unwrap();
+    cs[0].list_id = None;
+    cs[0].headers.clear();
+}
+
+#[tokio::test]
+async fn a_proposed_template_reply_is_staged_with_its_slots_filled() {
+    let mut f = Fixture::new();
+    personal(&f);
+    let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+    f.options.pass = Pass::AfterClassify;
+    let report = f.run(None).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Staged,
+        "{:#?}",
+        report.rows
+    );
+    assert_eq!(report.rows[0].outbox_item.as_deref(), Some("item-1"));
+    assert!(report.rows[0].closes);
+    assert_eq!(
+        f.mail.staged.lock().unwrap()[0],
+        "Hi Sender, thanks for Re: Sender's untrusted task instructions. Office hours are Fridays."
+    );
+    // Staged once: a later message in the thread is refused (here by the
+    // per-sender week, checked before the thread's closed occasion).
+    f.mail.candidates.lock().unwrap()[0]
+        .message
+        .provider_message_id = "later".into();
+    let again = f.run(None).await;
+    assert_eq!(again.rows[0].outcome, Outcome::Skipped);
+    assert_eq!(f.mail.staged.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_guards_refuse_a_reply_in_every_mode_and_say_which() {
+    for (setup, why) in [
+        ("auto", "auto-submitted"),
+        ("list", "a mailing list"),
+        ("noreply", "an automated sender"),
+        ("own", "one of your own addresses"),
+        ("joined", "a conversation you have joined"),
+    ] {
+        let mut f = Fixture::new();
+        personal(&f);
+        {
+            let mut cs = f.mail.candidates.lock().unwrap();
+            match setup {
+                "auto" => {
+                    cs[0]
+                        .headers
+                        .insert("Auto-Submitted".into(), vec!["auto-replied".into()]);
+                }
+                "list" => {
+                    cs[0].headers.insert(
+                        "List-Unsubscribe".into(),
+                        vec!["<mailto:x@example.com>".into()],
+                    );
+                }
+                "noreply" => cs[0].message.sender = "no-reply@example.com".into(),
+                "own" => cs[0].sending.owners.push("sender@example.com".into()),
+                _ => cs[0].sending.owner_participated = Some(true),
+            }
+        }
+        let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+        f.options.pass = Pass::AfterClassify;
+        // Shadow too: a would-have rate never counts a refused reply.
+        let shadow = f.run(None).await;
+        assert_eq!(shadow.rows[0].outcome, Outcome::Skipped, "{setup}");
+        assert_eq!(shadow.rows[0].reason, why, "{setup}");
+        f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+        let proposed = f.run(None).await;
+        assert_eq!(proposed.rows[0].reason, why, "{setup}");
+        assert!(f.mail.staged.lock().unwrap().is_empty(), "{setup}");
+    }
+}
+
+#[tokio::test]
+async fn one_reply_per_sender_per_rule_per_week() {
+    let mut f = Fixture::new();
+    personal(&f);
+    let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+    f.options.pass = Pass::AfterClassify;
+    assert_eq!(f.run(None).await.rows[0].outcome, Outcome::Staged);
+    f.mail.next("beta");
+    let second = f.run(None).await;
+    assert_eq!(second.rows[0].outcome, Outcome::Skipped);
+    assert!(second.rows[0].reason.contains("last 7 days"));
+    assert_eq!(f.mail.staged.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn what_the_owner_did_with_a_staged_reply_is_written_back_once() {
+    let mut f = Fixture::new();
+    personal(&f);
+    let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+    f.options.pass = Pass::AfterClassify;
+    let staged = f.run(None).await.rows[0].clone();
+    f.mail
+        .fates
+        .lock()
+        .unwrap()
+        .insert("item-1".into(), StagedFate::Rejected);
+    for _ in 0..3 {
+        f.run(None).await;
+    }
+    let rejected: Vec<_> = f
+        .store
+        .ledger()
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.outcome == Outcome::Rejected)
+        .collect();
+    assert_eq!(rejected.len(), 1, "{rejected:#?}");
+    assert_eq!(
+        rejected[0].correction_of.as_deref(),
+        Some(staged.id.as_str())
+    );
+    assert!(rejected[0].closes);
+    assert_eq!(rejected[0].outbox_item.as_deref(), Some("item-1"));
+}
+
+#[test]
+fn a_template_naming_a_slot_outside_the_closed_set_does_not_install() {
+    let f = Fixture::new();
+    let error = f
+        .store
+        .install(
+            "bad",
+            &format!("description = 'Bad'\n[match]\nfrom_domain = ['example.com']\n{REPLY}"),
+            &BTreeMap::from([("reply.md".to_string(), "Dear {name}".to_string())]),
+        )
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("not a template slot"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_description_rules_reply_takes_the_outbound_slot_through_its_active_name() {
+    let mut f = Fixture::new();
+    personal(&f);
+    let r = f
+        .store
+        .install(
+            "office-hours",
+            &format!(
+                "description = 'Office hours'\n[match]\ndescribe = 'Questions about office hours'\n{REPLY}"
+            ),
+            &BTreeMap::from([(
+                "reply.md".to_string(),
+                "Office hours are Fridays.".to_string(),
+            )]),
+        )
+        .unwrap();
+    f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Active, true, RuleInput::FullBody);
+    let report = f.run(None).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Staged,
+        "{:#?}",
+        report.rows
+    );
+    assert_eq!(report.rows[0].verdict_input, VerdictInput::FullBody);
 }
