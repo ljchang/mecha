@@ -68,6 +68,13 @@ mod tests {
     fn saturates_at_the_top() {
         assert_eq!(add(Probe::top(), helper()), MAX);
     }
+
+    #[test]
+    fn keeps_its_text() {
+        let s = "first
+second";
+        assert!(s.contains("\nsecond"));
+    }
 }
 """
 
@@ -350,8 +357,9 @@ class Source(unittest.TestCase):
         try:
             self.assertEqual(
                 sorted(mecha_history.hidden_tests(self.merge)),
-                [("demo", "lib", "a_new_module_test"), ("demo", "lib", "saturates_at_the_top"),
-                 ("demo", "lib", "top_level_test"), ("demo", "test:fresh", "a_whole_new_file")],
+                [("demo", "lib", "a_new_module_test"), ("demo", "lib", "keeps_its_text"),
+                 ("demo", "lib", "saturates_at_the_top"), ("demo", "lib", "top_level_test"),
+                 ("demo", "test:fresh", "a_whole_new_file")],
             )
             self.assertEqual(self.source("setup", "pr-1").returncode, 0)
             # A test the run wrote under the hidden test's own name.
@@ -366,14 +374,17 @@ class Source(unittest.TestCase):
         start = grafted.index("mod tests {")
         module = grafted.index("    mod hidden_grade {", start)
         self.assertLess(module, grafted.index("fn helper()"), "grafted after the module's own items")
-        block = grafted[module:grafted.index("\n    }\n", module)]
+        block = grafted[module:grafted.index("fn helper()", module)]
         self.assertIn("use super::*;", block)
-        self.assertIn("        use std::u32::MAX;", block)
-        self.assertIn("        /// The top of the range does not wrap.", block)
-        self.assertIn("        fn saturates_at_the_top() {", block)
+        # Placed verbatim, never re-indented.
+        self.assertIn("\n    use std::u32::MAX;\n", block)
+        self.assertIn("\n    /// The top of the range does not wrap.\n", block)
+        self.assertIn("\n    fn saturates_at_the_top() {\n", block)
         # A helper with no attribute of its own is still the PR's test code.
-        self.assertIn("        impl Probe {", block)
-        self.assertIn("        struct Probe;", block)
+        self.assertIn("\n    impl Probe {\n", block)
+        self.assertIn("\n    struct Probe;\n", block)
+        # A multi-line string literal's lines are its value (review of #852, pass 5).
+        self.assertIn('\n        let s = "first\nsecond";\n', block)
         self.assertNotIn("fn adds()", block, "an item the pin already had is not grafted")
         self.assertEqual(grafted.count("fn saturates_at_the_top()"), 2)
         self.assertEqual(read(os.path.join(self.ws, "demo", "tests", "fresh.rs")), NEW_TEST_FILE)
@@ -381,15 +392,15 @@ class Source(unittest.TestCase):
         # test-only module at the end; the PR's non-test code never does.
         other = read(os.path.join(self.ws, "demo", "src", "other.rs"))
         tail = other[other.index("#[cfg(test)]\nmod hidden_grade {"):]
-        self.assertIn("    fn top_level_test() {", tail)
-        self.assertIn("    /// A test at the top of an ordinary source file.", tail)
+        self.assertIn("\nfn top_level_test() {", tail)
+        self.assertIn("\n/// A test at the top of an ordinary source file.", tail)
         self.assertNotIn("added_code() -> u32", other)
         # A test module the PR added whole is grafted once, as one item.
         third = read(os.path.join(self.ws, "demo", "src", "third.rs"))
         self.assertEqual(third.count("fn a_new_module_test()"), 1, third)
         self.assertEqual(third.count("mod hidden_grade {"), 1, third)
         tail = third[third.index("mod hidden_grade {"):]
-        self.assertIn("    /// The module is new, attributes and all.\n    #[cfg(test)]\n    mod tests {", tail)
+        self.assertIn("\n/// The module is new, attributes and all.\n#[cfg(test)]\nmod tests {", tail)
 
     def with_home(self):
         home = os.path.join(self.tmp.name, ".mecha")  # where `source` (HOME=tmp) puts it
@@ -432,8 +443,13 @@ class Source(unittest.TestCase):
         self.assertEqual(self.source("setup", "pr-1").returncode, 0)
         os.remove(os.path.join(self.ws, "demo", "src", "other.rs"))  # the run deleted it
         first = self.source("grade", "pr-1", stdin="{}")
-        self.assertEqual(first.returncode, 2, first.stdout)
-        self.assertIn("other.rs", first.stderr)
+        # The run's doing, so a verdict on the contract, never a harness error.
+        self.assertEqual(first.returncode, 0, first.stderr)
+        verdict = json.loads(first.stdout)
+        self.assertFalse(verdict["passed"])
+        self.assertIn("other.rs", verdict["detail"])
+        self.assertEqual(read(os.path.join(self.ws, "demo", "src", "lib.rs")).count("hidden_grade"), 0,
+                         "nothing is grafted when the plan is refused")
         second = self.source("grade", "pr-1", stdin="{}")
         self.assertEqual(second.returncode, 2)
         self.assertIn("graded already", second.stderr)
@@ -537,6 +553,21 @@ class Source(unittest.TestCase):
             argv = mecha_history.jail_argv(tc, "/work/clone", {"HOME": "/work/clone"})
         under_home = {a for a in argv if a == home or a.startswith(home + os.sep)}
         self.assertEqual(under_home, {tc}, "nothing of the home but the toolchain")
+
+    def test_the_runs_git_is_asked_only_inside_the_jail(self):
+        # The run owns `.git/config` (an fsmonitor, a filter driver): any git
+        # the grade asks of its tree runs confined (review of #852, pass 5).
+        from unittest import mock
+        seen = []
+        with mock.patch.object(mecha_history.shutil, "which", return_value="/usr/bin/bwrap"), \
+                mock.patch.object(mecha_history, "run",
+                                  side_effect=lambda argv, **kw: seen.append(argv) or
+                                  subprocess.CompletedProcess(argv, 0, " M a.rs\n?? b.rs\n", "")):
+            self.assertEqual(mecha_history.jailed_status("/opt/tc", "/work/clone"), ["a.rs", "b.rs"])
+        argv = seen[0]
+        self.assertEqual(argv[0], "/usr/bin/bwrap")
+        self.assertIn("--unshare-net", argv)
+        self.assertEqual(argv[argv.index("--") + 1], "git")
 
     def test_libtest_output_is_read_per_test(self):
         out = ("test tests::adds ... ok\n"

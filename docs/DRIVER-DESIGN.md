@@ -545,8 +545,12 @@ the text above:
   `driven/setup/`). Before each cargo call, the grade puts back `.cargo/`
   and an empty `.cargo-home/`, because a `[build] rustc` or a `runner` there
   chooses what prints the libtest lines it reads, and `.git/info/exclude`
-  hides those files from `git status`. Before its first call it also puts
-  back the repaired fixtures and compares `vendor/`. The residual is the run's own
+  hides those files from `git status`. It also puts back the repaired
+  fixtures each time, and compares `vendor/` once. The one `git` it asks of
+  the run's tree runs inside the jail, because the run owns `.git/config`,
+  where an fsmonitor or a filter driver would run a program of its choosing
+  under any `git` on the host. A tree with no place for the hidden tests (a file
+  the run deleted) is graded `passed: false`, not left unanswered. The residual is the run's own
   code: the grade executes it, so a test binary that forges libtest's
   output from inside the process is beyond this grade, and the driver
   reads diffs that touch `Cargo.toml` or a build script.

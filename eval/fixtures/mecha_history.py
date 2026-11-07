@@ -187,7 +187,7 @@ def jail_argv(tc, tree, env):
     return a + ["--"]
 
 
-RESTORE = {}  # tree -> setup's cargo config, set by `grade` for every call it makes
+RESTORE = {}  # tree -> (setup's cargo config, {repaired path: text}), set by `grade`
 
 
 def cargo(tc, tree, *args, jobs=None, require_backends=False, confined=False):
@@ -204,8 +204,8 @@ def cargo(tc, tree, *args, jobs=None, require_backends=False, confined=False):
     argv = [os.path.join(tc, "bin", "cargo"), "--offline", *args]
     if os.path.realpath(tree) in RESTORE:
         # The run's build scripts execute during the grade, and could rewrite
-        # `.cargo/` between two of its cargo calls: setup's goes back each time.
-        write_cargo_config(tree, RESTORE[os.path.realpath(tree)])
+        # setup's files between two of its cargo calls: they go back each time.
+        put_back(tree, *RESTORE[os.path.realpath(tree)])
     if confined:
         argv = jail_argv(tc, tree, env) + argv
     return run(["nice", "-n", "19", *argv], cwd=tree, env=env)
@@ -260,6 +260,15 @@ def write_cargo_config(tree, text):
         os.makedirs(os.path.join(tree, d))
     with open(os.path.join(tree, ".cargo", "config.toml"), "w") as fh:
         fh.write(text)
+
+
+def put_back(tree, config, repairs):
+    write_cargo_config(tree, config)
+    for path, text in repairs.items():
+        dest = os.path.join(tree, path)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w") as fh:
+            fh.write(text)
 
 
 def vendor_digest(tree):
@@ -414,40 +423,70 @@ def new_test_files(merge):
     return git("diff", "--name-only", "--diff-filter=A", f"{merge}^1", merge, "--", "*/tests/*.rs").split()
 
 
-def graft(tree, merge):
-    """Put the PR's added tests into `tree`: whole new integration-test files
-    copied, and added items in an existing test module grafted into a module
-    of their own, so a test the run wrote under the same name is not a
-    compile error charged to the model. Returns the names placed. Grafting
-    twice would be a duplicate module; `cmd_grade` holds the once (`claim`)."""
+class GraftRefused(Exception):
+    """The run's tree has no place for the hidden tests: the run's doing,
+    so the grade answers `passed: false`, never a harness error."""
+
+
+def graft_plan(tree, merge):
+    """{path: new text} for every file the graft writes, or GraftRefused.
+    Whole new integration-test files are copied; added items in an existing
+    test module go into a module of their own (`hidden_grade`), so a test the
+    run wrote under the same name is not a compile error charged to the
+    model. Items are placed verbatim, never re-indented: a multi-line string
+    literal's lines are its value (review of #852, pass 5)."""
+    writes = {}
     for path in new_test_files(merge):
-        dest = os.path.join(tree, path)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "w") as fh:
-            fh.write(git("show", f"{merge}:{path}"))
+        writes[path] = git("show", f"{merge}:{path}")
     for path, groups in added_items(merge).items():
         p = os.path.join(tree, path)
-        if not os.path.exists(p):
-            die(f"{path}: the run's tree has no such file to graft the hidden tests into")
+        if not os.path.isfile(p):
+            raise GraftRefused(f"{path}: the run's tree has no such file to graft the hidden tests into")
         with open(p) as fh:
             src = fh.read().split("\n")
         # Bottom of the file first, so an insertion never moves a later one.
         for module, indent, items in sorted(groups, key=lambda g: g[0] is not None):
             inner = indent + "    "
-            body = "\n\n".join(items).split("\n")
             block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {GRAFT_MOD} {{",
                      f"{inner}#[allow(unused_imports)]", f"{inner}use super::*;", ""]
-            block += [(inner + l[len(indent):] if l.strip() else "") for l in body] + [f"{indent}}}", ""]
+            block += "\n\n".join(items).split("\n") + [f"{indent}}}", ""]
             if module is None:
                 src += block
                 continue
             at = [i for i, l in enumerate(src) if re.match(rf"mod {module}\s*\{{", l)]
             if not at:
-                die(f"{path}: no `mod {module}` in the run's tree to graft into")
+                raise GraftRefused(f"{path}: no `mod {module}` in the run's tree to graft into")
             src[at[-1] + 1:at[-1] + 1] = block
-        with open(p, "w") as fh:
-            fh.write("\n".join(src))
+        writes[path] = "\n".join(src)
+    return writes
+
+
+def graft_apply(tree, writes):
+    for path, text in writes.items():
+        dest = os.path.join(tree, path)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w") as fh:
+            fh.write(text)
+
+
+def graft(tree, merge):
+    """Plan and apply; returns the names placed. Grafting twice would be a
+    duplicate module; `cmd_grade` holds the once (`claim`)."""
+    graft_apply(tree, graft_plan(tree, merge))
     return [n for _, _, n in hidden_tests(merge)]
+
+
+def jailed_status(tc, tree):
+    """The paths the run changed, by `git status` inside the grade's jail:
+    the run owns `.git/config`, and an fsmonitor or a filter driver there
+    would run a program of its choosing under any git on the host (review
+    of #852, pass 5)."""
+    env = jail_env(tree)
+    r = run(jail_argv(tc, tree, env) + ["git", "-c", "core.fsmonitor=false", "status", "--porcelain",
+                                         "--untracked-files=all"], cwd=tree, env=env)
+    if r.returncode != 0:
+        return None
+    return [l[3:] for l in r.stdout.splitlines() if l.strip()]
 
 
 def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False):
@@ -592,13 +631,9 @@ def restore_setup(ws, t):
         rec = json.load(fh)
     if rec.get("task") != t["id"]:
         die(f"this workspace was set up for {rec.get('task')}, not {t['id']}")
-    write_cargo_config(ws, rec["cargo_config"])
-    RESTORE[os.path.realpath(ws)] = rec["cargo_config"]
-    for fix in t.get("repair", []):
-        dest = os.path.join(ws, fix["path"])
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "w") as fh:
-            fh.write(git("show", f"{fix['from']}:{fix['path']}"))
+    repairs = {fix["path"]: git("show", f"{fix['from']}:{fix['path']}") for fix in t.get("repair", [])}
+    RESTORE[os.path.realpath(ws)] = (rec["cargo_config"], repairs)
+    put_back(ws, rec["cargo_config"], repairs)
     if vendor_digest(ws) != rec.get("vendor_sha256"):
         return "the vendored crates differ from setup's"
     return None
@@ -661,18 +696,24 @@ def cmd_grade(task_id):
         json.load(sys.stdin)
     except ValueError:
         pass  # the verdict is the tests', never the run's own report
-    changed = git("status", "--porcelain", cwd=ws).strip()
     tc = toolchain_dir(t, t["pin"])
     tests = hidden_tests(t["merge"])
     # Taken before the tree is touched: a graft that dies partway leaves the
     # tree spent, never open to a second graft (review of #852, pass 4).
     claim(ws, t["id"])
-    tampered = restore_setup(ws, t)
-    if tampered:
-        json.dump({"passed": False, "detail": tampered,
-                   "checks": [{"name": "setup's files", "passed": False, "detail": tampered}]}, sys.stdout)
+    refused = restore_setup(ws, t)
+    if not refused:
+        try:
+            writes = graft_plan(ws, t["merge"])
+        except GraftRefused as e:
+            refused = str(e)
+    if refused:
+        json.dump({"passed": False, "detail": refused,
+                   "checks": [{"name": "the tree takes the grade", "passed": False, "detail": refused}]}, sys.stdout)
         return
-    names = graft(ws, t["merge"])
+    changed = jailed_status(tc, ws)
+    graft_apply(ws, writes)
+    names = [n for _, _, n in tests]
     hidden = run_hidden(tc, ws, tests, jobs=4, confined=True)
     checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
     pre = t["baseline"]["failing"]
@@ -683,8 +724,9 @@ def cmd_grade(task_id):
         checks.append({"name": f"regressions: {crate} {' '.join(selection(crate))}", "passed": ok, "detail": detail})
     passed = bool(names) and all(c["passed"] for c in checks)
     detail = (f"{sum(v == 'pass' for v in hidden.values())}/{len(hidden)} hidden tests pass"
-              + ("" if changed else "; the run left the tree unchanged"))
-    json.dump({"passed": passed, "detail": detail, "checks": checks}, sys.stdout)
+              + ("; the run left the tree unchanged" if changed == [] else ""))
+    # `changed` is diagnostic (the driver reads it); `passed` never does.
+    json.dump({"passed": passed, "detail": detail, "checks": checks, "changed": changed}, sys.stdout)
 
 
 def selection(crate):
