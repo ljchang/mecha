@@ -123,6 +123,17 @@ The shape:
   *and* the driven store's; that load is the default for a real-home run
   only. An owner run never opens the driven store. `Driven` stays in
   `Situation::MARK_KINDS`, because nothing needs it as a scope key.
+- **The rule cap applies to the union, not to each store.**
+  `MAX_ACTIVE_RULES_PER_DOMAIN` is per store, and its startup warning opens
+  one store, so a run carrying both could render twice the cap in one
+  domain, past the adherence cliff that cap exists for, with nothing
+  warning. That would confound §4: a harness-affordance verdict and a
+  degraded-prefix verdict would look the same, and D2's measurement would
+  read the lift of a longer prompt. So at render, driven rules take only
+  the room the owner's active rules leave in their domain, and the owner's
+  rules are never displaced. A driven rule with no room does not render, and
+  the positive check below then fails its trial loudly rather than reading
+  a zero. When the mark is set, the startup warning asks the union.
 - **The mark narrows alone, and adds only with a second factor.** Every
   other reader of `MECHA_SESSION_KIND` treats it as narrowing: it hides a
   session, or (D1b) turns surfaces off. Loading the driven store is the one
@@ -625,8 +636,15 @@ rather than trusting each run to be configured right:
   rather than by a guard. Keeping them would be a *measurement* choice (does
   the model waste turns reaching for the network), and would have to be
   named as one. Every other tool, feature-gated or MCP, is absent from a
-  driven run unless this document names it. A tool added later is then out of driven runs by
-  default, failing closed, where a sweep over levers would have let it in.
+  driven run unless this document names it. A tool added later is then out
+  of driven runs by default, failing closed, where a sweep over levers would
+  have let it in. **The allowlist is implemented through `opts.tools`**, the
+  same narrowing a front-end's tool list uses. The startup check that warns
+  "`[outbox] routes` a name which is not a registered tool ... this routing
+  protects nothing" is deliberately unconditional, and it stays quiet only
+  for a name narrowed out that way. Any other mechanism would make every
+  routed name in the owner's global `[outbox] tools` warn on every driven
+  start, for a reason that is not a typo.
   The run record's `features_on` already sits beside `levers_off`, and the
   registered tool list is recorded with them.
 - **Kept**: those builtins (under the interlock as always), the owner's
@@ -640,7 +658,11 @@ rather than trusting each run to be configured right:
   the harness is measured as the owner runs it, and accepted that it reaches
   the ceiling's provider, along with the rest of the system prompt and any
   transcript a D5 fork replays (§9, R8).
-- **Kept on purpose: the outbox.** With the outbox on, a routed call stages
+- **Kept on purpose: the outbox, as defence in depth.** The allowlist
+  registers no sender, so in the pilot nothing can stage at all and the
+  queue marking below has no reachable case today. A reviewer of D1b's
+  build need not look for surface work there. It is for the day a ruling
+  admits a sender. With the outbox on, a routed call stages
   rather than executes. Turning it off would make a routed call run
   directly, and staging is the safer of the two. This does not contradict
   "no sends at all" above: the leak guard runs only on an unrouted call
@@ -660,8 +682,20 @@ rather than trusting each run to be configured right:
   owner's.
 
 D1b lands before the first driven run, not with D1: the mark alone gives a
-run nothing new. **Both directions are refused at start.** A run marked
-driven is refused if any forced-off surface is still attached. And a run
+run nothing new. **Both directions are refused at start, and so is a
+sandbox that would refuse everything.** A run marked driven is refused if
+any forced-off surface is still attached. It is also refused unless the
+resolved sandbox is a backend where `can_reach_network()` is false
+(bwrap or docker with `network = false`). With the leak guard forced on,
+`shell` reports `Egress::Chosen` whenever the sandbox can reach the network,
+which is true of `Backend::None` (the default), of Landlock, and of a
+networked bwrap or docker. `Sandbox::preflight` returns `Ok` for a disabled
+sandbox, so nothing refused that start before. Every `cargo build`,
+`cargo test` and `git diff` would then be refused, a wall of harness
+refusals for D4 to attribute: the cost the `web_search` bullet argues
+against, applied to the allowlist's central tool. This makes R7's
+`[sandbox]` entries a precondition of a driven run rather than a
+recommendation. And a run
 *not* marked driven is refused if a home-side driven marker (§2) names its
 workspace. For the store load, "a marker with no mark" fails dark; for D1b
 it is the unsafe direction, because every surface the mark removes is gated
@@ -813,7 +847,7 @@ passes vacuously.
   rules live in their own learning store, which owner runs never open, so
   every failure leaves a driven rule dark rather than applying it to the
   owner's sessions. To be revisited when the v2 memory system rolls out (D2).
-- **R7, recommended, the owner's config.** A driven run reaches the Rust
+- **R7, the owner's config, and a precondition of a driven run** (D1b refuses a start whose sandbox can reach the network). A driven run reaches the Rust
   toolchain through the owner's `[sandbox] readable` (the toolchain trees,
   never the mecha home or a parent of it) and `[sandbox] env` (`CARGO_HOME`,
   `RUSTUP_HOME`) in the owner's **global** file. `PATH` is *not* named
