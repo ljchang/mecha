@@ -542,3 +542,112 @@ async fn abstaining_from_complete_comparison_still_requires_visible_sources() {
         json!(["missing_citations"])
     );
 }
+
+// An audit-only recall hit is still newly disclosed by the returned report.
+// Omitting it from the current-source closure must fail this regression.
+#[tokio::test]
+async fn unrelated_raw_recall_invalidation_during_call_aborts_without_next_arm() {
+    for mutation in ["restrict", "forget", "revise"] {
+        let mut f = Fixture::new(FixtureState::Baseline).await;
+        let mut unrelated = f.source.clone();
+        unrelated.source.id = "unrelated-recall".into();
+        unrelated.text = "Nori UNRELATED_RAW_RECALL_CANARY".into();
+        let reference = f.db.capture(unrelated.clone()).unwrap();
+        let pair = f.pair(4, 7);
+        assert!(pair
+            .raw_recall
+            .iter()
+            .any(|hit| hit.anchor.reference == reference));
+        pair.recheck(&f.db, &f.access).unwrap();
+        let path = f.path();
+        let mut calls = 0;
+        let result = evaluate_pair(
+            &f.db,
+            &pair,
+            &f.access,
+            "scripted-fixture",
+            [Arm::SourceOnly, Arm::SourceAndOutcome],
+            |_, _, _| {
+                calls += 1;
+                let path = path.clone();
+                let mut source = unrelated.clone();
+                async move {
+                    tokio::task::yield_now().await;
+                    let mut db = Memory::open(&path)?;
+                    match mutation {
+                        "restrict" => {
+                            source.scopes.insert("restricted".into());
+                            db.capture(source)?;
+                        }
+                        "forget" => {
+                            db.forget(&source.source)?;
+                        }
+                        "revise" => {
+                            source.text = "Nori corrected unrelated source".into();
+                            db.capture(source)?;
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(reply("Nori", 3))
+                }
+            },
+        )
+        .await;
+        assert!(result.is_err(), "{mutation}: stale audit was returned");
+        assert_eq!(calls, 1, "{mutation}: second arm must not dispatch");
+        let error = result.err().unwrap().to_string();
+        assert!(error.contains("outcome sources invalidated"));
+        assert!(!error.contains("UNRELATED_RAW_RECALL_CANARY"));
+    }
+}
+
+// Replacement on the final arm cannot be caught by a subsequent pre-call guard.
+#[tokio::test]
+async fn final_arm_canonical_store_replacement_aborts_without_report() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = f.pair(4, 7);
+    pair.recheck(&f.db, &f.access).unwrap();
+    let path = f.path();
+    let replacement = f.root.join("replacement.memory-prototype.sqlite");
+    let foreign = Memory::create_durable_action(&replacement, &f.access.domain).unwrap();
+    assert_ne!(foreign.snapshot().unwrap().instance, pair.snapshot.instance);
+    drop(foreign);
+    let original = f.root.join("original.memory-prototype.sqlite");
+    let mut calls = 0;
+    let result = evaluate_pair(
+        &f.db,
+        &pair,
+        &f.access,
+        "scripted-fixture",
+        [Arm::SourceOnly, Arm::SourceAndOutcome],
+        |_, _, _| {
+            calls += 1;
+            let count = calls;
+            let path = path.clone();
+            let replacement = replacement.clone();
+            let original = original.clone();
+            async move {
+                tokio::task::yield_now().await;
+                if count == 2 {
+                    std::fs::rename(&path, original)?;
+                    std::fs::rename(replacement, path)?;
+                }
+                Ok(reply(
+                    if count == 1 { "Nori" } else { "Arden" },
+                    if count == 1 { 3 } else { 4 },
+                ))
+            }
+        },
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "stale original connection returned a report"
+    );
+    assert_eq!(calls, 2);
+    assert!(result
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("outcome sources invalidated"));
+}

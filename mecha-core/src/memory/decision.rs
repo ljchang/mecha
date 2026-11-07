@@ -248,3 +248,33 @@ pub(crate) fn source_store_path(db: &super::Memory) -> Result<std::path::PathBuf
             .canonicalize()?,
     )
 }
+
+/// Revalidate the frozen audit without rerunning or replacing its retrieval.
+/// Every retained hit and its dependency closure must remain current and authorized.
+pub(crate) fn recheck_frozen_hits(
+    db: &super::Memory,
+    hits: &[super::Hit],
+    access: &super::Access,
+) -> Result<()> {
+    use super::sql::{authorized, current, fresh, lookup, required_scopes};
+    db.check_access(access)?;
+    let tx = db.conn.unchecked_transaction()?;
+    for hit in hits {
+        current(&tx, &hit.reference)?;
+        ensure!(
+            authorized(&tx, &hit.reference, access)? && fresh(&tx, &hit.reference, i64::MAX)?,
+            "frozen recall source unavailable"
+        );
+        ensure!(
+            required_scopes(&tx, &hit.reference.revision)? == hit.required_scopes,
+            "frozen recall source scopes changed"
+        );
+        let record = lookup(&tx, &hit.reference)?.context("missing frozen recall source")?;
+        ensure!(
+            serde_json::to_value(record)? == serde_json::to_value(&hit.record)?,
+            "frozen recall source content changed"
+        );
+    }
+    tx.commit()?;
+    Ok(())
+}

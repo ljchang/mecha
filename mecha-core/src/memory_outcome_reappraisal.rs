@@ -10,7 +10,7 @@ use crate::{
             Assessment, Passage, Projection, RecallView, Request,
         },
         model_evaluation::{Call, ModelReply},
-        Access, Memory, RecallHit, RecallQuery, Record, RevisionRef, Snapshot,
+        Access, Hit, Memory, RecallHit, RecallQuery, Record, RevisionRef, Snapshot,
     },
     memory_action_runtime,
 };
@@ -85,6 +85,7 @@ pub struct OutcomeGuard {
     action_id: String,
     access: Access,
     fingerprint: Value,
+    recall_hits: Vec<Hit>,
 }
 impl OutcomeGuard {
     pub fn check(&self) -> Result<()> {
@@ -109,6 +110,7 @@ impl OutcomeGuard {
             fingerprint == self.fingerprint,
             "outcome sources differ from preparation"
         );
+        decision::recheck_frozen_hits(db, &self.recall_hits, access)?;
         Ok(())
     }
 }
@@ -216,6 +218,11 @@ pub fn prepare_pair(
         action_id: action.id().into(),
         access: access.clone(),
         fingerprint,
+        recall_hits: raw_recall
+            .iter()
+            .flat_map(|hit| std::iter::once(&hit.anchor).chain(hit.context.iter()))
+            .cloned()
+            .collect(),
     };
     let pair = PreparedPair {
         protocol: PROTOCOL,
@@ -275,6 +282,9 @@ impl PreparedPair {
     pub fn recheck(&self, db: &Memory, access: &Access) -> Result<()> {
         self.binding
             .check_in(db, access)
+            // The pathname may now name another file than the caller's open
+            // SQLite connection. Reopen it at every post-await/final safe point.
+            .and_then(|()| self.binding.check())
             .map_err(|_| anyhow::anyhow!("outcome sources invalidated"))
     }
     pub fn guard(&self, db: &Memory, access: &Access) -> Result<OutcomeGuard> {
