@@ -176,8 +176,18 @@ The shape:
   rules actually applying. So `doctor` reads the driven store in its one
   pass. The driven store joins `backlog` only for what waits on the owner:
   promotion candidates, once measured.
-- **Mining is its own pass.** `reflect` keeps hiding driven sessions from
-  the owner's store (D1, #848), its outbox pass included: a draft a driven run staged is passed over even after the owner acts on it. A separate pass reads only driven
+- **Mining is its own pass.** `reflect` hides driven sessions from the
+  owner's store (D1, #848). The session pass inherits that from
+  `admitted_by_default`. **The outbox pass did not**, and #848 adds it: on
+  `main` before #848, the outbox pass selects drafts by
+  `mineable_as_writing()` (the owner's edit and release) and never resolves
+  the staging session, so a draft a test or driven session staged, which the
+  owner then edited and sent, is mined into the owner's `writing` domain.
+  It is the one path by which a driven intervention would reach the
+  *owner's* store. #848's `staged_by_refused` joins `item.session_id` to the
+  listing, passes over a draft whose session the admission refuses, and
+  treats a session it cannot resolve as unknown, never clean. A separate
+  pass reads only driven
   sessions and writes only the driven store. The two passes share code and
   never share a destination.
 - **The driver's interventions are labelled as the driver's, never as the
@@ -275,7 +285,12 @@ The shape:
        different clone, and a marked run whose marker is past its deadline
        each load nothing;
     8. the driven mining pass writes only the driven store, and `reflect`'s
-       owner pass still skips driven sessions, its outbox pass included.
+       owner pass still skips driven sessions;
+    9. `reflect`'s outbox pass skips a draft that a driven session staged,
+       after the owner edited and released it. This test is end to end
+       through `execute`, not through the helpers alone. #848's helper test
+       does not reach the filter, and in the pilot nothing stages, so only an
+       end-to-end fixture can fail on the old selection.
 
     Each runs in a child process that opts in to the kind override the way
     the kind probe does (§7's build trap): written the obvious way, under
@@ -539,9 +554,19 @@ waits for that work.
 
 ## 6. The principal, and the seam for appraisal
 
-In a multi-turn driven run, the driver is `EXPERIMENT-DESIGN.md` §16's model-driven principal. It
-steers, answers `questions`, and denies calls, always through the owner's own
-verbs, so the stores record exactly what they would record from a person.
+**The pilot's driven run is `mecha run`, one-shot.** It registers none of
+the front-end tools (`ask_user`, `show_file`, `recall`), which the TUI and
+the web and eval doors insert *after* `setup::prepare` returns and which
+consult no narrowing. It also has no steering queue and no asker. So the
+three principal verbs below are out of the pilot: the driver writes the
+prompt and grades the artifact, and nothing in between. A later ruling that
+wants a multi-turn driven run names the surface that provides them, and
+that surface's front-end tools join the allowlist only by name (§7).
+
+In such a multi-turn driven run, the driver would be `EXPERIMENT-DESIGN.md`
+§16's model-driven principal. It would steer, answer `questions`, and deny
+calls, always through the owner's own verbs, so the stores record exactly
+what they would record from a person.
 §16's first rule holds: **a verdict comes from gold wherever gold exists**.
 A task is closed `done` by its hidden grade, never by the driver's opinion.
 
@@ -668,7 +693,13 @@ rather than trusting each run to be configured right:
   named as one. Every other tool, feature-gated or MCP, is absent from a
   driven run unless this document names it. A tool added later is then out
   of driven runs by default, failing closed, where a sweep over levers would
-  have let it in. **The allowlist is implemented through `opts.tools`**, the
+  have let it in. **The allowlist is `opts.tools` *plus* "registers no
+  front-end tool"**, because the second does not follow from the first:
+  `ask_user`, `show_file` and `recall` are inserted after `prepare` and
+  consult nothing, and none has a `Lever`. `mecha run` registers none of
+  them, so the pilot pays nothing, and a later multi-turn surface admits one
+  only by name (§6). `ask_user` in a driven run would be the very influence
+  channel D1b drops the mailbox to close. **The `opts.tools` half**, the
   same narrowing a front-end's tool list uses. The startup check that warns
   "`[outbox] routes` a name which is not a registered tool ... this routing
   protects nothing" stays quiet for a name narrowed out that way, one of its
@@ -890,7 +921,16 @@ passes vacuously.
   `--setenv` wins before anyone relies on it. Neither entry comes through a
   `[[grant]]`, through anything the driver names, or from a project layer,
   which a driven run does not read (§7). Both are the owner's to add, after
-  the §8 measurement says what they must hold.
+  the §8 measurement says what they must hold. **`[sandbox] env` passes a
+  name through, and sets no value.** `bwrap_args` emits `--setenv` only
+  `if let Ok(value) = std::env::var(name)`, with no warning when the name is
+  absent, and rustup exports neither variable in a normal shell. So the
+  entry is half the remedy: the driver must also export `CARGO_HOME` and
+  `RUSTUP_HOME` in the environment it launches `mecha run` from. Otherwise
+  the entry looks right and changes nothing, and with `HOME=<workspace>`
+  cargo's home-relative fallback resolves into the empty clone. The §8
+  measurement's pass criterion is that the value arrives in the child,
+  never that the name is listed.
 - **R8. The charter stays on** on every arm of a driven run (owner,
   2026-11-06), including the ceiling's, where it leaves the machine. The
   recommendation had been off; the owner kept it, so driven runs measure the
