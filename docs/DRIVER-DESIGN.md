@@ -76,7 +76,10 @@ There are two modes, and they never trade places:
 a session whose principal is another agent rather than the owner. It is
 settable through `MECHA_SESSION_KIND=driven`, which makes three marks a
 process may put on a session. `SessionKind::test_override`'s comment says
-"these two and no more", and D1 changes that rule deliberately:
+"these two and no more", and D1 changes that rule deliberately, along with
+the doc comment on `test_override` itself (stale since D13, because it
+still says only `Test` can be returned) and the warning that names the
+accepted values (#848 edits all three):
 
 - `Test` is a development run, and nothing about it should be studied.
 - `Experiment` is a trial inside a trial home, read by `mecha exp`.
@@ -135,7 +138,9 @@ The shape:
   setup, which is the harness and not the model or the driver, writes one
   marker per task under the home, naming the task clone it covers and the
   task's deadline. Teardown removes it, and a marker past its deadline loads
-  nothing even if teardown failed. The run cannot reach it, because `setup`
+  nothing even if teardown failed. The deadline governs this load only. D1b's
+  refusal of an unmarked run keys on the marker's presence, expired or not
+  (§7). The run cannot reach it, because `setup`
   refuses any jail that contains the mecha home. A wrong mark with no
   marker, or a marker with no mark, loads nothing, so the boundary fails
   dark both ways: on a missing mark and on a mistaken one.
@@ -179,12 +184,13 @@ The shape:
   - **`learnable()` refuses any reflection with `driven` set, first, before
     every other arm**: before the triage exemption, before the edit
     promotion, and whatever its `Origin`. **Its readers are found by the
-    compiler, never by a list.** Two drafts of this paragraph enumerated
-    them by hand and both came up short. The tree has a reader in
-    `lesson_source` (twice, including `Sources::pair`), in `learning` (the
-    `learn` gate, `goal_lessons`, `goal_keys_in_play`), and in `doctor`,
-    `probe`, `commands/learn.rs` and `commands/reflections.rs` (three
-    sites). So the build **renames** `learnable()` to
+    compiler, never by a list.** Three drafts of this paragraph enumerated
+    them by hand, and each was wrong: two short, one miscounted. Review of
+    #847 counted ten non-test call sites, in `doctor`, `lesson_source`
+    (twice, one of them `Sources::pair`), `commands/reflections.rs` (three),
+    `learning` (`goal_keys_in_play`, `goal_lessons`), `probe` and the
+    `learn` gate in `commands/learn.rs`. A count written here is a claim
+    about one commit. So the build **renames** `learnable()` to
     `learnable_into_owner()`, and every caller fails to compile until it is
     assigned on purpose: the owner's gate, the driven store's
     (`learnable_into(StoreKind::Driven)`), or a readout that reports both.
@@ -548,8 +554,19 @@ rather than trusting each run to be configured right:
   system prompt where no taint sees it (§9, R8). The guard that refuses on
   `private` alone is `block_sends_after_private`, which defaults to off. So
   the driven mark forces it on and arms `private` at start, since the
-  charter in the prompt is private data, which together refuse every send,
-  `Blind` and `Chosen`, for the whole run. The pilot's tasks are offline
+  charter in the prompt is private data. **And it forces
+  `[security] trifecta = "block"`.** `block_sends_after_private` has one
+  enforcement site, and it feeds the same `match` on the trifecta policy as
+  the injection interlock. Only `TrifectaPolicy::Block` refuses; under
+  `Ask` or `Allow` the leak guard *escalates* instead. `Block` is the
+  default, but a driven run reads the owner's real global `[security]`, and
+  `TRIFECTA.md` documents `ask` as an owner opt-in. An escalation is a
+  question to a person, and a driven run has none: §6 makes the driver the
+  answerer, which is exactly the influence channel D1b drops the mailbox to
+  close. On a headless approver it is worse, because the dispatch's own
+  comment records that `trifecta = "ask"` silently equalled `"allow"` on
+  every headless surface. With all three forced, every send, `Blind` and
+  `Chosen`, is refused for the whole run. The pilot's tasks are offline
   repository work and lose nothing. A later task that needs the network is
   a ruling, not a default.
 - **Kept**: builtins (under the interlock as always), the owner's learned
@@ -591,8 +608,15 @@ it is the unsafe direction, because every surface the mark removes is gated
 on the mark alone, so a driven task whose mark was lost would run with the
 owner's servers, hooks, grants and mailbox attached. The marker names its
 task clone, so the case is detectable, and it is refused rather than run.
-**What D1b forces is recorded on the run.** `block_sends_after_private` and
-`private` armed at start are not `harness::Lever`s, so they would not appear
+**The unmarked-run refusal keys on the marker's presence alone, deadline or
+no deadline.** The deadline governs the store load, where an expired marker
+loading nothing is the safe direction. Here an expired marker must still
+refuse: a task that overruns, or a stalled run on its second attempt, is
+exactly when a mark is most likely to have been lost. The false positive
+this costs is a refused unmarked run in a task-clone path, and nothing else
+is supposed to run there. **What D1b forces is recorded on the run.**
+`block_sends_after_private`, `private` armed at start and
+`trifecta = "block"` are not `harness::Lever`s, so they would not appear
 in the session record's `levers_off`, and a later reader could not tell the
 guard was armed. The run record carries them beside the levers. Neither
 confounds §4, being constant across arms. **The forecast's exclusion is
@@ -739,8 +763,8 @@ passes vacuously.
   default-config run `http_fetch` stays callable, charter and all, until
   outside content arrives. That is pre-existing for every owner run. For a
   driven run, whose prompt an outside agent wrote, D1b closes it: the mark
-  forces `block_sends_after_private` on and arms `private` at start, so a
-  driven run sends nothing (§7).
+  forces `block_sends_after_private` on, arms `private` at start and forces
+  `trifecta = "block"`, so a driven run sends nothing (§7).
 - **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
   owner's eye before its first ceiling run.
 - **R10, owed.** Whether driven trajectories enter training at all, and if
