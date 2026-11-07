@@ -239,8 +239,7 @@ async fn partial_measurements_cannot_bind_an_action_for_reappraisal() {
                 },
                 &f.access,
             )
-            .err()
-            .expect("partial evidence cannot authorize an action or outcome reappraisal");
+            .expect_err("partial evidence cannot authorize an action or outcome reappraisal");
             assert!(
                 error
                     .to_string()
