@@ -2245,6 +2245,74 @@ Implementation choices where the plan did not specify details:
 - The redundant mail-rule dispatch after the early return is now an explicit
   unreachable exhaustiveness arm. Other carried minors remain untouched.
 
+**P3-2 implemented (2026-11-06).** `#mail/rules` is one responsive page
+(`web/src/lib/MailRules.svelte`) that App renders in place of either Mail
+build, so the phone and the desk show the same page; its display logic is
+`mail-rules.js`, tested as plain node. It calls only P3-1's routes and
+`/api/mail/read`. Choices where this document was silent, made in the
+implementation and not owner rulings:
+
+- The open rule is page state, not a third hash segment: App's router
+  carries one sub-view (`#mail/rules`), and changing routing for every view
+  was out of proportion. Back from a rule returns to the list in the page.
+- The definition is a plain TOML editor with the store's parse error shown,
+  not `TomlForm`: rule.toml has arrays of tables and a header map, which
+  the flat field schema does not express. A new rule has a guided form (one
+  matcher key, one action, name, description) that writes the TOML until
+  the owner types in it; the owner edits before installing.
+- *Make a rule from this thread* prefills the sender and the sender's
+  domain (matching on the domain), names the rule after the domain, and
+  suggests `archive`; the subject is the description only when no domain can
+  be read. It carries no list id: the mail views do not
+  hold `List-Id`, and §8 adds no provider fetch, so the form asks for it.
+- A mode change counts as a raise against the group's **effective** mode,
+  as the store measures it, so re-approving a braked or lapsed group (set
+  auto, running shadow) opens the approval screen. The screen shows every
+  file in the review inputs with the shadow-row count under the current
+  match digest, and sends that review's digest; a `stale_digest` refusal
+  reloads the files and says so rather than retrying.
+- Rates render a dash for a null rate and omit an empty `verdict_input`
+  bucket rather than showing zero. Rows under an earlier match digest are
+  grouped per group under a heading dated by their newest row; the
+  rule-level `approval lapsed` row stays with the current rows and names no
+  message. Outcomes, modes and groups this build cannot name read `unknown`.
+- A ledger row opens its thread read-only in a sheet over the page
+  (`mecha mail show` through `/api/mail/read`), since an archived thread is
+  no longer in the triage queue the mail readers walk.
+- The test result shows each account's status; a held or failed account
+  shows no match count, and partial rows stay visible beside a failure.
+- Not on the page yet, all deferred to the phase that produces them rather
+  than shown empty: *pending in the outbox* and *the share of staged rows by
+  reason* (§5.4) arrive with sends in P4, and `held: list cap` with its cap
+  and entry count arrives with description rules in P4 — P1–P3 rules are
+  header rules, which the cap never counts, so no rule can be held by it
+  yet. Description-rule testing (re-run over classified threads, with its
+  cost shown) is P4 too; the Test button surfaces the store's refusal.
+- The approval screen's counts are the store's statistics under the current
+  match digest, per `verdict_input`, never a count of the ledger window it
+  loaded (the newest 200 rows, said so when full). Its route list is
+  exported as `RULES_ENDPOINTS` for the docs demo's `check-demo.mjs`, which
+  cannot see calls made through the page's fetch wrappers; the demo answers
+  reads from fictional fixtures and declines every change.
+- Three of the page's slots are written from slow requests: a rule's load,
+  a thread read, and a test, which may run for minutes. Each answer lands
+  only where it was asked for. A late load for the rule just left never
+  fills the open rule's editor, which Save would write. A dismissed sheet
+  stays closed, and a test result shows only on the rule it tested, since
+  a raise is decided on that count. A reload after Pause, Undo or a mode
+  change keeps an unsaved definition edit.
+- What a Save and Pause all report is worded in `mail-rules.js`
+  (`editNotice`, `pauseAllNotice`), where the node checks pin it. A lapse
+  is reported even when the bytes did not move, because an outside edit
+  since approval lapses on Save. Pause all names each entry it could not
+  lower. A recorded wrong match takes the owner to the definition. These
+  live in the component, where the node checks cannot reach. They were
+  driven in headless Chromium with delayed responses, and nothing pins them
+  in CI. The same holds for the choice that makes re-approving a braked group
+  a raise: `setMode` judges against `effective_mode`. The server's
+  `--require-digest` is the gate behind that choice. If it regresses, the
+  owner sees a `digest_required` refusal, never an unreviewed raise.
+
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
 

@@ -110,6 +110,17 @@ export const ROUTES = [
   ['GET', /^\/api\/mail$/, () => fx.mail],
   ['GET', /^\/api\/mail\/inbox$/, () => fx.mailInbox],
   ['GET', /^\/api\/mail\/calendars$/, () => fx.mailCalendars],
+  // #mail/rules: reads from fixtures; every change, and a test (which would
+  // read a mailbox), is declined — the demo keeps no rules.
+  ['GET', /^\/api\/mail\/rules$/, () => fx.mailRules],
+  ['GET', /^\/api\/mail\/rules\/ledger$/, (url) => fx.mailRulesLedger[url.searchParams.get('rule')] ?? []],
+  [
+    'GET',
+    /^\/api\/mail\/rules\/([^/]+)$/,
+    (_url, [name]) => fx.mailRule[decodeURIComponent(name)] ?? new Response('unknown rule', { status: 502 }),
+  ],
+  ['POST', /^\/api\/mail\/rules\/(add|pause-all|undo|wrong-match)$/, () => new Response('the demo keeps no mail rules', { status: 501 })],
+  ['POST', /^\/api\/mail\/rules\/[^/]+\/(edit|mode|pause|test)$/, () => new Response('the demo keeps no mail rules and reads no mailbox', { status: 501 })],
   [
     'GET',
     /^\/api\/mail\/read$/,

@@ -5,6 +5,7 @@
   import Review from './lib/Review.svelte';
   import Mail from './lib/Mail.svelte';
   import MailDesk from './lib/MailDesk.svelte';
+  import MailRules from './lib/MailRules.svelte';
   import Tasks from './lib/Tasks.svelte';
   import Library from './lib/Library.svelte';
   import Personas from './lib/Personas.svelte';
@@ -166,7 +167,9 @@
     {#if view === 'chat'}
       <Chat resume={route.sub} />
     {:else if view === 'mail'}
-      {#if wide}<MailDesk />{:else}<Mail />{/if}
+      <!-- #mail/rules is one responsive page for both builds; the pane's
+           feature (PANE_FEATURE) sends a link home while it refuses. -->
+      {#if route.sub === 'rules'}<MailRules {navigate} />{:else if wide}<MailDesk {navigate} />{:else}<Mail {navigate} />{/if}
     {:else if view === 'review'}
       <Review initial={route.sub} {navigate} />
     {:else if view === 'tasks'}

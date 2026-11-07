@@ -4595,6 +4595,14 @@ any JSON failure/partial report survive a nonzero exit (HTTP 409); timeout is
 budget for paginated searches followed by individual reads with 30-second
 HTTP deadlines, not a measured guarantee for every mailbox.
 
+**The page (P3-2)** is `web/src/lib/MailRules.svelte`, rendered by App for
+`#mail/rules` in place of either Mail build, with its display rules in
+`mail-rules.js` (`web/test/mail-rules.mjs`): an unnamed mode, group or outcome
+renders `unknown`, a null rate a dash, and a raise is judged against the
+effective mode as the store judges it. *Make a rule* hands the reader's row to
+the page through `mail-rules-handoff.svelte.js`; nothing installs without the
+owner's Install, and it lands in shadow.
+
 **The JSON contract for P3-2 is additive.** `list --json` remains an array;
 `show --json` remains one object. `RuleView` carries `name`, `description`,
 `approval_digest`, `groups`, `holds`, `last_activity`, `load_error`,
