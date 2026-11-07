@@ -3,14 +3,19 @@ import constraint_abstention_trial as t
 
 class RubricTests(unittest.TestCase):
     def test_frozen_targets_and_matrix(self):
-        self.assertEqual(len(t.planned_pairs()), 24)
-        self.assertEqual(t.SEEDS, (31,43))
+        self.assertEqual(len(t.planned_pairs()), 12)
+        self.assertEqual(t.SEEDS, (59,))
+        self.assertEqual(t.PROTOCOL,'constraint-abstention-pilot-v2')
+        self.assertEqual(t.CORE_PROTOCOL,'outcome-reappraisal-v3')
+        self.assertEqual(t.PLANNED_CALLS,24)
+        self.assertEqual([(c['id'],c['contract']['energy_budget'],c['contract']['minimum_quality']) for c in t.frozen_cases()],
+                         [('E',3,9),('F',1,9),('G',6,8),('H',6,9)])
         self.assertEqual([[t.expected(c,a) for a in t.ARMS] for c in t.frozen_cases()],
                          [[set(),{'Arden'}],[set(),set()],[{'Quill'},{'Arden'}],[{'Quill'},set()]])
     def test_boundary_ties_and_empty(self):
-        c=t.frozen_cases()[0].copy(); c['source']={n:(4,4,9) for n in t.METHODS}
+        c=t.frozen_cases()[0].copy(); c['source']={n:(4,3,9) for n in t.METHODS}
         self.assertEqual(t.expected(c,'source_only'),set(t.METHODS))
-        c['contract']=dict(c['contract'],energy_budget=3)
+        c['contract']=dict(c['contract'],energy_budget=2)
         self.assertEqual(t.expected(c,'source_only'),set())
     def test_checks_reject_wrong_arithmetic_foreign_sources_and_bool_numbers(self):
         c=t.frozen_cases()[0]; p={'passages':[{'id':f'e{i+1}'} for i in range(4)]}
@@ -48,8 +53,7 @@ def preparation(case,treatment,action='action'):
                 outcome=dict(status='observed',**dict(zip(('observed_minutes','energy','quality'),case['actual'])))))
             visible.append(dict(id='e4',text=actual,sha256=t.hash_text(actual),source={'object':'actual','revision':'actual'},
                 projection=dict(text=text,sha256=t.hash_text(text))))
-        request=dict(prompt='frozen prompt '+arm,response_schema=dict(properties=dict(
-            reason=dict(maxLength=4000),citations=dict(items=dict(enum=[p['id'] for p in visible])))),passages=visible)
+        request=dict(prompt='frozen prompt '+arm,response_schema=dict(properties=dict(([('candidate_checks',{})] if t.response_format(treatment)=='feasibility_first' else []) + [('choice',{}),('citations',dict(items=dict(enum=[p['id'] for p in visible]))),('reason',dict(maxLength=4000))])),passages=visible)
         arms.append(dict(arm=arm,request=request,request_sha256='core hash'))
     snapshot=dict(instance='instance',sequence=1)
     return dict(protocol=t.CORE_PROTOCOL,policy=t.old.POLICY,action_id=action,contract=case['contract'],snapshot=snapshot,
@@ -83,6 +87,8 @@ class ScoringTests(unittest.TestCase):
         row=next(r for r in report(pair)['rows'] if r['arm']==t.ARMS[1])
         score=t.score_row(case,row,p,'scripted',treatment)
         self.assertTrue(score['evidence_appropriate']);self.assertTrue(score['host_withheld']);self.assertTrue(score['check_correctness'])
+        self.assertEqual(score['raw_response_field_order'],['choice','citations','reason','candidate_checks'])
+        self.assertFalse(score['response_order_matches_treatment'])
         answer=json.loads(row['call']['reply']['text']);answer['candidate_checks']['Arden']['energy']=8
         row['call']['reply']['text']=json.dumps(answer);score=t.score_row(case,row,p,'scripted',treatment)
         self.assertEqual(score['raw_choice'],'Arden');self.assertTrue(score['evidence_appropriate']);self.assertFalse(score['check_correctness'])
@@ -104,6 +110,17 @@ class ScoringTests(unittest.TestCase):
         for reason,valid in [(' '*4001+'x',False),('x'+' '*4000,False),(' '*4000,False),('🌱'*4000,True)]:
             answer['reason']=reason;row['call']['reply']['text']=json.dumps(answer)
             self.assertEqual(t.score_row(case,row,p,'scripted',treatment)['valid'],valid)
+
+    def test_old_choice_first_schema_rejected_for_feasibility_treatment(self):
+        case=t.frozen_cases()[0];treatment=t.TREATMENTS[1];p=preparation(case,treatment)
+        for arm in p['arms']:
+            props=arm['request']['response_schema']['properties']
+            arm['request']['response_schema']['properties']={k:props[k] for k in ('choice','citations','reason','candidate_checks')}
+        with self.assertRaises(ValueError):t.validate_preparation(p,case,{'action':'action'},treatment)
+        expected=t.expected_http_request(preparation(case,treatment)['arms'][0]['request'],treatment,59,'scripted')
+        bad=copy.deepcopy(expected);props=bad['response_format']['schema']['properties']
+        bad['response_format']['schema']['properties']={k:props[k] for k in ('choice','citations','reason','candidate_checks')}
+        with self.assertRaises(ValueError):t.audit_http_requests([expected],[bad])
 
     def test_http_audit_checks_dispatch_order_and_all_frozen_controls(self):
         expected=[]
@@ -165,7 +182,7 @@ class RunnerTests(unittest.TestCase):
         for store in ('AB','C','D'):
             db=root/(store+'.db');db.write_text('sentinel');source=root/(store+'.json');source.write_text(store)
             fixtures[store]=dict(db=str(db),action='action-'+store,source_path=str(source),source_sha256=t.sha(source))
-        manifest=dict(protocol=t.PROTOCOL,fixtures=fixtures,new_real_model_inference_calls=0,scripted_transport_requests=3)
+        manifest=dict(protocol='constraint-abstention-pilot-v1',fixtures=fixtures,new_real_model_inference_calls=0,scripted_transport_requests=3)
         calls=[]
         def invoke(argv,**kwargs):
             calls.append(argv);contract=t.decode(argv[argv.index('--contract')+1]);case=next(c for c in t.frozen_cases() if c['contract']==contract)
@@ -190,20 +207,23 @@ class RunnerTests(unittest.TestCase):
         for interrupt in (False,True):
             with self.subTest(interrupt=interrupt),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);summary,calls=self.run_fake(root,interrupt)
-                self.assertEqual(sum('--prepare-only' in c for c in calls),24)
-                self.assertEqual(len(summary['matrix']),48)
-                self.assertEqual(summary['calls_recorded'],0 if interrupt else 48)
+                self.assertEqual(sum('--prepare-only' in c for c in calls),12)
+                self.assertEqual(len(summary['matrix']),24)
+                self.assertEqual(summary['planned_calls'],24)
+                self.assertEqual(summary['calls_recorded'],0 if interrupt else 24)
                 self.assertEqual(summary['unknown_dispatch_slots'],2 if interrupt else 0)
                 self.assertEqual(summary['complete'],not interrupt)
                 freeze=t.decode((root/'output'/'freeze.json').read_text())
                 self.assertTrue(all(not p['started'] and p['report'] is None for p in freeze['pairs']))
+                for pair in freeze['pairs']:
+                    self.assertEqual(pair['schema_property_order'],{arm:t.schema_order(pair['treatment']) for arm in t.ARMS})
                 self.assertEqual(set(freeze['helper_artifacts']),{'outcome_reappraisal_trial','durable_action_trial'})
                 for artifact in freeze['helper_artifacts'].values():self.assertEqual(artifact['sha256'],t.sha(Path(artifact['path'])))
                 self.assertTrue(summary['database_unchanged']);self.assertTrue(summary['settings_unchanged'])
     def test_metadata_drift_stops_without_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             summary,calls=self.run_fake(Path(directory),drift=True)
-            self.assertFalse(summary['complete']);self.assertEqual(len(calls),25)
+            self.assertFalse(summary['complete']);self.assertEqual(len(calls),13)
             self.assertEqual(summary['unknown_dispatch_slots'],2)
 
 if __name__=='__main__':unittest.main()

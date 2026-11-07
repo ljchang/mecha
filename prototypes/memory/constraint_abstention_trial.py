@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frozen 48-first-response constraint diagnostic; real inference is parent-only.
+"""Frozen corrective 24-first-response constraint diagnostic; real inference is parent-only.
 
 Create three fresh authored-HTTP fixture lineages with --create-fixtures, then
 pass their fixtures.json to --fixtures for the read-only comparison. No retries,
@@ -19,9 +19,11 @@ import durable_action_trial as action
 encode, decode, hash_text = old.encode, old.decode, old.hash_text
 sha, write_json, arm_request = old.sha, old.write_json, old.arm_request
 ARMS, METHODS, WORKLOAD = old.ARMS, old.METHODS, old.WORKLOAD
-SEEDS = (31, 43)
-PROTOCOL = 'constraint-abstention-pilot-v1'
-CORE_PROTOCOL = 'outcome-reappraisal-v2'
+SEEDS = (59,)
+PROTOCOL = 'constraint-abstention-pilot-v2'
+FIXTURE_PROTOCOLS = ('constraint-abstention-pilot-v1', PROTOCOL)
+PLANNED_CALLS = 24
+CORE_PROTOCOL = 'outcome-reappraisal-v3'
 TREATMENTS = ('choice-first-fast', 'feasibility-first-fast', 'feasibility-first-thinking2048')
 SIMULATOR = dict(Nori=(4,9,8), Arden=(8,3,9), Quill=(6,5,6))
 
@@ -37,8 +39,8 @@ def frozen_cases():
     d = dict(Nori=(4,9,8), Arden=(8,3,8), Quill=(6,5,9))
     return [dict(id=n, store=s, source=source, actual_choice=choice, actual=SIMULATOR[choice],
         contract=dict(workload=WORKLOAD, objective='minimize_minutes', energy_budget=b, minimum_quality=q))
-        for n,s,source,choice,b,q in [('A','AB',ab,'Arden',4,9),('B','AB',ab,'Arden',2,9),
-                                      ('C','C',c,'Quill',5,8),('D','D',d,'Quill',5,9)]]
+        for n,s,source,choice,b,q in [('E','AB',ab,'Arden',3,9),('F','AB',ab,'Arden',1,9),
+                                      ('G','C',c,'Quill',6,8),('H','D',d,'Quill',6,9)]]
 
 
 def controls(treatment):
@@ -59,6 +61,7 @@ def planned_pairs():
             for k,treatment in enumerate(rotated):
                 plans.append(dict(case=case['id'], seed=seed, treatment=treatment,
                                   outcome_first=bool((i+j+k)%2)))
+    require(len(plans)*len(ARMS)==PLANNED_CALLS,'corrective diagnostic ceiling mismatch')
     return plans
 
 
@@ -133,6 +136,7 @@ def validate_preparation(prepared, case, fixture, treatment):
             ids=[p['id'] for p in request['passages']];require(len(set(ids))==len(ids))
             require(set(request['response_schema']['properties']['citations']['items']['enum'])==set(ids))
             require(request['response_schema']['properties']['reason']['maxLength']==4000)
+            require(list(request['response_schema']['properties'])==schema_order(treatment),'schema treatment order mismatch')
             for i,passage in enumerate(request['passages']):
                 require(type(passage['text']) is str and bool(passage['text']))
                 require(hash_text(passage['text'])==passage['sha256'])
@@ -160,7 +164,10 @@ def score_row(case,row,prepared,model,treatment):
         validate_preparation(prepared,case,dict(action=prepared['action_id']),treatment)
         request=arm_request(prepared,row['arm']);call=row['call'];reply=call['reply'];answer=decode(reply['text'])
         # Preserve raw declared choice even when checks or envelope fail.
-        if isinstance(answer,dict):score['raw_choice']=answer.get('choice')
+        if isinstance(answer,dict):
+            score['raw_choice']=answer.get('choice')
+            score['raw_response_field_order']=list(answer)
+            score['response_order_matches_treatment']=list(answer)==schema_order(treatment)
         ids={p['id'] for p in request['passages']}
         fields={'choice','citations','reason'} | ({'candidate_checks'} if response_format(treatment)=='feasibility_first' else set())
         valid=(not row.get('error') and not call.get('error') and not reply.get('error') and reply['model']==model
@@ -212,10 +219,10 @@ def summarize(pairs,model):
                 reasoning_char_count=row.get('reasoning_char_count') if row else None))
     require(set(lookup)<= {(p['case'],p['seed'],p['treatment']) for p in planned_pairs()})
     recorded=sum(r['status']=='recorded' for r in matrix)
-    return dict(protocol=PROTOCOL,planned_calls=48,calls_recorded=recorded,matrix_complete=recorded==48,
+    return dict(protocol=PROTOCOL,planned_calls=PLANNED_CALLS,calls_recorded=recorded,matrix_complete=recorded==PLANNED_CALLS,
         unknown_dispatch_slots=sum(r['status']=='dispatch_unknown' for r in matrix),matrix=matrix,
-        complete=recorded==48 and not any(p.get('error') for p in pairs),
-        limitations='Four authored development cases, two seeds, no holdout or generalization claim. Raw choices, visible-evidence arithmetic, citation coverage, host withholding and hidden simulator outcomes are separate. Free-form explanation entailment requires independent review. Failed dispatch counts remain unknown; no repair or adaptive rerun. Private untrusted exports are outside local erasure.')
+        complete=recorded==PLANNED_CALLS and not any(p.get('error') for p in pairs),
+        limitations='Four corrective authored development cases, one fresh seed; bounded continuation after a stopped invalid-treatment pilot, no replacement, holdout or generalization claim. Raw choices, visible-evidence arithmetic, citation coverage, host withholding and hidden simulator outcomes are separate. Free-form explanation entailment requires independent review. Failed dispatch counts remain unknown; no repair or adaptive rerun. Private untrusted exports are outside local erasure.')
 
 
 def isolated_env(home):
@@ -284,7 +291,7 @@ def create_fixtures(binary, output):
 
 
 def validate_fixtures(manifest):
-    require(manifest['protocol']==PROTOCOL and set(manifest['fixtures'])=={'AB','C','D'})
+    require(manifest['protocol'] in FIXTURE_PROTOCOLS and set(manifest['fixtures'])=={'AB','C','D'})
     require(manifest['new_real_model_inference_calls']==0 and manifest['scripted_transport_requests']==3)
     dbs=set();actions=set()
     for fixture in manifest['fixtures'].values():
@@ -300,7 +307,7 @@ def run_trial(*,binary,fixtures,endpoint,model,holds_dir,output,invoke=old.invok
     stores=validate_fixtures(fixture_manifest)
     binary=binary.resolve(strict=True);holds_dir=holds_dir.resolve(strict=True)
     output.mkdir(parents=True,mode=0o700,exist_ok=False);root=output.resolve();env=isolated_env(root/'isolated-home')
-    manifest=dict(protocol=PROTOCOL,private_data=True,untrusted_input=True,executed=False,planned_calls=48,
+    manifest=dict(protocol=PROTOCOL,private_data=True,untrusted_input=True,executed=False,planned_calls=PLANNED_CALLS,
         binary=str(binary),binary_sha256=sha(binary),runner_sha256=sha(Path(__file__)),helper_artifacts=helper_artifacts(),fixture_manifest=fixture_manifest,
         endpoint=endpoint,model=model,cases=frozen_cases(),seeds=list(SEEDS),treatments={t:controls(t) for t in TREATMENTS},
         offline_rubric=dict(simulator=SIMULATOR),pairs=[],error=None)
@@ -326,9 +333,10 @@ def run_trial(*,binary,fixtures,endpoint,model,holds_dir,output,invoke=old.invok
             else:
                 require(all(prepared[k]==first[k] for k in ('snapshot','raw_recall','read','observation')),'source preparation drift')
             pairs.append(dict(**plan,argv=argv,preparation=prepared,report=None,error=None,started=False,
-                request_hashes={a['arm']:hash_text(encode(a['request'])) for a in prepared['arms']}))
+                request_hashes={a['arm']:hash_text(encode(a['request'])) for a in prepared['arms']},
+                schema_property_order={a['arm']:list(a['request']['response_schema']['properties']) for a in prepared['arms']}))
             write_json(root/'manifest.json',manifest)
-        # All 48 slots and their exact preparations precede the first inference dispatch.
+        # All 24 corrective slots and their exact preparations precede the first inference dispatch.
         write_json(root/'freeze.json',manifest);manifest['freeze_sha256']=sha(root/'freeze.json')
         write_json(root/'manifest.json',manifest)
         for pair in pairs:
@@ -376,6 +384,10 @@ def run_trial(*,binary,fixtures,endpoint,model,holds_dir,output,invoke=old.invok
 
 
 
+
+def schema_order(treatment):
+    return (['candidate_checks'] if response_format(treatment)=='feasibility_first' else [])+['choice','citations','reason']
+
 def expected_http_request(request,treatment,seed,model):
     settings=controls(treatment)
     body=dict(model=model,max_tokens=settings['max_tokens'],temperature=settings['temperature'],seed=seed,
@@ -390,6 +402,8 @@ def audit_http_requests(expected,recorded):
     require(len(recorded)==len(expected),'HTTP dispatch count differs from frozen requests')
     for index,(wanted,actual) in enumerate(zip(expected,recorded)):
         require(all(actual.get(key)==value for key,value in wanted.items()),f'HTTP request drift at slot {index}')
+        require(list(actual['response_format']['schema']['properties'])==list(wanted['response_format']['schema']['properties']),
+                f'HTTP schema property order drift at slot {index}')
         require(('reasoning_budget_tokens' in actual)==('reasoning_budget_tokens' in wanted),
                 f'HTTP thinking-budget presence drift at slot {index}')
         require(not actual.get('tools') and not actual.get('stream'),f'HTTP request surface drift at slot {index}')
@@ -405,13 +419,16 @@ class QualificationProvider(action.ScriptedProvider):
     def do_POST(self):
         if self.path != '/v1/chat/completions':
             self.send_error(404);return
-        request=decode(self.rfile.read(int(self.headers['Content-Length'])).decode())
+        raw=self.rfile.read(int(self.headers['Content-Length'])).decode()
+        request=decode(raw)
+        self.server.raw_requests.append(raw)
+        self.server.schema_orders.append(list(request['response_format']['schema']['properties']))
         self.server.requests.append(request)
         if not self.server.answers:
             self.send_error(500,'authored queue exhausted');return
         answer=self.server.answers.pop(0)
         self.send_json(dict(id='authored-constraint-qualification',object='chat.completion',model=action.MODEL,
-            choices=[dict(index=0,message=dict(role='assistant',content=encode(answer)),finish_reason='stop')],
+            choices=[dict(index=0,message=dict(role='assistant',content=json.dumps(answer,ensure_ascii=False,sort_keys=False)),finish_reason='stop')],
             usage=dict(prompt_tokens=0,completion_tokens=0,total_tokens=0)))
 
 
@@ -424,9 +441,9 @@ def check_authored_queue(report,answers,root):
         raise ValueError('CLI did not consume both authored replies; see failed-pair-report.json')
 
 def qualify_scripted(binary, fixtures, output):
-    """Exercise all48 actual CLI slots with preauthored replies and zero inference."""
+    """Exercise all24 corrective actual CLI slots with preauthored replies and zero inference."""
     output.mkdir(parents=True,mode=0o700,exist_ok=False);root=output.resolve();holds=root/'holds';holds.mkdir()
-    server=ThreadingHTTPServer(('127.0.0.1',0),QualificationProvider);server.requests=[];server.answers=[]
+    server=ThreadingHTTPServer(('127.0.0.1',0),QualificationProvider);server.requests=[];server.answers=[];server.raw_requests=[];server.schema_orders=[]
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     endpoint=f'http://127.0.0.1:{server.server_port}';preparations={};expected_requests=[]
     def invoke(argv,**kwargs):
@@ -448,7 +465,7 @@ def qualify_scripted(binary, fixtures, output):
             expected_requests.append(expected_http_request(request,treatment,int(argv[argv.index('--seed')+1]),action.MODEL))
             answer=dict(choice=next(iter(expected(case,arm)),'abstain'),
                 citations=[p['id'] for p in request['passages']],reason='Authored qualification response; no model inference.')
-            if response_format(treatment)=='feasibility_first':answer['candidate_checks']=expected_checks(case,arm,request)
+            if response_format(treatment)=='feasibility_first':answer=dict(candidate_checks=expected_checks(case,arm,request),**answer)
             server.answers.append(answer)
         report=old.invoke_cli(argv,**kwargs)
         check_authored_queue(report,server.answers,root)
@@ -459,15 +476,19 @@ def qualify_scripted(binary, fixtures, output):
     finally:
         server.shutdown();server.server_close();thread.join(timeout=5)
         write_json(root/'http-requests.json',server.requests)
+        write_json(root/'http-raw-requests.json',server.raw_requests)
+        write_json(root/'http-schema-property-orders.json',server.schema_orders)
         write_json(root/'expected-http-requests.json',expected_requests)
     audit_http_requests(expected_requests,server.requests)
-    require(summary['complete'] and len(server.requests)==48,'scripted CLI qualification incomplete')
+    require(summary['complete'] and len(server.requests)==PLANNED_CALLS,'scripted CLI qualification incomplete')
     require(all(r['score']['valid'] and r['score']['evidence_appropriate'] and r['score']['citation_coverage']
-                and r['score']['check_correctness'] is not False and not r['score']['host_withheld'] for r in summary['matrix']),
+                and r['score']['check_correctness'] is not False and r['score']['response_order_matches_treatment']
+                and not r['score']['host_withheld'] for r in summary['matrix']),
             'scripted CLI qualification failed independent rubric')
-    result=dict(complete=True,new_real_model_inference_calls=0,scripted_transport_requests=48,
+    result=dict(complete=True,new_real_model_inference_calls=0,scripted_transport_requests=PLANNED_CALLS,
         http_request_audit=True,recorded_http_sha256=sha(root/'http-requests.json'),
-        expected_http_sha256=sha(root/'expected-http-requests.json'),helper_artifacts=helper_artifacts(),summary=summary)
+        expected_http_sha256=sha(root/'expected-http-requests.json'),
+        raw_http_sha256=sha(root/'http-raw-requests.json'),schema_property_orders=server.schema_orders,helper_artifacts=helper_artifacts(),summary=summary)
     write_json(root/'qualification.json',result);return result
 
 def main():
