@@ -107,6 +107,28 @@ pub(crate) fn assess_measurements(
     choice: &Choice,
     measurements: impl IntoIterator<Item = EffectiveMeasurement>,
 ) -> Result<Assessment> {
+    assess_measurements_with_citation_requirement(state, request, choice, measurements, false)
+}
+
+/// Assess citations against every effective measurement, including alternatives
+/// and abstention. Extra packet citations are allowed; host provenance is never
+/// appended to the model's submitted citations.
+pub(crate) fn assess_effective_measurement_citations(
+    state: &State,
+    request: &Request,
+    choice: &Choice,
+    measurements: impl IntoIterator<Item = EffectiveMeasurement>,
+) -> Result<Assessment> {
+    assess_measurements_with_citation_requirement(state, request, choice, measurements, true)
+}
+
+fn assess_measurements_with_citation_requirement(
+    state: &State,
+    request: &Request,
+    choice: &Choice,
+    measurements: impl IntoIterator<Item = EffectiveMeasurement>,
+    effective_citations_only: bool,
+) -> Result<Assessment> {
     ensure!(
         matches!(state.goal.as_str(), "minimize energy" | "minimize minutes"),
         "unknown objective"
@@ -136,6 +158,16 @@ pub(crate) fn assess_measurements(
         .filter(|m| !seen.contains(**m))
         .map(|m| m.to_string())
         .collect();
+    let citations_complete = if effective_citations_only {
+        candidates
+            .iter()
+            .all(|c| choice.citations.contains(&c.citation))
+    } else {
+        request
+            .passages
+            .iter()
+            .all(|p| choice.citations.contains(&p.id))
+    };
     let selected = candidates.iter().find(|c| c.method == choice.choice);
     let metric = |c: &Candidate| {
         if state.goal == "minimize energy" {
@@ -150,8 +182,11 @@ pub(crate) fn assess_measurements(
         if missing.is_empty() && best.is_some() {
             findings.push(Finding::UnnecessaryAbstention);
         }
+        if effective_citations_only && !citations_complete {
+            findings.push(Finding::MissingCitations);
+        }
         return Ok(Assessment {
-            admissible: true,
+            admissible: !effective_citations_only || citations_complete,
             missing,
             findings,
             candidates,
@@ -163,11 +198,7 @@ pub(crate) fn assess_measurements(
     if selected.is_none_or(|c| !c.feasible) {
         findings.push(Finding::InfeasibleChoice);
     }
-    if !request
-        .passages
-        .iter()
-        .all(|p| choice.citations.contains(&p.id))
-    {
+    if !citations_complete {
         findings.push(Finding::MissingCitations);
     }
     let admissible = findings.is_empty();

@@ -277,12 +277,14 @@ pub enum DurableDecideCommand {
 enum OutcomeResponseFormat {
     ChoiceFirst,
     FeasibilityFirst,
+    FeasibilityProvenance,
 }
 impl From<OutcomeResponseFormat> for mecha_core::memory_outcome_reappraisal::ResponseFormat {
     fn from(value: OutcomeResponseFormat) -> Self {
         match value {
             OutcomeResponseFormat::ChoiceFirst => Self::ChoiceFirst,
             OutcomeResponseFormat::FeasibilityFirst => Self::FeasibilityFirst,
+            OutcomeResponseFormat::FeasibilityProvenance => Self::FeasibilityProvenance,
         }
     }
 }
@@ -307,7 +309,7 @@ pub struct OutcomeRecallArgs {
     seed: u64,
     #[arg(long)]
     outcome_first: bool,
-    /// Opt into the v3 diagnostic; omission preserves legacy request bytes.
+    /// Opt into a diagnostic format (v3) or feasibility-provenance (v4); omission preserves legacy request bytes.
     #[arg(long, value_enum)]
     response_format: Option<OutcomeResponseFormat>,
     /// Per-request reasoning cap, within the 8192-token total allowance.

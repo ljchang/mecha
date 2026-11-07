@@ -28,11 +28,13 @@ const RESPONSE_MAX_BYTES: usize = 65536;
 pub enum ResponseFormat {
     ChoiceFirst,
     FeasibilityFirst,
+    FeasibilityProvenance,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct PairOptions {
     pub response_format: ResponseFormat,
 }
+const CITATION_POLICY: &str = "effective-measurements-v1";
 const POLICY: &str = "same-workload-actual-over-expectation-v1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -272,7 +274,9 @@ fn prepare_pair_inner(
             .collect(),
     };
     let pair = PreparedPair {
-        protocol: if response_format.is_some() {
+        protocol: if response_format == Some(ResponseFormat::FeasibilityProvenance) {
+            "outcome-reappraisal-v4"
+        } else if response_format.is_some() {
             "outcome-reappraisal-v3"
         } else {
             PROTOCOL
@@ -332,7 +336,16 @@ fn diagnostic_request(request: &mut Request, format: ResponseFormat) {
     request.prompt = request.prompt.replace("Return only JSON with choice, citations, and a brief reason.",
         "A method is feasible iff energy <= current energy_budget AND quality >= current minimum_quality, including equality. Optimize the current goal ONLY among feasible methods. If no method is feasible, choose abstain. Return only JSON with choice, citations, and a reason of at most 4000 Unicode characters.");
     request.response_schema["properties"]["reason"]["maxLength"] = json!(REASON_MAX_CHARS);
-    if format == ResponseFormat::FeasibilityFirst {
+    if format == ResponseFormat::FeasibilityProvenance {
+        request.prompt = request.prompt.replace(
+            "Cite all visible sources used for the comparison, including expectations and actuals for alternatives ruled out.",
+            "Cite the source of EVERY effective measurement used in the comparison, including alternatives ruled out and when choosing abstain. A same-workload numeric actual is the effective source for its method; its superseded expectation need not be cited. You may additionally cite superseded expectations or non-numeric actuals. All original expectations remain supplied as host packet provenance, separately from your citation claims. Host packet provenance does not supply missing model citations or verify your reason prose.",
+        );
+    }
+    if matches!(
+        format,
+        ResponseFormat::FeasibilityFirst | ResponseFormat::FeasibilityProvenance
+    ) {
         request.prompt.push_str("\nBefore choosing, report candidate_checks for Nori, Arden and Quill: effective minutes, energy, quality, source ID, energy_ok, quality_ok and feasible. Use the supplied source expectation unless the same-workload numeric actual supersedes it. Compute both inequalities independently; feasible is their conjunction. Then report choice, citations and reason.");
         let ids: Vec<_> = request.passages.iter().map(|p| p.id.as_str()).collect();
         let check = json!({"type":"object","additionalProperties":false,
@@ -445,7 +458,10 @@ impl PreparedPair {
             parse_diagnostic(
                 request,
                 text,
-                self.response_format == Some(ResponseFormat::FeasibilityFirst),
+                matches!(
+                    self.response_format,
+                    Some(ResponseFormat::FeasibilityFirst | ResponseFormat::FeasibilityProvenance)
+                ),
             )?
         } else {
             (experience::parse_choice(request, text)?, None)
@@ -513,11 +529,24 @@ impl PreparedPair {
         let checks_consistent = candidate_checks
             .as_ref()
             .map(|checks| checks == &expected_checks);
-        let mut assessment =
-            checks::assess_measurements(&self.contract.state()?, request, &choice, measurements)?;
+        let provenance = self.response_format == Some(ResponseFormat::FeasibilityProvenance);
+        let comparison_provenance = provenance
+            .then(|| comparison_provenance(request, &measurements, &choice.citations))
+            .transpose()?;
+        let mut assessment = if provenance {
+            checks::assess_effective_measurement_citations(
+                &self.contract.state()?,
+                request,
+                &choice,
+                measurements,
+            )?
+        } else {
+            checks::assess_measurements(&self.contract.state()?, request, &choice, measurements)?
+        };
         // This protocol always supplies a comparison packet. Abstention must
         // cite the evidence that makes every option fail; legacy behavior stays separate.
-        if choice.choice == "abstain"
+        if !provenance
+            && choice.choice == "abstain"
             && !request
                 .passages
                 .iter()
@@ -537,6 +566,8 @@ impl PreparedPair {
             "recommend"
         };
         Ok(OutcomeDecision {
+            comparison_provenance,
+            reason_status: provenance.then_some("unverified_model_prose"),
             candidate_checks,
             checks_consistent,
             proposed_choice: choice.choice,
@@ -551,6 +582,83 @@ impl PreparedPair {
         })
     }
 }
+/// Host-derived packet bookkeeping, never model support or action permission.
+#[derive(Serialize)]
+pub struct ComparisonProvenance {
+    pub supplied_source_ids: Vec<String>,
+    pub sources: Vec<ComparisonSource>,
+    pub method_effective_sources: std::collections::BTreeMap<String, String>,
+    pub model_omitted_packet_ids: Vec<String>,
+    pub missing_effective_citation_ids: Vec<String>,
+}
+#[derive(Serialize)]
+pub struct ComparisonSource {
+    pub id: String,
+    pub source: RevisionRef,
+    pub original_sha256: String,
+    pub projection_sha256: String,
+    pub role: ComparisonRole,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonRole {
+    EffectiveExpectation,
+    SupersededExpectation,
+    EffectiveActual,
+    NonNumericActual,
+}
+fn comparison_provenance(
+    request: &Request,
+    measurements: &[EffectiveMeasurement],
+    citations: &[String],
+) -> Result<ComparisonProvenance> {
+    let method_effective_sources = measurements
+        .iter()
+        .map(|m| (m.method.clone(), m.citation.clone()))
+        .collect();
+    let mut sources = Vec::new();
+    let mut model_omitted_packet_ids = Vec::new();
+    let mut missing_effective_citation_ids = Vec::new();
+    for passage in &request.passages {
+        let projection = passage
+            .projection
+            .as_ref()
+            .context("missing comparison projection")?;
+        let value: Value = serde_json::from_str(&projection.text)?;
+        let effective = measurements.iter().any(|m| m.citation == passage.id);
+        let role = if value["kind"] == "actual_observation" {
+            if effective {
+                ComparisonRole::EffectiveActual
+            } else {
+                ComparisonRole::NonNumericActual
+            }
+        } else if effective {
+            ComparisonRole::EffectiveExpectation
+        } else {
+            ComparisonRole::SupersededExpectation
+        };
+        if !citations.contains(&passage.id) {
+            model_omitted_packet_ids.push(passage.id.clone());
+            if effective {
+                missing_effective_citation_ids.push(passage.id.clone());
+            }
+        }
+        sources.push(ComparisonSource {
+            id: passage.id.clone(),
+            source: passage.source.clone(),
+            original_sha256: passage.sha256.clone(),
+            projection_sha256: projection.sha256.clone(),
+            role,
+        });
+    }
+    Ok(ComparisonProvenance {
+        supplied_source_ids: request.passages.iter().map(|p| p.id.clone()).collect(),
+        sources,
+        method_effective_sources,
+        model_omitted_packet_ids,
+        missing_effective_citation_ids,
+    })
+}
 fn number(v: &Value, field: &str) -> Result<u32> {
     Ok(u32::try_from(
         v[field].as_u64().context("missing measurement")?,
@@ -558,6 +666,10 @@ fn number(v: &Value, field: &str) -> Result<u32> {
 }
 #[derive(Serialize)]
 pub struct OutcomeDecision {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison_provenance: Option<ComparisonProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_status: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate_checks: Option<std::collections::BTreeMap<String, CandidateCheck>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -581,6 +693,8 @@ pub struct Row {
 }
 #[derive(Serialize)]
 pub struct PairReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citation_policy: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -659,6 +773,8 @@ where
     pair.recheck(db, access)
         .context("outcome sources invalidated")?;
     Ok(PairReport {
+        citation_policy: (pair.response_format == Some(ResponseFormat::FeasibilityProvenance))
+            .then_some(CITATION_POLICY),
         protocol: pair.protocol,
         response_format: pair.response_format,
         reason_max_chars: pair.reason_max_chars,

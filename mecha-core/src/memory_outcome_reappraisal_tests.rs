@@ -911,3 +911,410 @@ async fn diagnostic_actual_precedence_and_source_guards_remain_independent_of_cl
     assert!(guard.check().is_err());
     assert!(pair.recheck(&f.db, &f.access).is_err());
 }
+
+fn provenance_pair(f: &Fixture, budget: u32, quality: u32) -> PreparedPair {
+    prepare_pair_with_options(
+        &f.db,
+        &f.action,
+        &contract(budget, quality),
+        &f.query(),
+        &f.access,
+        PairOptions {
+            response_format: ResponseFormat::FeasibilityProvenance,
+        },
+    )
+    .unwrap()
+}
+fn provenance_reply(
+    choice: &str,
+    citations: &[&str],
+    budget: u32,
+    quality: u32,
+    actual: bool,
+) -> Value {
+    let mut checks = serde_json::Map::new();
+    for (method, minutes, energy, measured_quality, source) in [
+        (
+            "Nori",
+            4,
+            if actual { 9 } else { 2 },
+            8,
+            if actual { "e4" } else { "e1" },
+        ),
+        ("Arden", 8, 3, 9, "e2"),
+        ("Quill", 6, 5, 7, "e3"),
+    ] {
+        checks.insert(
+            method.into(),
+            json!({"minutes":minutes,"energy":energy,"quality":measured_quality,
+            "source":source,"energy_ok":energy<=budget,"quality_ok":measured_quality>=quality,
+            "feasible":energy<=budget && measured_quality>=quality}),
+        );
+    }
+    json!({"candidate_checks":checks,"choice":choice,"citations":citations,"reason":"Unverified comparison prose"})
+}
+
+// Removing only superseded e1 must stop being a citation failure in v4; v3
+// must still withhold exactly the same submitted reply.
+#[tokio::test]
+async fn provenance_omitted_superseded_expectation_preserves_raw_claims() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = provenance_pair(&f, 4, 7);
+    let submitted = provenance_reply("Arden", &["e4", "e2", "e3"], 4, 7, true);
+    let decision = pair
+        .finish(Arm::SourceAndOutcome, &submitted.to_string())
+        .unwrap();
+    assert_eq!(decision.disposition, "recommend");
+    assert_eq!(decision.citations, ["e4", "e2", "e3"]);
+    let legacy = prepare_pair_with_options(
+        &f.db,
+        &f.action,
+        &contract(4, 7),
+        &f.query(),
+        &f.access,
+        PairOptions {
+            response_format: ResponseFormat::FeasibilityFirst,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        legacy
+            .finish(Arm::SourceAndOutcome, &submitted.to_string())
+            .unwrap()
+            .disposition,
+        "withheld"
+    );
+    let report = evaluate_pair(
+        &f.db,
+        &pair,
+        &f.access,
+        "scripted-fixture",
+        [Arm::SourceAndOutcome, Arm::SourceOnly],
+        |_, _, _| {
+            let text = submitted.to_string();
+            async move {
+                let mut r = reply("Arden", 3);
+                r.text = text;
+                Ok(r)
+            }
+        },
+    )
+    .await
+    .unwrap();
+    let audit = serde_json::to_value(report).unwrap();
+    assert_eq!(audit["protocol"], "outcome-reappraisal-v4");
+    assert_eq!(audit["citation_policy"], "effective-measurements-v1");
+    let d = &audit["rows"][0]["decision"];
+    assert_eq!(d["reason_status"], "unverified_model_prose");
+    assert_eq!(d["citations"], submitted["citations"]);
+    assert_eq!(
+        audit["rows"][0]["call"]["reply"]["text"],
+        submitted.to_string()
+    );
+    let p = &d["comparison_provenance"];
+    assert_eq!(p["supplied_source_ids"], json!(["e1", "e2", "e3", "e4"]));
+    assert_eq!(p["model_omitted_packet_ids"], json!(["e1"]));
+    assert_eq!(p["missing_effective_citation_ids"], json!([]));
+    assert_eq!(
+        p["method_effective_sources"],
+        json!({"Nori":"e4","Arden":"e2","Quill":"e3"})
+    );
+    for (i, role) in [
+        "superseded_expectation",
+        "effective_expectation",
+        "effective_expectation",
+        "effective_actual",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let passage = &pair.request(Arm::SourceAndOutcome).passages[i];
+        assert_eq!(p["sources"][i]["id"], passage.id);
+        assert_eq!(
+            p["sources"][i]["source"],
+            serde_json::to_value(&passage.source).unwrap()
+        );
+        assert_eq!(p["sources"][i]["original_sha256"], passage.sha256);
+        assert_eq!(
+            p["sources"][i]["projection_sha256"],
+            passage.projection.as_ref().unwrap().sha256
+        );
+        assert_eq!(p["sources"][i]["role"], *role);
+        assert!(p["sources"][i].get("text").is_none());
+    }
+}
+
+#[tokio::test]
+async fn provenance_missing_effective_sources_withhold_even_abstention() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    for choice in ["Arden", "abstain"] {
+        for missing in ["e2", "e3", "e4"] {
+            let pair = provenance_pair(&f, 4, 7);
+            let citations: Vec<_> = ["e1", "e2", "e3", "e4"]
+                .into_iter()
+                .filter(|id| *id != missing)
+                .collect();
+            let d = pair
+                .finish(
+                    Arm::SourceAndOutcome,
+                    &provenance_reply(choice, &citations, 4, 7, true).to_string(),
+                )
+                .unwrap();
+            assert_eq!(d.disposition, "withheld", "{choice} {missing}");
+            let audit = serde_json::to_value(d).unwrap();
+            assert_eq!(
+                audit["comparison_provenance"]["missing_effective_citation_ids"],
+                json!([missing])
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn provenance_checks_cannot_substitute_expectation_or_false_values() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = provenance_pair(&f, 4, 7);
+    let valid = provenance_reply("Arden", &["e1", "e2", "e3", "e4"], 4, 7, true);
+    for field in [
+        "source",
+        "minutes",
+        "energy",
+        "quality",
+        "energy_ok",
+        "quality_ok",
+        "feasible",
+    ] {
+        let mut v = valid.clone();
+        v["candidate_checks"]["Nori"][field] = match field {
+            "source" => json!("e1"),
+            "energy_ok" | "quality_ok" | "feasible" => {
+                json!(!v["candidate_checks"]["Nori"][field].as_bool().unwrap())
+            }
+            _ => json!(99),
+        };
+        let d = pair.finish(Arm::SourceAndOutcome, &v.to_string()).unwrap();
+        assert_eq!(d.checks_consistent, Some(false), "{field}");
+        assert_eq!(d.disposition, "withheld", "{field}");
+        let audit = serde_json::to_value(d).unwrap();
+        assert_eq!(
+            audit["comparison_provenance"]["method_effective_sources"]["Nori"],
+            "e4"
+        );
+        assert_eq!(
+            audit["comparison_provenance"]["sources"][0]["role"],
+            "superseded_expectation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn provenance_preserves_advisory_abstention_and_suboptimality() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    for (budget, quality, choice, disposition, findings) in [
+        (1, 8, "abstain", "abstain", json!([])),
+        (
+            5,
+            7,
+            "abstain",
+            "abstain",
+            json!(["unnecessary_abstention"]),
+        ),
+        (5, 7, "Arden", "recommend", json!(["suboptimal_choice"])),
+    ] {
+        let pair = provenance_pair(&f, budget, quality);
+        let d = pair
+            .finish(
+                Arm::SourceAndOutcome,
+                &provenance_reply(choice, &["e2", "e3", "e4"], budget, quality, true).to_string(),
+            )
+            .unwrap();
+        assert_eq!(d.disposition, disposition);
+        assert_eq!(
+            serde_json::to_value(d.assessment).unwrap()["findings"],
+            findings
+        );
+    }
+}
+
+#[tokio::test]
+async fn provenance_non_numeric_actual_is_packet_provenance_only() {
+    for state in [FixtureState::Refused, FixtureState::Unknown] {
+        let f = Fixture::new(state).await;
+        let pair = provenance_pair(&f, 4, 7);
+        let submitted = provenance_reply("Nori", &["e1", "e2", "e3"], 4, 7, false);
+        let d = pair
+            .finish(Arm::SourceAndOutcome, &submitted.to_string())
+            .unwrap();
+        assert_eq!(d.disposition, "recommend");
+        let audit = serde_json::to_value(d).unwrap();
+        assert_eq!(
+            audit["comparison_provenance"]["sources"][3]["role"],
+            "non_numeric_actual"
+        );
+        assert_eq!(
+            audit["comparison_provenance"]["sources"][0]["role"],
+            "effective_expectation"
+        );
+        assert_eq!(
+            audit["comparison_provenance"]["model_omitted_packet_ids"],
+            json!(["e4"])
+        );
+        assert_eq!(
+            audit["comparison_provenance"]["method_effective_sources"]["Nori"],
+            "e1"
+        );
+        let mut false_actual = submitted.clone();
+        false_actual["candidate_checks"]["Nori"]["source"] = json!("e4");
+        assert_eq!(
+            pair.finish(Arm::SourceAndOutcome, &false_actual.to_string())
+                .unwrap()
+                .disposition,
+            "withheld"
+        );
+    }
+}
+
+#[tokio::test]
+async fn provenance_revoked_source_after_await_returns_no_report() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = provenance_pair(&f, 4, 7);
+    let mut calls = 0;
+    let path = f.path();
+    let source = f.source.source.clone();
+    let result = evaluate_pair(
+        &f.db,
+        &pair,
+        &f.access,
+        "scripted-fixture",
+        [Arm::SourceOnly, Arm::SourceAndOutcome],
+        |_, _, _| {
+            calls += 1;
+            let path = path.clone();
+            let source = source.clone();
+            async move {
+                tokio::task::yield_now().await;
+                Memory::open(&path)?.forget(&source)?;
+                let mut r = reply("Arden", 3);
+                r.text = provenance_reply("Arden", &["e2", "e3", "e4"], 4, 7, true).to_string();
+                Ok(r)
+            }
+        },
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(calls, 1);
+    assert!(result
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("outcome sources invalidated"));
+}
+
+#[tokio::test]
+async fn legacy_reports_have_no_provenance_additions() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    for format in [
+        None,
+        Some(ResponseFormat::ChoiceFirst),
+        Some(ResponseFormat::FeasibilityFirst),
+    ] {
+        let pair = if let Some(format) = format {
+            prepare_pair_with_options(
+                &f.db,
+                &f.action,
+                &contract(4, 7),
+                &f.query(),
+                &f.access,
+                PairOptions {
+                    response_format: format,
+                },
+            )
+            .unwrap()
+        } else {
+            f.pair(4, 7)
+        };
+        let report = evaluate_pair(
+            &f.db,
+            &pair,
+            &f.access,
+            "scripted-fixture",
+            [Arm::SourceOnly, Arm::SourceAndOutcome],
+            |_, _, _| async {
+                let mut r = reply("Nori", 3);
+                if format == Some(ResponseFormat::FeasibilityFirst) {
+                    r.text = provenance_reply("Nori", &["e1", "e2", "e3"], 4, 7, false).to_string();
+                }
+                Ok(r)
+            },
+        )
+        .await
+        .unwrap();
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(
+            value["protocol"],
+            if format.is_some() {
+                "outcome-reappraisal-v3"
+            } else {
+                "outcome-reappraisal-v1"
+            }
+        );
+        assert!(value.get("citation_policy").is_none());
+        for row in value["rows"].as_array().unwrap() {
+            let d = row["decision"].as_object().unwrap();
+            assert!(!d.contains_key("comparison_provenance"));
+            assert!(!d.contains_key("reason_status"));
+            let expected = if format == Some(ResponseFormat::FeasibilityFirst) {
+                11
+            } else {
+                9
+            };
+            assert_eq!(d.len(), expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn provenance_reuses_checks_first_schema_and_bounded_parser() {
+    let f = Fixture::new(FixtureState::Baseline).await;
+    let pair = provenance_pair(&f, 4, 7);
+    let v3 = prepare_pair_with_options(
+        &f.db,
+        &f.action,
+        &contract(4, 7),
+        &f.query(),
+        &f.access,
+        PairOptions {
+            response_format: ResponseFormat::FeasibilityFirst,
+        },
+    )
+    .unwrap();
+    for arm in [Arm::SourceOnly, Arm::SourceAndOutcome] {
+        assert_eq!(
+            pair.request(arm).response_schema,
+            v3.request(arm).response_schema
+        );
+        assert_eq!(
+            serde_json::to_value(&pair.request(arm).passages).unwrap(),
+            serde_json::to_value(&v3.request(arm).passages).unwrap()
+        );
+        assert_eq!(
+            pair.request(arm).response_schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["candidate_checks", "choice", "citations", "reason"]
+        );
+    }
+    let mut v = provenance_reply("Arden", &["e4", "e2", "e3", "e1"], 4, 7, true);
+    v["reason"] = json!("界".repeat(4000));
+    let d = pair.finish(Arm::SourceAndOutcome, &v.to_string()).unwrap();
+    assert_eq!(d.disposition, "recommend");
+    assert_eq!(d.citations, ["e4", "e2", "e3", "e1"]);
+    v["reason"] = json!("界".repeat(4001));
+    assert!(pair.finish(Arm::SourceAndOutcome, &v.to_string()).is_err());
+    v["reason"] = json!("valid");
+    v.as_object_mut().unwrap().remove("candidate_checks");
+    assert!(pair.finish(Arm::SourceAndOutcome, &v.to_string()).is_err());
+}
