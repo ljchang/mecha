@@ -249,9 +249,35 @@ async fn a_driven_run_drops_the_owners_surfaces_and_records_what_it_forced() {
     let meta = records.iter().find(|r| r["record"] == "meta").unwrap();
     assert_eq!(meta["kind"], "driven", "{meta}");
     let config = records.iter().find(|r| r["record"] == "config").unwrap();
-    for name in config["tools"].as_array().unwrap() {
-        assert!(ALLOWED.contains(&name.as_str().unwrap()), "{name} recorded");
+    // Both bounds. The upper is the allowlist. The lower is every
+    // allowlisted tool that registers unconditionally: `code`, `compact`
+    // and `skill` exist only where code mode is switched on, the provider
+    // has a context window, and the store holds a skill, none of which this
+    // home has. So a builtin renamed out from under `driven::TOOLS`, which
+    // would silently drop out of driven runs, shows here as a missing name.
+    let mut recorded: Vec<&str> = config["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    recorded.sort_unstable();
+    for name in &recorded {
+        assert!(ALLOWED.contains(name), "`{name}` recorded");
     }
+    assert_eq!(
+        recorded,
+        [
+            "fs_edit",
+            "fs_list",
+            "fs_read",
+            "fs_write",
+            "goal_context",
+            "shell",
+            "todo"
+        ],
+        "the recorded surface"
+    );
     assert_eq!(config["trifecta"], "block");
     assert_eq!(config["permission_mode"], "allow");
     // The project layer was not merged: its `kind = "none"` would have

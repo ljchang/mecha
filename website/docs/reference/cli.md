@@ -111,7 +111,9 @@ narrows:
 It refuses to start without a sandbox that cannot reach the network (`bwrap`
 or `docker` with `network = false`), or with a `[sandbox] readable` or
 `writable` path that overlaps the mecha home. It also refuses `--resume`,
-`--no-session` and `--read-only`, and every other command refuses the mark.
+`--no-session` and `--read-only`. Every other command that starts an agent
+refuses the mark. Commands that only read or manage stores (`sessions
+list`, `driven`, `doctor`) run as usual and skip the project layer.
 What it forced is recorded on the session. See [`driven`](#driven).
 
 ```bash
