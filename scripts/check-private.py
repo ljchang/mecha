@@ -985,6 +985,10 @@ BASE = ["HEAD"]
 # The public branch a push goes beside (`--public REF`, the pre-push hook's
 # `<remote>/HEAD`), or none.
 PUBLIC = []
+# `--text FILE`: the checked file's own path in the repository, if it is one.
+# Its committed copy is never "what the repository already says", or a
+# prompt checked after it lands would excuse itself (review of #852).
+SELF = []
 
 
 def in_head(normalised, head_cache={}):
@@ -1012,7 +1016,8 @@ def in_head_exact(text, cache={}):
     parts appearing apart (review of #841)."""
     if text not in cache:
         cache[text] = any(
-            subprocess.run(["git", "grep", "-q", "-I", "-i", "-F", "-e", text, rev, "--"],
+            subprocess.run(["git", "grep", "-q", "-I", "-i", "-F", "-e", text, rev, "--", ".",
+                            *[f":(exclude){p}" for p in SELF]],
                            capture_output=True).returncode == 0
             for rev in BASE + PUBLIC)
     return cache[text]
@@ -1029,6 +1034,8 @@ def tree_words(rev):
         if "\0" not in rec:
             continue
         path, text = rec.split("\0", 1)
+        if path.split(":", 1)[-1] in SELF:
+            continue
         files.setdefault(path, []).append(text)
     return " | ".join(" ".join(words(" ".join(lines))) for lines in files.values())
 
@@ -1041,6 +1048,11 @@ def main(args):
             return 2
         PUBLIC.append(run_git(["git", "rev-parse", "--verify", f"{args[i + 1]}^{{commit}}"]).strip())
         args = args[:i] + args[i + 2:]
+    if args and args[0] == "--text" and len(args) > 1:
+        top = run_git(["git", "rev-parse", "--show-toplevel"]).strip()
+        rel = os.path.relpath(os.path.realpath(args[1]), os.path.realpath(top))
+        if not rel.startswith(".."):
+            SELF.append(rel)
     if args and args[0] == "--range":
         BASE[0] = args[1].split("..")[0]
     elif not args or args[0] == "--staged":

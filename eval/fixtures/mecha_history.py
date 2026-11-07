@@ -10,24 +10,31 @@ D3a, D3b), on the contract of docs/EXPERIMENT-DESIGN.md §21.1
     grade <task>         -> stdin: the run's `--json` result; stdout:
                             {passed, detail, checks}: the PR's own added tests,
                             grafted over the run's tree, plus the touched
-                            crates' unit suites for regressions
+                            crates' unit suites for regressions (less the
+                            tests the pin already fails, from `baseline`)
 
-and three of its own, for the driver rather than `mecha exp`:
+and four of its own, for the driver rather than `mecha exp`:
 
     teardown <task>      -> removes the driven marker (`mecha driven unmark`)
     validate <task> [r]  -> D3a: the hidden tests r times on the pin (each run
                             must fail an assertion) and r times on the merge
                             (each run must pass); one JSON line
+    baseline <task> [r]  -> the touched crates' unit tests that already fail
+                            on the pin, in the grade's jail, over r runs (2),
+                            recorded in tasks.json; a task without one is not
+                            offered
     check-prompts        -> D3b: `check-private.py --text` over every prompt,
                             with CHECK_PRIVATE_REQUIRE=1, recording each
                             prompt's sha256 in tasks.json
 
 The bank is `mecha_history/tasks.json` (the seeded draw and one record per
 task) and `mecha_history/prompts/` (written by the driver, never copied from
-a PR or an issue). `list` offers only a task whose admission state is
-`admitted` (or one named in MECHA_HISTORY_INCLUDE, comma-separated) and
-whose prompt still has the sha256 its privacy check recorded: a prompt
-edited after the check is not offered.
+a PR or an issue). `list` offers a task whose admission state is
+`admitted`, or `interface-named` with an `## Interface` section in its prompt
+(the owner's ruling, 2026-11-07: the hidden tests call an item the pin lacks,
+so its signature, never its body, is named), and whose prompt still has the
+sha256 its privacy check recorded: a prompt edited after the check is not
+offered. Any other state, `rejected` among them, is never offered.
 
 **What setup builds, and why** (DRIVER-DESIGN.md §8, measured 2026-11-07
 inside the owner's jail). `[sandbox]`'s bwrap clears the environment and
@@ -45,6 +52,7 @@ is no remote: from a local source a push needs neither credentials nor
 network (§7), so the clone is made with no remote at all.
 """
 
+import datetime
 import hashlib
 import json
 import os
@@ -66,6 +74,9 @@ TEST_ATTR = re.compile(r"\+\s*#\[(tokio::)?test")
 RESULT = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)", re.M)
 FAILURE = re.compile(r"^---- (\S+) stdout ----\n(.*?)(?=^---- |^failures:$|\Z)", re.M | re.S)
 GRAFT_MOD = "hidden_grade"
+OFFERED = {"admitted", "interface-named"}
+INTERFACE = re.compile(r"^## Interface\s*$", re.M)
+ITEM = re.compile(r"(#\[|///|(pub(\([^)]*\))? )?(async |unsafe |const )*(fn|struct|enum|trait|type|impl|const|static|use|mod|macro_rules!)\b)")
 
 
 def die(msg, code=2):
@@ -147,13 +158,46 @@ def jail_env(tree):
     return {"PATH": SYSTEM_PATH, "HOME": tree, "CARGO_HOME": os.path.join(tree, ".cargo-home")}
 
 
-def cargo(tc, tree, *args, jobs=None, require_backends=False):
+def jail_argv(tc, tree, env):
+    """bwrap as `Sandbox::bwrap_args` builds it for the owner's `[sandbox]`
+    (no network, the system read-only, a private /tmp, the toolchain tree
+    read-only, the workspace the only writable path, the environment
+    cleared), up to and not including the command."""
+    bwrap = shutil.which("bwrap", path="/usr/local/bin:/usr/bin:/bin")
+    if not bwrap:
+        die("bwrap is not installed, and a run's tree is never built unconfined")
+    a = [bwrap, "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid",
+         "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try", "--unshare-net"]
+    for d in ("/usr", "/etc", "/opt"):
+        if os.path.isdir(d):
+            a += ["--ro-bind-try", d, d]
+    for d in ("/bin", "/sbin", "/lib", "/lib32", "/lib64"):
+        if os.path.islink(d):
+            a += ["--symlink", os.readlink(d), d]
+        elif os.path.exists(d):
+            a += ["--ro-bind-try", d, d]
+    a += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+          "--ro-bind-try", tc, tc, "--bind", tree, tree, "--chdir", tree, "--clearenv"]
+    for k, v in env.items():
+        a += ["--setenv", k, v]
+    return a + ["--"]
+
+
+def cargo(tc, tree, *args, jobs=None, require_backends=False, confined=False):
+    """cargo in the jail's environment. `confined` runs it inside bwrap too,
+    for a tree a model wrote: compiling one runs its build scripts, proc
+    macros and tests, so `grade` does that with no network and no view of
+    the host (DRIVER-DESIGN.md §8), where `setup` and `validate` build only
+    the repository's own history."""
     env = jail_env(tree)
     if jobs:
         env["CARGO_BUILD_JOBS"] = str(jobs)
     if require_backends:
         env["MECHA_TEST_REQUIRE_BACKENDS"] = "1"
-    return run(["nice", "-n", "19", os.path.join(tc, "bin", "cargo"), "--offline", *args], cwd=tree, env=env)
+    argv = [os.path.join(tc, "bin", "cargo"), "--offline", *args]
+    if confined:
+        argv = jail_argv(tc, tree, env) + argv
+    return run(["nice", "-n", "19", *argv], cwd=tree, env=env)
 
 
 # --- a tree at a commit ----------------------------------------------------
@@ -255,7 +299,7 @@ def whole_items(lines, added, start, end, indent):
     line that opens it, or at a `;` before anything opened."""
     items, i = [], start
     while i <= end and i < len(lines):
-        if (i + 1) in added and re.match(indent + r"(#\[|///|fn |async fn |struct |const |static |use )", lines[i]):
+        if (i + 1) in added and lines[i].startswith(indent) and ITEM.match(lines[i][len(indent):]):
             j, opened = i, False
             while j < len(lines):
                 line = lines[j].rstrip()
@@ -285,7 +329,8 @@ def added_items(merge):
     None for a whole test file's items and for top-level `#[cfg(test)]` items
     in an ordinary source file."""
     out = {}
-    for path in git("diff", "--name-only", f"{merge}^1", merge, "--", "*.rs").split():
+    # `d` drops a file the PR deleted: it has no merged text to read.
+    for path in git("diff", "--name-only", "--diff-filter=d", f"{merge}^1", merge, "--", "*.rs").split():
         if path in new_test_files(merge):
             continue
         lines = git("show", f"{merge}:{path}").split("\n")
@@ -362,7 +407,7 @@ def graft(tree, merge):
     return [n for _, _, n in hidden_tests(merge)]
 
 
-def run_hidden(tc, tree, tests, jobs=None, why=None):
+def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False):
     """{name: pass|fail|skipped|build-error|not-run}, one cargo call per target.
 
     Under MECHA_TEST_REQUIRE_BACKENDS=1: a hidden test that skips when its
@@ -375,30 +420,40 @@ def run_hidden(tc, tree, tests, jobs=None, why=None):
         by_target.setdefault((crate, target), []).append(name)
     for (crate, target), names in sorted(by_target.items()):
         sel = {"lib": ["--lib"], "bin": ["--bin", "mecha"]}.get(target) or ["--test", target[5:]]
-        r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *names, jobs=jobs, require_backends=True)
-        text = r.stdout + r.stderr
-        seen, panics = {}, {}
-        for path, verdict in RESULT.findall(text):
-            seen.setdefault(path.split("::")[-1], []).append((path, verdict))
-        for path, body in FAILURE.findall(text):
-            panics[path.split("::")[-1]] = body
-        built = "test result:" in text or seen
-        for name in names:
-            hits = seen.get(name, [])
-            if not built:
-                out[name] = "build-error"
-                if why is not None:
-                    why.setdefault(name, first_error(text))
-            elif not hits:
-                out[name] = "not-run"
-            elif all(v == "ok" for _, v in hits):
-                out[name] = "pass"
-            else:
-                body = panics.get(name, "")
-                out[name] = "skipped" if "MECHA_TEST_REQUIRE_BACKENDS" in body else "fail"
-                if why is not None:
-                    m = re.search(r"panicked at [^\n]*\n[^\n]*", body)
-                    why.setdefault(name, (m.group(0) if m else body.strip())[:300])
+        r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *names, jobs=jobs, require_backends=True,
+                  confined=confined)
+        out.update(statuses(r.stdout + r.stderr, names, why))
+    return out
+
+
+def statuses(text, names, why=None):
+    """Each hidden test's verdict from one cargo call's output. A test the
+    run wrote under the same name is the run's, not the grade's: where the
+    grafted copy (in `hidden_grade`) ran, only it counts."""
+    seen, panics, out = {}, {}, {}
+    for path, verdict in RESULT.findall(text):
+        seen.setdefault(path.split("::")[-1], []).append((path, verdict))
+    for path, body in FAILURE.findall(text):
+        panics[path] = body
+    built = "test result:" in text or seen
+    for name in names:
+        hits = seen.get(name, [])
+        grafted = [h for h in hits if f"::{GRAFT_MOD}::" in h[0] or h[0].startswith(f"{GRAFT_MOD}::")]
+        hits = grafted or hits
+        if not built:
+            out[name] = "build-error"
+            if why is not None:
+                why.setdefault(name, first_error(text))
+        elif not hits:
+            out[name] = "not-run"
+        elif all(v == "ok" for _, v in hits):
+            out[name] = "pass"
+        else:
+            body = next((panics.get(p, "") for p, v in hits if v == "FAILED"), "")
+            out[name] = "skipped" if "MECHA_TEST_REQUIRE_BACKENDS" in body else "fail"
+            if why is not None:
+                m = re.search(r"panicked at [^\n]*\n[^\n]*", body)
+                why.setdefault(name, (m.group(0) if m else body.strip())[:300])
     return out
 
 
@@ -411,11 +466,21 @@ def first_error(text):
 
 
 def offered(t):
-    states = {"admitted"} | {s for s in os.environ.get("MECHA_HISTORY_INCLUDE", "").split(",") if s}
-    if t["admission"]["state"] not in states:
+    state = t["admission"]["state"]
+    if state not in OFFERED:
         return False
     check = t.get("prompt_check") or {}
-    return check.get("store_present") is True and check.get("sha256") == sha256(prompt_path(t))
+    if not (check.get("store_present") is True and check.get("sha256") == sha256(prompt_path(t))):
+        return False
+    # Without the pin's own failures on record, the grade would charge a run with them.
+    base = (t.get("baseline") or {}).get("failing")
+    if not isinstance(base, dict) or set(base) != set(t["crates"]):
+        return False
+    # A test that calls an item the pin lacks is unsolvable without its name.
+    if state == "interface-named":
+        with open(prompt_path(t)) as fh:
+            return bool(INTERFACE.search(fh.read()))
+    return True
 
 
 def environment_note(t):
@@ -489,19 +554,71 @@ def cmd_grade(task_id):
     changed = git("status", "--porcelain", cwd=ws).strip()
     tc = toolchain_dir(t, t["pin"])
     names = graft(ws, t["merge"])
-    hidden = run_hidden(tc, ws, hidden_tests(t["merge"]), jobs=4)
+    hidden = run_hidden(tc, ws, hidden_tests(t["merge"]), jobs=4, confined=True)
     checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
+    pre = t["baseline"]["failing"]
     for crate in t["crates"]:
-        sel = ["--bin", "mecha"] if crate == "mecha-cli" else ["--lib"]
-        r = cargo(tc, ws, "test", "-p", crate, *sel, jobs=4)
-        failed = sorted({p for p, v in RESULT.findall(r.stdout) if v == "FAILED"})
-        ok = r.returncode == 0
-        detail = "passed" if ok else (f"{len(failed)} failed: {', '.join(failed[:5])}" if failed else first_error(r.stderr))
-        checks.append({"name": f"regressions: {crate} {' '.join(sel)}", "passed": ok, "detail": detail})
+        ok, failed, detail = regressions(tc, ws, crate)
+        if failed is not None:
+            ok, detail = counted(failed, pre.get(crate, []))
+        checks.append({"name": f"regressions: {crate} {' '.join(selection(crate))}", "passed": ok, "detail": detail})
     passed = bool(names) and all(c["passed"] for c in checks)
     detail = (f"{sum(v == 'pass' for v in hidden.values())}/{len(hidden)} hidden tests pass"
               + ("" if changed else "; the run left the tree unchanged"))
     json.dump({"passed": passed, "detail": detail, "checks": checks}, sys.stdout)
+
+
+def selection(crate):
+    return ["--bin", "mecha"] if crate == "mecha-cli" else ["--lib"]
+
+
+def regressions(tc, tree, crate):
+    """(passed, the failing test paths or None when nothing ran, detail)."""
+    r = cargo(tc, tree, "test", "-p", crate, *selection(crate), "--no-fail-fast", jobs=4, confined=True)
+    failed = sorted({p for p, v in RESULT.findall(r.stdout) if v == "FAILED"})
+    if r.returncode == 0:
+        return True, failed, "passed"
+    if failed:
+        return False, failed, f"{len(failed)} failed: {', '.join(failed[:5])}"
+    return False, None, first_error(r.stderr)
+
+
+def counted(failed, on_pin):
+    """A test the pin already fails is the pin's, never the run's; a grafted
+    hidden test is judged by the hidden check, once."""
+    hidden = [f for f in failed if f"::{GRAFT_MOD}::" in f"::{f}"]
+    known = [f for f in failed if f in on_pin and f not in hidden]
+    new = [f for f in failed if f not in hidden and f not in known]
+    if new:
+        return False, f"{len(new)} failed: {', '.join(new[:5])}"
+    return True, "passed" + (f" ({len(known)} failing on the pin too, not counted)" if known else "")
+
+
+def cmd_baseline(task_id, r):
+    """The touched crates' unit tests the pin already fails, in the grade's own
+    jail, over r runs (their union), recorded in tasks.json: the grade does
+    not charge a run with them."""
+    t = find(task_id)
+    failing = {}
+    with tempfile.TemporaryDirectory(prefix="mecha-history-") as tmp:
+        tree = os.path.join(tmp, "pin")
+        tc = prepare(t, tree, t["pin"])
+        for crate in t["crates"]:
+            seen = set()
+            for _ in range(r):
+                ok, failed, detail = regressions(tc, tree, crate)
+                if failed is None:
+                    die(f"{crate}'s unit tests do not run on the pin: {detail}")
+                seen.update(failed)
+            failing[crate] = sorted(seen)
+    data = bank()
+    for rec in data["tasks"]:
+        if rec["id"] == t["id"]:
+            rec["baseline"] = {"r": r, "date": datetime.date.today().isoformat(), "by": "baseline", "failing": failing}
+    with open(TASKS, "w") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    print(json.dumps({"task": t["id"], "failing": failing}))
 
 
 def cmd_validate(task_id, r):
@@ -556,7 +673,7 @@ def cmd_check_prompts():
         else:
             t["prompt_check"] = {"sha256": sha256(p), "store_present": True}
     with open(TASKS, "w") as fh:
-        json.dump(data, fh, indent=2)
+        json.dump(data, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
     if failed:
         die("prompts refused:\n" + "\n".join(failed), code=1)
@@ -577,6 +694,8 @@ def main(argv):
         cmd_teardown(rest[0])
     elif verb == "validate" and rest:
         cmd_validate(rest[0], int(rest[1]) if len(rest) > 1 else 5)
+    elif verb == "baseline" and rest:
+        cmd_baseline(rest[0], int(rest[1]) if len(rest) > 1 else 2)
     elif verb == "check-prompts":
         cmd_check_prompts()
     else:

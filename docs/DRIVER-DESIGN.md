@@ -1,10 +1,10 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
 **Status: 2026-11-07, designed and ruled (§9, R1–R6 and R8–R11, all ruled; R7 is the owner's config and a precondition of a driven run). D1 is
-merged (#848). D1b is merged (#851, §7 "As built"). R7 is measured (§8); the owner's
-two `[sandbox]` lines are the precondition left. D3's history source is built
-(`eval/fixtures/mecha_history.py`, §3 "As built"). D2 follows before the first
-validation run (R5).**
+merged (#848). D1b is merged (#851, §7 "As built"). R7 is measured (§8), and the
+owner's two `[sandbox]` lines are in (2026-11-07). D3's history source is built
+(`eval/fixtures/mecha_history.py`, §3 "As built"), with the interface-named tasks
+admitted on the owner's ruling. D2 follows before the first validation run (R5).**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
 the owner's desk) gives mecha real work, mostly changes to mecha itself,
@@ -489,7 +489,7 @@ them.
 
 **As built (2026-11-07).** The bank is `eval/fixtures/mecha_history/`: the
 pilot's draw as it was recorded (seed, rule, eligible set, replacements) in
-`tasks.json`, one record per task, and the prompts. Five choices go beyond
+`tasks.json`, one record per task, and the prompts. These choices go beyond
 the text above:
 
 - **The clone is fetched, not cloned.** A `git clone` copies the source's
@@ -512,8 +512,9 @@ the text above:
   order) add tests that call an item the pin does not have, so they fail on
   the pin by not building, which D3a does not admit. Their prompts name the
   missing items' signatures (never bodies), SWE-bench Verified's practice.
-  They are offered only by name (`MECHA_HISTORY_INCLUDE=interface-named`)
-  and only on the owner's ruling, because the admission rule is the owner's.
+  **Ruled (owner, 2026-11-07): admitted.** `list` offers one only when its
+  prompt has an `## Interface` section, since without the name the task
+  cannot be solved.
 - **The graft finds every test module.** A file may hold several top-level
   test modules (`mod tests`, `mod held_tests`, ...) and top-level
   `#[cfg(test)]` items beside them, and a module ends at rustfmt's `}` in
@@ -529,10 +530,24 @@ the text above:
   §8 self-hosting confound measured on the first draw. The touched crates'
   regression suites run without the variable, because skipping there is
   their design.
-- **Where the bank stands (2026-11-07).** Admitted by `validate`: 421, 525,
-  813. Interface-named, awaiting the owner's ruling: 466, 471, 476, 726, 759,
-  793, 798. Replaced or rejected: 780 (its tests read a private field) and
-  807 (above).
+- **The grade runs in a jail of its own,** built the way the run's is: bwrap,
+  no network, a cleared environment, the toolchain read-only and the tree
+  the only writable path. A run's tree is the model's code, and the grade
+  executes it. Setup and `validate` build only the repository's own history,
+  and run unconfined.
+- **Regressions are counted against the pin's own failures.** An old pin can
+  fail some of its own unit tests. At 525's pin one fails deterministically,
+  so its oracle grade (the merge's own diff, applied to the clone) failed.
+  `baseline <task> [r]` records the touched crates' unit tests that fail on
+  the pin, in the grade's jail, over r runs. The grade does not count them,
+  and it counts a grafted hidden test once, under the hidden check. A task
+  with no baseline on record is not offered. This is SWE-bench's
+  PASS_TO_PASS, measured rather than assumed.
+- **Where the bank stands (2026-11-07).** Admitted by `validate` (r = 5):
+  421, 525, 813. Interface-named by `validate`, and admitted under the
+  ruling: 466, 471, 476, 726, 759, 798. Replaced or rejected: 780 (its tests
+  read a private field), 807 (above), and 793, whose hidden test also needs
+  the monty worker, so no merge run passes it under the variable.
 - **`teardown`** removes the marker. It is the fourth verb, and the driver
   calls it, because §21.1's contract has no teardown and an expired marker
   still refuses unmarked runs (§7).

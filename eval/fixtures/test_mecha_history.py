@@ -54,10 +54,18 @@ mod tests {
         assert_eq!(add(1, helper()), 3);
     }
 
+    struct Probe;
+
+    impl Probe {
+        fn top() -> u32 {
+            MAX
+        }
+    }
+
     /// The top of the range does not wrap.
     #[test]
     fn saturates_at_the_top() {
-        assert_eq!(add(MAX, helper()), MAX);
+        assert_eq!(add(Probe::top(), helper()), MAX);
     }
 }
 """
@@ -110,6 +118,21 @@ def executable(path, text):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
 
 
+class Regressions(unittest.TestCase):
+    def test_a_test_the_pin_already_fails_is_not_the_runs(self):
+        self.assertEqual(mecha_history.counted(["a::slow"], ["a::slow"]),
+                         (True, "passed (1 failing on the pin too, not counted)"))
+
+    def test_a_new_failure_is_the_runs(self):
+        ok, detail = mecha_history.counted(["a::slow", "b::fresh"], ["a::slow"])
+        self.assertFalse(ok)
+        self.assertEqual(detail, "1 failed: b::fresh")
+
+    def test_a_hidden_test_is_judged_once_by_the_hidden_check(self):
+        self.assertEqual(mecha_history.counted(["x::hidden_grade::t"], []), (True, "passed"))
+        self.assertEqual(mecha_history.counted(["hidden_grade::t"], []), (True, "passed"))
+
+
 class Source(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -123,11 +146,13 @@ class Source(unittest.TestCase):
         git(self.repo, "config", "user.name", "t")
         write(os.path.join(self.repo, "demo", "src", "lib.rs"), PIN_LIB)
         write(os.path.join(self.repo, "demo", "src", "other.rs"), PIN_OTHER)
+        write(os.path.join(self.repo, "demo", "src", "gone.rs"), "pub fn gone() {}\n")
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "pin")
         self.pin = git(self.repo, "rev-parse", "HEAD").strip()
         write(os.path.join(self.repo, "demo", "src", "lib.rs"), MERGE_LIB)
         write(os.path.join(self.repo, "demo", "src", "other.rs"), MERGE_OTHER)
+        os.remove(os.path.join(self.repo, "demo", "src", "gone.rs"))
         os.makedirs(os.path.join(self.repo, "demo", "tests"))
         write(os.path.join(self.repo, "demo", "tests", "fresh.rs"), NEW_TEST_FILE)
         write(os.path.join(self.repo, "demo", "fixture.json"), '{"made": "up"}\n')
@@ -155,6 +180,7 @@ class Source(unittest.TestCase):
             "prompt": "prompts/pr-1.md",
             "repair": [{"path": "demo/fixture.json", "from": self.merge}],
             "admission": {"state": "admitted"},
+            "baseline": {"failing": {"demo": []}},
         }
         self.other = dict(self.task, id="pr-2", prompt="prompts/pr-2.md", admission={"state": "interface-named"})
         for t in (self.task, self.other):
@@ -197,9 +223,30 @@ class Source(unittest.TestCase):
         self.assertIn(os.path.join(self.rustup, "toolchains", "stable-test-triple", "bin", "cargo"), prompt)
         self.assertIn("`demo`", prompt)
 
-    def test_an_interface_named_task_is_offered_only_when_included_by_name(self):
-        r = self.source("list", extra={"MECHA_HISTORY_INCLUDE": "interface-named"})
-        self.assertEqual([t["id"] for t in json.loads(r.stdout)], ["pr-1", "pr-2"])
+    def test_an_interface_named_task_is_offered_when_its_prompt_names_the_interface(self):
+        path = os.path.join(self.bank, "prompts", "pr-2.md")
+        write(path, "# Make it saturate\n\nThe sum wraps.\n\n## Interface\n\n```rust\npub fn saturating(a: u8, b: u8) -> u8;\n```\n")
+        self.other["prompt_check"]["sha256"] = mecha_history.sha256(path)
+        self.write_bank()
+        self.assertEqual([t["id"] for t in json.loads(self.source("list").stdout)], ["pr-1", "pr-2"])
+
+    def test_a_rejected_or_unknown_state_is_never_offered(self):
+        for state in ("rejected", "proposed"):
+            self.other["admission"] = {"state": state}
+            path = os.path.join(self.bank, "prompts", "pr-2.md")
+            write(path, "# Make it saturate\n\n## Interface\n\n`fn saturating`\n")
+            self.other["prompt_check"]["sha256"] = mecha_history.sha256(path)
+            self.write_bank()
+            self.assertEqual([t["id"] for t in json.loads(self.source("list").stdout)], ["pr-1"], state)
+
+    def test_a_task_without_the_pins_own_failures_on_record_is_not_offered(self):
+        for base in (None, {"failing": {}}, {"failing": {"other": []}}):
+            if base is None:
+                self.task.pop("baseline")
+            else:
+                self.task["baseline"] = base
+            self.write_bank()
+            self.assertEqual(json.loads(self.source("list").stdout), [], base)
 
     def test_a_prompt_edited_after_its_check_is_not_offered(self):
         with open(os.path.join(self.bank, "prompts", "pr-1.md"), "a") as fh:
@@ -280,6 +327,9 @@ class Source(unittest.TestCase):
         self.assertIn("        use std::u32::MAX;", block)
         self.assertIn("        /// The top of the range does not wrap.", block)
         self.assertIn("        fn saturates_at_the_top() {", block)
+        # A helper with no attribute of its own is still the PR's test code.
+        self.assertIn("        impl Probe {", block)
+        self.assertIn("        struct Probe;", block)
         self.assertNotIn("fn adds()", block, "an item the pin already had is not grafted")
         self.assertEqual(grafted.count("fn saturates_at_the_top()"), 2)
         self.assertEqual(read(os.path.join(self.ws, "demo", "tests", "fresh.rs")), NEW_TEST_FILE)
@@ -331,6 +381,32 @@ class Source(unittest.TestCase):
         self.assertIn("MECHA_TEST_REQUIRE_BACKENDS", bodies["needs_a_worker"])
         self.assertNotIn("MECHA_TEST_REQUIRE_BACKENDS", bodies["asserts"])
         self.assertIn("assertion", bodies["asserts"])
+
+    def test_the_grafted_copy_decides_over_a_same_named_test_the_run_wrote(self):
+        out = ("test tests::saturates_at_the_top ... FAILED\n"
+               "test tests::hidden_grade::saturates_at_the_top ... ok\n\nfailures:\n\n"
+               "---- tests::saturates_at_the_top stdout ----\npanicked at src/lib.rs:1:1:\nthe run's own\n\n"
+               "failures:\n\ntest result: FAILED. 1 passed; 1 failed\n")
+        self.assertEqual(mecha_history.statuses(out, ["saturates_at_the_top"]), {"saturates_at_the_top": "pass"})
+        self.assertEqual(mecha_history.statuses("error[E0425]: nope\n", ["x"]), {"x": "build-error"})
+
+    def test_the_grade_builds_in_a_jail_with_no_network_and_no_home(self):
+        # The argv is the policy; CI's runner has no bwrap to name, so the
+        # lookup is stubbed and the assertions still run there.
+        from unittest import mock
+        with mock.patch.object(mecha_history.shutil, "which", return_value="/usr/bin/bwrap"):
+            argv = mecha_history.jail_argv("/opt/tc", "/work/clone", {"PATH": "/usr/bin", "HOME": "/work/clone"})
+        with mock.patch.object(mecha_history.shutil, "which", return_value=None), \
+                self.assertRaises(SystemExit):
+            mecha_history.jail_argv("/opt/tc", "/work/clone", {})
+        self.assertIn("--unshare-net", argv)
+        self.assertIn("--clearenv", argv)
+        i = argv.index("--bind")
+        self.assertEqual(argv[i + 1:i + 3], ["/work/clone", "/work/clone"])
+        self.assertEqual(argv.count("--bind"), 1, "the clone is the only writable path")
+        self.assertIn(["--ro-bind-try", "/opt/tc", "/opt/tc"], [argv[k:k + 3] for k in range(len(argv))])
+        self.assertFalse(any(a.startswith(os.path.expanduser("~")) for a in argv), "nothing of the home")
+        self.assertEqual(argv[-1], "--")
 
     def test_libtest_output_is_read_per_test(self):
         out = ("test tests::adds ... ok\n"

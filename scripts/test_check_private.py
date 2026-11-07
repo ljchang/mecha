@@ -146,6 +146,18 @@ class Guard(unittest.TestCase):
         open(doc, "w").write("# Count the bytes\n\nMake the change.\n")
         self.assertEqual(self.run_guard("--text", doc).returncode, 0)
 
+    def test_a_committed_text_does_not_excuse_itself(self):
+        # Checked after it lands, a prompt is in HEAD; its own copy must not
+        # count as the repository already saying it (review of #852).
+        self.stage("prompt.md", f"# {SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "add")
+        r = self.run_guard("--text", os.path.join(self.repo, "prompt.md"))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        # The repository's other files still excuse what they say.
+        self.stage("harness.md", f"{SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
+        self.assertEqual(self.run_guard("--text", os.path.join(self.repo, "prompt.md")).returncode, 0)
+
     def test_a_push_reads_every_commit_not_only_the_ends(self):
         # Added in one --no-verify commit and rewritten in the next: the
         # range's endpoint diff is clean, and the push must still refuse.
