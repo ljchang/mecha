@@ -478,6 +478,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Experimental goal-memory retrieval refreshes relation-validity time on every
+  call while retaining the invocation's knowledge snapshot. Reusing a tool no
+  longer keeps expired relations current; time remains controlled by the host.
+
 - Experimental `extract-plan --thinking-budget` now accepts 1–4096, reserving
   answer capacity within the 8192-token total allowance. Larger budgets are
   rejected before inference, matching outcome recall's existing cap.

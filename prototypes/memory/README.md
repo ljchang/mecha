@@ -401,6 +401,10 @@ not prove model judgment quality or counterfactual simulation accuracy.
 The runtime `GoalMemory` schema now restricts `serves` to its host-confirmed goal
 and recommends omitting it. Invalid IDs still fail closed with a repair hint;
 the ordinary tool without memory opt-in remains unchanged.
+The knowledge snapshot stays fixed for the invocation, while relation validity
+is checked at the host's current time on each memory call. Reusing the tool does
+not keep expired relations current or admit records captured after its snapshot.
+Current source restrictions still apply; model input cannot set the policy clock.
 
 ## Intentional limits
 
@@ -1045,6 +1049,9 @@ v5 action and the same workload; it neither creates a new action nor revises the
 original episode. The actual observation must appear in bounded ordinary recall
 and match the authenticated operational revision and bytes. A recall miss fails
 preparation rather than silently substituting a direct lookup.
+The retained action must come from an authenticated recommendation. In the
+current three-method fixture, incomplete measurements yield a withheld choice
+or an abstention; neither can bind an action or reach this paired evaluation.
 
 ```sh
 mecha memory --experimental --db /tmp/new.memory-prototype.sqlite \

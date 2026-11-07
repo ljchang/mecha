@@ -84,6 +84,32 @@ The current isolated release is
 Build/install hashes and CLI identity match; logs are retained under
 `results/memory-provenance-20261107/review-fixes/`.
 
+The next review exposed a reachable validity-clock defect: `GoalMemory` now asks
+its host `Clock` on every memory call while preserving its opening knowledge
+snapshot. A deterministic test failed when a reused tool retained an expired
+relation, then passed after the fix; it also measures later-record exclusion,
+current scope revocation, successful empty-result provenance and refusal of a
+model-supplied clock. A separate review claim about partial measurement packets
+was disproved by tracing the full authenticated action lineage. Both binding and
+retained-outcome reconstruction require `Recommend`; incomplete evidence yields
+`Withheld` or `Abstain`. Six actual durable read/model cases (0/1/2 measurements
+and method/abstention replies) pin that rejection. These are authored decision
+callbacks, not real inference or outcome-reappraisal calls. No schema or runtime
+restriction was added for the unreachable finding. Independent review confirmed
+both the clock repair and the reachability analysis.
+
+At qualified source `de5d60980`, Spark passed **6,598 all-feature tests /0 failed
+/28 ignored**, **6,302 default /0 /25**, formatting, strict Clippy, release build
+and **81 fresh-fixture Python tests with zero skips**. A test assertion initially
+failed Clippy's `err_expect` lint; the direct `expect_err` correction and original
+failure log are retained. The new isolated artifact is
+`~/.local/share/mecha-prototypes/memory-provenance-de5d60980/bin/mecha`, SHA256
+`fa48a1fb68e522fb5f700cf0cf5db3519d5c43be1de97e02add3d19da4568bbf`;
+build/install hashes and CLI identity match. Evidence is in
+`results/memory-provenance-20261107/final-boundary-fixes/`. No new real-model
+calls or production changes. The current handoff keeps this latest state;
+prior artifact identities and qualification history remain here.
+
 The first all-feature run failed in the unchanged mail-hook timeout test while
 launching its temporary executable with ETXTBSY (Text file busy). The exact isolated
 test and the full unchanged suite then passed. Both logs remain in the results;

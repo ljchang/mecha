@@ -46,53 +46,31 @@ proposal; missing active evidence and false candidate checks still do. Free-text
 reasons are explicitly unverified. Existing v1/v3 bytes/defaults and all-source
 guards remain unchanged. No persistence migration or new action executor.
 
-Spark qualification at product `611bbc048`: **6,587 all-feature tests /0 failed
-/28 ignored**, **6,294 default /0 /25**, **198 standalone**; formatting,
-strict all-target/all-feature Clippy and workspace/release builds passed. All
-**78 Python tests passed, zero skipped**, against the independently installed
-release, including eight authored HTTP replies across three v4 cases and a v3
-control, plus v4 pre-dispatch revocation with zero completions/no report.
-The checks retained exact raw replies/citations, full source/projection hashes,
-actual transmitted schema order and unchanged fixture stores. Zero real inference.
-The first all-feature attempt hit an unchanged mail-hook ETXTBSY launch error;
-its exact retry and the full unchanged rerun passed. Both logs are retained.
+Current runtime boundaries: extraction reasoning budgets accept 1–4096 within
+8192 total tokens; strict numeric-loopback transport is directly regression-tested.
+CI creates a fresh authored fixture and rejects empty discovery, missing
+configuration, skips and failures. `GoalMemory` refreshes host-owned `valid_at`
+on every call while keeping `known_at` frozen; expired relations disappear,
+post-snapshot captures remain excluded, and current restrictions still apply.
 
-Initial isolated Spark artifact (review build below supersedes it):
-`~/.local/share/mecha-prototypes/memory-provenance-611bbc048/bin/mecha`, SHA256
-`e39b1beb17514d0b996c835e1f587d5d547008ea7e008689a6f0feb23d63cef5`.
-Build/install hashes, version and actual CLI behavior verified. Results:
-`results/memory-provenance-20261107/qualification/`. Python qualification source
-is `ccee4000d`; it adds tests only to product `611bbc048`. The previous measured
-model diagnostic remains in HISTORY and `results/memory-constraint-20261106/`.
+Outcome reappraisal requires an authenticated retained action. Six real durable
+lineage cases confirm that 0/1/2 observations with either a method choice or
+abstention cannot bind that action. The review's partial-packet inconsistency is
+unreachable through the supported workflow; no comparison schema was changed.
+Independent scoped code and evidence reviews found no remaining issue in these
+changes. Current aggregate PR review/CI status is on the draft PR.
 
-
-Automated review then identified that ordinary CI discovery skipped the four
-installed-CLI tests without explicit fixture variables. `ci_qualification.py`
-now creates a disposable mismatch fixture through the authored loopback action
-lifecycle, validates its finalized action, sets the three qualification variables
-before discovery, and rejects missing configuration, empty discovery, skips or
-failed tests. CI explicitly builds the feature-enabled CLI first. The exact runner
-at `7a3bfcd11` passed **81 tests, zero failed/skipped**, on Spark with a fresh
-fixture and the qualified `611bbc048` artifact; no real model inference. Scoped
-re-review found both this gap and the corrected architecture/main inference comments
-addressed, with no major/medium findings. Portable developer skips remain explicit.
-
-Further automated review identified an extraction reasoning-budget gap and missing
-direct tests for the strict loopback predicate. At `0c96be336`, `extract-plan`
-accepts explicit budgets 1–4096 within its unchanged 8192-token allowance. Its
-new parser test failed on the old 4097 acceptance. Eight direct loopback tests
-passed; weakening numeric-host and URL-envelope checks produced two and five
-failures respectively, and both mutations were restored. Independent scoped
-re-review found no remaining issue. Spark passed **6,302 workspace tests /0 failed
-/25 ignored**, **1,612 feature-enabled CLI tests /0 /1**, formatting, strict
-all-target/all-feature Clippy, release build and the **81-test fresh-fixture
-qualification with zero skips**. Thirteen local socket tests had been denied by
-the local sandbox; all passed in the Spark workspace suite. No real inference.
-The current isolated release is
-`~/.local/share/mecha-prototypes/memory-provenance-0c96be336/bin/mecha`, SHA256
-`37613b6ab0a5099fe99c1ffca55fea899696849da5de71a778ef16e1c92075d2`.
-Build/install hashes and CLI identity match; logs are retained under
-`results/memory-provenance-20261107/review-fixes/`.
+Latest qualified source `de5d60980`: Spark passed **6,598 all-feature tests
+/0 failed /28 ignored**, **6,302 default /0 /25**, formatting, strict
+all-target/all-feature Clippy, release build and **81 fresh-fixture Python tests,
+zero skipped**. The independently installed release is
+`~/.local/share/mecha-prototypes/memory-provenance-de5d60980/bin/mecha`, SHA256
+`fa48a1fb68e522fb5f700cf0cf5db3519d5c43be1de97e02add3d19da4568bbf`.
+Build/install hashes and CLI identity match. Evidence is retained under
+`results/memory-provenance-20261107/final-boundary-fixes/`; earlier qualification,
+review findings and failures remain in HISTORY and the adjacent result folders.
+No new real-model calls were made. The prior 24-response model diagnostic remains
+in HISTORY and `results/memory-constraint-20261106/`.
 
 **Next:** freeze broader multi-seed cases to test whether the bounded-reasoning
 benefit holds under the new citation contract at acceptable cost. Score raw model
@@ -117,8 +95,8 @@ production deployment claim was requalified by this memory-only increment.
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#comparison-provenance-is-separate-from-model-citations
 Research v0.21 published 2026-11-07, source
-`cddd3b7d9d9574aeb919bf2a32dcfe9f82698a17`, deployment
-`appgdep_6aeed77eeba48191b12dee6cba27f858` succeeded. All 62 prior IDs retained
+`8fad238b504d67da7ea11feb3aacad77b3ef3682`, deployment
+`appgdep_6aeedf3740c08191bcf17dcc696d1a56` succeeded. All 62 prior IDs retained
 (63 current); internal links, 21 revision rows, inline scripts, unchanged SVG and
 dist mirror checked. Browser preview verified the new comparison table and ledger;
 native publication confirmed the matching source deployment. Shared production

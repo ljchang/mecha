@@ -12908,6 +12908,12 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   `GoalMemory` holds a read-only connection and marks returned records external;
   a local validation error never acquires external provenance. Agent dispatch
   tests verify that the resulting private/untrusted taint blocks chosen egress.
+  Knowledge time and validity time are distinct: `GoalMemory` keeps its opening
+  `known_at` snapshot, but asks the host `Clock` for `valid_at` on each memory
+  call. Freezing both let an expired relation remain current in a reused tool.
+  The model cannot supply either policy clock, and current access restrictions
+  still override the historical snapshot. An empty successful packet carries
+  no source provenance; it does not clear existing conversation taint.
 - **Select original text instead of composing an entity name.** Runtime source
   selections name a revision, original field and exact contiguous quote from the
   initial bounded packet. The host derives byte offsets and the mention before
@@ -13230,6 +13236,14 @@ actuals supersede expectations for decision arithmetic while preserving both rec
 This policy is not a universal truth hierarchy or automatic semantic belief adoption.
 Unknown/refused outcomes cannot supply numeric overrides, and historical feedback
 labels never become a current plan's feasibility judgment.
+
+Outcome pairs require an authenticated retained action. Both action binding and
+`retained_outcome` reconstruct `authenticated_recommendation` from sealed evidence
+and require `Recommend`. A partial measurement packet produces `Withheld` for a
+method choice or `Abstain`; neither can reach reappraisal. The structured
+three-method schema relies on this boundary. A future path that permits actions
+from partial evidence must also define how comparison checks represent unknown
+measurements; weakening only the action guard would make the schema contradictory.
 
 **A frozen comparison is not permission to use revoked evidence.** Both arms use
 one frozen snapshot and exact auditable recall/projection; current source access,
