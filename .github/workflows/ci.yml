@@ -152,6 +152,24 @@ jobs:
         env:
           MECHA_SESSION_KIND: test
 
+      # The standalone memory harness and independent pilot rubrics are not
+      # workspace members, so workspace tests cannot execute either suite.
+      - name: Test standalone memory harness
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        working-directory: prototypes/memory
+        run: cargo test --locked
+        env:
+          MECHA_SESSION_KIND: test
+          # Shared core files expose runtime APIs this standalone subset never
+          # invokes; keep every other warning fatal, as in the workspace.
+          RUSTFLAGS: -D warnings -A dead_code
+
+      - name: Test memory Python pilots
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: python3 -m unittest discover -s prototypes/memory -p 'test_*.py'
+        env:
+          MECHA_SESSION_KIND: test
+
   no-logs:
     # No logs, recordings or run output in a public repository (owner's
     # ruling, 2026-10-04). The pre-commit and pre-push hooks compare added text
