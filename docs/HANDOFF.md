@@ -31,7 +31,7 @@ replacement is deferred until v2 is solid. See the current-scope addendum in
 
 **Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
 `codex/mecha-memory-v2-prototype`. This is the clean prototype snapshot on GitHub
-main `d2adb3742`; do not push the older private prototype branch, whose history
+main `d943f4eb3`; do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
 **2026-11-07 — memory benefit diagnostic complete (prototype branch).**
@@ -118,47 +118,28 @@ preserved text but added an `active` field: the exact grader rejected it althoug
 the criterion did not explicitly exclude extra fields. Preserve these original
 scores and their ambiguity; do not reclassify or rerun them as a repaired result.
 
-**Planning-check registration repair:** `Agent::run_in` now admits command
-checks only when shell is registered and checks are enabled. `TodoTool` reports
-newly completed declared checks as unverified when no queue is available;
-`Verification::Skipped`, frozen commands and ordinary registered-tool guards are
-preserved. Old-code regressions fail as intended; 73 todo tests, 12 check tests,
-16 Python tests and all 24 native scripted slots/eight probes pass. Independent
-increment review found no major/medium findings. Spark build, formatting, strict Clippy and serial workspace tests passed
-(6305 default / 6669 memory-enabled; zero failures; 25/29 ignored). The exact
-executable preflight passed all 24 slots/eight probes (106 scripted requests, zero
-real inference). The unchanged-v1 repeat completed all 24 attempts/107 model calls:
-23 runs completed normally and all 24 captured; protocol integrity passed while
-the completion gate still failed. Later exact artifacts passed 7/8 with memory
-versus 5/8 control; correctness-or-appropriate-abstention was 7/8 versus 6/8.
-Two withdrawal runs declared checks and now finished with four unverified notices,
-six skipped step records and zero shell calls. Calibration-r1 control still
-exhausted on empty recall/missing-file reads, this time without an artifact.
-The two extra-field grading ambiguities remain. This historical development
-repeat is not a causal or generalization result; see
-`results/memory-planning-checks-20261107/`. This small ordinary-planning change is
-outside the memory feature gate; no installed production binary is changed.
+**Latest bounded experiment (source `a2b9f61`, prototype only):** early turn-budget
+advice is implemented and remains default-off. Both the original and new authored
+native preflights pass. The fixed 16-task real comparison plus 2 setups retained 99
+calls: correct artifacts 7/8 in each arm, no premature abstention, normal completion
+control 7/8 versus notice 6/8. Three treatment runs saw the notice. Both arms missed
+output on the same unavailable-information case; advice did not fix it. Capture
+succeeded 17/18. HISTORY and `results/memory-budget-notice-20261107/` hold complete
+conditions, failures, checks and independent audits. Build, strict Clippy and the
+default workspace suite pass (6,326 passed, zero failed, 25 ignored); final
+memory-enabled/GitHub qualification is recorded on PR #846. Existing production and owner
+knowledge remain unchanged. GitHub automatic checks resumed after integrating main;
+current check conclusions remain on PR #846.
 
-**CLI review follow-up:** `LocalMemoryModel::new` now opts into
-`without_autoload()` as `LocalTrialProvider` already did. A resident check plus a
-hold cannot prevent eviction before POST; the request must refuse loading. Two
-actual-HTTP regressions fail on the old URL and pass with the flag, including a
-single-request 503 refusal. Four authored fixture routes accept the query without
-changing bodies or scores. Independent scoped review found the medium addressed. Spark workspace build,
-strict Clippy, two HTTP regressions, 92 CLI-backed Python tests (zero skips), and
-the 24/48-request authored constraint/benefit workflows passed with no inference.
-Fresh GitHub qualification remains separately recorded on PR #846. The full workspace
-counts above belong to the planning repair at `838ceadbc`; the real comparison
-already used the protected provider and is unchanged.
-
-**Next MVP gaps:** qualify bounded evidence segmentation for longer failed
-episodes rather than raising limits to make a cohort pass. In the first
-comparison, 18/19 eligible passages exceeded the bridge's 16-passage bound.
-Calibration-r1 control exhausted through repeated empty queries/missing-file
-searches but wrote valid abstention. Improve dependable stopping, and tighten
-future fixture schemas in a separately versioned comparison. Keep original
-scores, failures and the exact-v1 repeat distinct. No new concept/rumination
-expansion until this ordinary-task path is dependable.
+**Next MVP gaps:** capture a safely classified failed memory lookup without losing
+the whole episode. The current `memory_experience_bridge::events` refuses every
+errored memory result to avoid losing consulted-source dependencies. In this pilot
+it rejected an empty-query validation failure before any useful recall. Investigate
+a typed no-retrieval receipt; arbitrary read errors must still fail closed. Separately,
+qualify lossless bounded evidence packing for longer episodes (the first comparison
+had 18/19 passages against a 16-passage bound). Dependable stopping remains open: the
+new default-off notice had no artifact-success gain. Preserve fixed comparisons
+and test fresh task schemas before expanding concepts or rumination.
 
 After these reliability repairs, implement §31 C: share bounded episode assembly with the existing
 interpretation/distillation path, separate the agent interpretation producer from

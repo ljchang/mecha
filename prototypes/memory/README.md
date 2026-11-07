@@ -127,6 +127,40 @@ remaining repairs and separately retained follow-up comparisons. Planning-check
 registration is now repaired; capture coverage and dependable stopping still need
 qualification. This prototype is not yet a dependable production memory loop.
 
+## Budget-notice comparison
+
+The native example accepts optional `--budget-notice true|false` (default false).
+It advises the actor before its last two turns while leaving the turn cap,
+available tools and execution guards unchanged. Recognized harness advice stays
+in the raw transcript but is not admitted as an owner-request passage.
+
+`budget_notice_trial.py` is a separate protocol: four evidence conditions, two
+fixed seeds, and notice/control arms (16 later tasks plus two source-setup runs).
+Its unavailable case reuses the previously failing calibration task. The other
+conditions test information available now, an authorized replacement reachable
+after a missing-file read, and withdrawn prior evidence. This is development
+evidence, not a held-out benchmark.
+
+```sh
+python3 prototypes/memory/budget_notice_trial.py \
+  --binary "$PWD/target/debug/examples/memory_bridge_trial" \
+  --output /tmp/mecha-budget-scripted-new --preflight
+python3 prototypes/memory/budget_notice_trial.py \
+  --binary "$PWD/target/debug/examples/memory_bridge_trial" \
+  --output /tmp/mecha-budget-real-new \
+  --endpoint http://127.0.0.1:8080 --model RESIDENT_MODEL \
+  --holds-dir /absolute/mecha-home/holds
+```
+
+Run the authored preflight first. Its deliberate last-turn write can produce a
+correct artifact and still end at `MaxTurns`: `preflight_passed` checks that
+expected behavior separately from natural completion. The real comparison
+records actual notice exposure, correct artifacts, appropriate and premature
+abstention, missing artifacts, stop status and cost. A run that finishes before
+the notice is unexposed. Neither an absent artifact nor a host refusal counts as
+model abstention. All planned slots remain in the denominator; no retry replaces
+a failure. Earlier protocols and results remain unchanged.
+
 ## Main Mecha CLI
 
 From the repository root, build the opt-in binary:

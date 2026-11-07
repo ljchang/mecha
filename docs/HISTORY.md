@@ -14,6 +14,71 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Budget finalization experiment and CI recovery (2026-11-07, prototype branch)
+
+`RunContext::with_budget_notice` adds default-off advice before the request with
+two turns remaining, or one for a one-turn run. It uses the effective hard cap,
+runs after existing stop checks, preserves tools/guards, and cannot add a call or
+write an artifact. Exact harness-voice registration keeps it out of owner steering;
+`memory_experience_bridge::events` also excludes recognized harness text from new
+owner-request passages while retaining raw transcripts and source coordinates.
+Historical captures are unchanged. The native example exposes a strict explicit
+boolean; false preserves old serialized `TrialConfig` shape. Explicit child runs
+remain off. Source commit `a2b9f61` contains this experiment, not a production rollout.
+
+Five new core assertions and the example argument test failed meaningfully on
+old behavior; the initial missing-constructor compile failure is retained but
+not counted as behavioral proof. Nine notice regressions, three example tests,
+ten native trial tests and twenty-one bridge tests pass locally. Spark authored
+preflights pass for both the unchanged old comparison and the new protocol, with
+zero inference. A deliberately last-turn write in the latter still ends at the
+cap: its preflight acceptance is separate from natural completion. The reviewed source also passed Spark build, formatting, strict all-target/all-feature
+Clippy and the default workspace suite: 6,326 passed, zero failed, 25 ignored.
+Memory-enabled and final GitHub qualification are recorded on PR #846. Independent
+source review found no major/medium defect; a notice-bearing context-overflow
+retry regression remains a nonblocking coverage suggestion.
+
+The separately frozen `connected-budget-notice-comparison-v1` completed all
+16 later tasks plus two source setups on the resident Qwen model, retaining all
+99 model calls without replacement or retry. Four synthetic evidence conditions,
+two seeds (70400/70401), balanced arm order, eight-turn cap, fast mode and existing
+model controls were fixed. The unavailable task reuses the exact earlier failing
+prompt, inputs and criterion; only its host oracle scores appropriate abstention.
+This is development evidence, not a held-out benchmark or a memory-benefit study.
+
+Both arms produced 7/8 correct artifacts, including 3/4 required abstentions;
+all four solvable tasks in each arm produced correct artifacts, with no premature
+abstention. Both unavailable-r1 runs failed to save output. The notice was visible
+in three treatment runs, first on request seven. One recoverable-clue treatment
+saved correct output but hit MaxTurns; normal completion was control 7/8 versus
+notice 6/8. After the warning, the failed unavailable treatment used todo and then
+tried to read a directory. Advice did not resolve that search-to-deliverable gap.
+The default remains off. Protocol integrity passed; all-runs-completed did not.
+
+Capture succeeded 17/18 including setups. The unavailable control's failure was
+NOT the 16-passage cap: an empty memory query returned `invalid recall text`, and
+`events` refuses an errored memory result because it cannot establish consulted
+sources. Preserve that fail-closed guard while investigating a typed receipt for
+validation failures known to occur before retrieval; do not simply accept all
+failed memory reads. This gap is distinct from longer-episode packing. The notice
+arm's failed task was captured, which does not establish a causal capture gain.
+
+Control/notice later calls were 47/46, input tokens 93,907/90,552 and output 3,897/3,730.
+Including setup: 194,162 input and 8,148 output tokens. Shared-server timings and
+concurrent qualification do not establish a latency benefit. Original source
+snapshots were unchanged and before/after router properties matched. The independent
+trace audit verified all attempts, controls, exposure, artifacts and withdrawal
+behavior. Records remain in `results/memory-budget-notice-20261107/` on the operator's
+machines; older results and frozen scores are untouched.
+
+GitHub's PR #846 metadata initially named an outdated base and claimed a conflict
+against its own ancestor. One close/reopen exposed eight newer main commits and
+an actual changelog conflict. Integration `50521da77` preserves both entries and
+restored automatic CI/review/documentation runs; build, strict Clippy and 6,320
+serial default workspace tests passed (zero failures, 25 ignored), with required
+owner-corpus privacy checks. No workflow was weakened, no branch history rewritten,
+and no PR merge or production deployment occurred.
+
 ### Prototype CLI request-level no-autoload (2026-11-07, review follow-up)
 
 Automated review found that the older `LocalMemoryModel` checked residency but
