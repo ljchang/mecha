@@ -127,12 +127,18 @@ The shape:
   has an incident behind it: a sticky `MECHA_SESSION_KIND=test` export once
   relabelled every session a live run wrote. `Experiment` already shows the
   fix, because the env mark alone admits nothing and admission also needs
-  `experiment::HOME_MARKER`. So the driven store loads only when the mark
-  *and* a driven marker in the run's workspace are both present. Task setup
-  writes the marker into the worktree, and setup is the harness, not the
-  model or the driver. A wrong mark with no marker, or a marker with no
-  mark, loads nothing, so the boundary fails dark both ways: on a missing
-  mark and on a mistaken one.
+  `experiment::HOME_MARKER`, which sits in the home and outside every jail.
+  So the driven store loads only when the mark *and* a driven marker are
+  both present, and **the marker sits under the mecha home, never in the
+  workspace**. A marker in the worktree would be inside the run's own path
+  jail, where the model can write it, and it would outlive the run. Task
+  setup, which is the harness and not the model or the driver, writes one
+  marker per task under the home, naming the worktree it covers and the
+  task's deadline. Teardown removes it, and a marker past its deadline loads
+  nothing even if teardown failed. The run cannot reach it, because `setup`
+  refuses any jail that contains the mecha home. A wrong mark with no
+  marker, or a marker with no mark, loads nothing, so the boundary fails
+  dark both ways: on a missing mark and on a mistaken one.
 - **The readers that notice a sick store must see it.** `doctor` walks
   `<home>/learning` by name, and `backlog` iterates a literal list of
   stores that includes `learning`. A driven store under its own path gets
@@ -254,7 +260,18 @@ the task is admitted: `check-private.py`'s matcher run over the prompt text
 itself, and a read against CLAUDE.md's conventions rule that fixtures and
 examples are made up, with no persona's name and no real person in them. A
 prompt that matches is rewritten, never admitted with an
-exception. The pins' trees were already scrubbed by the history rewrites;
+exception. **The invocation is named, because both obvious ones fail
+open.** `check-private.py` takes `--staged`, `--range` or `--message FILE`,
+and nothing called "this text". `--message FILE` reads an arbitrary file,
+but it skips every line that starts with `#` (git's own instruction lines),
+which is where a markdown prompt's headings sit. So the check either feeds
+the prompt with its headings unprefixed or gains a text mode, and the build
+picks one. And the matcher *passes, saying so*, when `~/.mecha` is absent,
+unless `CHECK_PRIVATE_REQUIRE=1` is set. Without the variable the gate is
+the silently-degrading guard, admitting every prompt clean on a machine with
+no store. So D3b runs with `CHECK_PRIVATE_REQUIRE=1`, and the task's
+admission record carries the fact that the check ran against a present
+store. The pins' trees were already scrubbed by the history rewrites;
 the prompt is the one new text. Whether prompts also need the owner's eye
 before a ceiling run is R9, owed.
 
@@ -283,9 +300,10 @@ can show that the harness improved but never that it improved *for the
 owner's work*. Only `history` and `co-written` carry that claim.
 
 **D3a. A task is admitted only when its grade discriminates.** Before a
-task enters the bank, its hidden tests are run *k* times (k=5 by default)
-on the pin, where they must fail every time, and *k* times on the merge,
-where they must pass every time. The failure on the pin must also be the
+task enters the bank, its hidden tests are run *r* times (r=5 by default)
+on the pin, where they must fail every time, and *r* times on the merge,
+where they must pass every time. (Here *r* is repeats; *k* is D5's fork
+turn, and a trial's seed count is spelled out.) The failure on the pin must also be the
 one the test asserts, not a build error or an unrelated panic. A grade that
 passes on the pin cannot tell a fix from no fix. A grade that is flaky on
 the merge would charge its noise to the model. A race test needs *k*
@@ -465,7 +483,17 @@ rather than trusting each run to be configured right:
 - **Kept on purpose: the outbox.** With the outbox on, a routed call stages
   rather than executes. Turning it off would make a routed call run
   directly, and staging is the safer of the two. A driven draft is set
-  aside from the forecast (D1).
+  aside from the forecast (D1), and **it is marked on the owner's queue.**
+  It stages into the real home's outbox beside the owner's own drafts, and
+  releasing one is a real send, so a draft whose prompt an outside agent
+  wrote must not sit unmarked there. That is R6's argument, one store over.
+  The kind is available for free, because `OutboxItem.session_id` is
+  recorded and `outbox_source::drafting` already joins the staging session.
+  So every surface that shows a draft for release (the queue card, `outbox
+  list`, `backlog`) names a driven draft as staged by a driven run, and
+  `backlog` counts those drafts apart from the owner's. An item whose
+  staging session cannot be resolved is shown as unknown, never as the
+  owner's.
 
 D1b lands before the first driven run, not with D1: the mark alone gives a
 run nothing new. A run marked driven is refused at start if any forced-off
@@ -532,7 +560,7 @@ passes vacuously.
 - **Prompt leakage from PR descriptions.** A description often names the fix.
   Prompts are written from the issue or the "why" paragraph, and the rule for
   what to strip is fixed before the first run.
-- **The ceiling's cost.** About 10 tasks × k=3 × one ceiling rerun per
+- **The ceiling's cost.** About 10 tasks × 3 seeds × one ceiling rerun per
   failure is small. The full bank is not, so measurement arms run the ceiling
   on a seeded subset.
 
@@ -573,7 +601,15 @@ passes vacuously.
   wider than the charter: the whole system prompt (the owner's learned
   rules and the skills block too), and, for a D5 fork, the recorded
   transcript up to turn *k*, whose tool results are mostly public repo
-  contents.
+  contents. A second egress is not priced by this ruling and predates it:
+  the interlock cannot see the charter at all. `Taint::private` is armed
+  from tool capabilities and folded owner material, never from a system
+  block, so a run is not armed by the charter it carries. A repository task
+  arms `private` at its first file read, after which `http_fetch` is refused
+  as `Chosen`; the window before that first read is open, in every owner
+  run as in a driven one, but a driven run's prompt was written by an
+  outside agent. Arming `private` at start for a driven run would close the
+  window, and that is a build question for D1b.
 - **R9, owed.** Whether a written, scrubbed prompt (D3b) also needs the
   owner's eye before its first ceiling run.
 - **R10, owed.** Whether driven trajectories enter training at all, and if
