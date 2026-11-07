@@ -393,9 +393,22 @@ writes a header rule for it.
 
 **P1b review correction (2026-11-04): raw-header preconditions have an
 account-level standing hold.** The engine asks the mailbox capability whether
-its reader can prove header absence. If it cannot (currently Graph), a rule
-using `list_id` or any `header.<Name>` matcher is excluded for that account,
-even on a positive match. Emit one notice per rule/account/pass, with no
+its reader can prove header absence. **Owner ruling (2026-11-06): narrow this
+hold; for a header rule whose actions are all non-outbound, a positive match
+is real evidence even on a partial header set, while Unknown means absent for
+this message, never a known negative.** A description rule (one with
+`match.describe`) keeps the account hold whatever its actions — an
+implementation choice in P3-1, not part of the ruling: its list admission and
+§4.2's entry cap are decided before any message is read, so a per-message
+exclusion would let it bypass the cap; P4 decides it with description rules.
+On a provider that cannot prove absence (currently Graph), non-outbound
+header rules using `list_id` / `header.<Name>` act normally on Match, recording
+`headers_partial: true`; Unknown contributes no row, key, cap, deferral,
+matched-set membership, outbound priority, description-list admission or
+handled-marker suppression. Retrospective tests follow the same rule.
+An outbound or description raw-header rule remains excluded for that account
+even on a positive match: send guards need absence evidence that truncation cannot
+supply. For that standing hold, emit one notice per rule/account/pass, with no
 per-message rows, claims, keys or cap consumption. The held rule contributes
 nothing to deferral, description-list admission, outbound priority or handled
 marker suppression: other rules behave as if it were absent. Existing pending
@@ -1263,6 +1276,10 @@ for each group and the sandbox as the remedy. This includes Mailbox and Board:
 tasks reach a task run's prompt, and the self-grant residual applies to every
 group. Outbound auto is held in P1, so an outbound-only check would never fire.
 The attribution implementation is unchanged.
+The orchestrating session keeps serve's loopback CLI-child route within this
+existing residual (including a chat live in serve); doctor now also flags
+every automatic group when registered shell has `Sandbox::can_reach_network`,
+naming the loopback route and a sandbox with network off alongside any write exposure.
 
 **P1c-2 adversarial review correction (2026-11-06):** a configured sandbox
 with a writable mount covering the rules store is also exposed. Compare both
@@ -2157,6 +2174,144 @@ skill's territory and carries a trap `HANDOFF.md` already records for
 line names it, or the briefing pastes a usage error into itself. Install
 first, then swap, then confirm by running the `notify` line, not by reading
 it.
+
+**P3-1 implemented (2026-11-06).** The backend for the P3 page now has
+stdin installation, atomic `edit`, digest-bound JSON `mode`, per-rule `pause`,
+header `wrong-match`, retrospective JSON testing, enriched list/show/ledger
+JSON, and eight feature-owned POST routes. Every mutation is a CLI child;
+no rule-store writes occur in serve. Svelte and the mail-desk button remain
+P3-2. The JSON field and route contract is in ARCHITECTURE §Mail rules.
+
+Implementation choices where the plan did not specify details:
+
+- Keep P1c's separate `mecha-mail rules test NAME`, adding `--json` as an
+  explicit spelling of its existing JSON output and adding per-account
+  status/counts/holds/rows. It still searches 30 days across all folders,
+  without token refresh or writes. A held or incomplete account has a null
+  match count, with partial rows retained. The serve budget is 600 seconds,
+  selected conservatively for pagination plus per-message reads (30-second
+  HTTP deadlines); no live mailbox timing measurement was made.
+- Add accepts `--stdin --name NAME`; serve passes `--stdin --name=NAME`, which
+  binds the value whatever it begins with. Rule names `add`, `ledger`,
+  `pause-all`, `undo` and `wrong-match` are refused at install, since those
+  fixed route segments would shadow a rule's page. Edit
+  accepts `--stdin` or `--file PATH` (`--file -` also reads stdin). Drafts
+  stay on a bounded 1 MiB stdin pipe; serve creates no draft file. Editing
+  changes only rule.toml and preserves bundled files. The full candidate is
+  validated before durable changes. Lapses are persisted before publication:
+  a failed rename may leave permission lowered, never recoverably automatic.
+  An unpersisted lapse of the old files is recorded first, so restoring approved
+  bytes after an external edit or invalid TOML cannot revive auto. If both
+  old and replacement snapshots lapse approval, history retains both
+  transitions while the edit report deduplicates affected groups.
+- The mode digest is the complete existing ApprovalDigest JSON object,
+  checked under the store lock. A stale supplied digest refuses even a
+  lowering; a lowering without one still works. Serve requires a digest
+  for any raise via the CLI's `--require-digest` guard, including shadow
+  from off and propose from shadow. Auto still requires `--yes` or an
+  interactive confirmation. Refusals carry typed JSON codes.
+- Wrong-match writes `wrong_match` with `closes:true`, copying the original
+  action key and naming `correction_of`; it never settles a pending attempt.
+  This intentionally closes even a previously non-closing shadow key: the
+  owner marked that matcher wrong, and neither this build nor an older
+  reader (which sees unknown) may re-run that action. It records no triage
+  correction and performs no undo. Existing undo remains available, and a
+  duplicate wrong-match is a no-op. The engine lease serializes it with
+  apply/undo; retries also retry a failed brake write.
+- Retain the existing brake units: wrong matches deduplicate per thread,
+  undo per automatic mailbox action. A row both undone and marked wrong
+  contributes once to each distinct brake, never twice to either. Page
+  combined corrections deduplicate action keys; owner rates require a
+  recorded owner actor. New undo and wrong-match rows record attribution;
+  historical missing attribution remains unknown. The shared CLI actor
+  reader moved into core for the provider binary to use the identical
+  posture/registry/run-marker reading; no authentication or request-causality
+  scheme was added. Safety brakes remain conservative for non-owner
+  corrections, which may lower but never raise permission.
+- Rates are partitioned by group, current match digest and verdict_input;
+  they never pool, and empty denominators are null. Fires count completed
+  actions in seven days; failures count failed ledger rows. The ledger
+  already holds sender and subject; missing text is null and the page does
+  not fetch mail. Show includes rule.toml text even when parsing is broken,
+  provided the contained file remains readable. Send/description fields
+  remain extensible; their execution and approval screens remain P4+.
+- Under the orchestrating session's choice within the existing closure
+  residual, serve-child attribution is unchanged. Ordinary live chats do
+  not mark serve itself as a run ancestor; a model reaching loopback with
+  the expected headers can cause an Owner-attributed CLI child. Doctor now
+  emits one finding per automatic rule/group for registered shell, stating
+  every applicable write and network route and its remedy, including
+  backends whose `can_reach_network()` stays true with network disabled.
+- The redundant mail-rule dispatch after the early return is now an explicit
+  unreachable exhaustiveness arm. Other carried minors remain untouched.
+
+**P3-2 implemented (2026-11-06).** `#mail/rules` is one responsive page
+(`web/src/lib/MailRules.svelte`) that App renders in place of either Mail
+build, so the phone and the desk show the same page; its display logic is
+`mail-rules.js`, tested as plain node. It calls only P3-1's routes and
+`/api/mail/read`. Choices where this document was silent, made in the
+implementation and not owner rulings:
+
+- The open rule is page state, not a third hash segment: App's router
+  carries one sub-view (`#mail/rules`), and changing routing for every view
+  was out of proportion. Back from a rule returns to the list in the page.
+- The definition is a plain TOML editor with the store's parse error shown,
+  not `TomlForm`: rule.toml has arrays of tables and a header map, which
+  the flat field schema does not express. A new rule has a guided form (one
+  matcher key, one action, name, description) that writes the TOML until
+  the owner types in it; the owner edits before installing.
+- *Make a rule from this thread* prefills the sender and the sender's
+  domain (matching on the domain), names the rule after the domain, and
+  suggests `archive`; the subject is the description only when no domain can
+  be read. It carries no list id: the mail views do not
+  hold `List-Id`, and §8 adds no provider fetch, so the form asks for it.
+- A mode change counts as a raise against the group's **effective** mode,
+  as the store measures it, so re-approving a braked or lapsed group (set
+  auto, running shadow) opens the approval screen. The screen shows every
+  file in the review inputs with the shadow-row count under the current
+  match digest, and sends that review's digest; a `stale_digest` refusal
+  reloads the files and says so rather than retrying.
+- Rates render a dash for a null rate and omit an empty `verdict_input`
+  bucket rather than showing zero. Rows under an earlier match digest are
+  grouped per group under a heading dated by their newest row; the
+  rule-level `approval lapsed` row stays with the current rows and names no
+  message. Outcomes, modes and groups this build cannot name read `unknown`.
+- A ledger row opens its thread read-only in a sheet over the page
+  (`mecha mail show` through `/api/mail/read`), since an archived thread is
+  no longer in the triage queue the mail readers walk.
+- The test result shows each account's status; a held or failed account
+  shows no match count, and partial rows stay visible beside a failure.
+- Not on the page yet, all deferred to the phase that produces them rather
+  than shown empty: *pending in the outbox* and *the share of staged rows by
+  reason* (§5.4) arrive with sends in P4, and `held: list cap` with its cap
+  and entry count arrives with description rules in P4 — P1–P3 rules are
+  header rules, which the cap never counts, so no rule can be held by it
+  yet. Description-rule testing (re-run over classified threads, with its
+  cost shown) is P4 too; the Test button surfaces the store's refusal.
+- The approval screen's counts are the store's statistics under the current
+  match digest, per `verdict_input`, never a count of the ledger window it
+  loaded (the newest 200 rows, said so when full). Its route list is
+  exported as `RULES_ENDPOINTS` for the docs demo's `check-demo.mjs`, which
+  cannot see calls made through the page's fetch wrappers; the demo answers
+  reads from fictional fixtures and declines every change.
+- Three of the page's slots are written from slow requests: a rule's load,
+  a thread read, and a test, which may run for minutes. Each answer lands
+  only where it was asked for. A late load for the rule just left never
+  fills the open rule's editor, which Save would write. A dismissed sheet
+  stays closed, and a test result shows only on the rule it tested, since
+  a raise is decided on that count. A reload after Pause, Undo or a mode
+  change keeps an unsaved definition edit.
+- What a Save and Pause all report is worded in `mail-rules.js`
+  (`editNotice`, `pauseAllNotice`), where the node checks pin it. A lapse
+  is reported even when the bytes did not move, because an outside edit
+  since approval lapses on Save. Pause all names each entry it could not
+  lower. A recorded wrong match takes the owner to the definition. These
+  live in the component, where the node checks cannot reach. They were
+  driven in headless Chromium with delayed responses, and nothing pins them
+  in CI. The same holds for the choice that makes re-approving a braked group
+  a raise: `setMode` judges against `effective_mode`. The server's
+  `--require-digest` is the gate behind that choice. If it regresses, the
+  owner sees a `digest_required` refusal, never an unreviewed raise.
 
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.

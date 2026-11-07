@@ -3,17 +3,33 @@ use super::actor::acting_actor_explained;
 use anyhow::{bail, ensure, Context, Result};
 use mecha_core::mail_rules::{self as rules, ActionGroup, Mode, RuleStore};
 use std::{
-    io::{IsTerminal, Write},
+    io::{IsTerminal, Read, Write},
     path::PathBuf,
 };
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
-    /// Install owner-named files in shadow, never auto.
+    /// Install owner-named files or stdin content in shadow, never auto.
     Add {
-        path: PathBuf,
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        path: Option<PathBuf>,
+        /// Read rule.toml from stdin; requires `--name=NAME`.
+        #[arg(long, requires = "name")]
+        stdin: bool,
         #[arg(long)]
         name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace rule.toml; changed approvals lapse. Bundled files are preserved.
+    Edit {
+        rule: String,
+        #[arg(long, required_unless_present = "stdin", conflicts_with = "stdin")]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        stdin: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Read recorded/effective modes and holds.
     List {
@@ -34,12 +50,22 @@ pub enum Cmd {
         mode: Mode,
         #[arg(long)]
         yes: bool,
+        /// Approval digest JSON from show; refuses if the inputs changed.
+        #[arg(long)]
+        digest: Option<String>,
+        #[arg(long)]
+        json: bool,
+        /// Require a supplied digest on raises (used by the web review).
+        #[arg(long, hide = true)]
+        require_digest: bool,
     },
     /// Match one header rule against 30 days of mail, including archived mail. Never writes.
     Test {
         rule: String,
         #[arg(long)]
         account: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Newest ledger rows, with pointers and reasons; never message bodies.
     Ledger {
@@ -51,8 +77,23 @@ pub enum Cmd {
     },
     /// Restore the exact message of a completed mailbox action.
     Undo { row_id: String },
-    /// Lower every group to shadow, preserving groups already off.
-    PauseAll,
+    /// Mark a header matcher wrong; edit the rule to fix it. Does not undo the action.
+    WrongMatch {
+        row_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Lower this rule to shadow, preserving off groups. Resume through mode and its approval screen; there is no unpause.
+    Pause {
+        rule: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Lower every group to shadow, preserving groups already off. Resume through mode.
+    PauseAll {
+        #[arg(long)]
+        json: bool,
+    },
 }
 fn parse_mode(value: &str) -> Result<Mode> {
     let mode = serde_json::from_value(serde_json::json!(value))?;
@@ -80,11 +121,53 @@ fn existing() -> Result<RuleStore> {
     RuleStore::open_existing(root()?)
         .context("opening mail rules; install a rule with `mecha mail rule add PATH`")
 }
+fn print_json(value: &impl serde::Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+fn input(file: Option<&std::path::Path>, stdin: bool) -> Result<String> {
+    if stdin || file.is_some_and(|p| p == std::path::Path::new("-")) {
+        let mut text = String::new();
+        std::io::stdin()
+            .take(1024 * 1024 + 1)
+            .read_to_string(&mut text)?;
+        ensure!(text.len() <= 1024 * 1024, "rule text exceeds 1 MiB");
+        Ok(text)
+    } else {
+        std::fs::read_to_string(file.context("--file or --stdin required")?)
+            .context("reading rule file")
+    }
+}
 
 pub async fn run(cmd: Cmd) -> Result<()> {
+    let json = matches!(
+        &cmd,
+        Cmd::Add { json: true, .. }
+            | Cmd::Edit { json: true, .. }
+            | Cmd::Mode { json: true, .. }
+            | Cmd::Pause { json: true, .. }
+            | Cmd::PauseAll { json: true }
+            | Cmd::WrongMatch { json: true, .. }
+    );
+    let result = run_inner(cmd).await;
+    if json {
+        if let Err(error) = &result {
+            let code = error
+                .downcast_ref::<rules::ModeError>()
+                .map(|e| e.code())
+                .unwrap_or("invalid_request");
+            print_json(
+                &serde_json::json!({"ok": false, "error": {"code": code, "message": format!("{error:#}")}}),
+            )?;
+        }
+    }
+    result
+}
+async fn run_inner(cmd: Cmd) -> Result<()> {
     if matches!(
         &cmd,
         Cmd::Add { .. }
+            | Cmd::Edit { .. }
             | Cmd::Test { .. }
             | Cmd::Undo { .. }
             | Cmd::Mode {
@@ -95,24 +178,86 @@ pub async fn run(cmd: Cmd) -> Result<()> {
         super::features::require(mecha_core::feature::Feature::MailRules)?;
     }
     match cmd {
-        Cmd::Add { path, name } => {
+        Cmd::Add {
+            path,
+            stdin,
+            name,
+            json,
+        } => {
+            // Parse content before opening/creating the store.
+            let text = if stdin {
+                Some(input(None, true)?)
+            } else {
+                None
+            };
+            if let Some(text) = &text {
+                rules::RuleDefinition::parse(text)?;
+            }
             let store = RuleStore::open_default()?;
-            let rule = rules::install_path(&store, &path, name.as_deref())?;
-            println!(
-                "Installed {} in shadow: {}",
-                rule.name,
-                rule.directory.display()
-            );
-            println!(
-                "Approval digest: {}",
-                serde_json::to_string(&rule.approval_digest)?
-            );
-            for action in &rule.definition.actions {
+            let rule = if let Some(text) = text {
+                let name = name
+                    .as_deref()
+                    .filter(|n| !n.is_empty())
+                    .context("stdin requires --name=NAME")?;
+                store.install(name, &text, &Default::default())?
+            } else {
+                rules::install_path(
+                    &store,
+                    path.as_deref().context("rule source required")?,
+                    name.as_deref(),
+                )?
+            };
+            if json {
+                print_json(
+                    &serde_json::json!({"ok": true, "name": rule.name, "mode": "shadow", "approval_digest": rule.approval_digest}),
+                )?;
+            } else {
                 println!(
-                    "  {} / {}",
-                    spelling(&action.group()),
-                    spelling(&action.verb)
+                    "Installed {} in shadow: {}",
+                    rule.name,
+                    rule.directory.display()
                 );
+                println!(
+                    "Approval digest: {}",
+                    serde_json::to_string(&rule.approval_digest)?
+                );
+                for action in &rule.definition.actions {
+                    println!(
+                        "  {} / {}",
+                        spelling(&action.group()),
+                        spelling(&action.verb)
+                    );
+                }
+            }
+        }
+        Cmd::Edit {
+            rule,
+            file,
+            stdin,
+            json,
+        } => {
+            let text = input(file.as_deref(), stdin)?;
+            rules::RuleDefinition::parse(&text)?;
+            let report = existing()?.edit(&rule, &text)?;
+            if json {
+                print_json(&report)?;
+            } else {
+                println!(
+                    "{}: changed {}",
+                    report.name,
+                    if report.changed_files.is_empty() {
+                        "nothing".into()
+                    } else {
+                        report.changed_files.join(", ")
+                    }
+                );
+                println!(
+                    "Approval digest: {}",
+                    serde_json::to_string(&report.approval_digest)?
+                );
+                for notice in report.notices {
+                    println!("{notice}: {:?}", report.lapsed_groups);
+                }
             }
         }
         Cmd::List { json } => {
@@ -122,7 +267,7 @@ pub async fn run(cmd: Cmd) -> Result<()> {
                 Vec::new()
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&views)?);
+                print_json(&views)?;
             } else if views.is_empty() {
                 println!("no mail rules installed");
             } else {
@@ -144,7 +289,8 @@ pub async fn run(cmd: Cmd) -> Result<()> {
                 } else {
                     serde_json::Value::Null
                 };
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                value["rule_toml"] = serde_json::to_value(store.rule_text(&rule).ok())?;
+                print_json(&value)?;
             } else {
                 print_view(&view);
                 if view.load_error.is_none() {
@@ -159,121 +305,42 @@ pub async fn run(cmd: Cmd) -> Result<()> {
             group,
             mode,
             yes,
+            digest,
+            json,
+            require_digest,
         } => {
-            let store = existing()?;
-            let (actor, why) = acting_actor_explained();
-            let shown = if mode == Mode::Auto {
-                let review = store.review_inputs(&rule)?;
-                let loaded = store.get(&rule)?;
-                let current = rules::resolve_mode(
-                    &loaded,
-                    group,
-                    &store.approvals()?,
-                    &rules::owner_file_holds(),
-                );
-                rules::gate_mode(current.effective, mode, Some(actor)).with_context(|| {
-                    why.clone()
-                        .unwrap_or_else(|| format!("actor: {}", actor.as_str()))
-                })?;
-                ensure!(
-                    mode.rank() <= store.mode_ceiling(&rule, group)?.rank(),
-                    "mode refused by the store's permanent ceiling"
-                );
-                println!("Approve {} / {} in auto", rule, spelling(&group));
-                println!(
-                    "Approval digest: {}",
-                    serde_json::to_string_pretty(&review.digest)?
-                );
-                for (file, text) in &review.files {
-                    println!("\n--- {file} ---\n{text}");
-                }
-                println!("Guards: exact message, activation cutoff, approval lapse, provider holds and automatic brakes.");
-                if group == ActionGroup::Board {
-                    println!("Tasks reach a task run's prompt and consume the rule/global daily caps. Propose is recommended.");
-                }
-                for hold in current.holds {
-                    println!("Held: {}", hold.reason);
-                }
-                println!("Shadow rows under this group's current match digest (verdict_input kept separate):");
-                let digest = loaded.match_digest(group, rules::GateStatus::Passing)?;
-                for row in rules::recent_ledger(&store, Some(&rule), usize::MAX)?
-                    .into_iter()
-                    .filter(|r| {
-                        r.group == group
-                            && r.match_digest == digest
-                            && r.outcome == rules::Outcome::WouldHave
-                    })
-                {
-                    println!("{}", serde_json::to_string(&row)?);
-                }
-                if !yes {
-                    ensure!(
-                        std::io::stdin().is_terminal(),
-                        "auto requires --yes or an interactive yes after reviewing the files"
-                    );
-                    print!("Approve these inputs? Type yes: ");
-                    std::io::stdout().flush()?;
-                    let mut answer = String::new();
-                    std::io::stdin().read_line(&mut answer)?;
-                    ensure!(
-                        answer.trim().eq_ignore_ascii_case("yes"),
-                        "approval cancelled"
-                    );
-                }
-                review.digest
-            } else {
-                store
-                    .get(&rule)
-                    .map(|r| r.approval_digest)
-                    .unwrap_or_default()
-            };
-            let decision = store
-                .change_mode(
-                    &rule,
-                    group,
-                    mode,
-                    Some(actor),
-                    &shown,
-                    &rules::owner_file_holds(),
-                )
-                .with_context(|| {
-                    why.clone()
-                        .unwrap_or_else(|| format!("actor: {}", actor.as_str()))
-                })?;
-            if decision.clamped {
-                println!(
-                    "Requested {} clamped to {}: {}",
-                    spelling(&mode),
-                    spelling(&decision.target),
-                    why.as_deref().unwrap_or("store safety gate")
-                );
-            }
-            for hold in &decision.holds {
-                println!("Held: {}", hold.reason);
-            }
-            ensure!(
-                !decision.refused,
-                "mode refused by the store's permanent ceiling"
-            );
-            println!(
-                "{} / {}: {} (actor: {})",
-                rule,
-                spelling(&group),
-                spelling(&decision.target),
-                actor.as_str()
-            );
+            let supplied = digest
+                .as_deref()
+                .map(serde_json::from_str::<rules::ApprovalDigest>)
+                .transpose()
+                .context("invalid approval digest JSON")?;
+            change_mode(
+                &rule,
+                group,
+                mode,
+                yes,
+                supplied.as_ref(),
+                json,
+                require_digest,
+            )?;
         }
         Cmd::Ledger { rule, limit, json } => {
-            let rows = if root()?.exists() {
-                rules::recent_ledger(&existing()?, rule.as_deref(), limit)?
-            } else {
-                Vec::new()
-            };
             if json {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
-            } else if rows.is_empty() {
-                println!("no mail rule ledger entries");
+                let rows = if root()?.exists() {
+                    rules::ledger_views(&existing()?, rule.as_deref(), limit)?
+                } else {
+                    Vec::new()
+                };
+                print_json(&rows)?;
             } else {
+                let rows = if root()?.exists() {
+                    rules::recent_ledger(&existing()?, rule.as_deref(), limit)?
+                } else {
+                    Vec::new()
+                };
+                if rows.is_empty() {
+                    println!("no mail rule ledger entries");
+                }
                 for row in rows {
                     println!(
                         "{} {} {} {} {}/{}/{} — {}",
@@ -291,33 +358,214 @@ pub async fn run(cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::PauseAll => {
+        Cmd::Pause { rule, json } => {
+            let (actor, why) = acting_actor_explained();
+            let report = rules::pause_rule(&existing()?, &rule, actor)?;
+            pause_output(report, actor, why, json)?;
+        }
+        Cmd::PauseAll { json } => {
             let (actor, why) = acting_actor_explained();
             let report = if root()?.exists() {
                 rules::pause_all(&existing()?, actor)?
             } else {
                 rules::PauseReport::default()
             };
-            for notice in report.notices {
-                eprintln!("{notice}");
-            }
-            println!(
-                "Paused {} groups to shadow (actor: {})",
-                report.groups,
-                actor.as_str()
-            );
-            if let Some(why) = why {
-                println!("Actor reading: {why}");
+            pause_output(report, actor, why, json)?;
+        }
+        Cmd::WrongMatch { row_id, json } => {
+            let (actor, why) = acting_actor_explained();
+            let report = existing()?.wrong_match(&row_id, actor)?;
+            if json {
+                print_json(&report)?;
+            } else {
+                println!("{}", report.message);
+                if let Some(why) = why {
+                    println!("Actor reading: {why}");
+                }
             }
         }
-        Cmd::Test { rule, account } => {
-            let mut args = vec!["rules".into(), "test".into(), rule];
-            if let Some(account) = account {
-                args.extend(["--account".into(), account]);
+        Cmd::Test {
+            rule,
+            account,
+            json,
+        } => {
+            let mut args = vec!["rules".into(), "test".into()];
+            if json {
+                args.push("--json".into());
             }
+            if let Some(account) = account {
+                // `=` binds a value that begins with a hyphen.
+                args.push(format!("--account={account}"));
+            }
+            args.extend(["--".into(), rule]);
             launch(&args).await?;
         }
-        Cmd::Undo { row_id } => launch(&["rules".into(), "undo".into(), row_id]).await?,
+        Cmd::Undo { row_id } => {
+            launch(&["rules".into(), "undo".into(), "--".into(), row_id]).await?
+        }
+    }
+    Ok(())
+}
+fn pause_output(
+    report: rules::PauseReport,
+    actor: mecha_core::closure::Actor,
+    why: Option<String>,
+    json: bool,
+) -> Result<()> {
+    if json {
+        print_json(
+            &serde_json::json!({"ok": true, "groups": report.groups, "notices": report.notices, "actor": actor, "actor_reason": why}),
+        )?;
+    } else {
+        for notice in report.notices {
+            eprintln!("{notice}");
+        }
+        println!(
+            "Paused {} groups to shadow (actor: {})",
+            report.groups,
+            actor.as_str()
+        );
+        if let Some(why) = why {
+            println!("Actor reading: {why}");
+        }
+    }
+    Ok(())
+}
+
+fn change_mode(
+    rule: &str,
+    group: ActionGroup,
+    mode: Mode,
+    yes: bool,
+    supplied: Option<&rules::ApprovalDigest>,
+    json: bool,
+    require_digest: bool,
+) -> Result<()> {
+    let store = existing()?;
+    let (actor, why) = acting_actor_explained();
+    let shown = if mode == Mode::Auto {
+        let review = store.review_inputs(rule)?;
+        if let Some(expected) = supplied {
+            ensure!(expected == &review.digest, rules::ModeError::StaleDigest);
+        }
+        let loaded = store.get(rule)?;
+        let current = rules::resolve_mode(
+            &loaded,
+            group,
+            &store.approvals()?,
+            &rules::owner_file_holds(),
+        );
+        rules::gate_mode(current.effective, mode, Some(actor)).with_context(|| {
+            why.clone()
+                .unwrap_or_else(|| format!("actor: {}", actor.as_str()))
+        })?;
+        ensure!(
+            mode.rank() <= store.mode_ceiling(rule, group)?.rank(),
+            rules::ModeError::Ceiling
+        );
+        let mut screen = format!(
+            "Approve {rule} / {} in auto\nApproval digest: {}\n",
+            spelling(&group),
+            serde_json::to_string_pretty(&review.digest)?
+        );
+        for (file, text) in &review.files {
+            screen.push_str(&format!("\n--- {file} ---\n{text}\n"));
+        }
+        screen.push_str("Guards: exact message, activation cutoff, approval lapse, provider holds and automatic brakes.\n");
+        if group == ActionGroup::Board {
+            screen.push_str("Tasks reach a task run's prompt and consume the rule/global daily caps. Propose is recommended.\n");
+        }
+        for hold in current.holds {
+            screen.push_str(&format!("Held: {}\n", hold.reason));
+        }
+        screen.push_str(
+            "Shadow rows under this group's current match digest (verdict_input kept separate):\n",
+        );
+        let digest = loaded.match_digest(group, rules::GateStatus::Passing)?;
+        for row in rules::recent_ledger(&store, Some(rule), usize::MAX)?
+            .into_iter()
+            .filter(|r| {
+                r.group == group
+                    && r.match_digest == digest
+                    && r.outcome == rules::Outcome::WouldHave
+            })
+        {
+            screen.push_str(&format!("{}\n", serde_json::to_string(&row)?));
+        }
+        if json {
+            eprint!("{screen}");
+        } else {
+            print!("{screen}");
+        }
+        if !yes {
+            ensure!(
+                !json && std::io::stdin().is_terminal(),
+                rules::ModeError::ConfirmationRequired
+            );
+            print!("Approve these inputs? Type yes: ");
+            std::io::stdout().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            ensure!(
+                answer.trim().eq_ignore_ascii_case("yes"),
+                "approval cancelled"
+            );
+        }
+        review.digest
+    } else {
+        store
+            .get(rule)
+            .map(|r| r.approval_digest)
+            .unwrap_or_default()
+    };
+    let decision = store
+        .change_mode_checked(
+            rule,
+            group,
+            mode,
+            Some(actor),
+            supplied.unwrap_or(&shown),
+            &rules::owner_file_holds(),
+            supplied,
+            require_digest,
+        )
+        .with_context(|| {
+            why.clone()
+                .unwrap_or_else(|| format!("actor: {}", actor.as_str()))
+        })?;
+    ensure!(!decision.refused, rules::ModeError::Ceiling);
+    if json {
+        let view = views(&store)?
+            .into_iter()
+            .find(|v| v.name == rule)
+            .context("unknown rule")?;
+        let group_view = view
+            .groups
+            .into_iter()
+            .find(|g| g.group == group)
+            .context("unknown group")?;
+        print_json(
+            &serde_json::json!({"ok": true, "name": rule, "group": group, "requested_mode": mode, "recorded_mode": group_view.recorded_mode, "effective_mode": group_view.effective_mode, "clamped": decision.clamped, "holds": group_view.holds, "actor": actor, "actor_reason": why}),
+        )?;
+    } else {
+        if decision.clamped {
+            println!(
+                "Requested {} clamped to {}: {}",
+                spelling(&mode),
+                spelling(&decision.target),
+                why.as_deref().unwrap_or("store safety gate")
+            );
+        }
+        for hold in &decision.holds {
+            println!("Held: {}", hold.reason);
+        }
+        println!(
+            "{} / {}: {} (actor: {})",
+            rule,
+            spelling(&group),
+            spelling(&decision.target),
+            actor.as_str()
+        );
     }
     Ok(())
 }

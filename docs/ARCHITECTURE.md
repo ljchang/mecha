@@ -4575,6 +4575,115 @@ return a refresh token every time.
 
 ## Mail rules
 
+**P3-1 supplies the page through CLI children.** The existing GET routes
+`/api/mail/rules`, `/api/mail/rules/{name}` and `/api/mail/rules/ledger`
+remain read-only. POST routes under `/api/mail/rules` are `/add`,
+`/{name}/edit`, `/{name}/mode`, `/{name}/pause`, `/pause-all`, `/undo`,
+`/wrong-match` and `/{name}/test`. Every route belongs to `MailRules`; the
+feature-off guard runs before the handler. Mutations invoke `mecha mail rule`
+through `review::self_json_input_within`; handlers never write the store.
+Names and row IDs follow `--`, except add, which passes `--name=NAME` (the
+`=` binds a value that begins with a hyphen), and test's `--account=NAME`.
+`RESERVED_RULE_NAMES` (the fixed route segments) are refused at install. Edit uses
+`edit --stdin -- NAME`, and drafts travel only on stdin. The stdin budget is
+1 MiB, and the add and edit routes refuse a larger body at the door
+(`MAX_DRAFT_BODY`). Child writing, output draining and exit share a deadline; cancellation
+kills the child's process group. Ordinary mutations have 30 seconds, undo
+120 seconds and retrospective testing 600 seconds. The last stderr line and
+any JSON failure/partial report survive a nonzero exit (HTTP 409); timeout is
+504 and spawn failure 500. The 600-second test allowance is a conservative
+budget for paginated searches followed by individual reads with 30-second
+HTTP deadlines, not a measured guarantee for every mailbox.
+
+**The page (P3-2)** is `web/src/lib/MailRules.svelte`, rendered by App for
+`#mail/rules` in place of either Mail build, with its display rules in
+`mail-rules.js` (`web/test/mail-rules.mjs`): an unnamed mode, group or outcome
+renders `unknown`, a null rate a dash, and a raise is judged against the
+effective mode as the store judges it. *Make a rule* hands the reader's row to
+the page through `mail-rules-handoff.svelte.js`; nothing installs without the
+owner's Install, and it lands in shadow.
+
+**The JSON contract for P3-2 is additive.** `list --json` remains an array;
+`show --json` remains one object. `RuleView` carries `name`, `description`,
+`approval_digest`, `groups`, `holds`, `last_activity`, `load_error`,
+`fires_7d`, `last_fired` and `failures`. Fires are completed `done`/`sent`
+actions, failures are failed ledger rows, and last-fired is null without a
+completed action. Each group carries `group`, `recorded_mode`,
+`effective_mode`, `activated_at`, `holds`, `match_digest` and `statistics`.
+The statistics array has distinct `not_applicable`, `snippet`, `full_body`
+and `unknown` buckets under that group's current match digest; there is no
+pooled rate. Each bucket contains `matched_actions`, `matching_threads`,
+`automatic_mailbox_actions`, `owner_undos`, `owner_wrong_matches`,
+`owner_corrected_actions`, `undo_rate`, `wrong_match_rate`, `correction_rate`
+and `shadow_upper_bound`. Undo rate is over automatic mailbox actions;
+wrong-match rate is over matching threads; combined correction rate is over
+matched action keys, counting an action both undone and marked wrong once.
+All rates with an empty denominator are null. Counts deduplicate immutable
+account/message/action keys or account/thread keys, respectively. Only
+corrections recorded with `actor: owner` enter owner numerators; historical
+rows without attribution remain unknown. Safety brakes retain their existing
+conservative evidence rules, including corrections from non-owner actors.
+Unknown recorded modes and ledger outcomes stay `unknown` in JSON.
+
+Show additionally carries `inputs: {digest, files}` and `rule_toml`. Files
+retain the existing `rule/…`, `skill/…` and global-input keys. `rule_toml`
+is also read through containment checks when parsing fails, so broken text
+can be repaired; an unreadable file is null. The approval digest is the full
+object, including future skill/alias/limit/version components, passed as JSON
+to `mode --digest`. The mode POST body is `{group, mode, digest?}`; every
+raise requires the supplied digest and auto passes `--yes`. The store checks
+both requirements under its writer lock. CLI mode JSON reports `ok`, `name`,
+`group`, `requested_mode`, `recorded_mode`, `effective_mode`, `clamped`,
+`holds`, `actor` and `actor_reason`; failures are
+`{ok:false,error:{code,message}}`, with `stale_digest`, `digest_required`,
+`owner_required`, `confirmation_required`, `mode_ceiling` or
+`invalid_request`. A supplied stale digest refuses even a lowering; without
+one, revocation remains available.
+
+Ledger JSON preserves the flattened wire fields (`account`, `thread_id`,
+`provider_message_id`, RFC `message_id`, `sender`, `subject`, `action`,
+`group`, `mode`, `match_digest`, `verdict_input`, `outcome`, `closes`,
+`correction_of`, `settlement`, `matched_because`, `reason`, timestamps),
+adding `undoable` and `wrong_match_allowed`. Empty historical sender/subject
+become null; P1 ledger rows already hold both, so this view never fetches mail
+or bodies. `actor` is optional on correction rows. Retrospective rows also
+carry `received_at` (provider arrival) and fresh `in_inbox`.
+
+Add's body is `{name,rule_toml}`, edit's `{rule_toml}`, undo/wrong-match's
+`{row_id}`, test's `{account?}`, and pause/pause-all accept `{}`. Add JSON
+reports `ok`, `name`, `mode: shadow`, `approval_digest`; edit reports `name`,
+`changed_files`, `approval_digest`, `lapsed_groups`, `notices`. Pause reports
+`ok`, `groups` (changed count), `notices`, `actor`, `actor_reason`.
+Wrong-match reports `changed`, `row` (null on a duplicate), `message`.
+`test --json` still launches `mecha-mail rules test NAME`, never apply. Its
+JSON contains `dry_run`, `window_days:30`, `all_folders:true`, the existing
+aggregate `report`, and `accounts`. Each account carries `account`, `status`
+(`complete`, `held`, `failed`), `matched_rows` (null if incomplete/held),
+`would_have_rows`, `read_failures`, `candidate_failures`,
+`unknown_header_messages`, `holds` and `rows`. `unknown_header_messages` counts
+messages a non-outbound header rule could not be checked against because the
+reader cannot prove absence and did not surface the header (the 2026-11-06
+ruling's Unknown); it is never folded into `matched_rows`, so "matched
+nothing" and "could not see the header" read differently.
+Partial would-have rows remain visible alongside a failed account.
+
+**Edits and corrections cannot restore permission.** `RuleStore::edit`
+parses first, validates a private candidate snapshot with existing bundled
+files, and appends every necessary lapse before atomically replacing only
+`rule.toml`. If publishing fails, permissions can remain lower; they cannot
+revive. Already-off groups are excluded, shadow stays shadow, and existing
+brakes bound lapses. Before publishing, edit also persists any lapse in the
+old files, including unreadable ones, so restoring previously approved bytes
+cannot recover auto after an external edit. Per-rule pause uses the same lower
+path as pause-all; resume is a mode raise, never an unpause. `wrong_match` is a new ledger
+outcome with `closes:true`, copying the original action key and naming its
+row in `correction_of`, never `settlement`. Older readers see unknown and
+close it too. It performs no triage correction or provider restore, refuses
+description rules until P4, and remains idempotent even after undo. Undo
+ignores this known independent correction when checking its own intent
+history. Both operations use the engine lease, and retrying a correction
+also retries a failed safety lowering without appending a duplicate row.
+
 **Unattended passes share the owner's gates.** P1c-2's `mail_rules` switch
 is global, off by default and requires `mail`; both the header timer and the
 post-classify child check it before opening stores or providers. `mecha mail rule`
@@ -4612,7 +4721,11 @@ findings distinguish unsettled attempts from exact interrupted settlements;
 normal completed attempts are healthy. Corrupt approvals cannot be skipped to
 write `off`. Unknown ledger outcomes keep their closing keys. An account without
 a stored address holds all rules, and Outlook's header limitations are standing
-findings. Every recorded automatic group under unconfined shell, or a sandbox
+findings only for the rules still held there: raw-header rules with an outbound
+action, and description rules. A non-outbound header rule acts on Outlook on a
+visible positive match (`headers_partial: true` on its rows) and is absent for a
+message whose header is not visible (owner ruling 2026-11-06; MAIL-RULES-DESIGN
+§4.1). Every recorded automatic group under unconfined shell, or a sandbox
 with a writable mount reaching the rules store, gets attention, including
 Mailbox and Board: the actor reading is advisory without an effective sandbox,
 and Board tasks reach a task prompt. The rules store is also in the general
@@ -4620,7 +4733,12 @@ confinement check's protected directories. Both the protected path and mount
 path resolve existing aliases before comparing ancestors or descendants.
 Doctor reads global confinement only and does not probe backend readiness.
 A failed configured sandbox is stopped by `Sandbox::preflight` before shell
-executes; the residual requires no sandbox or a writable mount exposing the store.
+executes; the residual includes unconfined writes, writable mounts and network access.
+The orchestrating session retained the web loopback route under the existing
+closure residual: a serve child can read as owner even with an ordinary chat
+live in serve, and doctor now reports every automatic group when registered
+shell can reach that port (`Sandbox::can_reach_network`), naming a sandbox
+with network off as the remedy alongside every applicable write exposure.
 Timer checks skip when systemd cannot be queried (including no binary or user
 bus); a returned missing-unit or failed-unit state is a finding.
 The sixth backlog store counts pending proposal directories and lapsed group
