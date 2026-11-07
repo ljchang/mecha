@@ -184,6 +184,10 @@ class RunnerTests(unittest.TestCase):
             manifest = json.loads((root/'output'/'manifest.json').read_text())
             self.assertEqual(len(manifest['pairs']), 10)
             self.assertTrue(all(p['preparation'] for p in manifest['pairs']))
+            frozen = json.loads((root/'output'/'freeze.json').read_text())
+            self.assertTrue(all(p['report'] is None and p['started'] is False for p in frozen['pairs']))
+            self.assertEqual(manifest['freeze_sha256'], trial.sha(root/'output'/'freeze.json'))
+            self.assertEqual([p['preparation'] for p in frozen['pairs']], [p['preparation'] for p in manifest['pairs']])
             for argv in self.calls[1:]: self.assertIn('--snapshot', argv)
             with self.assertRaises(FileExistsError):
                 trial.run_trial(binary=root/'binary', db=root/'db', action='action', endpoint='http://127.0.0.1:1',

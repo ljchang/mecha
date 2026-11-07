@@ -287,8 +287,20 @@ def invoke_cli(argv, *, env, cwd, binary):
 
 
 def write_json(path, value):
-    path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False)+'\n')
-    path.chmod(0o600)
+    # Atomic replacement preserves the last complete artifact on interruption.
+    temporary = path.with_name('.'+path.name+'.tmp')
+    data = json.dumps(value, indent=2, sort_keys=True, allow_nan=False)+'\n'
+    with temporary.open('w') as stream:
+        temporary.chmod(0o600)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def run_trial(*, binary, db, action, endpoint, model, holds_dir, output, invoke=invoke_cli,
@@ -332,6 +344,10 @@ def run_trial(*, binary, db, action, endpoint, model, holds_dir, output, invoke=
                 argv += ['--snapshot', encode(first['snapshot'])]
             pairs.append(dict(**plan, argv=argv, preparation=prepared, report=None, error=None, started=False))
             write_json(root/'manifest.json', manifest)
+        # Never rewrite this before-call freeze when progress/results arrive.
+        write_json(root/'freeze.json', manifest)
+        manifest['freeze_sha256'] = sha(root/'freeze.json')
+        write_json(root/'manifest.json', manifest)
         # All ten full preparations and controls are durably exported before any model call.
         for pair in pairs:
             if inspect_database(db) != before:
