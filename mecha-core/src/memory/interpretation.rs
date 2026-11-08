@@ -18,6 +18,10 @@ mod evidence_metadata;
 use evidence_metadata::evidence_metadata;
 pub use evidence_metadata::*;
 
+#[path = "native_evidence.rs"]
+mod native_evidence;
+pub use native_evidence::*;
+
 const PRODUCER: &str = "situated-interpretation-v1";
 const SCHEMA: &str = "CREATE TABLE external_binding(revision TEXT PRIMARY KEY REFERENCES revision(id),authority TEXT NOT NULL,locator TEXT NOT NULL,binding_revision TEXT NOT NULL);
 CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')),lineage_version INTEGER NOT NULL CHECK(lineage_version=2));

@@ -689,7 +689,11 @@ pub(super) fn validate_evaluated_draft(
 }
 
 impl Memory {
-    fn recheck_support_prepared(&self, p: &PreparedInterpretation, access: &Access) -> Result<()> {
+    pub(super) fn recheck_support_prepared(
+        &self,
+        p: &PreparedInterpretation,
+        access: &Access,
+    ) -> Result<()> {
         self.check_access(access)?;
         self.live_identity()?;
         ensure!(
