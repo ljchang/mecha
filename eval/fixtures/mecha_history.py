@@ -616,10 +616,31 @@ def needed(path, body, run_file=""):
     first = path.split("::")[0]
     if first not in ("super", "self", "crate"):
         return True
+    segs = path.split(" as ")[0].split("::")
+    if segs[-1] == "*":
+        # A glob, decided case by case rather than by falling through
+        # (review of #857, pass 9). `super::*` / `self::*` name the module
+        # itself, which always resolves. `super::m::*` resolves only if the
+        # run's file root has `m` — a support module the PR created and an
+        # independent solution never wrote is E0432 for the whole file. A
+        # `crate::` glob's head is in another file this cannot read, and is
+        # kept: dropping it loses a real import as surely as keeping an
+        # unresolved one fails the build, and the PR creating the module it
+        # globs is the rarer of the two.
+        if first == "super" and len(segs) > 2 and run_file:
+            return declared_at_root(segs[1], run_file)
+        return True  # the module itself, or a file this cannot read
     bound = path.split(" as ")[-1].split("::")[-1]
-    if bound == "*" or re.search(rf"\b{re.escape(bound)}\b", body):
+    if re.search(rf"\b{re.escape(bound)}\b", body):
         return True
-    name = re.escape(path.split(" as ")[0].split("::")[-1])
+    return declared_at_root(segs[-1], run_file)
+
+
+def declared_at_root(name, run_file):
+    """Whether `run_file` declares or imports `name` at its root (column 0,
+    where rustfmt puts every root item) — all `super::super` from the graft
+    can see (review of #857, pass 7)."""
+    name = re.escape(name)
     vis = r"(pub(\([^)]*\))?\s+)?"
     declared = (rf"^{vis}((async|unsafe|const|extern(\s+\"\w+\")?)\s+)*"
                 rf"(fn|struct|enum|union|trait|type|const|static|mod)\s+{name}\b"

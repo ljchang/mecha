@@ -875,6 +875,17 @@ class Imports(unittest.TestCase):
         self.assertNotIn("super::super::helper", block, "not at the root, so not reachable")
         self.assertIn("use super::super::resident;", block)
 
+    def test_a_glob_is_decided_by_whether_its_module_resolves(self):
+        # Pass 9: a glob left the guard before the resolve check, so a support
+        # module the PR created and glob-imported was E0432 for every arm.
+        run_file = "fn kept() {}\n\nmod support {\n    pub fn s() {}\n}\n"
+        self.assertTrue(mecha_history.needed("super::*", "", run_file), "the module itself")
+        self.assertTrue(mecha_history.needed("super::support::*", "", run_file), "the run's root has it")
+        self.assertFalse(mecha_history.needed("super::helpers::*", "", run_file), "the PR's, never the run's")
+        self.assertTrue(mecha_history.needed("crate::persona::tests_support::*", "", run_file),
+                        "another file's head, kept on purpose")
+        self.assertTrue(mecha_history.needed("super::helpers::*", "", ""), "a file this cannot read")
+
     def test_only_a_root_declaration_counts(self):
         self.assertTrue(mecha_history.needed("super::helper", "", "pub(crate) async fn helper() {}\n"))
         self.assertTrue(mecha_history.needed("super::helper", "", "use crate::x::{\n    helper,\n};\n"))

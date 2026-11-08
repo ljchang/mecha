@@ -14862,6 +14862,65 @@ justification = "echo is off on this box"
     /// one file is what boredom exists to name. Keyed whole like a success,
     /// three guesses were three keys and the shape key saw one target, so
     /// nothing fired (review of #857, pass 2).
+    /// The half of the rule that kept the old behaviour: two *declared reads*
+    /// reaching one file and getting the same bytes are one thing learned
+    /// twice, keyed by target through the registry's `effect()`. The only
+    /// test that proves the loop reads `effect()` at all — with the lookup
+    /// replaced by `is_error` alone the suite stayed green (review of #857,
+    /// pass 9).
+    #[tokio::test]
+    async fn two_read_tools_reaching_one_files_same_bytes_are_one_finding() {
+        let read = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("r{i}"),
+                    name: if i % 2 == 0 { "peek" } else { "look" }.into(),
+                    input: json!({"path": "src/lib.rs"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(read).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(SameBytes("peek")), Arc::new(SameBytes("look"))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("read it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// A declared read that answers the same bytes whichever tool asked.
+    struct SameBytes(&'static str);
+    #[async_trait]
+    impl Tool for SameBytes {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "Read a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Read)
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("fn main() {}"))
+        }
+    }
+
     #[tokio::test]
     async fn different_guesses_failing_on_one_file_are_still_named() {
         let guess = |i: usize| {
