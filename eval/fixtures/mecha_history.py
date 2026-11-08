@@ -459,13 +459,134 @@ class TreeRefused(Exception):
     answers `passed: false`, never a harness error."""
 
 
+USE_DECL = re.compile(r"(pub(\([^)]*\))?\s+)?use\s")
+USE_TOKEN = re.compile(r"::|[{},*]|\w+")
+
+
+def use_statements(lines, start, end, indent):
+    """The `use` declarations written at `indent` directly inside
+    lines[start..end], each as its text (joined over the lines it spans)."""
+    out, i = [], start
+    while i <= end and i < len(lines):
+        rest = lines[i][len(indent):] if lines[i].startswith(indent) else None
+        if rest is not None and not rest.startswith(" ") and USE_DECL.match(rest):
+            j = i
+            while j <= end and not lines[j].split("//")[0].rstrip().endswith(";"):
+                j += 1
+            out.append("\n".join(lines[i:j + 1]))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def use_paths(text):
+    """One `use` declaration flattened to the paths it imports, in order:
+    `use super::{a, b::{c, d as e}, f::*};` is `super::a`, `super::b::c`,
+    `super::b::d as e`, `super::f::*`. None when it does not parse — the
+    caller then leaves that declaration exactly as the graft always did."""
+    body = re.sub(r"//[^\n]*", "", text).strip()
+    m = re.match(r"(?:pub(?:\([^)]*\))?\s+)?use\s+(.*);$", body, re.S)
+    if not m:
+        return None
+    tokens = USE_TOKEN.findall(m.group(1))
+
+    def tree(i, prefix):
+        segs = []
+        while True:
+            tok = tokens[i]
+            if tok == "{":
+                i += 1
+                out = []
+                while tokens[i] != "}":
+                    sub, i = tree(i, prefix + segs)
+                    out += sub
+                    if tokens[i] == ",":
+                        i += 1
+                return out, i + 1
+            if tok == "*":
+                return ["::".join(prefix + segs + ["*"])], i + 1
+            if not re.match(r"\w+$", tok):
+                raise ValueError(tok)
+            segs.append(tok)
+            i += 1
+            if i < len(tokens) and tokens[i] == "::":
+                i += 1
+                continue
+            path = prefix + segs
+            if len(path) > 1 and path[-1] == "self":
+                path = path[:-1]  # `a::{self}` imports `a`
+            if i < len(tokens) and tokens[i] == "as":
+                return ["::".join(path) + " as " + tokens[i + 1]], i + 2
+            return ["::".join(path)], i
+
+    try:
+        paths, i = tree(0, [])
+    except (IndexError, ValueError):
+        return None
+    return paths if i == len(tokens) else None
+
+
+def module_imports(lines, module):
+    """The paths `module`'s own `use` declarations import, in order, once
+    each; a declaration that does not parse is left out."""
+    out = []
+    for name, start, end in test_modules(lines):
+        if name != module:
+            continue
+        for text in use_statements(lines, start + 1, end - 1, "    "):
+            for p in use_paths(text) or []:
+                if p not in out:
+                    out.append(p)
+    return out
+
+
+def added_imports(merge, path, module):
+    """What the PR added to `module`'s imports in `path`: the paths its `use`
+    declarations name at the merge and did not at the pin — a whole new `use`
+    line and an edit to an existing one alike. `pr-726` added
+    `ensure_resident` to `mod tests`'s `use super::{...}` list, the hidden
+    tests call it, and a graft that carried only whole items failed every
+    independent solution on E0425 (the driven pilot, 2026-11-08)."""
+    merged = git("show", f"{merge}:{path}").split("\n")
+    r = run(["git", "-C", repo(), "show", f"{merge}^1:{path}"])
+    pinned = r.stdout.split("\n") if r.returncode == 0 else []  # a file the PR created
+    before = set(module_imports(pinned, module))
+    return [p for p in module_imports(merged, module) if p not in before]
+
+
+def repoint(path):
+    """An import written in a test module, said from the graft's own module
+    one level inside it, where `super` is the test module."""
+    if path == "super" or path.startswith("super::"):
+        return "super::" + path
+    if path.startswith("self::"):
+        return "super::" + path[len("self::"):]
+    return path
+
+
+def plain_use(item):
+    """The paths of an item that is a bare `use` declaration — its text
+    starts at its first attribute or doc line, so one that starts with `use`
+    has neither — or None for anything else."""
+    return use_paths(item) if USE_DECL.match(item.lstrip(" ")) else None
+
+
 def graft_plan(tree, merge, module):
     """{path: new text} for every file the graft writes, or TreeRefused.
     Whole new integration-test files are copied; added items in an existing
     test module go into a module of their own (`hidden_grade`), so a test the
     run wrote under the same name is not a compile error charged to the
     model. Items are placed verbatim, never re-indented: a multi-line string
-    literal's lines are its value (review of #852, pass 5)."""
+    literal's lines are its value (review of #852, pass 5).
+
+    Grafted into a test module, the hidden tests sit one level deeper than
+    the PR wrote them, and `use super::*` reaches only what that module
+    imports. So the imports the PR added to it (`added_imports`) are said
+    again from the graft's module, re-pointed one level up (`repoint`); the
+    bare `use` items they cover are not also copied, which would import a
+    name twice (E0252). An explicit import outranks the glob, so nothing the
+    run wrote can make one ambiguous."""
     writes = {}
     for path in new_test_files(merge):
         writes[path] = git("show", f"{merge}:{path}")
@@ -480,6 +601,14 @@ def graft_plan(tree, merge, module):
             inner = indent + "    "
             block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {module} {{",
                      f"{inner}#[allow(unused_imports)]", f"{inner}use super::*;", ""]
+            if into is not None:
+                imports = added_imports(merge, path, into)
+                items = [it for it in items
+                         if not (plain_use(it) is not None and set(plain_use(it)) <= set(imports))]
+                for p in imports:
+                    block.append(f"{indent}#[allow(unused_imports)] use {repoint(p)};")
+                if imports:
+                    block.append("")
             block += "\n\n".join(items).split("\n") + [f"{indent}}}", ""]
             if into is None:
                 src += block

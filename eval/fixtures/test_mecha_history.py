@@ -421,8 +421,11 @@ class Source(unittest.TestCase):
         self.assertLess(module, grafted.index("fn helper()"), "grafted after the module's own items")
         block = grafted[module:grafted.index("fn helper()", module)]
         self.assertIn("use super::*;", block)
+        # The PR's import, said once from the graft's module (`added_imports`),
+        # never also copied as an item: twice is E0252.
+        self.assertEqual(block.count("use std::u32::MAX;"), 1)
+        self.assertIn("\n    #[allow(unused_imports)] use std::u32::MAX;\n", block)
         # Placed verbatim, never re-indented.
-        self.assertIn("\n    use std::u32::MAX;\n", block)
         self.assertIn("\n    /// The top of the range does not wrap.\n", block)
         self.assertIn("\n    fn saturates_at_the_top() {\n", block)
         # A helper with no attribute of its own is still the PR's test code.
@@ -637,6 +640,103 @@ class Source(unittest.TestCase):
         for path, verdict in mecha_history.RESULT.findall(out):
             seen.setdefault(path.split("::")[-1], []).append(verdict)
         self.assertEqual(seen["saturates_at_the_top"], ["FAILED", "ok"])
+
+
+PIN_LISTED = """fn kept() -> u32 {
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        kept,
+    };
+
+    #[test]
+    fn keeps() {
+        assert_eq!(kept(), 1);
+    }
+}
+"""
+
+MERGE_LISTED = """fn kept() -> u32 {
+    1
+}
+
+fn resident() -> u32 {
+    2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        kept, resident,
+    };
+
+    #[test]
+    fn keeps() {
+        assert_eq!(kept(), 1);
+    }
+
+    #[test]
+    fn the_resident_one_is_two() {
+        assert_eq!(resident(), 2);
+    }
+}
+"""
+
+
+class Imports(unittest.TestCase):
+    """`pr-726`'s shape (the driven pilot, 2026-11-08): the PR adds a private
+    function, edits `mod tests`'s explicit `use super::{...}` list to name
+    it, and a hidden test calls it. The graft sits one level inside `tests`,
+    where `use super::*` reaches only what `tests` imports, so it must carry
+    the PR's own import edit — or every independent solution fails on
+    E0425, the model's code never having been the problem."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(os.path.join(self.repo, "src"))
+        git(self.repo, "init", "-q")
+        git(self.repo, "config", "user.email", "t@example.com")
+        git(self.repo, "config", "user.name", "t")
+        write(os.path.join(self.repo, "src", "setup.rs"), PIN_LISTED)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "pin")
+        write(os.path.join(self.repo, "src", "setup.rs"), MERGE_LISTED)
+        git(self.repo, "commit", "-q", "-am", "the change")
+        self.merge = git(self.repo, "rev-parse", "HEAD").strip()
+        # The run's tree: an independent solution, the function written and
+        # the test module's import list left as the pin had it.
+        self.tree = os.path.join(self.tmp.name, "tree")
+        os.makedirs(os.path.join(self.tree, "src"))
+        write(os.path.join(self.tree, "src", "setup.rs"),
+              PIN_LISTED.replace("#[cfg(test)]", "fn resident() -> u32 {\n    2\n}\n\n#[cfg(test)]", 1))
+        os.environ["MECHA_HISTORY_REPO"] = self.repo
+        self.addCleanup(lambda: os.environ.pop("MECHA_HISTORY_REPO", None))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_an_edit_to_a_test_modules_import_list_is_carried_into_the_graft(self):
+        self.assertEqual(mecha_history.added_imports(self.merge, "src/setup.rs", "tests"), ["super::resident"])
+        text = mecha_history.graft_plan(self.tree, self.merge, "hidden_grade_t")["src/setup.rs"]
+        block = text[text.index("mod hidden_grade_t {"):]
+        # Said from one level deeper: `super` there is `tests`, not the file.
+        self.assertIn("use super::super::resident;", block)
+        self.assertNotIn("super::super::kept", block, "the pin already imported it")
+        self.assertIn("fn the_resident_one_is_two()", block)
+
+    def test_a_use_declaration_flattens_to_the_paths_it_imports(self):
+        self.assertEqual(
+            mecha_history.use_paths("use super::{a, b::{c, d as e}, f::*, g::{self}};"),
+            ["super::a", "super::b::c", "super::b::d as e", "super::f::*", "super::g"])
+        self.assertEqual(mecha_history.use_paths("    pub(crate) use crate::x::Y; // why"), ["crate::x::Y"])
+        self.assertIsNone(mecha_history.use_paths("use super::{a, b;"), "unbalanced: left alone")
+        self.assertEqual(mecha_history.repoint("super::a"), "super::super::a")
+        self.assertEqual(mecha_history.repoint("self::a"), "super::a")
+        self.assertEqual(mecha_history.repoint("crate::a"), "crate::a")
 
 
 if __name__ == "__main__":
