@@ -20,10 +20,17 @@
 //!
 //! - **Keyed on the call *and* its result**, on the loop guard's rule.
 //!   Identical arguments with a changing result is polling, and a poll must
-//!   never grade as stuck. The key is `compact::target_of` rather than the raw
-//!   arguments, so two different tools that read the same file and get the same
-//!   bytes count as the same thing learned twice — which is exactly what this
-//!   is looking for.
+//!   never grade as stuck. For a *read*, the key is `compact::target_of` rather
+//!   than the raw arguments, so two different tools that read the same file and
+//!   get the same bytes count as the same thing learned twice — which is
+//!   exactly what this is looking for. **For anything else the key is the whole
+//!   call**: a write's arguments are the work, and its result is a receipt
+//!   (`fs_edit` says `edited <path>` for every edit), so keying it on its path
+//!   read six different edits to one file as one edit made six times and told
+//!   a run mid-refactor to stop (the driven pilot, 2026-11-08: 15 of 16 trials
+//!   got the notice, and one obeyed it). Boredom is for an approach that has
+//!   stopped teaching the run anything; it must never interrupt one that is
+//!   still changing the world.
 //! - **Once per rung, never per turn.** The count is compared with `==` rather
 //!   than `>=`, so crossing a rung fires exactly once. A notice repeated every
 //!   turn would be the distractor shape `evict_superseded_results` exists to
@@ -289,22 +296,46 @@ impl Boredom {
 
     /// One outcome, as this counts them.
     ///
-    /// The **target** rather than the raw arguments, so two different tools
-    /// that reach the same file and get the same bytes are one thing learned
-    /// twice — which is the signal, not an approximation of it. And the result
-    /// as well as the call, on the loop guard's rule: identical arguments with
-    /// a changing result is polling, and a poll must never grade as stuck.
+    /// For a call that only reads (`reads`), the **target** rather than the
+    /// raw arguments, so two different tools that reach the same file and get
+    /// the same bytes are one thing learned twice — which is the signal, not
+    /// an approximation of it. For every other call, the **whole call**: a
+    /// write's arguments are what it did, and two different edits to one file
+    /// are two pieces of work however alike their receipts read. An identical
+    /// write repeated is still one key, so a run applying the same edit over
+    /// and over is still seen. And the result as well as the call, on the loop
+    /// guard's rule: identical arguments with a changing result is polling,
+    /// and a poll must never grade as stuck.
+    ///
+    /// `reads` is the tool's declared [`Effect`](crate::tool::effect::Effect),
+    /// `Read` or `ReadThatRecords`, and nothing else: an undeclared tool is
+    /// keyed whole, because the error that costs is interrupting work, and
+    /// keying whole can only make two calls *less* alike.
     ///
     /// A 64-bit hash rather than the strings: nothing adversarial is being
     /// resisted, a collision needs two different outcomes to repeat three
     /// times each, and keeping the text would make this a second copy of the
     /// transcript — including of the user's data.
-    pub fn key(name: &str, input: &serde_json::Value, result: &str) -> u64 {
+    pub fn key(name: &str, input: &serde_json::Value, result: &str, reads: bool) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        crate::compact::target_of(name, input).hash(&mut hasher);
+        if reads {
+            crate::compact::target_of(name, input).hash(&mut hasher);
+        } else {
+            name.hash(&mut hasher);
+            crate::compact::canonical(input)
+                .to_string()
+                .hash(&mut hasher);
+        }
         result.hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// Whether `effect` is one [`key`](Self::key) may key by target: a read,
+    /// declared. `None` — a tool nobody classified — is not.
+    pub fn reads(effect: Option<crate::tool::effect::Effect>) -> bool {
+        use crate::tool::effect::Effect;
+        matches!(effect, Some(Effect::Read | Effect::ReadThatRecords))
     }
 
     /// An errored call, for the shape key: the tool and [`error_shape`] of
@@ -496,13 +527,50 @@ mod tests {
         let input = serde_json::json!({ "path": path });
         Outcome {
             tool,
-            key: Boredom::key(tool, &input, error),
+            key: Boredom::key(tool, &input, error, true),
             failure: Some(Boredom::failure(tool, &input, error, refused)),
         }
     }
 
     fn jail(path: &str) -> String {
         format!("tool `fs_list` failed: path {path:?} resolves outside the workspace (/srv/work).")
+    }
+
+    /// A read keys by target, so two tools reaching one file's same bytes are
+    /// one finding; a write keys whole, so two different edits with the same
+    /// receipt are two pieces of work — and the same edit twice is still one.
+    #[test]
+    fn a_read_is_keyed_by_target_and_a_write_by_the_whole_call() {
+        let read = |name, extra: &str| {
+            Boredom::key(
+                name,
+                &serde_json::json!({"path": "a.rs", "why": extra}),
+                "bytes",
+                true,
+            )
+        };
+        assert_eq!(read("fs_read", "x"), read("fs_read", "y"));
+        let edit = |old: &str| {
+            Boredom::key(
+                "fs_edit",
+                &serde_json::json!({"path": "a.rs", "old_str": old, "new_str": "z"}),
+                "edited a.rs",
+                false,
+            )
+        };
+        assert_ne!(edit("one"), edit("two"), "different edits, one receipt");
+        assert_eq!(edit("one"), edit("one"), "the same edit again is a repeat");
+    }
+
+    /// Only a declared read keys by target: unknown is keyed whole, because
+    /// the costly mistake here is interrupting work.
+    #[test]
+    fn only_a_declared_read_keys_by_target() {
+        use crate::tool::effect::Effect;
+        assert!(Boredom::reads(Some(Effect::Read)));
+        assert!(Boredom::reads(Some(Effect::ReadThatRecords)));
+        assert!(!Boredom::reads(Some(Effect::Workspace)));
+        assert!(!Boredom::reads(None));
     }
 
     #[test]

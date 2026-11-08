@@ -4170,9 +4170,15 @@ impl Agent {
                     let bored = boredom.observe_turn(outcomes.iter().map(
                         |&(name, input, content, is_error)| {
                             let call = (name, input.to_string());
+                            // A write is keyed whole, a read by its target:
+                            // six different edits to one file are six pieces
+                            // of work, never one edit repeated (`Boredom::key`).
+                            let reads = crate::boredom::Boredom::reads(
+                                self.registry.get(name).and_then(|t| t.effect()),
+                            );
                             crate::boredom::Outcome {
                                 tool: name,
-                                key: crate::boredom::Boredom::key(name, input, content),
+                                key: crate::boredom::Boredom::key(name, input, content, reads),
                                 failure: (is_error && !declined_by_person.contains(&call)).then(
                                     || {
                                         crate::boredom::Boredom::failure(
@@ -14778,6 +14784,94 @@ justification = "echo is off on this box"
                 .all(|m| !m.text().contains("same thing")),
             "six identical calls with six different answers is watching, not repeating"
         );
+    }
+
+    /// A file edited in six different places answers `edited <path>` six
+    /// times, and that is a refactor, not a loop. The driven pilot's defect
+    /// (2026-11-08): keyed by path, the six read as one edit made six times,
+    /// the run was told to stop and say what blocked it, and Claude did — with
+    /// ten edits still to make. Fails on the old key, which ignored a write's
+    /// arguments.
+    #[tokio::test]
+    async fn different_edits_to_one_file_are_work_and_never_called_stuck() {
+        let edit = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("e{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": format!("a{i}"), "new": format!("b{i}")}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..6).map(edit).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(ReceiptEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("refactor it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| !m.text().contains(crate::boredom::NOTICE_STEM)),
+            "six different edits are six pieces of work"
+        );
+    }
+
+    /// The other half, so the fix above cannot pass by never firing: the same
+    /// edit, word for word, three turns running is still a repeat.
+    #[tokio::test]
+    async fn the_same_edit_three_times_is_still_named() {
+        let same = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("e{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": "a", "new": "b"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(same).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(ReceiptEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("edit it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// `fs_edit`'s shape: a workspace write whose result is a receipt that
+    /// never mentions what changed.
+    struct ReceiptEdit;
+    #[async_trait]
+    impl Tool for ReceiptEdit {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "Replace text in a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Workspace)
+        }
+        async fn call(&self, i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(format!(
+                "edited {}",
+                i["path"].as_str().unwrap_or("")
+            )))
+        }
     }
 
     #[tokio::test]
