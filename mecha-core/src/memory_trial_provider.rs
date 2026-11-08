@@ -9,7 +9,7 @@ use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, StructuredOutput};
 use crate::hold::{Held, Holds};
 use crate::message::{CompletionRequest, CompletionResponse};
 use crate::provider::{openai::OpenAiCompatible, router, Provider, StreamSink};
@@ -50,7 +50,21 @@ pub struct LocalTrialProvider {
     _held: Held,
 }
 impl LocalTrialProvider {
+    /// Explicitly use the verified llama-server constrained JSON dialect.
+    pub async fn new_structured(
+        config: LocalTrialConfig,
+        cancel: CancellationToken,
+    ) -> Result<Self> {
+        Self::with_structured_output(config, cancel, StructuredOutput::LlamaJson).await
+    }
     pub async fn new(config: LocalTrialConfig, cancel: CancellationToken) -> Result<Self> {
+        Self::with_structured_output(config, cancel, StructuredOutput::Disabled).await
+    }
+    async fn with_structured_output(
+        config: LocalTrialConfig,
+        cancel: CancellationToken,
+        structured_output: StructuredOutput,
+    ) -> Result<Self> {
         ensure!(
             router::is_literal_loopback(&config.endpoint),
             "explicit numeric loopback HTTP endpoint required"
@@ -81,6 +95,7 @@ impl LocalTrialProvider {
             temperature: Some(0.6),
             seed: Some(config.seed),
             max_retries: Some(0),
+            structured_output,
             ..Default::default()
         })?
         .without_autoload();
@@ -123,6 +138,9 @@ impl Provider for LocalTrialProvider {
     }
     fn local(&self) -> bool {
         true
+    }
+    fn structured_output(&self) -> bool {
+        self.inner.structured_output()
     }
     fn wire_body(&self, req: &CompletionRequest, stream: bool) -> Option<serde_json::Value> {
         self.inner.wire_body(req, stream)

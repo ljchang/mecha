@@ -386,6 +386,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the local model's support assessment remains fallible and production capture
   remains disabled.
 
+- The synthetic factual-support trial can explicitly opt into wire-v2: constrained
+  local output, request-bound citation choices and separate current-criterion and
+  premise-sufficiency checks. The existing v8 storage and legacy trial path are
+  unchanged. Model assessments remain provisional; schema validity is not factual
+  support or action permission.
+
 - The synthetic memory trial can opt into a turn-budget notice before its last
   two model turns, preserving ordinary tools, guards and hard limits. A separate
   paired diagnostic records completion, notice exposure and premature abstention.

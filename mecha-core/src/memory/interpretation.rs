@@ -104,6 +104,9 @@ pub struct PreparedInterpretation {
     request_id: String,
 }
 impl PreparedInterpretation {
+    pub(crate) fn request_identity(&self) -> &str {
+        &self.request_id
+    }
     pub fn context(&self) -> &InterpretationContext {
         &self.context
     }

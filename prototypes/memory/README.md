@@ -127,6 +127,49 @@ Unknown bearing. Raw rejected replies also contained semantic errors, so repairi
 JSON alone is insufficient. See `docs/HISTORY.md` and the current repository
 handoff for the next bounded repair; this is not production-ready appraisal.
 
+### Explicit support wire-v2
+
+The native example accepts `--grounded-v2` before `--synthetic-only`. It uses
+`LocalTrialProvider::new_structured` and the existing llama JSON-schema transport;
+providers without constrained-output capability refuse before inference. The
+ordinary command retains wire-v1 behavior. Both protocols use the same v8 store,
+source guards, canonical admission and ordinary GoalMemory reader.
+
+Freeze this explicit protocol through the same coordinator:
+
+```sh
+python3 prototypes/memory/support_trial.py freeze /tmp/mecha-support-v2-new \
+  /absolute/path/to/memory_support_trial http://127.0.0.1:8080 \
+  RESIDENT_MODEL /absolute/path/to/model-holds --grounded-v2 \
+  --fixture /absolute/path/to/independently-authored-cases.json
+```
+
+Omit `--fixture` only for an explicitly labeled development run on the existing
+cases. `run` and `score` infer the frozen protocol from the manifest; changing
+source, binary, helper or fixture after freeze refuses further calls.
+
+The generator selects role-prefixed, request-bound citation handles instead of
+copying source hashes and quotes. Mecha expands them to exact source references and supplies the
+confirmed goal. The evaluator separately compares the current criterion and each
+unit's factual premises, then assesses whether each offered judgment's original
+premises support its bearing. Host conversion prevents contradictory supported
+Good/Bad judgments, but cannot guarantee the model chose the correct criterion
+state. Exact quotation membership remains distinct from entailment.
+
+All original sources remain visible; catalog chunks cover every eligible source.
+Whole requests include frame, input and schema in their byte budget. Raw and
+expanded responses remain bounded and strict: no repair, retry, clipped diagnostics
+or silent legacy fallback. Opaque context keys may differ while the semantic
+source/criterion input stays invariant to private needs; no sensor values enter
+model requests. Producer schemas use conservative 128-character text/reasons and
+64-character questions, while canonical byte limits remain unchanged. Generated
+Supported/retained bearings are scored separately from host-authored probe
+judgments. Recorded bodies cannot show URL parameters: no-autoload is enforced
+by the provider URL policy and verified by authored HTTP tests.
+
+New development and fresh qualification must preserve their own
+frozen artifacts and cannot replace the original failed eight-case result.
+
 ### Legacy v7 demonstration
 
 The explicit v7 workflow adds durable, source-linked interpretation hypotheses

@@ -544,5 +544,489 @@ class SupportTrialTests(unittest.TestCase):
 
 
 
+
+class GroundedWireTests(unittest.TestCase):
+    def packet(self):
+        key = 'a' * 64
+        text = 'The observed artifact contains item p1.'
+        source = {'id': 'source:a', 'source': {'object': 'a', 'revision': '1'},
+                  'field': '/text', 'kind': 'ArtifactObservation', 'text': text}
+        citation = dict(handle='ArtifactObservation:' + key + ':c0', source_id=source['id'], source=source['source'],
+                        field=source['field'], kind=source['kind'], quote=text)
+        return dict(protocol='situated-support-wire-v2', request_key=key,
+                    criterion={'goal': 'task:test'}, sources=[source],
+                    catalog={'request_key': key, 'citations': [citation]})
+
+    def generation(self, packet):
+        return dict(request_key=packet['request_key'], units=[dict(id='u1', kind='RecordedEvent',
+                    text='The artifact contains item p1.', evidence=[packet['catalog']['citations'][0]['handle']])],
+                    judgments=[dict(bearing='Good', because=['u1'])])
+
+    def evaluation(self, packet):
+        proposal = trial.expand_generation(packet, self.generation(packet))
+        packet.update(proposal=proposal, targets=['unit:u1', 'judgment:0'])
+        diag = dict(evidence=[packet['catalog']['citations'][0]['handle']], reason='Exact observed evidence.', questions=[])
+        return dict(request_key=packet['request_key'], criterion=dict(diag, state='Met'),
+                    units=[dict(diag, target='unit:u1', factual_premises='Supported', status='Supported')],
+                    judgments=[dict(diag, target='judgment:0', premises_sufficient=True)])
+
+    def test_host_handles_expand_exact_canonical_identity_and_goal(self):
+        packet = self.packet()
+        proposal = trial.expand_generation(packet, self.generation(packet))
+        self.assertEqual(proposal['units'][0]['citations'], [{'source_id': 'source:a', 'quote': packet['sources'][0]['text']}])
+        self.assertEqual(proposal['judgments'][0]['goal'], 'task:test')
+        for mutate in (lambda p: p.update(request_key='b'*64), lambda p: p['units'][0].update(goal='wrong'),
+                       lambda p: p['units'][0].update(evidence=['foreign']),
+                       lambda p: p['units'][0].update(text='é'*257),
+                       lambda p: p['units'][0].update(evidence=[packet['catalog']['citations'][0]['handle']]*2)):
+            payload = self.generation(packet)
+            mutate(payload)
+            with self.assertRaises(ValueError):
+                trial.expand_generation(packet, payload)
+
+    def test_catalog_reconstructs_balanced_unicode_and_refuses_identity_tampering(self):
+        packet = self.packet()
+        packet['sources'][0]['text'] = 'é' * 301
+        entry = packet['catalog']['citations'][0]
+        entry['quote'] = 'é' * 151
+        packet['catalog']['citations'].append(dict(entry, handle='ArtifactObservation:' + packet['request_key'] + ':c1', quote='é'*150))
+        trial.validate_catalog(packet)
+        packet['catalog']['citations'][1]['source']['revision'] = 2
+        # Use an independent source locator so mutating the row cannot mutate source too.
+        packet['sources'][0]['source'] = {'object': 'a', 'revision': '1'}
+        with self.assertRaises(ValueError):
+            trial.validate_catalog(packet)
+
+    def test_evaluation_derivation_and_missing_premises_diagnostics(self):
+        packet = self.packet()
+        payload = self.evaluation(packet)
+        self.assertEqual([c['status'] for c in trial.expand_evaluation(packet, payload)['checks']], ['Supported', 'Supported'])
+        payload['judgments'][0].update(premises_sufficient=False, questions=['Which premise establishes the criterion?'])
+        checks = trial.expand_evaluation(packet, payload)['checks']
+        self.assertEqual(checks[1]['status'], 'Unknown')
+        self.assertFalse(checks[1]['unsupported_factual_premise'])
+        self.assertEqual(checks[1]['questions'], payload['judgments'][0]['questions'])
+        payload['units'][0]['factual_premises'] = 'Unknown'
+        with self.assertRaises(ValueError):
+            trial.expand_evaluation(packet, payload)
+
+    def test_all_bearing_states_and_target_coverage(self):
+        for state in ('Met', 'NotMet', 'Unknown'):
+            for bearing in ('Good', 'Bad', 'Unknown'):
+                for enough in (False, True):
+                    packet = self.packet()
+                    payload = self.evaluation(packet)
+                    packet['proposal']['judgments'][0]['bearing'] = bearing
+                    payload['criterion']['state'] = state
+                    if state == 'Unknown':
+                        payload['criterion']['questions'] = ['What is the observed result?']
+                    expected = ('Supported' if state == 'Unknown' else 'Contradicted') if bearing == 'Unknown' else (
+                        'Unknown' if state == 'Unknown' else ('Supported' if enough else 'Unknown')
+                        if (state, bearing) in (('Met', 'Good'), ('NotMet', 'Bad')) else 'Contradicted')
+                    payload['judgments'][0].update(premises_sufficient=enough, questions=['What premise is missing?'] if expected == 'Unknown' else [])
+                    self.assertEqual(trial.expand_evaluation(packet, payload)['checks'][1]['status'], expected)
+        packet = self.packet()
+        payload = self.evaluation(packet)
+        payload['units'].append(copy.deepcopy(payload['units'][0]))
+        with self.assertRaises(ValueError):
+            trial.expand_evaluation(packet, payload)
+
+    def test_false_supported_is_counted_even_when_store_blocks_admission(self):
+        old = SupportTrialTests('test_complete_report_is_accepted_with_verified_source_hashes')
+        old.setUp()
+        self.addCleanup(old.doCleanups)
+        report = old.report()
+        old.change_probe(report, unit_id='false', status='Supported', admitted=False, withheld=True,
+                         unsupported_factual_premise=True)
+        old.write_report(report)
+        validation = old.validate()
+        self.assertTrue(validation['valid'])
+        row = trial.score_case(old.case, validation, None, protocol='memory-factual-support-v2')
+        self.assertEqual(row['false_facts_supported'], 1)
+        self.assertEqual(row['false_facts_accepted'], 0)
+        summary = trial.summarize([dict(row, case_id=str(i), manual_audit_complete=True, unsupported_generated=0) for i in range(8)], protocol='memory-factual-support-v2')
+        self.assertEqual(summary['false_facts_supported'], 8)
+        self.assertFalse(summary['gate_passed'])
+
+    def request(self, packet):
+        evidence = {'type': 'array', 'maxItems': 2, 'uniqueItems': True,
+                    'items': {'type': 'string', 'enum': [c['handle'] for c in packet['catalog']['citations']]}}
+        def obj(properties):
+            return dict(type='object', additionalProperties=False, required=list(properties), properties=properties)
+        identifier = dict(type='string', minLength=1, maxLength=32, pattern='^[A-Za-z0-9_-]{1,32}$')
+        properties = {'request_key': {'type': 'string', 'enum': [packet['request_key']]}}
+        if 'proposal' in packet:
+            diagnostic = dict(evidence=evidence, reason=dict(type='string', minLength=1, maxLength=128),
+                              questions=dict(type='array', maxItems=4, items=dict(type='string', minLength=1, maxLength=64)))
+            known = obj(dict(diagnostic, state={'type': 'string', 'enum': ['Met', 'NotMet']},
+                             evidence=dict(evidence, minItems=1), questions=dict(diagnostic['questions'], minItems=0, maxItems=0)))
+            unknown = obj(dict(diagnostic, state={'type': 'string', 'enum': ['Unknown']},
+                               evidence=dict(evidence, minItems=0), questions=dict(diagnostic['questions'], minItems=1)))
+            properties['criterion'] = {'oneOf': [known, unknown]}
+            for name, targets in [('units', ['unit:' + u['id'] for u in packet['proposal']['units']]),
+                                  ('judgments', ['judgment:' + str(i) for i in range(len(packet['proposal']['judgments']))])]:
+                item = dict(diagnostic, target={'type': 'string', 'enum': targets})
+                if name == 'units':
+                    item.update(factual_premises={'type': 'string', 'enum': ['None', 'Supported', 'Contradicted', 'Unknown']},
+                                status={'type': 'string', 'enum': ['Supported', 'Contradicted', 'Unknown']})
+                else:
+                    item['premises_sufficient'] = {'type': 'boolean'}
+                properties[name] = dict(type='array', minItems=len(targets), maxItems=len(targets), items=obj(item))
+                if not targets:
+                    properties[name]['items'] = {'type': 'null'}
+        else:
+            properties['units'] = dict(type='array', maxItems=8, items=obj(dict(id=identifier,
+                kind={'type': 'string', 'enum': ['RecordedEvent', 'GoalAssessment', 'Hypothesis', 'Prediction']},
+                text=dict(type='string', minLength=1, maxLength=128), evidence=evidence)))
+            properties['judgments'] = dict(type='array', maxItems=8, items=obj(dict(
+                bearing={'type': 'string', 'enum': ['Good', 'Bad', 'Unknown']},
+                because=dict(type='array', maxItems=8, uniqueItems=True, items=identifier))))
+        schema = {'type': 'object', 'additionalProperties': False, 'required': list(properties), 'properties': properties}
+        text = '<support-input>\n' + json.dumps(packet, separators=(',', ':'), ensure_ascii=False) + '\n</support-input>'
+        request = {'request': {'system': 'Synthetic frame.', 'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': text}]}],
+                               'response_schema': schema, 'tools': []},
+                   'wire_body': {'response_format': {'type': 'json_object', 'schema': copy.deepcopy(schema)},
+                                 'messages': [{'role': 'system', 'content': 'Synthetic frame.'}, {'role': 'user', 'content': text}],
+                                 'chat_template_kwargs': {'enable_thinking': False}}}
+        stage = {'packet_bytes': len('Synthetic frame.'.encode()) + len(text.encode()) + len(trial.compact_bytes(schema))}
+        return request, stage
+
+    def test_actual_schema_binding_catalog_completeness_and_full_budget(self):
+        packet = self.packet()
+        request, stage = self.request(packet)
+        self.assertEqual(trial.wire_packet(request, stage), packet)
+        for mutate in (lambda r: r['wire_body'].pop('response_format'),
+                       lambda r: r['wire_body']['response_format']['schema'].update(additionalProperties=True),
+                       lambda r: r['request']['response_schema']['properties']['request_key'].update(enum=['wrong']),
+                       lambda r: r['wire_body']['messages'][1].update(content='different input')):
+            changed = copy.deepcopy(request)
+            mutate(changed)
+            with self.assertRaises(ValueError):
+                trial.wire_packet(changed, stage)
+        with self.assertRaises(ValueError):
+            trial.wire_packet(request, dict(packet_bytes=stage['packet_bytes']-1))
+
+    def test_malformed_wire_shapes_refuse_without_crashing_report_scoring(self):
+        for mutate in (lambda r: r['request']['messages'].__setitem__(0, None),
+                       lambda r: r['wire_body'].update(chat_template_kwargs=None),
+                       lambda r: r['request']['response_schema'].update(properties=[]),
+                       lambda r: r['request']['response_schema']['properties']['units'].update(items=None)):
+            request, stage = self.request(self.packet())
+            mutate(request)
+            request['wire_body']['response_format']['schema'] = copy.deepcopy(request['request']['response_schema'])
+            if request['request']['messages'][0] is not None:
+                stage['packet_bytes'] = len(request['request']['system'].encode()) + len(request['request']['messages'][0]['content'][0]['text'].encode()) + len(trial.compact_bytes(request['request']['response_schema']))
+            with self.assertRaises(ValueError):
+                trial.wire_packet(request, stage)
+
+    def test_expansion_preserves_distinct_sources_and_rejects_repeated_canonical_quote(self):
+        packet = self.packet()
+        source = copy.deepcopy(packet['sources'][0])
+        source.update(id='source:b', source={'object': 'b', 'revision': '2'})
+        packet['sources'].append(source)
+        packet['catalog']['citations'].append(dict(packet['catalog']['citations'][0], handle='ArtifactObservation:'+packet['request_key']+':c1',
+                                                  source_id=source['id'], source=source['source']))
+        payload = self.generation(packet)
+        payload['units'][0]['evidence'].append('ArtifactObservation:'+packet['request_key']+':c1')
+        self.assertEqual([c['source_id'] for c in trial.expand_generation(packet, payload)['units'][0]['citations']], ['source:a', 'source:b'])
+        # Two positions with the same source and quote resolve to one canonical identity.
+        packet = self.packet()
+        packet['sources'][0]['text'] = 'x'*600
+        entry = packet['catalog']['citations'][0]
+        entry['quote'] = 'x'*300
+        packet['catalog']['citations'].append(dict(entry, handle='ArtifactObservation:'+packet['request_key']+':c1'))
+        payload = self.generation(packet)
+        payload['units'][0]['evidence'].append('ArtifactObservation:'+packet['request_key']+':c1')
+        with self.assertRaises(ValueError):
+            trial.expand_generation(packet, payload)
+
+    def test_expanded_unicode_limits_and_target_diagnostics_are_not_truncated(self):
+        packet = self.packet()
+        packet['sources'][0]['text'] = '🧪'*600
+        entry = packet['catalog']['citations'][0]
+        entry['quote'] = '🧪'*300
+        # Distinct quote avoids duplicate citation rejection; every entry stays exact.
+        packet['sources'][0]['text'] = '🧪'*300 + '🐝'*300
+        packet['catalog']['citations'].append(dict(entry, handle='ArtifactObservation:'+packet['request_key']+':c1', quote='🐝'*300))
+        payload = self.generation(packet)
+        payload['units'][0]['evidence'].append('ArtifactObservation:'+packet['request_key']+':c1')
+        payload['units'] = [dict(payload['units'][0], id='u'+str(i)) for i in range(8)]
+        payload['judgments'] = []
+        with self.assertRaises(ValueError):
+            trial.expand_generation(packet, payload)
+        packet = self.packet()
+        payload = self.evaluation(packet)
+        payload['criterion']['reason'] = 'é'*257
+        with self.assertRaises(ValueError):
+            trial.expand_evaluation(packet, payload)
+
+    def grounded_report(self, generated_bearings=()):
+        old = SupportTrialTests('test_complete_report_is_accepted_with_verified_source_hashes')
+        old.setUp()
+        self.addCleanup(old.doCleanups)
+        for unit in old.case['probe']['units'][:2]:
+            unit['citation']['quote'] = None
+        report = old.report()
+        report['protocol'] = 'memory-factual-support-v2'
+        for stage_name in trial.MODEL_STAGES:
+            packet = self.packet()
+            criterion = old.case['native']['current_criterion']
+            packet['criterion'] = dict(goal='task:synthetic-support', goal_text=old.case['native']['goal_text'], criterion_text=criterion,
+                                       criterion_revision=hashlib.sha256(criterion.encode()).hexdigest(),
+                                       confirmation_digest=hashlib.sha256(('synthetic-owner-confirmation:' + criterion).encode()).hexdigest())
+            observed = old.case['native']['observed_output']
+            packet['sources'][0]['text'] = json.dumps(dict(content_status='Complete', artifact_text=observed,
+                artifact_digest=hashlib.sha256(observed.encode()).hexdigest(), verdict='Passed'), separators=(',', ':'))
+            packet['sources'][0]['field'] = '/artifact_observation'
+            packet['catalog']['citations'][0].update(quote=packet['sources'][0]['text'], field='/artifact_observation')
+            second = dict(packet['sources'][0], id='source:input', source={'object': 'input', 'revision': '1'},
+                          kind='Observation', text=old.case['native']['input_text'])
+            packet['sources'].append(second)
+            packet['catalog']['citations'].append(dict(handle='Observation:'+packet['request_key']+':c1', source_id=second['id'],
+                                                       source=second['source'], field=second['field'], kind=second['kind'], quote=second['text']))
+            proposal = {'units': [], 'judgments': []}
+            if stage_name == 'evaluate_probe':
+                proposal['units'] = [dict(id=u['id'], kind=u['kind'], text=u['text'], citations=[{
+                    'source_id': 'source:input' if u['citation']['passage'] == 'input' else 'source:a',
+                    'quote': u['citation']['quote'] if u['citation']['quote'] is not None else packet['sources'][0]['text']}]) for u in old.case['probe']['units']]
+                proposal['judgments'] = [dict(j, goal='task:synthetic-support') for j in old.case['probe']['judgments']]
+            if stage_name != 'evaluate_probe' and generated_bearings:
+                proposal['units'] = [dict(id='g1', kind='RecordedEvent', text='The observed artifact lists item p1.',
+                                          citations=[dict(source_id='source:a', quote=packet['sources'][0]['text'])])]
+                proposal['judgments'] = [dict(goal='task:synthetic-support', bearing=bearing, because=['g1']) for bearing in generated_bearings]
+            if stage_name == 'generate':
+                payload = dict(request_key=packet['request_key'],
+                    units=[dict(id=u['id'], kind=u['kind'], text=u['text'], evidence=[packet['catalog']['citations'][0]['handle']]) for u in proposal['units']],
+                    judgments=[{k:j[k] for k in ('bearing', 'because')} for j in proposal['judgments']])
+                (old.root/'generated-proposal.json').write_text(trial.encode(proposal))
+            else:
+                packet.update(proposal=proposal, targets=['unit:'+u['id'] for u in proposal['units']] + ['judgment:'+str(i) for i in range(len(proposal['judgments']))])
+                if stage_name == 'evaluate_probe':
+                    (old.root/'probe-proposal.json').write_text(trial.encode(proposal))
+                diag = dict(evidence=[packet['catalog']['citations'][0]['handle']], reason='Exact observation.', questions=[])
+                payload = dict(request_key=packet['request_key'], criterion=dict(diag, state='Met'), units=[], judgments=[])
+                for unit in proposal['units']:
+                    status = {'false': 'Contradicted', 'uncertain': 'Unknown'}.get(unit['id'], 'Supported')
+                    payload['units'].append(dict(diag, target='unit:'+unit['id'], status=status, factual_premises=status,
+                                                 questions=['Was approval recorded?'] if status == 'Unknown' else []))
+                payload['judgments'] = [dict(diag, target='judgment:'+str(i), premises_sufficient=True) for i in range(len(proposal['judgments']))]
+                if stage_name == 'evaluate_generated' and generated_bearings:
+                    payload['criterion']['state'] = 'NotMet' if generated_bearings[0] == 'Bad' else 'Met'
+            stage = report['stages'][stage_name]
+            req = trial.decode((old.root/stage['request']['path']).read_text())
+            wire, bounds = self.request(packet)
+            req['request'].update(wire['request'])
+            req['wire_body'].update(wire['wire_body'])
+            req['wire_body'].pop('autoload', None)
+            raw = trial.decode((old.root/stage['reply']['path']).read_text())
+            raw['message']['content'][0]['text'] = trial.encode(payload)
+            request_bytes, response_bytes = trial.encode(req).encode(), trial.encode(raw).encode()
+            stage.update(bounds)
+            stage['request'] = old.artifact(stage['request']['path'], request_bytes)
+            stage['reply'] = old.artifact(stage['reply']['path'], response_bytes)
+            stage['provider_audit'] = old.artifact(stage['provider_audit']['path'], request_bytes+response_bytes)
+            if stage_name == 'evaluate_probe':
+                descriptor = report['support_reports']['probe']
+                support = trial.decode((old.root/descriptor['path']).read_text())
+                support['units'][0]['unit'] = proposal['units'][0]
+                for judgment in support['judgments']:
+                    judgment['goal'] = 'task:synthetic-support'
+                report['support_reports']['probe'] = old.artifact(descriptor['path'], trial.encode(support).encode())
+                for unit in report['probe']['units']:
+                    unit['unsupported_factual_premise'] = unit['id'] != 'true'
+            if stage_name == 'evaluate_generated' and generated_bearings:
+                descriptor = report['support_reports']['generated']
+                support = trial.decode((old.root/descriptor['path']).read_text())
+                support['units'] = [dict(disposition='Accepted', unit=u, status='Supported') for u in proposal['units']]
+                support['judgments'] = [dict(index=i, goal=j['goal'], offered_bearing=j['bearing'],
+                    bearing=j['bearing'] if i == 0 else 'Unknown', because=j['because'], status='Supported',
+                    reason='Retained' if i == 0 else 'DuplicateGoal') for i,j in enumerate(proposal['judgments'])]
+                report['support_reports']['generated'] = old.artifact(descriptor['path'], trial.encode(support).encode())
+                descriptor = report['artifacts']['admitted_generated']
+                report['artifacts']['admitted_generated'] = old.artifact(descriptor['path'], trial.encode([dict(u,status='Supported') for u in proposal['units']]).encode())
+        old.write_report(report)
+        return old, report
+
+    def test_complete_v2_audits_raw_canonical_durable_and_probe(self):
+        old, report = self.grounded_report()
+        validation = trial.validate_report(old.root, old.case, 'resident-test', 'memory-factual-support-v2')
+        self.assertTrue(validation['valid'], validation['errors'] + validation['probe_errors'])
+        self.assertEqual(validation['probe_outcome']['criterion_state'], 'Met')
+        row = trial.score_case(old.case, validation, None, 'memory-factual-support-v2')
+        self.assertEqual(row['false_facts_supported'], 0)
+        self.assertEqual(row['criterion_correct'], 1)
+        descriptor = report['support_reports']['probe']
+        support = trial.decode((old.root/descriptor['path']).read_text())
+        support['judgments'][0]['reason'] = 'UnsupportedPremises'
+        support['judgments'][0]['bearing'] = 'Unknown'
+        report['support_reports']['probe'] = old.artifact(descriptor['path'], trial.encode(support).encode())
+        old.write_report(report)
+        changed = trial.validate_report(old.root, old.case, 'resident-test', 'memory-factual-support-v2')
+        self.assertFalse(changed['valid'])
+        self.assertIn('durable judgment derivation mismatch', changed['probe_errors'])
+
+    def test_perfect_probes_cannot_hide_supported_or_retained_wrong_generated_bearing(self):
+        old, report = self.grounded_report(('Bad', 'Bad'))
+        validation = trial.validate_report(old.root, old.case, 'resident-test', trial.GROUNDED_PROTOCOL)
+        self.assertTrue(validation['valid'], validation['errors'])
+        audit = dict(reviewer_kind='external_manual', reviewer='authored-test-reviewer',
+                     report_sha256=validation['report_sha256'], admitted_generated_sha256=report['artifacts']['admitted_generated']['sha256'],
+                     inspected_unit_ids=['g1'], unsupported_unit_ids=[], notes='Authored factual unit is supported; generated bearing is wrong.')
+        row = trial.score_case(old.case, validation, audit, trial.GROUNDED_PROTOCOL)
+        self.assertEqual(row['wrong_bearings_supported'], 0)
+        self.assertEqual(row['wrong_generated_bearings_supported'], 2)
+        self.assertEqual(row['wrong_generated_bearings_retained'], 1)
+        self.assertTrue(row['manual_audit_complete'])
+        rows = [dict(row, case_id=str(i)) for i in range(8)]
+        summary = trial.summarize(rows, trial.GROUNDED_PROTOCOL)
+        self.assertTrue(summary['generated_metrics_complete'])
+        self.assertEqual(summary['wrong_generated_bearings_supported'], 16)
+        self.assertFalse(summary['gate_passed'])
+        corrected = [dict(r, wrong_generated_bearings_supported=0, wrong_generated_bearings_retained=0) for r in rows]
+        self.assertTrue(trial.summarize(corrected, trial.GROUNDED_PROTOCOL)['gate_passed'])
+
+    def test_partial_generated_outcome_survives_probe_failure(self):
+        old, report = self.grounded_report(('Bad',))
+        report.update(status='failed', run_error='probe transport failed')
+        report['stages']['evaluate_probe'].update(status='failed', error='probe transport failed')
+        old.write_report(report)
+        validation = trial.validate_report(old.root, old.case, 'resident-test', trial.GROUNDED_PROTOCOL)
+        self.assertFalse(validation['valid'])
+        self.assertIsNone(validation['probe_outcome'])
+        self.assertIsNotNone(validation['generated_outcome'], validation['generated_errors'])
+        row = trial.score_case(old.case, validation, None, trial.GROUNDED_PROTOCOL)
+        self.assertEqual(row['wrong_generated_bearings_supported'], 1)
+        self.assertEqual(row['wrong_generated_bearings_retained'], 1)
+        summary = trial.summarize([row], trial.GROUNDED_PROTOCOL)
+        self.assertIsNone(summary['wrong_generated_bearings_supported'])
+        self.assertEqual(summary['observed_wrong_generated_bearings_supported'], 1)
+        self.assertEqual(summary['unknown_generated_outcomes'], 7)
+        self.assertFalse(summary['gate_passed'])
+
+    def test_missing_generated_evaluation_stays_unknown_in_gate_counts(self):
+        old, report = self.grounded_report()
+        report.update(status='failed', run_error='generated evaluator failed')
+        report['stages']['evaluate_generated'].update(status='failed', error='generated evaluator failed')
+        old.write_report(report)
+        validation = trial.validate_report(old.root, old.case, 'resident-test', trial.GROUNDED_PROTOCOL)
+        row = trial.score_case(old.case, validation, None, trial.GROUNDED_PROTOCOL)
+        self.assertFalse(row['generated_outcome_observed'])
+        self.assertIsNone(row['wrong_generated_bearings_supported'])
+        summary = trial.summarize([dict(row, case_id=str(i)) for i in range(8)], trial.GROUNDED_PROTOCOL)
+        self.assertFalse(summary['generated_metrics_complete'])
+        self.assertEqual(summary['unknown_generated_outcomes'], 8)
+        self.assertIsNone(summary['wrong_generated_bearings_retained'])
+        self.assertEqual(summary['observed_wrong_generated_bearings_retained'], 0)
+        self.assertFalse(summary['gate_passed'])
+
+    def rebind_schema(self, request, stage):
+        schema = request['request']['response_schema']
+        request['wire_body']['response_format']['schema'] = copy.deepcopy(schema)
+        stage['packet_bytes'] = len(request['request']['system'].encode()) + len(request['request']['messages'][0]['content'][0]['text'].encode()) + len(trial.compact_bytes(schema))
+
+    def test_role_prefixed_handles_reject_absent_or_mismatched_source_kind(self):
+        packet = self.packet()
+        entry = packet['catalog']['citations'][0]
+        entry['handle'] = 'ArtifactObservation:' + packet['request_key'] + ':c0'
+        trial.validate_catalog(packet)
+        for prefix in ('', 'Observation:'):
+            entry['handle'] = prefix + packet['request_key'] + ':c0'
+            with self.assertRaises(ValueError):
+                trial.validate_catalog(packet)
+
+    def test_utf8_safe_grammar_rejects_previous_character_limits(self):
+        packet = self.packet()
+        request, stage = self.request(packet)
+        request['request']['response_schema']['properties']['units']['items']['properties']['text']['maxLength'] = 512
+        self.rebind_schema(request, stage)
+        with self.assertRaises(ValueError):
+            trial.wire_packet(request, stage)
+        self.evaluation(packet)
+        for field, old_limit in (('reason', 512), ('questions', 256)):
+            request, stage = self.request(packet)
+            properties = request['request']['response_schema']['properties']['units']['items']['properties']
+            (properties[field]['items'] if field == 'questions' else properties[field])['maxLength'] = old_limit
+            self.rebind_schema(request, stage)
+            with self.assertRaises(ValueError):
+                trial.wire_packet(request, stage)
+
+    def test_criterion_grammar_requires_known_evidence_or_unknown_questions(self):
+        packet = self.packet()
+        self.evaluation(packet)
+        request, stage = self.request(packet)
+        trial.wire_packet(request, stage)
+        criterion = request['request']['response_schema']['properties']['criterion']
+        self.assertIn('oneOf', criterion)
+        for branch, field, value in ((0, 'evidence', 0), (1, 'questions', 0)):
+            changed = copy.deepcopy(request)
+            changed['request']['response_schema']['properties']['criterion']['oneOf'][branch]['properties'][field]['minItems'] = value
+            self.rebind_schema(changed, stage)
+            with self.assertRaises(ValueError):
+                trial.wire_packet(changed, stage)
+
+    def test_v2_actual_body_omits_url_autoload_policy_and_audit_names_boundary(self):
+        old, report = self.grounded_report()
+        validation = trial.validate_report(old.root, old.case, 'resident-test', 'memory-factual-support-v2')
+        self.assertTrue(validation['valid'], validation['errors'])
+        boundary = validation['transport_audit_boundary']
+        self.assertIn('URL', boundary)
+        self.assertIn('not recorded', boundary)
+        stage = report['stages']['generate']
+        request = trial.decode((old.root/stage['request']['path']).read_text())
+        request['wire_body']['autoload'] = False
+        request_bytes = trial.encode(request).encode()
+        stage['request'] = old.artifact(stage['request']['path'], request_bytes)
+        stage['provider_audit'] = old.artifact(stage['provider_audit']['path'], request_bytes+(old.root/stage['reply']['path']).read_bytes())
+        old.write_report(report)
+        validation = trial.validate_report(old.root, old.case, 'resident-test', 'memory-factual-support-v2')
+        self.assertFalse(validation['valid'])
+        self.assertIn('unexpected body autoload field', validation['errors'])
+
+    def test_v2_binds_every_stage_to_frozen_current_criterion_and_sources(self):
+        for name in trial.MODEL_STAGES:
+            for mutation in ('criterion_text', 'missing', 'goal', 'source_role'):
+                old, report = self.grounded_report()
+                stage = report['stages'][name]
+                request = trial.decode((old.root/stage['request']['path']).read_text())
+                block = request['request']['messages'][0]['content'][0]
+                packet = trial.decode(block['text'][len('<support-input>\n'):-len('\n</support-input>')])
+                if mutation == 'missing':
+                    packet['criterion'].pop('goal_text', None)
+                elif mutation == 'source_role':
+                    packet['sources'][1]['kind'] = 'AssistantStatement'
+                    packet['catalog']['citations'][1]['kind'] = 'AssistantStatement'
+                else:
+                    packet['criterion'][mutation] = 'historical or foreign goal'
+                block['text'] = '<support-input>\n' + json.dumps(packet, separators=(',', ':')) + '\n</support-input>'
+                request['wire_body']['messages'][1]['content'] = block['text']
+                stage['packet_bytes'] = len(request['request']['system'].encode()) + len(block['text'].encode()) + len(trial.compact_bytes(request['request']['response_schema']))
+                request_bytes = trial.encode(request).encode()
+                response_bytes = (old.root/stage['reply']['path']).read_bytes()
+                stage['request'] = old.artifact(stage['request']['path'], request_bytes)
+                stage['provider_audit'] = old.artifact(stage['provider_audit']['path'], request_bytes+response_bytes)
+                old.write_report(report)
+                validation = trial.validate_report(old.root, old.case, 'resident-test', 'memory-factual-support-v2')
+                self.assertFalse(validation['valid'], (name, mutation))
+                if name == 'evaluate_probe':
+                    self.assertIsNone(validation['probe_outcome'], mutation)
+
+    def test_explicit_v2_fixture_freeze_preserves_v1_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            binary = base / 'native'
+            binary.write_text('#!/bin/sh\nexit 0\n')
+            binary.chmod(0o700)
+            fixture = base / 'selected.json'
+            fixture.write_bytes(trial.FIXTURE.read_bytes())
+            with patch.object(trial, 'source_hashes', return_value={}):
+                manifest = trial.freeze(base/'trial', binary, 'http://127.0.0.1:1', 'test', base/'holds',
+                                        protocol='memory-factual-support-v2', fixture=fixture)
+                self.assertEqual(manifest['protocol'], 'memory-factual-support-v2')
+                self.assertEqual(manifest['fixture_path'], str(fixture.resolve()))
+                self.assertEqual(len(trial.validate_frozen(base/'trial', manifest)), 8)
+                fixture.write_text('{}')
+                with self.assertRaises(ValueError):
+                    trial.validate_frozen(base/'trial', manifest)
+
 if __name__ == '__main__':
     unittest.main()

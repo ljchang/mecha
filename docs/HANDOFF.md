@@ -173,12 +173,38 @@ calls observed 53,744 input / 20,544 output tokens. One case retained four indep
 supported units with Unknown bearing; seven empty admitted sets do not show
 reliability. See `results/memory-support-20261107/independent-audit.md` and HISTORY.
 
-**Next bounded repair:** simplify model citation selection through host-issued
-references and qualify schema-constrained output before another fresh trial.
-Keep exact source binding and fail-closed admission. Separately test semantic
-faithfulness: raw rejected replies invented approval, confused historical/current
-criteria and contradicted their own status labels. Do not treat format repair
-as a semantic fix or tune and rerun these eight cases into a passing result.
+**Citation/schema repair implemented; semantic qualification remains open.**
+`memory_support_wire::CitationCatalog` supplies role-prefixed request-bound source
+choices; `memory_support_reasoning` separates the current criterion from factual
+premises and judgment sufficiency. Explicit `generate_grounded`/
+`evaluate_grounded` and `run_case_with_protocol(GroundedV2)` use the existing local
+provider, canonical v8 storage and guarded recall. Legacy paths remain available.
+Producer limits and conditional criterion schemas reduce avoidable format errors;
+strict host byte checks, source authority and admission remain unchanged.
+
+The first reused-case development round completed 5/8 native workflows (24 calls).
+Its frozen ledger remains failed because the original auditor incorrectly looked
+for no-autoload in the body rather than the URL query. A separate corrected
+analysis observed six valid probes, including one false statement Supported and
+admitted. Independent review found five clear unsupported generated current claims,
+two disputed causal hypotheses, and one wrong generated Good bearing retained.
+See HISTORY and `results/memory-support-repair-20261107/`; none of these is fresh
+qualification. The v2 scorecard now audits generated bearings separately and
+preserves independently available partial outcomes.
+
+**Next:** complete the second bounded development round and then freeze the
+independently authored replacement holdout with exact source/binary/helper hashes.
+Do not tune on that holdout or erase earlier failures. Fresh qualification requires
+all eight workflows, supported true/appropriate uncertain probes, no wrong factual
+or bearing support, and independent inspection of every generated admission.
+Concepts and rumination remain deferred if this gate fails.
+
+Mechanical checks: the first repair snapshot passed 6,351 default and 6,816
+memory-enabled tests (0 failures; 25/29 ignored), workspace/all-target build,
+formatting and strict all-feature Clippy. The second refinement's four regressions
+failed before the fix, then the 29-test adapter/workflow suite passed. The nested
+Python suite passes 75 tests. Final code, model and CI evidence will be recorded
+on draft PR #846; no production cutover is implied.
 
 After that gate works, the next requested phase is concept learning and one
 bounded rumination cycle (`MECHA-MEMORY-DESIGN.md` §31.9). Reuse the existing provisional concept/revision store,
@@ -219,13 +245,13 @@ provenance gap corrected by admission and historical-binding refusal in
 
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#action-outcome-evidence-and-factual-support
-Research v0.34 published 2026-11-07 (2026-11-08 UTC), source
-`cc0bb0ea0bafd0f5c284e7d31c3c5cf37a978a79`, deployment
-`appgdep_6aefe79c522c81919316edeac6575ce1` succeeded. All 70 IDs retained;
-internal links, unchanged scripts/SVG and dist mirrors checked. Desktop/mobile
-browser checks verified the v0.34 failed model gate and next repair, 40 rendered
-math containers and no horizontal overflow. Concept learning and rumination are
-explicitly conditional on reliable support evaluation; see design section 31.9.
+Research v0.36 published 2026-11-08, source
+`cbfd0d43284e15f04701a2479eb6f586c90696e6`, deployment
+`appgdep_6af0033fcb488191ad8dd2cae5c533b5` succeeded. Existing IDs, scripts/SVG,
+internal links and dist mirrors are preserved. Browser checks verified current
+content, 40 rendered math containers and no desktop overflow. The Site separates
+the original failed trial from the reused-case development result; fresh
+qualification and concept learning remain pending.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

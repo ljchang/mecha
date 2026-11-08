@@ -43,6 +43,12 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub const PROTOCOL: &str = "memory-factual-support-v1";
+pub const GROUNDED_PROTOCOL: &str = "memory-factual-support-v2";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportProtocol {
+    LegacyV1,
+    GroundedV2,
+}
 const DOMAIN: &str = "synthetic-support-workflow";
 const ACCOUNT: &str = "synthetic";
 const STAGES: [&str; 8] = [
@@ -546,6 +552,11 @@ fn probe_proposal(case: &TrialCase, prepared: &PreparedInterpretation) -> Result
 
 fn packet_bytes(request: &CompletionRequest) -> usize {
     request.system.as_ref().map_or(0, String::len)
+        + request.response_schema.as_ref().map_or(0, |schema| {
+            serde_json::to_vec(schema)
+                .expect("JSON schema serializes")
+                .len()
+        })
         + request
             .messages
             .iter()
@@ -711,6 +722,25 @@ pub async fn run_case(
     providers: &dyn StageProviders,
     cancel: &CancellationToken,
 ) -> Result<Value> {
+    run_case_with_protocol(
+        root,
+        case,
+        model,
+        providers,
+        cancel,
+        SupportProtocol::LegacyV1,
+    )
+    .await
+}
+
+pub async fn run_case_with_protocol(
+    root: &Path,
+    case: &TrialCase,
+    model: &str,
+    providers: &dyn StageProviders,
+    cancel: &CancellationToken,
+    protocol: SupportProtocol,
+) -> Result<Value> {
     case.validate()?;
     ensure!(
         root.is_absolute() && !root.exists(),
@@ -723,13 +753,17 @@ pub async fn run_case(
         .into_iter()
         .map(|name| (name.into(), json!({"status":"pending","error":null})))
         .collect();
-    let mut report = json!({"protocol":PROTOCOL,"case_id":case.case_id,"case_sha256":case.case_sha256,
+    let protocol_name = match protocol {
+        SupportProtocol::LegacyV1 => PROTOCOL,
+        SupportProtocol::GroundedV2 => GROUNDED_PROTOCOL,
+    };
+    let mut report = json!({"protocol":protocol_name,"case_id":case.case_id,"case_sha256":case.case_sha256,
         "model":model,"seed":70510,"status":"failed","run_error":null,"stages":stages,
         "active_stage":"source","artifacts":{"initial_input":null,"native_transcript":null,"observed_output":null,"admitted_generated":null},
         "initial_hashes":null,"source_seal":null,"support_reports":{"generated":null,"probe":null},
         "probe":{"units":[],"judgments":[]},"input_tokens":null,"output_tokens":null});
     checkpoint(&root, &report)?;
-    let outcome = run_inner(&root, case, model, providers, cancel, &mut report).await;
+    let outcome = run_inner(&root, case, model, providers, cancel, protocol, &mut report).await;
     if let Err(error) = outcome {
         let active = report["active_stage"]
             .as_str()
@@ -785,6 +819,7 @@ async fn run_inner(
     model: &str,
     providers: &dyn StageProviders,
     cancel: &CancellationToken,
+    protocol: SupportProtocol,
     report: &mut Value,
 ) -> Result<()> {
     let source = execute_task(&root.join("native"), &case.native, cancel).await?;
@@ -861,15 +896,32 @@ async fn run_inner(
         report["needs_request_identical"] == true,
         "private needs/context identity changed request"
     );
+    if protocol == SupportProtocol::GroundedV2 {
+        // Opaque context-binding keys may differ; private needs never enter the semantic input.
+        report["needs_invariance_scope"] = json!("canonical_source_and_criterion_input");
+    }
     set_stage(report, "capture", "completed", None);
     checkpoint(root, report)?;
     let budget = GenerationBudget::new(4096, Duration::from_secs(180))?;
     report["active_stage"] = json!("generate");
     let generation = async {
-        let request = support::generation_request(&prepared, model, budget)?;
+        let request = match protocol {
+            SupportProtocol::LegacyV1 => support::generation_request(&prepared, model, budget)?,
+            SupportProtocol::GroundedV2 => {
+                support::grounded_generation_request(&prepared, model, budget)?
+            }
+        };
         report["stages"]["generate"]["packet_bytes"] = json!(packet_bytes(&request));
         let provider = stage_provider(root, "generate", providers, cancel).await?;
-        let outcome = support::generate(provider.as_ref(), model, &prepared, budget, cancel).await;
+        let outcome = match protocol {
+            SupportProtocol::LegacyV1 => {
+                support::generate(provider.as_ref(), model, &prepared, budget, cancel).await
+            }
+            SupportProtocol::GroundedV2 => {
+                support::generate_grounded(provider.as_ref(), model, &prepared, budget, cancel)
+                    .await
+            }
+        };
         write_audit_exports(root, report, "generate", &outcome)?;
         let served = outcome
             .served_model
@@ -898,11 +950,23 @@ async fn run_inner(
         let evaluation = async {
             let request =
                 memory.prepare_support_with_model(&prepared, proposal, &served, &source.access)?;
-            let body = support::evaluation_request(&request, model, budget)?;
+            let body = match protocol {
+                SupportProtocol::LegacyV1 => support::evaluation_request(&request, model, budget)?,
+                SupportProtocol::GroundedV2 => {
+                    support::grounded_evaluation_request(&request, model, budget)?
+                }
+            };
             report["stages"]["evaluate_generated"]["packet_bytes"] = json!(packet_bytes(&body));
             let provider = stage_provider(root, "evaluate_generated", providers, cancel).await?;
-            let outcome =
-                support::evaluate(provider.as_ref(), model, request, budget, cancel).await;
+            let outcome = match protocol {
+                SupportProtocol::LegacyV1 => {
+                    support::evaluate(provider.as_ref(), model, request, budget, cancel).await
+                }
+                SupportProtocol::GroundedV2 => {
+                    support::evaluate_grounded(provider.as_ref(), model, request, budget, cancel)
+                        .await
+                }
+            };
             write_audit_exports(root, report, "evaluate_generated", &outcome)?;
             outcome
                 .result
@@ -1002,10 +1066,22 @@ async fn run_inner(
             "host-authored-probe",
             &source.access,
         )?;
-        let body = support::evaluation_request(&request, model, budget)?;
+        let body = match protocol {
+            SupportProtocol::LegacyV1 => support::evaluation_request(&request, model, budget)?,
+            SupportProtocol::GroundedV2 => {
+                support::grounded_evaluation_request(&request, model, budget)?
+            }
+        };
         report["stages"]["evaluate_probe"]["packet_bytes"] = json!(packet_bytes(&body));
         let provider = stage_provider(root, "evaluate_probe", providers, cancel).await?;
-        let outcome = support::evaluate(provider.as_ref(), model, request, budget, cancel).await;
+        let outcome = match protocol {
+            SupportProtocol::LegacyV1 => {
+                support::evaluate(provider.as_ref(), model, request, budget, cancel).await
+            }
+            SupportProtocol::GroundedV2 => {
+                support::evaluate_grounded(provider.as_ref(), model, request, budget, cancel).await
+            }
+        };
         write_audit_exports(root, report, "evaluate_probe", &outcome)?;
         let evaluated = outcome
             .result
@@ -1122,6 +1198,43 @@ async fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn grounded_workflow_uses_constrained_wire_and_canonical_recall() {
+        let temporary = temporary();
+        let root = temporary.join("grounded");
+        let factory = providers(false, false);
+        let report = run_case_with_protocol(
+            &root,
+            &trial_case(),
+            "authored-support",
+            &factory,
+            &CancellationToken::new(),
+            SupportProtocol::GroundedV2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report["protocol"], GROUNDED_PROTOCOL);
+        assert_eq!(report["status"], "completed", "{report:#}");
+        assert_eq!(report["stages"]["recall"]["selected_current"], true);
+        assert_eq!(report["probe"]["units"][0]["admitted"], true);
+        assert_eq!(report["probe"]["units"][1]["admitted"], false);
+        for stage in ["generate", "evaluate_generated", "evaluate_probe"] {
+            let request: Value = serde_json::from_slice(
+                &fs::read(root.join(format!("{stage}-request.json"))).unwrap(),
+            )
+            .unwrap();
+            assert!(request["request"]["response_schema"].is_object());
+            assert_eq!(
+                request["wire_body"]["response_format"]["type"],
+                "json_object"
+            );
+            assert_eq!(
+                request["wire_body"]["response_format"]["schema"],
+                request["request"]["response_schema"]
+            );
+        }
+        fs::remove_dir_all(temporary).unwrap();
+    }
     fn temporary() -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("mecha-support-test-{}", uuid::Uuid::new_v4()));
@@ -1273,6 +1386,9 @@ mod tests {
         fn default_model(&self) -> &str {
             "authored-support"
         }
+        fn structured_output(&self) -> bool {
+            true
+        }
         fn local(&self) -> bool {
             true
         }
@@ -1286,6 +1402,11 @@ mod tests {
                     temperature: Some(0.6),
                     seed: Some(70510),
                     max_retries: Some(0),
+                    structured_output: if request.response_schema.is_some() {
+                        crate::config::StructuredOutput::LlamaJson
+                    } else {
+                        crate::config::StructuredOutput::Disabled
+                    },
                     ..Default::default()
                 },
             )
@@ -1310,7 +1431,9 @@ mod tests {
                     .strip_suffix("\n</support-input>")
                     .unwrap(),
             )?;
-            let reply = if self.stage == "generate" {
+            let reply = if request.response_schema.is_some() {
+                authored_grounded_reply(&packet, &self.stage)?
+            } else if self.stage == "generate" {
                 let source = packet["sources"]
                     .as_array()
                     .unwrap()
@@ -1361,6 +1484,39 @@ mod tests {
                 malformed_tool_args: 0,
             })
         }
+    }
+    fn authored_grounded_reply(packet: &Value, stage: &str) -> Result<Value> {
+        let rows = packet["catalog"]["citations"]
+            .as_array()
+            .context("missing catalog")?;
+        let artifact = rows
+            .iter()
+            .find(|r| r["kind"] == "ArtifactObservation")
+            .context("missing artifact citation")?;
+        let evidence = json!([artifact["handle"]]);
+        if stage == "generate" {
+            return Ok(json!({"request_key":packet["request_key"],
+                "units":[{"id":"g1","kind":"RecordedEvent","text":"The observed artifact records page15.","evidence":evidence}],
+                "judgments":[{"bearing":"Bad","because":["g1"]}]}));
+        }
+        let units: Vec<_> = packet["proposal"]["units"].as_array().context("missing units")?.iter().map(|unit| {
+            let id = unit["id"].as_str().unwrap();
+            let (status, premise, questions) = match id {
+                "q2" => ("Contradicted", "Contradicted", vec![]),
+                "q3" => ("Unknown", "Unknown", vec!["Was independent approval recorded?"]),
+                _ => ("Supported", "Supported", vec![]),
+            };
+            json!({"target":format!("unit:{id}"),"evidence":evidence,"reason":"Authored mechanical check, not model quality.",
+                "questions":questions,"factual_premises":premise,"status":status})
+        }).collect();
+        let judgments: Vec<_> = packet["proposal"]["judgments"].as_array().context("missing judgments")?.iter().enumerate().map(|(i, _)| {
+            json!({"target":format!("judgment:{i}"),"evidence":evidence,"reason":"Authored current-criterion check.",
+                "questions":[],"premises_sufficient":true})
+        }).collect();
+        Ok(
+            json!({"request_key":packet["request_key"],"criterion":{"evidence":evidence,"reason":"Observed page15 differs from required page14.",
+            "questions":[],"state":"NotMet"},"units":units,"judgments":judgments}),
+        )
     }
     fn providers(fail_generation: bool, cancel_generation: bool) -> AuthoredProviders {
         AuthoredProviders {
@@ -1488,60 +1644,65 @@ mod tests {
     }
     #[tokio::test]
     async fn source_revocation_withholds_interpretation_and_source_descendants() {
-        let temporary = temporary();
-        let root = temporary.join("revoked");
-        let report = run_case(
-            &root,
-            &trial_case(),
-            "authored-support",
-            &providers(false, false),
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(report["status"], "completed", "{report:#}");
-        let authority_path = root.join("native/authority");
-        let binding_path = fs::read_dir(&authority_path)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .find(|p| p.extension().is_some_and(|e| e == "binding"))
+        for protocol in [SupportProtocol::LegacyV1, SupportProtocol::GroundedV2] {
+            let temporary = temporary();
+            let root = temporary.join("revoked");
+            let report = run_case_with_protocol(
+                &root,
+                &trial_case(),
+                "authored-support",
+                &providers(false, false),
+                &CancellationToken::new(),
+                protocol,
+            )
+            .await
             .unwrap();
-        let binding: crate::memory::host_capture::ExternalBinding =
-            serde_json::from_slice(&fs::read(&binding_path).unwrap()).unwrap();
-        let authority = LocalAuthority::open(&authority_path).unwrap();
-        authority.withdraw(&binding.locator).unwrap();
-        let recall: Value =
-            serde_json::from_slice(&fs::read(root.join("recall.json")).unwrap()).unwrap();
-        let record = recall["memory"]["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|hit| hit["record"]["kind"] == "interpretation")
-            .unwrap();
-        let interpretation: crate::memory::interpretation::Interpretation =
-            serde_json::from_value(record["record"]["data"].clone()).unwrap();
-        let context =
-            InterpretationContext::new(interpretation.criterion, interpretation.host_context_id)
+            assert_eq!(report["status"], "completed", "{report:#}");
+            let authority_path = root.join("native/authority");
+            let binding_path = fs::read_dir(&authority_path)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.extension().is_some_and(|e| e == "binding"))
                 .unwrap();
-        let source = SourceFixture {
-            input: root.join("native/workspace/input.txt"),
-            artifact: root.join("native/workspace/output.json"),
-            transcript: root.join(
-                report["artifacts"]["native_transcript"]["path"]
-                    .as_str()
-                    .unwrap(),
-            ),
-            database: root.join("native/support.memory-prototype.sqlite"),
-            authority,
-            access: Access {
-                domain: DOMAIN.into(),
-                scopes: ["synthetic:support".into()].into(),
-            },
-            confirmation: String::new(),
-        };
-        let revoked = read_memory(&source, &context, true).await.unwrap();
-        assert!(revoked["memory"]["records"].as_array().unwrap().is_empty());
-        fs::remove_dir_all(temporary).unwrap();
+            let binding: crate::memory::host_capture::ExternalBinding =
+                serde_json::from_slice(&fs::read(&binding_path).unwrap()).unwrap();
+            let authority = LocalAuthority::open(&authority_path).unwrap();
+            authority.withdraw(&binding.locator).unwrap();
+            let recall: Value =
+                serde_json::from_slice(&fs::read(root.join("recall.json")).unwrap()).unwrap();
+            let record = recall["memory"]["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|hit| hit["record"]["kind"] == "interpretation")
+                .unwrap();
+            let interpretation: crate::memory::interpretation::Interpretation =
+                serde_json::from_value(record["record"]["data"].clone()).unwrap();
+            let context = InterpretationContext::new(
+                interpretation.criterion,
+                interpretation.host_context_id,
+            )
+            .unwrap();
+            let source = SourceFixture {
+                input: root.join("native/workspace/input.txt"),
+                artifact: root.join("native/workspace/output.json"),
+                transcript: root.join(
+                    report["artifacts"]["native_transcript"]["path"]
+                        .as_str()
+                        .unwrap(),
+                ),
+                database: root.join("native/support.memory-prototype.sqlite"),
+                authority,
+                access: Access {
+                    domain: DOMAIN.into(),
+                    scopes: ["synthetic:support".into()].into(),
+                },
+                confirmation: String::new(),
+            };
+            let revoked = read_memory(&source, &context, true).await.unwrap();
+            assert!(revoked["memory"]["records"].as_array().unwrap().is_empty());
+            fs::remove_dir_all(temporary).unwrap();
+        }
     }
 
     #[tokio::test]

@@ -119,42 +119,62 @@ impl Drop for Temp {
     }
 }
 
+async fn provider_mode(
+    structured: bool,
+    config: LocalTrialConfig,
+    cancel: CancellationToken,
+) -> Result<LocalTrialProvider> {
+    if structured {
+        LocalTrialProvider::new_structured(config, cancel).await
+    } else {
+        LocalTrialProvider::new(config, cancel).await
+    }
+}
+
 #[tokio::test]
 async fn rejects_non_numeric_remote_or_decorated_endpoints_before_holding() {
-    let dir = Temp::new();
-    for endpoint in [
-        "http://localhost:8080",
-        "https://127.0.0.1:8080",
-        "http://192.0.2.1",
-        "http://user@127.0.0.1",
-        "http://127.0.0.1?x=1",
-        "http://127.0.0.1/#x",
-        "http://127.0.0.1/arbitrary",
-    ] {
-        assert!(
-            LocalTrialProvider::new(dir.config(endpoint), CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(!dir.0.exists());
+    for structured in [false, true] {
+        let dir = Temp::new();
+        for endpoint in [
+            "http://localhost:8080",
+            "https://127.0.0.1:8080",
+            "http://192.0.2.1",
+            "http://user@127.0.0.1",
+            "http://127.0.0.1?x=1",
+            "http://127.0.0.1/#x",
+            "http://127.0.0.1/arbitrary",
+        ] {
+            assert!(
+                provider_mode(structured, dir.config(endpoint), CancellationToken::new())
+                    .await
+                    .is_err()
+            );
+            assert!(!dir.0.exists());
+        }
     }
 }
 
 #[tokio::test]
 async fn accepts_resident_and_holds_until_drop() {
-    let server = Server::start(200, "trial-model").await;
-    let dir = Temp::new();
-    let provider = LocalTrialProvider::new(dir.config(&server.endpoint), CancellationToken::new())
+    for structured in [false, true] {
+        let server = Server::start(200, "trial-model").await;
+        let dir = Temp::new();
+        let provider = provider_mode(
+            structured,
+            dir.config(&server.endpoint),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
-    assert_eq!(
-        crate::hold::Holds::new(&dir.0).live(&server.endpoint).len(),
-        1
-    );
-    drop(provider);
-    assert!(crate::hold::Holds::new(&dir.0)
-        .live(&server.endpoint)
-        .is_empty());
+        assert_eq!(
+            crate::hold::Holds::new(&dir.0).live(&server.endpoint).len(),
+            1
+        );
+        drop(provider);
+        assert!(crate::hold::Holds::new(&dir.0)
+            .live(&server.endpoint)
+            .is_empty());
+    }
 }
 
 fn request() -> crate::message::CompletionRequest {
@@ -163,6 +183,60 @@ fn request() -> crate::message::CompletionRequest {
         .ask("synthetic question");
     request.think = Some(false);
     request
+}
+
+#[tokio::test]
+async fn explicit_structured_constructor_sends_exact_llama_schema_and_audited_body() {
+    let server = Server::start(200, "trial-model").await;
+    let dir = Temp::new();
+    let provider =
+        LocalTrialProvider::new_structured(dir.config(&server.endpoint), CancellationToken::new())
+            .await
+            .unwrap();
+    assert!(provider.structured_output());
+    let schema = json!({"type":"object","properties":{"answer":{"type":"string","enum":["done"]}},"required":["answer"],"additionalProperties":false});
+    let mut req = request();
+    req.response_schema = Some(schema.clone());
+    let audit = provider.wire_body(&req, false).unwrap();
+    let response = provider.complete(&req, None).await.unwrap();
+    assert_eq!(response.model, "trial-model");
+    let records = server.seen.lock().unwrap();
+    let (path, sent) = records
+        .iter()
+        .find(|(p, _)| p.starts_with("/v1/chat/completions"))
+        .unwrap();
+    assert_eq!(path, "/v1/chat/completions?autoload=false");
+    assert_eq!(sent, &audit);
+    assert_eq!(
+        sent["response_format"],
+        json!({"type":"json_object","schema":schema})
+    );
+    assert_eq!(sent["seed"], 42);
+    assert_eq!(sent["temperature"], 0.6);
+    assert_eq!(sent["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(
+        crate::hold::Holds::new(&dir.0).live(&server.endpoint).len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn legacy_constructor_refuses_schema_without_inference() {
+    let server = Server::start(200, "trial-model").await;
+    let dir = Temp::new();
+    let provider = LocalTrialProvider::new(dir.config(&server.endpoint), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!provider.structured_output());
+    let mut req = request();
+    req.response_schema = Some(json!({"type":"object"}));
+    assert!(provider
+        .complete(&req, None)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("structured output"));
+    assert_eq!(server.inference_count(), 0);
 }
 
 #[tokio::test]
@@ -194,104 +268,127 @@ async fn sends_audited_seed_temperature_and_fast_settings_without_mutation() {
 
 #[tokio::test]
 async fn resident_change_refuses_before_inference_and_request_cannot_switch_model() {
-    let server = Server::start(200, "trial-model").await;
-    let dir = Temp::new();
-    let provider = LocalTrialProvider::new(dir.config(&server.endpoint), CancellationToken::new())
+    for structured in [false, true] {
+        let server = Server::start(200, "trial-model").await;
+        let dir = Temp::new();
+        let provider = provider_mode(
+            structured,
+            dir.config(&server.endpoint),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
-    let mut changed = request();
-    changed.model = "other".into();
-    assert!(provider.complete(&changed, None).await.is_err());
-    *server.resident.lock().unwrap() = "other".into();
-    assert!(provider.complete(&request(), None).await.is_err());
-    assert_eq!(server.inference_count(), 0);
+        let mut changed = request();
+        changed.model = "other".into();
+        assert!(provider.complete(&changed, None).await.is_err());
+        *server.resident.lock().unwrap() = "other".into();
+        assert!(provider.complete(&request(), None).await.is_err());
+        assert_eq!(server.inference_count(), 0);
+    }
 }
 
 #[tokio::test]
 async fn returned_model_must_match_and_transport_never_retries_or_redirects() {
-    for (status, model) in [(200, "other"), (503, "trial-model"), (307, "trial-model")] {
-        let server = Server::start(status, model).await;
-        let dir = Temp::new();
-        let provider =
-            LocalTrialProvider::new(dir.config(&server.endpoint), CancellationToken::new())
-                .await
-                .unwrap();
-        assert!(provider.complete(&request(), None).await.is_err());
-        assert_eq!(server.inference_count(), 1);
-        assert!(!server
-            .seen
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(p, _)| p == "/redirected"));
+    for structured in [false, true] {
+        for (status, model) in [(200, "other"), (503, "trial-model"), (307, "trial-model")] {
+            let server = Server::start(status, model).await;
+            let dir = Temp::new();
+            let provider = provider_mode(
+                structured,
+                dir.config(&server.endpoint),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert!(provider.complete(&request(), None).await.is_err());
+            assert_eq!(server.inference_count(), 1);
+            assert!(!server
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(p, _)| p == "/redirected"));
+        }
     }
 }
 
 #[tokio::test]
 async fn cancellation_stops_inflight_request_and_prevents_later_calls() {
-    let server = Server::start(999, "trial-model").await;
-    let dir = Temp::new();
-    let cancel = CancellationToken::new();
-    let provider = LocalTrialProvider::new(dir.config(&server.endpoint), cancel.clone())
+    for structured in [false, true] {
+        let server = Server::start(999, "trial-model").await;
+        let dir = Temp::new();
+        let cancel = CancellationToken::new();
+        let provider = provider_mode(structured, dir.config(&server.endpoint), cancel.clone())
+            .await
+            .unwrap();
+        let request = request();
+        let completion = provider.complete(&request, None);
+        let canceller = async {
+            while server.inference_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(completion, canceller)
+        })
         .await
         .unwrap();
-    let request = request();
-    let completion = provider.complete(&request, None);
-    let canceller = async {
-        while server.inference_count() == 0 {
-            tokio::task::yield_now().await;
-        }
-        cancel.cancel();
-    };
-    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        tokio::join!(completion, canceller)
-    })
-    .await
-    .unwrap();
-    assert!(result.unwrap_err().to_string().contains("cancel"));
-    assert!(provider.complete(&request, None).await.is_err());
-    assert_eq!(server.inference_count(), 1);
+        assert!(result.unwrap_err().to_string().contains("cancel"));
+        assert!(provider.complete(&request, None).await.is_err());
+        assert_eq!(server.inference_count(), 1);
+    }
 }
 
 #[tokio::test]
 async fn startup_mismatch_releases_hold_and_cancellation_never_waits_for_switch() {
-    let server = Server::start(200, "trial-model").await;
-    let dir = Temp::new();
-    *server.resident.lock().unwrap() = "other".into();
-    assert!(
-        LocalTrialProvider::new(dir.config(&server.endpoint), CancellationToken::new())
-            .await
-            .is_err()
-    );
-    assert!(crate::hold::Holds::new(&dir.0)
-        .live(&server.endpoint)
-        .is_empty());
-    assert_eq!(server.inference_count(), 0);
-    let switch = crate::hold::Holds::new(&dir.0)
-        .begin_switch(&server.endpoint, Some("other"), "trial-model")
-        .unwrap();
-    let cancel = CancellationToken::new();
-    cancel.cancel();
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        LocalTrialProvider::new(dir.config(&server.endpoint), cancel)
-    )
-    .await
-    .unwrap()
-    .is_err());
-    drop(switch);
+    for structured in [false, true] {
+        let server = Server::start(200, "trial-model").await;
+        let dir = Temp::new();
+        *server.resident.lock().unwrap() = "other".into();
+        assert!(provider_mode(
+            structured,
+            dir.config(&server.endpoint),
+            CancellationToken::new()
+        )
+        .await
+        .is_err());
+        assert!(crate::hold::Holds::new(&dir.0)
+            .live(&server.endpoint)
+            .is_empty());
+        assert_eq!(server.inference_count(), 0);
+        let switch = crate::hold::Holds::new(&dir.0)
+            .begin_switch(&server.endpoint, Some("other"), "trial-model")
+            .unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            provider_mode(structured, dir.config(&server.endpoint), cancel)
+        )
+        .await
+        .unwrap()
+        .is_err());
+        drop(switch);
+    }
 }
 
 #[tokio::test]
 async fn mismatched_response_is_retained_for_host_audit() {
-    let server = Server::start(200, "unrequested-model").await;
-    let dir = Temp::new();
-    let provider = LocalTrialProvider::new(dir.config(&server.endpoint), CancellationToken::new())
+    for structured in [false, true] {
+        let server = Server::start(200, "unrequested-model").await;
+        let dir = Temp::new();
+        let provider = provider_mode(
+            structured,
+            dir.config(&server.endpoint),
+            CancellationToken::new(),
+        )
         .await
         .unwrap();
-    let error = provider.complete(&request(), None).await.unwrap_err();
-    let rejected = error.downcast_ref::<ReturnedModelMismatch>().unwrap();
-    assert_eq!(rejected.response.model, "unrequested-model");
-    assert_eq!(rejected.response.message.text(), "done");
-    assert_eq!(rejected.response.usage.output_tokens, 2);
+        let error = provider.complete(&request(), None).await.unwrap_err();
+        let rejected = error.downcast_ref::<ReturnedModelMismatch>().unwrap();
+        assert_eq!(rejected.response.model, "unrequested-model");
+        assert_eq!(rejected.response.message.text(), "done");
+        assert_eq!(rejected.response.usage.output_tokens, 2);
+    }
 }

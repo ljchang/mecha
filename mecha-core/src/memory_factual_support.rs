@@ -92,6 +92,53 @@ pub fn evaluation_request(
         budget,
     )
 }
+fn make_grounded_request(
+    input: &str,
+    frame: &str,
+    schema: serde_json::Value,
+    packet_limit: usize,
+    model: &str,
+    budget: GenerationBudget,
+) -> Result<CompletionRequest> {
+    let mut request = make_request(input, frame, packet_limit, model, budget)?;
+    ensure!(
+        frame.len() + request.messages[0].text().len() + serde_json::to_vec(&schema)?.len()
+            <= packet_limit,
+        "oversized complete support packet including response schema"
+    );
+    request.response_schema = Some(schema);
+    Ok(request)
+}
+pub fn grounded_generation_request(
+    prepared: &PreparedInterpretation,
+    model: &str,
+    budget: GenerationBudget,
+) -> Result<CompletionRequest> {
+    let (input, schema) = crate::memory_support_wire::generation_input(prepared)?;
+    make_grounded_request(
+        &input,
+        crate::memory_support_wire::FRAME,
+        schema,
+        32 * 1024,
+        model,
+        budget,
+    )
+}
+pub fn grounded_evaluation_request(
+    request: &SupportRequest,
+    model: &str,
+    budget: GenerationBudget,
+) -> Result<CompletionRequest> {
+    let (input, schema) = crate::memory_support_reasoning::evaluation_input(request)?;
+    make_grounded_request(
+        &input,
+        crate::memory_support_reasoning::FRAME,
+        schema,
+        48 * 1024,
+        model,
+        budget,
+    )
+}
 async fn pass<T>(
     provider: &dyn Provider,
     model: &str,
@@ -125,6 +172,12 @@ async fn pass<T>(
             return out;
         }
     };
+    if request.response_schema.is_some() && !provider.structured_output() {
+        out.result = Err(SupportFailure::InvalidRequest(
+            "support wire requires a provider with constrained output".into(),
+        ));
+        return out;
+    }
     let response = tokio::select! {biased;
         _=cancel.cancelled()=>Err(SupportFailure::Cancelled),
         reply=tokio::time::timeout(budget.deadline(),provider.complete(&request,None))=>match reply {
@@ -195,6 +248,37 @@ pub async fn evaluate(
     })
     .await
 }
+pub async fn generate_grounded(
+    provider: &dyn Provider,
+    model: &str,
+    prepared: &PreparedInterpretation,
+    budget: GenerationBudget,
+    cancel: &CancellationToken,
+) -> PassOutcome<SupportProposal> {
+    pass(
+        provider,
+        model,
+        grounded_generation_request(prepared, model, budget),
+        budget,
+        cancel,
+        |text, _| crate::memory_support_wire::parse_generation(prepared, text),
+    )
+    .await
+}
+pub async fn evaluate_grounded(
+    provider: &dyn Provider,
+    model: &str,
+    request: SupportRequest,
+    budget: GenerationBudget,
+    cancel: &CancellationToken,
+) -> PassOutcome<EvaluatedInterpretation> {
+    let body = grounded_evaluation_request(&request, model, budget);
+    pass(provider, model, body, budget, cancel, |text, served| {
+        let reply = crate::memory_support_reasoning::parse_evaluation(&request, text)?;
+        finish_support(request, reply, served)
+    })
+    .await
+}
 
 #[cfg(test)]
 mod tests {
@@ -210,6 +294,7 @@ mod tests {
         cancel: Option<CancellationToken>,
         calls: AtomicUsize,
         local: bool,
+        structured: bool,
     }
     #[async_trait::async_trait]
     impl Provider for Fixture {
@@ -221,6 +306,9 @@ mod tests {
         }
         fn local(&self) -> bool {
             self.local
+        }
+        fn structured_output(&self) -> bool {
+            self.structured
         }
         async fn complete(
             &self,
@@ -264,6 +352,7 @@ mod tests {
             cancel: None,
             calls: AtomicUsize::new(0),
             local: true,
+            structured: true,
         }
     }
     async fn run(p: &Fixture, cancel: &CancellationToken) -> PassOutcome<SupportProposal> {
@@ -410,5 +499,267 @@ mod tests {
             GenerationBudget::new(4096, Duration::from_secs(181)).unwrap()
         )
         .is_err());
+    }
+
+    #[test]
+    fn grounded_packet_counts_serialized_schema_frame_and_input_at_exact_boundary() {
+        let schema = serde_json::json!({"type":"object","description":"schema contributes to request budget"});
+        let budget = GenerationBudget::new(4096, Duration::from_secs(180)).unwrap();
+        let wrapped = "<support-input>\n{}\n</support-input>";
+        let limit = "frame".len() + wrapped.len() + serde_json::to_vec(&schema).unwrap().len();
+        let request =
+            make_grounded_request("{}", "frame", schema.clone(), limit, "model", budget).unwrap();
+        assert_eq!(request.response_schema, Some(schema.clone()));
+        assert_eq!(request.system.as_deref(), Some("frame"));
+        assert_eq!(request.messages[0].text(), wrapped);
+        assert!(request.local_only && request.tools.is_empty());
+        assert!(
+            make_grounded_request("{}", "frame", schema.clone(), limit - 1, "model", budget)
+                .is_err()
+        );
+        assert!(make_grounded_request(
+            "{}",
+            "frame",
+            serde_json::json!({"description":"x".repeat(32768)}),
+            32768,
+            "model",
+            budget
+        )
+        .is_err());
+    }
+
+    fn grounded_fixture(
+        text: &str,
+    ) -> (
+        crate::memory::Memory,
+        std::path::PathBuf,
+        PreparedInterpretation,
+    ) {
+        use crate::memory::{host_capture::*, interpretation::*, Access, Memory, SourceKey};
+        use std::{collections::BTreeSet, sync::Arc};
+        struct Guard;
+        impl ExternalSourceGuard for Guard {
+            fn check(&self, _: &ExternalBinding) -> SourceStatus {
+                SourceStatus::Checked
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("support-pass-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut db =
+            Memory::create_supported_situated(&dir.join("pass.memory-prototype.sqlite"), "test")
+                .unwrap()
+                .with_source_guard(Arc::new(Guard));
+        let criterion = ConfirmedCriterion {
+            goal: "charter:pass-test".into(),
+            goal_text: "Inspect the observation".into(),
+            criterion_text: "Observed value satisfies the requirement".into(),
+            criterion_revision: "e".repeat(64),
+            confirmation_digest: "f".repeat(64),
+        };
+        let access = Access {
+            domain: "test".into(),
+            scopes: BTreeSet::new(),
+        };
+        let receipt = db
+            .admit_host_capture_with_evidence(
+                HostCapture {
+                    identity: CaptureIdentity {
+                        domain: "test".into(),
+                        account: "test".into(),
+                        session_id: "pass-fixture".into(),
+                        prefix_digest: "a".repeat(64),
+                        check_id: "b".repeat(64),
+                        check_version: EVIDENCE_CHECK_VERSION.into(),
+                        evaluator_version: "v1".into(),
+                    },
+                    binding: ExternalBinding {
+                        authority: "host-v1".into(),
+                        locator: "c".repeat(64),
+                        revision: "d".repeat(64),
+                    },
+                    criterion: criterion.clone(),
+                    originals: vec![
+                        OriginalPassage {
+                            source: SourceKey {
+                                connector: "bridge".into(),
+                                account: "test".into(),
+                                id: "pass-source".into(),
+                            },
+                            kind: PassageKind::ToolResult,
+                            line: 1,
+                            pointer: "/observation".into(),
+                            text: text.into(),
+                            occurred_at: None,
+                        },
+                        OriginalPassage {
+                            source: SourceKey {
+                                connector: "host-action-invocation-v1".into(),
+                                account: "test".into(),
+                                id: "pass-action".into(),
+                            },
+                            kind: PassageKind::ActionInvocation,
+                            line: 1,
+                            pointer: "/call/input".into(),
+                            text: serde_json::to_string(&ActionInvocation {
+                                call_id: "read-call".into(),
+                                tool_name: "read_observation".into(),
+                                input_status: InputStatus::Oversized,
+                                input: serde_json::Value::Null,
+                                input_digest: "a".repeat(64),
+                            })
+                            .unwrap(),
+                            occurred_at: None,
+                        },
+                        OriginalPassage {
+                            source: SourceKey {
+                                connector: "host-artifact-observation-v1".into(),
+                                account: "test".into(),
+                                id: "pass-artifact".into(),
+                            },
+                            kind: PassageKind::ArtifactObservation,
+                            line: 1,
+                            pointer: "/artifact_observation".into(),
+                            text: serde_json::to_string(&ArtifactObservation {
+                                content_status: ContentStatus::Missing,
+                                artifact_text: None,
+                                artifact_digest: None,
+                                verdict: CheckVerdict::Unavailable,
+                            })
+                            .unwrap(),
+                            occurred_at: None,
+                        },
+                    ],
+                    receipts: vec![ToolReceipt {
+                        call_id: "read-call".into(),
+                        tool_name: "read_observation".into(),
+                        status: ReceiptStatus::Succeeded,
+                    }],
+                    artifact: ArtifactCheck {
+                        artifact_digest: None,
+                        verdict: CheckVerdict::Unavailable,
+                    },
+                    consulted: vec![],
+                    scopes: BTreeSet::new(),
+                    occurred_at: None,
+                },
+                &access,
+            )
+            .unwrap();
+        let context = InterpretationContext::new(criterion, "opaque-pass-context".into()).unwrap();
+        let prepared = db
+            .prepare_interpretation(&receipt, &[], &context, &db.snapshot().unwrap(), &access)
+            .unwrap();
+        (db, dir, prepared)
+    }
+
+    #[tokio::test]
+    async fn grounded_pass_expands_authored_handles_and_finishes_canonical_evaluation() {
+        use crate::{
+            memory::{interpretation::SupportStatus, Access},
+            memory_support_wire::CitationCatalog,
+        };
+        use serde_json::json;
+        let observed = "The observed reading is forty two.";
+        let (db, dir, prepared) = grounded_fixture(observed);
+        let catalog =
+            CitationCatalog::new(&prepared, "generation", prepared.generation_input()).unwrap();
+        let rows = catalog.input();
+        let citation = rows["citations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["quote"] == observed)
+            .unwrap();
+        let mut provider = fixture();
+        provider.text = json!({"request_key":catalog.request_key(),"units":[{"id":"u1","kind":"RecordedEvent","text":"The source reports a reading.","evidence":[citation["handle"]]}],"judgments":[{"bearing":"Good","because":["u1"]}]}).to_string();
+        let budget = GenerationBudget::new(4096, Duration::from_secs(180)).unwrap();
+        let body = grounded_generation_request(&prepared, "model", budget).unwrap();
+        assert!(body.response_schema.is_some());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &body.messages[0]
+                    .text()
+                    .replace("<support-input>\n", "")
+                    .replace("\n</support-input>", "")
+            )
+            .unwrap()["protocol"],
+            "situated-support-wire-v2"
+        );
+        let generated = generate_grounded(
+            &provider,
+            "model",
+            &prepared,
+            budget,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(generated.raw_reply.as_deref(), Some(provider.text.as_str()));
+        let proposal = generated.result.unwrap();
+        assert_eq!(proposal.units[0].citations[0].quote, observed);
+        assert_eq!(
+            proposal.units[0].citations[0].source_id,
+            citation["source_id"]
+        );
+        assert_eq!(proposal.judgments[0].goal, "charter:pass-test");
+        let access = Access {
+            domain: "test".into(),
+            scopes: Default::default(),
+        };
+        let request = db.prepare_support(&prepared, proposal, &access).unwrap();
+        let catalog =
+            CitationCatalog::new(&prepared, "evaluation", request.generation_input()).unwrap();
+        let rows = catalog.input();
+        let handle = rows["citations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["quote"] == observed)
+            .unwrap()["handle"]
+            .clone();
+        provider.text = json!({"request_key":catalog.request_key(),"criterion":{"state":"Met","evidence":[handle],"reason":"The requirement is met.","questions":[]},"units":[{"target":"unit:u1","status":"Supported","factual_premises":"Supported","evidence":[handle],"reason":"The reading is reported.","questions":[]}],"judgments":[{"target":"judgment:0","premises_sufficient":true,"evidence":[handle],"reason":"This matches the current requirement.","questions":[]}]}).to_string();
+        let body = grounded_evaluation_request(&request, "model", budget).unwrap();
+        assert!(body.response_schema.is_some());
+        let evaluated = evaluate_grounded(
+            &provider,
+            "model",
+            request,
+            budget,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(evaluated.raw_reply.as_deref(), Some(provider.text.as_str()));
+        let evaluated = evaluated.result.unwrap();
+        assert_eq!(evaluated.reply().checks.len(), 2);
+        assert!(evaluated
+            .reply()
+            .checks
+            .iter()
+            .all(|c| c.status == SupportStatus::Supported));
+        assert_eq!(evaluated.reply().checks[0].citations[0].quote, observed);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        drop(db);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn grounded_pass_refuses_provider_without_constraints_before_calling() {
+        let (db, dir, prepared) = grounded_fixture("A complete synthetic observation.");
+        let mut provider = fixture();
+        provider.structured = false;
+        let outcome = generate_grounded(
+            &provider,
+            "model",
+            &prepared,
+            GenerationBudget::new(512, Duration::from_secs(1)).unwrap(),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            outcome.result,
+            Err(SupportFailure::InvalidRequest(_))
+        ));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        drop(db);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

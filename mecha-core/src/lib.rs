@@ -148,6 +148,10 @@ pub mod memory_situated_needs;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_situated_workflow;
 #[cfg(feature = "memory-prototype")]
+mod memory_support_reasoning;
+#[cfg(feature = "memory-prototype")]
+mod memory_support_wire;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_support_workflow;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_trial_provider;

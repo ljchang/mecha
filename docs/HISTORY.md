@@ -14,6 +14,50 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Citation/schema and evaluator repair (2026-11-08, prototype branch)
+
+The explicit support wire-v2 reuses v8 canonical storage and admission. A
+request-bound catalog resolves source choices into exact citations and supplies
+the confirmed goal. Source roles appear in handles. A separate criterion state
+and per-judgment premise-sufficiency assessment produce coherent offered-bearing
+checks while preserving the canonical all-premise gate. The existing resident
+provider now has an explicit structured-output constructor; the old constructor
+and legacy workflow remain unchanged. Core implementations are
+`memory_support_wire`, `memory_support_reasoning`,
+`memory_factual_support::{generate_grounded,evaluate_grounded}` and
+`memory_support_workflow::run_case_with_protocol`.
+
+The first reused-case development round retained all 24 calls and completed five
+native workflows out of eight. It observed 158,222 input and 32,460 output tokens.
+Two failures omitted required criterion questions; one exceeded a UTF-8 byte cap
+although the character-limited schema was satisfied. Its original auditor also
+incorrectly expected no-autoload in the JSON body; the actual provider sends the
+URL query, verified by HTTP tests. Preserve the original failed ledger and score.
+A separate corrected diagnostic audit observed six valid probes: six supported
+true statements, six appropriate uncertain responses, five correct supported
+bearings and one false statement Supported/admitted, all against eight planned
+cases. Unobserved outcomes remain unknown, not successes.
+
+Independent Codex review examined all 37 generated admissions across eight cases.
+It found five clear unsupported current claims, two additional disputed causal
+hypotheses, and one incorrect generated Good bearing retained. Generated criterion
+states were correct in three of eight cases. Probe correctness cannot stand in
+for generated interpretation quality. Accordingly the v2 scorer now counts wrong
+generated Supported/retained bearings separately, including dropped duplicates,
+and retains partial generated outcomes even when another stage fails. This is a
+small reused-case diagnostic, not fresh qualification or production readiness.
+
+The bounded second refinement adds role-prefixed handles, conservative producer
+character caps, conditional criterion diagnostics and generic current-criterion
+and factual-antecedent clarification. Canonical byte limits and strict parsing
+are not weakened. The first repair snapshot passed workspace/all-target build,
+formatting, strict Clippy, 6,351 default and 6,816 memory-enabled tests with zero
+failures (25/29 ignored). Four further regressions failed before that refinement
+and the 29-test adapter/workflow suite then passed; the nested Python directory
+passed 75 tests. Later model/CI results remain in HANDOFF and PR #846 until
+qualified. Raw evidence stays local in `results/memory-support-repair-20261107/`.
+
+
 ### Action/outcome evidence and factual support (2026-11-07, prototype branch)
 
 Explicit new-file v8 capture separates native action arguments, call receipts and

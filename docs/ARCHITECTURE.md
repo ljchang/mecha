@@ -12950,6 +12950,16 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   dropping a premise must never silently weaken the claim being evaluated.
   Canonical reader checks and final source authorization remain mandatory. Old
   v7 drafts cannot acquire evaluated status through migration or metadata edits.
+- **Wire convenience must not become evidence authority.** The explicit support
+  wire-v2 catalogs all eligible exact source chunks and binds handles to the
+  opaque prepared context, phase and complete input. The host resolves those
+  handles into unchanged canonical v8 citations; a valid handle only proves
+  quotation membership. Structured output, strict decoding, expanded byte limits
+  and final source checks all remain necessary. One current-criterion assessment
+  gives consistent bearing checks, but each judgment also needs sufficient
+  original premises and the canonical all-premise admission gate. Record the
+  model's separate criterion diagnostic in the host audit, not reader memory.
+  A false Supported check is an evaluator error even when admission blocks it.
 - **Default readers must also withhold interpreted descendants.** Merely omitting
   Interpretation from initial search still leaks it through a recaptured episode's
   dependency closure. The explicit contextual reader assigns every returned
@@ -12970,7 +12980,9 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   retain missing/stale and Unread/Deferred/Nothing/Sparse/Observed distinctions,
   including withdrawal and observed zero. An opaque random context identity binds
   the host context; never hash low-entropy sensor values into a reader-visible key.
-  Needs-only changes leave the generation request identical. Current public goals
+  Needs-only changes leave the semantic source/criterion input identical. Wire-v2
+  request-binding keys differ when the opaque host context changes; this does not
+  expose sensor values. Current public goals
   and evidence may change an interpretation; host needs assessment remains separate
   from semantic support and action permission.
 - **Legacy and v2 share interpretation machinery, not historical identity.**

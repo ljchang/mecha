@@ -3034,3 +3034,71 @@ concept learner. Reuse their orchestration and held-out comparison patterns
 without granting conceptual hypotheses Clean/instructional authority. Scheduling,
 automatic candidate discovery and broad policy promotion follow only after this
 small learning loop demonstrates useful transfer.
+
+
+### 31.10 Citation and evaluator repair: explicit wire v2
+
+The v8 factual-support trial established mechanical containment but failed all
+8 complete attempts. Repair the producer wire without rewriting those artifacts,
+relaxing citation validation, or changing the canonical v8 storage contract.
+
+Use existing provider-neutral response schemas through an explicit resident-only
+structured trial provider. A deterministic catalog covers every eligible source
+with request-local citation handles for exact contiguous chunks. The host expands selections
+into the original revision/field ID and exact quote, then runs existing validation.
+Partition each source of at least 12 Unicode scalars into balanced contiguous
+chunks of at most 300; preserve distinct source identities, including identical
+text. Short sources remain visible but uncitable. Complete source text, source
+roles, current criterion, catalog and schema count against the existing request
+budget; overflow refuses rather than clips. Bind each reply to its exact request.
+Handles include the source role before the request key, so constrained selection
+visibly distinguishes ActionInvocation from ArtifactObservation. The generator
+selects handles and unit IDs; the host supplies the exact goal. Producer schemas
+limit text/reasons to 128 Unicode characters and questions to 64, conservatively
+fitting the unchanged canonical 512/256 UTF-8 byte limits. Host parsing preserves
+those canonical bounds; submitted producer constraints are not a new storage
+format or a replacement for byte validation.
+
+The evaluator separately assesses each unit's entire factual content, including
+past/present premises embedded in speculation. A closed premise state (None,
+Supported, Contradicted, Unknown) replaces the easy-to-default boolean on the
+model wire; the host derives the canonical unsupported-premise flag. Factual
+units cannot claim no factual premises. Bounded evidence/comparison/missing-data
+fields precede conclusions. Assess one current criterion state (Met, NotMet,
+Unknown) and each offered judgment's premise sufficiency. Derive consistent
+canonical offered-bearing checks: known matching bearing can be Supported only
+with sufficient premises; its opposite is Contradicted; unknown criterion makes
+known bearings Unknown. Offered Unknown is Supported only for unknown criterion.
+Known/unknown criterion schema alternatives require known-state evidence with
+no questions, or Unknown with at least one missing-information question. Empty
+target lists use explicit empty-array schemas, avoiding empty enums in the model
+server converter. Existing admission still independently requires every original
+support unit to be factual, Supported and retained. No model confidence grants
+authority.
+
+Prompts and source roles distinguish requested input, observed artifact,
+historical criterion/check, attributed statements and prior interpretation.
+An empty exact set is not a successful nonempty requirement; historical Passed
+is not current success; a flag or instruction is not an independent approval
+record. Missing/omitted evidence remains unknown. These semantic judgments remain
+fallible and require independent fresh-case qualification.
+
+Keep legacy wire-v1 entrypoints and trial behavior available. New explicit wire-v2
+entrypoints share the provider envelope, native workflow, persistence and scorer;
+record the selected protocol and actual constrained wire in audit artifacts.
+Do not add another model transport, store, nightly process or concept learner.
+
+Qualification first uses the old eight cases only as development diagnostics,
+with every new attempt separately identified; the original run remains frozen.
+Permit at most two recorded development rounds before a separately frozen set of
+eight independently authored cases. No retries within an attempt. Preserve the
+4096-token/180-second call, 600-second case and at most three-call case bounds.
+The fresh gate requires 8/8 structurally complete attempts, zero false factual
+or wrong-bearing Supported probe checks, at least 6/8 true and correct-bearing
+Supported checks, appropriate uncertainty and no independently audited unsupported
+factual premises in actual generated admissions. Also require zero wrong generated
+Supported or retained bearings, with all eight generated outcomes observed; probe
+success cannot substitute for generated-output quality. Preserve independently
+available generated/probe outcomes when another stage fails. Report completion,
+semantic coverage, uncertainty, admission and observed cost separately. A failed gate
+leaves concepts/rumination deferred; it does not justify relaxing admission.
