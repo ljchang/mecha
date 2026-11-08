@@ -192,19 +192,55 @@ See HISTORY and `results/memory-support-repair-20261107/`; none of these is fres
 qualification. The v2 scorecard now audits generated bearings separately and
 preserves independently available partial outcomes.
 
-**Next:** complete the second bounded development round and then freeze the
-independently authored replacement holdout with exact source/binary/helper hashes.
-Do not tune on that holdout or erase earlier failures. Fresh qualification requires
-all eight workflows, supported true/appropriate uncertain probes, no wrong factual
-or bearing support, and independent inspection of every generated admission.
-Concepts and rumination remain deferred if this gate fails.
+The second and final reused-case development round also completed 5/8 workflows.
+It observed seven generated outcomes and six probe outcomes: 6/8 true support,
+4/8 appropriate uncertainty, 4/8 correct supported bearings and 4/8 correct
+criterion assessments. Among observed checks there were no false factual probe
+admissions, but one wrong probe bearing was Supported and one wrong generated
+bearing was retained. Missing outcomes remain unknown. Usage was 156,064 input /
+20,271 output tokens. Two failures allowed None for factual premises; one allowed
+Unknown without questions. A final schema correction expresses these existing
+host restrictions before a fresh trial; it adds no semantic prompt tuning.
 
-Mechanical checks: the first repair snapshot passed 6,351 default and 6,816
-memory-enabled tests (0 failures; 25/29 ignored), workspace/all-target build,
-formatting and strict all-feature Clippy. The second refinement's four regressions
-failed before the fix, then the 29-test adapter/workflow suite passed. The nested
-Python suite passes 75 tests. Final code, model and CI evidence will be recorded
-on draft PR #846; no production cutover is implied.
+**Next: evaluator reliability remains the blocker, not concept implementation.**
+The independently authored fresh cohort uses committed source `05f47d317`, with
+verified source/helper/fixture hashes matching the measured binary. The original
+attempt refused all eight cases before inference when the resident model changed;
+it remains preserved. The separate qwen3.8-27b cohort has already failed the gate:
+a probe endorsed prior write success despite a later Missing artifact, and one
+generated judgment omitted required evidence. No model was loaded or swapped;
+there were no retries or prompt changes. The cohort completed 6/8 workflows with
+all eight probe outcomes: 8/8 true support,
+8/8 appropriate uncertainty, 6/8 correct-bearing support and criterion accuracy,
+zero false factual probe support/admission, but one wrong probe bearing Supported
+and retained. Six generated outcomes were observed; two remain unknown. Observed
+usage was 152,341 input / 19,797 output tokens, incomplete because one evaluation
+timed out. Independent inspection covered all eight exports: 23 retained units,
+no unsupported factual premises found, and one mismatched citation. The formal
+scorer still has only six qualified manual audits. Full audits and costs are in
+PR #846, the living Site and
+`results/memory-support-repair-20261107/fresh-resident-qwen38/`.
+
+The post-qualification producer correction requires a citation for every goal
+judgment, while canonical citation-free Unknown/Contradicted diagnostics remain
+valid. Its fresh-model benefit is unmeasured; the failed cohort is not replayed.
+Qualify current-observation/criterion reasoning before allowing learning.
+Cross-field question/status consistency remains host-checked. Keep the known
+first-per-goal retention behavior explicit: an earlier
+Unknown can displace a later supported judgment (`DuplicateGoal`). Do not tune on
+this holdout or erase failed attempts. Fresh qualification requires all eight
+workflows, supported true/appropriate uncertain probes, no wrong factual or
+bearing support, and independent inspection of every generated admission.
+Concepts and rumination remain deferred. PR-control fixes are tested separately
+from the immutable measured source.
+
+Mechanical checks: workspace/all-target build, formatting, strict all-feature
+Clippy and 6,352 default tests passed (25 ignored). The final producer-only
+citation correction passed 6,824 memory-enabled tests (29 ignored), including
+its regression and canonical compatibility checks. The nested Python suite passed
+80 tests after auditor alignment. Required Spark privacy checks and independent
+reviews passed; latest-head CI is recorded in draft PR #846. No production cutover
+is implied.
 
 After that gate works, the next requested phase is concept learning and one
 bounded rumination cycle (`MECHA-MEMORY-DESIGN.md` §31.9). Reuse the existing provisional concept/revision store,
@@ -245,13 +281,10 @@ provenance gap corrected by admission and historical-binding refusal in
 
 Living Site remains owner-private:
 https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#action-outcome-evidence-and-factual-support
-Research v0.36 published 2026-11-08, source
-`cbfd0d43284e15f04701a2479eb6f586c90696e6`, deployment
-`appgdep_6af0033fcb488191ad8dd2cae5c533b5` succeeded. Existing IDs, scripts/SVG,
-internal links and dist mirrors are preserved. Browser checks verified current
-content, 40 rendered math containers and no desktop overflow. The Site separates
-the original failed trial from the reused-case development result; fresh
-qualification and concept learning remain pending.
+Publication snapshots and the current scorecard are recorded in the Site's
+revision ledger and PR #846. Existing IDs, scripts/SVG, internal links and dist
+mirrors are preserved; browser checks verify rendered math and layout. The Site
+separates infrastructure failure, reused-case development and fresh qualification.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

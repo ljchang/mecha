@@ -533,6 +533,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Disabled step checks stay silent.** Deliberately disabling the check lever no
+  longer adds a missing-check notice to the model context. Enabled checks without
+  a registered shell still report that verification was unavailable; both remain
+  unverified and existing frozen-check protections are unchanged.
+
 - Experimental memory CLI inference now refuses router autoload on each request,
   preserving its no-load/no-switch promise if a model disappears after the
   residency check. Normal provider behavior is unchanged.

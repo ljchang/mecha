@@ -3070,9 +3070,19 @@ canonical offered-bearing checks: known matching bearing can be Supported only
 with sufficient premises; its opposite is Contradicted; unknown criterion makes
 known bearings Unknown. Offered Unknown is Supported only for unknown criterion.
 Known/unknown criterion schema alternatives require known-state evidence with
-no questions, or Unknown with at least one missing-information question. Empty
-target lists use explicit empty-array schemas, avoiding empty enums in the model
-server converter. Existing admission still independently requires every original
+no questions, or Unknown with at least one missing-information question. Unit
+schema alternatives partition factual versus speculative targets and status:
+Supported requires evidence, no questions and supported factual premises (None
+is permitted only for speculative targets); Unknown requires missing-data
+questions; factual targets never permit None. Judgment producer schemas also require
+one or two citations for every verdict, including examined context for uncertainty;
+this does not turn an Unknown verdict into factual support. Canonical parsing still
+permits citation-free Unknown/Contradicted diagnostics. Question/status consistency
+continues to be checked after the host derives the judgment status. Contradicted retains the existing
+optional-evidence/questions diagnostic. Empty target lists use explicit empty-array
+schemas, avoiding empty enums in the model server converter. The complete
+48-KiB request cap includes every repeated schema branch; larger requests may
+therefore refuse earlier rather than omit evidence or silently raise the budget. Existing admission still independently requires every original
 support unit to be factual, Supported and retained. No model confidence grants
 authority.
 

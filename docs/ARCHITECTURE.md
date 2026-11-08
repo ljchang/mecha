@@ -10611,9 +10611,12 @@ batch, through ordinary shell dispatch: approver, sandbox, interlock and hooks.
 is enabled and `shell` is registered. This is a registration check, not a
 permission grant or a snapshot of dynamic availability: registered checks still
 traverse every ordinary dispatch guard. Without a queue, a newly completed
-checked step remains `Verification::Skipped`; `TodoTool` emits one bounded
-unverified notice per completing write, with no repeated notice for an unchanged
-completed-plan echo. Frozen commands and tamper detection remain intact. The
+checked step remains `Verification::Skipped`. `ToolCtx::step_checks_unavailable`
+is stamped each run only for enabled checks without a registered shell;
+`TodoTool` emits one bounded unverified notice only in that case, with no repeat
+for an unchanged completed-plan echo. Deliberately disabled checks remain silent:
+queue absence alone cannot distinguish an unavailable capability from an off lever,
+and emitting guidance for both contaminates bare/evaluation arms. Frozen commands and tamper detection remain intact. The
 first native memory comparison exposed harness-generated calls to a nonexistent
 shell, consuming context while contributing no verification. Disabled, denied,
 unavailable, staged or skipped checks remain unverified. At most sixteen checks run per run. The result is a

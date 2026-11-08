@@ -47,6 +47,24 @@ generated Supported/retained bearings separately, including dropped duplicates,
 and retains partial generated outcomes even when another stage fails. This is a
 small reused-case diagnostic, not fresh qualification or production readiness.
 
+The second and final reused-case round also completed 5/8 native workflows,
+observing seven generated and six probe outcomes. Against eight planned cases,
+true support was 6/8, appropriate uncertainty and correct supported bearings 4/8,
+and criterion correctness 4/8. Observed false factual probe support/admission was
+zero, but one wrong probe bearing was Supported and one wrong generated bearing
+was retained. Unobserved metrics remain unknown. Usage was 156,064 input and
+20,271 output tokens. Two failures selected None for factual-unit premises;
+another returned Unknown without a missing-information question. Existing host
+checks refused all three. The final structural correction aligns the producer
+schema with these existing restrictions before fresh qualification, without a
+third development replay or further semantic prompt changes. Independent review
+examined all eight admission exports (22 retained units across seven nonempty
+exports) and flagged two unsupported generated claims: literal input/output byte
+equality and an unobserved reasoning-process claim. The missing-artifact case
+retained Good based on an earlier write. Citation/reasoning defects are recorded
+separately from fact truth. The original run remains unchanged; separate reports
+are in `development-2-independent-audit/` beneath the repair results directory.
+
 The bounded second refinement adds role-prefixed handles, conservative producer
 character caps, conditional criterion diagnostics and generic current-criterion
 and factual-antecedent clarification. Canonical byte limits and strict parsing
@@ -56,6 +74,47 @@ failures (25/29 ignored). Four further regressions failed before that refinement
 and the 29-test adapter/workflow suite then passed; the nested Python directory
 passed 75 tests. Later model/CI results remain in HANDOFF and PR #846 until
 qualified. Raw evidence stays local in `results/memory-support-repair-20261107/`.
+
+The final unit schema correction passed the 30-test adapter/workflow suite,
+78 nested Python tests, formatting and strict all-feature Clippy after one
+test-only iterator lint correction. Independent review found no major/medium
+issues. A fresh frozen attempt made no model calls: Spark's resident model had
+changed and identity guards refused all eight cases. That infrastructure failure
+is preserved separately from the new qwen3.8-27b resident-model cohort; no model
+was loaded or swapped. The new cohort's findings cannot establish an equal-model
+improvement over the qwen3.6 development runs. The fresh cohort already
+exposes a wrong Supported probe bearing for an independently Missing artifact,
+plus a generated judgment with no required evidence. It cannot qualify the
+support gate. The final cohort completed 6/8 workflows, with all eight probes observed: 8/8
+true support and appropriate uncertainty, 6/8 correct-bearing support and current
+criterion accuracy, zero false factual support/admission, and one wrong probe
+bearing Supported and retained. Six generated outcomes were observed and two
+remain unknown. Independent inspection covered all eight exports and 23 retained
+units: no unsupported factual premises found, but one mismatched citation. The
+formal scorer still has six qualified manual audits, not eight. Observed usage
+was 152,341 input / 19,797 output tokens; timeout usage remains unknown.
+
+After that frozen assessment, a separate producer-only correction requires one
+or two citations for every goal judgment. Canonical Unknown/Contradicted replies
+may still omit citations, and no prompt, parser or storage semantics changed.
+Its regression failed before the one-line schema change; final memory-enabled
+verification passed 6,824 tests with zero failures (29 ignored), plus strict
+all-feature Clippy and formatting. The final review-fix default suite passed
+6,352 tests (25 ignored); the nested Python auditor directory passed 80 tests.
+The cohort was not replayed, so this follow-up has no fresh model-quality claim.
+Independent audit also records first-per-goal duplicate retention, unnecessary
+rejections and source-role defects separately; evaluator reliability remains open.
+
+PR review also found that queue absence conflated deliberately disabled step
+checks with an enabled check lacking shell. `ToolCtx::step_checks_unavailable`
+is now stamped on every run; only enabled-but-unavailable checks emit the notice.
+The four-way regression failed before the fix and passed afterward, as did the
+existing missing-shell and frozen-check/tamper tests. The CI port collision was
+addressed in the lifecycle test allocator using process-wide selected-port claims:
+a deterministic same-seed regression failed with two distinct ports before the
+fix and passed with four afterward; all seven lifecycle tests passed. This closes
+the in-process selection/startup race, not every possible external port conflict.
+
 
 
 ### Action/outcome evidence and factual support (2026-11-07, prototype branch)

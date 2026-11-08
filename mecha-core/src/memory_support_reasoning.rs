@@ -220,7 +220,7 @@ fn schema(request: &SupportRequest, catalog: &CitationCatalog) -> Value {
             "judgments":{"type":"array","minItems":judgment_targets.len(),"maxItems":judgment_targets.len(),
                 "items":{"type":"object","additionalProperties":false,
                     "properties":{"target":{"type":"string","enum":judgment_targets},
-                        "evidence":evidence,"reason":reason,"questions":questions,
+                        "evidence":known_evidence,"reason":reason,"questions":questions,
                         "premises_sufficient":{"type":"boolean"}},
                     "required":["target","evidence","reason","questions","premises_sufficient"]}},
         },
@@ -880,6 +880,64 @@ mod tests {
                 assert_eq!(reply.checks[0].status, SupportStatus::Supported);
             }
         }
+    }
+
+    #[test]
+    fn judgment_producer_requires_citations_for_every_bearing_with_or_without_units() {
+        for unit_count in [0, 1] {
+            let request = request_fixture(
+                UnitKind::RecordedEvent,
+                &[
+                    InterpretationBearing::Good,
+                    InterpretationBearing::Bad,
+                    InterpretationBearing::Unknown,
+                ],
+                unit_count == 0,
+                false,
+                unit_count,
+            );
+            let (_, schema) = evaluation_input(&request).unwrap();
+            let evidence = &schema["properties"]["judgments"]["items"]["properties"]["evidence"];
+            assert_eq!(
+                evidence["minItems"],
+                json!(1),
+                "every produced judgment needs a citation, including judgment-only proposals"
+            );
+            assert_eq!(evidence["maxItems"], json!(2));
+            assert_eq!(evidence["uniqueItems"], json!(true));
+            let handles = catalog(&request).handles();
+            assert!(!handles.is_empty());
+            assert_eq!(evidence["items"]["enum"], json!(handles));
+            if unit_count == 0 {
+                assert_eq!(
+                    schema["properties"]["units"],
+                    json!({"type":"array","minItems":0,"maxItems":0,"items":{"type":"null"}})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_judgment_diagnostics_still_allow_citation_free_unknown_and_contradicted() {
+        let request = request(
+            UnitKind::RecordedEvent,
+            &[InterpretationBearing::Good],
+            false,
+        );
+        for (criterion, expected) in [
+            ("Unknown", SupportStatus::Unknown),
+            ("NotMet", SupportStatus::Contradicted),
+        ] {
+            let mut body = wire(&request, criterion);
+            body["judgments"][0]["evidence"] = json!([]);
+            let reply = parse_evaluation(&request, &body.to_string()).unwrap();
+            assert_eq!(reply.checks[1].status, expected);
+            assert!(reply.checks[1].citations.is_empty());
+        }
+        // The canonical Supported requirement remains stricter than those statuses.
+        let mut body = wire(&request, "Met");
+        body["judgments"][0]["evidence"] = json!([]);
+        assert!(parse_evaluation(&request, &body.to_string()).is_err());
     }
 
     #[test]

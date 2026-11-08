@@ -923,6 +923,10 @@ pub struct ToolCtx {
     /// tool after the block is rendered.
     pub success_examples: Option<crate::planning::ServedSuccesses>,
     pub step_checks: Option<std::sync::Arc<std::sync::Mutex<Vec<crate::step::CheckRequest>>>>,
+    /// Checks are enabled, but the run has no registered `shell`. Stamped
+    /// by the agent each run; a missing queue alone can also mean that the
+    /// configuration deliberately disabled checks and must not add guidance.
+    pub step_checks_unavailable: bool,
     /// Whether a person is in this run's conversation, stamped by the
     /// front-end (`setup::posture_for`). The `shell` tool registers every
     /// command it spawns with it (`shell_registry`), which is what `mecha
@@ -1215,6 +1219,7 @@ impl Default for ToolCtx {
             goal_appraisals: None,
             success_examples: None,
             step_checks: None,
+            step_checks_unavailable: false,
             run_posture: None,
             shell_registry: None,
             image_trail: None,

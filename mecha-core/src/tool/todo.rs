@@ -1733,7 +1733,8 @@ impl Tool for TodoTool {
                 }
             }
             let mut findings = findings;
-            if ctx.step_checks.is_none()
+            if ctx.step_checks_unavailable
+                && ctx.step_checks.is_none()
                 && tracked.plan.items.iter().any(|item| {
                     item.status == Status::Completed
                         && !previous.contains(&item.content)
@@ -1968,7 +1969,10 @@ mod tests {
     #[tokio::test]
     async fn no_check_queue_notices_new_completions_once_and_preserves_frozen_checks() {
         let tool = TodoTool::new();
-        let ctx = ToolCtx::default();
+        let ctx = ToolCtx {
+            step_checks_unavailable: true,
+            ..Default::default()
+        };
         let notice = "A declared plan check was not run; completion remains unverified.";
         for (status, check, expected_notices) in [
             ("in_progress", "original", 0),

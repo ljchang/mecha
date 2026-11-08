@@ -84,3 +84,25 @@ outcomes. Probe correctness cannot substitute for generated interpretation
 quality. A separately authored replacement holdout remains unread by the
 implementers and will be frozen after development. The first draft is unused
 because its design report was accidentally opened before the controller freeze.
+
+## Final structural correction after development (2026-11-08)
+
+The second and final reused-case round completed 5/8 workflows. Two evaluators
+selected `None` for a factual unit's premises; another returned Unknown without
+a missing-information question. The host correctly refused all three. Final
+producer schemas therefore partition unit targets by factual/speculative kind
+and Supported/Contradicted/Unknown status. Supported requires citations, no
+questions and supported factual premises; Unknown requires questions; factual
+targets never permit None. These are existing parser constraints, not new
+semantic judgments. Empty target arrays remain explicit. No third development
+replay or further semantic prompt tuning precedes the fresh freeze.
+
+## Post-qualification citation correction
+
+The frozen fresh cohort at source `05f47d317` completed 6/8 workflows. A matching
+Unknown judgment had no citation and therefore failed the canonical Supported
+diagnostic. After preserving that assessment, a separate producer-only change
+requires at least one examined-source citation for every judgment. The host's
+Unknown/Contradicted parser behavior is unchanged, and this small correction has
+no fresh-model quality claim. The cohort is not replayed or reclassified. Current
+artifact/criterion reasoning still fails independently, so concepts stay deferred.

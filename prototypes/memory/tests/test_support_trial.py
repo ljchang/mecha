@@ -671,6 +671,7 @@ class GroundedWireTests(unittest.TestCase):
                                 status={'type': 'string', 'enum': ['Supported', 'Contradicted', 'Unknown']})
                 else:
                     item['premises_sufficient'] = {'type': 'boolean'}
+                    item['evidence'] = dict(evidence, minItems=1)
                 properties[name] = dict(type='array', minItems=len(targets), maxItems=len(targets), items=obj(item))
                 if name == 'units' and targets:
                     alternatives = []
@@ -1008,6 +1009,45 @@ class GroundedWireTests(unittest.TestCase):
         groups = request['request']['response_schema']['properties']['units']['items']['oneOf']
         self.assertEqual(len(groups), 3)
         self.assertIn('None', groups[0]['properties']['factual_premises']['enum'])
+
+    def test_judgment_schema_rejects_absent_or_zero_evidence_minimum(self):
+        packet = self.packet()
+        self.evaluation(packet)
+        for minimum in (None, 0):
+            with self.subTest(minimum=minimum):
+                request, stage = self.request(packet)
+                evidence = request['request']['response_schema']['properties']['judgments']['items']['properties']['evidence']
+                if minimum is None:
+                    evidence.pop('minItems')
+                else:
+                    evidence['minItems'] = minimum
+                self.rebind_schema(request, stage)
+                with self.assertRaisesRegex(ValueError, 'citation-choice schema'):
+                    trial.wire_packet(request, stage)
+
+    def test_judgment_evidence_minimum_does_not_change_generation_or_empty_targets(self):
+        packet = self.packet()
+        request, stage = self.request(packet)
+        self.assertNotIn('minItems', request['request']['response_schema']['properties']['units']['items']['properties']['evidence'])
+        self.assertEqual(trial.wire_packet(request, stage), packet)
+        self.evaluation(packet)
+        request, stage = self.request(packet)
+        evidence = request['request']['response_schema']['properties']['judgments']['items']['properties']['evidence']
+        self.assertEqual(evidence['minItems'], 1)
+        self.assertEqual(trial.wire_packet(request, stage), packet)
+        for units, judgments in (([], packet['proposal']['judgments']), (packet['proposal']['units'], []), ([], [])):
+            changed = copy.deepcopy(packet)
+            changed['proposal'].update(units=units, judgments=copy.deepcopy(judgments))
+            if not units:
+                for judgment in changed['proposal']['judgments']:
+                    judgment.update(bearing='Unknown', because=[])
+            changed['targets'] = ['unit:' + u['id'] for u in units] + ['judgment:' + str(i) for i in range(len(judgments))]
+            request, stage = self.request(changed)
+            self.assertEqual(trial.wire_packet(request, stage), changed)
+            for name in ('units', 'judgments'):
+                if not changed['proposal'][name]:
+                    self.assertEqual(request['request']['response_schema']['properties'][name],
+                                     dict(type='array', minItems=0, maxItems=0, items={'type': 'null'}))
 
     def test_unit_status_grammar_enforces_evidence_questions_and_supported_premises(self):
         packet = self.packet()

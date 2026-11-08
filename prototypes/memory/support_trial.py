@@ -395,7 +395,10 @@ def wire_packet(request, stage):
         if judgment is not None:
             positions.append(judgment['evidence'])
     for evidence in positions:
-        require(evidence == {'type': 'array', 'maxItems': 2, 'uniqueItems': True, 'items': {'type': 'string', 'enum': list(catalog)}}, 'incomplete/modified citation-choice schema')
+        expected_evidence = {'type': 'array', 'maxItems': 2, 'uniqueItems': True, 'items': {'type': 'string', 'enum': list(catalog)}}
+        if 'proposal' in packet:
+            expected_evidence['minItems'] = 1
+        require(evidence == expected_evidence, 'incomplete/modified citation-choice schema')
     if 'proposal' in packet:
         for name, targets in (('units', ['unit:' + u['id'] for u in packet['proposal']['units']]),
                               ('judgments', ['judgment:' + str(i) for i in range(len(packet['proposal']['judgments']))])):

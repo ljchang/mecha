@@ -2968,6 +2968,8 @@ impl Agent {
             // leaves the run beside the line.
             tools.goal_commitments = cx.homeostat.as_ref().and_then(|h| h.in_run_commitments());
             tools.goal_guidance = self.cfg.goal_guidance;
+            tools.step_checks_unavailable =
+                self.cfg.step_checks && self.registry.get("shell").is_none();
             tools.step_checks = (self.cfg.step_checks && self.registry.get("shell").is_some())
                 .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
@@ -15907,7 +15909,7 @@ justification = "echo is off on this box"
     }
 
     #[tokio::test]
-    async fn successful_checks_do_not_repeat_and_disabled_checks_stay_unverified() {
+    async fn step_check_availability_respects_the_configuration_lever() {
         struct PassingShell;
         #[async_trait]
         impl Tool for PassingShell {
@@ -15924,7 +15926,14 @@ justification = "echo is off on this box"
                 Ok(ToolOutput::ok("passed"))
             }
         }
-        for enabled in [true, false] {
+        for (enabled, shell_registered) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let checks_run = enabled && shell_registered;
+            let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tool::todo::TodoTool::new())];
+            if shell_registered {
+                tools.push(Arc::new(PassingShell));
+            }
             let plan = |id: &str, status: &str| {
                 assistant(
                     vec![Block::ToolUse {
@@ -15942,13 +15951,15 @@ justification = "echo is off on this box"
                     plan("p3", "completed"),
                     assistant(vec![Block::text("done")], StopReason::EndTurn),
                 ],
-                vec![
-                    Arc::new(crate::tool::todo::TodoTool::new()),
-                    Arc::new(PassingShell),
-                ],
+                tools,
                 PermissionMode::Allow,
             );
             agent.cfg.step_checks = enabled;
+            // Deliberately stale caller state must be overwritten for every run.
+            Arc::make_mut(&mut agent.cx).tools = Arc::new(ToolCtx {
+                step_checks_unavailable: !(enabled && !shell_registered),
+                ..(*agent.cx.tools).clone()
+            });
             let mut convo = Conversation::user("go");
             let outcome = agent.run(&mut convo, None).await.unwrap();
             assert_eq!(
@@ -15957,7 +15968,7 @@ justification = "echo is off on this box"
                     .iter()
                     .filter(|c| c.name == crate::step::CHECK_TRACE)
                     .count(),
-                usize::from(enabled)
+                usize::from(checks_run)
             );
             let feedback: Vec<_> = convo
                 .messages
@@ -15967,15 +15978,23 @@ justification = "echo is off on this box"
             let step = feedback.iter().flat_map(|f| &f.steps).next().unwrap();
             assert_eq!(
                 step.verification,
-                if enabled {
+                if checks_run {
                     crate::planning::Verification::Passed
                 } else {
                     crate::planning::Verification::Skipped
                 }
             );
             let last = feedback.last().unwrap().decisions.last().unwrap();
-            assert_eq!(last.unverified_steps, usize::from(!enabled));
+            assert_eq!(last.unverified_steps, usize::from(!checks_run));
             assert!(crate::learning::extract_mismatches(&convo.messages, &[]).is_empty());
+            let text = serde_json::to_string(&convo.messages).unwrap();
+            assert_eq!(
+                text.matches("A declared plan check was not run; completion remains unverified.")
+                    .count(),
+                usize::from(enabled && !shell_registered),
+                "notice must respect step_checks={enabled}, shell_registered={shell_registered}"
+            );
+            assert!(!text.contains("unknown tool"));
         }
     }
 
