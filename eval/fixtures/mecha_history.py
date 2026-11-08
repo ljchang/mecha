@@ -548,7 +548,11 @@ def use_paths(text):
         paths, i = tree(0, [])
     except (IndexError, ValueError):
         return None
-    return paths if i == len(tokens) else None
+    if i != len(tokens) or any(p in ("super", "self", "crate") for p in paths):
+        # A bare `super` (from `use super::{self};`) re-points to `use
+        # super::super;`, which does not compile: left as the graft placed it.
+        return None
+    return paths
 
 
 def module_imports(lines, module):
@@ -590,6 +594,24 @@ def repoint(path):
     if path.startswith("self::"):
         return "super::" + path[len("self::"):]
     return path
+
+
+def needed(path, body):
+    """Whether an import the PR added to a test module is grafted beside
+    `body`, the grafted items' text. An unresolved `use` fails the whole
+    file — every hidden test in it, and the crate's regressions — so a path
+    into the run's own code (`super::`, `self::`, `crate::`) is carried only
+    when the name it binds appears in the grafted tests, or it is a glob: the
+    PR may have added it for a test it *edited*, which is not grafted, naming
+    a helper an independent solution has no reason to write (review of #857,
+    pass 5). A library path (`std::`, `core::`, a dependency) resolves
+    whatever the run wrote, and is kept: a trait imported for its methods
+    (`use std::io::Write;`) is named nowhere in a test body."""
+    first = path.split("::")[0]
+    if first not in ("super", "self", "crate"):
+        return True
+    bound = path.split(" as ")[-1].split("::")[-1]
+    return bound == "*" or re.search(rf"\b{re.escape(bound)}\b", body) is not None
 
 
 def plain_use(item):
@@ -654,7 +676,7 @@ def graft_plan(tree, merge, module):
             # imports are its production code, the run's to write.
             imports = (dict(added_imports(merge, path, into))  # path -> attribute lines
                        if into is not None or whole_test_file(path) else {})
-            kept = []
+            kept, from_items = [], set()
             for it in items:
                 found = plain_use(it)
                 if found is None:
@@ -663,7 +685,10 @@ def graft_plan(tree, merge, module):
                 attrs, paths = found
                 for q in paths:
                     imports[q] = attrs  # the declaration's own attributes
+                    from_items.add(q)
             items = kept
+            body = "\n".join(items)
+            imports = {q: a for q, a in imports.items() if q in from_items or needed(q, body)}
             for q, attrs in imports.items():
                 block += [f"{indent}{a}" for a in attrs]
                 block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")

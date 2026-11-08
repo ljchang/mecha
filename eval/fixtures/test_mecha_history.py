@@ -811,6 +811,34 @@ class Imports(unittest.TestCase):
         self.assertIn("    #[cfg(unix)]\n    #[allow(unused_imports)] use super::super::kept as unix_kept;", block)
         self.assertNotIn("The resident one.", block, "a doc line is documentation, not part of the import")
 
+    def test_an_import_only_an_edited_test_uses_is_not_grafted(self):
+        # The PR adds `helper` for a test it *edited*, which is not grafted; an
+        # independent solution has no reason to write `helper`, and an
+        # unresolved `use` fails the whole file (review of #857, pass 5).
+        # The new test goes ahead of the edited one, so the diff cannot pair
+        # its closing brace with the edited test's and leave it half added.
+        merge = self.history(
+            "edited-test", PIN_LISTED,
+            PIN_LISTED.replace("fn kept() -> u32 {\n    1\n}\n",
+                               "fn kept() -> u32 {\n    1\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+                               "fn resident() -> u32 {\n    2\n}\n", 1)
+            .replace("        kept,\n", "        helper, kept, resident,\n", 1)
+            .replace("    #[test]\n    fn keeps() {\n        assert_eq!(kept(), 1);\n",
+                     "    #[test]\n    fn the_resident_one_is_two() {\n        assert_eq!(resident(), 2);\n    }\n\n"
+                     "    #[test]\n    fn keeps() {\n        assert_eq!(kept(), helper());\n", 1))
+        self.assertEqual([p for p, _ in mecha_history.added_imports(merge, "src/setup.rs", "tests")],
+                         ["super::helper", "super::resident"])
+        block = self.graft_block(merge)
+        self.assertIn("use super::super::resident;", block, "a grafted test names it")
+        self.assertNotIn("helper", block, "only the edited, ungrafted test needed it")
+
+    def test_a_library_import_is_kept_and_a_crate_one_only_when_named(self):
+        self.assertTrue(mecha_history.needed("std::io::Write", "fn t() { w.write_all(b\"x\") }"),
+                        "a trait for its methods is named nowhere in the body")
+        self.assertTrue(mecha_history.needed("super::*", ""))
+        self.assertTrue(mecha_history.needed("super::a as b", "b()"))
+        self.assertFalse(mecha_history.needed("crate::x::helper", "helpers()"), "a word, not a prefix")
+
     def test_a_use_declaration_flattens_to_the_paths_it_imports(self):
         self.assertEqual(
             mecha_history.use_paths("use super::{a, b::{c, d as e}, f::*, g::{self}};"),
