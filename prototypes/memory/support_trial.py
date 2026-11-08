@@ -332,7 +332,36 @@ def wire_packet(request, stage):
     require(all(isinstance(schema['properties'][name], dict) for name in ('units', 'judgments')), 'invalid target array schema')
     unit_keys = ('target', 'evidence', 'reason', 'questions', 'factual_premises', 'status') if 'proposal' in packet else ('id', 'kind', 'text', 'evidence')
     judgment_keys = ('target', 'evidence', 'reason', 'questions', 'premises_sufficient') if 'proposal' in packet else ('bearing', 'because')
-    unit = object_properties(schema['properties']['units']['items'], unit_keys) if 'proposal' not in packet or packet['proposal']['units'] else None
+    unit_variants = []
+    if 'proposal' in packet:
+        offered_units = packet['proposal']['units']
+        groups = [(['unit:' + u['id'] for u in offered_units if u['kind'] in kinds], premises)
+                  for kinds, premises in ((('RecordedEvent', 'GoalAssessment'), ['Supported', 'Contradicted', 'Unknown']),
+                                          (('Hypothesis', 'Prediction'), ['None', 'Supported', 'Contradicted', 'Unknown']))]
+        groups = [(targets, premises) for targets, premises in groups if targets]
+        require(sum(len(targets) for targets, _ in groups) == len(offered_units), 'unknown proposal unit kind')
+        if offered_units:
+            item = schema['properties']['units']['items']
+            fields(item, ('oneOf',), 'unit target alternatives')
+            expected_branches = [(targets, premises, status) for targets, premises in groups
+                                 for status in ('Supported', 'Contradicted', 'Unknown')]
+            require(isinstance(item['oneOf'], list) and len(item['oneOf']) == len(expected_branches), 'unit target/status group count mismatch')
+            for branch, (targets, premises, status) in zip(item['oneOf'], expected_branches):
+                properties = object_properties(branch, unit_keys)
+                if status == 'Supported':
+                    premises = ['None', 'Supported'] if 'None' in premises else ['Supported']
+                require(properties['target'] == {'type': 'string', 'enum': targets}
+                        and properties['factual_premises'] == {'type': 'string', 'enum': premises}
+                        and properties['status'] == {'type': 'string', 'enum': [status]}
+                        and properties['evidence'] == {'type': 'array', 'minItems': int(status == 'Supported'), 'maxItems': 2,
+                            'uniqueItems': True, 'items': {'type': 'string', 'enum': list(catalog)}}
+                        and properties['questions'] == {'type': 'array', 'minItems': int(status == 'Unknown'),
+                            'maxItems': 0 if status == 'Supported' else 4,
+                            'items': {'type': 'string', 'minLength': 1, 'maxLength': 64}}, 'unconstrained unit target/status diagnostic')
+                unit_variants.append(properties)
+    else:
+        unit = object_properties(schema['properties']['units']['items'], unit_keys)
+        unit_variants.append(unit)
     judgment = object_properties(schema['properties']['judgments']['items'], judgment_keys) if 'proposal' not in packet or packet['proposal']['judgments'] else None
     if 'proposal' in packet:
         criterion_schema = schema['properties']['criterion']
@@ -347,12 +376,11 @@ def wire_packet(request, stage):
                     and diagnostic['evidence'] == {'type': 'array', 'minItems': evidence_min, 'maxItems': 2, 'uniqueItems': True, 'items': citation_items}
                     and diagnostic['questions'] == {'type': 'array', 'minItems': questions_min, 'maxItems': questions_max, 'items': question_items}
                     and diagnostic['reason'] == {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'unconstrained criterion evidence/questions/state')
-        require((unit is None or unit['factual_premises'] == {'type': 'string', 'enum': ['None', 'Supported', 'Contradicted', 'Unknown']}
-                 and unit['status'] == {'type': 'string', 'enum': ['Supported', 'Contradicted', 'Unknown']})
-                and (judgment is None or judgment['premises_sufficient'] == {'type': 'boolean'}), 'unconstrained evaluator conclusions')
-        for diagnostic in (d for d in (unit, judgment) if d is not None):
-            require(diagnostic['reason'] == {'type': 'string', 'minLength': 1, 'maxLength': 128}
-                    and diagnostic['questions'] == {'type': 'array', 'maxItems': 4, 'items': question_items}, 'unbounded diagnostic schema')
+        require(judgment is None or judgment['premises_sufficient'] == {'type': 'boolean'}, 'unconstrained evaluator conclusions')
+        for diagnostic in unit_variants + ([judgment] if judgment is not None else []):
+            require(diagnostic['reason'] == {'type': 'string', 'minLength': 1, 'maxLength': 128}, 'unbounded diagnostic reason schema')
+        if judgment is not None:
+            require(judgment['questions'] == {'type': 'array', 'maxItems': 4, 'items': question_items}, 'unbounded judgment questions schema')
     else:
         identifier = {'type': 'string', 'minLength': 1, 'maxLength': 32, 'pattern': '^[A-Za-z0-9_-]{1,32}$'}
         require(unit['id'] == identifier and unit['kind'] == {'type': 'string', 'enum': ['RecordedEvent', 'GoalAssessment', 'Hypothesis', 'Prediction']}
@@ -362,7 +390,7 @@ def wire_packet(request, stage):
                 and all(schema['properties'][name].get('maxItems') == 8 for name in ('units', 'judgments')), 'unbounded generation schema')
     require(all(schema['properties'][name].get('type') == 'array' for name in ('units', 'judgments')), 'invalid target array schema')
     # Every evidence position must enumerate the complete host catalog, never a gold-selected subset.
-    positions = [unit['evidence']] if unit is not None else []
+    positions = [unit['evidence']] if 'proposal' not in packet else []
     if 'proposal' in packet:
         if judgment is not None:
             positions.append(judgment['evidence'])
@@ -373,8 +401,9 @@ def wire_packet(request, stage):
                               ('judgments', ['judgment:' + str(i) for i in range(len(packet['proposal']['judgments']))])):
             array = schema['properties'][name]
             if targets:
-                require(array.get('minItems') == array.get('maxItems') == len(targets)
-                        and array['items']['properties']['target'] == {'type': 'string', 'enum': targets}, 'unconstrained target coverage')
+                require(array.get('minItems') == array.get('maxItems') == len(targets), 'unconstrained target coverage')
+                if name == 'judgments':
+                    require(array['items']['properties']['target'] == {'type': 'string', 'enum': targets}, 'unconstrained judgment coverage')
             else:
                 require(array == {'type': 'array', 'minItems': 0, 'maxItems': 0, 'items': {'type': 'null'}}, 'empty target list must constrain an empty-only array')
     return packet

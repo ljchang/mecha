@@ -672,6 +672,21 @@ class GroundedWireTests(unittest.TestCase):
                 else:
                     item['premises_sufficient'] = {'type': 'boolean'}
                 properties[name] = dict(type='array', minItems=len(targets), maxItems=len(targets), items=obj(item))
+                if name == 'units' and targets:
+                    alternatives = []
+                    for kinds, premises in ((('RecordedEvent', 'GoalAssessment'), ['Supported', 'Contradicted', 'Unknown']),
+                                            (('Hypothesis', 'Prediction'), ['None', 'Supported', 'Contradicted', 'Unknown'])):
+                        group_targets = ['unit:' + u['id'] for u in packet['proposal']['units'] if u['kind'] in kinds]
+                        if group_targets:
+                            for status in ('Supported', 'Contradicted', 'Unknown'):
+                                branch = copy.deepcopy(item)
+                                branch['target']['enum'] = group_targets
+                                branch['status']['enum'] = [status]
+                                branch['factual_premises']['enum'] = (['None', 'Supported'] if 'None' in premises else ['Supported']) if status == 'Supported' else premises
+                                branch['evidence']['minItems'] = int(status == 'Supported')
+                                branch['questions'].update(minItems=int(status == 'Unknown'), maxItems=0 if status == 'Supported' else 4)
+                                alternatives.append(obj(branch))
+                    properties[name]['items'] = {'oneOf': alternatives}
                 if not targets:
                     properties[name]['items'] = {'type': 'null'}
         else:
@@ -944,11 +959,76 @@ class GroundedWireTests(unittest.TestCase):
         self.evaluation(packet)
         for field, old_limit in (('reason', 512), ('questions', 256)):
             request, stage = self.request(packet)
-            properties = request['request']['response_schema']['properties']['units']['items']['properties']
+            properties = request['request']['response_schema']['properties']['units']['items']['oneOf'][0]['properties']
             (properties[field]['items'] if field == 'questions' else properties[field])['maxLength'] = old_limit
             self.rebind_schema(request, stage)
             with self.assertRaises(ValueError):
                 trial.wire_packet(request, stage)
+
+    def test_unsplit_factual_target_schema_cannot_offer_no_factual_premises(self):
+        packet = self.packet()
+        self.evaluation(packet)
+        request, stage = self.request(packet)
+        units = request['request']['response_schema']['properties']['units']
+        item = units['items']
+        if 'oneOf' in item:
+            item = copy.deepcopy(item['oneOf'][0])
+            units['items'] = item
+        item['properties']['factual_premises']['enum'] = ['None', 'Supported', 'Contradicted', 'Unknown']
+        self.rebind_schema(request, stage)
+        with self.assertRaises(ValueError):
+            trial.wire_packet(request, stage)
+
+    def test_unit_schema_groups_exact_factual_and_speculative_targets(self):
+        packet = self.packet()
+        self.evaluation(packet)
+        first = packet['proposal']['units'][0]
+        packet['proposal']['units'] += [dict(first, id='u2', kind='Hypothesis'),
+                                       dict(first, id='u3', kind='GoalAssessment'), dict(first, id='u4', kind='Prediction')]
+        packet['targets'] = ['unit:u1', 'unit:u2', 'unit:u3', 'unit:u4', 'judgment:0']
+        request, stage = self.request(packet)
+        trial.wire_packet(request, stage)
+        groups = request['request']['response_schema']['properties']['units']['items']['oneOf']
+        self.assertEqual([g['properties']['target']['enum'] for g in groups], [['unit:u1', 'unit:u3']]*3 + [['unit:u2', 'unit:u4']]*3)
+        self.assertEqual(groups[0]['properties']['factual_premises']['enum'], ['Supported'])
+        self.assertEqual(groups[4]['properties']['factual_premises']['enum'], ['None', 'Supported', 'Contradicted', 'Unknown'])
+        for mutate in (lambda gs: gs[0]['properties']['factual_premises']['enum'].insert(0, 'None'),
+                       lambda gs: gs[0]['properties']['target'].update(enum=['unit:u2', 'unit:u3']),
+                       lambda gs: gs.pop(), lambda gs: gs.reverse()):
+            changed = copy.deepcopy(request)
+            mutate(changed['request']['response_schema']['properties']['units']['items']['oneOf'])
+            self.rebind_schema(changed, stage)
+            with self.assertRaises(ValueError):
+                trial.wire_packet(changed, stage)
+        # A speculative-only proposal has one branch, not an empty factual branch.
+        packet['proposal']['units'] = [dict(first, kind='Hypothesis')]
+        packet['targets'] = ['unit:u1', 'judgment:0']
+        request, stage = self.request(packet)
+        trial.wire_packet(request, stage)
+        groups = request['request']['response_schema']['properties']['units']['items']['oneOf']
+        self.assertEqual(len(groups), 3)
+        self.assertIn('None', groups[0]['properties']['factual_premises']['enum'])
+
+    def test_unit_status_grammar_enforces_evidence_questions_and_supported_premises(self):
+        packet = self.packet()
+        self.evaluation(packet)
+        request, stage = self.request(packet)
+        trial.wire_packet(request, stage)
+        branches = request['request']['response_schema']['properties']['units']['items']['oneOf']
+        self.assertEqual([b['properties']['status']['enum'] for b in branches], [['Supported'], ['Contradicted'], ['Unknown']])
+        for index, evidence_min, questions_min, questions_max in ((0, 1, 0, 0), (1, 0, 0, 4), (2, 0, 1, 4)):
+            properties = branches[index]['properties']
+            self.assertEqual(properties['evidence']['minItems'], evidence_min)
+            self.assertEqual(properties['questions']['minItems'], questions_min)
+            self.assertEqual(properties['questions']['maxItems'], questions_max)
+        self.assertEqual(branches[0]['properties']['factual_premises']['enum'], ['Supported'])
+        for index, field, key, value in ((0, 'evidence', 'minItems', 0), (2, 'questions', 'minItems', 0),
+                                       (0, 'questions', 'maxItems', 4), (0, 'factual_premises', 'enum', ['Supported', 'Unknown'])):
+            changed = copy.deepcopy(request)
+            changed['request']['response_schema']['properties']['units']['items']['oneOf'][index]['properties'][field][key] = value
+            self.rebind_schema(changed, stage)
+            with self.assertRaises(ValueError):
+                trial.wire_packet(changed, stage)
 
     def test_criterion_grammar_requires_known_evidence_or_unknown_questions(self):
         packet = self.packet()

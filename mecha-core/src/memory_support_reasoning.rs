@@ -152,12 +152,50 @@ fn schema(request: &SupportRequest, catalog: &CitationCatalog) -> Value {
     known_questions["maxItems"] = json!(0);
     let mut unknown_questions = questions.clone();
     unknown_questions["minItems"] = json!(1);
-    let unit_targets = request
-        .proposal()
-        .units
-        .iter()
-        .map(|u| format!("unit:{}", u.id))
-        .collect::<Vec<_>>();
+    let unit_count = request.proposal().units.len();
+    let mut unit_branches = Vec::new();
+    for factual in [true, false] {
+        let targets = request
+            .proposal()
+            .units
+            .iter()
+            .filter(|unit| {
+                matches!(
+                    unit.kind,
+                    UnitKind::RecordedEvent | UnitKind::GoalAssessment
+                ) == factual
+            })
+            .map(|unit| format!("unit:{}", unit.id))
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            continue;
+        }
+        for (status, evidence_min, questions_min, questions_max) in [
+            ("Supported", 1, 0, 0),
+            ("Contradicted", 0, 0, 4),
+            ("Unknown", 0, 1, 4),
+        ] {
+            let premises = match (status, factual) {
+                ("Supported", true) => json!(["Supported"]),
+                ("Supported", false) => json!(["None", "Supported"]),
+                (_, true) => json!(["Supported", "Contradicted", "Unknown"]),
+                (_, false) => json!(["None", "Supported", "Contradicted", "Unknown"]),
+            };
+            let mut unit_evidence = evidence.clone();
+            unit_evidence["minItems"] = json!(evidence_min);
+            let mut unit_questions = questions.clone();
+            unit_questions["minItems"] = json!(questions_min);
+            unit_questions["maxItems"] = json!(questions_max);
+            unit_branches.push(json!({
+                "type":"object","additionalProperties":false,
+                "properties":{"target":{"type":"string","enum":targets},
+                    "evidence":unit_evidence,"reason":reason,"questions":unit_questions,
+                    "factual_premises":{"type":"string","enum":premises},
+                    "status":{"type":"string","enum":[status]}},
+                "required":["target","evidence","reason","questions","factual_premises","status"]
+            }));
+        }
+    }
     let judgment_targets = (0..request.proposal().judgments.len())
         .map(|i| format!("judgment:{i}"))
         .collect::<Vec<_>>();
@@ -177,13 +215,8 @@ fn schema(request: &SupportRequest, catalog: &CitationCatalog) -> Value {
                         "state":{"type":"string","enum":["Unknown"]}},
                     "required":["evidence","reason","questions","state"]}
             ]},
-            "units":{"type":"array","minItems":unit_targets.len(),"maxItems":unit_targets.len(),
-                "items":{"type":"object","additionalProperties":false,
-                    "properties":{"target":{"type":"string","enum":unit_targets},
-                        "evidence":evidence,"reason":reason,"questions":questions,
-                        "factual_premises":{"type":"string","enum":["None","Supported","Contradicted","Unknown"]},
-                        "status":{"type":"string","enum":["Supported","Contradicted","Unknown"]}},
-                    "required":["target","evidence","reason","questions","factual_premises","status"]}},
+            "units":{"type":"array","minItems":unit_count,"maxItems":unit_count,
+                "items":{"oneOf":unit_branches}},
             "judgments":{"type":"array","minItems":judgment_targets.len(),"maxItems":judgment_targets.len(),
                 "items":{"type":"object","additionalProperties":false,
                     "properties":{"target":{"type":"string","enum":judgment_targets},
@@ -389,6 +422,15 @@ mod tests {
         large: bool,
         unit_count: usize,
     ) -> SupportRequest {
+        request_kinds(&vec![kind; unit_count], bearings, empty, large)
+    }
+
+    fn request_kinds(
+        kinds: &[UnitKind],
+        bearings: &[InterpretationBearing],
+        empty: bool,
+        large: bool,
+    ) -> SupportRequest {
         let dir = std::env::temp_dir().join(format!("support-reasoning-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("authored.memory-prototype.sqlite");
@@ -442,8 +484,10 @@ mod tests {
             .find(|s| s.text.starts_with("The prior inventory"))
             .unwrap();
         let proposal = SupportProposal {
-            units: (0..unit_count)
-                .map(|i| ProposedUnit {
+            units: kinds
+                .iter()
+                .enumerate()
+                .map(|(i, &kind)| ProposedUnit {
                     id: format!("u{}", i + 1),
                     kind,
                     text: if kind == UnitKind::Prediction {
@@ -877,8 +921,14 @@ mod tests {
             false,
         );
         let (_, schema) = evaluation_input(&request).unwrap();
-        for target in ["units", "judgments"] {
-            let properties = &schema["properties"][target]["items"]["properties"];
+        let unit_variants = schema["properties"]["units"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
+        for target in unit_variants
+            .iter()
+            .chain(std::iter::once(&schema["properties"]["judgments"]["items"]))
+        {
+            let properties = &target["properties"];
             let reason_max = properties["reason"]["maxLength"].as_u64().unwrap() as usize;
             let question_max = properties["questions"]["items"]["maxLength"]
                 .as_u64()
@@ -945,6 +995,127 @@ mod tests {
                 assert_eq!(properties["evidence"]["minItems"], 0);
                 assert_eq!(properties["questions"]["minItems"], 1);
                 assert_eq!(properties["questions"]["maxItems"], 4);
+            }
+        }
+    }
+
+    #[test]
+    fn unit_schema_groups_kind_and_status_to_enforce_existing_host_invariants() {
+        use UnitKind::{GoalAssessment, Hypothesis, Prediction, RecordedEvent};
+        for (kinds, expected) in [
+            (
+                vec![RecordedEvent, GoalAssessment, Hypothesis, Prediction],
+                vec![
+                    (
+                        json!(["unit:u1", "unit:u2"]),
+                        json!(["Supported"]),
+                        json!(["Supported", "Contradicted", "Unknown"]),
+                    ),
+                    (
+                        json!(["unit:u3", "unit:u4"]),
+                        json!(["None", "Supported"]),
+                        json!(["None", "Supported", "Contradicted", "Unknown"]),
+                    ),
+                ],
+            ),
+            (
+                vec![RecordedEvent],
+                vec![(
+                    json!(["unit:u1"]),
+                    json!(["Supported"]),
+                    json!(["Supported", "Contradicted", "Unknown"]),
+                )],
+            ),
+            (
+                vec![Hypothesis],
+                vec![(
+                    json!(["unit:u1"]),
+                    json!(["None", "Supported"]),
+                    json!(["None", "Supported", "Contradicted", "Unknown"]),
+                )],
+            ),
+        ] {
+            let request = request_kinds(&kinds, &[InterpretationBearing::Unknown], false, false);
+            let (_, schema) = evaluation_input(&request).unwrap();
+            crate::memory_factual_support::grounded_evaluation_request(
+                &request,
+                "authored",
+                crate::memory_factual_support::GenerationBudget::new(
+                    4096,
+                    std::time::Duration::from_secs(180),
+                )
+                .unwrap(),
+            )
+            .expect("ordinary mixed-kind complete packet must fit the evaluation budget");
+            let branches = schema["properties"]["units"]["items"]["oneOf"]
+                .as_array()
+                .expect("unit schemas must group factual and speculative targets separately");
+            assert_eq!(
+                branches.len(),
+                expected.len() * 3,
+                "empty groups must be omitted"
+            );
+            for (group, (targets, supported_premises, all_premises)) in
+                branches.as_chunks::<3>().0.iter().zip(expected)
+            {
+                for (branch, (status, evidence_min, questions_min, questions_max)) in
+                    group.iter().zip([
+                        ("Supported", 1, 0, 0),
+                        ("Contradicted", 0, 0, 4),
+                        ("Unknown", 0, 1, 4),
+                    ])
+                {
+                    assert_eq!(branch["type"], "object");
+                    assert_eq!(branch["additionalProperties"], false);
+                    assert_eq!(
+                        branch["required"],
+                        json!([
+                            "target",
+                            "evidence",
+                            "reason",
+                            "questions",
+                            "factual_premises",
+                            "status"
+                        ])
+                    );
+                    let properties = &branch["properties"];
+                    assert_eq!(
+                        properties
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                        [
+                            "target",
+                            "evidence",
+                            "reason",
+                            "questions",
+                            "factual_premises",
+                            "status"
+                        ]
+                    );
+                    assert_eq!(properties["target"]["enum"], targets);
+                    assert_eq!(
+                        properties["factual_premises"]["enum"],
+                        if status == "Supported" {
+                            supported_premises.clone()
+                        } else {
+                            all_premises.clone()
+                        }
+                    );
+                    assert_eq!(properties["evidence"]["minItems"], evidence_min);
+                    assert_eq!(properties["evidence"]["maxItems"], 2);
+                    assert_eq!(properties["questions"]["minItems"], questions_min);
+                    assert_eq!(properties["questions"]["maxItems"], questions_max);
+                    assert_eq!(
+                        properties["evidence"]["items"]["enum"],
+                        json!(catalog(&request).handles())
+                    );
+                    assert_eq!(properties["reason"]["maxLength"], 128);
+                    assert_eq!(properties["questions"]["items"]["maxLength"], 64);
+                    assert_eq!(properties["status"]["enum"], json!([status]));
+                }
             }
         }
     }
