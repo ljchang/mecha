@@ -4078,11 +4078,12 @@ impl Agent {
                     // One walk, three consumers, for the reason the byte
                     // measurement above is taken once: pairing every result
                     // with its call renders each input, and every reader needs
-                    // the same values. They key differently on purpose —
-                    // the guard on the exact call, boredom on the *target*, so
-                    // two tools that read one file and get the same bytes count
-                    // as the same thing learned twice. Only the guard's refusal
-                    // streak reads the error flag.
+                    // the same values. They key differently on purpose — the
+                    // guard on the exact call; boredom as `Boredom::key` says,
+                    // a declared read or a failed call by its target and any
+                    // other call whole, where that rule is stated once. The
+                    // guard's refusal streak and boredom's key both read the
+                    // error flag.
                     let outcomes: Vec<(&str, &Value, &str, bool)> = results
                         .iter()
                         .filter_map(|block| {
