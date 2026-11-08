@@ -90,12 +90,18 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
         _mention: String,
     }
     #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum PacketRecord {
+        Canonical(crate::memory::Record),
+        Reader(crate::memory::interpretation_reader::ReaderRecord),
+    }
+    #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Hit {
         reference: Reference,
         #[serde(rename = "sequence")]
         _sequence: i64,
-        record: crate::memory::Record,
+        record: PacketRecord,
         #[serde(rename = "possible_time")]
         _possible_time: bool,
         #[serde(rename = "required_scopes")]
@@ -148,13 +154,25 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
     let interpretations = packet
         .records
         .iter()
-        .filter_map(|hit| {
-            if let crate::memory::Record::Interpretation(value) = &hit.record {
-                Some((&hit.reference, value))
-            } else {
-                None
+        .map(|hit| match &hit.record {
+            PacketRecord::Canonical(crate::memory::Record::Interpretation(value)) => Ok(Some((
+                &hit.reference,
+                (&value.context_key, &value.criterion),
+            ))),
+            PacketRecord::Reader(
+                crate::memory::interpretation_reader::ReaderRecord::Interpretation(value),
+            ) => {
+                value.validate()?;
+                Ok(Some((
+                    &hit.reference,
+                    (&value.context_key, &value.criterion),
+                )))
             }
+            _ => Ok(None),
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
     ensure!(
         packet.interpretation_roles.len() == interpretations.len(),
@@ -168,7 +186,7 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
             seen.insert((&entry.reference.object, &entry.reference.revision)),
             "capture refused"
         );
-        let (_, interpretation) = interpretations
+        let (_, (context_key, criterion)) = interpretations
             .iter()
             .find(|(reference, _)| {
                 reference.object == entry.reference.object
@@ -176,14 +194,11 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
             })
             .ok_or_else(|| anyhow::anyhow!("capture refused"))?;
         if entry.role == InterpretationRole::SelectedCurrent {
-            ensure!(
-                interpretation.criterion.goal == packet.situation.goal,
-                "capture refused"
-            );
+            ensure!(criterion.goal == packet.situation.goal, "capture refused");
             if let Some(context) = selected_context {
-                ensure!(context == &interpretation.context_key, "capture refused");
+                ensure!(context == *context_key, "capture refused");
             } else {
-                selected_context = Some(&interpretation.context_key);
+                selected_context = Some(*context_key);
             }
             selected += 1;
         }

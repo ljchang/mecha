@@ -14,6 +14,62 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Compact appraisal reader and persistence diagnostics (2026-11-08, prototype branch)
+
+`interpretation_reader::serialize_records` presents atomic-v4 appraisals as
+`interpretation_reader_v1`, retaining the complete SupportReport, source locators,
+criterion and context identity once. Canonical SQLite payloads and receipt hashes
+remain unchanged. Native bridge recapture parses this through a separate strict
+type; it cannot become a canonical Record or source authority. The 20,000-byte and
+32-record contextual limits still withhold oversized complete closures. The
+host-only `Memory::stored_interpretation` checks the active receipt, complete
+source closure and an independent reopened authorization phase without inheriting
+those presentation limits.
+
+`memory_atomic_workflow::pipeline` now marks retain completed immediately after
+the successful API call and records stored_export and recall separately. Failed
+export or contextual exclusion cannot retroactively erase successful storage.
+The independent auditor preserves verified retention on a later recall failure
+and reconstructs the compact presentation from the full canonical export.
+Legacy stage sets and presentations remain accepted; all eight archived frozen
+summary results match the original auditor exactly. Three independent source
+reviews found no actionable issues in the component and combined patches.
+
+Integrated Spark qualification passed workspace/all-target build, strict
+all-target/all-feature Clippy, 6,352 default tests (25 ignored), 6,876
+memory-enabled tests (29 ignored), 286 standalone tests, and 182 Python tests
+with zero skips. Both actual native binaries handled authored HTTP fixtures.
+Formatting passed locally. No real-model calls were made by this increment.
+
+The real read-only development replay reopened the same eight saved atomic-v4
+stores through their original LocalAuthority. Old reader: 3/8 complete bundles;
+compact reader: 8/8, each with exactly nine expected references and SelectedCurrent.
+Context packets fell from 16,357–22,502 legacy bytes to 14,002–17,344; actual
+GoalMemory packets were 14,039–17,381 bytes under the unchanged 20,000-byte cap.
+All internal canonical records matched stored payloads byte-for-byte. Source-only,
+changed-goal, historical-context and pre-retention controls passed. Positive
+HistoricalDependency behavior requires the separate authored regression, because
+these eight stores contain only one interpretation each. Before/after hashes
+confirmed unchanged saved run trees, replay sources and copied binaries. Logs,
+full packets and inventories are in `results/memory-compact-recall-20261108/`.
+
+This is a reader regression repair on already-inspected synthetic cases, not a
+new model comparison or restored semantic reliability. The original 5/8 labels,
+3 factual/17 citation defects, inadequate premises and missing abstentions remain
+unchanged. Neither saved bad judgments nor their historical failed workflow
+records were rewritten. Whole typed native values and evidence-ID selection are
+the next design in `MECHA-MEMORY-DESIGN.md` §31.14; they are not implemented here.
+
+### Handoff source correction (2026-11-08)
+
+The old code-mode "nothing built" handoff statement is obsolete. Current source
+contains `Tool::effect`/`EffectClass`, `Agent::gate`, `CodeTool::call`/`over`,
+`setup::prepare_with_approver` registration, `Feature::Code`, `Lever::CodeTool`
+and `interpreter::for_runs`. This is a source inventory correction, not work
+implemented by the memory increment or a claim about installed capability,
+M1 results, analyst-profile readiness or production behavior. The old release
+v0.1.21 record is now explicitly historical rather than labelled latest.
+
 ### Atomic observations and derived appraisal (2026-11-08, prototype branch)
 
 The explicit default-off v4 path separates `generate_atomic`, `check_atomic` and

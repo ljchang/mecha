@@ -209,6 +209,20 @@ so the native path runs alongside the independent Python checks.
 
 ### Atomic observations and derived appraisal (v4)
 
+Atomic interpretations use a distinct `interpretation_reader_v1` presentation in
+contextual output. It keeps the complete support report, original claim-source
+locators and context identity while removing repeated rendered draft text. The
+stored canonical record and receipt remain unchanged. The full authorized bundle
+must still fit 20,000 bytes; nothing truncates citations or drops dependencies.
+Native recapture recognizes the compact record explicitly and retains its lineage.
+
+The native report separates `retain`, `stored_export` and `recall`. A successful
+write remains successful when later export or contextual recall fails. Available
+receipt, database and canonical-record artifacts survive independently of recall;
+recall reports selected_current, budget_omitted and actual packet bytes. Archived
+reports without stored_export remain supported by the independent auditor.
+These diagnostics and compact serialization do not repair semantic judgment errors.
+
 The explicit `memory_atomic_trial` example compares a three-call policy with a
 single direct judgment over the same captured source evidence. Generation emits
 observations without IDs or judgments; the host assigns IDs. A second call checks

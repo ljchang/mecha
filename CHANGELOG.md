@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental atomic appraisals use a compact contextual presentation that
+  preserves source provenance without repeating stored draft text. The synthetic
+  runner reports storage, canonical export and recall separately, retaining audit
+  evidence when contextual recall fails. The reader budget and security checks
+  remain unchanged; this does not establish semantic reliability.
+
 - Experimental atomic appraisal separates observation extraction, original-source
   checks and a derived current-goal judgment. A synthetic paired runner compares
   this policy with one direct judgment using identical initial evidence and

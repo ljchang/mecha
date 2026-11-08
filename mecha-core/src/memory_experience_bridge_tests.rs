@@ -1411,3 +1411,326 @@ fn contextual_packet_requires_an_exhaustive_consistent_role_map() {
         .unwrap()
         .is_empty());
 }
+
+fn retain_compact_appraisal(
+    f: &mut Captured,
+    context: &crate::memory::interpretation::InterpretationContext,
+) {
+    use crate::memory::interpretation::*;
+    let prepared = f
+        .memory
+        .prepare_interpretation(
+            &f.receipt,
+            &[],
+            context,
+            &f.memory.snapshot().unwrap(),
+            &f.access,
+        )
+        .unwrap();
+    let source = prepared
+        .sources()
+        .iter()
+        .find(|s| s.kind == SourceKind::ArtifactObservation)
+        .unwrap();
+    let citations = vec![SourceCitation {
+        source_id: source.id.clone(),
+        quote: "\"artifact_text\":\"[]\"".into(),
+    }];
+    let request = f
+        .memory
+        .prepare_support(
+            &prepared,
+            SupportProposal {
+                units: vec![ProposedUnit {
+                    id: "o1".into(),
+                    kind: UnitKind::RecordedEvent,
+                    text: "The checked artifact is an empty array".into(),
+                    citations: citations.clone(),
+                }],
+                judgments: vec![],
+            },
+            &f.access,
+        )
+        .unwrap();
+    let checked = finish_support(
+        request,
+        SupportReply {
+            checks: vec![SupportCheck {
+                target: "unit:o1".into(),
+                status: SupportStatus::Supported,
+                unsupported_factual_premise: false,
+                citations,
+                reason: "Synthetic support".into(),
+                questions: vec![],
+            }],
+        },
+        "synthetic-checker",
+    )
+    .unwrap();
+    let request = f.memory.prepare_appraisal(checked, &f.access).unwrap();
+    let evaluated = finish_appraisal(
+        request,
+        AtomicAppraisal {
+            state: AtomicCriterionState::NotMet,
+            because: vec!["o1".into()],
+            reason: "Synthetic appraisal".into(),
+            questions: vec![],
+        },
+        "synthetic-appraiser",
+    )
+    .unwrap();
+    f.memory
+        .retain_evaluated_interpretation(prepared, evaluated, &f.access)
+        .unwrap();
+}
+
+async fn compact_native_packet() -> (Captured, String) {
+    use crate::memory::interpretation::*;
+    use crate::tool::{goal_memory::GoalMemory, Tool, ToolCtx};
+    let mut f = captured_mode(true);
+    let context =
+        InterpretationContext::new(criterion(), "synthetic-compact-context".into()).unwrap();
+    retain_compact_appraisal(&mut f, &context);
+    let tool = GoalMemory::open_with_source_guard(
+        &f.root.join("test.memory-prototype.sqlite"),
+        f.access.clone(),
+        "synthetic".into(),
+        crate::memory::context::Situation {
+            event: "Convert fixture".into(),
+            goal: criterion().goal,
+            needs: None,
+        },
+        std::sync::Arc::new(f.authority.clone()),
+    )
+    .unwrap()
+    .with_interpretations(context.read_policy())
+    .unwrap();
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"fixture"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error && output.external);
+    (f, output.content)
+}
+
+#[tokio::test]
+async fn compact_native_packet_is_strict_and_preserves_every_dependency() {
+    let (f, raw) = compact_native_packet().await;
+    let packet: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let records = packet["memory"]["records"].as_array().unwrap();
+    let index = records
+        .iter()
+        .position(|h| h["record"]["kind"] == "interpretation_reader_v1")
+        .expect("compact reader record");
+    let expected = records
+        .iter()
+        .map(|h| serde_json::from_value::<RevisionRef>(h["reference"].clone()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(memory_packet_references(&raw).unwrap(), expected);
+    for (pointer, replacement) in [
+        (
+            format!("/memory/records/{index}/record/kind"),
+            serde_json::json!("interpretation_reader_v2"),
+        ),
+        (
+            format!("/memory/records/{index}/record/data/producer_version"),
+            serde_json::json!("situated-interpretation-v1"),
+        ),
+        (
+            format!("/memory/records/{index}/record/data/support/protocol"),
+            serde_json::json!("situated-factual-support-v2"),
+        ),
+        (
+            format!("/memory/records/{index}/private_data"),
+            serde_json::json!(false),
+        ),
+        (
+            format!("/memory/records/{index}/untrusted_input"),
+            serde_json::json!(false),
+        ),
+        (
+            format!("/memory/records/{index}/reference/revision"),
+            serde_json::json!(null),
+        ),
+        ("/memory/interpretation_roles".into(), serde_json::json!([])),
+        (
+            "/memory/situation/goal".into(),
+            serde_json::json!("task:other"),
+        ),
+    ] {
+        let mut bad = packet.clone();
+        *bad.pointer_mut(&pointer).unwrap() = replacement;
+        assert!(
+            memory_packet_references(&bad.to_string()).is_err(),
+            "{pointer}"
+        );
+    }
+    let mut bad = packet.clone();
+    bad["memory"]["records"][index]["record"]["data"]["unexpected"] = serde_json::json!(true);
+    assert!(memory_packet_references(&bad.to_string()).is_err());
+    let duplicate = raw.replacen(
+        "\"kind\":\"interpretation_reader_v1\"",
+        "\"kind\":\"interpretation_reader_v1\",\"kind\":\"interpretation_reader_v1\"",
+        1,
+    );
+    assert_ne!(duplicate, raw);
+    assert!(memory_packet_references(&duplicate).is_err());
+    assert!(memory_packet_references(&raw[..raw.len() - 1]).is_err());
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[tokio::test]
+async fn compact_native_recapture_retains_historical_role_and_withdrawn_lineage() {
+    use crate::memory::interpretation::InterpretationContext;
+    use crate::tool::{goal_memory::GoalMemory, Tool, ToolCtx};
+    let (mut f, raw) = compact_native_packet().await;
+    let expected = memory_packet_references(&raw).unwrap();
+    let old_binding = f.authority.binding(&f.confirmation).unwrap();
+    let second_source = f.root.join("second.jsonl");
+    let second_artifact = f.root.join("workspace/second.json");
+    let mut records = transcript()
+        .lines()
+        .map(|line| serde_json::from_str::<Record>(line).unwrap())
+        .collect::<Vec<_>>();
+    if let Record::Meta(meta) = &mut records[0] {
+        meta.id = "synthetic-recaptured".into();
+        meta.workspace = f.root.join("workspace");
+    }
+    for record in &mut records {
+        if let Record::Message(message) = record {
+            for block in &mut message.content {
+                match block {
+                    Block::ToolUse { name, input, .. } => {
+                        *name = "goal_context".into();
+                        *input = serde_json::json!({"memory":{"query":"fixture"}});
+                    }
+                    Block::ToolResult { content, .. } => *content = raw.clone(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let serialize = |rows: &[Record]| {
+        rows.iter()
+            .map(|r| serde_json::to_string(r).unwrap() + "\n")
+            .collect::<String>()
+    };
+    fs::write(&second_source, serialize(&records[..3])).unwrap();
+    let confirmation = f
+        .authority
+        .freeze(FreezeRequest {
+            transcript: second_source.clone(),
+            artifact: second_artifact.clone(),
+            criterion: criterion(),
+            expected_rows: vec![],
+        })
+        .unwrap();
+    let native = serialize(&records);
+    fs::write(&second_source, &native).unwrap();
+    fs::write(&second_artifact, "[]").unwrap();
+    let projected = events_with_evidence(&native, &criterion(), "synthetic").unwrap();
+    assert_eq!(projected.consulted, expected);
+    assert!(projected
+        .originals
+        .iter()
+        .all(|p| !p.text.contains("interpretation_reader_v1")));
+    assert!(projected
+        .originals
+        .iter()
+        .all(|p| p.kind != PassageKind::ToolResult));
+    let captured = f
+        .authority
+        .capture_with_evidence(
+            &mut f.memory,
+            CaptureRequest {
+                confirmation,
+                domain: f.access.domain.clone(),
+                account: "synthetic".into(),
+                scopes: BTreeSet::new(),
+                consulted: vec![],
+                records: SessionRecords::default(),
+            },
+            &f.access,
+        )
+        .unwrap();
+    let second_context = InterpretationContext::new(criterion(), "second-context".into()).unwrap();
+    f.memory
+        .prepare_interpretation(
+            &captured,
+            &[],
+            &second_context,
+            &f.memory.snapshot().unwrap(),
+            &f.access,
+        )
+        .unwrap();
+    f.receipt = captured.clone();
+    retain_compact_appraisal(&mut f, &second_context);
+    let tool = GoalMemory::open_with_source_guard(
+        &f.root.join("test.memory-prototype.sqlite"),
+        f.access.clone(),
+        "synthetic".into(),
+        crate::memory::context::Situation {
+            event: "Convert fixture".into(),
+            goal: criterion().goal,
+            needs: None,
+        },
+        std::sync::Arc::new(f.authority.clone()),
+    )
+    .unwrap()
+    .with_interpretations(second_context.read_policy())
+    .unwrap();
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"fixture"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error);
+    let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+    let roles = packet["memory"]["interpretation_roles"].as_array().unwrap();
+    assert_eq!(roles.len(), 2);
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|r| r["role"] == "SelectedCurrent")
+            .count(),
+        1
+    );
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|r| r["role"] == "HistoricalDependency")
+            .count(),
+        1
+    );
+    let references = memory_packet_references(&output.content).unwrap();
+    assert!(expected.iter().all(|r| references.contains(r)));
+    assert!(captured.originals.iter().all(|r| references.contains(r)));
+    f.authority.withdraw(&old_binding.locator).unwrap();
+    assert!(f
+        .memory
+        .prepare_interpretation(
+            &captured,
+            &[],
+            &second_context,
+            &f.memory.snapshot().unwrap(),
+            &f.access
+        )
+        .is_err());
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"fixture"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error);
+    assert!(memory_packet_references(&output.content)
+        .unwrap()
+        .is_empty());
+    fs::remove_dir_all(f.root).unwrap();
+}

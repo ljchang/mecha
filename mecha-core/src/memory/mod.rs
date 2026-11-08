@@ -13,6 +13,7 @@ mod forget;
 pub mod guard_coverage;
 pub mod host_capture;
 pub mod interpretation;
+pub(crate) mod interpretation_reader;
 mod model;
 pub mod model_evaluation;
 pub mod plan_assessment;

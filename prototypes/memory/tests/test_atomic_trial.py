@@ -321,6 +321,29 @@ class NativeContractTests(unittest.TestCase):
                 changed = audit.audit_case(root/'native',case,model)
                 self.assertFalse(changed[0]['structural_valid'],key)
                 path.write_bytes(saved)
+            # A contextual-reader omission cannot erase independently verified storage.
+            report = copy.deepcopy(original)
+            pipeline = report['arms']['pipeline']
+            pipeline.update(status='failed', error='ordinary recall did not select')
+            pipeline['stages']['recall'].update(status='failed', error='ordinary recall did not select')
+            for name in ('historical', 'changed_goal'):
+                pipeline['artifacts'].pop(name)
+                pipeline['stages'][name].update(status='withheld', error='upstream stage unavailable')
+            descriptor = pipeline['artifacts']['recall']
+            path = root/'native'/descriptor['path']
+            saved = path.read_bytes()
+            value = audit.decode(saved.decode())
+            value['memory'].update(records=[], interpretation_roles=[], budget_omitted=True)
+            data = json.dumps(value).encode()
+            path.write_bytes(data)
+            descriptor.update(sha256=hashlib.sha256(data).hexdigest(),bytes=len(data))
+            report_path.write_text(json.dumps(report))
+            failed = audit.audit_case(root/'native',case,model)[0]
+            self.assertFalse(failed['completed'])
+            self.assertFalse(failed['structural_valid'])
+            self.assertTrue(failed['retention_verified'], failed['errors'])
+            self.assertFalse(failed['recall_verified'])
+            path.write_bytes(saved)
             report_path.write_bytes(original_bytes)
 
 
@@ -359,6 +382,31 @@ class DurableTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 audit.validate_retained(bad,proposal,checks,final,p,'m',bindings)
 
+    def test_compact_recall_is_reconstructed_from_canonical_retained_record(self):
+        record, _, _, _, _ = self.fixture()
+        compact = dict(kind='interpretation_reader_v1', data=dict(
+            context_key='context', criterion=record['criterion'], host_context_id='host',
+            producer_version='situated-interpretation-v4', claim_sources=record['claim_sources'],
+            support=record['draft']['support']))
+        audit.validate_recall_record(compact, record)
+        audit.validate_recall_record(dict(kind='interpretation', data=record), record)
+        for mutate in (
+            lambda r: r.update(kind='interpretation_reader_v2'),
+            lambda r: r.update(kind='interpretation'),
+            lambda r: r['data'].update(context_key='forged'),
+            lambda r: r['data'].update(host_context_id='forged'),
+            lambda r: r['data'].update(producer_version='situated-interpretation-v3'),
+            lambda r: r['data']['criterion'].update(goal='other'),
+            lambda r: r['data']['claim_sources'][0].update(field='/other'),
+            lambda r: r['data']['support']['units'][0]['unit'].update(text='Altered fact.'),
+            lambda r: r['data']['support']['atomic'].update(checking_binding='0'*64),
+            lambda r: r['data'].update(draft=record['draft']),
+        ):
+            changed = copy.deepcopy(compact)
+            mutate(changed)
+            with self.assertRaises(ValueError):
+                audit.validate_recall_record(changed, record)
+
     def test_sqlite_row_receipt_and_all_source_dependencies(self):
         import hashlib
         import sqlite3
@@ -382,6 +430,21 @@ class DurableTests(unittest.TestCase):
                 historical=artifact('historical.json',dict(memory=dict(interpretation_roles=[]))),
                 changed_goal=artifact('changed.json',dict(memory=dict(interpretation_roles=[]))))
             audit.validate_persistence(root,artifacts,record,p)
+            compact = dict(kind='interpretation_reader_v1', data=dict(
+                context_key=record['context_key'], criterion=record['criterion'],
+                host_context_id=record['host_context_id'], producer_version='situated-interpretation-v4',
+                claim_sources=record['claim_sources'], support=record['draft']['support']))
+            artifacts['recall'] = artifact('recall.json', dict(memory=dict(
+                interpretation_roles=[dict(reference=reference,role='SelectedCurrent')],
+                records=[dict(reference=reference,record=compact)])))
+            audit.validate_persistence(root,artifacts,record,p)
+            row = audit.empty_row('one','pipeline')
+            artifacts['recall'] = artifact('recall.json',dict(memory=dict(
+                interpretation_roles=[], records=[], budget_omitted=True)))
+            with self.assertRaisesRegex(ValueError,'ordinary recall did not select'):
+                audit.validate_persistence(root,artifacts,record,p,row)
+            self.assertTrue(row['retention_verified'])
+            self.assertFalse(row['recall_verified'])
             db.execute('DELETE FROM dependency')
             artifacts['database'] = artifact('db.sqlite',db.serialize())
             with self.assertRaisesRegex(ValueError,'dependencies'):

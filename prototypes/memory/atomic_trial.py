@@ -75,7 +75,7 @@ def empty_row(case_id, arm):
     return dict(case_id=case_id, arm=arm, structural_valid=False, completed=False,
                 final_state=None, final_state_source='unobserved', observed_final_states=[], retained_bearing=None, frozen_expected_state=None, frozen_label_correct=None,
                 observation_targets=[], observation_inventory_complete=False, observation_audit_complete=False,
-                retention_verified=False, criterion_review=None, selected_premises_sufficient=None,
+                retention_verified=False, recall_verified=False, criterion_review=None, selected_premises_sufficient=None,
                 temporally_applicable=None, criterion_supported=None, usage_stages={},
                 defect_counts={group: dict(factual=0, citation=0) for group in ('generated', 'rejected', 'accepted', 'retained', 'diagnostic')},
                 errors=[], review_targets=[], semantic_complete=False,
@@ -480,11 +480,12 @@ def audit_case(root, case, model, annotations=None):
         refresh_usage(row)
         prepare_semantic_context(row, calls)
         try:
-            require(set(details.get('stages', {})) == set(STAGES[arm]) | (set(('retain', 'recall', 'changed_goal', 'historical')) if arm == 'pipeline' else set()), 'unknown/missing stages')
+            expected_stages = set(STAGES[arm]) | (set(('retain', 'recall', 'changed_goal', 'historical')) if arm == 'pipeline' else set())
+            actual_stages = set(details.get('stages', {}))
+            require(actual_stages == expected_stages or (arm == 'pipeline' and actual_stages == expected_stages | {'stored_export'}), 'unknown/missing stages')
             elapsed = details['elapsed_ms']
             require(type(elapsed) is int and 0 <= elapsed <= 540000, 'arm deadline exceeded or unknown')
             row['elapsed_ms'] = elapsed
-            require(details['status'] == 'completed' and details.get('error') is None, 'arm incomplete')
             require(len(calls) == len(STAGES[arm]), 'incomplete raw exchanges')
             require(details['initial_evidence_sha256'] == report['initial_evidence']['sha256'] and details['model'] == model and details['seed'] == SEED, 'arm initial evidence/model/seed mismatch')
             require(details['output_token_allowance'] == 6144 and details['deadline_seconds'] == 540, 'arm budget mismatch')
@@ -495,6 +496,7 @@ def audit_case(root, case, model, annotations=None):
                 validate_pipeline(root, details, calls, initial, model, row)
             else:
                 validate_direct(root, details, calls['direct'])
+            require(details['status'] == 'completed' and details.get('error') is None, 'arm incomplete')
             row['completed'] = True
         except ERRORS as error:
             row['errors'].append('arm: ' + str(error))
@@ -543,7 +545,8 @@ def validate_pipeline(root, arm, calls, initial, model, row=None):
     require(appraisal_packet['supported_ids'] == supported, 'appraiser supported IDs differ from exact checks')
     final = appraisal(appraisal_packet, final, proposal, checked)
     artifacts = arm['artifacts']
-    fields(artifacts, ('numbered_observations', 'fact_checks', 'appraisal', 'retained', 'receipt', 'database', 'recall', 'historical', 'changed_goal', 'checking_binding_input', 'appraisal_binding_input'), 'pipeline artifacts')
+    allowed = {'numbered_observations', 'fact_checks', 'appraisal', 'retained', 'receipt', 'database', 'recall', 'historical', 'changed_goal', 'checking_binding_input', 'appraisal_binding_input'}
+    require(isinstance(artifacts, dict) and set(artifacts) <= allowed, 'unknown pipeline artifacts')
     require(arm.get('independently_checked_retention') is True, 'pipeline retention unavailable')
     require(read(root, artifacts['numbered_observations']) == proposal, 'host numbered observation export differs')
     require(read(root, artifacts['fact_checks']) == canonical, 'canonical factual export differs')
@@ -552,7 +555,7 @@ def validate_pipeline(root, arm, calls, initial, model, row=None):
     validate_retained(retained, proposal, checked, final, initial, model,
                       [p['request_key'] for p in (generation_packet, check_packet, appraisal_packet)])
     validate_persistence(root, artifacts, retained, initial, row)
-    for name in ('retain', 'recall', 'historical', 'changed_goal'):
+    for name in ('retain', 'recall', 'historical', 'changed_goal') + (('stored_export',) if 'stored_export' in arm['stages'] else ()):
         require(arm['stages'][name]['status'] == 'completed' and arm['stages'][name].get('error') is None, 'incomplete persistence/control stage: ' + name)
 
 
@@ -674,6 +677,22 @@ def main():
     print(json.dumps(result, indent=2))
 
 
+def validate_recall_record(record, retained):
+    """Independently reconstruct the versioned presentation from canonical storage."""
+    fields(record, ('kind', 'data'), 'recalled record')
+    if record['kind'] == 'interpretation':
+        expected = retained
+    else:
+        require(record['kind'] == 'interpretation_reader_v1', 'unknown interpretation presentation')
+        draft = retained['draft']
+        require(draft['producer_version'] == 'situated-interpretation-v4' and
+                draft['support']['protocol'] == 'situated-atomic-appraisal-v4' and
+                isinstance(draft['support']['atomic'], dict), 'compact presentation requires canonical atomic v4')
+        expected = {key: retained[key] for key in ('context_key', 'criterion', 'host_context_id', 'claim_sources')}
+        expected.update(producer_version=draft['producer_version'], support=draft['support'])
+    require(record['data'] == expected, 'ordinary recall differs from durable record')
+
+
 def validate_persistence(root, artifacts, retained, initial, row=None):
     import sqlite3
     receipt = read(root, artifacts['receipt'])
@@ -699,7 +718,10 @@ def validate_persistence(root, artifacts, retained, initial, row=None):
     recall = read(root, artifacts['recall'])['memory']
     require(any(r['reference'] == reference and r['role'] == 'SelectedCurrent' for r in recall['interpretation_roles']), 'ordinary recall did not select durable record')
     matching = [r for r in recall['records'] if r['reference'] == reference]
-    require(len(matching) == 1 and matching[0]['record'] == dict(kind='interpretation', data=retained), 'ordinary recall differs from durable record')
+    require(len(matching) == 1, 'ordinary recall lacks unique durable record')
+    validate_recall_record(matching[0]['record'], retained)
+    if row is not None:
+        row['recall_verified'] = True
     for name in ('historical', 'changed_goal'):
         control = read(root, artifacts[name])['memory']
         require(not any(r['role'] == 'SelectedCurrent' for r in control.get('interpretation_roles', [])), name + ' promoted old interpretation into current context')

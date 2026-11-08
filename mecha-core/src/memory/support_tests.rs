@@ -1053,3 +1053,421 @@ fn revised_later_known_replaces_downgraded_known_without_relabeling_old_reason()
     );
     assert_eq!(report.judgments[0].because, vec!["u1"]);
 }
+
+// Six independently checked observations amplify only canonical draft copies;
+// the original seven passages and every uncited dependency must survive recall.
+fn large_atomic_fixture() -> (
+    std::path::PathBuf,
+    Memory,
+    Arc<AtomicBool>,
+    InterpretationReceipt,
+) {
+    large_atomic_fixture_with_text(55)
+}
+
+fn large_atomic_fixture_with_text(
+    repeats: usize,
+) -> (
+    std::path::PathBuf,
+    Memory,
+    Arc<AtomicBool>,
+    InterpretationReceipt,
+) {
+    let (path, mut db, guard) = supported_fixture();
+    let mut capture = rich_input("large-atomic");
+    for index in 0..4 {
+        let mut passage = capture.originals[0].clone();
+        passage.source.id = format!("large-atomic-extra-{index}");
+        passage.line = index + 2;
+        passage.pointer = format!("/content/{index}/text");
+        passage.text = format!(
+            "Synthetic observation {index}: {}",
+            "雪\"\\\n".repeat(repeats)
+        );
+        capture.originals.push(passage);
+    }
+    let receipt = db
+        .admit_host_capture_with_evidence(capture, &access())
+        .unwrap();
+    let prepared = prepare(&db, &receipt);
+    let source = prepared
+        .sources()
+        .iter()
+        .find(|s| s.text.starts_with("Synthetic observation 0:"))
+        .unwrap();
+    let citation = SourceCitation {
+        source_id: source.id.clone(),
+        quote: source.text.chars().take(100).collect(),
+    };
+    let units = (1..=6)
+        .map(|index| ProposedUnit {
+            id: format!("o{index}"),
+            kind: UnitKind::RecordedEvent,
+            text: format!(
+                "Synthetic recorded observation {index}: {}",
+                "bounded evidence ".repeat(24)
+            ),
+            citations: vec![citation.clone()],
+        })
+        .collect::<Vec<_>>();
+    let checks = SupportReply {
+        checks: units
+            .iter()
+            .map(|unit| SupportCheck {
+                target: format!("unit:{}", unit.id),
+                status: SupportStatus::Supported,
+                unsupported_factual_premise: false,
+                citations: unit.citations.clone(),
+                reason: "Authored synthetic check".into(),
+                questions: vec![],
+            })
+            .collect(),
+    };
+    let request = db
+        .prepare_support(
+            &prepared,
+            SupportProposal {
+                units,
+                judgments: vec![],
+            },
+            &access(),
+        )
+        .unwrap();
+    let checked = finish_support(request, checks, "synthetic-checker").unwrap();
+    let appraisal = db.prepare_appraisal(checked, &access()).unwrap();
+    let evaluated = finish_appraisal(
+        appraisal,
+        AtomicAppraisal {
+            state: AtomicCriterionState::Met,
+            because: (1..=6).map(|i| format!("o{i}")).collect(),
+            reason: "Authored synthetic appraisal".into(),
+            questions: vec![],
+        },
+        "synthetic-appraiser",
+    )
+    .unwrap();
+    let retained = db
+        .retain_evaluated_interpretation(prepared, evaluated, &access())
+        .unwrap();
+    (path, db, guard, retained)
+}
+
+#[test]
+fn compact_atomic_reader_fits_full_nine_record_closure_and_preserves_storage() {
+    let (path, db, _, retained) = large_atomic_fixture();
+    let before: (String, String) = db.conn.query_row(
+        "SELECT r.payload,i.payload_hash FROM revision r JOIN interpretation_receipt i ON i.revision_id=r.id WHERE r.id=?1",
+        [&retained.reference.revision], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+    let packet = read(&db, &context());
+    assert_eq!(
+        packet.records.len(),
+        9,
+        "entire atomic interpretation closure must fit"
+    );
+    let encoded = serde_json::to_value(&packet).unwrap();
+    let mut legacy = encoded.clone();
+    legacy["records"] = serde_json::to_value(&packet.records).unwrap();
+    let old_len = serde_json::to_vec(&legacy).unwrap().len();
+    let new_len = serde_json::to_vec(&encoded).unwrap().len();
+    eprintln!("legacy bytes={old_len}; compact bytes={new_len}");
+    assert!(old_len > 20_000);
+    assert!(new_len <= 20_000);
+    assert_eq!(packet.interpretation_roles.len(), 1);
+    assert_eq!(
+        packet.interpretation_roles[0].role,
+        InterpretationRole::SelectedCurrent
+    );
+    let canonical = packet
+        .records
+        .iter()
+        .find(|h| h.reference == retained.reference)
+        .unwrap();
+    let Record::Interpretation(interpretation) = &canonical.record else {
+        panic!("internal record must stay canonical")
+    };
+    let wire = encoded["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["reference"] == serde_json::to_value(&retained.reference).unwrap())
+        .unwrap();
+    assert_eq!(wire["record"]["kind"], "interpretation_reader_v1");
+    assert_eq!(
+        wire["record"]["data"]["support"],
+        serde_json::to_value(&interpretation.draft.support).unwrap()
+    );
+    assert_eq!(
+        wire["record"]["data"]["claim_sources"],
+        serde_json::to_value(&interpretation.claim_sources).unwrap()
+    );
+    assert!(wire["record"]["data"].get("draft").is_none());
+    assert!(serde_json::from_value::<Record>(wire["record"].clone()).is_err());
+    for (hit, rendered) in packet
+        .records
+        .iter()
+        .zip(encoded["records"].as_array().unwrap())
+    {
+        assert!(hit.private_data && hit.untrusted_input);
+        if !matches!(hit.record, Record::Interpretation(_)) {
+            assert_eq!(serde_json::to_value(hit).unwrap(), *rendered);
+        }
+    }
+    let after: (String, String) = db.conn.query_row(
+        "SELECT r.payload,i.payload_hash FROM revision r JOIN interpretation_receipt i ON i.revision_id=r.id WHERE r.id=?1",
+        [&retained.reference.revision], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+    assert_eq!(before, after);
+    Memory::open_read_only(&path).unwrap();
+}
+
+#[cfg(feature = "memory-prototype")]
+#[tokio::test]
+async fn compact_atomic_goalmemory_returns_the_full_nine_record_packet() {
+    use crate::tool::{goal_memory::GoalMemory, Tool, ToolCtx};
+    let (path, db, state, _) = large_atomic_fixture();
+    let packet = read(&db, &context());
+    assert_eq!(packet.records.len(), 9);
+    let encoded = serde_json::to_value(&packet).unwrap();
+    let tool = GoalMemory::open_with_source_guard(
+        &path,
+        access(),
+        "test".into(),
+        Situation {
+            event: "conversion".into(),
+            goal: criterion().goal,
+            needs: None,
+        },
+        Arc::new(Guard(state)),
+    )
+    .unwrap()
+    .with_interpretations(context().read_policy())
+    .unwrap();
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"conversion"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error && output.external);
+    let actual: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+    assert_eq!(actual["memory"]["records"], encoded["records"]);
+    assert!(serde_json::to_vec(&actual["memory"]).unwrap().len() <= 20_000);
+}
+
+#[test]
+fn compact_atomic_reader_respects_exact_byte_limit_and_uncited_source_withdrawal() {
+    let (_, mut db, _, retained) = large_atomic_fixture();
+    let packet = read(&db, &context());
+    assert_eq!(packet.records.len(), 9);
+    let size = serde_json::to_vec(&packet).unwrap().len();
+    let mut policy = ContextPolicy {
+        access: access(),
+        valid_at: None,
+        recall: RecallQuery {
+            text: "conversion".into(),
+            known_at: db.snapshot().unwrap(),
+            account: None,
+            session_id: None,
+            occurred_after: None,
+            occurred_before: None,
+            limit: 8,
+            neighbors: 0,
+            max_bytes: size,
+        },
+    };
+    let request = ContextRequest {
+        query: "conversion".into(),
+        bindings: vec![],
+    };
+    let situation = Situation {
+        event: "conversion".into(),
+        goal: criterion().goal,
+        needs: None,
+    };
+    let exact = db
+        .context_with_interpretations(&request, &policy, &situation, &context().read_policy())
+        .unwrap();
+    assert_eq!(exact.records.len(), 9);
+    policy.recall.max_bytes -= 1;
+    let smaller = db
+        .context_with_interpretations(&request, &policy, &situation, &context().read_policy())
+        .unwrap();
+    assert!(smaller.budget_omitted);
+    assert!(!smaller
+        .records
+        .iter()
+        .any(|h| h.reference == retained.reference));
+    assert!(serde_json::to_vec(&smaller).unwrap().len() <= policy.recall.max_bytes);
+    // The original first passage was not cited by any accepted observation.
+    db.forget(&rich_input("large-atomic").originals[0].source)
+        .unwrap();
+    assert!(read(&db, &context()).interpretation_roles.is_empty());
+}
+
+#[test]
+fn stored_interpretation_authenticates_receipt_context_and_uncited_sources() {
+    let (_, mut db, state, retained) = large_atomic_fixture();
+    let canonical = db
+        .stored_interpretation(&retained, &access(), &context())
+        .unwrap();
+    assert_eq!(
+        canonical.draft.support.as_ref().unwrap().protocol,
+        ATOMIC_SUPPORT_PROTOCOL
+    );
+    let mut forged = retained.clone();
+    forged.id.push_str("forged");
+    assert!(db
+        .stored_interpretation(&forged, &access(), &context())
+        .is_err());
+    forged = retained.clone();
+    forged.reference.object.push_str("forged");
+    assert!(db
+        .stored_interpretation(&forged, &access(), &context())
+        .is_err());
+    let foreign = InterpretationContext::new(criterion(), "foreign-context".into()).unwrap();
+    assert!(db
+        .stored_interpretation(&retained, &access(), &foreign)
+        .is_err());
+    state.store(false, Ordering::SeqCst);
+    assert!(db
+        .stored_interpretation(&retained, &access(), &context())
+        .is_err());
+    state.store(true, Ordering::SeqCst);
+    db.forget(&rich_input("large-atomic").originals[0].source)
+        .unwrap();
+    assert!(db
+        .stored_interpretation(&retained, &access(), &context())
+        .is_err());
+}
+
+#[test]
+fn compact_atomic_reader_withholds_when_even_compact_closure_is_too_large() {
+    let (_, db, _, retained) = large_atomic_fixture_with_text(250);
+    let stored = db
+        .stored_interpretation(&retained, &access(), &context())
+        .unwrap();
+    assert_eq!(stored.draft.support.as_ref().unwrap().units.len(), 6);
+    let packet = read(&db, &context());
+    assert!(packet.budget_omitted);
+    assert!(packet.interpretation_roles.is_empty());
+    assert!(!packet
+        .records
+        .iter()
+        .any(|h| h.reference == retained.reference));
+    assert!(serde_json::to_vec(&packet).unwrap().len() <= 20_000);
+}
+
+#[test]
+fn compact_atomic_reader_and_host_audit_recheck_final_source_authority() {
+    use std::sync::atomic::AtomicUsize;
+    struct LastCheck {
+        calls: Arc<AtomicUsize>,
+        deny_at: usize,
+    }
+    impl ExternalSourceGuard for LastCheck {
+        fn check(&self, _: &ExternalBinding) -> SourceStatus {
+            if self.calls.fetch_add(1, Ordering::SeqCst) + 1 >= self.deny_at {
+                SourceStatus::Withheld
+            } else {
+                SourceStatus::Checked
+            }
+        }
+    }
+    let (_, mut db, _, retained) = large_atomic_fixture();
+    for host_audit in [false, true] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        db.source_guard = Some(Arc::new(LastCheck {
+            calls: calls.clone(),
+            deny_at: usize::MAX,
+        }));
+        if host_audit {
+            db.stored_interpretation(&retained, &access(), &context())
+                .unwrap();
+        } else {
+            assert_eq!(read(&db, &context()).records.len(), 9);
+        }
+        let count = calls.swap(0, Ordering::SeqCst);
+        assert!(count >= 2);
+        db.source_guard = Some(Arc::new(LastCheck {
+            calls,
+            deny_at: count,
+        }));
+        if host_audit {
+            assert!(db
+                .stored_interpretation(&retained, &access(), &context())
+                .is_err());
+        } else {
+            let packet = read(&db, &context());
+            assert!(packet.records.is_empty() && packet.interpretation_roles.is_empty());
+        }
+    }
+}
+
+#[test]
+fn compact_serializer_preserves_legacy_supported_interpretation_bytes() {
+    let (_, mut db, _) = supported_fixture();
+    let prepared = prepared_supported(&mut db);
+    let evaluated = evaluate(
+        &db,
+        &prepared,
+        proposal(&prepared),
+        reply(
+            &prepared,
+            SupportStatus::Supported,
+            SupportStatus::Supported,
+        ),
+    );
+    db.retain_evaluated_interpretation(prepared, evaluated, &access())
+        .unwrap();
+    let packet = read(&db, &context());
+    assert_eq!(packet.interpretation_roles.len(), 1);
+    let encoded = serde_json::to_value(&packet).unwrap();
+    assert_eq!(
+        encoded["records"],
+        serde_json::to_value(&packet.records).unwrap()
+    );
+}
+
+#[test]
+fn stored_interpretation_is_independent_of_contextual_record_count_limit() {
+    let (_, mut db, _) = supported_fixture();
+    let mut previous = None;
+    for episode in 0..2 {
+        let mut capture = rich_input(&format!("many-records-{episode}"));
+        for index in 0..12 {
+            let mut passage = capture.originals[0].clone();
+            passage.source.id = format!("many-records-{episode}-extra-{index}");
+            passage.line = index + 2;
+            passage.pointer = format!("/content/{index}/text");
+            passage.text = format!("Synthetic uncited passage {episode}/{index}");
+            capture.originals.push(passage);
+        }
+        if let Some(receipt) = &previous {
+            let receipt: &CaptureReceipt = receipt;
+            capture.consulted.push(receipt.projection.clone());
+        }
+        previous = Some(
+            db.admit_host_capture_with_evidence(capture, &access())
+                .unwrap(),
+        );
+    }
+    let receipt = previous.unwrap();
+    let prepared = prepare(&db, &receipt);
+    let evaluated = evaluate(
+        &db,
+        &prepared,
+        proposal(&prepared),
+        reply(
+            &prepared,
+            SupportStatus::Supported,
+            SupportStatus::Supported,
+        ),
+    );
+    let retained = db
+        .retain_evaluated_interpretation(prepared, evaluated, &access())
+        .unwrap();
+    let packet = read(&db, &context());
+    assert!(packet.budget_omitted && packet.interpretation_roles.is_empty());
+    db.stored_interpretation(&retained, &access(), &context())
+        .unwrap();
+}

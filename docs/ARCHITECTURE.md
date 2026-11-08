@@ -12986,6 +12986,22 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   judgment and binds each stage. Final retention replays both stages and checks
   source authority again. Accepted premise membership is a structural gate,
   not a proof of joint sufficiency or temporal applicability.
+- **A contextual presentation is not a canonical stored record.** Atomic-v4
+  interpretations serialize through the explicit `interpretation_reader_v1`
+  presentation only inside ContextPacket. The complete SupportReport and source
+  locators remain; repeated draft text/claims are omitted. Internal hits and
+  SQLite hashes keep the full canonical record. Native recapture decodes the
+  presentation separately and carries every consulted reference with its role
+  and taint. Five valid saved appraisals exceeded the 20 KB packet budget because
+  prose, claims and support repeated the same quotations; raising the cap or
+  dropping dependencies would hide the cause and weaken the contract.
+- **Successful storage and successful recall are separate facts.** The host-only
+  `stored_interpretation` accessor authenticates the active receipt, context,
+  canonical payload and complete current source closure, with a fresh final
+  reopened check. It does not use the model presentation budget and is not a
+  tool. The atomic trial records the write before attempting stored export and
+  ordinary recall. A later budget exclusion once hid both the retained payload
+  and database audit, making a saved wrong judgment look like unknown retention.
 - **Constrained-output schemas must fit the actual grammar compiler.** The
   pinned llama.cpp compiler selects `oneOf` alternatives without merging sibling
   properties. Each alternative must therefore be a complete closed object with

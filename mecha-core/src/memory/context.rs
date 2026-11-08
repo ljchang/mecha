@@ -76,6 +76,7 @@ pub struct ContextPacket {
     pub valid_at: Option<String>,
     pub situation: Situation,
     pub bindings: Vec<SelectedMention>,
+    #[serde(serialize_with = "super::interpretation_reader::serialize_records")]
     pub records: Vec<Hit>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub interpretation_roles: Vec<interpretation::InterpretationRoleEntry>,

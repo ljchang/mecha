@@ -170,10 +170,17 @@ only 3/8 complete versus 8/8 direct answers. The inspected bundle exceeds the
 defects in accepted pipeline observations, with no defective observation rejected.
 Correct labels still lacked sufficient/current selected premises in all eight
 pipeline cases. Neither arm abstained on the two unknown cases. The gate fails.
-Next: compact bounded evidence without dropping provenance, preserve safe
-post-write failure diagnostics, and use complete typed event facts/citations where
-possible before testing criterion application again. Concepts remain gated.
-See HISTORY, `MECHA-MEMORY-DESIGN.md` §31.12 and the prototype README. The v3
+The follow-up reader repair is implemented in `InterpretationReaderV1` and
+`serialize_records`: full canonical storage is preserved while contextual output
+removes repeated prose. `Memory::stored_interpretation` provides a separately
+authorized host audit, and `memory_atomic_workflow::pipeline` distinguishes
+retain, stored_export and recall outcomes. Saved-store replay improved complete
+recall from 3/8 to 8/8 with all nine dependencies and unchanged source hashes.
+Spark passed 6,352 default / 6,876 memory-enabled tests, 286 standalone and 182
+Python checks with zero skips; full conditions are in HISTORY. Next: complete typed native event facts and source
+locators, then test criterion application, temporal relevance and abstention on
+fresh cases. The earlier semantic failures remain; concepts remain gated.
+See HISTORY, `MECHA-MEMORY-DESIGN.md` §§31.12–31.14 and the prototype README. The v3
 results below remain historical failures, not the current software qualification.
 
 The default-off synthetic v8 path captures bounded action inputs and independent
@@ -1608,8 +1615,8 @@ before publishing. The previous source audit remains applicable; the follow-up
 audit confirms graceful serve shutdown, awaited MCP teardown and typed/steered
 input broadcasts are implemented on main, with evidence in `HISTORY.md`.
 
-Public at **github.com/ljchang/mecha**, MIT licensed. The latest published
-release is **v0.1.21**, published and installed 2026-09-18 from `a5275980`
+Public at **github.com/ljchang/mecha**, MIT licensed. The release recorded here
+was **v0.1.21**, published and installed 2026-09-18 from `a5275980`
 (v0.1.20 was `eab6773f`, 2026-09-11). The dated v0.1.19 installation record
 above describes an earlier update; the current deployment is the 2026-09-18
 entry under *Machine state, dated* below.
@@ -2096,6 +2103,11 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**2026-11-08 memory increment:** isolated Spark builds and saved synthetic-store
+reads only; no service restart or production installation. Earlier deployed
+artifacts, model settings and service-health claims below were not reverified.
+The main eval inventory was recounted: 36 cases / 15 tags.
 
 **Verified 2026-09-09 15:56 UTC for the anticipation worktree:** baseline build
 and workspace tests passed; final strict workspace tests and Clippy passed
@@ -7225,25 +7237,17 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   `precheck`). Nothing would notice a build on an older toolchain failing;
   state it in `Cargo.toml` or add an MSRV job.
 
-### Code mode and the RLM arc — designed and ruled, nothing built
+### Code mode and the RLM arc — remaining qualification
 
 `docs/CODE-MODE-DESIGN.md` is the authority. `docs/RLM-RESEARCH.md` and
-`docs/POST-TRAINING-RESEARCH.md` hold the evidence (#760, merged
-9506285a1). The owner ruled R1–R3 and R5–R9 on 2026-10-30. Verified
-unbuilt at 9506285a1: no `code` tool in the registry, no `Lever::CodeTool`,
-no effect-class axis on `Tool`.
+`docs/POST-TRAINING-RESEARCH.md` hold the evidence. The former blanket
+"nothing built" claim was obsolete: current source includes effect classes,
+`Agent::gate`, `CodeTool`, feature/lever controls and setup registration.
+The source-confirmed implementation inventory moved to HISTORY. This memory
+increment did not reverify code-mode deployment, M1 measurements, budget rulings
+or the analyst profile; consult that design and the owning lane before treating
+those items as finished.
 
-- **M1 is owed before R4.** Measure `monty-pool` worker start and
-  per-host-call overhead on this box, alone and under contention. R4 sets
-  the budget defaults from M0 (done, §10) and M1.
-- **The build order is the design's, not §3.12's.**
-  1. `ROLLOUT-DESIGN.md` §3.2's effect class, shared with rollouts.
-  2. Split `Agent::dispatch`'s per-call body into gate and rendering.
-  3. The `code` tool (read-only slice, handles, typed `llm_query`), as a
-     `Feature` and a `harness::Lever`.
-  4. The `analyst` profile.
-
-  Each step has §8 tests that must fail on the naive build.
 - **Post-training is not started, deliberately.** Step 0 (2026-10-30)
   found six owner denials, with the model-side failures being retry loops.
   Of the three harness fixes it named, #762 (in review) adds one and

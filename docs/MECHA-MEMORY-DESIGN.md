@@ -3195,3 +3195,83 @@ not success; failed and incomplete cases remain in the planned denominator.
 Because both arms receive the same evidence, this comparison tests reasoning
 decomposition and evidence handling. It does not measure a retrieval advantage
 or establish that the full memory system improves long-horizon decisions.
+
+
+### 31.13 Compact presentation with separate storage and recall outcomes
+
+**Implemented addendum (8 November 2026):** full qualification and actual
+read-only saved-store replay passed; complete recall improved from 3/8 to 8/8
+with unchanged originals. See HISTORY for sizes, controls and unchanged semantic
+failures. The design below is retained as rationale.
+
+Design dated 8 November 2026; implementation qualification is recorded separately
+in HISTORY. The next bounded repair addresses the five post-storage reader-budget
+failures from 31.12 without changing their saved appraisals or semantic scores.
+
+SQLite retains the complete canonical Interpretation, including its rendered draft,
+claims, support report and receipt hash. ContextPacket retains those same canonical
+records internally. Only contextual serialization replaces an atomic-v4
+interpretation with an explicitly tagged `interpretation_reader_v1` presentation.
+It includes context_key, complete criterion, host_context_id, producer_version,
+claim_sources and the complete support report. This removes repeated prose and
+quotations while preserving every admitted observation, original citation, factual
+check disposition, judgment premise ID and stage binding once. Other record kinds
+and legacy interpretation protocols retain their existing serialization.
+
+The compact presentation is not a canonical Record and cannot be used as one.
+Native GoalMemory recapture decodes it through a separate strict reader type;
+current/historical roles, full consulted references and taint remain mandatory.
+Every returned bundle retains complete authorized dependencies under the unchanged
+20,000-byte and 32-record limits. A still-oversized bundle is withheld atomically.
+Selection and final reopened source checks remain separate, and uncited ancestors
+can still disqualify a result. No source values or quotation tails are truncated.
+
+Storage success, canonical audit export and ordinary contextual recall are separate
+outcomes. A successful write is recorded before a later export/read can fail.
+The host-only stored-record accessor authenticates receipt/context, canonical
+payload and current complete source closure without using the model packet budget;
+it does not expose an uncapped model tool. The trial preserves its receipt,
+database snapshot and available canonical audit, then records actual GoalMemory
+selection, serialized bytes and budget omission. Failed recall must never imply
+that a wrong judgment was not saved.
+
+Qualification uses regression tests and read-only replay of the already-viewed
+eight databases through the original source authority. Original files, labels and
+semantic audits remain immutable. Successful replay establishes retrieval and
+serialization behavior only; it cannot establish better factual support, premise
+sufficiency, abstention or decision accuracy. Implementation steps are in
+`superpowers/plans/2026-11-08-compact-appraisal-recall.md`.
+
+### 31.14 Next evidence boundary: complete typed native values
+
+Proposed, not implemented by the compact-reader repair. The v4 extractor is asked
+to describe data in 128-character observations and cite at most 300-character source
+chunks. Native JSON envelopes can split inside escaped values, and a faithfully
+copied fragment is neither a complete fact nor an adequate premise. Increasing
+limits across old reports would change historical canonical contracts and retain
+the same avoidable copying task.
+
+The next experiment should derive a core-owned `NativeEvidenceView` from already
+authenticated prepared sources. Facts retain a source revision, original field,
+typed selector (whole field or JSON pointer), role, known time and complete value.
+Decode native envelopes by authenticated source kind and field, never because
+arbitrary user or assistant text happens to parse as JSON. Preserve requested
+inputs, action receipts, independently observed bytes, historical criteria and
+historical artifact checks as distinct roles. Current criterion remains separately
+host-bound. An observed file's assertions do not become verified world facts.
+Empty present content and missing/refused/non-UTF8/oversized content stay distinct.
+
+Host-issued fact IDs bind the whole value and its provenance; a model selects IDs
+and appraises the current criterion instead of regenerating long evidence. Whole
+values either fit the explicitly bounded view or produce a typed omission; never
+truncate them silently. ID membership is not proof of semantic sufficiency,
+causation or interval coverage. Uncertainty therefore still requires independent
+semantic evaluation, not a host heuristic based on criterion keywords.
+
+Start with a separately versioned read-only comparison. Durable integration needs
+an explicit new report/locator contract whose canonical validator reconstructs
+facts from original authorized records and rechecks the complete closure. The
+existing SQLite schema may suffice, but old v4 quotation limits, identities and
+report meaning remain unchanged. Compare against direct reasoning under matched
+sources/model/budgets, account for every call and token, and freeze a fresh cohort
+only after implementation. Development replay alone cannot qualify this design.

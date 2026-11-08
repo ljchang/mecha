@@ -8,9 +8,8 @@ use crate::{
     memory_situated_needs::new_context_id,
     memory_support_atomic as atomic,
     memory_support_workflow::{
-        checkpoint, criterion, descriptor, digest, durable_interpretation, packet_bytes,
-        prepare_native, read_case, read_memory, write_audit_exports, write_value, PreparedNative,
-        StageProviders, TrialCase,
+        checkpoint, criterion, descriptor, digest, packet_bytes, prepare_native, read_case,
+        read_memory, write_audit_exports, write_value, PreparedNative, StageProviders, TrialCase,
     },
     message::CompletionRequest,
     provider::Provider,
@@ -47,6 +46,7 @@ fn arm(pipeline: bool) -> Value {
             "check",
             "appraise",
             "retain",
+            "stored_export",
             "recall",
             "changed_goal",
             "historical",
@@ -310,24 +310,23 @@ async fn pipeline(
         appraised,
         &prepared.source.access,
     )?;
+    // A successful write remains successful if export or bounded recall fails.
+    completed(arm, "retain");
+    activate(arm, "stored_export");
     artifact(root, arm, "receipt", "pipeline-receipt.json", &receipt)?;
-    // A new database connection plus the ordinary contextual reader proves that
-    // this is the stored record, not the just-created in-memory interpretation.
+    // Reopen and authenticate the full stored record and its complete lineage.
+    // This host audit is independent of contextual selection and packet budgets.
     let reopened = prepared.source.memory()?;
-    let record = durable_interpretation(
-        &reopened,
-        &receipt,
-        &prepared.source.access,
-        &prepared.current,
-    )?;
-    artifact(root, arm, "retained", "retained-pipeline.json", &record)?;
+    let record =
+        reopened.stored_interpretation(&receipt, &prepared.source.access, &prepared.current)?;
     // Memory uses DELETE journaling and completed transactions; no WAL sidecar
     // is needed for this immutable audit snapshot.
     let database = root.join("retained.memory-prototype.sqlite");
     fs::copy(&prepared.source.database, &database)?;
     arm["artifacts"]["database"] = descriptor(root, &database)?;
+    artifact(root, arm, "retained", "retained-pipeline.json", &record)?;
     arm["independently_checked_retention"] = json!(true);
-    completed(arm, "retain");
+    completed(arm, "stored_export");
 
     activate(arm, "recall");
     let recall = read_memory(&prepared.source, &prepared.current, true).await?;
@@ -339,6 +338,7 @@ async fn pipeline(
                 r["reference"] == json!(receipt.reference) && r["role"] == "SelectedCurrent"
             })
         });
+    arm["stages"]["recall"]["packet_bytes"] = json!(serde_json::to_vec(&recall["memory"])?.len());
     arm["stages"]["recall"]["selected_current"] = json!(selected);
     arm["stages"]["recall"]["budget_omitted"] = recall["memory"]["budget_omitted"].clone();
     ensure!(
@@ -640,6 +640,8 @@ mod tests {
     }
     struct Authored {
         mode: Mode,
+        blocked_export: Option<std::path::PathBuf>,
+        crowd_database: Option<std::path::PathBuf>,
         seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
     }
     struct Reply {
@@ -655,6 +657,27 @@ mod tests {
             stage: &str,
             cancel: &CancellationToken,
         ) -> Result<Box<dyn Provider>> {
+            if stage == "pipeline-appraise" {
+                if let Some(path) = &self.blocked_export {
+                    fs::create_dir(path)?;
+                }
+                if let Some(path) = &self.crowd_database {
+                    let mut memory = crate::memory::Memory::open(path)?;
+                    for index in 0..8 {
+                        memory.capture(crate::memory::Capture {
+                            source: crate::memory::SourceKey {
+                                connector: "authored".into(),
+                                account: "synthetic".into(),
+                                id: format!("crowded-output-{index}"),
+                            },
+                            text: "output ".repeat(500),
+                            occurred_at: None,
+                            scopes: ["synthetic:support".into()].into(),
+                            transcript: None,
+                        })?;
+                    }
+                }
+            }
             Ok(Box::new(Reply {
                 stage: stage.into(),
                 mode: self.mode,
@@ -760,6 +783,8 @@ mod tests {
     fn authored(mode: Mode) -> Authored {
         Authored {
             mode,
+            blocked_export: None,
+            crowd_database: None,
             seen: Default::default(),
         }
     }
@@ -839,6 +864,78 @@ mod tests {
         assert!(retained["draft"]["support"]["atomic"].is_object());
         assert_eq!(report["source_integrity_verified"], true);
         drop(calls);
+        fs::remove_dir_all(temporary).unwrap();
+    }
+    #[tokio::test]
+    async fn failed_canonical_export_preserves_write_receipt_without_claiming_verification() {
+        let temporary = temporary();
+        let root = temporary.join("run");
+        let mut factory = authored(Mode::Good);
+        factory.blocked_export = Some(root.join("retained-pipeline.json"));
+        let report = run_case(
+            &root,
+            &case(),
+            "authored-atomic",
+            &factory,
+            &CancellationToken::new(),
+            0,
+        )
+        .await
+        .unwrap();
+        let pipeline = &report["arms"]["pipeline"];
+        assert_eq!(
+            pipeline["stages"]["retain"]["status"], "completed",
+            "{report:#}"
+        );
+        assert_eq!(pipeline["stages"]["stored_export"]["status"], "failed");
+        assert_eq!(pipeline["stages"]["recall"]["status"], "withheld");
+        assert_eq!(pipeline["independently_checked_retention"], false);
+        assert!(pipeline["artifacts"]["receipt"].is_object());
+        assert!(pipeline["artifacts"]["database"].is_object());
+        assert!(pipeline["artifacts"]["retained"].is_null());
+        assert_eq!(report["arms"]["direct"]["status"], "completed");
+        fs::remove_dir_all(temporary).unwrap();
+    }
+    #[tokio::test]
+    async fn crowded_recall_preserves_successful_retention_and_audit_artifacts() {
+        let temporary = temporary();
+        let root = temporary.join("run");
+        let mut factory = authored(Mode::Good);
+        factory.crowd_database = Some(root.join("native/support.memory-prototype.sqlite"));
+        let report = run_case(
+            &root,
+            &case(),
+            "authored-atomic",
+            &factory,
+            &CancellationToken::new(),
+            0,
+        )
+        .await
+        .unwrap();
+        let pipeline = &report["arms"]["pipeline"];
+        assert_eq!(
+            pipeline["stages"]["retain"]["status"], "completed",
+            "{report:#}"
+        );
+        assert_eq!(
+            pipeline["stages"]["recall"]["status"], "failed",
+            "{report:#}"
+        );
+        assert_eq!(pipeline["stages"]["recall"]["selected_current"], false);
+        assert_eq!(pipeline["stages"]["recall"]["budget_omitted"], true);
+        assert!(
+            pipeline["stages"]["recall"]["packet_bytes"]
+                .as_u64()
+                .unwrap()
+                <= 20_000
+        );
+        assert_eq!(pipeline["independently_checked_retention"], true);
+        for name in ["receipt", "retained", "database", "recall"] {
+            assert!(root
+                .join(pipeline["artifacts"][name]["path"].as_str().unwrap())
+                .is_file());
+        }
+        assert_eq!(report["arms"]["direct"]["status"], "completed");
         fs::remove_dir_all(temporary).unwrap();
     }
     #[tokio::test]

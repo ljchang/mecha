@@ -733,6 +733,61 @@ impl Memory {
         tx.commit()?;
         Ok(reference)
     }
+    /// Host-only canonical audit read, independent of the model packet budget.
+    /// A serialized receipt is a lookup key, never source authority.
+    pub(crate) fn stored_interpretation(
+        &self,
+        receipt: &InterpretationReceipt,
+        access: &Access,
+        context: &InterpretationContext,
+    ) -> Result<Interpretation> {
+        self.check_access(access)?;
+        self.live_identity()?;
+        let read = |conn: &Connection| -> Result<Interpretation> {
+            require_situated(conn)?;
+            let matches: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM interpretation_receipt WHERE receipt_id=?1 AND object_id=?2 AND revision_id=?3 AND context_key=?4 AND state='active')",
+                params![receipt.id, receipt.reference.object, receipt.reference.revision, context.key()],
+                |row| row.get(0),
+            )?;
+            ensure!(matches, "interpretation receipt unavailable");
+            let checks = SourceChecks::new(self.source_guard.as_deref());
+            let refs = closure(conn, &receipt.reference)?;
+            for reference in refs {
+                ensure!(
+                    authorized_with_guard(conn, &reference, access, Some(&checks))?
+                        && fresh(conn, &reference, i64::MAX)?,
+                    "interpretation source unavailable"
+                );
+                if matches!(lookup(conn, &reference)?, Some(Record::Interpretation(_))) {
+                    ensure!(canonical(conn, &reference)?, "noncanonical interpretation");
+                }
+            }
+            let Some(Record::Interpretation(value)) = lookup(conn, &receipt.reference)? else {
+                anyhow::bail!("interpretation unavailable")
+            };
+            ensure!(
+                value.context_key == context.key(),
+                "interpretation context mismatch"
+            );
+            Ok(value)
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        let selected = read(&tx)?;
+        tx.commit()?;
+        let live =
+            Self::open_read_only(Path::new(self.conn.path().context("missing memory path")?))?;
+        ensure!(live.instance == self.instance, "memory store was replaced");
+        let tx = live.conn.unchecked_transaction()?;
+        let current = read(&tx)?;
+        ensure!(
+            serde_json::to_vec(&selected)? == serde_json::to_vec(&current)?,
+            "interpretation changed"
+        );
+        tx.commit()?;
+        Ok(current)
+    }
+
     pub fn context_with_interpretations(
         &self,
         request: &ContextRequest,
