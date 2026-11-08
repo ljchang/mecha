@@ -116,6 +116,193 @@ fn fixture() -> (std::path::PathBuf, Memory, Arc<AtomicBool>) {
         .with_source_guard(Arc::new(Guard(state.clone())));
     (path, db, state)
 }
+
+fn rich_input() -> HostCapture {
+    use sha2::{Digest, Sha256};
+    let mut value = input();
+    value.identity.check_version = EVIDENCE_CHECK_VERSION.into();
+    let requested = serde_json::json!({"content":"requested contents","path":"out.json"});
+    let hash = |bytes: &[u8]| {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    value.artifact = ArtifactCheck {
+        artifact_digest: Some(hash(b"[]")),
+        verdict: CheckVerdict::Failed,
+    };
+    for (kind, connector, pointer, text) in [
+        (
+            PassageKind::ActionInvocation,
+            "host-action-invocation-v1",
+            "/content/0/input",
+            serde_json::to_string(&ActionInvocation {
+                call_id: "call1".into(),
+                tool_name: "fs_write".into(),
+                input_status: InputStatus::Complete,
+                input_digest: hash(&serde_json::to_vec(&requested).unwrap()),
+                input: requested,
+            })
+            .unwrap(),
+        ),
+        (
+            PassageKind::ArtifactObservation,
+            "host-artifact-observation-v1",
+            "/artifact_observation",
+            serde_json::to_string(&ArtifactObservation {
+                content_status: ContentStatus::Complete,
+                artifact_text: Some("[]".into()),
+                artifact_digest: value.artifact.artifact_digest.clone(),
+                verdict: CheckVerdict::Failed,
+            })
+            .unwrap(),
+        ),
+    ] {
+        value.originals.push(OriginalPassage {
+            source: SourceKey {
+                connector: connector.into(),
+                account: "test".into(),
+                id: format!("s1:{pointer}"),
+            },
+            kind,
+            line: 4,
+            pointer: pointer.into(),
+            text,
+            occurred_at: None,
+        });
+    }
+    value
+}
+
+#[test]
+fn rich_v8_roundtrip_preparation_roles_and_legacy_admission_refusal() {
+    let (path, _, state) = fixture();
+    let path = path.with_file_name("rich.memory-prototype.sqlite");
+    let mut db = Memory::create_supported_situated(&path, "test")
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state.clone())));
+    let version: i64 = db
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
+    assert!(db.admit_host_capture(input(), &access()).is_err());
+    let capture = rich_input();
+    let receipt = db
+        .admit_host_capture_with_evidence(capture.clone(), &access())
+        .unwrap();
+    assert_eq!(
+        receipt,
+        db.admit_host_capture_with_evidence(capture.clone(), &access())
+            .unwrap()
+    );
+    let context = interpretation::InterpretationContext::new(
+        capture.criterion.clone(),
+        "opaque-context".into(),
+    )
+    .unwrap();
+    let prepared = db
+        .prepare_interpretation(&receipt, &[], &context, &db.snapshot().unwrap(), &access())
+        .unwrap();
+    assert!(prepared
+        .sources()
+        .iter()
+        .any(|s| s.kind == interpretation::SourceKind::ActionInvocation
+            && s.text.contains("requested contents")));
+    assert!(prepared.sources().iter().any(|s| s.kind
+        == interpretation::SourceKind::ArtifactObservation
+        && s.text.contains("\"artifact_text\":\"[]\"")));
+    let legacy = interpretation::InterpretationDraft {
+        interpretation: "Provisional unknown result".into(),
+        claims: vec![],
+        judgments: vec![],
+        prediction: None,
+        grounding: interpretation::GroundingReport {
+            offered: 0,
+            dropped: 0,
+            dropped_by: Default::default(),
+            unresolved_goals: 0,
+        },
+        model: "authored".into(),
+        producer_version: "fixture".into(),
+        support: None,
+    };
+    let error = db
+        .retain_interpretation(prepared, legacy, &access())
+        .unwrap_err();
+    assert!(error.to_string().contains("requires version 7"));
+    let mut changed = capture;
+    changed.originals[0].text.push_str(" changed");
+    assert!(db
+        .admit_host_capture_with_evidence(changed, &access())
+        .is_err());
+    drop(db);
+    let reopened = Memory::open_read_only(&path)
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state.clone())));
+    assert!(reopened
+        .read(&receipt.projection, &access())
+        .unwrap()
+        .is_some());
+    state.store(false, Ordering::SeqCst);
+    for reference in receipt
+        .originals
+        .iter()
+        .chain(std::iter::once(&receipt.projection))
+    {
+        assert!(reopened.read(reference, &access()).unwrap().is_none());
+    }
+}
+
+#[test]
+fn rich_evidence_rejects_v7_unknown_kinds_duplicate_sources_and_malformed_envelopes() {
+    let (path, _, state) = fixture();
+    let mut v7 =
+        Memory::create_situated(&path.with_file_name("v7.memory-prototype.sqlite"), "test")
+            .unwrap()
+            .with_source_guard(Arc::new(Guard(state.clone())));
+    assert!(v7
+        .admit_host_capture_with_evidence(rich_input(), &access())
+        .is_err());
+    assert!(v7.admit_host_capture(rich_input(), &access()).is_err());
+    assert!(serde_json::from_str::<PassageKind>("\"UnknownKind\"").is_err());
+    let mut db = Memory::create_supported_situated(
+        &path.with_file_name("v8.memory-prototype.sqlite"),
+        "test",
+    )
+    .unwrap()
+    .with_source_guard(Arc::new(Guard(state)));
+    let mut variants = Vec::new();
+    let mut value = rich_input();
+    value.identity.check_version = "legacy-v1".into();
+    variants.push(value);
+    let mut value = rich_input();
+    value.originals.push(value.originals[1].clone());
+    variants.push(value);
+    let mut value = rich_input();
+    value.originals[1].text = value.originals[1]
+        .text
+        .replace("\"Complete\"", "\"Unknown\"");
+    variants.push(value);
+    let mut value = rich_input();
+    value.originals[1].text =
+        value.originals[1]
+            .text
+            .replacen("{", "{\"call_id\":\"duplicate\",", 1);
+    variants.push(value);
+    let mut value = rich_input();
+    value.originals[2].text = value.originals[2]
+        .text
+        .replace("\"artifact_text\":\"[]\"", "\"artifact_text\":\"[{}]\"");
+    variants.push(value);
+    for value in variants {
+        assert!(db
+            .admit_host_capture_with_evidence(value, &access())
+            .is_err());
+        assert_eq!(db.snapshot().unwrap().sequence, 0);
+    }
+}
 #[test]
 fn host_admission_atomic_retry_and_conflict() {
     let (_p, mut db, _s) = fixture();

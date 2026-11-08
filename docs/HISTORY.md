@@ -14,6 +14,61 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Action/outcome evidence and factual support (2026-11-07, prototype branch)
+
+Explicit new-file v8 capture separates native action arguments, call receipts and
+independently observed artifact contents. `LocalAuthority::capture_with_evidence`
+uses the same descriptor read for the artifact check and bounded reader envelope;
+omission states preserve missing/refused/non-UTF8/oversized distinctions. Old
+formats are neither migrated nor silently certified as evaluated.
+
+`memory_factual_support::{generate,evaluate}` proposes typed statements and checks
+every statement and offered goal bearing in separate bounded local calls.
+`Memory::retain_evaluated_interpretation` rebuilds deterministic reader prose from
+the admitted report and rechecks current sources, scopes and complete dependencies.
+Rejected prose and evaluator diagnostics stay in host audit. Good/Bad requires its
+own supported assessment and all original factual premises; speculation remains
+labeled and cannot supply those premises. The assessments are fallible, correlated
+model judgments, not independent truth or action authority.
+
+The authored native workflow connects ordinary Agent file actions, actual
+observations, generation/evaluation, durable reopening and GoalMemory recall.
+The recapture regression exposed an 11,579-byte returned memory packet exceeding
+the ordinary 4 KiB original-passage limit. Rich GoalMemory results now retain
+strict full-packet validation, native receipts and all consulted dependencies,
+without copying that whole packet into another observation. Exact historical
+presentation remains in JSONL. Native changed-goal recapture preserves influenced
+roles and is withheld after ancestor withdrawal and reopen.
+
+Qualification review separated evaluator classification from final admission:
+dropping duplicate goal judgments could otherwise mask wrong Supported answers.
+The coordinator compares exported outcomes with raw replies and read-back durable
+reports, preserves observed errors across later failures, and checks pre-inference
+source seals. These safeguards establish measurement consistency; a fresh local
+model trial is still required to establish semantic performance. No production
+capture, owner-graph migration or nightly learning pipeline was enabled.
+
+Final Spark qualification passed workspace/all-target builds, strict all-feature
+Clippy, 6,351 default tests (25 ignored) and 6,793 memory-enabled tests (29 ignored),
+62 suites each. Standalone memory passed 258 tests; the support coordinator passed
+40, alongside 101 existing Python tests (4 skipped). The first full run exposed
+six AppleDouble transfer files misread as Rust source; removing only those verified
+untracked metadata files restored the source-inspection tests. A large enum lint
+was resolved by boxing optional support metadata, preserving serialized bytes.
+
+The frozen eight-case resident-model qualification **failed**: 0/8 complete
+workflows, 2/8 valid generated proposals, 1/2 valid generated-proposal evaluations
+and 0/8 valid probe evaluations. It made 18 calls, observing 53,744 input and 20,544
+output tokens. Missing fields, invalid source IDs and inexact quotations prevented
+qualification. Independent raw-response review also found invented approval,
+incorrect current-criterion application and contradictory labels; format repair
+alone would not establish correctness. One case retained four independently
+supported units, with its goal bearing downgraded to Unknown. Seven empty admitted
+sets are not successful semantic evaluation. All eight artifacts were independently
+audited, but none qualifies as a complete pipeline; official probe metrics remain
+unknown. No response repair, retry, downstream comparison or concept/rumination
+integration followed. Evidence: `results/memory-support-20261107/`.
+
 ### Situated interpretation workflow (2026-11-07, prototype branch)
 
 Source `02cfe11cc` adds explicit v7 interpretation records beside immutable

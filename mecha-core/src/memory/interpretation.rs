@@ -9,6 +9,10 @@ use std::{
     path::Path,
 };
 
+#[path = "support.rs"]
+mod support;
+pub use support::*;
+
 const PRODUCER: &str = "situated-interpretation-v1";
 const SCHEMA: &str = "CREATE TABLE external_binding(revision TEXT PRIMARY KEY REFERENCES revision(id),authority TEXT NOT NULL,locator TEXT NOT NULL,binding_revision TEXT NOT NULL);
 CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')),lineage_version INTEGER NOT NULL CHECK(lineage_version=2));
@@ -73,6 +77,8 @@ impl InterpretationRead {
 pub enum SourceKind {
     Observation,
     AssistantStatement,
+    ActionInvocation,
+    ArtifactObservation,
     PriorInterpretation,
     /// Passage may repeat prior hypotheses; not independent evidence of their truth.
     InterpretationInfluenced,
@@ -146,6 +152,8 @@ pub struct InterpretationDraft {
     pub grounding: GroundingReport,
     pub model: String,
     pub producer_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support: Option<Box<SupportReport>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -201,6 +209,16 @@ fn require_v7(conn: &Connection) -> Result<()> {
     );
     validate_schema(conn)
 }
+fn require_situated(conn: &Connection) -> Result<()> {
+    ensure!(
+        matches!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+            7 | 8
+        ),
+        "interpretation preparation requires version 7 or 8"
+    );
+    validate_schema(conn)
+}
 pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
     conn.prepare("SELECT request_id,payload_hash,receipt_id,object_id,revision_id,context_key,state FROM interpretation_receipt LIMIT 0").context("invalid interpretation schema")?;
     let invalid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interpretation_receipt i WHERE i.state='active' AND (i.payload_hash IS NULL OR i.receipt_id IS NULL OR i.context_key IS NULL OR NOT EXISTS(SELECT 1 FROM revision r WHERE r.id=i.revision_id AND r.object_id=i.object_id AND json_extract(r.payload,'$.kind')='interpretation' AND json_extract(r.payload,'$.data.context_key')=i.context_key)))",[],|r|r.get(0))?;
@@ -224,7 +242,10 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
-    if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? != 7 {
+    if !matches!(
+        conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+        7 | 8
+    ) {
         return Ok(false);
     }
     let saved: Option<(String,String)> = conn.query_row("SELECT payload_hash,context_key FROM interpretation_receipt WHERE revision_id=?1 AND object_id=?2 AND state='active'",params![r.revision,r.object],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
@@ -234,7 +255,10 @@ pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
     let Some(record @ Record::Interpretation(_)) = lookup(conn, r)? else {
         return Ok(false);
     };
-    if hash(&record)? != payload_hash {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if (version == 8 && serde_json::to_vec(&record)?.len() > 16384)
+        || hash(&record)? != payload_hash
+    {
         return Ok(false);
     }
     let Record::Interpretation(i) = record else {
@@ -255,7 +279,12 @@ pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
     // revalidating every older interpretation. Schema/read walks validate those
     // records separately, keeping long histories bounded.
     let sources = source_fields_impl(conn, &refs, false)?;
-    if validate_draft(&context, &sources, &i.draft).is_err() {
+    let valid = if version == 8 {
+        support::validate_evaluated_draft(&context, &sources, &i.draft)
+    } else {
+        validate_draft(&context, &sources, &i.draft)
+    };
+    if valid.is_err() {
         return Ok(false);
     }
     Ok(serde_json::to_vec(&claim_sources_for(&sources, &i.draft))?
@@ -385,10 +414,13 @@ fn source_fields_impl(
                         .context("original does not match projection")?;
                     let kind = if contains_interpretation(conn, r)? {
                         SourceKind::InterpretationInfluenced
-                    } else if p.kind == PassageKind::AssistantText {
-                        SourceKind::AssistantStatement
                     } else {
-                        SourceKind::Observation
+                        match p.kind {
+                            PassageKind::AssistantText => SourceKind::AssistantStatement,
+                            PassageKind::ActionInvocation => SourceKind::ActionInvocation,
+                            PassageKind::ArtifactObservation => SourceKind::ArtifactObservation,
+                            _ => SourceKind::Observation,
+                        }
                     };
                     fields.push((p.pointer, e.text, kind));
                 }
@@ -429,6 +461,7 @@ fn validate_draft(
     sources: &[SourceField],
     d: &InterpretationDraft,
 ) -> Result<()> {
+    ensure!(d.support.is_none(), "legacy support metadata refused");
     ensure!(
         !d.interpretation.trim().is_empty()
             && d.interpretation.len() <= 8192
@@ -488,6 +521,13 @@ impl Memory {
     pub fn create_situated(path: &Path, domain: &str) -> Result<Self> {
         Self::create_schema(path, domain, SCHEMA)
     }
+    pub fn create_supported_situated(path: &Path, domain: &str) -> Result<Self> {
+        Self::create_schema(
+            path,
+            domain,
+            &SCHEMA.replace("user_version=7", "user_version=8"),
+        )
+    }
     fn live_identity(&self) -> Result<()> {
         if let Some(path) = self.conn.path() {
             let live = Self::open_read_only(Path::new(path))?;
@@ -506,7 +546,7 @@ impl Memory {
         self.check_access(access)?;
         self.live_identity()?;
         let tx = self.conn.unchecked_transaction()?;
-        require_v7(&tx)?;
+        require_situated(&tx)?;
         ensure!(
             snapshot.instance == self.instance
                 && snapshot.sequence >= 0
@@ -651,7 +691,7 @@ impl Memory {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        require_v7(&tx)?;
+        require_situated(&tx)?;
         ensure!(
             canonical(&tx, expected)?
                 && authorized_with_guard(&tx, expected, access, self.source_guard.as_deref())?,
@@ -688,7 +728,7 @@ impl Memory {
         self.live_identity()?;
         let mut packet = self.context(request, policy, situation)?;
         let tx = self.conn.unchecked_transaction()?;
-        require_v7(&tx)?;
+        require_situated(&tx)?;
         let mut statement=tx.prepare("SELECT i.object_id,i.revision_id FROM interpretation_receipt i JOIN revision r ON r.id=i.revision_id WHERE i.state='active' AND i.context_key=?1 AND r.seq<=?2 ORDER BY r.seq DESC,r.id")?;
         let roots = statement
             .query_map(params![read.key(), policy.recall.known_at.sequence], |r| {
@@ -899,7 +939,10 @@ fn validate_roles(
     Ok(())
 }
 pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
-    if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 7 {
+    if matches!(
+        conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+        7 | 8
+    ) {
         conn.execute("UPDATE interpretation_receipt SET state='forgotten',payload_hash=NULL,receipt_id=NULL,object_id=NULL,revision_id=NULL,context_key=NULL WHERE object_id IN (SELECT id FROM doomed)",[])?;
     }
     Ok(())

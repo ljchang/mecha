@@ -154,21 +154,42 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Next appraisal priority: semantic faithfulness.** Independent review found
-unsupported historical explanations in all four prose drafts, some hedged; one
-retained claim inferred a route selection from a two-byte write although the actual
-artifact was `[]`. Current quote/ID checks cannot detect this entailment failure.
-The generator saw only the check verdict/digest and write receipt, not artifact
-contents. Keep automatic use off; qualify bounded action/outcome evidence and an
-independent factual-support check. Separate recorded events from prospective choices
-and causal hypotheses, retaining unknowns rather than filling them with a story.
-Measure correct abstention/withholding on fresh cases before broadening consumption.
-Only two of four drafts retained a structured goal judgment, and one invalid quote
-was dropped. Goal-identifier reliability, scope and counterexamples also remain open. Automatic needs-driven goal/context orchestration remains open;
-private readings and rationales stay outside prompts. Default graph writers and old
-orchestration have not switched. Retire duplication only after consumer parity and
-measured benefit. Safe failed-lookup capture and longer-episode qualification above
-remain the next reliability work; useful concepts and rumination are later milestones.
+**Current appraisal priority: qualify factual support before concept learning.**
+The explicit v8 implementation now captures bounded action inputs and observed
+artifact bytes, proposes typed statements, separately evaluates every statement
+and offered goal bearing, and retains host-rendered evaluated interpretations.
+See `memory_factual_support::{generate,evaluate}`,
+`Memory::retain_evaluated_interpretation` and
+`memory_support_workflow::run_case`. The earlier four-draft semantic failures
+remain historical evidence; implementation alone does not supersede them.
+
+Authored core tests cover native action/output mismatch, durable recall, changed
+context, rich recapture, complete influenced-source lineage, cancellation and
+withdrawal after reopen. Final workspace qualification passed 6,351 default and 6,793 memory-enabled
+checks (25/29 ignored; 62 suites each), with strict all-feature Clippy clean.
+The frozen resident-model gate failed: 0/8 complete workflows, 2/8 valid generated
+proposals, 1/2 valid generated-proposal evaluations and 0/8 valid probes. Eighteen
+calls observed 53,744 input / 20,544 output tokens. One case retained four independently
+supported units with Unknown bearing; seven empty admitted sets do not show
+reliability. See `results/memory-support-20261107/independent-audit.md` and HISTORY.
+
+**Next bounded repair:** simplify model citation selection through host-issued
+references and qualify schema-constrained output before another fresh trial.
+Keep exact source binding and fail-closed admission. Separately test semantic
+faithfulness: raw rejected replies invented approval, confused historical/current
+criteria and contradicted their own status labels. Do not treat format repair
+as a semantic fix or tune and rerun these eight cases into a passing result.
+
+After that gate works, the next requested phase is concept learning and one
+bounded rumination cycle (`MECHA-MEMORY-DESIGN.md` §31.9). Reuse the existing provisional concept/revision store,
+source bundles and counterfactual replay. Native external-source concept admission
+is still deliberately unsupported by `memory/concept.rs`; add a narrowly guarded
+producer rather than weakening guardless authorization. Test transfer, a near-match
+and a counterexample before revising one concept. Existing `learning.rs` rules
+enter instruction prompts and remain distinct from provisional conceptual knowledge.
+No default nightly migration is planned. Automatic needs-driven goal/context
+orchestration, safe failed-lookup capture and longer-episode qualification remain
+open; retire old appraisal duplication only after consumer parity and measured benefit.
 
 The transitive-freshness limitation remains: revising a consulted source makes
 its independently measured outcome ineligible. Separating historical provenance
@@ -197,14 +218,14 @@ provenance gap corrected by admission and historical-binding refusal in
 `12e2432c4`; nested program capture remains unsupported.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#situated-appraisal-one-episode-different-goals
-Research v0.32 published 2026-11-07, source
-`be8850fbf041e61fa29734446651ee3f0057a594`, deployment
-`appgdep_6aef9ecf526481918a66b9c10a59330b` succeeded. All 68 prior IDs retained;
-internal links, scripts, unchanged SVG, dist mirrors and version markers checked.
-Desktop/mobile browser checks verified changed goal and architecture content,
-40 rendered math containers, mobile navigation and no horizontal overflow.
-The final comparison and semantic limitations were verified in the rendered page.
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#action-outcome-evidence-and-factual-support
+Research v0.34 published 2026-11-07 (2026-11-08 UTC), source
+`cc0bb0ea0bafd0f5c284e7d31c3c5cf37a978a79`, deployment
+`appgdep_6aefe79c522c81919316edeac6575ce1` succeeded. All 70 IDs retained;
+internal links, unchanged scripts/SVG and dist mirrors checked. Desktop/mobile
+browser checks verified the v0.34 failed model gate and next repair, 40 rendered
+math containers and no horizontal overflow. Concept learning and rumination are
+explicitly conditional on reliable support evaluation; see design section 31.9.
 Shared production binaries, services, configuration, owner stores and nightly
 jobs were not changed.
 

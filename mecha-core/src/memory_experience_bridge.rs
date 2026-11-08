@@ -16,7 +16,10 @@
 //! Late deliveries, unfinished resumed ranges, and code/program captures are
 //! unsupported and refused; nested program-read provenance is not reconstructed.
 use crate::memory::{
-    host_capture::{ConfirmedCriterion, OriginalPassage, PassageKind, ReceiptStatus, ToolReceipt},
+    host_capture::{
+        ActionInvocation, ConfirmedCriterion, InputStatus, OriginalPassage, PassageKind,
+        ReceiptStatus, ToolReceipt, EVIDENCE_CHECK_VERSION,
+    },
     SourceKey,
 };
 use crate::{
@@ -243,6 +246,23 @@ fn check_execution_text(text: &str) -> Result<()> {
 }
 
 fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<Events> {
+    events_mode(text, criterion, account, false)
+}
+
+fn events_with_evidence(
+    text: &str,
+    criterion: &ConfirmedCriterion,
+    account: &str,
+) -> Result<Events> {
+    events_mode(text, criterion, account, true)
+}
+
+fn events_mode(
+    text: &str,
+    criterion: &ConfirmedCriterion,
+    account: &str,
+    rich: bool,
+) -> Result<Events> {
     check_execution_text(text)?;
     let (transcript, _) = crate::appraisal_store::SessionEvidence::from_transcript_text(
         std::path::Path::new("capture.jsonl"),
@@ -317,8 +337,32 @@ fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<E
                             order.push(id.clone());
                             let memory_read =
                                 name == "goal_context" && input.get("memory").is_some();
+                            let passage = if rich {
+                                let bytes = serde_json::to_vec(&input)?;
+                                Some((
+                                    PassageKind::ActionInvocation,
+                                    "input",
+                                    serde_json::to_string(&ActionInvocation {
+                                        call_id: id.clone(),
+                                        tool_name: name.clone(),
+                                        input_status: if bytes.len() <= 1024 {
+                                            InputStatus::Complete
+                                        } else {
+                                            InputStatus::Oversized
+                                        },
+                                        input: if bytes.len() <= 1024 {
+                                            input
+                                        } else {
+                                            serde_json::Value::Null
+                                        },
+                                        input_digest: digest(&bytes),
+                                    })?,
+                                ))
+                            } else {
+                                None
+                            };
                             calls.insert(id, (name, None, memory_read));
-                            None
+                            passage
                         }
                         Block::ToolResult {
                             tool_use_id,
@@ -350,7 +394,18 @@ fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<E
                             } else {
                                 ReceiptStatus::Failed
                             });
-                            Some((PassageKind::ToolResult, "content", content))
+                            if rich && call.2 {
+                                // The complete validated return is retained in
+                                // native JSONL; its records are already carried
+                                // by the consulted dependency closure. Copying
+                                // that packet as an original duplicates all
+                                // recalled text and can exceed passage bounds.
+                                // Preserve the invocation and typed receipt,
+                                // and never clip or skip provenance parsing.
+                                None
+                            } else {
+                                Some((PassageKind::ToolResult, "content", content))
+                            }
                         }
                         // Preserve raw transcript positions but never admit a
                         // registered harness voice as the owner's request.
@@ -370,6 +425,7 @@ fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<E
                         if text.is_empty() {
                             continue;
                         }
+                        ensure!(!rich || text.len() <= 4096, "capture refused");
                         let mut end = text.len().min(4096);
                         while !text.is_char_boundary(end) {
                             end -= 1;
@@ -378,7 +434,12 @@ fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<E
                         let pointer = format!("/content/{index}/{field}");
                         originals.push(OriginalPassage {
                             source: SourceKey {
-                                connector: "host-session-field-v1".into(),
+                                connector: if kind == PassageKind::ActionInvocation {
+                                    "host-action-invocation-v1"
+                                } else {
+                                    "host-session-field-v1"
+                                }
+                                .into(),
                                 account: account.into(),
                                 id: format!("{}:{}:{pointer}", transcript.meta.id, line + 1),
                             },
@@ -421,8 +482,8 @@ fn events(text: &str, criterion: &ConfirmedCriterion, account: &str) -> Result<E
 }
 
 use crate::memory::host_capture::{
-    ArtifactCheck, CaptureIdentity, CaptureReceipt, CheckVerdict, ExternalBinding,
-    ExternalSourceGuard, HostCapture, SourceStatus,
+    ArtifactCheck, ArtifactObservation, CaptureIdentity, CaptureReceipt, CheckVerdict,
+    ContentStatus, ExternalBinding, ExternalSourceGuard, HostCapture, SourceStatus,
 };
 use crate::{
     appraisal::SessionRecords,
@@ -493,6 +554,8 @@ struct HostAudit {
     transcript: String,
     artifact_digest: Option<String>,
     artifact_verdict: CheckVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artifact_evidence: Option<ArtifactObservation>,
     appraisal: crate::appraisal::Appraisal,
     joined: serde_json::Value,
     taint: Option<crate::agent::Taint>,
@@ -774,14 +837,26 @@ impl LocalAuthority {
         input: CaptureRequest<'_>,
         access: &Access,
     ) -> Result<CaptureReceipt> {
-        safe(self.capture_inner(memory, input, access))
+        safe(self.capture_inner(memory, input, access, false))
+    }
+    /// V8 opt-in: native requested inputs and independently observed artifact
+    /// bytes, carrying the same conservative consulted lineage as all passages.
+    pub fn capture_with_evidence(
+        &self,
+        memory: &mut Memory,
+        input: CaptureRequest<'_>,
+        access: &Access,
+    ) -> Result<CaptureReceipt> {
+        safe(self.capture_inner(memory, input, access, true))
     }
     fn capture_inner(
         &self,
         memory: &mut Memory,
         input: CaptureRequest<'_>,
         access: &Access,
+        rich: bool,
     ) -> Result<CaptureReceipt> {
+        memory.require_host_capture_version(rich)?;
         let (frozen, frozen_bytes) = self.frozen(&input.confirmation)?;
         let bytes = bounded_read(&frozen.transcript, TRANSCRIPT_MAX)?;
         let text = String::from_utf8(bytes)?;
@@ -800,7 +875,11 @@ impl LocalAuthority {
             transcript.meta.id == frozen.session_id,
             "host capture unavailable"
         );
-        let projected = events(&text, &frozen.criterion, &input.account)?;
+        let mut projected = if rich {
+            events_with_evidence(&text, &frozen.criterion, &input.account)?
+        } else {
+            events(&text, &frozen.criterion, &input.account)?
+        };
         let mut consulted = input.consulted;
         for reference in projected.consulted {
             if !consulted.contains(&reference) {
@@ -808,7 +887,29 @@ impl LocalAuthority {
             }
         }
         ensure!(consulted.len() <= 32, "capture refused");
-        let checked = artifact_check(&frozen.artifact, &frozen.expected_rows);
+        let artifact_evidence =
+            rich.then(|| artifact_observation(&frozen.artifact, &frozen.expected_rows));
+        let checked = if let Some(observation) = &artifact_evidence {
+            projected.originals.push(OriginalPassage {
+                source: SourceKey {
+                    connector: "host-artifact-observation-v1".into(),
+                    account: input.account.clone(),
+                    id: format!("{}:artifact:{EVIDENCE_CHECK_VERSION}", transcript.meta.id),
+                },
+                kind: PassageKind::ArtifactObservation,
+                line: 1,
+                pointer: "/artifact_observation".into(),
+                text: serde_json::to_string(observation)?,
+                occurred_at: None,
+            });
+            ensure!(projected.originals.len() <= 16, "capture refused");
+            ArtifactCheck {
+                artifact_digest: observation.artifact_digest.clone(),
+                verdict: observation.verdict.clone(),
+            }
+        } else {
+            artifact_check(&frozen.artifact, &frozen.expected_rows)
+        };
         let appraisal = crate::appraisal::for_transcript(
             &transcript,
             &transcript.meta.id,
@@ -827,6 +928,7 @@ impl LocalAuthority {
             transcript: text,
             artifact_digest: checked.artifact_digest.clone(),
             artifact_verdict: checked.verdict.clone(),
+            artifact_evidence,
             appraisal: appraisal.appraisal,
             joined,
             taint: evidence.taint(),
@@ -850,36 +952,39 @@ impl LocalAuthority {
             self.check(&binding) == SourceStatus::Checked,
             "host capture unavailable"
         );
+        let check_version = if rich {
+            EVIDENCE_CHECK_VERSION
+        } else {
+            "exact-json-string-rows-v1"
+        };
         let check_id = digest(
-            serde_json::to_string(&(
-                &frozen.criterion,
-                &frozen.expected_rows,
-                "exact-json-string-rows-v1",
-            ))?
-            .as_bytes(),
+            serde_json::to_string(&(&frozen.criterion, &frozen.expected_rows, check_version))?
+                .as_bytes(),
         );
-        memory.admit_host_capture(
-            HostCapture {
-                identity: CaptureIdentity {
-                    domain: input.domain,
-                    account: input.account,
-                    session_id: transcript.meta.id,
-                    prefix_digest,
-                    check_id,
-                    check_version: "exact-json-string-rows-v1".into(),
-                    evaluator_version: "existing-for-transcript-v1".into(),
-                },
-                binding,
-                criterion: frozen.criterion,
-                originals: projected.originals,
-                receipts: projected.receipts,
-                artifact: checked,
-                consulted,
-                scopes: input.scopes,
-                occurred_at: None,
+        let capture = HostCapture {
+            identity: CaptureIdentity {
+                domain: input.domain,
+                account: input.account,
+                session_id: transcript.meta.id,
+                prefix_digest,
+                check_id,
+                check_version: check_version.into(),
+                evaluator_version: "existing-for-transcript-v1".into(),
             },
-            access,
-        )
+            binding,
+            criterion: frozen.criterion,
+            originals: projected.originals,
+            receipts: projected.receipts,
+            artifact: checked,
+            consulted,
+            scopes: input.scopes,
+            occurred_at: None,
+        };
+        if rich {
+            memory.admit_host_capture_with_evidence(capture, access)
+        } else {
+            memory.admit_host_capture(capture, access)
+        }
     }
     pub fn binding(&self, confirmation: &str) -> Result<ExternalBinding> {
         safe((|| {
@@ -955,7 +1060,16 @@ impl LocalAuthority {
                 "host capture unavailable"
             );
         }
-        let check = artifact_check(&frozen.artifact, &frozen.expected_rows);
+        let check = if let Some(observation) = audit.artifact_evidence {
+            let current = artifact_observation(&frozen.artifact, &frozen.expected_rows);
+            ensure!(current == observation, "host capture unavailable");
+            ArtifactCheck {
+                artifact_digest: current.artifact_digest,
+                verdict: current.verdict,
+            }
+        } else {
+            artifact_check(&frozen.artifact, &frozen.expected_rows)
+        };
         ensure!(
             check.artifact_digest == audit.artifact_digest
                 && check.verdict == audit.artifact_verdict,
@@ -1004,6 +1118,80 @@ fn artifact_check(path: &Path, expected: &[BTreeMap<String, String>]) -> Artifac
                 CheckVerdict::Unavailable
             },
         },
+    }
+}
+
+// One descriptor-safe read supplies both the checker and reader selection. A
+// checker-limit overflow has no complete-file digest: its bytes were not read.
+fn artifact_observation(path: &Path, expected: &[BTreeMap<String, String>]) -> ArtifactObservation {
+    let read = (|| -> std::io::Result<Option<Vec<u8>>> {
+        let file = open_nofollow(path, false)?;
+        if file.metadata()?.len() > ARTIFACT_MAX as u64 {
+            return Ok(None);
+        }
+        let mut bytes = Vec::new();
+        file.take((ARTIFACT_MAX + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        Ok((bytes.len() <= ARTIFACT_MAX).then_some(bytes))
+    })();
+    match read {
+        Ok(Some(bytes)) => {
+            let verdict =
+                if serde_json::from_slice::<crate::memory::plan_extraction::UniqueValue>(&bytes)
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<Vec<BTreeMap<String, String>>>(v.0).ok())
+                    .is_some_and(|actual| actual == expected)
+                {
+                    CheckVerdict::Passed
+                } else {
+                    CheckVerdict::Failed
+                };
+            let (content_status, artifact_text) = match std::str::from_utf8(&bytes) {
+                Err(_) => (ContentStatus::NonUtf8, None),
+                Ok(text) if bytes.len() <= 2048 => (ContentStatus::Complete, Some(text.to_owned())),
+                Ok(_) => (ContentStatus::Oversized, None),
+            };
+            ArtifactObservation {
+                content_status,
+                artifact_text,
+                artifact_digest: Some(digest(&bytes)),
+                verdict,
+            }
+        }
+        Ok(None) => ArtifactObservation {
+            content_status: ContentStatus::Oversized,
+            artifact_text: None,
+            artifact_digest: None,
+            verdict: CheckVerdict::Refused,
+        },
+        Err(error) => {
+            let content_status =
+                if matches!(error.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR))
+                    || matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidInput
+                            | std::io::ErrorKind::InvalidData
+                            | std::io::ErrorKind::PermissionDenied
+                    )
+                {
+                    ContentStatus::Refused
+                } else if error.kind() == std::io::ErrorKind::NotFound {
+                    ContentStatus::Missing
+                } else {
+                    ContentStatus::Unavailable
+                };
+            let verdict = if content_status == ContentStatus::Refused {
+                CheckVerdict::Refused
+            } else {
+                CheckVerdict::Unavailable
+            };
+            ArtifactObservation {
+                content_status,
+                artifact_text: None,
+                artifact_digest: None,
+                verdict,
+            }
+        }
     }
 }
 

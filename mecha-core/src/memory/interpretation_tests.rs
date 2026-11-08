@@ -118,6 +118,7 @@ fn draft(p: &PreparedInterpretation) -> InterpretationDraft {
         },
         model: "authored".into(),
         producer_version: "v1".into(),
+        support: None,
     }
 }
 fn read(db: &Memory, c: &InterpretationContext) -> ContextPacket {

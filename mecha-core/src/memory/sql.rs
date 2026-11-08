@@ -15,12 +15,12 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        app == 1296912466 && matches!(version, 1..=7),
+        app == 1296912466 && matches!(version, 1..=8),
         "not a supported Mecha memory prototype"
     );
     if version >= 6 {
         host_capture::validate_schema(conn)?;
-        if version == 7 {
+        if matches!(version, 7 | 8) {
             interpretation::validate_schema(conn)?;
         }
     }

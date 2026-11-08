@@ -42,6 +42,13 @@ pub struct GenerationBudget {
     deadline: Duration,
 }
 impl GenerationBudget {
+    pub fn max_tokens(self) -> u32 {
+        self.max_tokens
+    }
+    pub fn deadline(self) -> Duration {
+        self.deadline
+    }
+
     pub fn new(max_tokens: u32, deadline: Duration) -> Result<Self> {
         ensure!(
             (1..=8192).contains(&max_tokens),
@@ -303,6 +310,7 @@ fn ground_reply(
         },
         model: model.into(),
         producer_version: PRODUCER_VERSION.into(),
+        support: None,
     };
     // Escaping or support metadata may make the typed draft larger than the
     // original reply. Apply the storage packet bound before returning it.

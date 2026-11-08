@@ -65,6 +65,90 @@ fn native_receipt_and_original_field_positions_come_from_same_bytes() {
     assert_eq!(e.originals[1].text, "wrote out.json");
     assert_eq!(e.originals[1].occurred_at, None);
 }
+
+fn evidence_events(text: &str) -> Events {
+    events_with_evidence(text, &criterion(), "synthetic").unwrap()
+}
+
+#[test]
+fn rich_action_evidence_preserves_requested_write_without_claiming_artifact() {
+    let events = evidence_events(&transcript());
+    let invocation = events.originals.iter().find_map(|p| {
+        serde_json::from_str::<serde_json::Value>(&p.text)
+            .ok()
+            .filter(|v| v.get("call_id") == Some(&serde_json::json!("write-1")))
+            .map(|value| (p, value))
+    });
+    assert!(
+        invocation.is_some(),
+        "native ToolUse input is missing from evidence"
+    );
+    let (passage, value) = invocation.unwrap();
+    assert_eq!(passage.line, 4);
+    assert_eq!(passage.pointer, "/content/0/input");
+    assert_eq!(value["tool_name"], "fs_write");
+    assert_eq!(value["input_status"], "Complete");
+    assert_eq!(value["input"]["content"], "[]");
+    assert_eq!(
+        value["input_digest"],
+        "af0d9c6a676e2975813dc6fcd333abd3fcf8b33a566c904198f1c3165884d607"
+    );
+    assert!(value.get("verdict").is_none());
+}
+
+#[test]
+fn legacy_capture_keeps_exact_original_passages_without_invocation_envelope() {
+    let events = events(&transcript(), &criterion(), "synthetic").unwrap();
+    assert_eq!(events.originals.len(), 2);
+    assert_eq!(events.originals[0].text, "Convert the fixture");
+    assert_eq!(events.originals[1].text, "wrote out.json");
+    assert!(events
+        .originals
+        .iter()
+        .all(|p| !p.text.contains("input_digest")));
+}
+
+#[test]
+fn artifact_evidence_retains_empty_json_array_as_actual_content() {
+    let root = temp();
+    let path = root.join("out.json");
+    fs::write(&path, b"[]").unwrap();
+    let value = serde_json::to_value(artifact_observation(&path, &[])).unwrap();
+    assert_eq!(
+        value["artifact_text"], "[]",
+        "actual artifact bytes are missing"
+    );
+    assert_eq!(value["content_status"], "Complete");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rich_action_omits_oversized_input_honestly_and_refuses_clipped_ordinary_text() {
+    let text = transcript();
+    let long = "x".repeat(1500);
+    let value: serde_json::Value = serde_json::from_str(text.lines().nth(3).unwrap()).unwrap();
+    let mut changed = value;
+    changed["content"][0]["input"]["content"] = serde_json::json!(long);
+    let changed = text.replace(
+        text.lines().nth(3).unwrap(),
+        &serde_json::to_string(&changed).unwrap(),
+    );
+    let rich = evidence_events(&changed);
+    let p = rich
+        .originals
+        .iter()
+        .find(|p| p.kind == PassageKind::ActionInvocation)
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&p.text).unwrap();
+    assert_eq!(v["input_status"], "Oversized");
+    assert!(v["input"].is_null());
+    assert_eq!(v["input_digest"].as_str().unwrap().len(), 64);
+    assert!(!p.text.contains(&"x".repeat(30)));
+    let text = transcript().replace("Convert the fixture", &"é".repeat(2049));
+    assert!(events_with_evidence(&text, &criterion(), "synthetic").is_err());
+    let legacy = events(&text, &criterion(), "synthetic").unwrap();
+    assert_eq!(legacy.originals[0].text.len(), 4096);
+}
 #[test]
 fn changed_goal_rewrite_and_orphan_result_refuse_without_leaking() {
     let base = transcript();
@@ -242,6 +326,9 @@ struct Captured {
     access: Access,
 }
 fn captured() -> Captured {
+    captured_mode(false)
+}
+fn captured_mode(rich: bool) -> Captured {
     let root = temp();
     let workspace = root.join("workspace");
     fs::create_dir(&workspace).unwrap();
@@ -258,6 +345,11 @@ fn captured() -> Captured {
         "\"record\":\"outcome\"",
         "\"record\":\"outcome\",\"host_unknown\":\"SENSOR_HOST_ONLY_72601\"",
     );
+    let text = if rich {
+        text.replace("\"content\":\"[]\"", "\"content\":\"requested route\"")
+    } else {
+        text
+    };
     fs::write(
         &source,
         text.lines()
@@ -272,7 +364,14 @@ fn captured() -> Captured {
             transcript: source.clone(),
             artifact: artifact.clone(),
             criterion: criterion(),
-            expected_rows: vec![],
+            expected_rows: if rich {
+                vec![BTreeMap::from([(
+                    "host-only".into(),
+                    "GOLD_ONLY_91827".into(),
+                )])]
+            } else {
+                vec![]
+            },
         })
         .unwrap();
     fs::write(&source, text).unwrap();
@@ -281,24 +380,28 @@ fn captured() -> Captured {
         domain: "bridge-test".into(),
         scopes: BTreeSet::new(),
     };
-    let mut memory =
-        Memory::create_host_capture(&root.join("test.memory-prototype.sqlite"), &access.domain)
-            .unwrap()
-            .with_source_guard(std::sync::Arc::new(authority.clone()));
-    let receipt = authority
-        .capture(
-            &mut memory,
-            CaptureRequest {
-                confirmation: confirmation.clone(),
-                domain: access.domain.clone(),
-                account: "synthetic".into(),
-                scopes: BTreeSet::new(),
-                consulted: vec![],
-                records: SessionRecords::default(),
-            },
-            &access,
-        )
-        .unwrap();
+    let create = if rich {
+        Memory::create_supported_situated
+    } else {
+        Memory::create_host_capture
+    };
+    let mut memory = create(&root.join("test.memory-prototype.sqlite"), &access.domain)
+        .unwrap()
+        .with_source_guard(std::sync::Arc::new(authority.clone()));
+    let input = CaptureRequest {
+        confirmation: confirmation.clone(),
+        domain: access.domain.clone(),
+        account: "synthetic".into(),
+        scopes: BTreeSet::new(),
+        consulted: vec![],
+        records: SessionRecords::default(),
+    };
+    let receipt = if rich {
+        authority.capture_with_evidence(&mut memory, input, &access)
+    } else {
+        authority.capture(&mut memory, input, &access)
+    }
+    .unwrap();
     Captured {
         root,
         authority,
@@ -309,6 +412,258 @@ fn captured() -> Captured {
         receipt,
         access,
     }
+}
+
+#[test]
+fn rich_capture_distinguishes_requested_contents_and_observed_bytes_without_private_gold() {
+    use crate::memory::interpretation::{InterpretationContext, SourceKind};
+    let mut f = captured_mode(true);
+    let context = InterpretationContext::new(criterion(), "opaque-context".into()).unwrap();
+    let prepared = f
+        .memory
+        .prepare_interpretation(
+            &f.receipt,
+            &[],
+            &context,
+            &f.memory.snapshot().unwrap(),
+            &f.access,
+        )
+        .unwrap();
+    let action = prepared
+        .sources()
+        .iter()
+        .find(|p| p.kind == SourceKind::ActionInvocation)
+        .unwrap();
+    let artifact = prepared
+        .sources()
+        .iter()
+        .find(|p| p.kind == SourceKind::ArtifactObservation)
+        .unwrap();
+    let requested: serde_json::Value = serde_json::from_str(&action.text).unwrap();
+    let actual: serde_json::Value = serde_json::from_str(&artifact.text).unwrap();
+    assert_eq!(requested["input"]["content"], "requested route");
+    assert_eq!(actual["artifact_text"], "[]");
+    assert_eq!(actual["verdict"], "Failed");
+    assert_eq!(
+        actual["artifact_digest"],
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    );
+    for secret in ["GOLD_ONLY_91827", "SENSOR_HOST_ONLY_72601", "expected_rows"] {
+        assert!(!prepared.generation_input().contains(secret));
+        for reference in f
+            .receipt
+            .originals
+            .iter()
+            .chain(std::iter::once(&f.receipt.projection))
+        {
+            assert!(
+                !serde_json::to_string(&f.memory.read(reference, &f.access).unwrap())
+                    .unwrap()
+                    .contains(secret)
+            );
+        }
+    }
+    assert!(!prepared
+        .generation_input()
+        .contains(f.root.to_str().unwrap()));
+    let again = f
+        .authority
+        .capture_with_evidence(
+            &mut f.memory,
+            CaptureRequest {
+                confirmation: f.confirmation.clone(),
+                domain: f.access.domain.clone(),
+                account: "synthetic".into(),
+                scopes: BTreeSet::new(),
+                consulted: vec![],
+                records: SessionRecords::default(),
+            },
+            &f.access,
+        )
+        .unwrap();
+    assert_eq!(again, f.receipt);
+    fs::write(&f.artifact, b"[1]").unwrap();
+    for reference in f
+        .receipt
+        .originals
+        .iter()
+        .chain(std::iter::once(&f.receipt.projection))
+    {
+        assert!(f.memory.read(reference, &f.access).unwrap().is_none());
+    }
+    assert!(f
+        .authority
+        .capture_with_evidence(
+            &mut f.memory,
+            CaptureRequest {
+                confirmation: f.confirmation.clone(),
+                domain: f.access.domain.clone(),
+                account: "synthetic".into(),
+                scopes: BTreeSet::new(),
+                consulted: vec![],
+                records: SessionRecords::default(),
+            },
+            &f.access
+        )
+        .is_err());
+    fs::write(&f.artifact, b"[]").unwrap();
+    assert!(f
+        .memory
+        .read(&f.receipt.projection, &f.access)
+        .unwrap()
+        .is_some());
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[test]
+fn rich_and_legacy_public_producers_refuse_the_other_store_version() {
+    let mut f = captured_mode(true);
+    let mut legacy = Memory::create_situated(
+        &f.root.join("legacy.memory-prototype.sqlite"),
+        &f.access.domain,
+    )
+    .unwrap()
+    .with_source_guard(std::sync::Arc::new(f.authority.clone()));
+    assert!(f
+        .authority
+        .capture_with_evidence(
+            &mut legacy,
+            CaptureRequest {
+                confirmation: f.confirmation.clone(),
+                domain: f.access.domain.clone(),
+                account: "synthetic".into(),
+                scopes: BTreeSet::new(),
+                consulted: vec![],
+                records: SessionRecords::default(),
+            },
+            &f.access
+        )
+        .is_err());
+    assert_eq!(legacy.snapshot().unwrap().sequence, 0);
+    assert!(f
+        .authority
+        .capture(
+            &mut f.memory,
+            CaptureRequest {
+                confirmation: f.confirmation.clone(),
+                domain: f.access.domain.clone(),
+                account: "synthetic".into(),
+                scopes: BTreeSet::new(),
+                consulted: vec![],
+                records: SessionRecords::default(),
+            },
+            &f.access
+        )
+        .is_err());
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[test]
+fn rich_artifact_statuses_preserve_complete_bytes_and_distinguish_omission_reasons() {
+    let root = temp();
+    let path = root.join("out.json");
+    let missing = artifact_observation(&path, &[]);
+    assert_eq!(missing.content_status, ContentStatus::Missing);
+    assert_eq!(missing.verdict, CheckVerdict::Unavailable);
+    assert!(missing.artifact_text.is_none() && missing.artifact_digest.is_none());
+    let cases = [
+        (
+            b"[]".to_vec(),
+            ContentStatus::Complete,
+            Some("[]"),
+            CheckVerdict::Passed,
+        ),
+        (
+            vec![],
+            ContentStatus::Complete,
+            Some(""),
+            CheckVerdict::Failed,
+        ),
+        (
+            vec![0xff, 0xfe],
+            ContentStatus::NonUtf8,
+            None,
+            CheckVerdict::Failed,
+        ),
+        (
+            [b"[]".as_slice(), vec![b' '; 2046].as_slice()].concat(),
+            ContentStatus::Complete,
+            None,
+            CheckVerdict::Passed,
+        ),
+        (
+            [b"[]".as_slice(), vec![b' '; 2047].as_slice()].concat(),
+            ContentStatus::Oversized,
+            None,
+            CheckVerdict::Passed,
+        ),
+        (
+            br#"[{"name":"wrong","name":"right"}]"#.to_vec(),
+            ContentStatus::Complete,
+            None,
+            CheckVerdict::Failed,
+        ),
+    ];
+    for (bytes, status, text, verdict) in cases {
+        fs::write(&path, &bytes).unwrap();
+        let observed = artifact_observation(&path, &[]);
+        assert_eq!(observed.content_status, status);
+        assert_eq!(observed.verdict, verdict);
+        assert_eq!(observed.artifact_digest, Some(digest(&bytes)));
+        if status == ContentStatus::Complete {
+            assert_eq!(
+                observed.artifact_text.as_deref(),
+                Some(std::str::from_utf8(&bytes).unwrap())
+            );
+        } else {
+            assert!(observed.artifact_text.is_none());
+        }
+        if let Some(text) = text {
+            assert_eq!(observed.artifact_text.as_deref(), Some(text));
+        }
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    fs::write(&path, vec![b' '; ARTIFACT_MAX + 1]).unwrap();
+    let oversized = artifact_observation(&path, &[]);
+    assert_eq!(oversized.content_status, ContentStatus::Oversized);
+    assert_eq!(oversized.verdict, CheckVerdict::Refused);
+    assert!(oversized.artifact_text.is_none() && oversized.artifact_digest.is_none());
+    let checker_boundary = [b"[]".as_slice(), vec![b' '; ARTIFACT_MAX - 2].as_slice()].concat();
+    fs::write(&path, &checker_boundary).unwrap();
+    let boundary = artifact_observation(&path, &[]);
+    assert_eq!(boundary.content_status, ContentStatus::Oversized);
+    assert_eq!(boundary.verdict, CheckVerdict::Passed);
+    assert_eq!(boundary.artifact_digest, Some(digest(&checker_boundary)));
+    let unavailable = artifact_observation(&root.join("x".repeat(256)), &[]);
+    assert_eq!(unavailable.content_status, ContentStatus::Unavailable);
+    assert_eq!(unavailable.verdict, CheckVerdict::Unavailable);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rich_artifact_refuses_final_and_parent_symlinks_and_fifo_without_reading() {
+    use std::{
+        ffi::CString,
+        os::unix::{ffi::OsStrExt, fs::symlink},
+    };
+    let root = temp();
+    let parent = root.join("real");
+    fs::create_dir(&parent).unwrap();
+    let path = parent.join("out.json");
+    fs::write(&path, b"[]").unwrap();
+    symlink(&parent, root.join("linked")).unwrap();
+    symlink(&path, root.join("out.json")).unwrap();
+    let fifo = root.join("pipe");
+    let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: the NUL-terminated path remains live, and the mode is ordinary.
+    assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+    for path in [root.join("linked/out.json"), root.join("out.json"), fifo] {
+        let observed = artifact_observation(&path, &[]);
+        assert_eq!(observed.content_status, ContentStatus::Refused);
+        assert_eq!(observed.verdict, CheckVerdict::Refused);
+        assert!(observed.artifact_text.is_none() && observed.artifact_digest.is_none());
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn audit_and_source_binding_fail_closed_on_changes_and_preserve_original_taint() {
@@ -507,7 +862,120 @@ fn malformed_native_memory_packets_refuse_capture() {
             events(&text, &criterion(), "synthetic").is_err(),
             "malformed native memory packet must not become a lineage-free original"
         );
+        assert!(
+            events_with_evidence(&text, &criterion(), "synthetic").is_err(),
+            "omitted rich memory results must still validate the complete packet"
+        );
     }
+}
+
+#[tokio::test]
+async fn rich_memory_result_keeps_all_references_and_receipt_without_duplicate_packet_passage() {
+    use crate::tool::{goal_memory::GoalMemory, Tool, ToolCtx};
+    let f = captured_mode(true);
+    let tool = GoalMemory::open_with_source_guard(
+        &f.root.join("test.memory-prototype.sqlite"),
+        f.access.clone(),
+        "synthetic".into(),
+        crate::memory::context::Situation {
+            event: "Convert fixture".into(),
+            goal: "task:convert".into(),
+            needs: None,
+        },
+        std::sync::Arc::new(f.authority.clone()),
+    )
+    .unwrap();
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"fixture"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error && output.external);
+    assert!(
+        output.content.len() > 4096,
+        "exercise a complete packet beyond the ordinary passage bound"
+    );
+    let raw = output.content;
+    let native_with_result = |content: &str, memory_read: bool| {
+        transcript()
+            .lines()
+            .map(|line| {
+                let mut record: Record = serde_json::from_str(line).unwrap();
+                if let Record::Message(message) = &mut record {
+                    for block in &mut message.content {
+                        match block {
+                            Block::ToolUse { name, input, .. } if memory_read => {
+                                *name = "goal_context".into();
+                                *input = serde_json::json!({"memory":{"query":"fixture"}});
+                            }
+                            Block::ToolResult {
+                                content: result, ..
+                            } => *result = content.into(),
+                            _ => {}
+                        }
+                    }
+                }
+                serde_json::to_string(&record).unwrap() + "\n"
+            })
+            .collect::<String>()
+    };
+    let text = native_with_result(&raw, true);
+    let rich = events_with_evidence(&text, &criterion(), "synthetic").unwrap();
+    let packet: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let expected = packet["memory"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| RevisionRef {
+            object: hit["reference"]["object"].as_str().unwrap().into(),
+            revision: hit["reference"]["revision"].as_str().unwrap().into(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rich.consulted, expected);
+    assert!(rich.consulted.contains(&f.receipt.projection));
+    assert!(f
+        .receipt
+        .originals
+        .iter()
+        .all(|r| rich.consulted.contains(r)));
+    assert_eq!(rich.receipts.len(), 1);
+    assert_eq!(rich.receipts[0].call_id, "write-1");
+    assert_eq!(rich.receipts[0].tool_name, "goal_context");
+    assert_eq!(rich.receipts[0].status, ReceiptStatus::Succeeded);
+    assert_eq!(rich.originals.len(), 2);
+    assert!(rich
+        .originals
+        .iter()
+        .all(|p| p.kind != PassageKind::ToolResult));
+    assert!(rich
+        .originals
+        .iter()
+        .all(|p| !p.text.contains(&f.receipt.projection.revision)));
+    let legacy = events(&text, &criterion(), "synthetic").unwrap();
+    assert_eq!(legacy.originals[1].kind, PassageKind::ToolResult);
+    assert_eq!(legacy.originals[1].text.len(), 4096);
+    assert!(raw.starts_with(&legacy.originals[1].text));
+    let ordinary_long = native_with_result(&"x".repeat(4097), false);
+    assert!(events_with_evidence(&ordinary_long, &criterion(), "synthetic").is_err());
+    assert_eq!(
+        events(&ordinary_long, &criterion(), "synthetic")
+            .unwrap()
+            .originals[1]
+            .text
+            .len(),
+        4096
+    );
+    let mut unexpected: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    unexpected["memory"]["unknown_shape"] = serde_json::json!(true);
+    assert!(events_with_evidence(
+        &native_with_result(&unexpected.to_string(), true),
+        &criterion(),
+        "synthetic"
+    )
+    .is_err());
+    fs::remove_dir_all(f.root).unwrap();
 }
 
 #[tokio::test]

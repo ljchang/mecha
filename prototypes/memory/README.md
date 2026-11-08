@@ -62,6 +62,73 @@ Production/private-data qualification remains separate work. The bounded model c
 
 ## Situated appraisal and changed-goal interpretation
 
+### Evaluated statements and action/outcome evidence (v8)
+
+The next opt-in format, `Memory::create_supported_situated`, creates a **new**
+v8 database. It adds bounded native action arguments and actual artifact contents
+to captured evidence, then requires separate proposal and factual-support passes
+before retaining an interpretation. Existing v7 stores and examples keep their
+original behavior; there is no automatic migration or production registration.
+
+`LocalAuthority::capture_with_evidence` distinguishes a requested write, its call
+receipt, and the independently observed artifact. Complete small UTF-8 artifacts
+are readable; oversized, missing, refused and non-UTF8 artifacts retain explicit
+omission states. No private sensor rationale or expected grader answer enters the
+reader packet.
+
+`memory_factual_support::{generate,evaluate}` makes bounded, local, tool-free
+calls. `Memory::prepare_support_with_model` binds the proposal to its prepared
+source context; `retain_evaluated_interpretation` rechecks that context and all
+dependencies. Every offered unit and goal judgment receives a check. Unsupported
+factual units are omitted, speculative units are labeled, and a Good/Bad judgment
+requires its own supported assessment plus every originally named factual
+premise. The host renders the retained text; rejected prose and evaluator
+diagnostics remain outside reader memory.
+
+These are **fallible model assessments**, not truth certificates. Quotation
+membership alone did not catch false historical claims in the earlier comparison.
+The separate `support_trial.py` qualification therefore tests fresh annotated
+cases and externally audits the actual admitted statements before permitting a
+downstream decision comparison. It scores evaluator classification separately
+from final admission: dropping a duplicate goal judgment must not hide a wrong
+evaluator answer. Concept learning and rumination remain behind this reliability
+gate. The existing v2 concept/revision store and counterfactual replay are reuse
+candidates; nightly behavior-rule learning is not automatically repointed.
+
+Build the native qualifier, then freeze a new run before inference:
+
+```sh
+cargo build -p mecha-core --features memory-prototype --example memory_support_trial
+python3 prototypes/memory/support_trial.py freeze /tmp/mecha-support-new \
+  target/debug/examples/memory_support_trial http://127.0.0.1:8080 \
+  RESIDENT_MODEL /absolute/path/to/model-holds
+python3 prototypes/memory/support_trial.py run /tmp/mecha-support-new
+python3 prototypes/memory/support_trial.py score /tmp/mecha-support-new
+```
+
+The eight synthetic cases use native Agent file actions, independent artifact
+observations and ordinary GoalMemory recall. Each permits at most three local
+model calls; the coordinator neither retries nor reloads a model. Record the
+successful build and its source/binary hashes: freezing those hashes separately
+does not establish that they correspond. Interrupted or malformed attempts stay
+in the denominator. The gate also requires externally reviewed, digest-bound
+audits under the run's `audits/` directory; scoring alone cannot supply those
+judgments. The detailed report/audit contract is in `support_trial.py`.
+
+Native memory reads keep their complete consulted-source dependencies and call
+receipts without copying the whole recalled packet into another original passage.
+The exact historical tool response remains in JSONL. Recapture therefore preserves
+provenance without treating previously remembered evidence as a new observation.
+
+The first frozen eight-case resident-model run did **not** qualify: 0/8 complete
+workflows, 2/8 valid generated proposals, 1/2 valid generated-proposal evaluations
+and 0/8 valid probes. One case retained four independently supported units and an
+Unknown bearing. Raw rejected replies also contained semantic errors, so repairing
+JSON alone is insufficient. See `docs/HISTORY.md` and the current repository
+handoff for the next bounded repair; this is not production-ready appraisal.
+
+### Legacy v7 demonstration
+
 The explicit v7 workflow adds durable, source-linked interpretation hypotheses
 beside the unchanged episode. It reuses existing interpretation parsing,
 qualified grounding, deterministic appraisal and the ordinary agent loop.

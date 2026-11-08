@@ -70,3 +70,6 @@ mod host_capture_tests;
 
 #[cfg(test)]
 mod interpretation_tests;
+
+#[cfg(test)]
+mod support_tests;

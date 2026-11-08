@@ -379,6 +379,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interpretation parsing and grounding preserve the existing graph follow-up,
   while private needs assessment remains outside model prompts and reader memory.
 
+- New explicit v8 prototype stores capture bounded native action inputs and actual
+  artifact observations, then require a separate factual-support assessment before
+  retaining an interpretation. Host rendering excludes rejected claims, labels
+  speculation and accounts for every goal judgment. Old formats are not migrated;
+  the local model's support assessment remains fallible and production capture
+  remains disabled.
+
 - The synthetic memory trial can opt into a turn-budget notice before its last
   two model turns, preserving ordinary tools, guards and hard limits. A separate
   paired diagnostic records completion, notice exposure and premature abstention.

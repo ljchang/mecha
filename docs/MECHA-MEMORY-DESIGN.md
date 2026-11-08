@@ -2851,3 +2851,186 @@ providers prove these mechanics. A small frozen resident-model comparison report
 semantic grounding, changed-goal adaptation, failures and cost separately; it must
 not turn model self-assessment into the correctness oracle. General concept
 learning, open-ended rumination and production rollout remain later milestones.
+
+
+### 31.8 Action/outcome evidence and factual-support evaluation
+
+**Intent and scope.** The situated trial showed that exact quotations did not
+prevent false historical claims: a write receipt was interpreted as a route
+selection although the resulting artifact was `[]`. This increment gives appraisal
+bounded actual action/outcome evidence, evaluates its proposed statements in a
+separate pass, and measures false support and abstention on fresh cases. It does
+not make a model a truth oracle. It does not promote concepts, change action
+permissions, expose private needs, migrate the owner graph or schedule rumination.
+The user approved this increment and wants concept learning/rumination next once
+it works; the existing concept/revision and counterfactual machinery should be
+adapted at that stage rather than duplicated.
+
+**Format boundary (implementation choice).** Add explicit new-file v8 through
+`Memory::create_supported_situated`. Preserve v1-v7 byte semantics; no automatic
+upgrade. V8 reuses the SQLite tables and v7 lossless projection structure. It adds
+strict action/artifact passage kinds and requires evaluated structured statements
+for Interpretation admission. Old binaries reject v8 at open. Ordinary evidence
+recall remains available; default readers continue withholding interpretations and
+interpreted descendants. Public legacy `retain_interpretation` cannot write v8.
+
+**Rich evidence.** `LocalAuthority::capture_with_evidence` is a distinct opt-in
+producer on v8. The legacy `capture` path remains unchanged. Rich capture records
+native ToolUse inputs with call ID/name, exact native line/pointer, and explicit
+availability; this establishes an invocation, not execution or success. Independently
+observed artifact bytes establish file contents, not the truth of model-authored
+contents. Typed JSON envelopes distinguish actual text from host metadata and make
+short content such as `[]` citeable. Artifact checking and content selection use
+one bounded descriptor-safe read, never a second read after the check. Preserve
+1 MiB checker limit, retain complete UTF-8 artifact text only up to 2,048 bytes and
+complete serialized action input only up to 1,024 bytes. Above these reader limits,
+retain a typed omission with digest, never a silently truncated value. Distinguish
+missing, refused, non-UTF8 and oversized from an empty complete file. No expected
+rows, private audit, absolute authority paths or sensor values enter the packet.
+New passages inherit every consulted dependency, external binding and required
+scope; changing/withdrawing/forgetting the source withholds descendants. Rich
+capture refuses overlong ordinary passages instead of silently clipping them.
+Keep the existing 16-original bound and atomic 20,000-byte contextual packet bound.
+
+**Statements instead of unchecked narrative.** The new producer returns
+`SupportProposal { units, judgments }`, not a free narrative. A unit has unique
+`id`, `kind` (RecordedEvent, GoalAssessment, Hypothesis, Prediction), `text`, and
+zero to two exact qualified citations. A citation is `{source_id, quote}`. A
+judgment has exact current `goal`, `bearing` and `because` unit IDs. The host binds
+all units to the prepared context and original sources. Limit eight offered units,
+512 UTF-8 bytes per text, eight offered judgments, eight support IDs per judgment,
+12-300 characters per quotation, and 16 KiB reply. Duplicate/unknown unit IDs,
+invalid citations, unknown kinds and overbounds fail preparation. RecordedEvent
+and GoalAssessment require at least one citation. Hypotheses may lack evidence,
+but are never factual support or authority. Every hypothesis/prediction remains
+explicitly speculative, even when its premises have model-assessed support.
+
+**Independent support pass.** `SupportRequest` is opaque and non-deserializable,
+binding the exact prepared packet/context/proposal. An isolated local-only call
+receives these and no history, generator rationale, hidden needs or gold answer.
+Require one check per unit and per offered judgment, no omissions/duplicates/invented
+IDs. Host-issued target IDs are `unit:<unit-id>` and `judgment:<offered-index>`.
+A judgment check evaluates whether that exact bearing follows for the current
+goal/criterion, not merely whether its supporting statements are factual. Each check gives
+`status` Supported/Contradicted/Unknown, `unsupported_factual_premise` boolean,
+zero to two exact citations, bounded diagnostic reason, and missing-information
+questions for Unknown. Supported must have at least one citation and no unresolved
+questions. Reasons/questions remain in host audit, not reader factual prose.
+Checks cover the full statement including factual premises in hypothetical or
+predictive wording. A same-model separate call is allowed but explicitly labelled
+fallible and correlated, never independent ground truth. General entailment stays
+a measured model capability; deterministic guards certify only their defined
+structural/typed contracts.
+
+**Admission and rendering.** `finish_support` validates the complete checklist and
+creates an opaque, non-deserializable `EvaluatedInterpretation` bound to its
+preparation. `Memory::retain_evaluated_interpretation` rechecks preparation, all
+sources, canonical receipt, scopes and current external authority; no transaction
+spans inference. RecordedEvent/GoalAssessment survive only Supported with no
+unsupported factual premise. Hypothesis/Prediction may survive Supported or Unknown
+only without that flag; render as explicitly speculative. Never retain a
+Contradicted unit. Model-evaluated support never changes source roles or taint.
+Good/Bad judgments require their own Supported check with no unsupported premise
+and every original support unit to survive as a supported
+RecordedEvent/GoalAssessment; do not silently weaken their premises by remapping
+only a subset. Otherwise retain a current Unknown. Explicit Unknown may have no
+factual support. Account for every offered judgment (retained, downgraded or
+dropped, with stable reasons); retain original indices for diagnostics.
+
+Host rendering alone constructs legacy-compatible prose/claims from admitted
+units. Do not copy original generator narrative, rejected statement text, evaluator
+reason text or questions into reader-visible records. The durable support report
+contains admitted units/citations, model/protocol identity, hashes, per-unit status
+and judgment dispositions; rejected units appear only as IDs/statuses, not text.
+Canonical reopen validates the deterministic rendering and report correspondence.
+Optional support metadata must serialize absent on v7 so old payload hashes remain
+identical; v8 requires it. A public draft/report is not an evaluated receipt. All
+retained interpretations stay provisional/private/untrusted. A failed evaluation
+cannot fall back to legacy admission. Keep generation and evaluation failures,
+usage and raw replies in bounded host audit even when nothing is admitted.
+
+**Budgets and failures.** Reuse current local provider identity, cancellation,
+refusal, stop-reason and output-limit checks; never accept MaxTokens or mismatched
+served identity. Generation packet remains at most 32 KiB, evaluation packet at
+most 48 KiB including frame; replies at most 16 KiB; calls at most 4,096 output
+tokens/180 seconds in qualification. No retries or automatic repair in this slice.
+Retained payload remains at most 16 KiB, rendered prose at most 8 KiB. Oversize
+bundles fail closed rather than dropping dependencies. A structural/evaluation
+failure retains host diagnostic data, never an apparently evaluated record.
+
+**Qualification.** Authored tests must fail before the new behavior and cover exact
+bytes, requested action versus actual artifact, missing/oversized/non-UTF8/refused
+content, source changes during evaluation, foreign/replayed preparations, complete
+check coverage, dishonest supported checks, unsupported speculative premises,
+rejected-prose exclusion, empty Unknown, complete judgment accounting, reopen and
+schema compatibility, changed goals, needs-only request invariance and transitive
+withdrawal. A live frozen set includes eight fresh cases across correct outcome,
+empty output, missing artifact, request/output mismatch, changed goal, unsupported
+causal explanation, untrusted instructions and genuinely unknown evidence.
+
+First measure generation with richer evidence and evaluation against independent
+case annotations; count all failures, abstentions, false support and total cost.
+Only if that gate is usable, compare source-only recall, a simple source-linked
+summary and evaluated situated appraisal on fresh downstream decisions with equal
+sources/criteria/budgets. A model's Supported label cannot grade itself; inspect raw
+responses against the fixture's independently known events. Do not tune and rerun
+the same held-out cases into success. Claims of benefit remain bounded by sample.
+
+**After this gate.** Reuse existing `prepare_concept`/`retain_concept` revision and
+counterexample primitives, with explicit external-source guards for native captures.
+Begin with one provisional concept, a near-match/counterexample and untouched
+transfer cases, then one bounded rumination cycle. Existing Clean instructional
+learning remains separate from untrusted conceptual hypotheses. Nightly migration
+and the owner's mecha-graph remain deferred.
+
+**Native recapture refinement (before qualification).** An authored Agent read
+returned an 11,579-byte GoalMemory packet; v8 correctly refused treating that
+whole packet as an ordinary original passage under the 4 KiB cap. A successful,
+strictly decoded GoalMemory result is therefore represented by its native call
+receipt and complete consulted revision dependencies, without duplicating the
+serialized packet as another original observation. Native JSONL still retains
+the exact returned bytes, and source closure supplies the original evidence and
+historical interpretations. Every later passage retains that complete lineage.
+Malformed/failed memory reads still refuse; non-memory overlong passages still
+refuse; v6/v7 serialization remains unchanged. This avoids growing nested copies
+and prevents recalled knowledge from masquerading as fresh independent evidence.
+The cost is that v8 reader memory does not duplicate the exact historical memory
+packet presentation; that presentation remains in its native transcript.
+
+### 31.9 Next: one concept and one rumination cycle
+
+This is the next requested phase, conditional on the factual-support gate;
+it is not implemented by §31.8. Reuse the existing memory store rather than
+introducing another learning database or migrating nightly jobs.
+
+1. **Induce one provisional concept.** Existing `prepare_concept` and
+   `retain_concept` already handle bounded original evidence, a principle,
+   applicability, counterexamples and optimistic revision. Start from 2–8
+   independent episode identities. Recalled copies, interpretations and concepts
+   must not masquerade as additional independent observations. Native bridge
+   sources currently fail the concept producer's conservative authorization;
+   add a dedicated preparation/receipt path with current external-source checks
+   before inference and retention, rather than loosening generic authorization.
+2. **Test transfer and scope.** Hold back tasks before induction. Compare the
+   same episode evidence with and without the concept under matched budgets.
+   Include a useful transfer, a near-match that should not generalize, a genuine
+   counterexample and insufficient evidence. Existing plan assessment can test
+   applicability; independent task outcomes must grade utility. A model's
+   Supported label or a successful revision is not demonstrated learning.
+3. **Revise once.** Use the existing expected-revision guard, preserving prior
+   evidence and relevant counterexamples in the consulted closure. Re-test an
+   untouched task, and verify that source withdrawal, correction and scope
+   restrictions withhold all dependent concepts and copied test material.
+4. **Connect bounded rumination.** An explicit one-cycle driver can select a
+   failed application, retrieve bounded evidence/counterexamples, propose one
+   revision and test it, ending with a provisional revision or no change.
+   Reuse `counterfactual::branch_at` and `replay_run` for supported recorded
+   decision points; divergence or absent ground truth remains inconclusive.
+   Imagined outcomes are predictions, never observed experience.
+
+Existing `learning.rs`/nightly rumination consolidates behavioral instructions,
+and harness rumination evaluates configuration changes. Neither is a drop-in
+concept learner. Reuse their orchestration and held-out comparison patterns
+without granting conceptual hypotheses Clean/instructional authority. Scheduling,
+automatic candidate discovery and broad policy promotion follow only after this
+small learning loop demonstrates useful transfer.

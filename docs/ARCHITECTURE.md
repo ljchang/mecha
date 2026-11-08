@@ -12929,6 +12929,27 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   transaction spans inference. Retained claims carry host-resolved revision/field
   locators as well as the model's qualified citation ID: an opaque hash alone
   cannot tell a reopened reader which of two identical quotations was cited.
+- **Requested actions, observed artifacts and goal success are different evidence.**
+  Explicit new-file v8 capture retains bounded native ToolUse inputs and the
+  independently read artifact bytes. The checker and reader envelope share one
+  descriptor read; missing, refused, non-UTF8 and oversized content are typed
+  omissions, never an empty successful result. A successful two-byte write once
+  supported a false selection claim when readers could see only its receipt.
+  Rich capture preserves consulted-source closure and interpretation influence;
+  adding a source kind does not make model-authored content true or trusted.
+  A decoded native GoalMemory result contributes its receipt and complete
+  consulted dependencies, not another copy of its serialized memory packet.
+  Native JSONL retains that presentation. Recalled evidence is not a new
+  independent observation, and recursive packet copies would exhaust the bounds.
+- **Quote membership is not factual support.** V8 interpretation retention requires
+  a separate, fallible support assessment of every proposed statement and every
+  offered goal judgment. A true premise does not itself certify a Good or Bad
+  bearing. Host rendering includes only admitted typed units, labels speculation,
+  and excludes rejected prose and evaluator diagnostics. Known bearings require
+  their own supported assessment and every originally named factual premise;
+  dropping a premise must never silently weaken the claim being evaluated.
+  Canonical reader checks and final source authorization remain mandatory. Old
+  v7 drafts cannot acquire evaluated status through migration or metadata edits.
 - **Default readers must also withhold interpreted descendants.** Merely omitting
   Interpretation from initial search still leaks it through a recaptured episode's
   dependency closure. The explicit contextual reader assigns every returned

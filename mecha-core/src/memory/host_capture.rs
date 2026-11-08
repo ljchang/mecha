@@ -47,6 +47,45 @@ pub enum PassageKind {
     UserRequest,
     AssistantText,
     ToolResult,
+    /// Native requested input, not evidence of execution or factual truth.
+    ActionInvocation,
+    /// Independently read bytes, not evidence of their author's factual claims.
+    ArtifactObservation,
+}
+
+pub const EVIDENCE_CHECK_VERSION: &str = "exact-json-string-rows-evidence-v1";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputStatus {
+    Complete,
+    Oversized,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionInvocation {
+    pub call_id: String,
+    pub tool_name: String,
+    pub input_status: InputStatus,
+    pub input: serde_json::Value,
+    pub input_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContentStatus {
+    Complete,
+    Missing,
+    Refused,
+    NonUtf8,
+    Oversized,
+    Unavailable,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactObservation {
+    pub content_status: ContentStatus,
+    pub artifact_text: Option<String>,
+    pub artifact_digest: Option<String>,
+    pub verdict: CheckVerdict,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -143,7 +182,7 @@ fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64)
         return Ok(serde_json::to_string(input)?);
     }
     ensure!(
-        version == 7 && originals.len() == input.originals.len(),
+        matches!(version, 7 | 8) && originals.len() == input.originals.len(),
         "invalid host projection version"
     );
     Ok(serde_json::to_string(&ProjectionV2 {
@@ -194,7 +233,10 @@ pub(super) fn projection_input(conn: &Connection, projection: &Capture) -> Resul
         "host-capture-projection-v1" => serde_json::from_str::<HostCapture>(&projection.text)?,
         "host-capture-projection-v2" => {
             ensure!(
-                conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 7,
+                matches!(
+                    conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+                    7 | 8
+                ),
                 "unsupported host projection version"
             );
             let p: ProjectionV2 = serde_json::from_str(&projection.text)?;
@@ -351,6 +393,20 @@ fn hash<T: Serialize>(value: &T) -> Result<String> {
 }
 
 impl Memory {
+    pub(crate) fn require_host_capture_version(&self, rich: bool) -> Result<()> {
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        ensure!(
+            if rich {
+                version == 8
+            } else {
+                matches!(version, 6 | 7)
+            },
+            "host capture producer does not match store version"
+        );
+        Ok(())
+    }
     pub fn create_host_capture(path: &Path, domain: &str) -> Result<Self> {
         Self::create_schema(path, domain, "CREATE TABLE external_binding(revision TEXT PRIMARY KEY REFERENCES revision(id),authority TEXT NOT NULL,locator TEXT NOT NULL,binding_revision TEXT NOT NULL);
           CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')),lineage_version INTEGER NOT NULL CHECK(lineage_version=2));
@@ -365,11 +421,23 @@ impl Memory {
         input: HostCapture,
         access: &Access,
     ) -> Result<CaptureReceipt> {
-        admit(self, input, access)
+        admit(self, input, access, false)
+    }
+    pub(crate) fn admit_host_capture_with_evidence(
+        &mut self,
+        input: HostCapture,
+        access: &Access,
+    ) -> Result<CaptureReceipt> {
+        admit(self, input, access, true)
     }
 }
 
-fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<CaptureReceipt> {
+fn admit(
+    db: &mut Memory,
+    input: HostCapture,
+    access: &Access,
+    rich: bool,
+) -> Result<CaptureReceipt> {
     db.check_access(access)?;
     ensure!(
         input.identity.domain == access.domain,
@@ -377,10 +445,24 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
     );
     let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        matches!(version, 6 | 7),
-        "host capture requires version 6 or 7"
+        if rich {
+            version == 8
+        } else {
+            matches!(version, 6 | 7)
+        },
+        "host capture producer does not match store version"
     );
     validate(&input)?;
+    ensure!(
+        rich || input.originals.iter().all(|p| !matches!(
+            p.kind,
+            PassageKind::ActionInvocation | PassageKind::ArtifactObservation
+        )),
+        "rich evidence requires version 8"
+    );
+    if rich {
+        validate_rich(&input)?;
+    }
     let identity = hash(&input.identity)?;
     let payload = hash(&input)?;
     let guard = db.source_guard.as_deref();
@@ -420,7 +502,7 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
             )?;
             ensure!(
                 (safe && matches!(lookup(&tx, &member)?, Some(Record::Evidence(_))))
-                    || (version == 7
+                    || (matches!(version, 7 | 8)
                         && interpretation::canonical(&tx, &member)?
                         && matches!(lookup(&tx, &member)?, Some(Record::Interpretation(_)))),
                 "unsupported host dependency"
@@ -516,7 +598,7 @@ fn admit(db: &mut Memory, input: HostCapture, access: &Access) -> Result<Capture
         originals.push(reference);
     }
     let projection_source = SourceKey {
-        connector: if version == 7 {
+        connector: if matches!(version, 7 | 8) {
             "host-capture-projection-v2"
         } else {
             "host-capture-projection-v1"
@@ -638,7 +720,12 @@ fn validate(input: &HostCapture) -> Result<()> {
                 && p.pointer.starts_with('/')
                 && p.pointer.len() <= 256
                 && !p.text.is_empty()
-                && p.text.len() <= 4096,
+                && p.text.len()
+                    <= if p.kind == PassageKind::ArtifactObservation {
+                        16_384
+                    } else {
+                        4096
+                    },
             "invalid host passage"
         );
         ensure!(
@@ -676,6 +763,110 @@ fn validate(input: &HostCapture) -> Result<()> {
     ensure!(
         serde_json::to_vec(input)?.len() <= 32768,
         "oversized host projection"
+    );
+    Ok(())
+}
+
+fn validate_rich(input: &HostCapture) -> Result<()> {
+    ensure!(
+        input.identity.check_version == EVIDENCE_CHECK_VERSION,
+        "invalid rich check version"
+    );
+    let mut actions = BTreeSet::new();
+    let mut artifacts = 0;
+    for passage in &input.originals {
+        match passage.kind {
+            PassageKind::ActionInvocation => {
+                let value: super::plan_extraction::UniqueValue =
+                    serde_json::from_str(&passage.text)?;
+                let action: ActionInvocation = serde_json::from_value(value.0)?;
+                ensure!(
+                    passage.source.connector == "host-action-invocation-v1"
+                        && passage.pointer.ends_with("/input")
+                        && digest(&action.input_digest)
+                        && actions.insert(action.call_id.clone())
+                        && input.receipts.iter().any(|r| r.call_id == action.call_id && r.tool_name == action.tool_name),
+                    "invalid action evidence"
+                );
+                let bytes = serde_json::to_vec(&action.input)?;
+                match action.input_status {
+                    InputStatus::Complete => ensure!(
+                        bytes.len() <= 1024 && hash(&action.input)? == action.input_digest,
+                        "invalid complete action input"
+                    ),
+                    InputStatus::Oversized => {
+                        ensure!(action.input.is_null(), "invalid omitted action input")
+                    }
+                }
+            }
+            PassageKind::ArtifactObservation => {
+                artifacts += 1;
+                let value: super::plan_extraction::UniqueValue =
+                    serde_json::from_str(&passage.text)?;
+                let artifact: ArtifactObservation = serde_json::from_value(value.0)?;
+                ensure!(
+                    passage.source.connector == "host-artifact-observation-v1"
+                        && passage.pointer == "/artifact_observation"
+                        && artifact.artifact_digest == input.artifact.artifact_digest
+                        && artifact.verdict == input.artifact.verdict,
+                    "invalid artifact evidence"
+                );
+                if artifact.content_status == ContentStatus::Complete {
+                    let text = artifact
+                        .artifact_text
+                        .as_deref()
+                        .context("missing complete artifact")?;
+                    let actual = Sha256::digest(text.as_bytes())
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>();
+                    ensure!(
+                        text.len() <= 2048
+                            && artifact.artifact_digest.as_deref() == Some(actual.as_str()),
+                        "invalid complete artifact"
+                    );
+                } else {
+                    ensure!(
+                        artifact.artifact_text.is_none(),
+                        "noncomplete artifact has text"
+                    );
+                    match artifact.content_status {
+                        ContentStatus::Missing | ContentStatus::Unavailable => ensure!(
+                            artifact.artifact_digest.is_none()
+                                && artifact.verdict == CheckVerdict::Unavailable,
+                            "invalid unavailable artifact"
+                        ),
+                        ContentStatus::Refused => ensure!(
+                            artifact.artifact_digest.is_none()
+                                && artifact.verdict == CheckVerdict::Refused,
+                            "invalid refused artifact"
+                        ),
+                        ContentStatus::NonUtf8 => ensure!(
+                            artifact.artifact_digest.is_some()
+                                && artifact.verdict == CheckVerdict::Failed,
+                            "invalid non-UTF8 artifact"
+                        ),
+                        ContentStatus::Oversized => ensure!(
+                            if artifact.artifact_digest.is_some() {
+                                matches!(
+                                    artifact.verdict,
+                                    CheckVerdict::Passed | CheckVerdict::Failed
+                                )
+                            } else {
+                                artifact.verdict == CheckVerdict::Refused
+                            },
+                            "invalid oversized artifact"
+                        ),
+                        ContentStatus::Complete => unreachable!(),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        artifacts == 1 && actions.len() == input.receipts.len(),
+        "incomplete rich evidence"
     );
     Ok(())
 }
