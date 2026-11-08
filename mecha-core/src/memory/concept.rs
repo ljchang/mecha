@@ -11,6 +11,9 @@ use std::{
     future::Future,
 };
 
+#[path = "concept_rumination.rs"]
+pub mod rumination;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConceptStatus {
@@ -194,6 +197,19 @@ impl Memory {
         access: &Access,
         expected: Option<&RevisionRef>,
     ) -> Result<RevisionRef> {
+        self.retain_concept_scoped(request, reply, access, expected, None)
+    }
+
+    // Rumination also binds the previous concept's own scopes. Check those in
+    // the same write transaction as the existing optimistic retention guards.
+    fn retain_concept_scoped(
+        &mut self,
+        request: ConceptRequest,
+        reply: &str,
+        access: &Access,
+        expected: Option<&RevisionRef>,
+        expected_scopes: Option<&BTreeSet<String>>,
+    ) -> Result<RevisionRef> {
         self.check_access(access)?;
         ensure!(request.instance == self.instance, "foreign concept receipt");
         ensure!(reply.len() <= 32_000, "concept reply exceeds 32000 bytes");
@@ -234,6 +250,12 @@ impl Memory {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(previous) = expected {
             current(&tx, previous)?;
+            if let Some(scopes) = expected_scopes {
+                ensure!(
+                    required_scopes(&tx, &previous.revision)? == *scopes,
+                    "previous concept scopes changed during rumination"
+                );
+            }
             ensure!(
                 authorized(&tx, previous, access)?,
                 "previous concept outside current scope"
@@ -243,7 +265,7 @@ impl Memory {
                 "expected a concept revision"
             );
         }
-        let mut scopes = BTreeSet::new();
+        let mut scopes = expected_scopes.cloned().unwrap_or_default();
         for (reference, _) in &request.sources {
             current(&tx, reference)?;
             ensure!(
