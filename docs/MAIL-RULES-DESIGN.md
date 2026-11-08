@@ -2442,8 +2442,11 @@ screen's outbox line. In this phase:
   `no`; `Precedence: bulk | list | junk`; `List-Id` or `List-Unsubscribe`; a
   `noreply`/`mailer-daemon`/`postmaster` sender; one of the owner's own
   addresses; a conversation the owner has sent in; and one reply per sender
-  per rule per seven days. Each guard keys on its fact being present, and the
-  row says which fired (`skipped: <guard>`).
+  per rule per seven days, counting a shadow would-have reply while in
+  shadow. Each guard keys on its fact being present, and the row says which
+  fired (`skipped: <guard>`). A template using `{subject}` is refused when the
+  subject cannot be read whole (undecodable, truncated or repeated); Gmail's
+  raw RFC 2047 subject is decoded first, as the matcher reads it.
 - The staged item is a `mail_reply` call through the tool `[outbox] tools`
   routes, with `from_only: true` — a new narrowing on `mail_reply` that
   addresses only the message's `From` (on Graph, an explicit recipient in
@@ -2451,6 +2454,9 @@ screen's outbox line. In this phase:
   `reply_all` or on the owner's own message. A rule with no routed
   `mail_reply` stages nothing and says so. The store and route are the
   global config's, the ones the review surfaces read.
+- The staged item is armed (private and untrusted), so every review surface
+  shows it as possibly a stranger's words: its slots carry the sender's name
+  and subject, and the strip bounds length, not content.
 - The staged row records its `outbox_item`; each pass first settles staged
   rows whose item the owner has since released or rejected, as `released
   unchanged`, `edited` or `rejected`, linked by `correction_of`.

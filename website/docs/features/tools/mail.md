@@ -869,7 +869,9 @@ what you did with it. Sending unattended is not available yet. A reply is
 never drafted to an automated sender (`noreply`, auto-replies), a mailing
 list, one of your own addresses, a conversation you have already written
 in, or someone the rule answered in the last seven days; the ledger row says
-which of these stopped it.
+which of these stopped it. A reply using `{subject}` is not drafted when the
+subject could not be read whole. The outbox marks these drafts as containing
+a stranger's words, since the name and subject come from the message.
 
 **Pause** lowers a rule's groups to shadow at once; **Pause all** does it for
 every rule. Resuming is a raise, with its approval screen.

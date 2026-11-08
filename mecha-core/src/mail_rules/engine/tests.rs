@@ -3678,6 +3678,88 @@ async fn one_reply_per_sender_per_rule_per_week() {
     assert_eq!(f.mail.staged.lock().unwrap().len(), 1);
 }
 
+/// Review of #856: the shadow readout is the rate the rule would reply at,
+/// so the week binds there too — and a pass over the same message never
+/// skips it for its own earlier row.
+#[tokio::test]
+async fn the_per_sender_week_binds_in_shadow_too() {
+    let mut f = Fixture::new();
+    personal(&f);
+    reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    f.options.pass = Pass::AfterClassify;
+    assert_eq!(f.run(None).await.rows[0].outcome, Outcome::WouldHave);
+    let again = f.run(None).await;
+    assert!(
+        again.rows.iter().all(|r| r.outcome != Outcome::Skipped),
+        "the same message is not its own earlier reply: {:#?}",
+        again.rows
+    );
+    f.mail.next("beta");
+    let second = f.run(None).await;
+    assert_eq!(
+        second.rows[0].outcome,
+        Outcome::Skipped,
+        "{:#?}",
+        second.rows
+    );
+    assert!(second.rows[0].reason.contains("last 7 days"));
+}
+
+/// Review of #856: `{subject}` is the subject as read, never Gmail's raw
+/// encoded-words, and a subject that cannot be read whole refuses the reply
+/// rather than render a hole.
+#[tokio::test]
+async fn the_subject_slot_is_decoded_or_the_reply_is_refused() {
+    let mut f = Fixture::new();
+    personal(&f);
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        cs[0].subject_is_raw = true;
+        cs[0].message.subject = "=?UTF-8?B?UsOpc2VydmF0aW9uIGNvbmZpcm3DqWU=?=".into();
+    }
+    let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+    f.options.pass = Pass::AfterClassify;
+    let report = f.run(None).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Staged,
+        "{:#?}",
+        report.rows
+    );
+    let body = f.mail.staged.lock().unwrap()[0].clone();
+    assert!(
+        body.contains("thanks for Re: Réservation confirmée."),
+        "{body}"
+    );
+
+    for unreadable in ["truncated", "undecodable"] {
+        let mut f = Fixture::new();
+        personal(&f);
+        {
+            let mut cs = f.mail.candidates.lock().unwrap();
+            if unreadable == "truncated" {
+                cs[0].subject_complete = Some(false);
+            } else {
+                cs[0].subject_is_raw = true;
+                cs[0].message.subject = "=?X-UNKNOWN?Q?broken?=".into();
+            }
+        }
+        let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+        f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+        f.options.pass = Pass::AfterClassify;
+        let report = f.run(None).await;
+        assert_eq!(
+            report.rows[0].outcome,
+            Outcome::Skipped,
+            "{unreadable}: {:#?}",
+            report.rows
+        );
+        assert_eq!(report.rows[0].reason, "the subject could not be read whole");
+        assert!(f.mail.staged.lock().unwrap().is_empty());
+    }
+}
+
 #[tokio::test]
 async fn what_the_owner_did_with_a_staged_reply_is_written_back_once() {
     let mut f = Fixture::new();

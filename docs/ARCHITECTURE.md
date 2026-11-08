@@ -4892,8 +4892,9 @@ group is supported up to `propose`. `mail_rules::send` fills the closed
 slots and applies §5.4's refusals in every non-off mode, shadow included;
 the per-sender week reads the ledger. At dispatch the engine renders the
 template and calls `Mailbox::stage_reply`, which the mail binary implements
-as `OutboxStore::stage_by_harness` of the routed `mail_reply` tool with
-`from_only: true`; the `staged` row keeps `outbox_item`, and every pass
+as `OutboxStore::stage_by_harness_quoting_mail` of the routed `mail_reply`
+tool with `from_only: true` — armed, because the slots carry the sender's
+words and a harness-authored draft is otherwise stamped clean; the `staged` row keeps `outbox_item`, and every pass
 begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
 `rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
 a model may also set; it can only remove recipients.

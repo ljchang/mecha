@@ -342,12 +342,7 @@ pub fn header_match(m: &Matcher, c: &Candidate) -> HeaderMatch {
         .map(|(_, values)| values.len())
         .sum::<usize>()
         <= 1;
-    let subject = if c.subject_is_raw {
-        headers::decode(&c.message.subject)
-    } else {
-        headers::unfold(&c.message.subject)
-    }
-    .filter(|_| subject_unique && c.subject_complete != Some(false));
+    let subject = reply_subject_text(c);
     let mut keys = vec![
         compare(
             &m.from,
@@ -427,6 +422,26 @@ fn classified(c: &Candidate) -> bool {
 
 // Deliberately accepts a conservative addr-spec subset, never a display name,
 // whitespace or syntax that could turn into instructions in a task's name.
+/// The subject as `{subject}` fills it: decoded from Gmail's raw RFC 2047
+/// form, unfolded otherwise, and `None` when it cannot be read whole — not
+/// decodable, truncated, or more than one Subject header — the same reading
+/// the matcher compares against.
+pub(super) fn reply_subject_text(c: &Candidate) -> Option<String> {
+    let unique = c
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("subject"))
+        .map(|(_, values)| values.len())
+        .sum::<usize>()
+        <= 1;
+    if c.subject_is_raw {
+        headers::decode(&c.message.subject)
+    } else {
+        headers::unfold(&c.message.subject)
+    }
+    .filter(|_| unique && c.subject_complete != Some(false))
+}
+
 pub fn parsed_address(s: &str) -> Option<String> {
     let (local, domain) = s.split_once('@')?;
     if local.is_empty()
@@ -852,8 +867,11 @@ impl Run<'_> {
         }
     }
     /// §5.4's per-sender limit: this rule already answered this sender —
-    /// a reply staged, sent or still pending — within the last seven days.
-    fn answered_this_week(&self, rule: &LoadedRule, c: &Candidate) -> bool {
+    /// a reply staged, sent or still pending — within the last seven days,
+    /// on another message. In shadow a would-have reply counts too, so the
+    /// would-have rate is the rate the rule would actually reply at (review
+    /// of #856); a shadow row never holds back a real reply after a raise.
+    fn answered_this_week(&self, rule: &LoadedRule, c: &Candidate, mode: Mode) -> bool {
         let Some(sender) = parsed_address(&c.message.sender) else {
             return false;
         };
@@ -861,7 +879,7 @@ impl Run<'_> {
         self.rows.iter().any(|r| {
             r.rule == rule.name
                 && r.group == ActionGroup::FixedWords
-                && matches!(
+                && (matches!(
                     r.outcome,
                     Outcome::Pending
                         | Outcome::Staged
@@ -869,10 +887,23 @@ impl Run<'_> {
                         | Outcome::ReleasedUnchanged
                         | Outcome::Edited
                         | Outcome::Held
-                )
+                ) || (mode == Mode::Shadow
+                    && r.outcome == Outcome::WouldHave
+                    && r.mode == Mode::Shadow))
+                && !(r.message.account == c.message.account
+                    && r.message.provider_message_id == c.message.provider_message_id)
                 && r.at.is_some_and(|at| at >= since)
                 && parsed_address(&r.message.sender).is_some_and(|s| s == sender)
         })
+    }
+
+    /// The rule's template text for a reply action.
+    fn template<'r>(rule: &'r LoadedRule, action: &Action) -> Option<&'r str> {
+        action
+            .template
+            .as_ref()
+            .and_then(|name| rule.files.get(name))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
     }
 
     /// Render the rule's template for this message and stage it.
@@ -882,11 +913,7 @@ impl Run<'_> {
         action: &Action,
         c: &Candidate,
     ) -> Result<String, HeldReason> {
-        let template = action
-            .template
-            .as_ref()
-            .and_then(|name| rule.files.get(name))
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        let template = Self::template(rule, action)
             .ok_or_else(|| HeldReason::Other("template unreadable".into()))?;
         let today = self
             .options
@@ -895,7 +922,10 @@ impl Run<'_> {
             .with_timezone(&self.options.timezone)
             .format("%Y-%m-%d")
             .to_string();
-        let body = super::send::render(template, &c.sending.from_name, &c.message.subject, &today);
+        // The guard refused a template naming `{subject}` when the subject
+        // has no honest value, so an empty one here is a template without it.
+        let subject = reply_subject_text(c).unwrap_or_default();
+        let body = super::send::render(template, &c.sending.from_name, &subject, &today);
         self.mailbox.stage_reply(c, &body).await
     }
 
@@ -1339,16 +1369,27 @@ impl Run<'_> {
                 // §5.4's refusals bind a reply in every non-off mode, shadow
                 // included, so a would-have rate never counts a reply the
                 // guards would refuse.
-                if action.group() == ActionGroup::FixedWords {
-                    if let Some(guard) =
-                        super::send::reply_refusal(c)
-                            .map(str::to_string)
-                            .or_else(|| {
-                                self.answered_this_week(rule, c).then(|| {
-                                    "this sender was answered by this rule in the last 7 days"
-                                        .to_string()
-                                })
+                // A rule that does not hold the outbound slot is recorded as
+                // superseded below, never refused for a guard it would not
+                // have reached (review of #856).
+                if action.group() == ActionGroup::FixedWords
+                    && (mode == Mode::Shadow || outbound.as_deref() == Some(&rule.name))
+                {
+                    if let Some(guard) = super::send::reply_refusal(c)
+                        .map(str::to_string)
+                        .or_else(|| {
+                            // A slot with no honest value refuses rather
+                            // than render raw bytes (review of #856).
+                            (Self::template(rule, action).is_some_and(|t| t.contains("{subject}"))
+                                && reply_subject_text(c).is_none())
+                            .then(|| "the subject could not be read whole".to_string())
+                        })
+                        .or_else(|| {
+                            self.answered_this_week(rule, c, mode).then(|| {
+                                "this sender was answered by this rule in the last 7 days"
+                                    .to_string()
                             })
+                        })
                     {
                         row.outcome = Outcome::Skipped;
                         row.closes = false;

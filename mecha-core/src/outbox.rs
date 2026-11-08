@@ -1086,6 +1086,25 @@ impl OutboxStore {
         )
     }
 
+    /// [`stage_by_harness`](Self::stage_by_harness) for a draft whose words
+    /// are partly a stranger's: a rule's template reply, its slots filled
+    /// from the inbound message. Staged armed, so every review surface shows
+    /// it as possibly an attacker's words — the subject strip bounds length,
+    /// not content (review of #856).
+    pub fn stage_by_harness_quoting_mail(&self, tool: &str, args: Value) -> Result<OutboxItem> {
+        self.stage_as(
+            Author::Harness,
+            tool,
+            OutboxKind::Message,
+            args,
+            Taint {
+                private: true,
+                untrusted: true,
+            },
+            Provenance::default(),
+        )
+    }
+
     /// [`stage_by_harness`](Self::stage_by_harness) for a publication: a
     /// bundle the harness assembled from the owner's own files (a dashboard's
     /// release), reviewed as the rendered page it is.
@@ -2812,6 +2831,17 @@ mod tests {
         assert_eq!(staged.author(), Author::Harness);
         assert_eq!(staged.kind, OutboxKind::Message, "reviewed as a message");
         assert!(!staged.taint.trifecta_armed(), "the owner's records: clean");
+        let quoting = store
+            .stage_by_harness_quoting_mail(
+                "gmail__mail_reply",
+                serde_json::json!({"body_markdown": "Hi"}),
+            )
+            .unwrap();
+        assert!(
+            quoting.taint.trifecta_armed(),
+            "a reply quoting inbound mail is reviewed as a stranger's words"
+        );
+        assert_eq!(quoting.author(), Author::Harness);
         assert_eq!(staged.session_id, None);
         assert_eq!(staged.call_id, None);
         let mut sent = store.item(&staged.id).unwrap();

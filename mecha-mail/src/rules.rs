@@ -436,7 +436,7 @@ impl Mailbox for RuleMailbox {
             candidate.message.message_id.clone()
         };
         let item = store
-            .stage_by_harness(
+            .stage_by_harness_quoting_mail(
                 &tool,
                 serde_json::json!({
                     "thread_id": candidate.message.thread_id,

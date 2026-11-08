@@ -1249,23 +1249,6 @@ pub(crate) fn reply_target<'a>(emails: &'a [Email], wanted: Option<&str>) -> Opt
 /// (or, when the target is the user's own message, its recipients), keep
 /// everyone on for reply-all, and never put the user's own address on the
 /// list. Returns `(to, cc, subject)`.
-/// Why a `from_only` reply cannot be made: it answers exactly the message's
-/// From, so it needs one that is not the owner's own, and never reply-all.
-pub(crate) fn from_only_refusal(
-    target: &Email,
-    self_address: Option<&str>,
-    reply_all: bool,
-) -> Option<String> {
-    if reply_all {
-        return Some("from_only and reply_all cannot both be set".into());
-    }
-    let from = target.from_address.trim();
-    if from.is_empty() || self_address.is_some_and(|a| a.eq_ignore_ascii_case(from)) {
-        return Some("from_only: the message has no sender to answer but you".into());
-    }
-    None
-}
-
 pub(crate) fn gmail_reply_fields(
     target: &Email,
     self_address: Option<&str>,
@@ -1324,6 +1307,23 @@ pub(crate) fn gmail_reply_fields(
         format!("Re: {}", target.subject)
     };
     (to.join(", "), cc, subject)
+}
+
+/// Why a `from_only` reply cannot be made: it answers exactly the message's
+/// From, so it needs one that is not the owner's own, and never reply-all.
+pub(crate) fn from_only_refusal(
+    target: &Email,
+    self_address: Option<&str>,
+    reply_all: bool,
+) -> Option<String> {
+    if reply_all {
+        return Some("from_only and reply_all cannot both be set".into());
+    }
+    let from = target.from_address.trim();
+    if from.is_empty() || self_address.is_some_and(|a| a.eq_ignore_ascii_case(from)) {
+        return Some("from_only: the message has no sender to answer but you".into());
+    }
+    None
 }
 
 // ------------------------------------------------------------------ dispatch
