@@ -233,13 +233,11 @@ async fn paired(
     report["request_key"] = json!(request.view().request_key);
     report["stages"]["native_prepare"]["status"] = json!("completed");
     checkpoint(root, report)?;
-    let mut stopped = cancel.is_cancelled();
+    let mut any_cancelled = cancel.is_cancelled();
     for name in order {
         let arm_started = Instant::now();
+        // Each arm owns its deadline; only root cancellation reaches siblings.
         let arm_cancel = cancel.child_token();
-        if stopped {
-            arm_cancel.cancel();
-        }
         let timer_cancel = arm_cancel.clone();
         let timer = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(SECONDS)).await;
@@ -255,7 +253,7 @@ async fn paired(
         };
         let result = run_arm(run, &native, &request, &mut report["arms"][name]).await;
         timer.abort();
-        stopped |= arm_cancel.is_cancelled();
+        any_cancelled |= arm_cancel.is_cancelled();
         let unchanged = descriptor(root, &native.source.database)? == database;
         report["arms"][name]["database_unchanged"] = json!(unchanged);
         let result = result.and_then(|()| {
@@ -283,12 +281,12 @@ async fn paired(
             None => !native.source.artifact.exists(),
         };
     report["source_integrity_verified"] = json!(intact);
-    report["cancelled"] = json!(stopped);
+    report["cancelled"] = json!(any_cancelled);
     ensure!(intact, "captured source or source-only control changed");
     if order
         .iter()
         .all(|name| report["arms"][name]["status"] == "completed")
-        && !stopped
+        && !any_cancelled
     {
         report["status"] = json!("completed");
     }
@@ -369,10 +367,12 @@ mod tests {
     struct Scripted {
         root: std::path::PathBuf,
         seen: Arc<Mutex<Vec<String>>>,
+        root_cancel: CancellationToken,
         mode: u8,
     }
     struct Reply {
         cancel: CancellationToken,
+        root_cancel: CancellationToken,
         root: std::path::PathBuf,
         mode: u8,
     }
@@ -403,6 +403,7 @@ mod tests {
             }
             Ok(Box::new(Reply {
                 cancel: cancel.clone(),
+                root_cancel: self.root_cancel.clone(),
                 root: self.root.clone(),
                 mode: self.mode,
             }))
@@ -430,8 +431,12 @@ mod tests {
             assert_eq!(request.max_tokens, 6144);
             assert!(request.local_only && request.tools.is_empty());
             assert_eq!(request.think, Some(false));
-            if self.mode == 1 {
+            if self.mode == 1 && !self.root.join("typed-provider.jsonl").is_file() {
                 self.cancel.cancel();
+                std::future::pending::<()>().await;
+            }
+            if self.mode == 6 {
+                self.root_cancel.cancel();
                 std::future::pending::<()>().await;
             }
             let text = request.messages[0].text();
@@ -488,21 +493,16 @@ mod tests {
         fs::create_dir(&temporary).unwrap();
         let root = temporary.canonicalize().unwrap().join("run");
         let seen = Arc::new(Mutex::new(vec![]));
+        let cancel = CancellationToken::new();
         let factory = Scripted {
             root: root.clone(),
+            root_cancel: cancel.clone(),
             seen: seen.clone(),
             mode,
         };
-        let report = run_case(
-            &root,
-            &case(),
-            "scripted-native",
-            &factory,
-            &CancellationToken::new(),
-            index,
-        )
-        .await
-        .unwrap();
+        let report = run_case(&root, &case(), "scripted-native", &factory, &cancel, index)
+            .await
+            .unwrap();
         let seen = seen.lock().unwrap().clone();
         (temporary, report, seen)
     }
@@ -541,13 +541,28 @@ mod tests {
         fs::remove_dir_all(tmp).unwrap();
     }
     #[tokio::test]
-    async fn cancellation_keeps_attempt_and_withholds_next_call() {
+    async fn arm_cancellation_keeps_attempt_and_preserves_sibling_budget() {
         let (tmp, report, seen) = run(1, 0).await;
         assert_eq!(report["status"], "failed");
+        assert_eq!(report["cancelled"], true);
+        assert_eq!(seen, vec!["raw", "typed"]);
+        assert_eq!(report["arms"]["raw"]["policy_calls_started"], 1);
+        assert_eq!(report["arms"]["raw"]["cancelled"], true);
+        assert_eq!(report["arms"]["typed"]["policy_calls_started"], 1);
+        assert_eq!(report["arms"]["typed"]["status"], "completed");
+        assert_eq!(report["arms"]["typed"]["cancelled"], false);
+        assert_eq!(report["arms"]["raw"]["database_unchanged"], true);
+        fs::remove_dir_all(tmp).unwrap();
+    }
+    #[tokio::test]
+    async fn root_cancellation_keeps_attempt_and_withholds_sibling_call() {
+        let (tmp, report, seen) = run(6, 0).await;
+        assert_eq!(report["status"], "failed");
+        assert_eq!(report["cancelled"], true);
         assert_eq!(seen, vec!["raw"]);
         assert_eq!(report["arms"]["raw"]["policy_calls_started"], 1);
         assert_eq!(report["arms"]["typed"]["policy_calls_started"], 0);
-        assert_eq!(report["arms"]["raw"]["database_unchanged"], true);
+        assert_eq!(report["arms"]["typed"]["cancelled"], true);
         fs::remove_dir_all(tmp).unwrap();
     }
     #[tokio::test]
