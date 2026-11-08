@@ -40,13 +40,13 @@ pub(crate) const FRAME: &str = concat!(
 );
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum CriterionState {
+pub(crate) enum CriterionState {
     Met,
     NotMet,
     Unknown,
 }
 
-fn judgment_status(
+pub(crate) fn judgment_status(
     criterion: CriterionState,
     bearing: InterpretationBearing,
     premises_sufficient: bool,
@@ -68,7 +68,7 @@ fn judgment_status(
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum FactualPremises {
+pub(crate) enum FactualPremises {
     None,
     Supported,
     Contradicted,
@@ -77,11 +77,11 @@ enum FactualPremises {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireCriterion {
-    evidence: Vec<String>,
-    reason: String,
-    questions: Vec<String>,
-    state: CriterionState,
+pub(crate) struct WireCriterion {
+    pub(crate) evidence: Vec<String>,
+    pub(crate) reason: String,
+    pub(crate) questions: Vec<String>,
+    pub(crate) state: CriterionState,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,12 +97,12 @@ struct WireUnit {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireJudgment {
-    target: String,
-    evidence: Vec<String>,
-    reason: String,
-    questions: Vec<String>,
-    premises_sufficient: bool,
+pub(crate) struct WireJudgment {
+    pub(crate) target: String,
+    pub(crate) evidence: Vec<String>,
+    pub(crate) reason: String,
+    pub(crate) questions: Vec<String>,
+    pub(crate) premises_sufficient: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +137,7 @@ pub(crate) fn evaluation_input(request: &SupportRequest) -> Result<(String, Valu
     Ok((input, schema))
 }
 
-fn schema(request: &SupportRequest, catalog: &CitationCatalog) -> Value {
+pub(crate) fn schema(request: &SupportRequest, catalog: &CitationCatalog) -> Value {
     let evidence = json!({"type":"array","maxItems":2,"uniqueItems":true,
         "items":{"type":"string","enum":catalog.handles()}});
     let reason = json!({"type":"string","minLength":1,"maxLength":128});
@@ -239,12 +239,29 @@ fn schema(request: &SupportRequest, catalog: &CitationCatalog) -> Value {
     schema
 }
 
-fn check(
+pub(crate) fn check(
     catalog: &CitationCatalog,
     target: String,
     status: SupportStatus,
     unsupported_factual_premise: bool,
     evidence: &[String],
+    reason: &str,
+    questions: &[String],
+) -> Result<SupportCheck> {
+    check_citations(
+        target,
+        status,
+        unsupported_factual_premise,
+        catalog.resolve(evidence)?,
+        reason,
+        questions,
+    )
+}
+pub(crate) fn check_citations(
+    target: String,
+    status: SupportStatus,
+    unsupported_factual_premise: bool,
+    citations: Vec<crate::memory::interpretation::SourceCitation>,
     reason: &str,
     questions: &[String],
 ) -> Result<SupportCheck> {
@@ -257,7 +274,6 @@ fn check(
                 .all(|q| !q.trim().is_empty() && q.len() <= 256),
         "invalid evaluation diagnostics"
     );
-    let citations = catalog.resolve(evidence)?;
     match status {
         SupportStatus::Supported => ensure!(
             !citations.is_empty() && questions.is_empty(),
@@ -431,6 +447,15 @@ mod tests {
         empty: bool,
         large: bool,
     ) -> SupportRequest {
+        request_slots(kinds, bearings, empty, large, 1)
+    }
+    fn request_slots(
+        kinds: &[UnitKind],
+        bearings: &[InterpretationBearing],
+        empty: bool,
+        large: bool,
+        slots: usize,
+    ) -> SupportRequest {
         let dir = std::env::temp_dir().join(format!("support-reasoning-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("authored.memory-prototype.sqlite");
@@ -496,10 +521,17 @@ mod tests {
                         "The current inventory is empty"
                     }
                     .into(),
-                    citations: vec![SourceCitation {
+                    citations: [
+                        "The current inventory is empty.",
+                        "The prior inventory passed its old check.",
+                    ]
+                    .iter()
+                    .take(if slots == usize::MAX { i % 3 } else { slots })
+                    .map(|quote| SourceCitation {
                         source_id: source.id.clone(),
-                        quote: "The current inventory is empty.".into(),
-                    }],
+                        quote: (*quote).into(),
+                    })
+                    .collect(),
                 })
                 .collect(),
             judgments: bearings
@@ -545,6 +577,308 @@ mod tests {
                     "premises_sufficient":!j.because.is_empty()})
             }).collect::<Vec<_>>()
         })
+    }
+
+    fn evidence_wire(request: &SupportRequest, criterion: &str) -> Value {
+        let catalog =
+            CitationCatalog::evidence(request.prepared(), "evaluation", request.generation_input())
+                .unwrap();
+        let old_catalog = catalog_legacy_for_evidence(request);
+        let mut body = wire(request, criterion);
+        fn rebind(value: &mut Value, old: &CitationCatalog, new: &CitationCatalog) {
+            match value {
+                Value::String(text) => {
+                    if text == old.request_key() {
+                        *text = new.request_key().into();
+                    } else if let Some(i) = old.handles().iter().position(|h| h == text) {
+                        *text = new.handles()[i].clone();
+                    }
+                }
+                Value::Array(values) => {
+                    for v in values {
+                        rebind(v, old, new);
+                    }
+                }
+                Value::Object(values) => {
+                    for v in values.values_mut() {
+                        rebind(v, old, new);
+                    }
+                }
+                _ => {}
+            }
+        }
+        rebind(&mut body, &old_catalog, &catalog);
+        for (unit, offered) in body["units"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(&request.proposal().units)
+        {
+            unit["evidence"] = json!([]);
+            unit["original_citations"] = json!(offered
+                .citations
+                .iter()
+                .enumerate()
+                .map(|(i, _)| json!({"citation_index":i,"relation":"DirectSupport"}))
+                .collect::<Vec<_>>());
+        }
+        body
+    }
+    fn catalog_legacy_for_evidence(request: &SupportRequest) -> CitationCatalog {
+        catalog(request)
+    }
+
+    #[test]
+    fn evidence_v3_exact_original_slot_coverage_and_diagnostic_evidence_cannot_rescue() {
+        let request = request(
+            UnitKind::RecordedEvent,
+            &[InterpretationBearing::Good],
+            false,
+        );
+        let good = evidence_wire(&request, "Met");
+        let parse = |body: &Value| {
+            crate::memory_support_evidence::parse_evaluation(&request, &body.to_string())
+        };
+        assert!(parse(&good).is_ok());
+        for original in [
+            json!([]),
+            json!([{"citation_index":1,"relation":"DirectSupport"}]),
+            json!([{"citation_index":0,"relation":"DirectSupport"},{"citation_index":0,"relation":"DirectSupport"}]),
+        ] {
+            let mut body = good.clone();
+            body["units"][0]["original_citations"] = original;
+            assert!(parse(&body).is_err());
+        }
+        let c =
+            CitationCatalog::evidence(request.prepared(), "evaluation", request.generation_input())
+                .unwrap();
+        for relation in ["ContextOnly", "Contradiction", "Uncertain"] {
+            let mut body = good.clone();
+            body["units"][0]["original_citations"][0]["relation"] = json!(relation);
+            body["units"][0]["evidence"] = json!([c.handles()[0]]);
+            assert!(
+                parse(&body).is_err(),
+                "replacement diagnostic rescued {relation}"
+            );
+        }
+        // A strict nested DTO must reject unknown or repeated keys instead of normalizing them.
+        let duplicate = good.to_string().replace(
+            "\"citation_index\":0",
+            "\"citation_index\":0,\"citation_index\":0",
+        );
+        assert!(crate::memory_support_evidence::parse_evaluation(&request, &duplicate).is_err());
+        let mut foreign = good.clone();
+        foreign["units"][0]["original_citations"][0]["extra"] = json!(true);
+        assert!(parse(&foreign).is_err());
+    }
+
+    #[test]
+    fn evidence_v3_unknown_contradiction_withholds_speculation_without_relabelling_absence() {
+        let request = request(
+            UnitKind::Hypothesis,
+            &[InterpretationBearing::Unknown],
+            false,
+        );
+        let mut body = evidence_wire(&request, "Unknown");
+        body["units"][0]["status"] = json!("Unknown");
+        body["units"][0]["questions"] = json!(["Which observation resolves this possibility?"]);
+        body["units"][0]["factual_premises"] = json!("None");
+        for (relation, unsupported) in [
+            ("Contradiction", true),
+            ("Uncertain", false),
+            ("ContextOnly", false),
+        ] {
+            body["units"][0]["original_citations"][0]["relation"] = json!(relation);
+            let reply =
+                crate::memory_support_evidence::parse_evaluation(&request, &body.to_string())
+                    .unwrap();
+            assert_eq!(reply.checks[0].status, SupportStatus::Unknown);
+            assert_eq!(reply.checks[0].unsupported_factual_premise, unsupported);
+            assert!(reply.checks[0].citations.is_empty());
+        }
+        body["units"][0]["factual_premises"] = json!("Unknown");
+        let reply =
+            crate::memory_support_evidence::parse_evaluation(&request, &body.to_string()).unwrap();
+        assert_eq!(reply.checks[0].status, SupportStatus::Unknown);
+        assert!(reply.checks[0].unsupported_factual_premise);
+    }
+
+    #[test]
+    fn evidence_v3_supported_schema_matches_original_citation_contract() {
+        let request = request_slots(
+            &[UnitKind::Hypothesis; 8],
+            &[InterpretationBearing::Unknown],
+            false,
+            false,
+            usize::MAX,
+        );
+        let (_, schema) = crate::memory_support_evidence::evaluation_input(&request).unwrap();
+        let branches = schema["properties"]["units"]["items"]["oneOf"]
+            .as_array()
+            .unwrap();
+        let supported = branches
+            .iter()
+            .filter(|b| b["properties"]["status"]["enum"] == json!(["Supported"]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            supported.len(),
+            2,
+            "Supported targets must group by one/two original slots"
+        );
+        for branch in supported {
+            let properties = &branch["properties"];
+            let originals = &properties["original_citations"];
+            assert_eq!(
+                originals["items"]["properties"]["relation"]["enum"],
+                json!(["DirectSupport"])
+            );
+            let targets = properties["target"]["enum"].as_array().unwrap();
+            assert!(!targets.is_empty());
+            for target in targets {
+                let unit = request
+                    .proposal()
+                    .units
+                    .iter()
+                    .find(|u| format!("unit:{}", u.id) == target.as_str().unwrap())
+                    .unwrap();
+                let count = unit.citations.len();
+                assert!(
+                    count > 0,
+                    "zero-citation target must not have Supported branch"
+                );
+                assert_eq!(originals["minItems"], json!(count));
+                assert_eq!(originals["maxItems"], json!(count));
+                assert_eq!(
+                    originals["items"]["properties"]["citation_index"]["maximum"],
+                    json!(count - 1)
+                );
+            }
+        }
+        // The complete maximum-unit request still uses the original 48 KiB ceiling.
+        let budget = crate::memory_factual_support::GenerationBudget::new(
+            4096,
+            std::time::Duration::from_secs(180),
+        )
+        .unwrap();
+        crate::memory_factual_support::evidence_evaluation_request(&request, "authored", budget)
+            .unwrap();
+    }
+
+    #[test]
+    fn evidence_v3_all_originals_are_required_and_canonical_order_survives_assessment_order() {
+        let request = request_slots(
+            &[UnitKind::RecordedEvent],
+            &[InterpretationBearing::Good],
+            false,
+            false,
+            2,
+        );
+        let mut body = evidence_wire(&request, "Met");
+        body["units"][0]["original_citations"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let reply =
+            crate::memory_support_evidence::parse_evaluation(&request, &body.to_string()).unwrap();
+        assert_eq!(
+            reply.checks[0].citations,
+            request.proposal().units[0].citations
+        );
+        for relation in ["ContextOnly", "Contradiction", "Uncertain"] {
+            body["units"][0]["original_citations"][0]["relation"] = json!(relation);
+            assert!(
+                crate::memory_support_evidence::parse_evaluation(&request, &body.to_string())
+                    .is_err()
+            );
+        }
+    }
+    #[test]
+    fn evidence_v3_citation_free_pure_hypothesis_only_retains_unknown() {
+        let request = request_slots(
+            &[UnitKind::Hypothesis],
+            &[InterpretationBearing::Unknown],
+            false,
+            false,
+            0,
+        );
+        let mut body = evidence_wire(&request, "Unknown");
+        body["units"][0]["factual_premises"] = json!("None");
+        assert!(
+            crate::memory_support_evidence::parse_evaluation(&request, &body.to_string()).is_err()
+        );
+        body["units"][0]["status"] = json!("Unknown");
+        body["units"][0]["questions"] = json!(["What independent observations are available?"]);
+        let reply =
+            crate::memory_support_evidence::parse_evaluation(&request, &body.to_string()).unwrap();
+        assert_eq!(reply.checks[0].status, SupportStatus::Unknown);
+        assert!(!reply.checks[0].unsupported_factual_premise);
+        assert!(reply.checks[0].citations.is_empty());
+    }
+
+    #[test]
+    fn evidence_v3_complete_metadata_binds_both_phases_and_leaves_legacy_envelopes_unchanged() {
+        let request = request(
+            UnitKind::RecordedEvent,
+            &[InterpretationBearing::Good],
+            false,
+        );
+        let (legacy, old_schema) = evaluation_input(&request).unwrap();
+        let legacy: Value = serde_json::from_str(&legacy).unwrap();
+        assert!(legacy.get("evidence_metadata").is_none());
+        let (input, schema) = crate::memory_support_evidence::evaluation_input(&request).unwrap();
+        let input: Value = serde_json::from_str(&input).unwrap();
+        assert_eq!(
+            input["evidence_metadata"],
+            serde_json::to_value(request.prepared().evidence_metadata()).unwrap()
+        );
+        assert_ne!(input["request_key"], legacy["request_key"]);
+        for field in ["sources", "criterion", "proposal", "targets"] {
+            assert_eq!(input[field], legacy[field]);
+        }
+        assert!(
+            old_schema["properties"]["units"]["items"]["oneOf"][0]["properties"]
+                .get("original_citations")
+                .is_none()
+        );
+        assert_eq!(
+            schema["properties"]["units"]["items"]["oneOf"][0]["properties"]["evidence"]
+                ["minItems"],
+            0
+        );
+        let (generation, _) =
+            crate::memory_support_wire::evidence_generation_input(request.prepared()).unwrap();
+        let generation: Value = serde_json::from_str(&generation).unwrap();
+        assert_eq!(generation["evidence_metadata"], input["evidence_metadata"]);
+        assert_ne!(generation["request_key"], input["request_key"]);
+        let budget = crate::memory_factual_support::GenerationBudget::new(
+            4096,
+            std::time::Duration::from_secs(180),
+        )
+        .unwrap();
+        crate::memory_factual_support::evidence_generation_request(
+            request.prepared(),
+            "authored",
+            budget,
+        )
+        .unwrap();
+        crate::memory_factual_support::evidence_evaluation_request(&request, "authored", budget)
+            .unwrap();
+    }
+
+    #[test]
+    fn evidence_v3_canonical_support_uses_original_citation_slots() {
+        let request = request(
+            UnitKind::RecordedEvent,
+            &[InterpretationBearing::Good],
+            false,
+        );
+        let body = evidence_wire(&request, "Met");
+        let reply =
+            crate::memory_support_evidence::parse_evaluation(&request, &body.to_string()).unwrap();
+        assert_eq!(
+            reply.checks[0].citations,
+            request.proposal().units[0].citations
+        );
     }
 
     // A promotion of both opposite bearings, or ignoring semantic sufficiency, fails this table.

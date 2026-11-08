@@ -3112,3 +3112,44 @@ success cannot substitute for generated-output quality. Preserve independently
 available generated/probe outcomes when another stage fails. Report completion,
 semantic coverage, uncertainty, admission and observed cost separately. A failed gate
 leaves concepts/rumination deferred; it does not justify relaxing admission.
+
+### 31.11 Evidence reasoning and candidate judgment revision
+
+Implemented and mechanically qualified on the prototype branch, 8 November 2026;
+see HISTORY. Fresh semantic qualification remains separate.
+
+The next repair addresses three distinct failures: historical action success
+mistaken for current success, true statements retained with irrelevant original
+citations, and an early Unknown judgment displacing a later supported one.
+Implementation follows `superpowers/plans/2026-11-08-evidence-reasoning-revision.md`.
+
+Keep SQLite v8 and legacy source/report reconstruction unchanged. A request-local
+metadata sidecar identifies authenticated capture membership, source role and
+known passage/capture times; selected capture does not mean globally newest, and
+missing times stay unknown. Include all eligible associations from the authorized
+closure, never enrich the request from unrelated captures. Interpretation influence
+remains separate from the original source role. Bind and recheck this metadata at
+preparation, model request and retention boundaries.
+
+An explicit wire-v3 evaluator assesses every ORIGINAL citation slot for direct
+support, context, contradiction or uncertainty. A replacement citation discovered
+by the evaluator cannot repair a wrong citation in the proposed retained claim.
+Supported units require their original citations to directly support them; the
+canonical check is rendered from those originals. Additional evaluator evidence is
+host diagnostic context. This is a consistency and attribution gate over fallible
+model assessments, not a deterministic entailment checker. Current requirements,
+selected-capture observations and historical events remain separate; neither a
+missing artifact nor an absent causal experiment has a universal goal verdict.
+
+New report semantics assess all candidates before selection. A fully qualified
+known judgment can replace an earlier Unknown; contradictory eligible Good and Bad
+judgments yield Unknown. Same-bearing ties choose the first eligible candidate.
+All original dispositions and eligibility determinants remain auditable. Older
+reports retain their original renderer and validation. This revision concerns
+candidates within one evaluation; separate historical interpretations are not
+silently withdrawn or relabeled.
+
+The old model cohorts remain immutable and failed. Deterministic tests establish
+contracts; a fresh, independently authored cohort must establish semantic behavior
+before concept learning resumes. When Spark is unavailable, model qualification
+and the required owner-corpus privacy scan remain pending rather than waived.

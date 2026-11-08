@@ -170,6 +170,43 @@ by the provider URL policy and verified by authored HTTP tests.
 New development and fresh qualification must preserve their own
 frozen artifacts and cannot replace the original failed eight-case result.
 
+### Explicit evidence-aware support wire-v3
+
+Use `--evidence-v3` in place of `--grounded-v2`; the coordinator requires an
+explicit independently authored `--fixture`. This keeps SQLite v8 and the old
+adapters unchanged. New requests include authenticated source roles, capture
+associations, known timestamps and interpretation influence. Selected capture
+means selected for this appraisal, not globally newest; missing times remain
+unknown. The metadata participates in request binding and final admission checks.
+
+The evaluator must assess every original citation as DirectSupport, ContextOnly,
+Contradiction or Uncertain. Supported units require all original citations to
+provide direct support. Optional diagnostic handles cannot replace an irrelevant
+original quotation. The versioned report considers every candidate judgment:
+the first eligible known bearing wins, conflicting eligible bearings become
+Unknown, and otherwise the first candidate renders as Unknown. Original premises
+and every disposition remain auditable. This does not withdraw separate historical
+interpretation records or promote observations into learned instructions.
+
+V3 exports full reopened `retained-generated.json` and `retained-probe.json`
+records after successful retention. Qualification separately checks source
+metadata, original-citation relevance, evaluator support, and the actual retained
+judgment. A valid schema or mechanical regression does not establish semantic
+reliability. Preserve prior frozen cohorts and keep concept learning deferred
+until fresh evaluation meets the gate.
+
+Before model qualification, exercise the complete native/auditor contract with
+three authored HTTP responses and no real inference:
+
+```sh
+python3 prototypes/memory/support_native_smoke.py \
+  --binary /absolute/path/to/memory_support_trial --root /new/smoke-directory
+```
+
+This explicit command refuses missing binaries or failed audits. CI builds the
+example and sets `MECHA_SUPPORT_NATIVE_BINARY` for the corresponding unittest,
+so the native path runs alongside the independent Python checks.
+
 ### Legacy v7 demonstration
 
 The explicit v7 workflow adds durable, source-linked interpretation hypotheses

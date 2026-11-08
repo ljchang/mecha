@@ -68,7 +68,7 @@ fn input(id: &str) -> HostCapture {
         occurred_at: None,
     }
 }
-fn access() -> Access {
+pub(super) fn access() -> Access {
     Access {
         domain: "test".into(),
         scopes: BTreeSet::new(),
@@ -151,7 +151,7 @@ fn read(db: &Memory, c: &InterpretationContext) -> ContextPacket {
     )
     .unwrap()
 }
-fn supported_fixture() -> (std::path::PathBuf, Memory, Arc<AtomicBool>) {
+pub(super) fn supported_fixture() -> (std::path::PathBuf, Memory, Arc<AtomicBool>) {
     let dir = std::env::temp_dir().join(format!("support-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("x.memory-prototype.sqlite");
@@ -214,7 +214,7 @@ fn rich_input(id: &str) -> HostCapture {
     });
     i
 }
-fn prepared_supported(db: &mut Memory) -> PreparedInterpretation {
+pub(super) fn prepared_supported(db: &mut Memory) -> PreparedInterpretation {
     let r = db
         .admit_host_capture_with_evidence(rich_input("rich"), &access())
         .unwrap();
@@ -231,7 +231,7 @@ fn citation(p: &PreparedInterpretation) -> SourceCitation {
         quote: "\"artifact_text\":\"[]\"".into(),
     }
 }
-fn proposal(p: &PreparedInterpretation) -> SupportProposal {
+pub(super) fn proposal(p: &PreparedInterpretation) -> SupportProposal {
     SupportProposal {
         units: vec![ProposedUnit {
             id: "u1".into(),
@@ -264,7 +264,11 @@ fn check(target: &str, status: SupportStatus, p: &PreparedInterpretation) -> Sup
         },
     }
 }
-fn reply(p: &PreparedInterpretation, unit: SupportStatus, judgment: SupportStatus) -> SupportReply {
+pub(super) fn reply(
+    p: &PreparedInterpretation,
+    unit: SupportStatus,
+    judgment: SupportStatus,
+) -> SupportReply {
     SupportReply {
         checks: vec![check("unit:u1", unit, p), check("judgment:0", judgment, p)],
     }
@@ -803,4 +807,249 @@ fn evaluated_ancestors_keep_influenced_roles_and_forgetting_withholds_recaptured
         .records
         .iter()
         .any(|h| h.reference == first.reference || h.reference == descendant.reference));
+}
+
+#[test]
+fn revised_selection_replaces_unknown_and_preserves_audit() {
+    let (_, mut db, _) = supported_fixture();
+    let p = prepared_supported(&mut db);
+    let mut offered = proposal(&p);
+    offered.judgments.insert(
+        0,
+        ProposedJudgment {
+            goal: criterion().goal,
+            bearing: InterpretationBearing::Unknown,
+            because: vec![],
+        },
+    );
+    let mut assessed = reply(&p, SupportStatus::Supported, SupportStatus::Unknown);
+    assessed
+        .checks
+        .push(check("judgment:1", SupportStatus::Supported, &p));
+    let evaluated = finish_support_revised(
+        db.prepare_support(&p, offered, &access()).unwrap(),
+        assessed,
+        "evaluator",
+    )
+    .unwrap();
+    assert_eq!(
+        evaluated.draft().judgments[0].bearing,
+        InterpretationBearing::Good
+    );
+    let report = evaluated.draft().support.as_ref().unwrap();
+    assert_eq!(report.protocol, SUPPORT_REVISION_PROTOCOL);
+    assert_eq!(report.judgments[0].reason, JudgmentReason::ExplicitUnknown);
+    assert_eq!(report.judgments[1].reason, JudgmentReason::Retained);
+    assert_eq!(report.judgments[1].unsupported_factual_premise, Some(false));
+    assert!(db
+        .retain_evaluated_interpretation(p, evaluated, &access())
+        .is_ok());
+}
+
+#[test]
+fn revised_selection_conflicts_ties_and_all_premise_gates() {
+    for mode in 0..8 {
+        let (_, mut db, _) = supported_fixture();
+        let p = prepared_supported(&mut db);
+        let mut offered = proposal(&p);
+        offered.judgments[0].bearing = InterpretationBearing::Unknown;
+        offered.judgments.push(ProposedJudgment {
+            goal: criterion().goal,
+            bearing: InterpretationBearing::Good,
+            because: vec!["u1".into()],
+        });
+        let mut assessed = reply(&p, SupportStatus::Supported, SupportStatus::Unknown);
+        assessed
+            .checks
+            .push(check("judgment:1", SupportStatus::Supported, &p));
+        match mode {
+            0 | 1 => {
+                let mut j = offered.judgments[1].clone();
+                if mode == 0 {
+                    j.bearing = InterpretationBearing::Bad;
+                }
+                offered.judgments.push(j);
+                assessed
+                    .checks
+                    .push(check("judgment:2", SupportStatus::Supported, &p));
+            }
+            2 => assessed.checks[2].unsupported_factual_premise = true,
+            3 => offered.units[0].kind = UnitKind::Hypothesis,
+            4 => assessed.checks[0] = check("unit:u1", SupportStatus::Contradicted, &p),
+            5 => offered.judgments[1].because.clear(),
+            6 => {
+                let mut u = offered.units[0].clone();
+                u.id = "u2".into();
+                offered.units.push(u);
+                offered.judgments[1].because.push("u2".into());
+                assessed
+                    .checks
+                    .push(check("unit:u2", SupportStatus::Unknown, &p));
+            }
+            _ => assessed.checks[2] = check("judgment:1", SupportStatus::Unknown, &p),
+        }
+        let evaluated = finish_support_revised(
+            db.prepare_support(&p, offered, &access()).unwrap(),
+            assessed,
+            "evaluator",
+        )
+        .unwrap();
+        assert_eq!(evaluated.draft().judgments.len(), 1);
+        assert_eq!(
+            evaluated.draft().judgments[0].bearing,
+            if mode == 1 {
+                InterpretationBearing::Good
+            } else {
+                InterpretationBearing::Unknown
+            },
+            "mode {mode}"
+        );
+        let report = evaluated.draft().support.as_ref().unwrap();
+        if mode == 0 {
+            assert_eq!(report.judgments[1].reason, JudgmentReason::Conflicting);
+            assert_eq!(report.judgments[2].reason, JudgmentReason::Conflicting);
+        }
+        if mode == 1 {
+            assert_eq!(report.judgments[1].reason, JudgmentReason::Retained);
+            assert_eq!(report.judgments[2].reason, JudgmentReason::Superseded);
+        }
+    }
+}
+
+#[test]
+fn revised_canonical_validation_rejects_forged_selection_determinants() {
+    let (path, mut db, _) = supported_fixture();
+    let p = prepared_supported(&mut db);
+    let evaluated = finish_support_revised(
+        db.prepare_support(&p, proposal(&p), &access()).unwrap(),
+        reply(&p, SupportStatus::Supported, SupportStatus::Supported),
+        "evaluator",
+    )
+    .unwrap();
+    let receipt = db
+        .retain_evaluated_interpretation(
+            p.clone(),
+            finish_support_revised(
+                db.prepare_support(&p, proposal(&p), &access()).unwrap(),
+                reply(&p, SupportStatus::Supported, SupportStatus::Supported),
+                "evaluator",
+            )
+            .unwrap(),
+            &access(),
+        )
+        .unwrap();
+    let sql = rusqlite::Connection::open(path).unwrap();
+    let payload: String = sql
+        .query_row(
+            "SELECT payload FROM revision WHERE id=?1",
+            [&receipt.reference.revision],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for mode in 0..6 {
+        let mut draft = evaluated.draft().clone();
+        let report = draft.support.as_mut().unwrap();
+        match mode {
+            0 => report.judgments[0].reason = JudgmentReason::Superseded,
+            1 => report.judgments[0].bearing = InterpretationBearing::Bad,
+            2 => report.judgments[0].index = 1,
+            3 => report.judgments[0].unsupported_factual_premise = None,
+            4 => report.judgments[0].unsupported_factual_premise = Some(true),
+            _ => report.protocol = SUPPORT_PROTOCOL.into(),
+        }
+        let mut record: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        record["data"]["draft"] = serde_json::to_value(draft).unwrap();
+        let typed: Record = serde_json::from_value(record.clone()).unwrap();
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(serde_json::to_vec(&typed).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        sql.execute(
+            "UPDATE revision SET payload=?1 WHERE id=?2",
+            rusqlite::params![record.to_string(), receipt.reference.revision],
+        )
+        .unwrap();
+        sql.execute(
+            "UPDATE interpretation_receipt SET payload_hash=?1 WHERE revision_id=?2",
+            rusqlite::params![hash, receipt.reference.revision],
+        )
+        .unwrap();
+        assert!(
+            interpretation::validate_schema(&sql).is_err(),
+            "mode {mode}"
+        );
+    }
+}
+
+#[test]
+fn revised_reopen_retry_and_legacy_bytes_remain_distinct() {
+    let (path, mut db, _) = supported_fixture();
+    let p = prepared_supported(&mut db);
+    let assessed = reply(&p, SupportStatus::Supported, SupportStatus::Supported);
+    let legacy = evaluate(&db, &p, proposal(&p), assessed.clone());
+    let json = serde_json::to_string(legacy.draft()).unwrap();
+    assert!(!json.contains("unsupported_factual_premise"));
+    let revised = || {
+        finish_support_revised(
+            db.prepare_support(&p, proposal(&p), &access()).unwrap(),
+            assessed.clone(),
+            "evaluator",
+        )
+        .unwrap()
+    };
+    let evaluated = revised();
+    assert_eq!(
+        evaluated.draft().producer_version,
+        SUPPORT_REVISION_PRODUCER
+    );
+    let retry = revised();
+    let receipt = db
+        .retain_evaluated_interpretation(p.clone(), evaluated, &access())
+        .unwrap();
+    assert_eq!(
+        receipt,
+        db.retain_evaluated_interpretation(p.clone(), retry, &access())
+            .unwrap()
+    );
+    assert!(db
+        .retain_evaluated_interpretation(p, legacy, &access())
+        .is_err());
+    assert!(Memory::open(&path).is_ok());
+}
+
+#[test]
+fn revised_later_known_replaces_downgraded_known_without_relabeling_old_reason() {
+    let (_, mut db, _) = supported_fixture();
+    let p = prepared_supported(&mut db);
+    let mut offered = proposal(&p);
+    offered.judgments.push(ProposedJudgment {
+        goal: criterion().goal,
+        bearing: InterpretationBearing::Bad,
+        because: vec!["u1".into()],
+    });
+    let mut assessed = reply(&p, SupportStatus::Supported, SupportStatus::Contradicted);
+    assessed
+        .checks
+        .push(check("judgment:1", SupportStatus::Supported, &p));
+    let evaluated = finish_support_revised(
+        db.prepare_support(&p, offered, &access()).unwrap(),
+        assessed,
+        "evaluator",
+    )
+    .unwrap();
+    assert_eq!(
+        evaluated.draft().judgments[0].bearing,
+        InterpretationBearing::Bad
+    );
+    let report = evaluated.draft().support.as_ref().unwrap();
+    assert_eq!(
+        report.judgments[0].reason,
+        JudgmentReason::UnsupportedJudgment
+    );
+    assert_eq!(
+        report.judgments[0].offered_bearing,
+        InterpretationBearing::Good
+    );
+    assert_eq!(report.judgments[0].because, vec!["u1"]);
 }

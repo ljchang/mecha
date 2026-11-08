@@ -168,11 +168,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         run: cargo build -p mecha-cli --locked --features memory-prototype
 
+      - name: Build authored support contract binary
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        run: cargo build -p mecha-core --locked --features memory-prototype --example memory_support_trial
+
       - name: Test memory Python pilots
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         run: |
           python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha
-          python3 -m unittest discover -s prototypes/memory/tests -p 'test_*.py' -v
+          MECHA_SUPPORT_NATIVE_BINARY="$PWD/target/debug/examples/memory_support_trial" python3 -m unittest discover -s prototypes/memory/tests -p 'test_*.py' -v
         env:
           MECHA_SESSION_KIND: test
 

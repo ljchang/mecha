@@ -139,6 +139,37 @@ pub fn grounded_evaluation_request(
         budget,
     )
 }
+/// Explicit evidence-aware wire-v3; legacy and wire-v2 remain unchanged.
+pub fn evidence_generation_request(
+    prepared: &PreparedInterpretation,
+    model: &str,
+    budget: GenerationBudget,
+) -> Result<CompletionRequest> {
+    let (input, schema) = crate::memory_support_wire::evidence_generation_input(prepared)?;
+    make_grounded_request(
+        &input,
+        crate::memory_support_evidence::GENERATION_FRAME,
+        schema,
+        32 * 1024,
+        model,
+        budget,
+    )
+}
+pub fn evidence_evaluation_request(
+    request: &SupportRequest,
+    model: &str,
+    budget: GenerationBudget,
+) -> Result<CompletionRequest> {
+    let (input, schema) = crate::memory_support_evidence::evaluation_input(request)?;
+    make_grounded_request(
+        &input,
+        crate::memory_support_evidence::EVALUATION_FRAME,
+        schema,
+        48 * 1024,
+        model,
+        budget,
+    )
+}
 async fn pass<T>(
     provider: &dyn Provider,
     model: &str,
@@ -276,6 +307,38 @@ pub async fn evaluate_grounded(
     pass(provider, model, body, budget, cancel, |text, served| {
         let reply = crate::memory_support_reasoning::parse_evaluation(&request, text)?;
         finish_support(request, reply, served)
+    })
+    .await
+}
+
+pub async fn generate_evidence(
+    provider: &dyn Provider,
+    model: &str,
+    prepared: &PreparedInterpretation,
+    budget: GenerationBudget,
+    cancel: &CancellationToken,
+) -> PassOutcome<SupportProposal> {
+    pass(
+        provider,
+        model,
+        evidence_generation_request(prepared, model, budget),
+        budget,
+        cancel,
+        |text, _| crate::memory_support_wire::parse_evidence_generation(prepared, text),
+    )
+    .await
+}
+pub async fn evaluate_evidence(
+    provider: &dyn Provider,
+    model: &str,
+    request: SupportRequest,
+    budget: GenerationBudget,
+    cancel: &CancellationToken,
+) -> PassOutcome<EvaluatedInterpretation> {
+    let body = evidence_evaluation_request(&request, model, budget);
+    pass(provider, model, body, budget, cancel, |text, served| {
+        let reply = crate::memory_support_evidence::parse_evaluation(&request, text)?;
+        crate::memory::interpretation::finish_support_revised(request, reply, served)
     })
     .await
 }

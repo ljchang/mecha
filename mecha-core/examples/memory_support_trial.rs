@@ -12,7 +12,7 @@ mod enabled {
     use std::{path::PathBuf, time::Duration};
     use tokio_util::sync::CancellationToken;
 
-    const USAGE: &str = "memory_support_trial [--grounded-v2] --synthetic-only NEW_ROOT ENDPOINT MODEL HOLDS_DIRECTORY 70510 CASE_FILE";
+    const USAGE: &str = "memory_support_trial [--grounded-v2 | --evidence-v3] --synthetic-only NEW_ROOT ENDPOINT MODEL HOLDS_DIRECTORY 70510 CASE_FILE";
     struct Resident {
         endpoint: String,
         model: String,
@@ -33,7 +33,7 @@ mod enabled {
                 SupportProtocol::LegacyV1 => {
                     LocalTrialProvider::new(config, cancel.clone()).await?
                 }
-                SupportProtocol::GroundedV2 => {
+                SupportProtocol::GroundedV2 | SupportProtocol::EvidenceV3 => {
                     LocalTrialProvider::new_structured(config, cancel.clone()).await?
                 }
             };
@@ -42,7 +42,10 @@ mod enabled {
     }
     pub async fn run() -> Result<()> {
         let mut args: Vec<_> = std::env::args().skip(1).collect();
-        let protocol = if args.first().is_some_and(|arg| arg == "--grounded-v2") {
+        let protocol = if args.first().is_some_and(|arg| arg == "--evidence-v3") {
+            args.remove(0);
+            SupportProtocol::EvidenceV3
+        } else if args.first().is_some_and(|arg| arg == "--grounded-v2") {
             args.remove(0);
             SupportProtocol::GroundedV2
         } else {

@@ -18,7 +18,8 @@ import time
 
 PROTOCOL = 'memory-factual-support-v1'
 GROUNDED_PROTOCOL = 'memory-factual-support-v2'
-PROTOCOLS = (PROTOCOL, GROUNDED_PROTOCOL)
+EVIDENCE_PROTOCOL = 'memory-factual-support-v3'
+PROTOCOLS = (PROTOCOL, GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL)
 TRANSPORT_AUDIT_BOUNDARY = ('The actual JSON body is audited. The autoload=false URL policy is checked by frozen provider source and authored HTTP tests; the request URL is not recorded in these body artifacts.')
 SEED = 70510
 STAGES = ('source', 'capture', 'generate', 'evaluate_generated', 'evaluate_probe', 'retain', 'recall', 'changed_goal')
@@ -153,13 +154,182 @@ def compact_bytes(value):
     return json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode()
 
 
+ORIGINAL_CITATION_SCHEMA = {'type': 'array', 'maxItems': 2, 'items': {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {'citation_index': {'type': 'integer', 'minimum': 0, 'maximum': 1},
+                   'relation': {'type': 'string', 'enum': ['DirectSupport', 'ContextOnly', 'Contradiction', 'Uncertain']}},
+    'required': ['citation_index', 'relation']}}
+METADATA_AUDIT_BOUNDARY = ('Metadata is independently compared with the frozen exported SQLite capture receipts and exact source revisions. This does not reproduce the live Rust external-source guard or establish semantic truth; absent exports are unverifiable and fail the v3 audit.')
+
+
+def validate_diagnostic_text(item):
+    require(isinstance(item['reason'], str) and item['reason'].strip() and len(item['reason'].encode()) <= 512
+            and isinstance(item['questions'], list) and len(item['questions']) <= 4
+            and all(isinstance(q, str) and q.strip() and len(q.encode()) <= 256 for q in item['questions']), 'invalid evaluation diagnostic')
+
+
+def original_relations(original, assessments):
+    require(isinstance(assessments, list) and len(assessments) == len(original['citations']), 'incomplete original citation coverage')
+    slots = {}
+    for assessment in assessments:
+        fields(assessment, ('citation_index', 'relation'), 'original citation assessment')
+        index = assessment['citation_index']
+        require(type(index) is int and 0 <= index < len(original['citations']) and index not in slots, 'foreign/duplicate original citation index')
+        require(assessment['relation'] in ('DirectSupport', 'ContextOnly', 'Contradiction', 'Uncertain'), 'unknown original citation relation')
+        slots[index] = assessment['relation']
+    return [slots[i] for i in range(len(original['citations']))]
+
+
+def validate_metadata(packet):
+    metadata = packet.get('evidence_metadata')
+    require(isinstance(metadata, list) and len(metadata) == len(packet['sources']), 'metadata source coverage mismatch')
+    ids = set()
+    roles = {'Unclassified', 'HistoricalCriterion', 'ExecutionReceipt', 'ArtifactCheck', 'UserStatement', 'AssistantStatement', 'ToolResult', 'ActionInvocation', 'ArtifactObservation', 'PriorInterpretation'}
+    sources = {source['id']: source for source in packet['sources']}
+    for row in metadata:
+        fields(row, ('source_id', 'role', 'interpretation_influenced', 'captures'), 'evidence metadata')
+        identifier = row['source_id']
+        require(isinstance(identifier, str) and identifier in sources and identifier not in ids, 'foreign/duplicate metadata source')
+        ids.add(identifier)
+        require(row['role'] in roles and type(row['interpretation_influenced']) is bool
+                and row['interpretation_influenced'] == (sources[identifier]['kind'] == 'InterpretationInfluenced')
+                and isinstance(row['captures'], list), 'invalid metadata role/influence')
+        for association in row['captures']:
+            fields(association, ('capture', 'relation', 'capture_time', 'passage_time', 'transcript_line'), 'capture association')
+            fields(association['capture'], ('object', 'revision'), 'capture revision')
+            require(all(isinstance(v, str) and v for v in association['capture'].values())
+                    and association['relation'] in ('SelectedCapture', 'Dependency')
+                    and all(association[k] is None or isinstance(association[k], str) for k in ('capture_time', 'passage_time'))
+                    and (association['transcript_line'] is None or type(association['transcript_line']) is int and 0 <= association['transcript_line'] < 2**64), 'invalid capture association')
+    return metadata
+
+
+def revised_decisions(offered, units, checks):
+    kinds = {u['id']: u['kind'] for u in offered['units']}
+    reasons = []
+    for index, original in enumerate(offered['judgments']):
+        check = checks['judgment:' + str(index)]
+        factual = bool(original['because']) and all(units[i]['admitted'] and units[i]['status'] == 'Supported'
+                    and kinds[i] in ('RecordedEvent', 'GoalAssessment') for i in original['because'])
+        reasons.append('ExplicitUnknown' if original['bearing'] == 'Unknown' else 'UnsupportedJudgment'
+                       if check['status'] != 'Supported' or check['unsupported_factual_premise'] else 'UnsupportedPremises'
+                       if not factual else 'Retained')
+    eligible = [i for i, reason in enumerate(reasons) if reason == 'Retained']
+    conflict = len({offered['judgments'][i]['bearing'] for i in eligible}) > 1
+    for position, index in enumerate(eligible):
+        reasons[index] = 'Conflicting' if conflict else 'Retained' if position == 0 else 'Superseded'
+    return reasons
+
+
+def audit_capture_metadata(root, report, packet):
+    """Reconstruct from revision payloads and receipt membership, never metadata itself.
+
+    Read only projections already represented in the packet's authorized sources.
+    Export hashes authenticate trial correspondence, not live external authorization.
+    """
+    import sqlite3
+    from datetime import datetime, timezone
+    require(report.get('source_only_database') is not None and report.get('capture_receipt') is not None, 'capture metadata authority export unavailable')
+    database = artifact_bytes(root, report['source_only_database'])
+    receipt = decode(artifact_bytes(root, report['capture_receipt']).decode())
+    connection = sqlite3.connect(':memory:')
+    try:
+        connection.deserialize(database)
+        fields(receipt, ('id', 'projection', 'originals'), 'selected capture receipt')
+        selected = receipt['projection']
+        active = connection.execute("SELECT projection_object,projection_revision,originals FROM host_capture_receipt WHERE receipt_id=? AND state='active'", (receipt['id'],)).fetchall()
+        require(len(active) == 1 and selected == dict(object=active[0][0], revision=active[0][1])
+                and receipt['originals'] == decode(active[0][2]), 'selected capture receipt is not canonical')
+        projections, records = [], {}
+        references = {(s['source']['object'], s['source']['revision']) for s in packet['sources']}
+        for obj, revision in sorted(references):
+            rows = connection.execute('SELECT payload FROM revision WHERE object_id=? AND id=? AND lifecycle=\'active\'', (obj, revision)).fetchall()
+            require(len(rows) == 1, 'source revision missing in authority export')
+            record = decode(rows[0][0])
+            records[(obj, revision)] = record
+            data = record.get('data', {})
+            if record.get('kind') != 'evidence' or data.get('source', {}).get('connector') not in ('host-capture-projection-v1', 'host-capture-projection-v2'):
+                continue
+            projection = decode(data['text'])
+            saved = connection.execute('SELECT originals FROM host_capture_receipt WHERE projection_object=? AND projection_revision=? AND state=\'active\'', (obj, revision)).fetchall()
+            require(len(saved) == 1, 'projection receipt unavailable')
+            originals = decode(saved[0][0])
+            require([p['reference'] for p in projection['originals']] == originals, 'projection original receipt mismatch')
+            projections.append((dict(object=obj, revision=revision), projection))
+        # Authenticate packet source identity, original pointer, bytes and ancestry
+        # independently of the packet and its self-consistent citation catalog.
+        for source in packet['sources']:
+            reference = source['source']
+            record = records[(reference['object'], reference['revision'])]
+            data = record['data']
+            field = source['field']
+            canonical_id = 'source:' + hashlib.sha256(compact_bytes([dict(object=reference['object'], revision=reference['revision']), field])).hexdigest()
+            require(source['id'] == canonical_id, 'noncanonical source identity')
+            if record['kind'] == 'interpretation':
+                choices = {'/criterion': compact_bytes(data['criterion']).decode(), '/interpretation': data['draft']['interpretation']}
+                choices.update({'/claims/' + str(i) + '/statement': claim['statement'] for i, claim in enumerate(data['draft']['claims'])})
+                require(field in choices and source['text'] == choices[field] and source['kind'] == 'PriorInterpretation', 'prior interpretation source mismatch')
+                continue
+            require(record['kind'] == 'evidence', 'unsupported canonical source kind')
+            projection = next((p for r, p in projections if r == reference), None)
+            if projection is not None:
+                choices = {'/criterion': projection['criterion'], '/receipts': projection['receipts'], '/artifact': projection['artifact']}
+                require(field in choices and source['text'] == compact_bytes(choices[field]).decode()
+                        and source['kind'] == 'Observation', 'projection source bytes/field/kind mismatch')
+                continue
+            require(data.get('source') is not None, 'original source identity missing')
+            # Match the same first active capture used by core source_fields_impl.
+            saved = connection.execute("SELECT r.payload FROM host_capture_receipt h JOIN revision r ON r.id=h.projection_revision WHERE h.state='active' AND EXISTS(SELECT 1 FROM json_each(h.originals) j WHERE json_extract(j.value,'$.revision')=?) ORDER BY r.seq LIMIT 1", (reference['revision'],)).fetchall()
+            require(len(saved) == 1, 'original source has no capture authority')
+            authority = decode(decode(saved[0][0])['data']['text'])
+            descriptor = next((d for d in authority['originals'] if d.get('reference') == reference), None)
+            require(descriptor is not None and descriptor['pointer'] == field and source['text'] == data['text'], 'original source pointer/bytes mismatch')
+            influenced = connection.execute("WITH RECURSIVE inputs(id) AS (SELECT ? UNION SELECT d.input FROM dependency d JOIN inputs i ON d.output=i.id) SELECT EXISTS(SELECT 1 FROM inputs JOIN revision r ON r.id=inputs.id WHERE json_extract(r.payload,'$.kind')='interpretation')", (reference['revision'],)).fetchone()[0]
+            kind = 'InterpretationInfluenced' if influenced else {'AssistantText': 'AssistantStatement', 'ActionInvocation': 'ActionInvocation', 'ArtifactObservation': 'ArtifactObservation'}.get(descriptor['kind'], 'Observation')
+            require(source['kind'] == kind, 'original source role/influence mismatch')
+        def normalized(value):
+            if value is None:
+                return None
+            match = re.search(r'\.(\d+)', value)
+            fraction = (match.group(1) if match else '').ljust(9, '0')[:9]
+            utc = datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(timezone.utc)
+            return utc.strftime('%Y-%m-%dT%H:%M:%S') + '.' + fraction + 'Z'
+        roles = {'UserRequest': 'UserStatement', 'AssistantText': 'AssistantStatement', 'ToolResult': 'ToolResult', 'ActionInvocation': 'ActionInvocation', 'ArtifactObservation': 'ArtifactObservation'}
+        expected = []
+        for source in packet['sources']:
+            role = 'PriorInterpretation' if source['kind'] == 'PriorInterpretation' else None
+            captures = []
+            if role is None:
+                for reference, projection in projections:
+                    matches = []
+                    if reference == source['source']:
+                        field_role = {'/criterion': 'HistoricalCriterion', '/receipts': 'ExecutionReceipt', '/artifact': 'ArtifactCheck'}.get(source['field'])
+                        require(field_role is not None, 'unknown projection field')
+                        matches.append((field_role, None, None))
+                    else:
+                        matches.extend((roles[p['kind']], normalized(p.get('occurred_at')), p['line']) for p in projection['originals'] if p['reference'] == source['source'])
+                    for candidate, passage_time, line in matches:
+                        require(role is None or role == candidate, 'conflicting authority roles')
+                        role = candidate
+                        captures.append(dict(capture=reference, relation='SelectedCapture' if reference == selected else 'Dependency', capture_time=normalized(projection.get('occurred_at')), passage_time=passage_time, transcript_line=line))
+            expected.append(dict(source_id=source['id'], role=role or 'Unclassified', interpretation_influenced=source['kind'] == 'InterpretationInfluenced', captures=captures))
+        require(packet['evidence_metadata'] == expected, 'metadata differs from independent capture authority reconstruction')
+        return True
+    except sqlite3.Error as error:
+        raise ValueError('invalid capture authority database: ' + str(error)) from error
+    finally:
+        connection.close()
+
+
 def validate_catalog(packet):
     """Reconstruct every catalog row from source bytes without consulting gold.
 
     The opaque prepared-context hash remains host-owned. Audit its equality across
     packet/catalog/reply/handle, while Rust tests establish the hidden-context binding.
     """
-    require(isinstance(packet, dict) and packet.get('protocol') == 'situated-support-wire-v2', 'invalid wire packet')
+    require(isinstance(packet, dict) and packet.get('protocol') in ('situated-support-wire-v2', 'situated-support-wire-v3'), 'invalid wire packet')
+    if packet['protocol'] == 'situated-support-wire-v3':
+        validate_metadata(packet)
     key = packet.get('request_key')
     require(isinstance(key, str) and re.fullmatch('[0-9a-f]{64}', key), 'invalid wire request key')
     fields(packet.get('catalog'), ('request_key', 'citations'), 'citation catalog')
@@ -246,6 +416,7 @@ def expand_generation(packet, payload):
 
 def expand_evaluation(packet, payload):
     catalog = validate_catalog(packet)
+    evidence_v3 = packet['protocol'] == 'situated-support-wire-v3'
     offered = validate_canonical_proposal(packet, packet['proposal'])
     fields(payload, ('request_key', 'criterion', 'units', 'judgments'), 'wire evaluation')
     require(payload['request_key'] == packet['request_key'], 'wire evaluator binding mismatch')
@@ -272,7 +443,7 @@ def expand_evaluation(packet, payload):
         require(isinstance(payload[name], list) and len(payload[name]) == len(targets), 'evaluation target count mismatch')
         rows = {}
         for item in payload[name]:
-            fields(item, keys, 'wire ' + name)
+            fields(item, keys + (('original_citations',) if evidence_v3 and name == 'units' else ()), 'wire ' + name)
             require(isinstance(item['target'], str) and item['target'] in targets and item['target'] not in rows, 'foreign/duplicate evaluation target')
             rows[item['target']] = item
         for target, original in zip(targets, offered[name]):
@@ -283,7 +454,22 @@ def expand_evaluation(packet, payload):
                         and (premise != 'None' or original['kind'] in ('Hypothesis', 'Prediction')), 'invalid factual premise state')
                 unsupported = premise in ('Contradicted', 'Unknown')
                 require(item['status'] != 'Supported' or not unsupported, 'Supported unit has unsupported factual premises')
-                checks.append(diagnostic(item, item['status'], target, unsupported))
+                if evidence_v3:
+                    relations = original_relations(original, item['original_citations'])
+                    contradiction = 'Contradiction' in relations
+                    unsupported |= item['status'] == 'Unknown' and contradiction
+                    require(item['status'] != 'Supported' or bool(relations) and all(r == 'DirectSupport' for r in relations), 'Supported unit lacks original direct support')
+                    # Validate optional handles but never use them as claim support.
+                    resolve_evidence(catalog, item['evidence'])
+                    canonical = [c for c, relation in zip(original['citations'], relations) if relation == 'DirectSupport']
+                    validate_diagnostic_text(item)
+                    require(item['status'] != 'Supported' or canonical and not item['questions'], 'invalid Supported diagnostic')
+                    require(item['status'] != 'Unknown' or bool(item['questions']), 'Unknown diagnostic lacks questions')
+                    check = dict(target=target, status=item['status'], unsupported_factual_premise=unsupported,
+                                 citations=canonical, reason=item['reason'], questions=item['questions'])
+                    checks.append(check)
+                else:
+                    checks.append(diagnostic(item, item['status'], target, unsupported))
             else:
                 enough, bearing = item['premises_sufficient'], original['bearing']
                 require(type(enough) is bool and (bearing == 'Unknown' or original['because'] or not enough), 'invalid judgment premise sufficiency')
@@ -314,6 +500,7 @@ def wire_packet(request, stage):
     require(text.startswith('<support-input>\n') and text.endswith('\n</support-input>'), 'invalid support input wrapper')
     packet = decode(text[len('<support-input>\n'):-len('\n</support-input>')])
     catalog = validate_catalog(packet)
+    evidence_v3 = packet['protocol'] == 'situated-support-wire-v3'
     require(isinstance(effective.get('system'), str), 'missing support frame')
     require(messages[0].get('role') == 'user' and effective.get('tools') == [] and not wire.get('tools')
             and wire.get('messages') == [{'role': 'system', 'content': effective['system']}, {'role': 'user', 'content': text}]
@@ -331,6 +518,8 @@ def wire_packet(request, stage):
         return value['properties']
     require(all(isinstance(schema['properties'][name], dict) for name in ('units', 'judgments')), 'invalid target array schema')
     unit_keys = ('target', 'evidence', 'reason', 'questions', 'factual_premises', 'status') if 'proposal' in packet else ('id', 'kind', 'text', 'evidence')
+    if evidence_v3 and 'proposal' in packet:
+        unit_keys += ('original_citations',)
     judgment_keys = ('target', 'evidence', 'reason', 'questions', 'premises_sufficient') if 'proposal' in packet else ('bearing', 'because')
     unit_variants = []
     if 'proposal' in packet:
@@ -343,21 +532,36 @@ def wire_packet(request, stage):
         if offered_units:
             item = schema['properties']['units']['items']
             fields(item, ('oneOf',), 'unit target alternatives')
-            expected_branches = [(targets, premises, status) for targets, premises in groups
-                                 for status in ('Supported', 'Contradicted', 'Unknown')]
+            expected_branches = []
+            for targets, premises in groups:
+                for status in ('Supported', 'Contradicted', 'Unknown'):
+                    if evidence_v3 and status == 'Supported':
+                        for count in (1, 2):
+                            eligible = ['unit:' + u['id'] for u in offered_units if len(u['citations']) == count and 'unit:' + u['id'] in targets]
+                            if eligible:
+                                expected_branches.append((eligible, premises, status, count))
+                    else:
+                        expected_branches.append((targets, premises, status, None))
             require(isinstance(item['oneOf'], list) and len(item['oneOf']) == len(expected_branches), 'unit target/status group count mismatch')
-            for branch, (targets, premises, status) in zip(item['oneOf'], expected_branches):
+            for branch, (targets, premises, status, count) in zip(item['oneOf'], expected_branches):
                 properties = object_properties(branch, unit_keys)
                 if status == 'Supported':
                     premises = ['None', 'Supported'] if 'None' in premises else ['Supported']
                 require(properties['target'] == {'type': 'string', 'enum': targets}
                         and properties['factual_premises'] == {'type': 'string', 'enum': premises}
                         and properties['status'] == {'type': 'string', 'enum': [status]}
-                        and properties['evidence'] == {'type': 'array', 'minItems': int(status == 'Supported'), 'maxItems': 2,
+                        and properties['evidence'] == {'type': 'array', 'minItems': int(status == 'Supported' and not evidence_v3), 'maxItems': 2,
                             'uniqueItems': True, 'items': {'type': 'string', 'enum': list(catalog)}}
                         and properties['questions'] == {'type': 'array', 'minItems': int(status == 'Unknown'),
                             'maxItems': 0 if status == 'Supported' else 4,
                             'items': {'type': 'string', 'minLength': 1, 'maxLength': 64}}, 'unconstrained unit target/status diagnostic')
+                if evidence_v3:
+                    expected_originals = copy.deepcopy(ORIGINAL_CITATION_SCHEMA)
+                    if count is not None:
+                        expected_originals.update(uniqueItems=True, minItems=count, maxItems=count)
+                        expected_originals['items']['properties']['citation_index']['maximum'] = count - 1
+                        expected_originals['items']['properties']['relation']['enum'] = ['DirectSupport']
+                    require(properties['original_citations'] == expected_originals, 'unconstrained original citation schema')
                 unit_variants.append(properties)
     else:
         unit = object_properties(schema['properties']['units']['items'], unit_keys)
@@ -442,6 +646,10 @@ def validate_case_packet(root, case, report, name):
     require(observed['content_status'] == ('Missing' if content is None else 'Complete')
             and observed['artifact_text'] == content
             and observed['artifact_digest'] == (None if content is None else hashlib.sha256(content.encode()).hexdigest()), 'model artifact observation differs from frozen bytes')
+    if packet['protocol'] == 'situated-support-wire-v3':
+        audit_capture_metadata(root, report, packet)
+        if name != 'generate' and generation.get('request') is not None:
+            require(packet['evidence_metadata'] == request_packet(root, generation)['evidence_metadata'], 'metadata differs between stages')
     return packet
 
 
@@ -463,7 +671,7 @@ def validate_call(root, stage, model, protocol=PROTOCOL):
             and effective.get('max_tokens') == wire.get('max_tokens') == 4096
             and wire.get('seed') == SEED and wire.get('temperature') == 0.6,
             'raw runtime controls mismatch')
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         # OpenAiCompatible::request puts autoload=false on the URL. The recorder
         # exposes only its JSON body; never mislabel URL policy as observed here.
         require('autoload' not in wire, 'unexpected body autoload field')
@@ -472,8 +680,9 @@ def validate_call(root, stage, model, protocol=PROTOCOL):
         require(wire.get('autoload') is False, 'raw runtime controls mismatch')
     require(reply.get('stop_reason') == 'end_turn' and not reply.get('refusal'), 'raw refusal/incomplete response')
     require(all(reply.get(k) == stage[k] for k in ('input_tokens', 'output_tokens')), 'raw usage mismatch')
-    if protocol == GROUNDED_PROTOCOL:
-        wire_packet(request, stage)
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
+        packet = wire_packet(request, stage)
+        require(packet['protocol'] == ('situated-support-wire-v3' if protocol == EVIDENCE_PROTOCOL else 'situated-support-wire-v2'), 'coordinator/wire protocol mismatch')
     return reply
 
 
@@ -488,7 +697,12 @@ def response_payload(reply):
 
 def validate_sources(root, case, report):
     artifacts = report.get('artifacts')
-    require(isinstance(artifacts, dict) and set(artifacts) == {'initial_input', 'native_transcript', 'observed_output', 'admitted_generated'}, 'missing/unknown evidence artifacts')
+    expected_artifacts = {'initial_input', 'native_transcript', 'observed_output', 'admitted_generated'}
+    if report.get('protocol') == EVIDENCE_PROTOCOL:
+        require(isinstance(artifacts, dict) and expected_artifacts <= set(artifacts)
+                and set(artifacts) <= expected_artifacts | {'retained_generated', 'retained_probe'}, 'missing/unknown evidence artifacts')
+    else:
+        require(isinstance(artifacts, dict) and set(artifacts) == expected_artifacts, 'missing/unknown evidence artifacts')
     content = {}
     for key in ('initial_input', 'native_transcript', 'observed_output'):
         value = artifacts[key]
@@ -510,7 +724,7 @@ def validate_support(root, report, name, model, offered, protocol=PROTOCOL):
     fields(descriptors, ('generated', 'probe'), 'durable support reports')
     support = decode(artifact_bytes(root, descriptors[name]).decode())
     fields(support, ('protocol', 'generator_model', 'evaluator_model', 'proposal_hash', 'request_hash', 'units', 'judgments'), 'durable support report')
-    require(support['protocol'] == 'situated-factual-support-v1' and support['evaluator_model'] == model
+    require(support['protocol'] == ('situated-factual-support-v2' if protocol == EVIDENCE_PROTOCOL else 'situated-factual-support-v1') and support['evaluator_model'] == model
             and isinstance(support['generator_model'], str) and support['generator_model'], 'durable support identity mismatch')
     if name == 'generated':
         require(support['generator_model'] == model, 'durable generator identity mismatch')
@@ -522,7 +736,7 @@ def validate_support(root, report, name, model, offered, protocol=PROTOCOL):
     require(isinstance(stage, dict), 'invalid evaluator stage')
     require(stage.get('status') == 'completed' and stage.get('error') is None, 'probe/evaluator outcome not completed')
     payload = response_payload(validate_call(root, stage, model, protocol))
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         packet = request_packet(root, stage)
         canonical = decode(bounded_read(root / (name + '-proposal.json'), 16384).decode())
         require(packet['proposal'] == canonical, 'evaluator request differs from canonical proposal export')
@@ -585,39 +799,49 @@ def validate_support(root, report, name, model, offered, protocol=PROTOCOL):
         require(admitted == should_admit, 'durable/raw unit admission mismatch')
         if admitted:
             require(all(unit[k] == original[k] for k in ('id', 'kind', 'text')), 'durable accepted unit differs from offered proposal')
-            if name == 'generated' or protocol == GROUNDED_PROTOCOL:
+            if name == 'generated' or protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
                 require(unit == original, 'durable citations differ from generated proposal')
             accepted.append(dict(unit, status=entry['status']))
         units[identifier] = dict(id=identifier, status=entry['status'], admitted=admitted, withheld=not admitted,
                                  unsupported_factual_premise=check['unsupported_factual_premise'])
     require(isinstance(support['judgments'], list) and len(support['judgments']) == len(offered['judgments']), 'durable judgment coverage mismatch')
+    revised = revised_decisions(offered, units, checks) if protocol == EVIDENCE_PROTOCOL else None
     judgments = []
     for index, (entry, original) in enumerate(zip(support['judgments'], offered['judgments'])):
-        fields(entry, ('index', 'goal', 'offered_bearing', 'bearing', 'because', 'status', 'reason'), 'durable judgment')
+        fields(entry, ('index', 'goal', 'offered_bearing', 'bearing', 'because', 'status', 'reason') + (('unsupported_factual_premise',) if protocol == EVIDENCE_PROTOCOL else ()), 'durable judgment')
         check = checks['judgment:' + str(index)]
         require(type(entry['index']) is int and entry['index'] == index and entry['offered_bearing'] == original['bearing']
                 and entry['because'] == original['because'] and entry['status'] == check['status'], 'durable/raw offered judgment mismatch')
         reason = entry['reason']
-        if protocol == GROUNDED_PROTOCOL:
+        if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
             factual_support = bool(original['because']) and all(
                 units[i]['admitted'] and units[i]['status'] == 'Supported'
                 and expected_units[i]['kind'] in ('RecordedEvent', 'GoalAssessment') for i in original['because'])
             expected_reason = ('DuplicateGoal' if index > 0 else 'ExplicitUnknown' if original['bearing'] == 'Unknown'
                                else 'UnsupportedJudgment' if check['status'] != 'Supported' or check['unsupported_factual_premise']
                                else 'UnsupportedPremises' if not factual_support else 'Retained')
+            if revised is not None:
+                expected_reason = revised[index]
+                require(type(entry['unsupported_factual_premise']) is bool and entry['unsupported_factual_premise'] == check['unsupported_factual_premise'], 'durable own premise flag mismatch')
             require(entry['goal'] == original['goal'] and reason == expected_reason
                     and entry['bearing'] == (original['bearing'] if reason == 'Retained' else 'Unknown'), 'durable judgment derivation mismatch')
-        require(reason in ('Retained', 'ExplicitUnknown', 'UnsupportedJudgment', 'UnsupportedPremises', 'DuplicateGoal'), 'unknown durable judgment reason')
+        require(reason in ('Retained', 'ExplicitUnknown', 'UnsupportedJudgment', 'UnsupportedPremises', 'DuplicateGoal') + (('Superseded', 'Conflicting') if revised is not None else ()), 'unknown durable judgment reason')
         disposition = 'dropped' if reason == 'DuplicateGoal' else 'retained' if reason in ('Retained', 'ExplicitUnknown') else 'downgraded'
         require(entry['bearing'] in ('Good', 'Bad', 'Unknown') and (disposition == 'retained' or entry['bearing'] == 'Unknown'), 'durable final bearing mismatch')
         judgments.append(dict(index=index, status=entry['status'], offered_bearing=entry['offered_bearing'], bearing=entry['bearing'],
                               disposition=disposition, reason=reason, unsupported_factual_premise=check['unsupported_factual_premise']))
+    if protocol == EVIDENCE_PROTOCOL:
+        retained = decode(artifact_bytes(root, report['artifacts']['retained_' + name]).decode())
+        fields(retained, ('context_key', 'criterion', 'host_context_id', 'draft', 'claim_sources'), 'retained interpretation')
+        expected_draft, expected_locators = canonical_retained_draft(support, accepted, judgments, offered, packet['sources'])
+        require(retained['criterion'] == packet['criterion'] and retained['draft'] == expected_draft
+                and retained['claim_sources'] == expected_locators, 'retained canonical renderer/claim locator mismatch')
     return accepted, units, judgments
 
 
 def validate_probe(root, case, report, model, protocol=PROTOCOL):
     validate_sources(root, case, report)
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         validate_case_packet(root, case, report, 'evaluate_probe')
     _, units, judgments = validate_support(root, report, 'probe', model, case['probe'], protocol)
     probe = report.get('probe')
@@ -627,34 +851,44 @@ def validate_probe(root, case, report, model, protocol=PROTOCOL):
     for unit in probe['units']:
         require(unit == units[unit['id']], 'probe summary differs from durable/raw unit')
     require(probe['judgments'] == judgments, 'probe summary differs from durable/raw judgments')
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         raw = response_payload(validate_call(root, report['stages']['evaluate_probe'], model, protocol))
-        return dict(probe, criterion_state=raw['criterion']['state'])
+        result = dict(probe, criterion_state=raw['criterion']['state'])
+        if protocol == EVIDENCE_PROTOCOL:
+            packet = request_packet(root, report['stages']['evaluate_probe'])
+            accepted = [dict(u['unit'], status=u['status']) for u in decode(artifact_bytes(root, report['support_reports']['probe']).decode())['units'] if u['disposition'] == 'Accepted']
+            result['retained_judgments'] = retained_judgments(packet['proposal'], judgments, accepted)
+        return result
     return probe
 
 
-def validate_generated(root, case, report, model):
+def validate_generated(root, case, report, model, protocol=GROUNDED_PROTOCOL):
     """Independently preserve generated outcomes, even if later stages fail."""
     validate_sources(root, case, report)
     stage = report['stages']['generate']
     require(stage.get('status') == 'completed' and stage.get('error') is None, 'generator outcome not completed')
     packet = validate_case_packet(root, case, report, 'generate')
     validate_case_packet(root, case, report, 'evaluate_generated')
-    proposal = expand_generation(packet, response_payload(validate_call(root, stage, model, GROUNDED_PROTOCOL)))
+    proposal = expand_generation(packet, response_payload(validate_call(root, stage, model, protocol)))
     require(decode(bounded_read(root / 'generated-proposal.json', 16384).decode()) == proposal,
             'canonical generator export differs from expanded wire')
-    accepted, units, judgments = validate_support(root, report, 'generated', model, proposal, GROUNDED_PROTOCOL)
+    accepted, units, judgments = validate_support(root, report, 'generated', model, proposal, protocol)
     admitted = decode(artifact_bytes(root, report['artifacts']['admitted_generated']).decode())
     require(admitted == accepted, 'admitted export differs from durable accepted units')
-    return {'units': list(units.values()), 'judgments': judgments,
-            'admitted_unit_ids': sorted(unit['id'] for unit in accepted)}
+    result = {'units': list(units.values()), 'judgments': judgments,
+              'admitted_unit_ids': sorted(unit['id'] for unit in accepted)}
+    if protocol == EVIDENCE_PROTOCOL:
+        result['retained_judgments'] = retained_judgments(proposal, judgments, accepted)
+    return result
 
 
 def validate_report(root, case, model, protocol=PROTOCOL):
     """Return a failed row on malformed/incomplete native output, never omit it."""
     root = Path(root)
     result = {'valid': False, 'errors': [], 'report': None, 'report_sha256': None, 'probe_outcome': None, 'probe_errors': []}
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol == EVIDENCE_PROTOCOL:
+        result['metadata_audit_boundary'] = METADATA_AUDIT_BOUNDARY
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         result['transport_audit_boundary'] = TRANSPORT_AUDIT_BOUNDARY
         result.update(generated_outcome=None, generated_errors=[])
     try:
@@ -663,11 +897,11 @@ def validate_report(root, case, model, protocol=PROTOCOL):
         report = decode(report_bytes.decode())
         result['report'] = report
         require(isinstance(report, dict), 'report is not an object')
-        if protocol == GROUNDED_PROTOCOL:
+        if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
             try:
                 require(report.get('protocol') == protocol and report.get('seed') == SEED and report.get('model') == model
                         and report.get('case_id') == case['id'] and report.get('case_sha256') == digest(case), 'generated case identity mismatch')
-                result['generated_outcome'] = validate_generated(root, case, report, model)
+                result['generated_outcome'] = validate_generated(root, case, report, model, protocol)
                 result['admitted_unit_ids'] = result['generated_outcome']['admitted_unit_ids']
             except (ValueError, OSError, KeyError, TypeError, UnicodeError) as error:
                 result['generated_errors'].append(str(error))
@@ -703,7 +937,7 @@ def validate_report(root, case, model, protocol=PROTOCOL):
                 require(stage.get('model') == model, 'served model mismatch: ' + name)
                 require(stage.get('stop_reason') == 'end_turn', 'incomplete/refused model reply: ' + name)
                 validate_call(root, stage, model, protocol)
-                if protocol == GROUNDED_PROTOCOL:
+                if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
                     validate_case_packet(root, case, report, name)
                 for key in ('input_tokens', 'output_tokens'):
                     require(type(stage.get(key)) is int and stage[key] >= 0, 'missing model usage')
@@ -711,7 +945,7 @@ def validate_report(root, case, model, protocol=PROTOCOL):
         for key in ('input_tokens', 'output_tokens'):
             require(type(report.get(key)) is int and report[key] == sum(stages[name][key] for name in MODEL_STAGES), 'usage total mismatch')
         validate_sources(root, case, report)
-        if protocol == GROUNDED_PROTOCOL:
+        if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
             require(result['generated_outcome'] is not None, '; '.join(result['generated_errors']) or 'missing validated generated outcome')
         else:
             generated_reply = validate_call(root, stages['generate'], model, protocol)
@@ -721,12 +955,71 @@ def validate_report(root, case, model, protocol=PROTOCOL):
             require(admitted == accepted, 'admitted export differs from durable accepted units')
             result['admitted_unit_ids'] = sorted(unit['id'] for unit in accepted)
         require(result['probe_outcome'] is not None, '; '.join(result['probe_errors']) or 'missing validated probe outcome')
+        if protocol == EVIDENCE_PROTOCOL:
+            result['original_citation_slots'] = []
+            for name in ('generated', 'probe'):
+                packet = request_packet(root, stages['evaluate_' + name])
+                result['original_citation_slots'].extend(name + ':' + unit['id'] + ':' + str(index)
+                    for unit in packet['proposal']['units'] for index in range(len(unit['citations'])))
+            result['metadata_audit_complete'] = True
         result['valid'] = True
     except FileNotFoundError as error:
         result['errors'].append('missing native report/artifact: ' + str(error))
     except (ValueError, OSError, KeyError, TypeError, UnicodeError) as error:
         result['errors'].append(str(error))
     return result
+
+
+def canonical_retained_draft(support, accepted, judgments, offered, sources):
+    labels = {'RecordedEvent': 'Recorded event', 'GoalAssessment': 'Goal assessment',
+              'Hypothesis': 'Speculative hypothesis', 'Prediction': 'Speculative prediction'}
+    prose = [labels[u['kind']] + ': ' + u['text'] for u in accepted]
+    claims = [dict(source_id=c['source_id'], statement=u['text'], quote=c['quote'])
+              for u in accepted if u['kind'] in ('RecordedEvent', 'GoalAssessment') for c in u['citations']]
+    dropped_by = {}
+    for entry in support['units']:
+        if entry['disposition'] == 'Rejected':
+            dropped_by[entry['status']] = dropped_by.get(entry['status'], 0) + 1
+    dropped = sum(dropped_by.values())
+    draft = dict(interpretation='\n'.join(prose) if prose else 'No supported statements retained.',
+                 claims=claims, judgments=retained_judgments(offered, judgments, accepted), prediction=None,
+                 grounding=dict(offered=len(claims) + dropped, dropped=dropped, dropped_by=dropped_by, unresolved_goals=0),
+                 model=support['generator_model'], producer_version='situated-interpretation-v3', support=support)
+    claimed = {c['source_id'] for c in claims}
+    locators = [{key: source[key] for key in ('id', 'source', 'field', 'kind')} for source in sources if source['id'] in claimed]
+    return draft, locators
+
+
+def retained_judgments(proposal, judgments, accepted):
+    selected = next((j for j in judgments if j['reason'] == 'Retained'), None)
+    if selected is None:
+        if not proposal['judgments']:
+            return []
+        selected = judgments[0]
+    original = proposal['judgments'][selected['index']]
+    indices, next_index = {}, 0
+    for unit in accepted:
+        if unit['kind'] in ('RecordedEvent', 'GoalAssessment'):
+            indices[unit['id']] = list(range(next_index, next_index + len(unit['citations'])))
+            next_index += len(unit['citations'])
+    because = [index for identifier in original['because'] for index in indices[identifier]] if selected['reason'] == 'Retained' else []
+    return [dict(goal=original['goal'], bearing=selected['bearing'], because=because)]
+
+
+def citation_audit(validation, audit):
+    """Every original slot, including rejected units, gets separate semantic review."""
+    try:
+        require(manual_audit(validation, audit)[0], 'external factual audit incomplete')
+        slots = validation['original_citation_slots']
+        inspected = audit['inspected_original_citations']
+        defects = audit['original_citation_defects']
+        require(isinstance(inspected, list) and all(isinstance(s, str) for s in inspected)
+                and len(inspected) == len(set(inspected)) and set(inspected) == set(slots), 'original citation audit coverage mismatch')
+        require(isinstance(defects, list) and all(isinstance(s, str) for s in defects)
+                and len(defects) == len(set(defects)) and set(defects) <= set(slots), 'invalid original citation defects')
+        return True, len(defects)
+    except (ValueError, KeyError, TypeError):
+        return False, None
 
 
 def manual_audit(validation, audit):
@@ -775,7 +1068,7 @@ def score_case(case, validation, audit, protocol=PROTOCOL):
             if row[key] is not None:
                 row['observed_' + key] = max(row[key], row['observed_' + key] or 0)
     probe = validation.get('probe_outcome')
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         generated = validation.get('generated_outcome')
         row.update(false_facts_supported=None, criterion_correct=None,
                    generated_outcome_observed=generated is not None, generated_errors=validation.get('generated_errors', []),
@@ -783,8 +1076,20 @@ def score_case(case, validation, audit, protocol=PROTOCOL):
         if generated is not None:
             row['wrong_generated_bearings_supported'], row['wrong_generated_bearings_retained'] = bearing_errors(
                 generated['judgments'], case['annotations']['expected_bearing'])
+    if protocol == EVIDENCE_PROTOCOL:
+        row.update(original_citation_audit_complete=False, original_citation_defects=None,
+                   metadata_audit_complete=validation.get('metadata_audit_complete', False),
+                   retained_bearing_correct=None, retained_probe_bearing_correct=None)
+        generated = validation.get('generated_outcome')
+        if generated is not None:
+            bearings = [j['bearing'] for j in generated['retained_judgments']]
+            row['retained_bearing_correct'] = int(bearings == [case['annotations']['expected_bearing']])
+        if validation['valid']:
+            row['original_citation_audit_complete'], row['original_citation_defects'] = citation_audit(validation, audit)
     if probe is None:
         return row
+    if protocol == EVIDENCE_PROTOCOL:
+        row['retained_probe_bearing_correct'] = int([j['bearing'] for j in probe['retained_judgments']] == [case['annotations']['expected_bearing']])
     units = {u['id']: u for u in probe['units']}
     annotations = case['annotations']
     true, false, uncertain = [units[annotations[key]] for key in ('true_unit', 'false_unit', 'uncertain_unit')]
@@ -795,7 +1100,7 @@ def score_case(case, validation, audit, protocol=PROTOCOL):
                wrong_bearings_accepted=wrong_retained, wrong_bearings_supported=wrong_supported,
                correct_bearing_supported=int(any(j['offered_bearing'] == annotations['expected_bearing'] and j['status'] == 'Supported'
                                                 and not j['unsupported_factual_premise'] for j in probe['judgments'])))
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         row['false_facts_supported'] = int(false['status'] == 'Supported')
         if probe.get('criterion_state') in ('Met', 'NotMet', 'Unknown'):
             row['criterion_correct'] = int(probe['criterion_state'] == {'Good': 'Met', 'Bad': 'NotMet', 'Unknown': 'Unknown'}[annotations['expected_bearing']])
@@ -819,13 +1124,19 @@ def summarize(rows, protocol=PROTOCOL):
     passed = (total == 8 and unique and valid == 8 and audit_complete == 8
               and metrics_complete and count('true_supported') >= 6 and count('uncertain_appropriate') >= 6 and count('correct_bearing_supported') >= 6
               and count('false_facts_accepted') == count('wrong_bearings_accepted') == count('wrong_bearings_supported') == count('unsupported_generated') == 0)
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         generated_observed = sum(row.get('generated_outcome_observed', False) for row in rows)
         generated_complete = total == 8 and generated_observed == 8 and all(
             type(row.get(key)) is int for row in rows for key in ('wrong_generated_bearings_supported', 'wrong_generated_bearings_retained'))
         passed = (passed and all(type(row.get('false_facts_supported')) is int for row in rows)
                   and count('false_facts_supported') == 0 and generated_complete
                   and count('wrong_generated_bearings_supported') == count('wrong_generated_bearings_retained') == 0)
+    if protocol == EVIDENCE_PROTOCOL:
+        citation_audits = sum(row.get('original_citation_audit_complete', False) for row in rows)
+        metadata_audits = sum(row.get('metadata_audit_complete', False) for row in rows)
+        citation_complete = total == 8 and citation_audits == 8 and all(type(row.get('original_citation_defects')) is int for row in rows)
+        retained_complete = total == 8 and all(type(row.get(key)) is int for row in rows for key in ('retained_bearing_correct', 'retained_probe_bearing_correct'))
+        passed = passed and citation_complete and count('original_citation_defects') == 0 and metadata_audits == 8 and retained_complete and count('retained_bearing_correct') >= 6 and count('retained_probe_bearing_correct') >= 6
     result = {'protocol': protocol, 'attempts': total, 'planned_attempts': 8, 'valid_attempts': valid,
             'failed_attempts': total - valid, 'unique_cases': unique,
             'true_supported': {'count': count('true_supported'), 'denominator': 8},
@@ -846,7 +1157,7 @@ def summarize(rows, protocol=PROTOCOL):
             'cost_complete': total == 8 and all(all(type(r.get(k)) is int for k in ('input_tokens', 'output_tokens')) for r in rows),
             'gate_passed': passed, 'downstream_comparison_authorized': passed,
             'evidence_boundary': 'Eight-case synthetic development gate only; model evaluation is fallible and correlated, not independent truth.'}
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         result['transport_audit_boundary'] = TRANSPORT_AUDIT_BOUNDARY
         result.update(generated_metrics_complete=generated_complete,
                       observed_generated_outcomes=generated_observed,
@@ -859,6 +1170,17 @@ def summarize(rows, protocol=PROTOCOL):
                       observed_false_facts_supported=count('false_facts_supported'),
                       criterion_correct={'count': count('criterion_correct'), 'denominator': 8},
                       criterion_metrics_complete=metrics_complete and all(type(row.get('criterion_correct')) is int for row in rows))
+    if protocol == EVIDENCE_PROTOCOL:
+        result.update(metadata_audit_boundary=METADATA_AUDIT_BOUNDARY,
+                      metadata_audits_complete=metadata_audits, original_citation_audits_complete=citation_audits,
+                      original_citation_metrics_complete=citation_complete,
+                      original_citation_defects=count('original_citation_defects') if citation_complete else None,
+                      observed_original_citation_defects=count('original_citation_defects'),
+                      retained_bearing_metrics_complete=retained_complete,
+                      retained_bearing_correct={'count': count('retained_bearing_correct'), 'denominator': 8},
+                      retained_probe_bearing_correct={'count': count('retained_probe_bearing_correct'), 'denominator': 8})
+        # Planned or failed attempts always remain unknown within the fixed eight slots.
+        result['unknown_probe_outcomes'] = max(8, total) - observed
     return result
 
 
@@ -883,7 +1205,8 @@ def source_hashes():
 
 def freeze(root, binary, endpoint, model, holds_dir, protocol=PROTOCOL, fixture=None):
     require(protocol in PROTOCOLS, 'unknown support protocol')
-    require(protocol == GROUNDED_PROTOCOL or fixture is None, 'custom fixtures require explicit grounded-v2 protocol')
+    require(protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL) or fixture is None, 'custom fixtures require explicit grounded-v2 protocol')
+    require(protocol != EVIDENCE_PROTOCOL or fixture is not None, 'evidence-v3 requires an independently authored explicit fresh fixture')
     selected_fixture = Path(fixture or FIXTURE).absolute()
     cases = load_cases(selected_fixture)
     root, binary = Path(root).absolute(), Path(binary).resolve(strict=True)
@@ -917,11 +1240,14 @@ def freeze(root, binary, endpoint, model, holds_dir, protocol=PROTOCOL, fixture=
                          'max_wrong_bearings_supported': 0, 'min_correct_bearing_supported': 6,
                          'require_all_eight_external_manual_audits': True},
                 'created_unix': time.time()}
-    if protocol == GROUNDED_PROTOCOL:
+    if protocol in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
         manifest['fixture_path'] = str(selected_fixture.resolve(strict=True))
         manifest['gate']['max_false_facts_supported'] = 0
         manifest['gate'].update(max_wrong_generated_bearings_supported=0, max_wrong_generated_bearings_retained=0,
                                 require_all_eight_generated_outcomes=True)
+    if protocol == EVIDENCE_PROTOCOL:
+        manifest['gate'].update(max_original_citation_defects=0, require_all_eight_original_citation_audits=True,
+                               require_all_eight_metadata_audits=True, min_retained_bearing_correct=6)
     write_json(root / 'manifest.json', manifest)
     (root / 'manifest.sha256').write_text(file_hash(root / 'manifest.json') + '\n')
     write_json(root / 'attempts.json', attempts)
@@ -937,7 +1263,7 @@ def validate_frozen(root, manifest, runtime=True):
     if runtime:
         require(file_hash(manifest['binary']) == manifest['binary_sha256']
                 and file_hash(__file__) == manifest['helper_sha256']
-                and file_hash(manifest['fixture_path'] if manifest['protocol'] == GROUNDED_PROTOCOL else FIXTURE) == manifest['fixture_sha256']
+                and file_hash(manifest['fixture_path'] if manifest['protocol'] in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL) else FIXTURE) == manifest['fixture_sha256']
                 and source_hashes() == manifest['source_files_sha256'], 'modified native binary/helper/source/fixture')
     require(file_hash(root / 'cases.json') == manifest['cases_sha256'], 'modified frozen cases')
     cases = load_cases(root / 'cases.json')
@@ -1009,8 +1335,8 @@ def run(root):
         argv = [manifest['binary'], '--synthetic-only', str(root / 'runs' / case['id']),
                 manifest['endpoint'], manifest['model'], manifest['holds_dir'], str(SEED),
                 str(root / manifest['case_files'][case['id']]['path'])]
-        if manifest['protocol'] == GROUNDED_PROTOCOL:
-            argv.insert(1, '--grounded-v2')
+        if manifest['protocol'] in (GROUNDED_PROTOCOL, EVIDENCE_PROTOCOL):
+            argv.insert(1, '--evidence-v3' if manifest['protocol'] == EVIDENCE_PROTOCOL else '--grounded-v2')
         stdout, stderr = b'', b''
         try:
             # Recheck the freeze before *every* call, including the binary itself.
@@ -1047,14 +1373,16 @@ def main():
     freeze_parser = commands.add_parser('freeze')
     for arg in ('root', 'binary', 'endpoint', 'model', 'holds_dir'):
         freeze_parser.add_argument(arg)
-    freeze_parser.add_argument('--grounded-v2', action='store_true')
+    modes = freeze_parser.add_mutually_exclusive_group()
+    modes.add_argument('--grounded-v2', action='store_true')
+    modes.add_argument('--evidence-v3', action='store_true')
     freeze_parser.add_argument('--fixture', type=Path)
     for command in ('run', 'score'):
         commands.add_parser(command).add_argument('root')
     args = parser.parse_args()
     if args.command == 'freeze':
         result = freeze(args.root, args.binary, args.endpoint, args.model, args.holds_dir,
-                        protocol=GROUNDED_PROTOCOL if args.grounded_v2 else PROTOCOL, fixture=args.fixture)
+                        protocol=EVIDENCE_PROTOCOL if args.evidence_v3 else GROUNDED_PROTOCOL if args.grounded_v2 else PROTOCOL, fixture=args.fixture)
         print(encode({'protocol': result['protocol'], 'frozen_attempts': len(result['attempts'])}), end='')
     else:
         result = run(args.root) if args.command == 'run' else score_root(args.root)

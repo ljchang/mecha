@@ -12963,6 +12963,21 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   original premises and the canonical all-premise admission gate. Record the
   model's separate criterion diagnostic in the host audit, not reader memory.
   A false Supported check is an evaluator error even when admission blocks it.
+- **Evidence context cannot silently rewrite historical identity.** Explicit
+  wire-v3 carries authenticated capture metadata beside the unchanged legacy
+  source serialization. Its request key and every support-admission recheck bind
+  that sidecar; reconstruct it only from projections already in the authorized
+  closure. A selected capture is not globally newest, and matching text does not
+  identify a shared source. Missing times remain unknown. Original citation slots
+  are evaluated independently of optional diagnostics: a correct replacement
+  quotation cannot rescue false provenance in the generated claim.
+- **Revising a judgment means evaluating all its original premises.** The explicit
+  `situated-factual-support-v2` report records each candidate's own unsupported
+  premise flag, then derives selection without trusting its reason label. The
+  first eligible known bearing wins unless eligible known bearings conflict, in
+  which case the rendered result is Unknown. Legacy reports retain their original
+  first-per-goal semantics. An earlier Unknown once hid a later supported bearing;
+  changing selection must not reinterpret old stored reports or weaken premises.
 - **Default readers must also withhold interpreted descendants.** Merely omitting
   Interpretation from initial search still leaks it through a recaptured episode's
   dependency closure. The explicit contextual reader assigns every returned

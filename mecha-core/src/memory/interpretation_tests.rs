@@ -833,3 +833,288 @@ fn malformed_grounding_counts_refuse_without_overflow() {
     d.grounding.dropped = usize::MAX;
     assert!(db.retain_interpretation(p, d, &access()).is_err());
 }
+
+#[test]
+fn evidence_metadata_preserves_authorized_capture_associations() {
+    let (_path, mut db, _) = fixture();
+    let mut first = input("metadata-first");
+    first.occurred_at = Some("2026-11-01T10:00:00Z".into());
+    let a = db.admit_host_capture(first.clone(), &access()).unwrap();
+    let mut shared = input("metadata-shared");
+    shared.originals = first.originals.clone();
+    shared.originals[0].pointer = "/later/passage".into();
+    shared.originals[0].line = 7;
+    let b = db.admit_host_capture(shared, &access()).unwrap();
+    let mut unconsulted = input("metadata-unconsulted");
+    unconsulted.originals = first.originals.clone();
+    let hidden = db.admit_host_capture(unconsulted, &access()).unwrap();
+    let mut selected = input("metadata-selected");
+    selected.consulted = vec![a.projection.clone(), b.projection.clone()];
+    let c = db.admit_host_capture(selected, &access()).unwrap();
+    let p = prepare(&db, &c);
+    let metadata = serde_json::to_value(p.evidence_metadata()).unwrap();
+    let rows = metadata.as_array().unwrap();
+    assert_eq!(rows.len(), p.sources().len());
+    let original = p
+        .sources()
+        .iter()
+        .find(|s| s.source == a.originals[0])
+        .unwrap();
+    let row = rows.iter().find(|r| r["source_id"] == original.id).unwrap();
+    assert_eq!(row["role"], "AssistantStatement");
+    assert_eq!(row["interpretation_influenced"], false);
+    let captures = row["captures"].as_array().unwrap();
+    assert_eq!(captures.len(), 2);
+    assert!(captures.iter().all(|r| r["relation"] == "Dependency"));
+    assert!(captures
+        .iter()
+        .any(|r| r["capture"]["revision"] == a.projection.revision
+            && r["capture_time"] == "2026-11-01T10:00:00.000000000Z"));
+    assert!(captures
+        .iter()
+        .any(|r| r["capture"]["revision"] == b.projection.revision && r["capture_time"].is_null()));
+    assert!(captures
+        .iter()
+        .all(|r| r["passage_time"].is_null()
+            && (r["transcript_line"] == 1 || r["transcript_line"] == 7)));
+    assert!(!metadata.to_string().contains(&hidden.projection.revision));
+    for (field, role) in [
+        ("/criterion", "HistoricalCriterion"),
+        ("/receipts", "ExecutionReceipt"),
+        ("/artifact", "ArtifactCheck"),
+    ] {
+        let source = p
+            .sources()
+            .iter()
+            .find(|s| s.source == c.projection && s.field == field)
+            .unwrap();
+        let row = rows.iter().find(|r| r["source_id"] == source.id).unwrap();
+        assert_eq!(row["role"], role);
+        assert_eq!(row["captures"][0]["relation"], "SelectedCapture");
+    }
+    assert_eq!(
+        p.generation_input(),
+        serde_json::to_string(
+            &serde_json::json!({"criterion":context().criterion(), "sources":p.sources()})
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn evidence_metadata_keeps_original_only_dependency_unclassified() {
+    let (_path, mut db, _) = fixture();
+    let old = db
+        .admit_host_capture(input("metadata-old"), &access())
+        .unwrap();
+    let selected = db
+        .admit_host_capture(input("metadata-new"), &access())
+        .unwrap();
+    let p = db
+        .prepare_interpretation(
+            &selected,
+            &old.originals,
+            &context(),
+            &db.snapshot().unwrap(),
+            &access(),
+        )
+        .unwrap();
+    let source = p
+        .sources()
+        .iter()
+        .find(|s| s.source == old.originals[0])
+        .unwrap();
+    let metadata = serde_json::to_value(p.evidence_metadata()).unwrap();
+    let row = metadata
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["source_id"] == source.id)
+        .unwrap();
+    assert_eq!(row["role"], "Unclassified");
+    assert_eq!(row["captures"], serde_json::json!([]));
+}
+
+#[test]
+fn evidence_metadata_authenticates_roles_independently_of_influence() {
+    let (_path, mut db, _) = metadata_supported_fixture();
+    let old = db
+        .admit_host_capture_with_evidence(metadata_rich_input("metadata-prior"), &access())
+        .unwrap();
+    let p = prepare(&db, &old);
+    let source = p
+        .sources()
+        .iter()
+        .find(|s| s.kind == SourceKind::ArtifactObservation)
+        .unwrap();
+    let citation = SourceCitation {
+        source_id: source.id.clone(),
+        quote: "\"artifact_text\":\"[]\"".into(),
+    };
+    let proposal = SupportProposal {
+        units: vec![ProposedUnit {
+            id: "u1".into(),
+            kind: UnitKind::RecordedEvent,
+            text: "The observed artifact is an empty array".into(),
+            citations: vec![citation.clone()],
+        }],
+        judgments: vec![],
+    };
+    let request = db.prepare_support(&p, proposal, &access()).unwrap();
+    let evaluated = finish_support(
+        request,
+        SupportReply {
+            checks: vec![SupportCheck {
+                target: "unit:u1".into(),
+                status: SupportStatus::Supported,
+                unsupported_factual_premise: false,
+                citations: vec![citation],
+                reason: "authored".into(),
+                questions: vec![],
+            }],
+        },
+        "evaluator",
+    )
+    .unwrap();
+    let prior = db
+        .retain_evaluated_interpretation(p, evaluated, &access())
+        .unwrap();
+    let mut current = metadata_rich_input("metadata-influenced");
+    current.consulted = vec![prior.reference];
+    let base = current.originals[0].clone();
+    let mut simple = Vec::new();
+    for (n, kind) in [
+        PassageKind::UserRequest,
+        PassageKind::AssistantText,
+        PassageKind::ToolResult,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut passage = base.clone();
+        passage.source.id = format!("metadata-role-{n}");
+        passage.pointer = format!("/passage/{n}");
+        passage.kind = kind;
+        simple.push(passage);
+    }
+    simple.extend(current.originals.into_iter().skip(1));
+    current.originals = simple;
+    let receipt = db
+        .admit_host_capture_with_evidence(current, &access())
+        .unwrap();
+    let prepared = prepare(&db, &receipt);
+    let metadata = serde_json::to_value(prepared.evidence_metadata()).unwrap();
+    let rows = metadata.as_array().unwrap();
+    for (n, role) in [
+        "UserStatement",
+        "AssistantStatement",
+        "ToolResult",
+        "ActionInvocation",
+        "ArtifactObservation",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let source = prepared
+            .sources()
+            .iter()
+            .find(|s| s.source == receipt.originals[n])
+            .unwrap();
+        assert_eq!(source.kind, SourceKind::InterpretationInfluenced);
+        let row = rows.iter().find(|r| r["source_id"] == source.id).unwrap();
+        assert_eq!(row["role"], role);
+        assert_eq!(row["interpretation_influenced"], true);
+        assert_eq!(row["captures"].as_array().unwrap().len(), 1);
+    }
+    let ids: BTreeSet<_> = prepared
+        .sources()
+        .iter()
+        .filter(|s| receipt.originals.contains(&s.source))
+        .map(|s| &s.id)
+        .collect();
+    assert_eq!(ids.len(), 5);
+    assert!(rows
+        .iter()
+        .any(|r| r["role"] == "PriorInterpretation" && r["captures"] == serde_json::json!([])));
+}
+
+fn metadata_supported_fixture() -> (std::path::PathBuf, Memory, Arc<AtomicBool>) {
+    let dir = std::env::temp_dir().join(format!("support-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("x.memory-prototype.sqlite");
+    let state = Arc::new(AtomicBool::new(true));
+    let db = Memory::create_supported_situated(&path, "test")
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state.clone())));
+    (path, db, state)
+}
+fn metadata_rich_input(id: &str) -> HostCapture {
+    use sha2::{Digest, Sha256};
+    let mut i = input(id);
+    i.identity.check_version = EVIDENCE_CHECK_VERSION.into();
+    let action_input = serde_json::json!({"content":"requested different rows","path":"out.json"});
+    let input_digest = Sha256::digest(serde_json::to_vec(&action_input).unwrap())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    i.originals.push(OriginalPassage {
+        source: SourceKey {
+            connector: "host-action-invocation-v1".into(),
+            account: "test".into(),
+            id: format!("{id}-action"),
+        },
+        kind: PassageKind::ActionInvocation,
+        line: 1,
+        pointer: "/content/0/input".into(),
+        text: serde_json::to_string(&ActionInvocation {
+            call_id: "call1".into(),
+            tool_name: "fs_write".into(),
+            input_status: InputStatus::Complete,
+            input: action_input,
+            input_digest,
+        })
+        .unwrap(),
+        occurred_at: None,
+    });
+    let digest = Sha256::digest(b"[]")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    i.artifact.artifact_digest = Some(digest.clone());
+    i.originals.push(OriginalPassage {
+        source: SourceKey {
+            connector: "host-artifact-observation-v1".into(),
+            account: "test".into(),
+            id: format!("{id}-artifact"),
+        },
+        kind: PassageKind::ArtifactObservation,
+        line: 1,
+        pointer: "/artifact_observation".into(),
+        text: serde_json::to_string(&ArtifactObservation {
+            content_status: ContentStatus::Complete,
+            artifact_text: Some("[]".into()),
+            artifact_digest: Some(digest),
+            verdict: CheckVerdict::Failed,
+        })
+        .unwrap(),
+        occurred_at: None,
+    });
+    i
+}
+
+#[test]
+fn evidence_metadata_refuses_conflicting_authenticated_roles() {
+    let (_path, mut db, _) = fixture();
+    let first = input("metadata-role-conflict-first");
+    let a = db.admit_host_capture(first.clone(), &access()).unwrap();
+    let mut second = input("metadata-role-conflict-second");
+    second.originals = first.originals;
+    second.originals[0].kind = PassageKind::ToolResult;
+    let b = db.admit_host_capture(second, &access()).unwrap();
+    let mut selected = input("metadata-role-conflict-selected");
+    selected.consulted = vec![a.projection, b.projection];
+    let c = db.admit_host_capture(selected, &access()).unwrap();
+    assert!(db
+        .prepare_interpretation(&c, &[], &context(), &db.snapshot().unwrap(), &access())
+        .is_err());
+}

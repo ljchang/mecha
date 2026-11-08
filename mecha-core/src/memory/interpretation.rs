@@ -13,6 +13,11 @@ use std::{
 mod support;
 pub use support::*;
 
+#[path = "evidence_metadata.rs"]
+mod evidence_metadata;
+use evidence_metadata::evidence_metadata;
+pub use evidence_metadata::*;
+
 const PRODUCER: &str = "situated-interpretation-v1";
 const SCHEMA: &str = "CREATE TABLE external_binding(revision TEXT PRIMARY KEY REFERENCES revision(id),authority TEXT NOT NULL,locator TEXT NOT NULL,binding_revision TEXT NOT NULL);
 CREATE TABLE host_capture_receipt(identity_hash TEXT PRIMARY KEY,payload_hash TEXT,receipt_id TEXT,projection_object TEXT,projection_revision TEXT,originals TEXT,state TEXT NOT NULL CHECK(state IN ('active','forgotten')),lineage_version INTEGER NOT NULL CHECK(lineage_version=2));
@@ -100,6 +105,7 @@ pub struct PreparedInterpretation {
     snapshot: Snapshot,
     roots: Vec<RevisionRef>,
     sources: Vec<SourceField>,
+    evidence_metadata: Vec<EvidenceMetadata>,
     generation_input: String,
     request_id: String,
 }
@@ -112,6 +118,9 @@ impl PreparedInterpretation {
     }
     pub fn sources(&self) -> &[SourceField] {
         &self.sources
+    }
+    pub fn evidence_metadata(&self) -> &[EvidenceMetadata] {
+        &self.evidence_metadata
     }
     pub fn generation_input(&self) -> &str {
         &self.generation_input
@@ -564,6 +573,7 @@ impl Memory {
         roots.dedup();
         let refs = check_roots(&tx, &roots, snapshot, access, self.source_guard.as_deref())?;
         let sources = source_fields(&tx, &refs)?;
+        let evidence_metadata = evidence_metadata(&tx, &refs, &receipt.projection, &sources)?;
         let generation_input = serde_json::to_string(
             &serde_json::json!({"criterion":context.criterion,"sources":sources}),
         )?;
@@ -592,6 +602,7 @@ impl Memory {
             snapshot: snapshot.clone(),
             roots,
             sources,
+            evidence_metadata,
             generation_input,
             request_id,
         })
@@ -626,6 +637,11 @@ impl Memory {
         ensure!(
             serde_json::to_vec(&source_fields(&tx, &refs)?)? == serde_json::to_vec(&p.sources)?,
             "prepared source fields changed"
+        );
+        ensure!(
+            evidence_metadata(&tx, &refs, &p.receipt.projection, &p.sources)?
+                == p.evidence_metadata,
+            "prepared evidence metadata changed"
         );
         let claim_sources = claim_sources_for(&p.sources, &draft);
         let record = Record::Interpretation(Interpretation {

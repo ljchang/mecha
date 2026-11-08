@@ -14,6 +14,42 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Evidence-context and candidate judgment repair (2026-11-08, prototype branch)
+
+The explicit evidence-aware adapter added authenticated capture associations,
+source roles and known timestamps without changing canonical SQLite v8 source
+bytes. `evidence_metadata` uses only projections in the authorized closure;
+`recheck_support_prepared` and final retention reconstruct it. Source influence
+remains distinct from role. Selected capture denotes the appraisal's selected
+experience, not globally newest evidence.
+
+`memory_support_evidence` separately evaluates every original citation slot.
+Supported units require all originals to provide direct support, and canonical
+support uses those original quotations. An evaluator's alternative relevant
+passage can no longer hide the proposal's irrelevant citation. The new
+`finish_support_revised` report records each judgment's own premise flag and
+reconstructs candidate selection: first eligible known bearing, Unknown on
+conflicting eligible bearings, otherwise conservative Unknown. Original premises
+and dispositions survive. Legacy reports reopen with their old semantics;
+separate historical interpretation records are not withdrawn.
+
+V3 workflows export full reopened interpretations for both generated and probe
+paths. Review caught two audit gaps: relying on request labels rather than stored
+source payloads, and inspecting dispositions without the actual retained prose
+and locators. Both were reproduced and corrected. Final integration review then
+caught Python expecting a generic Supported schema after Rust introduced exact
+citation-count groups. Correcting that contract passed an actual native workflow
+with three authored HTTP responses, full SQLite authority and saved-render
+verification. An initial fixture-label refusal occurred before any call and was
+preserved. The final nested Python suite passed 144 invocations with zero skips;
+CI now enables the actual native check. Independently constructed test dictionaries
+can agree with one another while disagreeing with the producer.
+
+Workspace/all-target build, formatting, strict all-feature Clippy, 6,352 default
+tests (25 ignored) and 6,844 memory-enabled tests (29 ignored) passed on Spark.
+Nine focused v3 regressions and 273 standalone checks passed. These verify
+mechanics; no new semantic model qualification is implied.
+
 ### Citation/schema and evaluator repair (2026-11-08, prototype branch)
 
 The explicit support wire-v2 reuses v8 canonical storage and admission. A

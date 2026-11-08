@@ -3,6 +3,8 @@ use super::*;
 
 pub const SUPPORT_PROTOCOL: &str = "situated-factual-support-v1";
 pub const SUPPORT_PRODUCER: &str = "situated-interpretation-v2";
+pub const SUPPORT_REVISION_PROTOCOL: &str = "situated-factual-support-v2";
+pub const SUPPORT_REVISION_PRODUCER: &str = "situated-interpretation-v3";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,6 +135,8 @@ pub enum JudgmentReason {
     UnsupportedJudgment,
     UnsupportedPremises,
     DuplicateGoal,
+    Superseded,
+    Conflicting,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,6 +148,8 @@ pub struct JudgmentDisposition {
     pub because: Vec<String>,
     pub status: SupportStatus,
     pub reason: JudgmentReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported_factual_premise: Option<bool>,
 }
 /// Reader-safe report. Rejected text and evaluator diagnostics have no fields here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,6 +305,23 @@ pub fn finish_support(
     reply: SupportReply,
     evaluator_model: &str,
 ) -> Result<EvaluatedInterpretation> {
+    finish_support_protocol(request, reply, evaluator_model, false)
+}
+
+pub fn finish_support_revised(
+    request: SupportRequest,
+    reply: SupportReply,
+    evaluator_model: &str,
+) -> Result<EvaluatedInterpretation> {
+    finish_support_protocol(request, reply, evaluator_model, true)
+}
+
+fn finish_support_protocol(
+    request: SupportRequest,
+    reply: SupportReply,
+    evaluator_model: &str,
+    revised: bool,
+) -> Result<EvaluatedInterpretation> {
     ensure!(
         identifier(evaluator_model, 256),
         "invalid support evaluator model"
@@ -334,7 +357,7 @@ pub fn finish_support(
             }
         })
         .collect::<Vec<_>>();
-    let judgments = request.proposal.judgments.iter().enumerate().map(|(index,j)| {
+    let mut judgments: Vec<_> = request.proposal.judgments.iter().enumerate().map(|(index,j)| {
         let check = check_for(&reply, &format!("judgment:{index}"));
         let factual_support = !j.because.is_empty() && j.because.iter().all(|id| units.iter().any(|entry| matches!(entry, UnitDisposition::Accepted{unit,status:SupportStatus::Supported} if unit.id == *id && unit.kind.factual())));
         let reason = if index > 0 { JudgmentReason::DuplicateGoal }
@@ -344,10 +367,23 @@ pub fn finish_support(
             else { JudgmentReason::Retained };
         JudgmentDisposition { index, goal: j.goal.clone(), offered_bearing: j.bearing,
             bearing: if reason == JudgmentReason::Retained {j.bearing} else {InterpretationBearing::Unknown},
-            because: j.because.clone(), status: check.status, reason }
+            because: j.because.clone(), status: check.status, reason,
+            unsupported_factual_premise: revised.then_some(check.unsupported_factual_premise) }
     }).collect();
+    if revised {
+        let decisions = revised_decisions(&units, &judgments)?;
+        for (j, (reason, bearing)) in judgments.iter_mut().zip(decisions) {
+            j.reason = reason;
+            j.bearing = bearing;
+        }
+    }
     let report = SupportReport {
-        protocol: SUPPORT_PROTOCOL.into(),
+        protocol: if revised {
+            SUPPORT_REVISION_PROTOCOL
+        } else {
+            SUPPORT_PROTOCOL
+        }
+        .into(),
         generator_model: request.generator_model.clone(),
         evaluator_model: evaluator_model.into(),
         proposal_hash: hash(&request.proposal)?,
@@ -363,13 +399,76 @@ pub fn finish_support(
     })
 }
 
+/// Reconstruct selection exclusively from preserved assessment determinants.
+fn revised_decisions(
+    units: &[UnitDisposition],
+    judgments: &[JudgmentDisposition],
+) -> Result<Vec<(JudgmentReason, InterpretationBearing)>> {
+    let mut reasons = Vec::new();
+    for j in judgments {
+        let unsupported = j
+            .unsupported_factual_premise
+            .context("missing judgment premise flag")?;
+        let factual = !j.because.is_empty()
+            && j.because.iter().all(|id| {
+                units.iter().any(|entry| {
+                    matches!(entry,
+            UnitDisposition::Accepted { unit, status: SupportStatus::Supported }
+            if unit.id == *id && unit.kind.factual())
+                })
+            });
+        reasons.push(if j.offered_bearing == InterpretationBearing::Unknown {
+            JudgmentReason::ExplicitUnknown
+        } else if j.status != SupportStatus::Supported || unsupported {
+            JudgmentReason::UnsupportedJudgment
+        } else if !factual {
+            JudgmentReason::UnsupportedPremises
+        } else {
+            JudgmentReason::Retained
+        });
+    }
+    let eligible: Vec<_> = reasons
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| (*r == JudgmentReason::Retained).then_some(i))
+        .collect();
+    let conflict = eligible.first().is_some_and(|first| {
+        eligible
+            .iter()
+            .any(|i| judgments[*i].offered_bearing != judgments[*first].offered_bearing)
+    });
+    for (position, index) in eligible.iter().enumerate() {
+        reasons[*index] = if conflict {
+            JudgmentReason::Conflicting
+        } else if position == 0 {
+            JudgmentReason::Retained
+        } else {
+            JudgmentReason::Superseded
+        };
+    }
+    Ok(reasons
+        .into_iter()
+        .zip(judgments)
+        .map(|(reason, j)| {
+            (
+                reason,
+                if reason == JudgmentReason::Retained {
+                    j.offered_bearing
+                } else {
+                    InterpretationBearing::Unknown
+                },
+            )
+        })
+        .collect())
+}
+
 fn validate_report(
     context: &InterpretationContext,
     sources: &[SourceField],
     report: &SupportReport,
 ) -> Result<()> {
     ensure!(
-        report.protocol == SUPPORT_PROTOCOL
+        (report.protocol == SUPPORT_PROTOCOL || report.protocol == SUPPORT_REVISION_PROTOCOL)
             && identifier(&report.generator_model, 256)
             && identifier(&report.evaluator_model, 256)
             && digest(&report.proposal_hash)
@@ -400,6 +499,12 @@ fn validate_report(
             )?;
         }
     }
+    let revised = report.protocol == SUPPORT_REVISION_PROTOCOL;
+    let decisions = if revised {
+        Some(revised_decisions(&report.units, &report.judgments)?)
+    } else {
+        None
+    };
     for (index, j) in report.judgments.iter().enumerate() {
         ensure!(
             j.index == index
@@ -409,8 +514,22 @@ fn validate_report(
                 && j.because.iter().collect::<BTreeSet<_>>().len() == j.because.len(),
             "invalid report judgment"
         );
+        if let Some(decisions) = &decisions {
+            ensure!(
+                (j.reason, j.bearing) == decisions[index],
+                "noncanonical revised judgment"
+            );
+            continue;
+        }
+        ensure!(
+            j.unsupported_factual_premise.is_none(),
+            "legacy judgment premise flag"
+        );
         let supported = !j.because.is_empty() && j.because.iter().all(|id| report.units.iter().any(|entry| matches!(entry,UnitDisposition::Accepted{unit,status:SupportStatus::Supported} if unit.id == *id && unit.kind.factual())));
         match j.reason {
+            JudgmentReason::Superseded | JudgmentReason::Conflicting => {
+                anyhow::bail!("new judgment reason in legacy report")
+            }
             JudgmentReason::Retained => ensure!(
                 index == 0
                     && j.offered_bearing != InterpretationBearing::Unknown
@@ -480,10 +599,17 @@ fn render_report(
     if prose.is_empty() {
         prose.push("No supported statements retained.".into());
     }
-    let judgments = report
-        .judgments
-        .iter()
-        .take(1)
+    let selected = if report.protocol == SUPPORT_REVISION_PROTOCOL {
+        report
+            .judgments
+            .iter()
+            .find(|j| j.reason == JudgmentReason::Retained)
+            .or_else(|| report.judgments.first())
+    } else {
+        report.judgments.first()
+    };
+    let judgments = selected
+        .into_iter()
         .map(|j| InterpretationJudgment {
             goal: j.goal.clone(),
             bearing: j.bearing,
@@ -510,7 +636,12 @@ fn render_report(
             unresolved_goals: 0,
         },
         model: report.generator_model.clone(),
-        producer_version: SUPPORT_PRODUCER.into(),
+        producer_version: if report.protocol == SUPPORT_REVISION_PROTOCOL {
+            SUPPORT_REVISION_PRODUCER
+        } else {
+            SUPPORT_PRODUCER
+        }
+        .into(),
         support: Some(Box::new(report)),
     };
     ensure!(
@@ -559,7 +690,8 @@ impl Memory {
                 && fresh.access.domain == p.access.domain
                 && fresh.access.scopes == p.access.scopes
                 && fresh.request_id == p.request_id
-                && fresh.generation_input == p.generation_input,
+                && fresh.generation_input == p.generation_input
+                && fresh.evidence_metadata == p.evidence_metadata,
             "support preparation changed"
         );
         Ok(())
@@ -607,7 +739,8 @@ impl Memory {
         ensure!(
             p.request_id == evaluated.request.prepared.request_id
                 && p.instance == evaluated.request.prepared.instance
-                && p.generation_input == evaluated.request.prepared.generation_input,
+                && p.generation_input == evaluated.request.prepared.generation_input
+                && p.evidence_metadata == evaluated.request.prepared.evidence_metadata,
             "foreign support evaluation"
         );
         // Re-run every structural assessment; the wrapper is not a success flag.
@@ -618,7 +751,19 @@ impl Memory {
             .context("missing support report")?
             .evaluator_model
             .clone();
-        let rebuilt = finish_support(evaluated.request, evaluated.reply, &evaluator)?;
+        let protocol = &evaluated
+            .draft
+            .support
+            .as_ref()
+            .context("missing support report")?
+            .protocol;
+        let revised = match protocol.as_str() {
+            SUPPORT_PROTOCOL => false,
+            SUPPORT_REVISION_PROTOCOL => true,
+            _ => anyhow::bail!("unknown support protocol"),
+        };
+        let rebuilt =
+            finish_support_protocol(evaluated.request, evaluated.reply, &evaluator, revised)?;
         ensure!(
             serde_json::to_vec(&rebuilt.draft)? == serde_json::to_vec(&evaluated.draft)?,
             "mutated support evaluation"
@@ -637,6 +782,11 @@ impl Memory {
         ensure!(
             serde_json::to_vec(&source_fields(&tx, &refs)?)? == serde_json::to_vec(&p.sources)?,
             "prepared source fields changed"
+        );
+        ensure!(
+            evidence_metadata(&tx, &refs, &p.receipt.projection, &p.sources)?
+                == p.evidence_metadata,
+            "prepared evidence metadata changed"
         );
         let draft = rebuilt.draft;
         let claim_sources = claim_sources_for(&p.sources, &draft);
@@ -699,5 +849,48 @@ impl Memory {
         )?;
         tx.commit()?;
         Ok(receipt)
+    }
+}
+
+#[cfg(test)]
+mod metadata_binding_tests {
+    use super::*;
+    use crate::memory::support_tests::{
+        access, prepared_supported, proposal, reply, supported_fixture,
+    };
+
+    #[test]
+    fn metadata_change_cannot_reuse_legacy_preparation_hash() {
+        let (_, mut db, _) = supported_fixture();
+        let mut prepared = prepared_supported(&mut db);
+        let legacy_input = prepared.generation_input.clone();
+        let legacy_id = prepared.request_id.clone();
+        assert!(!prepared.evidence_metadata.is_empty());
+        prepared.evidence_metadata.clear();
+        assert_eq!(prepared.generation_input, legacy_input);
+        assert_eq!(prepared.request_id, legacy_id);
+        assert!(db
+            .prepare_support(&prepared, proposal(&prepared), &access())
+            .is_err());
+    }
+
+    #[test]
+    fn evaluated_metadata_must_match_supplied_preparation() {
+        let (_, mut db, _) = supported_fixture();
+        let prepared = prepared_supported(&mut db);
+        let request = db
+            .prepare_support(&prepared, proposal(&prepared), &access())
+            .unwrap();
+        let assessed = reply(
+            &prepared,
+            SupportStatus::Supported,
+            SupportStatus::Supported,
+        );
+        let mut evaluated = finish_support_revised(request, assessed, "authored").unwrap();
+        assert!(!evaluated.request.prepared.evidence_metadata.is_empty());
+        evaluated.request.prepared.evidence_metadata.clear();
+        assert!(db
+            .retain_evaluated_interpretation(prepared, evaluated, &access())
+            .is_err());
     }
 }

@@ -31,13 +31,27 @@ impl CitationCatalog {
         phase: &str,
         binding_input: &str,
     ) -> Result<Self> {
-        let mut hash = Sha256::new();
-        hash.update(b"mecha-factual-support-wire-v2\0");
-        for value in [prepared.request_identity(), phase, binding_input] {
-            hash.update((value.len() as u64).to_be_bytes());
-            hash.update(value.as_bytes());
-        }
-        let request_key: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        Self::bound(prepared, phase, binding_input, false)
+    }
+    pub(crate) fn evidence(
+        prepared: &PreparedInterpretation,
+        phase: &str,
+        binding_input: &str,
+    ) -> Result<Self> {
+        Self::bound(prepared, phase, binding_input, true)
+    }
+    fn bound(
+        prepared: &PreparedInterpretation,
+        phase: &str,
+        binding_input: &str,
+        evidence: bool,
+    ) -> Result<Self> {
+        let metadata = if evidence {
+            Some(serde_json::to_vec(prepared.evidence_metadata())?)
+        } else {
+            None
+        };
+        let request_key = bound_request_key(prepared, phase, binding_input, metadata.as_deref());
         let mut entries = Vec::new();
         for source in prepared.sources() {
             append_chunks(&mut entries, &request_key, source);
@@ -80,6 +94,29 @@ impl CitationCatalog {
     }
 }
 
+fn bound_request_key(
+    prepared: &PreparedInterpretation,
+    phase: &str,
+    binding_input: &str,
+    metadata: Option<&[u8]>,
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(if metadata.is_some() {
+        b"mecha-factual-support-wire-v3\0"
+    } else {
+        b"mecha-factual-support-wire-v2\0"
+    });
+    if let Some(metadata) = metadata {
+        hash.update((metadata.len() as u64).to_be_bytes());
+        hash.update(metadata);
+    }
+    for value in [prepared.request_identity(), phase, binding_input] {
+        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn append_chunks(entries: &mut Vec<CatalogEntry>, request_key: &str, source: &SourceField) {
     let boundaries: Vec<_> = source
         .text
@@ -110,9 +147,35 @@ fn append_chunks(entries: &mut Vec<CatalogEntry>, request_key: &str, source: &So
 }
 
 pub(crate) fn generation_input(prepared: &PreparedInterpretation) -> Result<(String, Value)> {
-    let catalog = CitationCatalog::new(prepared, "generation", prepared.generation_input())?;
+    generation_with_catalog(
+        prepared,
+        CitationCatalog::new(prepared, "generation", prepared.generation_input())?,
+        false,
+    )
+}
+pub(crate) fn evidence_generation_input(
+    prepared: &PreparedInterpretation,
+) -> Result<(String, Value)> {
+    generation_with_catalog(
+        prepared,
+        CitationCatalog::evidence(prepared, "generation", prepared.generation_input())?,
+        true,
+    )
+}
+fn generation_with_catalog(
+    prepared: &PreparedInterpretation,
+    catalog: CitationCatalog,
+    evidence: bool,
+) -> Result<(String, Value)> {
     let mut packet: Value = serde_json::from_str(prepared.generation_input())?;
-    packet["protocol"] = json!("situated-support-wire-v2");
+    packet["protocol"] = json!(if evidence {
+        "situated-support-wire-v3"
+    } else {
+        "situated-support-wire-v2"
+    });
+    if evidence {
+        packet["evidence_metadata"] = serde_json::to_value(prepared.evidence_metadata())?;
+    }
     packet["request_key"] = json!(catalog.request_key());
     packet["catalog"] = catalog.input();
     let schema = json!({
@@ -167,10 +230,30 @@ pub(crate) fn parse_generation(
     prepared: &PreparedInterpretation,
     text: &str,
 ) -> Result<SupportProposal> {
+    parse_generation_with_catalog(
+        prepared,
+        text,
+        CitationCatalog::new(prepared, "generation", prepared.generation_input())?,
+    )
+}
+pub(crate) fn parse_evidence_generation(
+    prepared: &PreparedInterpretation,
+    text: &str,
+) -> Result<SupportProposal> {
+    parse_generation_with_catalog(
+        prepared,
+        text,
+        CitationCatalog::evidence(prepared, "generation", prepared.generation_input())?,
+    )
+}
+fn parse_generation_with_catalog(
+    prepared: &PreparedInterpretation,
+    text: &str,
+    catalog: CitationCatalog,
+) -> Result<SupportProposal> {
     ensure!(text.len() <= 16384, "oversized wire support proposal");
     // Decode the typed wire directly so repeated keys cannot disappear into Value.
     let wire: WireProposal = serde_json::from_str(text)?;
-    let catalog = CitationCatalog::new(prepared, "generation", prepared.generation_input())?;
     ensure!(
         wire.request_key == catalog.request_key(),
         "foreign wire generation request"
@@ -212,6 +295,34 @@ mod tests {
     use serde_json::json;
     use std::{collections::BTreeSet, sync::Arc};
 
+    #[test]
+    fn evidence_v3_metadata_changes_binding_with_identical_legacy_input() {
+        let prepared = prepared(
+            &["A complete synthetic observation for metadata binding.".into()],
+            "opaque-binding",
+        );
+        let metadata = serde_json::to_vec(prepared.evidence_metadata()).unwrap();
+        let mut changed: Value = serde_json::from_slice(&metadata).unwrap();
+        changed[0]["captures"][0]["capture_time"] = json!("2030-01-01T00:00:00Z");
+        let changed = serde_json::to_vec(&changed).unwrap();
+        for phase in ["generation", "evaluation"] {
+            let first = bound_request_key(
+                &prepared,
+                phase,
+                prepared.generation_input(),
+                Some(&metadata),
+            );
+            assert_ne!(
+                first,
+                bound_request_key(
+                    &prepared,
+                    phase,
+                    prepared.generation_input(),
+                    Some(&changed)
+                )
+            );
+        }
+    }
     struct Guard;
     impl ExternalSourceGuard for Guard {
         fn check(&self, _: &ExternalBinding) -> SourceStatus {

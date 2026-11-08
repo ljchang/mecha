@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental evidence-aware appraisal (`--evidence-v3`) distinguishes authenticated
+  capture context, evaluates each original citation, and selects a later supported
+  judgment when an earlier candidate is Unknown. Conflicting supported bearings
+  remain Unknown. Legacy reports and SQLite v8 retain their existing behavior;
+  this is a default-off synthetic prototype, not production semantic qualification.
+
 - **Mail rules can match on what a message says.** A rule with
   `match.describe` (or *Description* in the new-rule form) is checked by the
   classifier at each classify pass, which must quote the words in the message

@@ -154,93 +154,48 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Current appraisal priority: qualify factual support before concept learning.**
-The explicit v8 implementation now captures bounded action inputs and observed
-artifact bytes, proposes typed statements, separately evaluates every statement
-and offered goal bearing, and retains host-rendered evaluated interpretations.
-See `memory_factual_support::{generate,evaluate}`,
-`Memory::retain_evaluated_interpretation` and
-`memory_support_workflow::run_case`. The earlier four-draft semantic failures
-remain historical evidence; implementation alone does not supersede them.
+**Current appraisal priority: qualify evidence-aware support before concept learning.**
+The default-off synthetic v8 path captures bounded action inputs and independent
+artifact observations, evaluates typed statements and goal bearings, and retains
+host-rendered interpretations. Explicit `EvidenceV3` adds authenticated source
+roles, capture associations and known times, with interpretation influence kept
+separate. The sidecar is bound into wire request identity and rechecked through
+admission; SQLite v8 and old wire/report semantics remain unchanged.
 
-Authored core tests cover native action/output mismatch, durable recall, changed
-context, rich recapture, complete influenced-source lineage, cancellation and
-withdrawal after reopen. Final workspace qualification passed 6,351 default and 6,793 memory-enabled
-checks (25/29 ignored; 62 suites each), with strict all-feature Clippy clean.
-The frozen resident-model gate failed: 0/8 complete workflows, 2/8 valid generated
-proposals, 1/2 valid generated-proposal evaluations and 0/8 valid probes. Eighteen
-calls observed 53,744 input / 20,544 output tokens. One case retained four independently
-supported units with Unknown bearing; seven empty admitted sets do not show
-reliability. See `results/memory-support-20261107/independent-audit.md` and HISTORY.
+`memory_support_evidence` assesses every original citation. Supported admission
+requires all originals to directly support the claim; optional diagnostic handles
+cannot replace incorrect provenance. `Memory::finish_support_revised` and
+`revised_decisions` select the first eligible known judgment after checking every
+original factual premise. Opposing eligible bearings yield Unknown. The complete
+candidate dispositions survive, and separate historical interpretations remain
+untouched. V3 exports the actual reopened generated/probe interpretations for
+independent audit. No model verdict grants permission or promotes a learned rule.
 
-**Citation/schema repair implemented; semantic qualification remains open.**
-`memory_support_wire::CitationCatalog` supplies role-prefixed request-bound source
-choices; `memory_support_reasoning` separates the current criterion from factual
-premises and judgment sufficiency. Explicit `generate_grounded`/
-`evaluate_grounded` and `run_case_with_protocol(GroundedV2)` use the existing local
-provider, canonical v8 storage and guarded recall. Legacy paths remain available.
-Producer limits and conditional criterion schemas reduce avoidable format errors;
-strict host byte checks, source authority and admission remain unchanged.
+**Qualification is in progress; semantic reliability remains unproven.**
+Focused regression tests cover authenticated metadata, unchanged legacy bytes,
+original-citation replacement, unsupported/conflicting candidates, canonical
+reopen and retained-payload exports. The current Spark workspace build, strict
+Clippy, nine focused v3 tests, 6,352 default tests (25 ignored), and 6,844
+memory-enabled tests (29 ignored) pass. The standalone subset passed 273 checks;
+144 nested Python test invocations pass with zero skips, including the actual
+native binary against three authored HTTP responses. Full SQLite authority,
+request/schema and retained-render audits pass on those actual artifacts.
+The final schema-auditor mismatch was corrected and independently reviewed;
+CI now builds and runs this native contract check. Fresh model qualification
+and the required final privacy scan remain pending.
+See `MECHA-MEMORY-DESIGN.md` §31.11 and the prototype README for contracts.
 
-The first reused-case development round completed 5/8 native workflows (24 calls).
-Its frozen ledger remains failed because the original auditor incorrectly looked
-for no-autoload in the body rather than the URL query. A separate corrected
-analysis observed six valid probes, including one false statement Supported and
-admitted. Independent review found five clear unsupported generated current claims,
-two disputed causal hypotheses, and one wrong generated Good bearing retained.
-See HISTORY and `results/memory-support-repair-20261107/`; none of these is fresh
-qualification. The v2 scorecard now audits generated bearings separately and
-preserves independently available partial outcomes.
-
-The second and final reused-case development round also completed 5/8 workflows.
-It observed seven generated outcomes and six probe outcomes: 6/8 true support,
-4/8 appropriate uncertainty, 4/8 correct supported bearings and 4/8 correct
-criterion assessments. Among observed checks there were no false factual probe
-admissions, but one wrong probe bearing was Supported and one wrong generated
-bearing was retained. Missing outcomes remain unknown. Usage was 156,064 input /
-20,271 output tokens. Two failures allowed None for factual premises; one allowed
-Unknown without questions. A final schema correction expresses these existing
-host restrictions before a fresh trial; it adds no semantic prompt tuning.
-
-**Next: evaluator reliability remains the blocker, not concept implementation.**
-The independently authored fresh cohort uses committed source `05f47d317`, with
-verified source/helper/fixture hashes matching the measured binary. The original
-attempt refused all eight cases before inference when the resident model changed;
-it remains preserved. The separate qwen3.8-27b cohort has already failed the gate:
-a probe endorsed prior write success despite a later Missing artifact, and one
-generated judgment omitted required evidence. No model was loaded or swapped;
-there were no retries or prompt changes. The cohort completed 6/8 workflows with
-all eight probe outcomes: 8/8 true support,
-8/8 appropriate uncertainty, 6/8 correct-bearing support and criterion accuracy,
-zero false factual probe support/admission, but one wrong probe bearing Supported
-and retained. Six generated outcomes were observed; two remain unknown. Observed
-usage was 152,341 input / 19,797 output tokens, incomplete because one evaluation
-timed out. Independent inspection covered all eight exports: 23 retained units,
-no unsupported factual premises found, and one mismatched citation. The formal
-scorer still has only six qualified manual audits. Full audits and costs are in
-PR #846, the living Site and
-`results/memory-support-repair-20261107/fresh-resident-qwen38/`.
-
-The post-qualification producer correction requires a citation for every goal
-judgment, while canonical citation-free Unknown/Contradicted diagnostics remain
-valid. Its fresh-model benefit is unmeasured; the failed cohort is not replayed.
-Qualify current-observation/criterion reasoning before allowing learning.
-Cross-field question/status consistency remains host-checked. Keep the known
-first-per-goal retention behavior explicit: an earlier
-Unknown can displace a later supported judgment (`DuplicateGoal`). Do not tune on
-this holdout or erase failed attempts. Fresh qualification requires all eight
-workflows, supported true/appropriate uncertain probes, no wrong factual or
-bearing support, and independent inspection of every generated admission.
-Concepts and rumination remain deferred. PR-control fixes are tested separately
-from the immutable measured source.
-
-Mechanical checks: workspace/all-target build, formatting, strict all-feature
-Clippy and 6,352 default tests passed (25 ignored). The final producer-only
-citation correction passed 6,824 memory-enabled tests (29 ignored), including
-its regression and canonical compatibility checks. The nested Python suite passed
-80 tests after auditor alignment. Required Spark privacy checks and independent
-reviews passed; latest-head CI is recorded in draft PR #846. No production cutover
-is implied.
+The previous immutable fresh qwen3.8-27b cohort at `05f47d317` failed: 6/8 complete
+workflows, all eight probe outcomes, one wrong known probe bearing retained, and
+one citation defect among 23 independently inspected retained units. Its timeout
+cost is incomplete and its formal qualified-audit count remains six. Full prior
+measurements, rejected attempts, reused development rounds and exact denominators
+remain in HISTORY and local `results/memory-support-repair-20261107/`.
+Do not replay or tune on that cohort. A new run must freeze source, binary,
+helper, independently authored fixtures and resident model, and preserve every
+failure. Require all eight workflows/audits, zero false support or wrong-bearing
+support, zero original-citation defects, and sufficient useful known/uncertain
+responses. Mechanical success alone does not open the learning gate.
 
 After that gate works, the next requested phase is concept learning and one
 bounded rumination cycle (`MECHA-MEMORY-DESIGN.md` §31.9). Reuse the existing provisional concept/revision store,

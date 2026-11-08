@@ -44,10 +44,12 @@ use tokio_util::sync::CancellationToken;
 
 pub const PROTOCOL: &str = "memory-factual-support-v1";
 pub const GROUNDED_PROTOCOL: &str = "memory-factual-support-v2";
+pub const EVIDENCE_PROTOCOL: &str = "memory-factual-support-v3";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SupportProtocol {
     LegacyV1,
     GroundedV2,
+    EvidenceV3,
 }
 const DOMAIN: &str = "synthetic-support-workflow";
 const ACCOUNT: &str = "synthetic";
@@ -639,12 +641,12 @@ async fn stage_provider(
     )
 }
 
-fn durable_support(
+fn durable_interpretation(
     memory: &Memory,
     receipt: &crate::memory::interpretation::InterpretationReceipt,
     access: &Access,
     context: &InterpretationContext,
-) -> Result<SupportReport> {
+) -> Result<crate::memory::interpretation::Interpretation> {
     let packet = memory.context_with_interpretations(
         &ContextRequest {
             query: "output".into(),
@@ -678,13 +680,19 @@ fn durable_support(
         .find(|hit| hit.reference == receipt.reference)
         .context("stored evaluated interpretation withheld by contextual reader")?;
     match hit.record {
-        MemoryRecord::Interpretation(record) => record
-            .draft
-            .support
-            .map(|report| *report)
-            .context("stored evaluated report missing"),
+        MemoryRecord::Interpretation(record) => Ok(record),
         _ => anyhow::bail!("retained interpretation did not reopen as an interpretation"),
     }
+}
+fn durable_support(
+    record: &crate::memory::interpretation::Interpretation,
+) -> Result<SupportReport> {
+    record
+        .draft
+        .support
+        .as_deref()
+        .cloned()
+        .context("stored evaluated report missing")
 }
 fn probe_results(stored: &SupportReport, reply: &SupportReply) -> Value {
     let units: Vec<_> = stored
@@ -756,6 +764,7 @@ pub async fn run_case_with_protocol(
     let protocol_name = match protocol {
         SupportProtocol::LegacyV1 => PROTOCOL,
         SupportProtocol::GroundedV2 => GROUNDED_PROTOCOL,
+        SupportProtocol::EvidenceV3 => EVIDENCE_PROTOCOL,
     };
     let mut report = json!({"protocol":protocol_name,"case_id":case.case_id,"case_sha256":case.case_sha256,
         "model":model,"seed":70510,"status":"failed","run_error":null,"stages":stages,
@@ -896,7 +905,10 @@ async fn run_inner(
         report["needs_request_identical"] == true,
         "private needs/context identity changed request"
     );
-    if protocol == SupportProtocol::GroundedV2 {
+    if matches!(
+        protocol,
+        SupportProtocol::GroundedV2 | SupportProtocol::EvidenceV3
+    ) {
         // Opaque context-binding keys may differ; private needs never enter the semantic input.
         report["needs_invariance_scope"] = json!("canonical_source_and_criterion_input");
     }
@@ -910,6 +922,9 @@ async fn run_inner(
             SupportProtocol::GroundedV2 => {
                 support::grounded_generation_request(&prepared, model, budget)?
             }
+            SupportProtocol::EvidenceV3 => {
+                support::evidence_generation_request(&prepared, model, budget)?
+            }
         };
         report["stages"]["generate"]["packet_bytes"] = json!(packet_bytes(&request));
         let provider = stage_provider(root, "generate", providers, cancel).await?;
@@ -919,6 +934,10 @@ async fn run_inner(
             }
             SupportProtocol::GroundedV2 => {
                 support::generate_grounded(provider.as_ref(), model, &prepared, budget, cancel)
+                    .await
+            }
+            SupportProtocol::EvidenceV3 => {
+                support::generate_evidence(provider.as_ref(), model, &prepared, budget, cancel)
                     .await
             }
         };
@@ -955,6 +974,9 @@ async fn run_inner(
                 SupportProtocol::GroundedV2 => {
                     support::grounded_evaluation_request(&request, model, budget)?
                 }
+                SupportProtocol::EvidenceV3 => {
+                    support::evidence_evaluation_request(&request, model, budget)?
+                }
             };
             report["stages"]["evaluate_generated"]["packet_bytes"] = json!(packet_bytes(&body));
             let provider = stage_provider(root, "evaluate_generated", providers, cancel).await?;
@@ -964,6 +986,10 @@ async fn run_inner(
                 }
                 SupportProtocol::GroundedV2 => {
                     support::evaluate_grounded(provider.as_ref(), model, request, budget, cancel)
+                        .await
+                }
+                SupportProtocol::EvidenceV3 => {
+                    support::evaluate_evidence(provider.as_ref(), model, request, budget, cancel)
                         .await
                 }
             };
@@ -1002,7 +1028,13 @@ async fn run_inner(
     let retained = if let Some(evaluated) = evaluated {
         match memory.retain_evaluated_interpretation(prepared.clone(), evaluated, &source.access) {
             Ok(receipt) => {
-                let stored = durable_support(&memory, &receipt, &source.access, &current)?;
+                let reopened = durable_interpretation(&memory, &receipt, &source.access, &current)?;
+                let stored = durable_support(&reopened)?;
+                if protocol == SupportProtocol::EvidenceV3 {
+                    let path = root.join("retained-generated.json");
+                    write_value(&path, &reopened)?;
+                    report["artifacts"]["retained_generated"] = descriptor(root, &path)?;
+                }
                 let path = root.join("support-generated.json");
                 write_value(&path, &stored)?;
                 report["support_reports"]["generated"] = descriptor(root, &path)?;
@@ -1071,6 +1103,9 @@ async fn run_inner(
             SupportProtocol::GroundedV2 => {
                 support::grounded_evaluation_request(&request, model, budget)?
             }
+            SupportProtocol::EvidenceV3 => {
+                support::evidence_evaluation_request(&request, model, budget)?
+            }
         };
         report["stages"]["evaluate_probe"]["packet_bytes"] = json!(packet_bytes(&body));
         let provider = stage_provider(root, "evaluate_probe", providers, cancel).await?;
@@ -1080,6 +1115,9 @@ async fn run_inner(
             }
             SupportProtocol::GroundedV2 => {
                 support::evaluate_grounded(provider.as_ref(), model, request, budget, cancel).await
+            }
+            SupportProtocol::EvidenceV3 => {
+                support::evaluate_evidence(provider.as_ref(), model, request, budget, cancel).await
             }
         };
         write_audit_exports(root, report, "evaluate_probe", &outcome)?;
@@ -1092,7 +1130,13 @@ async fn run_inner(
             evaluated,
             &source.access,
         )?;
-        let stored = durable_support(&probe_memory, &receipt, &source.access, &current)?;
+        let reopened = durable_interpretation(&probe_memory, &receipt, &source.access, &current)?;
+        let stored = durable_support(&reopened)?;
+        if protocol == SupportProtocol::EvidenceV3 {
+            let path = root.join("retained-probe.json");
+            write_value(&path, &reopened)?;
+            report["artifacts"]["retained_probe"] = descriptor(root, &path)?;
+        }
         report["probe"] = probe_results(&stored, &raw_reply);
         let path = root.join("support-probe.json");
         write_value(&path, &stored)?;
@@ -1214,6 +1258,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(report["protocol"], GROUNDED_PROTOCOL);
+        assert!(report["artifacts"].get("retained_generated").is_none());
+        assert!(report["artifacts"].get("retained_probe").is_none());
         assert_eq!(report["status"], "completed", "{report:#}");
         assert_eq!(report["stages"]["recall"]["selected_current"], true);
         assert_eq!(report["probe"]["units"][0]["admitted"], true);
@@ -1232,6 +1278,57 @@ mod tests {
                 request["wire_body"]["response_format"]["schema"],
                 request["request"]["response_schema"]
             );
+        }
+        fs::remove_dir_all(temporary).unwrap();
+    }
+    #[tokio::test]
+    async fn evidence_v3_native_workflow_retains_later_supported_bearing() {
+        let temporary = temporary();
+        let root = temporary.join("evidence");
+        let report = run_case_with_protocol(
+            &root,
+            &trial_case(),
+            "authored-support",
+            &providers(false, false),
+            &CancellationToken::new(),
+            SupportProtocol::EvidenceV3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report["protocol"], EVIDENCE_PROTOCOL);
+        assert_eq!(report["status"], "completed", "{report:#}");
+        assert_eq!(report["stages"]["recall"]["selected_current"], true);
+        let stored: Value =
+            serde_json::from_slice(&fs::read(root.join("support-generated.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored["protocol"], "situated-factual-support-v2");
+        assert_eq!(stored["judgments"][1]["bearing"], "Bad");
+        assert_eq!(stored["judgments"][1]["reason"], "Retained");
+        for (artifact, filename) in [
+            ("retained_generated", "retained-generated.json"),
+            ("retained_probe", "retained-probe.json"),
+        ] {
+            assert_eq!(report["artifacts"][artifact]["path"], filename);
+            let retained: Value =
+                serde_json::from_slice(&fs::read(root.join(filename)).unwrap()).unwrap();
+            assert_eq!(
+                retained["draft"]["producer_version"],
+                "situated-interpretation-v3"
+            );
+            assert!(retained["criterion"].is_object());
+            assert!(retained["claim_sources"].is_array());
+            assert!(retained["context_key"].is_string());
+            if artifact == "retained_generated" {
+                assert_eq!(retained["draft"]["judgments"].as_array().unwrap().len(), 1);
+                assert_eq!(retained["draft"]["judgments"][0]["bearing"], "Bad");
+            }
+        }
+        for stage in ["generate", "evaluate_generated", "evaluate_probe"] {
+            let audit: Value = serde_json::from_slice(
+                &fs::read(root.join(format!("{stage}-request.json"))).unwrap(),
+            )
+            .unwrap();
+            assert!(audit["request"]["response_schema"].is_object());
         }
         fs::remove_dir_all(temporary).unwrap();
     }
@@ -1497,7 +1594,7 @@ mod tests {
         if stage == "generate" {
             return Ok(json!({"request_key":packet["request_key"],
                 "units":[{"id":"g1","kind":"RecordedEvent","text":"The observed artifact records page15.","evidence":evidence}],
-                "judgments":[{"bearing":"Bad","because":["g1"]}]}));
+                "judgments":if packet["protocol"] == "situated-support-wire-v3" { json!([{"bearing":"Unknown","because":[]},{"bearing":"Bad","because":["g1"]}]) } else { json!([{"bearing":"Bad","because":["g1"]}]) }}));
         }
         let units: Vec<_> = packet["proposal"]["units"].as_array().context("missing units")?.iter().map(|unit| {
             let id = unit["id"].as_str().unwrap();
@@ -1506,8 +1603,12 @@ mod tests {
                 "q3" => ("Unknown", "Unknown", vec!["Was independent approval recorded?"]),
                 _ => ("Supported", "Supported", vec![]),
             };
-            json!({"target":format!("unit:{id}"),"evidence":evidence,"reason":"Authored mechanical check, not model quality.",
-                "questions":questions,"factual_premises":premise,"status":status})
+            let mut diagnostic = json!({"target":format!("unit:{id}"),"evidence":evidence,"reason":"Authored mechanical check, not model quality.",
+                "questions":questions,"factual_premises":premise,"status":status});
+            if packet["protocol"] == "situated-support-wire-v3" {
+                diagnostic["original_citations"] = json!(unit["citations"].as_array().unwrap().iter().enumerate().map(|(i, _)| json!({"citation_index":i,"relation":if status == "Supported" { "DirectSupport" } else if status == "Contradicted" { "Contradiction" } else { "Uncertain" }})).collect::<Vec<_>>());
+            }
+            diagnostic
         }).collect();
         let judgments: Vec<_> = packet["proposal"]["judgments"].as_array().context("missing judgments")?.iter().enumerate().map(|(i, _)| {
             json!({"target":format!("judgment:{i}"),"evidence":evidence,"reason":"Authored current-criterion check.",
