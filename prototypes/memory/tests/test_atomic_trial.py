@@ -445,6 +445,13 @@ class DurableTests(unittest.TestCase):
                 audit.validate_persistence(root,artifacts,record,p,row)
             self.assertTrue(row['retention_verified'])
             self.assertFalse(row['recall_verified'])
+            row = audit.empty_row('one','pipeline')
+            artifacts['recall'] = artifact('recall.json',dict(memory=dict(
+                records=[], budget_omitted=True)))
+            with self.assertRaisesRegex(ValueError,'ordinary recall did not select'):
+                audit.validate_persistence(root,artifacts,record,p,row)
+            self.assertTrue(row['retention_verified'])
+            self.assertFalse(row['recall_verified'])
             db.execute('DELETE FROM dependency')
             artifacts['database'] = artifact('db.sqlite',db.serialize())
             with self.assertRaisesRegex(ValueError,'dependencies'):

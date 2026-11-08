@@ -716,7 +716,7 @@ def validate_persistence(root, artifacts, retained, initial, row=None):
         for target in row['observation_targets']:
             target['retained'] = target['accepted']
     recall = read(root, artifacts['recall'])['memory']
-    require(any(r['reference'] == reference and r['role'] == 'SelectedCurrent' for r in recall['interpretation_roles']), 'ordinary recall did not select durable record')
+    require(any(r['reference'] == reference and r['role'] == 'SelectedCurrent' for r in recall.get('interpretation_roles', [])), 'ordinary recall did not select durable record')
     matching = [r for r in recall['records'] if r['reference'] == reference]
     require(len(matching) == 1, 'ordinary recall lacks unique durable record')
     validate_recall_record(matching[0]['record'], retained)
