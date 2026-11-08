@@ -904,7 +904,11 @@ impl Run<'_> {
         }
         let confirmation = record.confirmation.as_ref();
         Ok(Some(Described {
-            confirmed: confirmation.is_some_and(|c| c.confirms_active(&rule.name)),
+            // Only a rule the main pass named on its active list can be
+            // confirmed active, structurally rather than by the guard that
+            // drops it later (review of #855, pass 5).
+            confirmed: active.is_some()
+                && confirmation.is_some_and(|c| c.confirms_active(&rule.name)),
             shadow_confirmed: confirmation.and_then(|c| c.shadow_verdict(&rule.name)),
             // Under this build only, as `confirmed` is, so a row never says
             // both "the pass chose X" and "unconfirmed" (review of #855).

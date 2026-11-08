@@ -266,8 +266,19 @@ pub async fn confirm_active(
     match ask(provider, model, prompt(offered, CHOOSE, thread), schema).await {
         Err(e) => out.failed = Some(format!("{e:#}")),
         Ok(answer) => {
-            let name = answer["rule"].as_str().map(str::trim).unwrap_or("none");
-            if name != "none" && !name.is_empty() {
+            // A reply with no `rule` (or an empty one) decided nothing: a
+            // failure, never a grounded "none" — the default install sends
+            // no schema, so wrong keys are the ordinary malformed answer
+            // (review of #855, pass 5). The shadow shape's `answered` is the
+            // same line.
+            let name = match answer["rule"].as_str().map(str::trim) {
+                None | Some("") => {
+                    out.failed = Some("the confirmation pass gave no `rule` field".into());
+                    return out;
+                }
+                Some(name) => name,
+            };
+            if name != "none" {
                 let quote = answer["quote"].as_str();
                 if !names.iter().any(|n| n == name) {
                     out.refused.push(super::rule_frame::refused(
@@ -461,6 +472,25 @@ mod tests {
             shadow: vec![],
         };
         assert_eq!(none.active_choice().as_deref(), Some("none"));
+
+        for keyless in [
+            r#"{"reasoning":"x"}"#,
+            r#"{"reasoning":"x","rule":null}"#,
+            r#"{"rule":" "}"#,
+        ] {
+            let a = confirm_active(&Fixed(keyless.into()), "m", &thread(), &entries()).await;
+            assert!(a.failed.is_some(), "{keyless}");
+            let c = Confirmation {
+                version: CONFIRMATION_VERSION.clone(),
+                active: Some(a),
+                shadow: vec![],
+            };
+            assert_eq!(
+                c.active_choice().as_deref(),
+                Some(NOT_CONFIRMED),
+                "{keyless}"
+            );
+        }
 
         let p = Fixed("not json".into());
         let a = confirm_active(&p, "m", &thread(), &entries()).await;
