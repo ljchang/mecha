@@ -728,6 +728,34 @@ class Imports(unittest.TestCase):
         self.assertNotIn("super::super::kept", block, "the pin already imported it")
         self.assertIn("fn the_resident_one_is_two()", block)
 
+    def test_a_one_line_import_list_edited_is_never_copied_verbatim(self):
+        # rustfmt keeps a short list on one line, so the whole `use` line is
+        # added and reads as an item. Copied as it was, `super` would be
+        # `tests` inside the graft: E0432 on `kept`, E0252 on `resident`
+        # (review of #857, pass 1).
+        repo = os.path.join(self.tmp.name, "one-line")
+        os.makedirs(os.path.join(repo, "src"))
+        git(repo, "init", "-q")
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "t")
+        one = lambda text: text.replace("use super::{\n        kept,\n    };", "use super::{kept};").replace(
+            "use super::{\n        kept, resident,\n    };", "use super::{kept, resident};")
+        write(os.path.join(repo, "src", "setup.rs"), one(PIN_LISTED))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "pin")
+        write(os.path.join(repo, "src", "setup.rs"), one(MERGE_LISTED))
+        git(repo, "commit", "-q", "-am", "the change")
+        merge = git(repo, "rev-parse", "HEAD").strip()
+        write(os.path.join(self.tree, "src", "setup.rs"), one(read(os.path.join(self.tree, "src", "setup.rs"))))
+        os.environ["MECHA_HISTORY_REPO"] = repo
+        text = mecha_history.graft_plan(self.tree, merge, "hidden_grade_t")["src/setup.rs"]
+        start = text.index("mod hidden_grade_t {")
+        block = text[start:text.index("\n    }\n", start)]  # the graft's module only, not the run's own
+        self.assertNotIn("use super::{", block, "a relative list is never copied into the graft as written")
+        self.assertEqual(block.count("use super::super::resident;"), 1, "said once")
+        self.assertIn("use super::super::kept;", block)
+        self.assertIn("fn the_resident_one_is_two()", block)
+
     def test_a_use_declaration_flattens_to_the_paths_it_imports(self):
         self.assertEqual(
             mecha_history.use_paths("use super::{a, b::{c, d as e}, f::*, g::{self}};"),

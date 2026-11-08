@@ -48,7 +48,7 @@ follow_loaded = true
 kind = "local"
 base_url = "http://127.0.0.1:8080"
 model = "gemma-4-26b-a4b"
-context_window = 32768             # -c 32768 / -np 1
+context_window = 262144            # -c 262144 / -np 1
 ```
 
 A followed run takes **everything** from the sibling entry: its

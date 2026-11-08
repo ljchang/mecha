@@ -582,11 +582,12 @@ def graft_plan(tree, merge, module):
 
     Grafted into a test module, the hidden tests sit one level deeper than
     the PR wrote them, and `use super::*` reaches only what that module
-    imports. So the imports the PR added to it (`added_imports`) are said
-    again from the graft's module, re-pointed one level up (`repoint`); the
-    bare `use` items they cover are not also copied, which would import a
-    name twice (E0252). An explicit import outranks the glob, so nothing the
-    run wrote can make one ambiguous."""
+    imports. So the imports the PR added to it (`added_imports`), and every
+    path of every bare `use` item grafted with the tests, are said again from
+    the graft's module, re-pointed one level up (`repoint`), once each —
+    never copied as written, which would point `super` at the wrong module
+    and could import a name twice (E0252). An explicit import outranks the
+    glob, so nothing the run wrote can make one ambiguous."""
     writes = {}
     for path in new_test_files(merge):
         writes[path] = git("show", f"{merge}:{path}")
@@ -602,11 +603,22 @@ def graft_plan(tree, merge, module):
             block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {module} {{",
                      f"{inner}#[allow(unused_imports)]", f"{inner}use super::*;", ""]
             if into is not None:
+                # Every bare `use` item is re-said path by path, never copied:
+                # a `super::`-relative path written for the test module is
+                # wrong one level inside it whether the PR added it or not, and
+                # a one-line list rustfmt kept whole is an item holding both
+                # (review of #857, pass 1).
                 imports = added_imports(merge, path, into)
-                items = [it for it in items
-                         if not (plain_use(it) is not None and set(plain_use(it)) <= set(imports))]
-                for p in imports:
-                    block.append(f"{indent}#[allow(unused_imports)] use {repoint(p)};")
+                kept = []
+                for it in items:
+                    paths = plain_use(it)
+                    if paths is None:
+                        kept.append(it)
+                    else:
+                        imports += [q for q in paths if q not in imports]
+                items = kept
+                for q in imports:
+                    block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")
                 if imports:
                     block.append("")
             block += "\n\n".join(items).split("\n") + [f"{indent}}}", ""]

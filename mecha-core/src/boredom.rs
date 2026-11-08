@@ -169,7 +169,7 @@ impl Rung {
 #[derive(Debug, Clone, Copy)]
 pub struct Outcome<'a> {
     pub tool: &'a str,
-    /// [`Boredom::key`]: the target and the result.
+    /// [`Boredom::key`]: a read's target, or any other call whole, and the result.
     pub key: u64,
     /// Set when the call errored or was refused ([`Boredom::failure`]).
     pub failure: Option<Failure>,
