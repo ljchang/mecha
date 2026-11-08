@@ -170,7 +170,9 @@ jobs:
 
       - name: Test memory Python pilots
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
-        run: python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha
+        run: |
+          python3 prototypes/memory/ci_qualification.py --binary target/debug/mecha
+          python3 -m unittest discover -s prototypes/memory/tests -p 'test_*.py' -v
         env:
           MECHA_SESSION_KIND: test
 
