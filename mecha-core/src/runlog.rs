@@ -459,8 +459,10 @@ impl Corpus {
     /// driven-pilot trials were told they were stuck); after it, a write is
     /// keyed whole. So this rate falls at that binary's install for a reason
     /// that is not runs getting less stuck. Compare it only within one side,
-    /// split on `started_at` at the install time `docs/HISTORY.md` records
-    /// for #857 — and `appraisal`'s `boredom_notices` error moves the same way.
+    /// split on `started_at` at the first install of a binary built from
+    /// #857's merge — `docs/HISTORY.md` records that install when the deploy
+    /// lands, and the merge commit's own date is a lower bound before then.
+    /// `appraisal`'s `boredom_notices` error moves the same way.
     pub fn boredom_rate(&self) -> Option<f64> {
         Self::share_positive(self.rows.iter().filter_map(|r| r.stats.boredom_notices))
     }

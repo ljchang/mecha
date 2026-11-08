@@ -690,7 +690,7 @@ def graft_plan(tree, merge, module):
             # imports are its production code, the run's to write.
             imports = (dict(added_imports(merge, path, into))  # path -> attribute lines
                        if into is not None or whole_test_file(path) else {})
-            kept, from_items = [], set()
+            kept = []
             for it in items:
                 found = plain_use(it)
                 if found is None:
@@ -699,7 +699,6 @@ def graft_plan(tree, merge, module):
                 attrs, paths = found
                 for q in paths:
                     imports[q] = attrs  # the declaration's own attributes
-                    from_items.add(q)
             items = kept
             body = "\n".join(items)
             # Every path through `needed`, the ones a one-line list brought

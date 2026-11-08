@@ -848,6 +848,40 @@ mod tests {
         }
     }
 
+    /// The GB10's router script and the catalog write gemma's preset twice,
+    /// and #857 had to edit both by hand to move its window: every setting
+    /// but the file paths must agree, or `model add` installs a different
+    /// model than the script serves (the shape of
+    /// `router_unit::tests::the_pinned_preset_is_the_script_s_production_section`).
+    #[test]
+    fn the_scripts_gemma_section_is_the_catalogs() {
+        let script = include_str!("../../scripts/start-router.sh");
+        let section = script
+            .split_once("\n[gemma-4-26b-a4b]\n")
+            .expect("the script's gemma section moved")
+            .1;
+        let section = &section[..section.find("\nEOF").unwrap()];
+        let paths = ["model", "mmproj", "model-draft"];
+        let settings = |text: &str| -> std::collections::BTreeMap<String, String> {
+            text.lines()
+                .filter_map(|l| l.split_once(" = "))
+                .filter(|(k, _)| !paths.contains(&k.trim()))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect()
+        };
+        let p = Paths {
+            model: "/m/w.gguf".into(),
+            mmproj: Some("/m/p.gguf".into()),
+            draft: Some("/m/d.gguf".into()),
+        };
+        let ours = section_text(entry("gemma-4-26b-a4b").unwrap(), 128, &p).unwrap();
+        assert_eq!(settings(section), settings(&ours));
+        assert!(
+            settings(section).contains_key("ctx-size"),
+            "the comparison is not vacuous"
+        );
+    }
+
     #[test]
     fn a_section_names_its_files_geometry_and_lines() {
         let e = entry("gemma-4-26b-a4b").unwrap();
