@@ -168,6 +168,10 @@ t('pause all with nothing skipped is plain', pauseAllNotice({ groups: 1, notices
 const described = matchedBecause({ matched_because: JSON.stringify({ from_domain: ['example.edu'], describe: 'Room booking confirmations', quote: 'your booking for Friday' }) });
 t('a description row leads with the quoted words', described === '“your booking for Friday” · from domain: example.edu');
 t('the owner’s own sentence is not repeated as a reason', !/Room booking/.test(described));
+const said = (c) => matchedBecause({ matched_because: JSON.stringify({ quote: 'your booking for Friday', confirmation: c }) });
+t('a second check that chose none says so', said('none') === '“your booking for Friday” · second check: none of these rules');
+t('a second check that decided nothing never reads as a judgement', said('not confirmed') === '“your booking for Friday” · second check: gave no answer');
+t('a second check that chose a rule names it', said('bookings') === '“your booking for Friday” · second check: bookings');
 const ddraft = { ...pre, match: 'describe', describe: 'Confirmations, of a room booking' };
 t('a description is one TOML string, never split on commas', draftToml(ddraft).includes('describe = "Confirmations, of a room booking"'));
 t('a description draft passes', draftProblem('bookings', ddraft) === null);

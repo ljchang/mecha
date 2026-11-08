@@ -3385,6 +3385,21 @@ fn only_the_groups_the_confirmation_pass_decides_carry_its_version() {
         .confirmation_version
         .is_empty());
     assert!(header.approval_digest.confirmation_version.is_empty());
+    // A description rule the pass decides nothing for carries no version in
+    // either digest (review of #855, pass 6).
+    let archive_only = described_rule(&f, "archive-only", "", ARCHIVE);
+    assert!(archive_only.approval_digest.confirmation_version.is_empty());
+    assert!(archive_only
+        .match_digest(ActionGroup::Mailbox, GateStatus::Passing)
+        .unwrap()
+        .confirmation_version
+        .is_empty());
+    // A send counts, as a task does.
+    let replying = reply_rule(&f, "replying", "describe = 'Questions about office hours'");
+    assert_eq!(
+        replying.approval_digest.confirmation_version,
+        *CONFIRMATION_VERSION
+    );
 }
 
 /// Answers in order, and counts the calls.

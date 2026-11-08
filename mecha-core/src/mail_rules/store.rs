@@ -465,7 +465,14 @@ impl RuleStore {
             },
             // §6.2: a description rule with a task or send rests on the
             // compiled confirmation frame; a build that changes it lapses.
-            confirmation_version: if definition.is_description() && uses_limits {
+            // Asked through the same predicate as the match digest, so the
+            // two cannot drift (review of #855, pass 6).
+            confirmation_version: if definition.is_description()
+                && definition
+                    .groups()
+                    .into_iter()
+                    .any(super::describe::confirmation_decides)
+            {
                 crate::mail_triage::confirm::CONFIRMATION_VERSION.clone()
             } else {
                 String::new()

@@ -27,7 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only your descriptions, never what the classifier has learned — agrees;
   otherwise the task is offered. When that second check's instructions change
   in an update, a description rule with a task asks to be approved again,
-  every group of it, as an edit to its files does. Sends wait for the next phase. Newsletters and list mail are read for a
+  every group of it, as an edit to its files does. Its replies are staged
+  like any rule's (above). Newsletters and list mail are read for a
   description rule only when the rule could apply. Wrong match on such a row
   also corrects the classifier. At most 12 description list entries are
   admitted.
