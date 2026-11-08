@@ -220,7 +220,14 @@ pub trait Mailbox: Send + Sync {
     /// candidate's authorised message, to its authenticated `From` only.
     /// Returns the outbox item id. A host with no outbox holds, dispatching
     /// nothing.
-    async fn stage_reply(&self, _candidate: &Candidate, _body: &str) -> Result<String, HeldReason> {
+    ///
+    /// `answering` is what the review shows the reply is to and about.
+    async fn stage_reply(
+        &self,
+        _candidate: &Candidate,
+        _body: &str,
+        _answering: &crate::outbox::Answering,
+    ) -> Result<String, HeldReason> {
         Err(HeldReason::NotDispatched("no outbox".into()))
     }
     /// Where a staged item stands now.
@@ -420,8 +427,6 @@ fn classified(c: &Candidate) -> bool {
         .is_some_and(|at| c.classified.as_ref().is_some_and(|v| v.at >= at))
 }
 
-// Deliberately accepts a conservative addr-spec subset, never a display name,
-// whitespace or syntax that could turn into instructions in a task's name.
 /// The subject as `{subject}` fills it: decoded from Gmail's raw RFC 2047
 /// form, unfolded otherwise, and `None` when it cannot be read whole — not
 /// decodable, truncated, or more than one Subject header — the same reading
@@ -442,6 +447,8 @@ pub(super) fn reply_subject_text(c: &Candidate) -> Option<String> {
     .filter(|_| unique && c.subject_complete != Some(false))
 }
 
+// Deliberately accepts a conservative addr-spec subset, never a display name,
+// whitespace or syntax that could turn into instructions in a task's name.
 pub fn parsed_address(s: &str) -> Option<String> {
     let (local, domain) = s.split_once('@')?;
     if local.is_empty()
@@ -935,7 +942,13 @@ impl Run<'_> {
         // has no honest value, so an empty one here is a template without it.
         let subject = reply_subject_text(c).unwrap_or_default();
         let body = super::send::render(template, &c.sending.from_name, &subject, &today);
-        self.mailbox.stage_reply(c, &body).await
+        // What the owner's review shows: the address `from_only` answers and
+        // the reply's subject, since no drafting session holds the thread.
+        let answering = crate::outbox::Answering {
+            to: parsed_address(&c.message.sender).unwrap_or_default(),
+            subject: super::send::reply_subject(&subject),
+        };
+        self.mailbox.stage_reply(c, &body, &answering).await
     }
 
     /// Settle every staged send whose outbox item has been released or
@@ -1387,8 +1400,11 @@ impl Run<'_> {
                 if action.group() == ActionGroup::FixedWords
                     && (mode == Mode::Shadow || outbound.as_deref() == Some(&rule.name))
                 {
-                    if let Some(guard) = super::send::reply_refusal(c)
-                        .map(str::to_string)
+                    if let Some(guard) = rule
+                        .template_refused
+                        .as_ref()
+                        .map(|why| format!("template refused: {why}"))
+                        .or_else(|| super::send::reply_refusal(c).map(str::to_string))
                         .or_else(|| {
                             // A slot with no honest value refuses rather
                             // than render raw bytes (review of #856).

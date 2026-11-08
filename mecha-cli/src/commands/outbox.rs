@@ -566,6 +566,11 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
         );
         println!();
     }
+    if let Some(a) = &item.answering {
+        // No session holds the thread a rule's reply answers, so the item
+        // says who it goes to and what it is about (review of #856).
+        println!("A rule's reply to {} — \"{}\"\n", a.to, a.subject);
+    }
     if let Some(error) = &item.error {
         println!("last send attempt failed: {error}\n");
     }
@@ -1723,6 +1728,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

@@ -679,6 +679,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind) -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

@@ -146,6 +146,12 @@ fn headline_and_snippet(args: &serde_json::Value) -> (String, String) {
 
 fn row(item: &OutboxItem) -> Row {
     let (headline, snippet) = headline_and_snippet(&item.args);
+    // A harness-staged reply names no subject in its arguments; what it
+    // answers does (review of #856).
+    let headline = match &item.answering {
+        Some(a) if headline.is_empty() => a.subject.clone(),
+        _ => headline,
+    };
     let is_calendar = item
         .tool
         .rsplit("__")
@@ -319,8 +325,15 @@ fn detail_json(
 ) -> serde_json::Value {
     let view = DraftView::of(&item.args);
     let (headline, _) = headline_and_snippet(&item.args);
+    let headline = match &item.answering {
+        Some(a) if headline.is_empty() => a.subject.clone(),
+        _ => headline,
+    };
     serde_json::json!({
         "id": item.id,
+        // What a harness-staged reply answers: the address `from_only`
+        // sends to and the reply's subject, the sender's words.
+        "answering": item.answering,
         // What the drafting run's plan served when it staged this (§17.7
         // item 3's note on the artifact): the pointer, and for a charter
         // line the owner's own text beside it, both resolved by the caller
@@ -1481,6 +1494,7 @@ mod tests {
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

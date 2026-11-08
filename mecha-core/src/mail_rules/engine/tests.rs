@@ -76,6 +76,7 @@ struct Fake {
     on_effect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Staged replies' bodies, and what the owner did with each item.
     staged: Mutex<Vec<String>>,
+    answering: Mutex<Vec<crate::outbox::Answering>>,
     fates: Mutex<BTreeMap<String, StagedFate>>,
 }
 impl Fake {
@@ -124,6 +125,7 @@ impl Fake {
             gate: GateStatus::Passing,
             on_effect: Mutex::new(None),
             staged: Mutex::new(Vec::new()),
+            answering: Mutex::new(Vec::new()),
             fates: Mutex::new(BTreeMap::new()),
         }
     }
@@ -204,7 +206,13 @@ impl Mailbox for Fake {
     fn origin_gate(&self, _: &LoadedRule) -> GateStatus {
         self.gate
     }
-    async fn stage_reply(&self, _: &Candidate, body: &str) -> Result<String, HeldReason> {
+    async fn stage_reply(
+        &self,
+        _: &Candidate,
+        body: &str,
+        answering: &crate::outbox::Answering,
+    ) -> Result<String, HeldReason> {
+        self.answering.lock().unwrap().push(answering.clone());
         let mut staged = self.staged.lock().unwrap();
         staged.push(body.into());
         Ok(format!("item-{}", staged.len()))
@@ -3732,6 +3740,10 @@ async fn the_subject_slot_is_decoded_or_the_reply_is_refused() {
         body.contains("thanks for Re: Réservation confirmée."),
         "{body}"
     );
+    // The review is told who the reply goes to and what it answers.
+    let answering = f.mail.answering.lock().unwrap()[0].clone();
+    assert_eq!(answering.subject, "Re: Réservation confirmée");
+    assert!(answering.to.contains('@'), "{answering:?}");
 
     for unreadable in ["truncated", "undecodable"] {
         let mut f = Fixture::new();
@@ -3814,6 +3826,58 @@ fn a_rule_with_two_replies_does_not_install() {
         format!("{error:#}").contains("replies at most once"),
         "{error:#}"
     );
+}
+
+/// Review of #856: a template refused on disk holds that rule's reply and
+/// stops nothing else — the pass runs every other rule, and the bad rule's
+/// would-have rate never counts a reply it could not render.
+#[tokio::test]
+async fn a_bad_template_on_disk_holds_its_reply_and_stops_nothing_else() {
+    let mut f = Fixture::new();
+    personal(&f);
+    let good = f.rule("archiver", ARCHIVE);
+    f.mode(&good, ActionGroup::Mailbox, Mode::Auto);
+    let bad = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    // Written past install, as a rule from before validation would be.
+    std::fs::write(bad.directory.join("reply.md"), "Dear {name}").unwrap();
+    let loaded = f.store.get("office-hours").unwrap();
+    assert!(loaded.template_refused.is_some());
+    f.options.pass = Pass::AfterClassify;
+    let report = f.run(None).await;
+    assert!(
+        report
+            .rows
+            .iter()
+            .any(|r| r.rule == "archiver" && r.outcome == Outcome::Done),
+        "{:#?}",
+        report.rows
+    );
+    let reply = report
+        .rows
+        .iter()
+        .find(|r| r.rule == "office-hours")
+        .expect("the bad rule is still considered");
+    assert_eq!(reply.outcome, Outcome::Skipped);
+    assert!(
+        reply.reason.starts_with("template refused"),
+        "{}",
+        reply.reason
+    );
+    // And it cannot be raised past shadow while the template stands.
+    let decision = f
+        .store
+        .change_mode(
+            "office-hours",
+            ActionGroup::FixedWords,
+            Mode::Propose,
+            Some(Actor::Owner),
+            &loaded.approval_digest,
+            &P1Holds {
+                origin_gate: GateStatus::Passing,
+            },
+        )
+        .unwrap();
+    assert!(decision.refused);
 }
 
 #[test]

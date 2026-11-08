@@ -388,6 +388,7 @@ impl RuleStore {
             .context("missing actions")?;
         let mut actions = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut template_refused = None;
         for (action, table) in definition.actions.iter().zip(tables) {
             let digest = definition::hash(&serde_json::to_vec(table)?);
             ensure!(
@@ -421,7 +422,16 @@ impl RuleStore {
                 if action.group() == ActionGroup::FixedWords
                     && action.template.as_ref() == Some(file)
                 {
-                    super::send::validate_template(std::str::from_utf8(&bytes)?)?;
+                    // Refused at install and edit, where the owner is told
+                    // which file; a rule already on disk loads with its
+                    // reply held instead, so one brace in one template never
+                    // stops every rule's pass (review of #856).
+                    if let Err(e) = std::str::from_utf8(&bytes)
+                        .map_err(anyhow::Error::from)
+                        .and_then(super::send::validate_template)
+                    {
+                        template_refused = Some(format!("{file}: {e:#}"));
+                    }
                 }
                 files.insert(file.clone(), bytes);
             }
@@ -486,6 +496,7 @@ impl RuleStore {
             directory: directory.into(),
             files,
             approval_digest,
+            template_refused,
         })
     }
 
@@ -560,6 +571,9 @@ impl RuleStore {
                 write_new(&temp.join(name), text.as_bytes())?;
             }
             let rule = self.load_directory(name, &temp)?;
+            if let Some(why) = &rule.template_refused {
+                bail!("{why}");
+            }
             self.admit_locked(Admission::Install(&rule), &self.approvals()?)?;
             File::open(&temp)?.sync_all()?;
             for group in rule.definition.groups() {
@@ -614,6 +628,9 @@ impl RuleStore {
                 write_new(&path, bytes)?;
             }
             let candidate = self.load_directory(name, &temp)?;
+            if let Some(why) = &candidate.template_refused {
+                bail!("{why}");
+            }
             let mut approvals = self.approvals()?;
             self.admit_locked(Admission::Replace(&candidate), &approvals)?;
             let ledger = self.ledger()?;

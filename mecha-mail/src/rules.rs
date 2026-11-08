@@ -401,7 +401,12 @@ fn provider_proves_header_absence(provider: Provider, read: HeaderRead) -> bool 
 
 #[async_trait]
 impl Mailbox for RuleMailbox {
-    async fn stage_reply(&self, candidate: &Candidate, body: &str) -> Result<String, HeldReason> {
+    async fn stage_reply(
+        &self,
+        candidate: &Candidate,
+        body: &str,
+        answering: &mecha_core::outbox::Answering,
+    ) -> Result<String, HeldReason> {
         // The same store and route the owner's review reads: the global
         // config's `[outbox]`, never a project's layered one.
         let config = mecha_core::config::Config::load_global()
@@ -445,6 +450,7 @@ impl Mailbox for RuleMailbox {
                     "body_markdown": body,
                     "from_only": true,
                 }),
+                answering.clone(),
             )
             .map_err(|e| HeldReason::NotDispatched(format!("staging failed: {e:#}")))?;
         Ok(item.id)

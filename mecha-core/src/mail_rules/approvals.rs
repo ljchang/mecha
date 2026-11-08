@@ -303,6 +303,14 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
             reason: "not yet supported in P1".into(),
         });
     }
+    if group == ActionGroup::FixedWords {
+        if let Some(why) = &rule.template_refused {
+            holds.push(ModeHold {
+                ceiling: Mode::Shadow,
+                reason: format!("template refused: {why}"),
+            });
+        }
+    }
     if super::describe::precondition_unreadable(&rule.definition) {
         // Not evaluated at all (see the view's hold): refusing the raise on
         // the approval screen beats approving a rule that cannot run.

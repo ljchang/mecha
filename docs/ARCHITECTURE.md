@@ -4897,7 +4897,11 @@ tool with `from_only: true` — armed, because the slots carry the sender's
 words and a harness-authored draft is otherwise stamped clean; the `staged` row keeps `outbox_item`, and every pass
 begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
 `rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
-a model may also set; it can only remove recipients.
+a model may also set: the message's `From` alone, never reply-all — on
+Graph an explicit recipient in place of the `replyTo` the endpoint would
+follow, so a substitution there rather than a subset, and never wider.
+A staged reply carries `OutboxItem::answering` (the address and subject),
+because no drafting session exists for the review's source join to read.
 
 **A description rule's task is decided by a pass with no learned rules in
 it (P4b-1).** `mail_triage::confirm` asks the candidates' descriptions alone,

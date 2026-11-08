@@ -87,7 +87,10 @@ pub struct MessageRef {
     pub account: String,
     pub provider_message_id: String,
     pub thread_id: String,
-    /// RFC Message-ID is display only, never a key.
+    /// RFC Message-ID: never a ledger key. A staged template reply does use
+    /// it as `mail_reply`'s `message_id`, to name the answered message within
+    /// its thread on both providers — sender-written, so to be re-examined
+    /// before replies are sent unattended (MAIL-RULES-DESIGN §11 P4b-2a).
     pub message_id: String,
     pub sender: String,
     pub subject: String,

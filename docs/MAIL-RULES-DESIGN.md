@@ -2436,7 +2436,10 @@ screen's outbox line. In this phase:
 
 - `mail_rules::send` holds the closed slots (`{sender_first_name}`,
   `{subject}`, `{today}`, each stating what it strips) and §5.4's refusals. A
-  template naming anything else, or with a stray brace, does not load.
+  template naming anything else, or with a stray brace, is refused at install
+  and edit; one already on disk loads with its reply held at shadow and every
+  match skipped as `template refused`, so it stops no other rule. A rule has at
+  most one reply. Slots render in one pass, never rescanning a value.
 - Refusals bind in every non-off mode, shadow included, so a would-have rate
   never counts a reply the guards would refuse: `Auto-Submitted` other than
   `no`; `Precedence: bulk | list | junk`; `List-Id` or `List-Unsubscribe`; a
@@ -2454,6 +2457,10 @@ screen's outbox line. In this phase:
   `reply_all` or on the owner's own message. A rule with no routed
   `mail_reply` stages nothing and says so. The store and route are the
   global config's, the ones the review surfaces read.
+- The staged item carries `answering` (the address `from_only` sends to and
+  the reply's subject) and is summarised by it, since no drafting session
+  exists for the review's source join; the queue, the detail and `mecha
+  outbox show` name both.
 - The staged item is armed (private and untrusted), so every review surface
   shows it as possibly a stranger's words: its slots carry the sender's name
   and subject, and the strip bounds length, not content.

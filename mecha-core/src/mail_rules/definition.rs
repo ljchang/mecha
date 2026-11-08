@@ -304,6 +304,9 @@ pub struct LoadedRule {
     pub directory: PathBuf,
     pub files: BTreeMap<String, Vec<u8>>,
     pub approval_digest: ApprovalDigest,
+    /// Why the reply's template was refused, for a rule found on disk with
+    /// one; install and edit refuse it outright. Its reply is held.
+    pub template_refused: Option<String>,
 }
 
 /// Empty means absent, not a version supplied by the reading build.

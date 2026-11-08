@@ -177,6 +177,17 @@ pub struct DeliveryAttempt {
     pub evidence: Option<String>,
 }
 
+/// What a harness-staged reply answers, recorded when it is staged because
+/// there is no drafting session for the source join to read: the address
+/// the reply goes to and its subject. Both are the sender's words, shown as
+/// data on an item that is armed for exactly that reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Answering {
+    pub to: String,
+    pub subject: String,
+}
+
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
@@ -243,6 +254,10 @@ pub struct OutboxItem {
     /// review it as possibly an attacker's words, not the assistant's.
     #[serde(default)]
     pub taint: Taint,
+    /// What a harness-staged reply answers ([`Answering`]); `None` for
+    /// every other item, which the source join or the arguments describe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answering: Option<Answering>,
     pub created_at: String,
     #[serde(default)]
     pub resolved_at: Option<String>,
@@ -957,9 +972,10 @@ impl OutboxStore {
         taint: Taint,
         from: Provenance,
     ) -> Result<OutboxItem> {
-        self.stage_as(Author::Model, tool, kind, args, taint, from)
+        self.stage_as(Author::Model, tool, kind, args, taint, from, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn stage_as(
         &self,
         author: Author,
@@ -968,6 +984,7 @@ impl OutboxStore {
         args: Value,
         taint: Taint,
         from: Provenance,
+        answering: Option<Answering>,
     ) -> Result<OutboxItem> {
         let Provenance {
             anticipation,
@@ -1003,12 +1020,21 @@ impl OutboxStore {
             status: "pending".into(),
             tool: tool.to_string(),
             kind,
-            summary: summarize(tool, &args),
+            summary: match &answering {
+                // A harness-staged reply's arguments name no recipient and no
+                // subject; what it answers does (review of #856).
+                Some(a) => format!(
+                    "{tool} {}",
+                    clip(format!("to {} — \"{}\"", a.to, a.subject), 80)
+                ),
+                None => summarize(tool, &args),
+            },
             args_before: args.clone(),
             args,
             session_id,
             workspace,
             taint,
+            answering,
             created_at: chrono::Utc::now().to_rfc3339(),
             resolved_at: None,
             reason: None,
@@ -1083,6 +1109,7 @@ impl OutboxStore {
             args,
             Taint::default(),
             Provenance::default(),
+            None,
         )
     }
 
@@ -1091,7 +1118,16 @@ impl OutboxStore {
     /// from the inbound message. Staged armed, so every review surface shows
     /// it as possibly an attacker's words — the subject strip bounds length,
     /// not content (review of #856).
-    pub fn stage_by_harness_quoting_mail(&self, tool: &str, args: Value) -> Result<OutboxItem> {
+    ///
+    /// `answering` is what the review shows the reply is to and about, since
+    /// no session holds the thread it answers (review of #856): it becomes
+    /// the item's summary and rides on the item.
+    pub fn stage_by_harness_quoting_mail(
+        &self,
+        tool: &str,
+        args: Value,
+        answering: Answering,
+    ) -> Result<OutboxItem> {
         self.stage_as(
             Author::Harness,
             tool,
@@ -1102,6 +1138,7 @@ impl OutboxStore {
                 untrusted: true,
             },
             Provenance::default(),
+            Some(answering),
         )
     }
 
@@ -1130,6 +1167,7 @@ impl OutboxStore {
                 workspace: Some(workspace.to_path_buf()),
                 ..Provenance::default()
             },
+            None,
         )
     }
 
@@ -2835,8 +2873,22 @@ mod tests {
             .stage_by_harness_quoting_mail(
                 "gmail__mail_reply",
                 serde_json::json!({"body_markdown": "Hi"}),
+                Answering {
+                    to: "dana@example.edu".into(),
+                    subject: "Re: Booking".into(),
+                },
             )
             .unwrap();
+        // The reviewable object: who it goes to and what it answers, on the
+        // item and in its summary, as written to the store.
+        let stored = store.item(&quoting.id).unwrap();
+        assert_eq!(stored.answering.as_ref().unwrap().to, "dana@example.edu");
+        assert!(
+            stored.summary.contains("to dana@example.edu")
+                && stored.summary.contains("Re: Booking"),
+            "{}",
+            stored.summary
+        );
         assert!(
             quoting.taint.trifecta_armed(),
             "a reply quoting inbound mail is reviewed as a stranger's words"
