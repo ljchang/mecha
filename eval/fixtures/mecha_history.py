@@ -603,8 +603,12 @@ def needed(path, body, run_file=""):
     `self::`, `crate::`) is carried only when it is a glob, when the name it
     binds appears in the grafted tests, or when `run_file` — the run's own
     file, where `super` of a test module resolves — declares or imports the
-    name, so the import resolves: a crate trait imported for its methods is
-    named nowhere in a test body. Otherwise the PR may have added it for a
+    name *at its root*, so the import resolves: a crate trait imported for
+    its methods is named nowhere in a test body. Root only, because that is
+    all `super::super` from the graft can see: a `helper` the run wrote
+    inside `mod tests` would pass a whole-file search and still be E0432
+    (review of #857, pass 7). rustfmt puts every root item in column 0, so
+    the declaration is matched there and nowhere deeper. Otherwise the PR may have added it for a
     test it *edited*, which is not grafted, naming a helper an independent
     solution has no reason to write (review of #857, passes 5 and 6). A
     library path (`std::`, `core::`, a dependency) resolves whatever the run
@@ -616,8 +620,10 @@ def needed(path, body, run_file=""):
     if bound == "*" or re.search(rf"\b{re.escape(bound)}\b", body):
         return True
     name = re.escape(path.split(" as ")[0].split("::")[-1])
-    declared = (rf"\b(fn|struct|enum|union|trait|type|const|static|mod)\s+{name}\b"
-                rf"|macro_rules!\s*{name}\b|^\s*(pub(\([^)]*\))?\s+)?use\s[^;]*\b{name}\b")
+    vis = r"(pub(\([^)]*\))?\s+)?"
+    declared = (rf"^{vis}((async|unsafe|const|extern(\s+\"\w+\")?)\s+)*"
+                rf"(fn|struct|enum|union|trait|type|const|static|mod)\s+{name}\b"
+                rf"|^macro_rules!\s*{name}\b|^{vis}use\s[^;]*\b{name}\b")
     return bool(run_file) and re.search(declared, run_file, re.M) is not None
 
 

@@ -855,6 +855,31 @@ class Imports(unittest.TestCase):
         self.assertIn("use super::super::resident;", block)
         self.assertIn("use super::super::kept;", block, "the run's file declares it, so it resolves")
 
+    def test_a_name_the_run_declared_only_inside_its_test_module_does_not_resolve(self):
+        # `super::super` from the graft is the file root; a `helper` inside
+        # `mod tests` passed a whole-file search and was E0432 (review of
+        # #857, pass 7).
+        merge = self.history(
+            "nested-helper", PIN_LISTED,
+            PIN_LISTED.replace("fn kept() -> u32 {\n    1\n}\n",
+                               "fn kept() -> u32 {\n    1\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+                               "fn resident() -> u32 {\n    2\n}\n", 1)
+            .replace("        kept,\n", "        helper, kept, resident,\n", 1)
+            .replace("    #[test]\n    fn keeps() {\n        assert_eq!(kept(), 1);\n",
+                     "    #[test]\n    fn the_resident_one_is_two() {\n        assert_eq!(resident(), 2);\n    }\n\n"
+                     "    #[test]\n    fn keeps() {\n        assert_eq!(kept(), helper());\n", 1))
+        write(os.path.join(self.tree, "src", "setup.rs"),
+              PIN_LISTED.replace("#[cfg(test)]", "fn resident() -> u32 {\n    2\n}\n\n#[cfg(test)]", 1)
+              .replace("    #[test]\n    fn keeps()", "    fn helper() -> u32 {\n        1\n    }\n\n    #[test]\n    fn keeps()", 1))
+        block = self.graft_block(merge)
+        self.assertNotIn("super::super::helper", block, "not at the root, so not reachable")
+        self.assertIn("use super::super::resident;", block)
+
+    def test_only_a_root_declaration_counts(self):
+        self.assertTrue(mecha_history.needed("super::helper", "", "pub(crate) async fn helper() {}\n"))
+        self.assertTrue(mecha_history.needed("super::helper", "", "use crate::x::{\n    helper,\n};\n"))
+        self.assertFalse(mecha_history.needed("super::helper", "", "mod tests {\n    fn helper() {}\n}\n"))
+
     def test_a_crate_import_the_runs_file_declares_is_kept_though_unnamed(self):
         # A crate trait imported for its methods is named nowhere in a test
         # body; the run's file declaring it is what makes the import resolve.
