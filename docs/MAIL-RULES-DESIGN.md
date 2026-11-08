@@ -2448,7 +2448,8 @@ screen's outbox line. In this phase:
   per rule per seven days, counting a shadow would-have reply while in
   shadow. Each guard keys on its fact being present, and the row says which
   fired (`skipped: <guard>`). A template using `{subject}` is refused when the
-  subject cannot be read whole (undecodable, truncated or repeated); Gmail's
+  subject cannot be read whole (undecodable, truncated or repeated), and one
+  using `{sender_first_name}` when the sender gave no name; Gmail's
   raw RFC 2047 subject is decoded first, as the matcher reads it.
 - The staged item is a `mail_reply` call through the tool `[outbox] tools`
   routes, with `from_only: true` — a new narrowing on `mail_reply` that

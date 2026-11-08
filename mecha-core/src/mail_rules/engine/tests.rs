@@ -3745,16 +3745,19 @@ async fn the_subject_slot_is_decoded_or_the_reply_is_refused() {
     assert_eq!(answering.subject, "Re: Réservation confirmée");
     assert!(answering.to.contains('@'), "{answering:?}");
 
-    for unreadable in ["truncated", "undecodable"] {
+    for unreadable in ["truncated", "undecodable", "nameless"] {
         let mut f = Fixture::new();
         personal(&f);
         {
             let mut cs = f.mail.candidates.lock().unwrap();
-            if unreadable == "truncated" {
-                cs[0].subject_complete = Some(false);
-            } else {
-                cs[0].subject_is_raw = true;
-                cs[0].message.subject = "=?X-UNKNOWN?Q?broken?=".into();
+            match unreadable {
+                "truncated" => cs[0].subject_complete = Some(false),
+                "undecodable" => {
+                    cs[0].subject_is_raw = true;
+                    cs[0].message.subject = "=?X-UNKNOWN?Q?broken?=".into();
+                }
+                // A bare address in From: `{sender_first_name}` has no value.
+                _ => cs[0].sending.from_name = String::new(),
             }
         }
         let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
@@ -3767,9 +3770,45 @@ async fn the_subject_slot_is_decoded_or_the_reply_is_refused() {
             "{unreadable}: {:#?}",
             report.rows
         );
-        assert_eq!(report.rows[0].reason, "the subject could not be read whole");
+        assert_eq!(
+            report.rows[0].reason,
+            if unreadable == "nameless" {
+                "the sender gave no name to address"
+            } else {
+                "the subject could not be read whole"
+            }
+        );
         assert!(f.mail.staged.lock().unwrap().is_empty());
     }
+}
+
+/// Review of #856: a staged reply is the rule firing, once — its settlement
+/// is what the owner did with that fire, never a second one.
+#[tokio::test]
+async fn a_released_reply_is_one_fire_on_the_rules_page() {
+    let mut f = Fixture::new();
+    personal(&f);
+    let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
+    f.options.pass = Pass::AfterClassify;
+    f.run(None).await;
+    f.mail
+        .fates
+        .lock()
+        .unwrap()
+        .insert("item-1".into(), StagedFate::ReleasedUnchanged);
+    f.run(None).await;
+    let ledger = f.store.ledger().unwrap();
+    assert!(ledger
+        .iter()
+        .any(|row| row.outcome == Outcome::ReleasedUnchanged));
+    let (fires, last, _) = super::super::presentation::activity(
+        "office-hours",
+        &ledger,
+        Utc::now() + Duration::days(1),
+    );
+    assert_eq!(fires, 1, "{ledger:#?}");
+    assert!(last.is_some());
 }
 
 #[tokio::test]

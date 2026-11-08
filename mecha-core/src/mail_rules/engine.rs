@@ -1413,6 +1413,13 @@ impl Run<'_> {
                             .then(|| "the subject could not be read whole".to_string())
                         })
                         .or_else(|| {
+                            // Nor a name: "Hi , thanks" is a hole too.
+                            (Self::template(rule, action)
+                                .is_some_and(|t| t.contains("{sender_first_name}"))
+                                && super::send::sender_first_name(&c.sending.from_name).is_empty())
+                            .then(|| "the sender gave no name to address".to_string())
+                        })
+                        .or_else(|| {
                             self.answered_this_week(rule, c, mode).then(|| {
                                 "this sender was answered by this rule in the last 7 days"
                                     .to_string()

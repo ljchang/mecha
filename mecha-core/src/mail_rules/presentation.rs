@@ -126,6 +126,9 @@ pub(super) fn activity(
                         | Outcome::ReleasedUnchanged
                         | Outcome::Edited
                 )
+                // A settlement is what the owner did with a fire, never a
+                // second one — `statistics` draws the same line.
+                && r.correction_of.is_none()
         })
         .filter_map(|r| r.at)
         .collect();

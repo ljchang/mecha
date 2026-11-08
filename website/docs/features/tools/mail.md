@@ -862,7 +862,7 @@ template = "reply.md"   # beside rule.toml
 `reply.md` is what you would type, with at most three slots filled in for
 you: `{sender_first_name}`, `{subject}` and `{today}`; any other `{...}`
 makes the rule refuse to load. `{subject}` is the reply's subject line, so
-it carries its `Re:` — "thanks for {subject}" reads "thanks for Re: …". A
+it carries its `Re:` — `thanks for {subject}` reads `thanks for Re: …`. A
 rule has at most one reply. Install a rule with its template from a
 directory: `mecha mail rule add ~/office-hours/`. In `propose`, each match
 puts the reply in your **outbox** to release, edit or reject — it answers
@@ -872,7 +872,8 @@ never drafted to an automated sender (`noreply`, auto-replies), a mailing
 list, one of your own addresses, a conversation you have already written
 in, or someone the rule answered in the last seven days; the ledger row says
 which of these stopped it. A reply using `{subject}` is not drafted when the
-subject could not be read whole. The outbox marks these drafts as containing
+subject could not be read whole, nor one using `{sender_first_name}` when the
+sender gave no name. The outbox marks these drafts as containing
 a stranger's words, since the name and subject come from the message.
 
 **Pause** lowers a rule's groups to shadow at once; **Pause all** does it for
