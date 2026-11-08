@@ -207,6 +207,60 @@ This explicit command refuses missing binaries or failed audits. CI builds the
 example and sets `MECHA_SUPPORT_NATIVE_BINARY` for the corresponding unittest,
 so the native path runs alongside the independent Python checks.
 
+### Atomic observations and derived appraisal (v4)
+
+The explicit `memory_atomic_trial` example compares a three-call policy with a
+single direct judgment over the same captured source evidence. Generation emits
+observations without IDs or judgments; the host assigns IDs. A second call checks
+each original citation. The final appraisal combines supported observation IDs
+against the current criterion. Its v4 report labels that judgment as derived,
+preserving the original observations and checks. Direct answers are unverified
+comparison outputs and are not retained as independently checked memory.
+
+Both arms receive 6,144 output tokens in total and a shared 540-second deadline
+per arm, including provider setup. Pipeline allocations are 1,536 / 3,072 / 1,536.
+All calls explicitly disable the model's thinking mode and use the already
+resident model. Actual repeated input, output and elapsed cost are reported.
+Legacy trials retain their 180-second provider limit and existing wire behavior.
+
+```sh
+cargo build -p mecha-core --features memory-prototype --example memory_atomic_trial
+target/debug/examples/memory_atomic_trial --synthetic-only \
+  /new/absolute/run-root http://127.0.0.1:8080 RESIDENT_MODEL \
+  /absolute/shared/holds 70510 /absolute/case.json 0
+```
+
+`CASE_INDEX` alternates the execution order. Case envelopes use the existing
+native source fields; v4 does not evaluate probes or expose their annotations.
+`atomic_trial.py` separately freezes source/binary/auditor hashes before new case
+authoring, freezes eight cases afterward, and audits raw requests, replies,
+bindings, source SQLite and actual retained/recall records. Failed cases stay in
+the planned denominator. Exact source membership is not semantic support;
+independent semantic review is required before interpreting the comparison.
+
+Run the actual native/auditor contract with authored HTTP replies before model
+qualification (CI supplies the binary explicitly):
+
+```sh
+MECHA_ATOMIC_NATIVE_BINARY="$PWD/target/debug/examples/memory_atomic_trial" \
+  python3 -m unittest discover -s prototypes/memory/tests -p test_atomic_trial.py -v
+```
+
+The first frozen eight-case comparison matched labels in 5/8 for both policies.
+All 32 calls returned, but five three-call workflows failed at post-storage recall;
+only 3/8 completed, versus 8/8 direct answers. The inspected complete provenance
+bundle exceeded the reader's 20,000-byte cap. The gate failed; no accuracy advantage
+or production reliability is established. Independent review covered all 32 replies
+and found accepted factual/citation defects and insufficient selected premises;
+both arms failed to abstain on two unknown cases. See HISTORY for complete counts,
+cost and audit limitations.
+Build all test variants first, then copy and freeze the feature-enabled example:
+a later default-feature build can overwrite the same target path with its stub.
+
+These are synthetic prototype experiments, not production or private-data
+qualification. Current measured outcomes and remaining gates are in
+[`MECHA-MEMORY-DESIGN.md`](../../docs/MECHA-MEMORY-DESIGN.md) and the research Site.
+
 ### Legacy v7 demonstration
 
 The explicit v7 workflow adds durable, source-linked interpretation hypotheses

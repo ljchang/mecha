@@ -110,7 +110,7 @@ pub struct TrialCase {
     pub probe: ProbeCase,
 }
 impl TrialCase {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate_native(&self) -> Result<()> {
         ensure!(
             self.version == 1
                 && !self.case_id.is_empty()
@@ -149,6 +149,10 @@ impl TrialCase {
             "oversized synthetic observation"
         );
         let _: Vec<BTreeMap<String, String>> = serde_json::from_str(&self.native.requested_output)?;
+        Ok(())
+    }
+    fn validate(&self) -> Result<()> {
+        self.validate_native()?;
         ensure!(
             self.probe.units.len() == 3 && self.probe.judgments.len() == 2,
             "invalid frozen probe count"
@@ -183,6 +187,12 @@ impl TrialCase {
 
 /// Owner-selected input only; reject symlinks, nonregular files and overbounds.
 pub fn load_case(path: &Path) -> Result<TrialCase> {
+    let case = read_case(path)?;
+    case.validate()?;
+    Ok(case)
+}
+
+pub(crate) fn read_case(path: &Path) -> Result<TrialCase> {
     use std::os::unix::fs::OpenOptionsExt;
     ensure!(
         path.is_absolute() && path.canonicalize()? == path,
@@ -208,9 +218,7 @@ pub fn load_case(path: &Path) -> Result<TrialCase> {
         .take(65537)
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "case grew past limit");
-    let case: TrialCase = serde_json::from_slice(&bytes)?;
-    case.validate()?;
-    Ok(case)
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 /// A factory selects only existing Provider implementations; it executes no calls.
@@ -219,13 +227,13 @@ pub trait StageProviders: Send + Sync {
     async fn create(&self, stage: &str, cancel: &CancellationToken) -> Result<Box<dyn Provider>>;
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
 }
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = OpenOptions::new()
         .write(true)
@@ -236,16 +244,16 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all()?;
     Ok(())
 }
-fn write_value(path: &Path, value: &impl Serialize) -> Result<()> {
+pub(crate) fn write_value(path: &Path, value: &impl Serialize) -> Result<()> {
     write_new(path, &serde_json::to_vec(value)?)
 }
-fn checkpoint(root: &Path, report: &Value) -> Result<()> {
+pub(crate) fn checkpoint(root: &Path, report: &Value) -> Result<()> {
     let temporary = root.join("report.next.json");
     write_value(&temporary, report)?;
     fs::rename(temporary, root.join("report.json"))?;
     Ok(())
 }
-fn descriptor(root: &Path, path: &Path) -> Result<Value> {
+pub(crate) fn descriptor(root: &Path, path: &Path) -> Result<Value> {
     ensure!(
         path.starts_with(root) && !fs::symlink_metadata(path)?.file_type().is_symlink(),
         "invalid host artifact"
@@ -257,7 +265,7 @@ fn descriptor(root: &Path, path: &Path) -> Result<Value> {
     );
     Ok(json!({"path":path.strip_prefix(root)?,"sha256":digest(&bytes),"bytes":bytes.len()}))
 }
-fn criterion(native: &NativeCase, current: bool) -> ConfirmedCriterion {
+pub(crate) fn criterion(native: &NativeCase, current: bool) -> ConfirmedCriterion {
     let text = if current {
         &native.current_criterion
     } else {
@@ -321,17 +329,17 @@ fn tool_call(id: &str, name: &str, input: Value) -> Message {
         input,
     }])
 }
-struct SourceFixture {
-    input: PathBuf,
-    artifact: PathBuf,
-    transcript: PathBuf,
-    database: PathBuf,
+pub(crate) struct SourceFixture {
+    pub(crate) input: PathBuf,
+    pub(crate) artifact: PathBuf,
+    pub(crate) transcript: PathBuf,
+    pub(crate) database: PathBuf,
     authority: LocalAuthority,
-    access: Access,
+    pub(crate) access: Access,
     confirmation: String,
 }
 impl SourceFixture {
-    fn memory(&self) -> Result<Memory> {
+    pub(crate) fn memory(&self) -> Result<Memory> {
         Ok(Memory::open(&self.database)?.with_source_guard(Arc::new(self.authority.clone())))
     }
     fn capture(&self, memory: &mut Memory) -> Result<CaptureReceipt> {
@@ -469,7 +477,7 @@ async fn execute_task(
     })
 }
 
-async fn read_memory(
+pub(crate) async fn read_memory(
     source: &SourceFixture,
     context: &InterpretationContext,
     interpretations: bool,
@@ -552,7 +560,7 @@ fn probe_proposal(case: &TrialCase, prepared: &PreparedInterpretation) -> Result
     })
 }
 
-fn packet_bytes(request: &CompletionRequest) -> usize {
+pub(crate) fn packet_bytes(request: &CompletionRequest) -> usize {
     request.system.as_ref().map_or(0, String::len)
         + request.response_schema.as_ref().map_or(0, |schema| {
             serde_json::to_vec(schema)
@@ -569,7 +577,7 @@ fn set_stage(report: &mut Value, name: &str, status: &str, error: Option<String>
     report["stages"][name]["status"] = json!(status);
     report["stages"][name]["error"] = json!(error);
 }
-fn write_audit_exports<T>(
+pub(crate) fn write_audit_exports<T>(
     root: &Path,
     report: &mut Value,
     name: &str,
@@ -641,7 +649,7 @@ async fn stage_provider(
     )
 }
 
-fn durable_interpretation(
+pub(crate) fn durable_interpretation(
     memory: &Memory,
     receipt: &crate::memory::interpretation::InterpretationReceipt,
     access: &Access,
@@ -822,15 +830,22 @@ pub async fn run_case_with_protocol(
     Ok(report)
 }
 
-async fn run_inner(
+/// Shared native execution/capture path. No policy model call occurs here.
+pub(crate) struct PreparedNative {
+    pub(crate) source: SourceFixture,
+    pub(crate) memory: Memory,
+    pub(crate) capture: CaptureReceipt,
+    pub(crate) current: InterpretationContext,
+    pub(crate) prepared: PreparedInterpretation,
+    pub(crate) source_control: PathBuf,
+}
+pub(crate) async fn prepare_native(
     root: &Path,
     case: &TrialCase,
-    model: &str,
-    providers: &dyn StageProviders,
     cancel: &CancellationToken,
-    protocol: SupportProtocol,
     report: &mut Value,
-) -> Result<()> {
+    opaque_wire: bool,
+) -> Result<PreparedNative> {
     let source = execute_task(&root.join("native"), &case.native, cancel).await?;
     report["artifacts"]["initial_input"] = descriptor(root, &source.input)?;
     report["artifacts"]["native_transcript"] = descriptor(root, &source.transcript)?;
@@ -880,8 +895,6 @@ async fn run_inner(
     // Keep all controls source-only before either proposal is evaluated/retained.
     let source_control = root.join("source-only.memory-prototype.sqlite");
     fs::copy(&source.database, &source_control)?;
-    let probe_database = root.join("probe.memory-prototype.sqlite");
-    fs::copy(&source.database, &probe_database)?;
     report["source_only_database"] = descriptor(root, &source_control)?;
     report["source_only_packet"] = descriptor(root, &root.join("source-only-packet.json"))?;
     report["capture_receipt"] = descriptor(root, &root.join("source-capture.json"))?;
@@ -905,15 +918,48 @@ async fn run_inner(
         report["needs_request_identical"] == true,
         "private needs/context identity changed request"
     );
-    if matches!(
-        protocol,
-        SupportProtocol::GroundedV2 | SupportProtocol::EvidenceV3
-    ) {
+    if opaque_wire {
         // Opaque context-binding keys may differ; private needs never enter the semantic input.
         report["needs_invariance_scope"] = json!("canonical_source_and_criterion_input");
     }
     set_stage(report, "capture", "completed", None);
     checkpoint(root, report)?;
+    Ok(PreparedNative {
+        source,
+        memory,
+        capture,
+        current,
+        prepared,
+        source_control,
+    })
+}
+
+async fn run_inner(
+    root: &Path,
+    case: &TrialCase,
+    model: &str,
+    providers: &dyn StageProviders,
+    cancel: &CancellationToken,
+    protocol: SupportProtocol,
+    report: &mut Value,
+) -> Result<()> {
+    let PreparedNative {
+        source,
+        mut memory,
+        capture,
+        current,
+        prepared,
+        source_control,
+    } = prepare_native(
+        root,
+        case,
+        cancel,
+        report,
+        protocol != SupportProtocol::LegacyV1,
+    )
+    .await?;
+    let probe_database = root.join("probe.memory-prototype.sqlite");
+    fs::copy(&source.database, &probe_database)?;
     let budget = GenerationBudget::new(4096, Duration::from_secs(180))?;
     report["active_stage"] = json!("generate");
     let generation = async {

@@ -14,6 +14,102 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Atomic observations and derived appraisal (2026-11-08, prototype branch)
+
+The explicit default-off v4 path separates `generate_atomic`, `check_atomic` and
+`appraise_atomic`. The host assigns observation IDs and resolves each original
+quotation; supported checks cannot substitute another source. `prepare_appraisal`
+reauthorizes all dependencies before exposing an opaque request. `finish_appraisal`
+preserves the original proposal/checks and adds a separately identified derived
+judgment. Retention replays this construction and checks authority again. SQLite
+v8 and legacy wire/report semantics remain unchanged. This is a synthetic-only
+comparison path, not automatic production capture or a truth guarantee.
+
+`memory_atomic_workflow::run_case` gives the three-call policy and a direct answer
+the same initial sources, criterion, resident model, seed, 6,144 total output-token
+allowance and 540-second whole-arm deadline. Separate thinking is explicitly off.
+The new timeout constructor preserves the legacy provider's 180-second default
+while allowing the direct arm its actual declared deadline. The independent
+`atomic_trial.py` auditor reconstructs source/catalog bindings, raw wire controls,
+SQLite retention and recall. External review separately grades original claims,
+citations, selected-premise sufficiency and temporal applicability. Rejected
+extraction defects remain visible without being counted as retained defects;
+malformed responses retain their known usage costs. Label blinding is limited:
+reviewers lack arm/model/gold labels, but raw stage structure remains visible.
+
+Source review exposed complete-object `oneOf` alternatives required by the
+llama.cpp grammar compiler and the provider's hidden 180-second ceiling. Both
+received failing-before/passing-after regressions and independent rereview.
+Final aggregate review found no major/medium issue. Minor follow-ups are stricter
+stored-report shape validation against coordinated direct database tampering and
+binding the auditor's reported case ordinal to the frozen manifest. The actual
+comparison driver supplies the frozen ordinal; neither is claimed fixed here.
+
+Integrated Spark verification passed workspace/all-target build, strict all-feature
+Clippy, 6,352 default tests (25 ignored), 6,864 memory-enabled tests (29 ignored),
+279 standalone checks, and 181 nested Python test invocations with zero skips,
+including both native binaries against authored HTTP replies. Formatting and diff
+checks passed. A single unscored development case completed both arms and passed
+independent structural auditing; it was not a fresh semantic qualification.
+
+The source snapshot contains the reviewed uncommitted increment over `c8567100a`,
+not the base commit alone. Its SHA256 is
+`527caa417ef7818a4ee840c72cb6aa8315f9b310a4dbafaa9999c05970b59e8f`;
+the copied atomic binary is
+`56d274926a742d79367b4a40bcc420437453c1b8d36a67eff6d5d455235174d1`.
+Implementation/auditor freeze preceded independent authoring of eight new cases.
+Raw checks and comparison artifacts are in
+`results/memory-atomic-appraisal-20261108/`. The frozen comparison completed all
+32 model calls with the already-resident
+qwen3.6-35b-a3b-uncensored (different from the previous v3 cohort). Both arms
+matched the independently authored label in 5/8 cases. Pipeline workflow completion
+was 3/8 versus 8/8 direct answers; direct answers do not promise checked retention.
+All five pipeline failures occurred after storage at contextual rereading. Both
+arms wrongly resolved unknown causal responsibility and interval continuity into
+known outcomes. The pipeline additionally misread the current empty-file sentinel;
+the direct arm additionally misread the changed units/schema criterion.
+
+Three independent reviewers assessed all 32 raw replies and all 119 original
+observations (58 pipeline, 61 direct), with arm/model/gold labels withheld and
+raw stage structure visible. All 16 case-arm semantic annotations passed exact
+artifact/hash and count-reconciliation checks. Reviewers agreed with the frozen
+5/8 label scores. Pipeline accepted observations contained 3 factual and 17
+original-citation defects; direct emitted observations contained 4 and 22.
+No generated pipeline defect was rejected by its fact checker. Diagnostic/reason
+output added 14 factual and 17 citation defects for pipeline, versus 7 factual
+and zero additional source-citation defects for direct. These are assertion/slot
+counts, not comparable per-answer error rates: the pipeline emits more blocks.
+Final selected premises were independently judged sufficient/current in 0/8
+pipeline cases versus 3/8 direct cases, even where labels were correct.
+Both arms failed to abstain on both genuinely unknown cases. Neither pilot gate
+passed. Among the three fully exported pipeline records, the formal auditor
+observed 2 retained factual and 6 retained-citation defects; full-eight retained
+totals remain unknown because five workflows lacked required exports. Prior failed
+cohorts remain immutable and concepts remain gated.
+
+All observed usage is complete: pipeline 226,646 input /13,387 output tokens over
+242.615 seconds summed arm time; direct 64,000 /7,805 over 105.402 seconds.
+The ratios are 3.54x input, 1.72x output and 2.30x time, with no label-accuracy gain.
+No retry, prompt change or model switch occurred. Frozen-file hashes and the
+actual eight manifest ordinals/alternating orders were verified after inference.
+These small same-evidence cases measure neither retrieval benefit nor general
+learning, and equal output allowances do not equal equal compute.
+
+All five failed rereads had reconstructed complete packets above the budget
+(20,357–22,502 bytes); successful cases fit (16,357–18,347 bytes).
+The first fresh case exposed this concrete retrieval-size boundary: persistence
+succeeded, but the complete nine-record context required 21,130 serialized bytes
+against the reader's 20,000-byte cap. Its Hit entries alone occupied 20,381 bytes.
+Canonical reopening passed and source hashes still matched. The generic withheld
+error therefore does not mean no row was saved. Because the workflow stopped
+before retained/database/control exports, the strict auditor leaves retention
+unverified and retained-defect totals unknown. A separate read-only inspection of
+all eight SQLite stores found three wrong known bearings saved, two in workflows
+with failed later recall. This supplemental observation does not turn incomplete
+primary audits into complete workflows; retrieval exclusion is not non-retention.
+Compacting evidence must preserve the complete authorized dependency closure;
+dropping provenance to fit is not a fix.
+
 ### Evidence-context and candidate judgment repair (2026-11-08, prototype branch)
 
 The explicit evidence-aware adapter added authenticated capture associations,
@@ -9949,6 +10045,14 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+A default-feature cargo test build overwrote a feature-enabled example at the
+same target path during atomic-memory qualification. The next HTTP smoke made
+zero requests because it ran the feature-disabled stub. Build after all suites,
+copy the actual executable to an isolated experiment directory, exercise its
+contract and freeze that copy. A matching source tree and a previously successful
+build do not identify the bytes currently at a shared target path.
+
 
 A checks-first constrained response schema reordered `required` but appended its
 checks field after choice in `properties`. The first real run therefore emitted

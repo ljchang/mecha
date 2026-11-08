@@ -3154,3 +3154,44 @@ The old model cohorts remain immutable and failed. Deterministic tests establish
 contracts; a fresh, independently authored cohort must establish semantic behavior
 before concept learning resumes. When Spark is unavailable, model qualification
 and the required owner-corpus privacy scan remain pending rather than waived.
+
+### 31.12 Atomic observations before situated appraisal
+
+Implemented and mechanically qualified 8 November 2026; the fresh paired pilot
+failed. Both policies matched 5/8 labels, with no decomposition advantage; five
+pipeline rereads exceeded the context budget, and independent review found
+unsupported accepted facts/citations and insufficient selected premises. See
+HISTORY for complete verification and measurement, and `superpowers/plans/2026-11-08-atomic-evidence-appraisal.md`. This tests a
+smaller evaluator contract in response to the failed §31.11 cohort.
+
+Use three bounded, quarantined calls: extract observations, check their original
+evidence, then appraise the checked observations against the current criterion.
+The generator cannot choose identifiers or goal bearings. The host numbers its
+observations; each retains one exact original quotation. Fact checks cover those
+identifiers exactly and cannot substitute a better quotation. Unknown results
+require an explicit missing-information question in both schema and parser.
+
+Appraisal combines accepted observations through their identifiers. For example,
+a matching invocation, execution receipt and artifact observation can jointly
+support a completion judgment. No single quotation has to prove that combined
+conclusion. Each constituent assertion still needs its own support, and temporal
+applicability and joint sufficiency remain fallible semantic judgments. Host
+validation can reject foreign, speculative or unsupported premises; it cannot
+prove that a model's conclusion follows from the remaining ones.
+
+An opaque appraisal request preserves the original observations and factual
+checks. Its one derived judgment is explicitly distinguished from an independent
+check of a generator's judgment. Retention retains source reauthorization and
+complete dependencies. This changes neither SQLite v8 nor legacy report meaning.
+
+Compare this policy with one direct reasoning call over the same initial sources
+and current criterion. Both receive the same resident model, seed, total output
+allowance and arm deadline. Report actual cost, including repeated input in the
+three-call policy; equal output limits do not establish equal compute. Fresh
+cases and annotations are frozen only after implementation and auditor freeze.
+Independent review checks atomic claim support, citation relevance, current
+criterion and premise sufficiency in both arms. Structural acceptance alone is
+not success; failed and incomplete cases remain in the planned denominator.
+Because both arms receive the same evidence, this comparison tests reasoning
+decomposition and evidence handling. It does not measure a retrieval advantage
+or establish that the full memory system improves long-horizon decisions.

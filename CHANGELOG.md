@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental atomic appraisal separates observation extraction, original-source
+  checks and a derived current-goal judgment. A synthetic paired runner compares
+  this policy with one direct judgment using identical initial evidence and
+  bounded total output/time allowances. Independent artifact auditing checks
+  source bindings, retained records and recall. This remains default-off and
+  does not establish reliable semantic evaluation or production readiness.
+
 - Experimental evidence-aware appraisal (`--evidence-v3`) distinguishes authenticated
   capture context, evaluates each original citation, and selects a later supported
   judgment when an earlier candidate is Unknown. Conflicting supported bearings

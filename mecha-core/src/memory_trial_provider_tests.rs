@@ -392,3 +392,110 @@ async fn mismatched_response_is_retained_for_host_audit() {
         assert_eq!(rejected.response.usage.output_tokens, 2);
     }
 }
+
+#[tokio::test]
+async fn explicit_timeout_bounds_the_actual_resident_http_completion() {
+    let server = Server::start(999, "trial-model").await;
+    let dir = Temp::new();
+    let provider = LocalTrialProvider::new_structured_with_timeout(
+        dir.config(&server.endpoint),
+        CancellationToken::new(),
+        Duration::from_millis(100),
+    )
+    .await
+    .unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), provider.complete(&request(), None))
+        .await
+        .expect("explicit short timeout was ignored in favor of the legacy 180 seconds");
+    assert!(result.unwrap_err().to_string().contains("timed out"));
+    assert_eq!(server.inference_count(), 1);
+}
+
+#[tokio::test]
+async fn explicit_timeout_bounds_model_hold_setup_without_inference() {
+    let server = Server::start(200, "trial-model").await;
+    let dir = Temp::new();
+    let switch = Holds::new(&dir.0)
+        .begin_switch(&server.endpoint, Some("other"), "trial-model")
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        LocalTrialProvider::new_structured_with_timeout(
+            dir.config(&server.endpoint),
+            CancellationToken::new(),
+            Duration::from_millis(100),
+        ),
+    )
+    .await
+    .expect("explicit model hold timeout was ignored");
+    assert!(result
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("model hold timed out"));
+    assert!(server.seen.lock().unwrap().is_empty());
+    drop(switch);
+}
+
+#[tokio::test]
+async fn explicit_timeout_refuses_zero_and_overbound_before_side_effects() {
+    let server = Server::start(200, "trial-model").await;
+    let dir = Temp::new();
+    for timeout in [Duration::ZERO, Duration::from_secs(541)] {
+        let result = LocalTrialProvider::new_structured_with_timeout(
+            dir.config(&server.endpoint),
+            CancellationToken::new(),
+            timeout,
+        )
+        .await;
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("timeout must be"));
+    }
+    assert!(!dir.0.exists());
+    assert!(server.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn full_comparison_timeout_keeps_shared_arm_cancellation_and_resident_guards() {
+    let server = Server::start(999, "trial-model").await;
+    let dir = Temp::new();
+    let cancel = CancellationToken::new();
+    let provider = LocalTrialProvider::new_structured_with_timeout(
+        dir.config(&server.endpoint),
+        cancel.clone(),
+        Duration::from_secs(540),
+    )
+    .await
+    .unwrap();
+    assert!(provider.structured_output());
+    let req = request();
+    let completion = provider.complete(&req, None);
+    let cancel_arm = async {
+        while server.inference_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        cancel.cancel();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(completion, cancel_arm)
+    })
+    .await
+    .expect("540-second provider ignored the earlier shared arm cancellation");
+    assert!(result.unwrap_err().to_string().contains("cancelled"));
+    assert!(provider.complete(&req, None).await.is_err());
+    let records = server.seen.lock().unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(path, _)| path.starts_with("/v1/chat/completions"))
+            .count(),
+        1
+    );
+    let (path, body) = records.last().unwrap();
+    assert_eq!(path, "/v1/chat/completions?autoload=false");
+    assert_eq!(body["model"], "trial-model");
+    assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+}

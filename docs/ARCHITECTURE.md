@@ -12978,6 +12978,21 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   which case the rendered result is Unknown. Legacy reports retain their original
   first-per-goal semantics. An earlier Unknown once hid a later supported bearing;
   changing selection must not reinterpret old stored reports or weaken premises.
+- **A derived appraisal is not another independent fact check.** The explicit
+  v4 path first numbers observations, then checks their unchanged original
+  quotations, then appraises only accepted observation IDs. `prepare_appraisal`
+  reauthorizes the complete source closure; its opaque receipt preserves the
+  original proposal and checks. The separate v4 report labels the derived
+  judgment and binds each stage. Final retention replays both stages and checks
+  source authority again. Accepted premise membership is a structural gate,
+  not a proof of joint sufficiency or temporal applicability.
+- **Constrained-output schemas must fit the actual grammar compiler.** The
+  pinned llama.cpp compiler selects `oneOf` alternatives without merging sibling
+  properties. Each alternative must therefore be a complete closed object with
+  all required fields. Partial conditional branches passed a JSON Schema audit
+  and authored HTTP test while making parser-valid replies impossible under the
+  real compiler. Keep an explicit complete-branch regression alongside parser
+  tests; a mocked provider does not exercise grammar compilation.
 - **Default readers must also withhold interpreted descendants.** Merely omitting
   Interpretation from initial search still leaks it through a recaptured episode's
   dependency closure. The explicit contextual reader assigns every returned

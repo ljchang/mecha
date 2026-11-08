@@ -155,6 +155,27 @@ tiny development result, not a general benefit or efficiency claim. HISTORY reta
 all denominators, model-quality gaps and the independent audit.
 
 **Current appraisal priority: qualify evidence-aware support before concept learning.**
+
+The explicit atomic-observation v4 comparison is now implemented and mechanically
+qualified. `memory_support_atomic` separates extraction, original-citation checking
+and current-goal appraisal; `memory_atomic_workflow` compares it with a single
+same-evidence answer. Opaque receipts and final source checks remain mandatory.
+Build, strict Clippy, 6,352 default / 6,864 memory-enabled tests, 279 standalone
+checks and 181 Python invocations (zero skips) passed. The independently frozen
+eight-case comparison matched labels in 5/8 for both policies, with no accuracy
+gain and 3.54x input /1.72x output /2.30x summed time for three calls. All 32 calls
+returned, but five pipeline workflows failed after storage at contextual recall;
+only 3/8 complete versus 8/8 direct answers. The inspected bundle exceeds the
+20,000-byte reader budget. All 16 independent semantic audits are complete: 3 factual and 17 original-citation
+defects in accepted pipeline observations, with no defective observation rejected.
+Correct labels still lacked sufficient/current selected premises in all eight
+pipeline cases. Neither arm abstained on the two unknown cases. The gate fails.
+Next: compact bounded evidence without dropping provenance, preserve safe
+post-write failure diagnostics, and use complete typed event facts/citations where
+possible before testing criterion application again. Concepts remain gated.
+See HISTORY, `MECHA-MEMORY-DESIGN.md` §31.12 and the prototype README. The v3
+results below remain historical failures, not the current software qualification.
+
 The default-off synthetic v8 path captures bounded action inputs and independent
 artifact observations, evaluates typed statements and goal bearings, and retains
 host-rendered interpretations. Explicit `EvidenceV3` adds authenticated source

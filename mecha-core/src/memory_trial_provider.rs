@@ -15,6 +15,7 @@ use crate::message::{CompletionRequest, CompletionResponse};
 use crate::provider::{openai::OpenAiCompatible, router, Provider, StreamSink};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+const MAX_EXPLICIT_TIMEOUT: Duration = Duration::from_secs(540);
 
 /// Explicit host inputs; never loaded from global or project configuration.
 pub struct LocalTrialConfig {
@@ -46,6 +47,7 @@ pub struct LocalTrialProvider {
     endpoint: String,
     model: String,
     cancel: CancellationToken,
+    request_timeout: Duration,
     // Held until the provider (and therefore the trial) ends, including errors.
     _held: Held,
 }
@@ -55,16 +57,34 @@ impl LocalTrialProvider {
         config: LocalTrialConfig,
         cancel: CancellationToken,
     ) -> Result<Self> {
-        Self::with_structured_output(config, cancel, StructuredOutput::LlamaJson).await
+        Self::with_structured_output(config, cancel, StructuredOutput::LlamaJson, REQUEST_TIMEOUT)
+            .await
+    }
+    /// Explicit synthetic comparison timeout, bounded to 540 seconds. The caller
+    /// must additionally enforce its shared arm deadline across setup and calls;
+    /// this per-operation ceiling never extends the supplied cancellation token.
+    pub async fn new_structured_with_timeout(
+        config: LocalTrialConfig,
+        cancel: CancellationToken,
+        request_timeout: Duration,
+    ) -> Result<Self> {
+        Self::with_structured_output(config, cancel, StructuredOutput::LlamaJson, request_timeout)
+            .await
     }
     pub async fn new(config: LocalTrialConfig, cancel: CancellationToken) -> Result<Self> {
-        Self::with_structured_output(config, cancel, StructuredOutput::Disabled).await
+        Self::with_structured_output(config, cancel, StructuredOutput::Disabled, REQUEST_TIMEOUT)
+            .await
     }
     async fn with_structured_output(
         config: LocalTrialConfig,
         cancel: CancellationToken,
         structured_output: StructuredOutput,
+        request_timeout: Duration,
     ) -> Result<Self> {
+        ensure!(
+            !request_timeout.is_zero() && request_timeout <= MAX_EXPLICIT_TIMEOUT,
+            "local trial timeout must be in (0, 540] seconds"
+        );
         ensure!(
             router::is_literal_loopback(&config.endpoint),
             "explicit numeric loopback HTTP endpoint required"
@@ -84,7 +104,7 @@ impl LocalTrialProvider {
         let held = tokio::select! {
             biased;
             () = cancel.cancelled() => anyhow::bail!("local trial cancelled before taking model hold"),
-            held = tokio::time::timeout(REQUEST_TIMEOUT, holds.hold_when_clear(&endpoint, "synthetic memory bridge trial", |_| {})) => held.context("local trial model hold timed out after 180s")??,
+            held = tokio::time::timeout(request_timeout, holds.hold_when_clear(&endpoint, "synthetic memory bridge trial", |_| {})) => held.with_context(|| format!("local trial model hold timed out after {request_timeout:?}"))??,
         };
         let hold_cancel = cancel.clone();
         held.on_cancel(move || hold_cancel.cancel());
@@ -104,6 +124,7 @@ impl LocalTrialProvider {
             endpoint,
             model: config.model,
             cancel,
+            request_timeout,
             _held: held,
         };
         tokio::select! {
@@ -157,7 +178,7 @@ impl Provider for LocalTrialProvider {
         tokio::select! {
             biased;
             () = self.cancel.cancelled() => anyhow::bail!("local trial cancelled"),
-            result = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            result = tokio::time::timeout(self.request_timeout, async {
                 self.check_resident().await?;
                 // The recorder applied fast/local-only settings before auditing.
                 // Never rewrite the request after its effective body was recorded.
@@ -166,7 +187,7 @@ impl Provider for LocalTrialProvider {
                     return Err(ReturnedModelMismatch { expected:self.model.clone(),response }.into());
                 }
                 Ok(response)
-            }) => result.context("local trial request timed out after 180s")?,
+            }) => result.with_context(|| format!("local trial request timed out after {:?}", self.request_timeout))?,
         }
     }
 }

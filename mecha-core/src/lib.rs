@@ -130,6 +130,8 @@ pub mod memory;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_action_runtime;
 #[cfg(feature = "memory-prototype")]
+pub mod memory_atomic_workflow;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_bridge_trial;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_decision_runtime;
@@ -147,6 +149,8 @@ pub mod memory_situated_appraisal;
 pub mod memory_situated_needs;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_situated_workflow;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_support_atomic;
 #[cfg(feature = "memory-prototype")]
 mod memory_support_evidence;
 #[cfg(feature = "memory-prototype")]

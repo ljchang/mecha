@@ -26,6 +26,22 @@ pub(crate) struct CitationCatalog {
     entries: Vec<CatalogEntry>,
 }
 impl CitationCatalog {
+    pub(crate) fn atomic(
+        prepared: &PreparedInterpretation,
+        phase: &str,
+        binding_input: &str,
+    ) -> Result<Self> {
+        let request_key =
+            crate::memory::interpretation::atomic_request_binding(prepared, phase, binding_input)?;
+        let mut entries = Vec::new();
+        for source in prepared.sources() {
+            append_chunks(&mut entries, &request_key, source);
+        }
+        Ok(Self {
+            request_key,
+            entries,
+        })
+    }
     pub(crate) fn new(
         prepared: &PreparedInterpretation,
         phase: &str,

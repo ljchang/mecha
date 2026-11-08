@@ -170,7 +170,7 @@ pub fn evidence_evaluation_request(
         budget,
     )
 }
-async fn pass<T>(
+pub(crate) async fn pass<T>(
     provider: &dyn Provider,
     model: &str,
     request: Result<CompletionRequest>,
