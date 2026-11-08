@@ -219,6 +219,10 @@ fn every_uncited_source_remains_a_dependency_at_prepare_dispatch_and_finish() {
             .find(|f| f.metadata.role == EvidenceRole::ArtifactObservation)
             .unwrap();
         response["because"] = json!([cited.id]);
+        let checked_response = json!({"request_key":r.checked_request_key().unwrap(),"artifact_content":"complete","artifact_facts":[cited.id],"comparison":"supports","because":[cited.id],"reason":"Synthetic provisional assessment","questions":[],"state":"met"});
+        assert!(db
+            .finish_native_checked_appraisal(&r, &checked_response.to_string(), &access())
+            .is_ok());
         let uncited = p
             .sources
             .iter()
@@ -269,6 +273,11 @@ fn every_uncited_source_remains_a_dependency_at_prepare_dispatch_and_finish() {
             db.finish_native_appraisal(&r, &response.to_string(), &access())
                 .is_err(),
             "finish mutation {mutation}"
+        );
+        assert!(
+            db.finish_native_checked_appraisal(&r, &checked_response.to_string(), &access())
+                .is_err(),
+            "checked finish mutation {mutation}"
         );
     }
 }
@@ -365,4 +374,26 @@ fn matched_provider_requests_use_identical_explicit_budget_and_no_tools() {
     assert!(raw.tools.is_empty());
     assert!(typed.tools.is_empty());
     assert_eq!(raw.system, typed.system);
+}
+
+#[test]
+fn checked_contract_has_one_flat_state_last_schema() {
+    let (_, mut db, _) = supported_fixture();
+    let p = prepared_supported(&mut db);
+    let r = db.prepare_native_evidence(&p, &access()).unwrap();
+    // The legacy contract cannot represent checks before the verdict.
+    let (_, schema) = r.checked_input(NativeEvidenceFormat::Typed).unwrap();
+    assert!(
+        schema.get("oneOf").is_none(),
+        "checked contract must be flat"
+    );
+    assert_eq!(
+        schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next_back()
+            .unwrap(),
+        "state"
+    );
 }

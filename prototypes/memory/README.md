@@ -38,6 +38,25 @@ MECHA_SESSION_KIND=test cargo run -p mecha-core --features memory-prototype \
   http://127.0.0.1:8080 RESIDENT_MODEL /absolute/shared/holds 70510 CASE_FILE 0
 ```
 
+An explicit trailing `--checks-first` instead compares typed direct v1 with typed
+checked v2. Both arms receive the same complete facts and current criterion.
+The checked response assesses artifact availability and compares evidence before
+emitting its verdict. `finish_native_checked_appraisal` verifies authenticated
+artifact roles, issued citations and comparison/verdict consistency; it refuses
+inconsistency without rewriting the answer. Execution-only criteria can leave
+artifact contents unassessed. These checks do not prove factual support or causality.
+
+A trailing `--verdict-controls` runs six literal-copy diagnostics: met, not_met
+and unknown through each response contract. Targets appear only in this mode.
+Exact target equality, host acceptance, raw responses and call accounting are
+recorded separately. Run controls before semantic comparisons; a failed control
+is not evidence about reasoning quality. Each mode requires a new output root.
+The core legacy runner and response contract remain available unchanged.
+The standalone harness now preserves JSON insertion order, matching core. Stored
+payload formats are unchanged, but serialized requests and recomputed request
+identities are not guaranteed byte-identical across this build change. Use new
+experiment roots rather than resuming old in-flight standalone requests.
+
 `Memory::{prepare_concept_rumination,finish_concept_rumination,ruminate_concept}`
 adds one explicit revision cycle around existing concept learning. Supply a current
 concept revision and exact new counterexample excerpts. The request retains every

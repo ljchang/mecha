@@ -12996,6 +12996,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   arms share that closure, IDs, criterion and response contract. A valid selection
   proves reference integrity, never premise sufficiency, temporal applicability
   or world truth. Read-only native appraisals cannot acquire v4 support status.
+- **Checks-first is a distinct response contract, not a repaired verdict.**
+  `finish_native_checked_appraisal` binds a v2 request identity to the original
+  complete source context. Artifact selections must name authenticated observation
+  values with the declared availability; empty complete text differs from missing
+  observation. Comparison and verdict must agree or the host refuses the response.
+  No universal artifact gate applies to execution-only questions. The host cannot
+  establish premise sufficiency or causal identification from these structural
+  checks. A model once explained a mismatch while returning `met`; retaining the
+  raw reply separately from withholding prevents host checks from masquerading as
+  improved model reasoning. Literal-copy controls measure verdict reachability
+  independently of the semantic comparison and never supply its expected labels.
 - **A contextual presentation is not a canonical stored record.** Atomic-v4
   interpretations serialize through the explicit `interpretation_reader_v1`
   presentation only inside ContextPacket. The complete SupportReport and source

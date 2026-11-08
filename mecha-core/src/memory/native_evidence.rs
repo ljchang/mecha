@@ -364,3 +364,7 @@ impl Memory {
 #[cfg(test)]
 #[path = "native_evidence_tests.rs"]
 mod tests;
+
+#[path = "native_appraisal_checks.rs"]
+mod native_appraisal_checks;
+pub use native_appraisal_checks::*;

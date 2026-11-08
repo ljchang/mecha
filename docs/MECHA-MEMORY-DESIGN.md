@@ -3291,6 +3291,18 @@ report meaning remain unchanged. Compare against direct reasoning under matched
 sources/model/budgets, account for every call and token, and freeze a fresh cohort
 only after implementation. Development replay alone cannot qualify this design.
 
+**Checks-first addendum (8 November 2026):** the opt-in v2 native response now
+orders artifact assessment and comparison before its final verdict. Source-bound
+artifact-role checks and comparison/verdict consistency are host-enforced;
+semantic sufficiency remains fallible. Existing v1 behavior is preserved. The
+bounded qualification uses six literal-copy controls, then eight reused and four
+independently authored direct/checked pairs if controls pass, at most 30 calls.
+Both semantic arms use typed evidence with identical facts. This bundles response
+order, prompt, bounds and structural checks; any improvement cannot be attributed
+to field order alone. The completed comparison did not improve accepted semantic
+judgments or genuine abstention; keep it experimental. See HISTORY for outcomes and
+`superpowers/plans/2026-11-08-native-appraisal-checks-first.md` for the fixed plan.
+
 ### 31.15 Bounded provisional concept rumination
 
 The first concept-learning increment reuses existing provisional concept storage

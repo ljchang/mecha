@@ -15,6 +15,94 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 
+### Native appraisal consistency and verdict controls (2026-11-08, prototype branch)
+
+`NativeEvidenceRequest::checked_input` and `checked_generation_request` add a
+separate flat checks-first response; v1 APIs retain their original meaning.
+`Memory::finish_native_checked_appraisal` checks v2 identity, authenticated artifact
+roles/availability, issued citations, bounds and comparison/verdict consistency.
+It rechecks the complete source closure and writes nothing. Unknown requires an
+explicit question; execution-only criteria may leave artifact contents unassessed.
+These are reference and consistency checks, not semantic entailment checks.
+
+`memory_native_workflow::run_checked_case` compares typed direct and checked
+responses with identical evidence. `run_verdict_controls` exercises all three
+labels under both contracts with explicit literal-copy targets. Targets are never
+used by semantic trials; exact matching and host acceptance remain separate.
+Original replies, refusals, source hashes, usage and independent deadlines remain
+in the audit. The existing example selects the modes explicitly with trailing
+`--checks-first` or `--verdict-controls`. No production defaults or database
+schema changed. The standalone harness enables serde_json insertion ordering so
+its effective schema preserves the same state-last contract as the core build.
+Source review found no stored-record hash change: nested action JSON remains
+original text in stored captures. Standalone generation-input serialization and
+recomputed request identities can change, so cross-build retry/dedup identity is
+not promised. An externally authored old action envelope with unsorted input keys
+and a sorted-key digest may fail re-admission; ordinary old writer envelopes keep
+their sorted bytes. Core already preserved order. Cross-build execution was not
+performed; this is a source-reviewed compatibility boundary, not a migration test.
+
+Software qualification passed workspace/all-target build, formatting, strict
+all-target/all-feature Clippy, 6,352 default workspace tests (25 ignored), 6,911
+memory-enabled tests (29 ignored), 303 standalone unit plus four integration
+checks, and 182 Python checks using both actual native binaries. Required sandbox
+backends were enabled. The first Clippy pass rejected two new test-only
+`keys().last()` calls; replacing them with `next_back()` preserved their assertions
+and passed scoped review and Clippy. The successful default suite was carried
+forward across exactly these two test-only changes; the memory suite ran afterward.
+The original failure log is retained. Rust/manifests match the final qualified
+snapshot; source and independent review found no unresolved major/medium issue.
+
+The fixed Qwen3.6-35b-a3b-uncensored repair comparison completed 30 first
+responses: six exact literal controls and 12 direct/checked pairs (eight reused,
+four independently authored). All controls passed. Both arms used identical typed
+facts, temperature 0.6, seed 70510, thinking off, 6,144 output tokens and independent
+540-second deadlines. No responses were retried or prompts changed within the run.
+Before any response, independent review clarified the fresh causal case to ask a
+causal proposition rather than evidence adequacy; its observations were unchanged
+and the final fixture/oracle hashes were frozen.
+
+| Twelve development cases | Direct v1 | Checked v2 |
+|---|---:|---:|
+| Correct raw state | 5/12 | 6/12 |
+| Primary semantic pass | 5/12 | 4/12 |
+| Host accepted | 12/12 | 7/12 |
+| Host accepted and primary semantic pass | 5/12 | 2/12 |
+| Correct required unknown | 0/4 | 0/4 |
+| Semantic-arm input/output tokens | 63,644 /3,492 | 65,062 /4,339 |
+
+Primary semantic pass requires the correct raw state, sufficient original premises
+in structured `because`, a faithful complete explanation and a relevant question
+for genuine uncertainty. The masked audit did not inspect host acceptance. Two
+checked replies named needed input only in prose; a separately reported
+prose-inclusive sensitivity raises checked semantic passes to 6/12, leaving direct
+at 5/12. It does not repair the structured citation contract. Reused-case primary
+scores were direct 4/8 versus checked 3/8; fresh cases were 1/4 for both.
+
+Every checked comparison said `supports`. Four checked states said `not_met`,
+so the host refused their contradiction; two of those raw judgments were otherwise
+correct and fully supported. A fifth refusal mislabeled complete observed content
+as unavailable. Neither arm used unknown when needed. The result does not qualify
+semantic reliability or show a usable benefit. It is a bundled protocol change,
+not an isolated field-order experiment or a representative benchmark.
+
+Independent verification compiled all 30 actual schemas using engine
+`b1915-27637851`, confirmed checked state-last order, and verified 260 saved artifact
+references. Typed facts/criteria matched within each semantic pair, and source,
+database, binary, fixture and model-setting checks remained intact. The six
+controls cost an additional 31,247 input /792 output tokens. Artifacts are retained
+under `results/memory-evaluator-repair-20261108/trial-20261108T222045.752765Z`.
+Checks-first stays opt-in. The next bounded concept pilot can use independently
+scored synthetic outcomes; automatic native concept admission remains unqualified.
+
+The preceding separate Qwen3.6-35b-a3b-uncensored comparison completed all 16
+raw/typed responses without retries: each arm had 3/8 correct states, 2/8 fully
+supported responses and 0/2 required abstentions. All replies said met. One reason
+correctly identified a mismatch while its verdict said met; other replies used
+requested writes as observed contents. This motivated a bounded protocol repair,
+not a claim that the typed evidence experiment had qualified semantic evaluation.
+The partial Qwen3.8 pilots below remain separate and are not a model ranking.
+
 ### Complete native evidence and bounded concept rumination (2026-11-08, prototype branch)
 
 `Memory::prepare_native_evidence` creates an opaque request from reauthenticated

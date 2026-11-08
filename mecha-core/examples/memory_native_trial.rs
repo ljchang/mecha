@@ -3,7 +3,7 @@
 mod enabled {
     use anyhow::{ensure, Context, Result};
     use mecha_core::{
-        memory_native_workflow::{load_case, run_case},
+        memory_native_workflow::{load_case, run_case, run_checked_case, run_verdict_controls},
         memory_support_workflow::StageProviders,
         memory_trial_provider::{LocalTrialConfig, LocalTrialProvider},
         provider::Provider,
@@ -11,7 +11,7 @@ mod enabled {
     use std::{path::PathBuf, time::Duration};
     use tokio_util::sync::CancellationToken;
 
-    const USAGE: &str = "memory_native_trial --synthetic-only NEW_ROOT ENDPOINT MODEL HOLDS_DIRECTORY 70510 CASE_FILE CASE_INDEX";
+    const USAGE: &str = "memory_native_trial --synthetic-only NEW_ROOT ENDPOINT MODEL HOLDS_DIRECTORY 70510 CASE_FILE CASE_INDEX [--checks-first|--verdict-controls]";
     struct Resident {
         endpoint: String,
         model: String,
@@ -38,7 +38,15 @@ mod enabled {
     }
     pub async fn run() -> Result<()> {
         let args: Vec<_> = std::env::args().skip(1).collect();
-        ensure!(args.len() == 8 && args[0] == "--synthetic-only", USAGE);
+        ensure!(
+            (args.len() == 8 || args.len() == 9) && args[0] == "--synthetic-only",
+            USAGE
+        );
+        let mode = args.get(8).map(String::as_str);
+        ensure!(
+            matches!(mode, None | Some("--checks-first" | "--verdict-controls")),
+            USAGE
+        );
         let root = PathBuf::from(&args[1]);
         let holds = PathBuf::from(&args[4]);
         ensure!(
@@ -62,7 +70,15 @@ mod enabled {
             holds,
             seed,
         };
-        let result = run_case(&root, &case, &resident.model, &resident, &cancel, index).await;
+        let result = match mode {
+            Some("--checks-first") => {
+                run_checked_case(&root, &case, &resident.model, &resident, &cancel, index).await
+            }
+            Some("--verdict-controls") => {
+                run_verdict_controls(&root, &case, &resident.model, &resident, &cancel, index).await
+            }
+            _ => run_case(&root, &case, &resident.model, &resident, &cancel, index).await,
+        };
         signal.abort();
         let report = result?;
         println!("{}", serde_json::to_string(&report)?);

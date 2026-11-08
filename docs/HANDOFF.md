@@ -154,28 +154,35 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Current memory priority: qualify native appraisal and measure useful concept revision.**
+**Current memory priority: measure one concept and revision independently; native semantic appraisal remains unqualified.**
 
 `NativeEvidenceRequest` and `memory_native_workflow` implement the read-only typed
 fact experiment from design §31.14. The opaque request preserves original values,
 IDs and authenticated metadata, with whole-value omissions and complete source
 rechecks. Raw and typed arms share one-call budgets and independent deadlines.
-The actual resident model is now Qwen3.8-27b; comparisons with older Qwen3.6 results
-are not controlled model comparisons. Current qualification artifacts live in
-Spark's isolated `/home/ljchang/Github/mecha-memory-native-concepts-20261108/results/memory-native-concepts-20261108`.
+The owner selected Qwen3.6-35b-a3b-uncensored for subsequent measurements;
+recheck residency before each run. The separate complete raw/typed comparison
+returned 16 replies, all met: both arms had 3/8 correct states, 2/8 fully supported
+responses and 0/2 required abstentions. Earlier partial Qwen3.8 results remain
+separate, not a controlled model ranking.
 
-Software qualification passes: 6,352 default / 6,901 memory-enabled workspace
-tests (25/29 ignored), 303 standalone and 182 actual-binary Python checks, plus
-build, strict Clippy and formatting. The test-only standalone Tokio dependency
-is declared explicitly. The fresh model pilot is **incomplete**: seven of sixteen
-planned replies, three complete pairs. In those pairs raw/typed labels were 1/3
-and 2/3; fully supported responses were 0/3 for both. One additional unpaired
-typed response was fully supported. An owner model switch blocked setup; the
-remaining experiment was stopped without touching the switch or its other live
-holder. Nine prepared schemas compile; source/database/freeze checks pass.
-HISTORY records missing slots and fixture ambiguities. Do not resume under a
-different model and call it the same controlled comparison, or claim abstention
-was qualified: both unknown cases were unstarted.
+The opt-in checks-first response and six literal controls are implemented and
+qualified mechanically (6,352 default /6,911 memory-enabled tests, 307 standalone,
+182 actual-binary Python checks, strict Clippy/build/fmt). The fixed 30-response
+Qwen3.6 comparison is complete: all six controls passed. Direct/checked raw labels
+were 5/12 and 6/12, primary semantic passes 5/12 and 4/12, and accepted semantic
+passes 5/12 and 2/12. Both failed all four required unknown cases. Five checked
+responses were withheld; withholding is not improved reasoning. HISTORY records
+strata, the prose-citation sensitivity and all limitations. Keep this protocol
+experimental and preserve the prior cohorts. New artifacts use
+`results/memory-evaluator-repair-20261108` in the isolated Spark checkout.
+
+Next implement the already specified 14-call concept/revision pilot (§31.15): a
+thin `memory_concept_workflow`, example adapter and independent offline fixture
+scorer. Existing concept APIs suffice. Hold original evidence equal within pairs,
+use fixture-defined outcomes rather than this native evaluator as judge, and
+preserve failures in the planned denominator. No further prompt-tuning cycle is
+part of the completed comparison. Native admission and production use remain open.
 
 `concept::rumination` implements one explicit provisional revision over existing
 synthetic concept storage. Complete prior consulted sources, mandatory old/new

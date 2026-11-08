@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental native appraisal adds an opt-in checks-first response and paired
+  typed comparison. Host checks reject invalid artifact citations and inconsistent
+  verdicts while preserving raw replies. Separate literal-copy controls test all
+  three verdicts; these diagnostics do not establish semantic reliability.
+
 - Experimental native appraisal selects host-issued IDs for complete typed source
   evidence and rechecks all dependencies without retaining a model judgment. A
   paired synthetic runner compares raw and typed presentations under matched

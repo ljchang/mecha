@@ -21,6 +21,47 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub const PROTOCOL: &str = "memory-native-comparison-v1";
+pub const CHECKED_PROTOCOL: &str = "memory-native-checks-first-comparison-v1";
+pub const CONTROLS_PROTOCOL: &str = "memory-native-verdict-copy-controls-v1";
+#[derive(Clone, Copy)]
+enum Mode {
+    Legacy,
+    Checked,
+    Controls,
+}
+impl Mode {
+    fn checked(self, name: &str) -> bool {
+        matches!(self, Self::Checked) && name == "checked"
+            || matches!(self, Self::Controls) && name.starts_with("v2-")
+    }
+    fn protocol(self) -> &'static str {
+        match self {
+            Self::Legacy => PROTOCOL,
+            Self::Checked => CHECKED_PROTOCOL,
+            Self::Controls => CONTROLS_PROTOCOL,
+        }
+    }
+    fn order(self, index: usize) -> Vec<&'static str> {
+        let mut order = match self {
+            Self::Legacy => vec!["raw", "typed"],
+            Self::Checked => vec!["direct", "checked"],
+            Self::Controls => {
+                return vec![
+                    "v1-met",
+                    "v1-not_met",
+                    "v1-unknown",
+                    "v2-met",
+                    "v2-not_met",
+                    "v2-unknown",
+                ]
+            }
+        };
+        if !index.is_multiple_of(2) {
+            order.reverse();
+        }
+        order
+    }
+}
 const TOKENS: u32 = 6144;
 const SECONDS: u64 = 540;
 const STAGES: [&str; 6] = [
@@ -87,6 +128,7 @@ struct ArmRun<'a> {
     providers: &'a dyn StageProviders,
     cancel: &'a CancellationToken,
     started: Instant,
+    mode: Mode,
 }
 async fn run_arm(
     run: ArmRun<'_>,
@@ -101,6 +143,7 @@ async fn run_arm(
         providers,
         cancel,
         started,
+        mode,
     } = run;
     activate(arm, "prepare");
     ensure!(!cancel.is_cancelled(), "arm cancelled");
@@ -109,13 +152,66 @@ async fn run_arm(
     } else {
         NativeEvidenceFormat::Typed
     };
-    let (input, schema) = request.input(format)?;
+    let checked = mode.checked(name);
+    let (input, schema) = if checked {
+        request.checked_input(format)?
+    } else {
+        request.input(format)?
+    };
+    let key = serde_json::from_str::<Value>(&input)?["request_key"].clone();
     write_value(
         &root.join(format!("{name}-input.json")),
-        &json!({"request_key":request.view().request_key,"input":input,"schema":schema}),
+        &json!({"request_key":key,"input":input,"schema":schema}),
     )?;
     arm["input"] = descriptor(root, &root.join(format!("{name}-input.json")))?;
-    let planned = request.generation_request(model, remaining(started)?, format)?;
+    let mut planned = if checked {
+        request.checked_generation_request(model, remaining(started)?, format)?
+    } else {
+        request.generation_request(model, remaining(started)?, format)?
+    };
+    arm["response_protocol"] = json!(if checked {
+        "situated-native-evidence-v2"
+    } else {
+        "situated-native-evidence-v1"
+    });
+    if matches!(mode, Mode::Controls) {
+        let state = name.split_once('-').expect("control name").1;
+        let id = request
+            .view()
+            .facts
+            .iter()
+            .find(|f| {
+                !matches!(
+                    f.value,
+                    crate::memory::interpretation::NativeValue::Omitted { .. }
+                )
+            })
+            .context("copy controls require an issued fact")?
+            .id
+            .clone();
+        let unknown = state == "unknown";
+        let mut target = json!({"request_key":key,"state":state,"because":if unknown {vec![]} else {vec![id]},"reason":"Literal copy control.","questions":if unknown {vec!["What information is missing?"]} else {vec![]}});
+        if checked {
+            target["artifact_content"] = json!("not_assessed");
+            target["artifact_facts"] = json!([]);
+            target["comparison"] = json!(match state {
+                "met" => "supports",
+                "not_met" => "contradicts",
+                _ => "insufficient",
+            });
+        }
+        planned.system = Some("This is a literal verdict emission control, not an evidence reasoning task. Do not appraise evidence. Copy the supplied target JSON exactly under the effective response schema. The evidence packet supplies authenticated IDs only.".into());
+        planned.messages.push(crate::message::Message::user(format!(
+            "Copy this literal target JSON exactly:\n{}",
+            serde_json::to_string(&target)?
+        )));
+        arm["target"] = target;
+        arm["control_match"] = json!(false);
+    }
+    ensure!(
+        packet_bytes(&planned) <= 128 * 1024,
+        "oversized native request"
+    );
     arm["stages"]["inference"]["packet_bytes"] = json!(packet_bytes(&planned));
     arm["stages"]["inference"]["max_output_tokens"] = json!(planned.max_tokens);
     completed(arm, "prepare");
@@ -160,6 +256,10 @@ async fn run_arm(
     completed(arm, "postcheck");
     activate(arm, "inference");
     let response = inference?;
+    if matches!(mode, Mode::Controls) {
+        arm["control_match"] =
+            json!(serde_json::from_str::<Value>(&response).ok().as_ref() == Some(&arm["target"]));
+    }
     ensure!(
         outcome
             .usage
@@ -167,14 +267,31 @@ async fn run_arm(
         "provider exceeded output allowance"
     );
     activate(arm, "finalize");
-    let result =
+    let finalized = if checked {
         native
             .memory
-            .finish_native_appraisal(request, &response, &native.source.access)?;
+            .finish_native_checked_appraisal(request, &response, &native.source.access)
+            .and_then(|r| Ok(serde_json::to_value(r)?))
+    } else {
+        native
+            .memory
+            .finish_native_appraisal(request, &response, &native.source.access)
+            .and_then(|r| Ok(serde_json::to_value(r)?))
+    };
+    let result = match finalized {
+        Ok(result) => result,
+        Err(error) => {
+            arm["refusal"] = json!({"stage":"finalize","error":format!("{error:#}")});
+            return Err(error);
+        }
+    };
     let path = root.join(format!("{name}-result.json"));
     write_value(&path, &result)?;
     arm["result"] = descriptor(root, &path)?;
     arm["appraisal"] = serde_json::to_value(result)?;
+    if matches!(mode, Mode::Controls) {
+        ensure!(arm["control_match"] == true, "literal copy target mismatch");
+    }
     completed(arm, "finalize");
     Ok(())
 }
@@ -188,6 +305,7 @@ fn finish_arm(arm: &mut Value, result: Result<()>, started: Instant, cancelled: 
                 .to_string();
             arm["stages"][&active]["status"] = json!("failed");
             arm["stages"][&active]["error"] = json!(format!("{error:#}"));
+            arm["refusal"] = json!({"stage":active,"error":format!("{error:#}")});
             arm["status"] = json!("failed");
             arm["error"] = json!(format!("{error:#}"));
         }
@@ -217,9 +335,14 @@ async fn paired(
     model: &str,
     providers: &dyn StageProviders,
     cancel: &CancellationToken,
-    order: [&str; 2],
+    mode: Mode,
     report: &mut Value,
 ) -> Result<()> {
+    let order = mode.order(
+        report["case_index"]
+            .as_u64()
+            .context("missing case index")? as usize,
+    );
     let native = prepare_native(root, case, cancel, report, true).await?;
     report["active_stage"] = json!("native_prepare");
     let database = descriptor(root, &native.source.database)?;
@@ -234,7 +357,7 @@ async fn paired(
     report["stages"]["native_prepare"]["status"] = json!("completed");
     checkpoint(root, report)?;
     let mut any_cancelled = cancel.is_cancelled();
-    for name in order {
+    for &name in &order {
         let arm_started = Instant::now();
         // Each arm owns its deadline; only root cancellation reaches siblings.
         let arm_cancel = cancel.child_token();
@@ -250,6 +373,7 @@ async fn paired(
             providers,
             cancel: &arm_cancel,
             started: arm_started,
+            mode,
         };
         let result = run_arm(run, &native, &request, &mut report["arms"][name]).await;
         timer.abort();
@@ -302,6 +426,66 @@ pub async fn run_case(
     cancel: &CancellationToken,
     case_index: usize,
 ) -> Result<Value> {
+    run_mode(
+        root,
+        case,
+        model,
+        providers,
+        cancel,
+        case_index,
+        Mode::Legacy,
+    )
+    .await
+}
+/// Compare typed direct v1 and checks-first v2 against one complete capture.
+pub async fn run_checked_case(
+    root: &Path,
+    case: &TrialCase,
+    model: &str,
+    providers: &dyn StageProviders,
+    cancel: &CancellationToken,
+    case_index: usize,
+) -> Result<Value> {
+    run_mode(
+        root,
+        case,
+        model,
+        providers,
+        cancel,
+        case_index,
+        Mode::Checked,
+    )
+    .await
+}
+/// Six literal-copy diagnostics; targets are never consulted by semantic trials.
+pub async fn run_verdict_controls(
+    root: &Path,
+    case: &TrialCase,
+    model: &str,
+    providers: &dyn StageProviders,
+    cancel: &CancellationToken,
+    case_index: usize,
+) -> Result<Value> {
+    run_mode(
+        root,
+        case,
+        model,
+        providers,
+        cancel,
+        case_index,
+        Mode::Controls,
+    )
+    .await
+}
+async fn run_mode(
+    root: &Path,
+    case: &TrialCase,
+    model: &str,
+    providers: &dyn StageProviders,
+    cancel: &CancellationToken,
+    case_index: usize,
+    mode: Mode,
+) -> Result<Value> {
     case.validate_native()?;
     ensure!(
         root.is_absolute() && !root.exists(),
@@ -309,15 +493,14 @@ pub async fn run_case(
     );
     fs::create_dir(root)?;
     let root = root.canonicalize()?;
-    let order = if case_index.is_multiple_of(2) {
-        ["raw", "typed"]
-    } else {
-        ["typed", "raw"]
-    };
+    let order = mode.order(case_index);
     let started = Instant::now();
-    let mut report = json!({"protocol":PROTOCOL,"case_id":case.case_id,"case_sha256":case.case_sha256,"case_index":case_index,"model":model,"seed":70510,"arm_order":order,"status":"failed","error":null,"cancelled":false,"artifacts":{},"diagnostic_policy_calls":0,"stages":{"source":stage(),"capture":stage(),"native_prepare":stage()},"arms":{"raw":arm(),"typed":arm()}});
+    let mut report = json!({"protocol":mode.protocol(),"case_id":case.case_id,"case_sha256":case.case_sha256,"case_index":case_index,"model":model,"seed":70510,"arm_order":order,"status":"failed","error":null,"cancelled":false,"artifacts":{},"diagnostic_policy_calls":0,"stages":{"source":stage(),"capture":stage(),"native_prepare":stage()},"arms":{}});
+    for name in &order {
+        report["arms"][*name] = arm();
+    }
     checkpoint(&root, &report)?;
-    if let Err(error) = paired(&root, case, model, providers, cancel, order, &mut report).await {
+    if let Err(error) = paired(&root, case, model, providers, cancel, mode, &mut report).await {
         let active = report["active_stage"]
             .as_str()
             .unwrap_or("source")
@@ -336,7 +519,7 @@ pub async fn run_case(
             stage["error"] = json!("upstream stage unavailable");
         }
     }
-    for name in order {
+    for &name in &order {
         if report["arms"][name]["status"] == "pending" {
             finish_arm(
                 &mut report["arms"][name],
@@ -395,7 +578,7 @@ mod tests {
             cancel: &CancellationToken,
         ) -> Result<Box<dyn Provider>> {
             self.seen.lock().unwrap().push(name.into());
-            if self.mode == 2 && name == "raw" {
+            if self.mode == 2 && matches!(name, "raw" | "direct") {
                 withdraw(&self.root)?;
             }
             if self.mode == 3 {
@@ -423,6 +606,17 @@ mod tests {
         fn structured_output(&self) -> bool {
             true
         }
+        fn wire_body(&self, request: &CompletionRequest, stream: bool) -> Option<Value> {
+            crate::provider::openai::OpenAiCompatible::from_config(&crate::config::ProviderConfig {
+                kind: "local".into(),
+                base_url: Some("http://127.0.0.1:8080".into()),
+                model: Some("scripted-native".into()),
+                structured_output: crate::config::StructuredOutput::LlamaJson,
+                ..Default::default()
+            })
+            .unwrap()
+            .wire_body(request, stream)
+        }
         async fn complete(
             &self,
             request: &CompletionRequest,
@@ -442,10 +636,34 @@ mod tests {
             let text = request.messages[0].text();
             let packet: Value =
                 serde_json::from_str(&text[text.find('{').unwrap()..=text.rfind('}').unwrap()])?;
-            let response = json!({"request_key":packet["request_key"],"state":"unknown","because":[],"reason":"The scripted provider measures lifecycle only.","questions":["Does the artifact meet the current criterion?"]});
+            let mut response = json!({"request_key":packet["request_key"],"state":"unknown","because":[],"reason":"The scripted provider measures lifecycle only.","questions":["Does the artifact meet the current criterion?"]});
+            if request
+                .response_schema
+                .as_ref()
+                .is_some_and(|v| v["properties"]["comparison"].is_object())
+            {
+                response["artifact_content"] = json!("not_assessed");
+                response["artifact_facts"] = json!([]);
+                response["comparison"] = json!("insufficient");
+            }
+            if self.mode == 8 && response["comparison"].is_string() {
+                response["comparison"] = json!("supports");
+            }
+            if self.mode == 9 {
+                response["questions"] = json!([]);
+            }
+            if matches!(self.mode, 7 | 10) {
+                let target = request.messages.last().unwrap().text();
+                response = serde_json::from_str(target.split_once('\n').unwrap().1)?;
+                if self.mode == 10 {
+                    response["reason"] = json!("Changed literal.");
+                }
+            }
             if self.mode == 4
-                && self.root.join("raw-provider.jsonl").is_file()
+                && (self.root.join("raw-provider.jsonl").is_file()
+                    || self.root.join("direct-provider.jsonl").is_file())
                 && !self.root.join("typed-provider.jsonl").is_file()
+                && !self.root.join("checked-provider.jsonl").is_file()
             {
                 withdraw(&self.root)?;
             }
@@ -488,6 +706,13 @@ mod tests {
         }
     }
     async fn run(mode: u8, index: usize) -> (std::path::PathBuf, Value, Vec<String>) {
+        run_selected(mode, index, Mode::Legacy).await
+    }
+    async fn run_selected(
+        mode: u8,
+        index: usize,
+        selection: Mode,
+    ) -> (std::path::PathBuf, Value, Vec<String>) {
         let temporary =
             std::env::temp_dir().join(format!("native-trial-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&temporary).unwrap();
@@ -500,11 +725,147 @@ mod tests {
             seen: seen.clone(),
             mode,
         };
-        let report = run_case(&root, &case(), "scripted-native", &factory, &cancel, index)
-            .await
-            .unwrap();
+        let report = run_mode(
+            &root,
+            &case(),
+            "scripted-native",
+            &factory,
+            &cancel,
+            index,
+            selection,
+        )
+        .await
+        .unwrap();
         let seen = seen.lock().unwrap().clone();
         (temporary, report, seen)
+    }
+    #[tokio::test]
+    async fn checked_refusals_keep_raw_output_usage_and_sibling_attempt() {
+        for mode in [8, 9] {
+            let (tmp, report, seen) = run_selected(mode, 1, Mode::Checked).await;
+            assert_eq!(seen, vec!["checked", "direct"]);
+            let checked = &report["arms"]["checked"];
+            assert_eq!(checked["status"], "failed", "{report:#}");
+            assert_eq!(checked["policy_calls_started"], 1);
+            assert_eq!(checked["output_tokens"], 20);
+            assert_eq!(checked["refusal"]["stage"], "finalize");
+            assert!(tmp.join("run/checked-raw.txt").is_file());
+            assert_eq!(report["arms"]["direct"]["policy_calls_started"], 1);
+            fs::remove_dir_all(tmp).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn checked_authorization_withdrawal_blocks_dispatch_and_finalization() {
+        for mode in [2, 4] {
+            let (tmp, report, _) = run_selected(mode, 0, Mode::Checked).await;
+            assert_eq!(report["status"], "failed");
+            assert_eq!(report["arms"]["checked"]["policy_calls_started"], 0);
+            assert_eq!(
+                report["arms"]["direct"]["policy_calls_started"],
+                u8::from(mode == 4)
+            );
+            if mode == 4 {
+                assert!(tmp.join("run/direct-raw.txt").is_file());
+            }
+            fs::remove_dir_all(tmp).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn control_target_mismatch_fails_even_when_host_accepts() {
+        let (tmp, report, seen) = run_selected(10, 0, Mode::Controls).await;
+        assert_eq!(seen.len(), 6);
+        assert_eq!(report["status"], "failed");
+        for name in Mode::Controls.order(0) {
+            assert_eq!(report["arms"][name]["control_match"], false);
+            assert!(report["arms"][name]["appraisal"].is_object());
+            assert_eq!(report["arms"][name]["policy_calls_started"], 1);
+        }
+        fs::remove_dir_all(tmp).unwrap();
+    }
+    #[tokio::test]
+    async fn literal_controls_are_six_distinct_audited_one_call_targets() {
+        let temporary =
+            std::env::temp_dir().join(format!("native-controls-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&temporary).unwrap();
+        let root = temporary.canonicalize().unwrap().join("run");
+        let seen = Arc::new(Mutex::new(vec![]));
+        let cancel = CancellationToken::new();
+        let factory = Scripted {
+            root: root.clone(),
+            root_cancel: cancel.clone(),
+            seen: seen.clone(),
+            mode: 7,
+        };
+        let report = run_verdict_controls(&root, &case(), "scripted-native", &factory, &cancel, 0)
+            .await
+            .unwrap();
+        assert_eq!(report["protocol"], CONTROLS_PROTOCOL);
+        assert_eq!(seen.lock().unwrap().len(), 6);
+        assert_eq!(report["status"], "completed", "{report:#}");
+        for protocol in ["v1", "v2"] {
+            for state in ["met", "not_met", "unknown"] {
+                let name = format!("{protocol}-{state}");
+                let arm = &report["arms"][&name];
+                assert_eq!(arm["target"]["state"], state);
+                assert_eq!(arm["control_match"], true);
+                assert_eq!(arm["policy_calls_started"], 1);
+                assert_eq!(arm["database_unchanged"], true);
+                assert!(root.join(format!("{name}-raw.txt")).is_file());
+                assert!(root.join(format!("{name}-request.json")).is_file());
+            }
+        }
+        fs::remove_dir_all(temporary).unwrap();
+    }
+    #[tokio::test]
+    async fn checked_pairs_have_explicit_protocol_and_typed_distinct_requests() {
+        let temporary =
+            std::env::temp_dir().join(format!("native-checked-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&temporary).unwrap();
+        let root = temporary.canonicalize().unwrap().join("run");
+        let seen = Arc::new(Mutex::new(vec![]));
+        let cancel = CancellationToken::new();
+        let factory = Scripted {
+            root: root.clone(),
+            root_cancel: cancel.clone(),
+            seen: seen.clone(),
+            mode: 0,
+        };
+        let report = run_checked_case(&root, &case(), "scripted-native", &factory, &cancel, 0)
+            .await
+            .unwrap();
+        assert_eq!(report["protocol"], CHECKED_PROTOCOL);
+        assert_eq!(*seen.lock().unwrap(), vec!["direct", "checked"]);
+        let direct: Value =
+            serde_json::from_slice(&fs::read(root.join("direct-input.json")).unwrap()).unwrap();
+        let checked: Value =
+            serde_json::from_slice(&fs::read(root.join("checked-input.json")).unwrap()).unwrap();
+        let wire: Value =
+            serde_json::from_slice(&fs::read(root.join("checked-request.json")).unwrap()).unwrap();
+        let properties = wire["wire_body"]["response_format"]["schema"]["properties"]
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            properties.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "request_key",
+                "artifact_content",
+                "artifact_facts",
+                "comparison",
+                "because",
+                "reason",
+                "questions",
+                "state"
+            ]
+        );
+        assert_eq!(
+            wire["wire_body"]["response_format"]["schema"],
+            checked["schema"]
+        );
+        assert_ne!(direct["schema"], checked["schema"]);
+        assert_ne!(direct["request_key"], checked["request_key"]);
+        assert_eq!(report["arms"]["direct"]["status"], "completed");
+        assert_eq!(report["arms"]["checked"]["policy_calls_started"], 1);
+        fs::remove_dir_all(temporary).unwrap();
     }
     #[tokio::test]
     async fn paired_calls_share_binding_schema_and_preserve_database() {
