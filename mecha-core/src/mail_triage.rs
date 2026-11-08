@@ -41,6 +41,7 @@
 
 pub mod rule_records;
 
+pub mod confirm;
 pub mod rule_frame;
 use std::path::{Path, PathBuf};
 

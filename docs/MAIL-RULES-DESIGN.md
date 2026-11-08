@@ -2382,6 +2382,50 @@ ruling:
 - Description-rule testing against past mail, with its cost shown, is a
   separate PR (P4a-2). Until then the Test button reports the store's refusal.
 
+**P4b-1 implemented (2026-11-07): the confirmation pass.** `mail_triage::confirm`
+is the second quarantined call of §4.2: a compiled instruction and the
+candidates' `match.describe` texts, no learned rules and no correction examples.
+The classify sweep runs it after the main pass's final reading, over the same
+text: the **choose** shape when the main pass's grounded `rule` names a rule
+with a Board or outbound group in `propose`/`auto` (offered every eligible such
+rule, in frame order), and the **each** shape, one verdict per candidate, for
+the reconciled match set's rules with such a group in `shadow`. The result
+rides on the triage record's `rules.confirmation` with
+`CONFIRMATION_VERSION`, a digest of the compiled strings. The engine runs an
+automatic description task only when the active confirmation, under this
+build, chose the same rule; otherwise the task is offered with the reason
+`unconfirmed` (the pass chose otherwise, or gave no answer), and the row's
+`matched_because.confirmation` names what the pass chose: a rule, `none`, or
+`not confirmed` when it decided nothing. A shadow task's would-have row
+records `would have proposed: the confirmation pass disagreed` or `not
+confirmed`. The version enters the match
+digest of exactly the groups the pass decides, and the approval digest of a
+description rule with a task or send, so a changed instruction separates the
+measurement and lapses those approvals. The approval digest is per rule, so the
+lapse takes every group of such a rule, its mailbox actions included, as an
+alias or limits change already does; and the first build carrying the version
+lapses every such rule once (none was installed when it shipped). A task held at
+`propose` is confirmed too, though its row is an offer either way: the answer
+rides on the offer the owner reads, and it is the agreement rate a promotion
+to `auto` is weighed on, which a task that is never confirmed until it is
+automatic could not show. A description rule's `task` therefore
+leaves `shadow` in this phase; its sends stay there until P4b-2.
+`Reflexion::learnable`'s comment gains the sentence naming the confirmation
+pass as why the triage exemption's premise still holds.
+
+Refusals (`rules.refused`, and the confirmation's own) are recorded with
+`RuleRefusal::label` text but not yet shown on the page; the description-rule
+test (P4a-2) is where they surface, beside the cost it reports.
+
+Implementation choices, not owner rulings: a failed confirmation call, or an
+answer whose quote was refused, demotes exactly as a disagreement does and is
+never retried into agreement, but is recorded on both shapes as `not
+confirmed` rather than as a judgement, so an outage is not counted in the
+measurement promotion is decided on; a
+confirmation from another build's frame confirms nothing; the shadow
+confirmation of a rule with no gate-failing text (every rule until P7) is the
+only shadow case.
+
 **P3 — `#mail/rules`.** The list, the rule page, the ledger with undo and
 wrong-match, header-rule testing, *make a rule from this thread*.
 

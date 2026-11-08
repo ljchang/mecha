@@ -2869,6 +2869,7 @@ fn told(f: &Fixture, rule: &LoadedRule, list: RuleList, named: bool, input: Rule
             Vec::new()
         },
         refused: Vec::new(),
+        confirmation: None,
     });
 }
 
@@ -2979,9 +2980,10 @@ async fn description_ceilings_follow_the_group() {
         approvals::mode_ceiling(&trash, ActionGroup::Mailbox),
         Mode::Propose
     );
+    // P4b-1: a description task is confirmed, so it may rise.
     assert_eq!(
         approvals::mode_ceiling(&task, ActionGroup::Board),
-        Mode::Shadow
+        Mode::Auto
     );
     assert_eq!(
         approvals::mode_ceiling(&forward, ActionGroup::VerbatimForward),
@@ -3127,5 +3129,400 @@ async fn a_description_row_can_be_marked_a_wrong_match_and_counts_toward_the_bra
     assert_eq!(
         brake_evidence("bookings", &f.store.ledger().unwrap()).wrong_matches,
         1
+    );
+}
+
+// ---- the confirmation pass (P4b-1) ----
+
+fn confirmed(f: &Fixture, choice: Option<&str>, shadow: &[(&str, bool)]) {
+    use crate::mail_triage::confirm::{
+        ActiveConfirmation, Confirmation, ShadowConfirmation, CONFIRMATION_VERSION,
+    };
+    let mut cs = f.mail.candidates.lock().unwrap();
+    let rules = cs[0].classified.as_mut().unwrap().rules.as_mut().unwrap();
+    rules.confirmation = Some(Confirmation {
+        version: CONFIRMATION_VERSION.clone(),
+        active: choice.map(|name| ActiveConfirmation {
+            offered: vec![name.into()],
+            choice: (name != "none").then(|| RuleHit {
+                name: name.into(),
+                quote: "booking for Friday".into(),
+            }),
+            ..Default::default()
+        }),
+        shadow: shadow
+            .iter()
+            .map(|(name, agrees)| ShadowConfirmation {
+                name: (*name).into(),
+                agrees: *agrees,
+                quote: None,
+                refused: None,
+                answered: true,
+                failed: None,
+            })
+            .collect(),
+    });
+}
+
+#[tokio::test]
+async fn an_automatic_description_task_needs_the_confirmation_pass_to_agree() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", TASK);
+    f.mode(&r, ActionGroup::Board, Mode::Auto);
+    f.options.pass = Pass::AfterClassify;
+    let sink = Sink::default();
+    // The main pass named it, the confirmation pass chose none: proposed.
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    let report = f.run(Some(&sink)).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Offered,
+        "{:#?}",
+        report.rows
+    );
+    assert_eq!(report.rows[0].mode, Mode::Propose);
+    assert_eq!(
+        report.rows[0].reason,
+        "unconfirmed: the confirmation pass did not choose this rule"
+    );
+    assert!(report.rows[0]
+        .matched_because
+        .contains(r#""confirmation":"none""#));
+    assert!(sink.0.lock().unwrap().is_empty());
+
+    // Both passes chose it: the task is created.
+    f.mail.next("beta");
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("bookings"), &[]);
+    let report = f.run(Some(&sink)).await;
+    assert_eq!(report.rows[0].outcome, Outcome::Done, "{:#?}", report.rows);
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
+
+    // No confirmation at all (another build, or none recorded): proposed.
+    f.mail.next("gamma");
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    let report = f.run(Some(&sink)).await;
+    assert_eq!(report.rows[0].outcome, Outcome::Offered);
+    assert_eq!(
+        report.rows[0].reason, "unconfirmed: the confirmation pass gave no answer",
+        "no answer is not a disagreement (review of #855, pass 2)"
+    );
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
+
+    // The call failed: proposed, and the row says so rather than "none".
+    f.mail.next("delta");
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        let rules = cs[0].classified.as_mut().unwrap().rules.as_mut().unwrap();
+        let active = rules
+            .confirmation
+            .as_mut()
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap();
+        active.failed = Some("the model server did not answer".into());
+    }
+    let report = f.run(Some(&sink)).await;
+    assert_eq!(report.rows[0].outcome, Outcome::Offered);
+    assert_eq!(
+        report.rows[0].reason,
+        "unconfirmed: the confirmation pass gave no answer"
+    );
+    assert!(
+        report.rows[0]
+            .matched_because
+            .contains(r#""confirmation":"not confirmed""#),
+        "{}",
+        report.rows[0].matched_because
+    );
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
+}
+
+/// Review of #855, pass 3: the demotion happens at planning, not only at
+/// dispatch, so an unconfirmed task is never an automatic one anywhere —
+/// not in the claimed row, not against the sink hold, not against a cap.
+#[tokio::test]
+async fn an_unconfirmed_task_is_demoted_before_it_is_planned() {
+    // No sink: an automatic task would be held for it; an offer is not.
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", TASK);
+    f.mode(&r, ActionGroup::Board, Mode::Auto);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    let report = f.run(None).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Offered,
+        "{:#?}",
+        report.rows
+    );
+    assert!(
+        f.store
+            .ledger()
+            .unwrap()
+            .iter()
+            .all(|row| row.mode != Mode::Auto),
+        "no row of an unconfirmed task is written as automatic: {:#?}",
+        f.store.ledger().unwrap()
+    );
+
+    // Two threads, one global cap: the unconfirmed first leaves the cap to
+    // the confirmed second.
+    let mut f = Fixture::new();
+    std::fs::write(f.store.root().join("limits.toml"), "daily_cap = 1\n").unwrap();
+    let r = described_rule(&f, "bookings", "", TASK);
+    f.mode(&r, ActionGroup::Board, Mode::Auto);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        let mut second = cs[0].clone();
+        second.message.provider_message_id = "message-beta".into();
+        second.message.thread_id = "thread-beta".into();
+        let rules = second.classified.as_mut().unwrap().rules.as_mut().unwrap();
+        let active = rules
+            .confirmation
+            .as_mut()
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap();
+        active.choice = Some(RuleHit {
+            name: "bookings".into(),
+            quote: "booking for Friday".into(),
+        });
+        cs.push(second);
+    }
+    let sink = Sink::default();
+    let report = f.run(Some(&sink)).await;
+    let by_thread = |t: &str| {
+        report
+            .rows
+            .iter()
+            .find(|row| row.message.thread_id == t)
+            .unwrap_or_else(|| panic!("no row for {t}: {:#?}", report.rows))
+            .outcome
+    };
+    assert_eq!(
+        by_thread("thread-beta"),
+        Outcome::Done,
+        "{:#?}",
+        report.rows
+    );
+    assert_ne!(by_thread("thread-alpha"), Outcome::Done);
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_shadow_task_records_what_the_confirmation_pass_said() {
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", TASK);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    confirmed(&f, None, &[("bookings", false)]);
+    let row = f.run(None).await.rows[0].clone();
+    assert_eq!(row.outcome, Outcome::WouldHave);
+    assert_eq!(
+        row.reason,
+        "would have proposed: the confirmation pass disagreed"
+    );
+    f.mail.next("beta");
+    told(&f, &r, RuleList::Shadow, true, RuleInput::Snippet);
+    confirmed(&f, None, &[("bookings", true)]);
+    assert_eq!(f.run(None).await.rows[0].reason, "");
+}
+
+#[test]
+fn only_the_groups_the_confirmation_pass_decides_carry_its_version() {
+    use crate::mail_triage::confirm::CONFIRMATION_VERSION;
+    let f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", &format!("{ARCHIVE}{TASK}"));
+    let board = r
+        .match_digest(ActionGroup::Board, GateStatus::Passing)
+        .unwrap();
+    let mailbox = r
+        .match_digest(ActionGroup::Mailbox, GateStatus::Passing)
+        .unwrap();
+    assert_eq!(board.confirmation_version, *CONFIRMATION_VERSION);
+    assert!(mailbox.confirmation_version.is_empty());
+    assert_eq!(
+        r.approval_digest.confirmation_version,
+        *CONFIRMATION_VERSION
+    );
+    let header = f.rule("header-task", TASK);
+    assert!(header
+        .match_digest(ActionGroup::Board, GateStatus::Passing)
+        .unwrap()
+        .confirmation_version
+        .is_empty());
+    assert!(header.approval_digest.confirmation_version.is_empty());
+}
+
+/// Answers in order, and counts the calls.
+struct Answers(
+    std::sync::Mutex<Vec<&'static str>>,
+    std::sync::atomic::AtomicUsize,
+);
+#[async_trait]
+impl crate::provider::Provider for Answers {
+    fn local(&self) -> bool {
+        true
+    }
+    fn id(&self) -> &str {
+        "answers"
+    }
+    fn default_model(&self) -> &str {
+        "answers-1"
+    }
+    async fn complete(
+        &self,
+        _: &crate::message::CompletionRequest,
+        _: Option<&crate::provider::StreamSink>,
+    ) -> Result<crate::message::CompletionResponse> {
+        use crate::message::{Block, CompletionResponse, Message, StopReason};
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let text = self.0.lock().unwrap().remove(0).to_string();
+        Ok(CompletionResponse {
+            message: Message::assistant(vec![Block::Text { text }]),
+            stop_reason: StopReason::EndTurn,
+            usage: crate::message::Usage::default(),
+            refusal: None,
+            model: "answers-1".into(),
+            malformed_tool_args: 0,
+        })
+    }
+}
+
+/// Review of #855, pass 4: the producer of the record the engine demotes on
+/// is measured, not only the record — an inert one would turn every
+/// automatic description task into an offer with the suite green.
+#[tokio::test]
+async fn the_confirmation_pass_runs_only_when_a_candidate_is_owed_one() {
+    use super::super::describe::{ClassifierRules, Envelope};
+    use crate::mail_triage::confirm::CONFIRMATION_VERSION;
+    use crate::mail_triage::rule_frame::RuleReading;
+    use std::sync::atomic::Ordering;
+    let f = Fixture::new();
+    let a = described_rule(&f, "a-tasks", "", TASK);
+    f.mode(&a, ActionGroup::Board, Mode::Auto);
+    let archive = described_rule(&f, "c-archive", "", ARCHIVE);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    described_rule(&f, "d-shadow-task", "", TASK);
+    let rules = ClassifierRules::load(&f.store).unwrap();
+    let ask = rules.ask(&Envelope {
+        account: "campus",
+        from: "someone@example.com",
+        subject: "Friday",
+        has_attachment: None,
+    });
+    let thread = crate::mail_triage::ThreadInput {
+        thread_id: "t1".into(),
+        account: "campus".into(),
+        from: "someone@example.com".into(),
+        from_name: "Someone".into(),
+        subject: "Friday".into(),
+        date: "2026-11-07T10:00:00Z".into(),
+        body: "Your booking for Friday is confirmed.".into(),
+    };
+    let hit = |name: &str| RuleHit {
+        name: name.into(),
+        quote: "booking for Friday".into(),
+    };
+    let provider = Answers(
+        std::sync::Mutex::new(vec![
+            r#"{"reasoning":"x","rule":"a-tasks","quote":"booking for Friday"}"#,
+            r#"{"reasoning":"x","verdicts":[{"name":"d-shadow-task","matches":true,"quote":"booking for Friday"}]}"#,
+        ]),
+        Default::default(),
+    );
+
+    // A mailbox-only match owes nothing: no call, no record.
+    let only_archive = RuleReading {
+        active: Some(hit("c-archive")),
+        ..Default::default()
+    };
+    assert!(rules
+        .confirm(&provider, "m", &thread, &ask, &only_archive)
+        .await
+        .is_none());
+    assert_eq!(provider.1.load(Ordering::SeqCst), 0);
+
+    // An automatic task candidate: the active shape runs, under this build.
+    let task = RuleReading {
+        active: Some(hit("a-tasks")),
+        ..Default::default()
+    };
+    let c = rules
+        .confirm(&provider, "m", &thread, &ask, &task)
+        .await
+        .expect("a task candidate is confirmed");
+    assert_eq!(c.version, *CONFIRMATION_VERSION);
+    assert!(c.confirms_active("a-tasks"), "{c:#?}");
+    assert!(c.shadow.is_empty());
+
+    // A shadow task named: the each shape runs, and nothing active.
+    let shadow = RuleReading {
+        shadow: vec![hit("d-shadow-task")],
+        ..Default::default()
+    };
+    let c = rules
+        .confirm(&provider, "m", &thread, &ask, &shadow)
+        .await
+        .expect("a shadow task is confirmed");
+    assert!(c.active.is_none());
+    assert_eq!(c.shadow_verdict("d-shadow-task"), Some(true), "{c:#?}");
+    assert_eq!(provider.1.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn the_sweep_confirms_a_task_candidate_against_every_eligible_task_rule_and_nothing_else() {
+    use super::super::describe::{ClassifierRules, Envelope};
+    let f = Fixture::new();
+    let a = described_rule(&f, "a-tasks", "", TASK);
+    f.mode(&a, ActionGroup::Board, Mode::Auto);
+    let b = described_rule(&f, "b-tasks", "", TASK);
+    f.mode(&b, ActionGroup::Board, Mode::Propose);
+    let archive = described_rule(&f, "c-archive", "", ARCHIVE);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    described_rule(&f, "d-shadow-task", "", TASK);
+    let rules = ClassifierRules::load(&f.store).unwrap();
+    let ask = rules.ask(&Envelope {
+        account: "campus",
+        from: "someone@example.com",
+        subject: "Friday",
+        has_attachment: None,
+    });
+    let hit = |name: &str| RuleHit {
+        name: name.into(),
+        quote: "Friday notice".into(),
+    };
+    let reading =
+        |active: Option<&str>, shadow: &[&str]| crate::mail_triage::rule_frame::RuleReading {
+            active: active.map(hit),
+            shadow: shadow.iter().map(|n| hit(n)).collect(),
+            ..Default::default()
+        };
+    let names = |v: Vec<crate::mail_triage::rule_frame::FrameEntry>| {
+        v.into_iter().map(|e| e.name).collect::<Vec<_>>()
+    };
+    // A task candidate: both task rules are offered, the archive rule is not.
+    assert_eq!(
+        names(rules.active_confirmation(&ask, &reading(Some("a-tasks"), &[]))),
+        vec!["a-tasks", "b-tasks"]
+    );
+    // A mailbox-only match needs no confirmation at all.
+    assert!(rules
+        .active_confirmation(&ask, &reading(Some("c-archive"), &[]))
+        .is_empty());
+    // Shadow: only the named rules with a shadow task, one verdict each.
+    assert_eq!(
+        names(rules.shadow_confirmation(&reading(None, &["d-shadow-task", "c-archive"]))),
+        vec!["d-shadow-task"]
     );
 }

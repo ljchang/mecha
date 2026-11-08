@@ -312,13 +312,11 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
         });
     }
     if rule.definition.is_description() {
-        if group.is_outbound() || group == ActionGroup::Board {
-            // §4.2: a description match is a candidate, never a decision,
-            // for a send or a task until the confirmation pass decides it.
+        if group.is_outbound() {
+            // Tasks are confirmed since P4b-1; sends wait for their guards.
             holds.push(ModeHold {
                 ceiling: Mode::Shadow,
-                reason: "a description rule's sends and tasks wait for the confirmation pass (P4b)"
-                    .into(),
+                reason: "a description rule's sends wait for the send guards (P4b-2)".into(),
             });
         }
         if group == ActionGroup::Mailbox

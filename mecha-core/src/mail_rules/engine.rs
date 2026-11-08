@@ -18,6 +18,13 @@ struct Described {
     /// The quote, when the shadow list named it.
     shadow: Option<String>,
     input: VerdictInput,
+    /// The active confirmation chose this rule under this build.
+    confirmed: bool,
+    /// The shadow confirmation's verdict on this rule, when it gave one.
+    shadow_confirmed: Option<bool>,
+    /// What the active confirmation chose, for the row: a name, "none", or
+    /// "not confirmed" when it decided nothing.
+    confirmation_choice: Option<String>,
 }
 
 impl Described {
@@ -852,6 +859,11 @@ impl Run<'_> {
             // The sender's words the classifier cited, grounded against what
             // it read: a human's "matched because", never a privileged run's.
             because["quote"] = serde_json::json!(d.quote(mode));
+            if let Some(choice) = &d.confirmation_choice {
+                // Both answers on the row (§4.2): the main pass's quote above,
+                // and what the pass without learned rules chose.
+                because["confirmation"] = serde_json::json!(choice);
+            }
         }
         row.matched_because = serde_json::to_string(&because)?;
         row.headers_partial =
@@ -890,7 +902,19 @@ impl Run<'_> {
         if active.is_none() && shadow.is_none() {
             return Ok(None);
         }
+        let confirmation = record.confirmation.as_ref();
         Ok(Some(Described {
+            // Only a rule the main pass named on its active list can be
+            // confirmed active, structurally rather than by the guard that
+            // drops it later (review of #855, pass 5).
+            confirmed: active.is_some()
+                && confirmation.is_some_and(|c| c.confirms_active(&rule.name)),
+            shadow_confirmed: confirmation.and_then(|c| c.shadow_verdict(&rule.name)),
+            // Under this build only, as `confirmed` is, so a row never says
+            // both "the pass chose X" and "unconfirmed" (review of #855).
+            confirmation_choice: confirmation
+                .filter(|_| active.is_some())
+                .and_then(|c| c.active_choice()),
             active,
             shadow,
             input: match record.input {
@@ -1068,7 +1092,7 @@ impl Run<'_> {
                 });
             for (index, action) in rule.definition.actions.iter().enumerate() {
                 let resolved = &current[&action.group()];
-                let mode = resolved.effective;
+                let mut mode = resolved.effective;
                 if mode == Mode::Off
                     || (mode.rank() >= Mode::Propose.rank() && resolved.activated_at.is_none())
                 {
@@ -1081,7 +1105,41 @@ impl Run<'_> {
                     // active action, and no row for this group.
                     continue;
                 }
+                // §4.2: for a task or send, the main pass's match is a
+                // candidate; an automatic one runs only when the confirmation
+                // pass, with no learned rules in it, chose the same rule.
+                // Keyed on the rule, not on the record, so a description rule
+                // that ever arrived here without one fails closed (review of
+                // #855, pass 2). `Some` carries the row's reason.
+                let unconfirmed = (rule.definition.is_description()
+                    && super::describe::confirmation_decides(action.group())
+                    && !described.is_some_and(|d| d.confirmed))
+                .then(|| {
+                    let choice = described.and_then(|d| d.confirmation_choice.as_deref());
+                    match choice {
+                        Some(c) if c != crate::mail_triage::confirm::NOT_CONFIRMED => {
+                            "unconfirmed: the confirmation pass did not choose this rule"
+                        }
+                        _ => "unconfirmed: the confirmation pass gave no answer",
+                    }
+                });
+                if unconfirmed.is_some() && mode == Mode::Auto {
+                    mode = Mode::Propose;
+                }
                 let mut row = self.snapshot_described(rule, index, c, mode, described)?;
+                if mode == Mode::Shadow {
+                    if let Some(d) =
+                        described.filter(|_| super::describe::confirmation_decides(action.group()))
+                    {
+                        row.reason = match d.shadow_confirmed {
+                            Some(true) => String::new(),
+                            Some(false) => {
+                                "would have proposed: the confirmation pass disagreed".into()
+                            }
+                            None => "not confirmed".into(),
+                        };
+                    }
+                }
                 let unknown = header_match(&rule.definition.matcher, c) == HeaderMatch::Unknown;
                 let removal = matches!(
                     action.verb,
@@ -1172,7 +1230,7 @@ impl Run<'_> {
                     reservations.push(row.clone());
                 }
                 pending.push(row);
-                planned.push((index, cap));
+                planned.push((index, cap, unconfirmed));
             }
             if !pending.is_empty() {
                 let claims = if self.options.dry_run {
@@ -1191,7 +1249,7 @@ impl Run<'_> {
                     self.sync_ledger()?;
                 }
                 let mut provisional: BTreeSet<_> = pending.iter().map(|r| r.id.clone()).collect();
-                for ((row, claim), (index, reserved_cap)) in
+                for ((row, claim), (index, reserved_cap, unconfirmed)) in
                     pending.into_iter().zip(claims).zip(planned)
                 {
                     if claim.status != ClaimStatus::Claimed {
@@ -1228,7 +1286,10 @@ impl Run<'_> {
                     // A preceding sibling can await I/O while the owner pauses
                     // and reactivates a group, or can trip its failure brake.
                     let resolved = self.modes(rule)?[&action.group()].clone();
-                    let mode = resolved.effective;
+                    let mut mode = resolved.effective;
+                    if unconfirmed.is_some() && mode == Mode::Auto {
+                        mode = Mode::Propose;
+                    }
                     let inputs_changed = self.check_inputs(rule)?;
                     // Recheck at dispatch: provider reads and earlier actions
                     // can cross the local day boundary after reservation.
@@ -1283,7 +1344,11 @@ impl Run<'_> {
                             FailureKind::Unknown,
                         )
                     } else if mode == Mode::Propose {
-                        (Outcome::Offered, String::new(), FailureKind::Unknown)
+                        (
+                            Outcome::Offered,
+                            unconfirmed.unwrap_or_default().into(),
+                            FailureKind::Unknown,
+                        )
                     } else if let Some(cap) = cap {
                         self.report.notices.push(cap.into());
                         (Outcome::Held, cap.into(), FailureKind::Unknown)
