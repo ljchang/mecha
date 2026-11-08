@@ -3364,6 +3364,122 @@ fn only_the_groups_the_confirmation_pass_decides_carry_its_version() {
     assert!(header.approval_digest.confirmation_version.is_empty());
 }
 
+/// Answers in order, and counts the calls.
+struct Answers(
+    std::sync::Mutex<Vec<&'static str>>,
+    std::sync::atomic::AtomicUsize,
+);
+#[async_trait]
+impl crate::provider::Provider for Answers {
+    fn local(&self) -> bool {
+        true
+    }
+    fn id(&self) -> &str {
+        "answers"
+    }
+    fn default_model(&self) -> &str {
+        "answers-1"
+    }
+    async fn complete(
+        &self,
+        _: &crate::message::CompletionRequest,
+        _: Option<&crate::provider::StreamSink>,
+    ) -> Result<crate::message::CompletionResponse> {
+        use crate::message::{Block, CompletionResponse, Message, StopReason};
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let text = self.0.lock().unwrap().remove(0).to_string();
+        Ok(CompletionResponse {
+            message: Message::assistant(vec![Block::Text { text }]),
+            stop_reason: StopReason::EndTurn,
+            usage: crate::message::Usage::default(),
+            refusal: None,
+            model: "answers-1".into(),
+            malformed_tool_args: 0,
+        })
+    }
+}
+
+/// Review of #855, pass 4: the producer of the record the engine demotes on
+/// is measured, not only the record — an inert one would turn every
+/// automatic description task into an offer with the suite green.
+#[tokio::test]
+async fn the_confirmation_pass_runs_only_when_a_candidate_is_owed_one() {
+    use super::super::describe::{ClassifierRules, Envelope};
+    use crate::mail_triage::confirm::CONFIRMATION_VERSION;
+    use crate::mail_triage::rule_frame::RuleReading;
+    use std::sync::atomic::Ordering;
+    let f = Fixture::new();
+    let a = described_rule(&f, "a-tasks", "", TASK);
+    f.mode(&a, ActionGroup::Board, Mode::Auto);
+    let archive = described_rule(&f, "c-archive", "", ARCHIVE);
+    f.mode(&archive, ActionGroup::Mailbox, Mode::Auto);
+    described_rule(&f, "d-shadow-task", "", TASK);
+    let rules = ClassifierRules::load(&f.store).unwrap();
+    let ask = rules.ask(&Envelope {
+        account: "campus",
+        from: "someone@example.com",
+        subject: "Friday",
+        has_attachment: None,
+    });
+    let thread = crate::mail_triage::ThreadInput {
+        thread_id: "t1".into(),
+        account: "campus".into(),
+        from: "someone@example.com".into(),
+        from_name: "Someone".into(),
+        subject: "Friday".into(),
+        date: "2026-11-07T10:00:00Z".into(),
+        body: "Your booking for Friday is confirmed.".into(),
+    };
+    let hit = |name: &str| RuleHit {
+        name: name.into(),
+        quote: "booking for Friday".into(),
+    };
+    let provider = Answers(
+        std::sync::Mutex::new(vec![
+            r#"{"reasoning":"x","rule":"a-tasks","quote":"booking for Friday"}"#,
+            r#"{"reasoning":"x","verdicts":[{"name":"d-shadow-task","matches":true,"quote":"booking for Friday"}]}"#,
+        ]),
+        Default::default(),
+    );
+
+    // A mailbox-only match owes nothing: no call, no record.
+    let only_archive = RuleReading {
+        active: Some(hit("c-archive")),
+        ..Default::default()
+    };
+    assert!(rules
+        .confirm(&provider, "m", &thread, &ask, &only_archive)
+        .await
+        .is_none());
+    assert_eq!(provider.1.load(Ordering::SeqCst), 0);
+
+    // An automatic task candidate: the active shape runs, under this build.
+    let task = RuleReading {
+        active: Some(hit("a-tasks")),
+        ..Default::default()
+    };
+    let c = rules
+        .confirm(&provider, "m", &thread, &ask, &task)
+        .await
+        .expect("a task candidate is confirmed");
+    assert_eq!(c.version, *CONFIRMATION_VERSION);
+    assert!(c.confirms_active("a-tasks"), "{c:#?}");
+    assert!(c.shadow.is_empty());
+
+    // A shadow task named: the each shape runs, and nothing active.
+    let shadow = RuleReading {
+        shadow: vec![hit("d-shadow-task")],
+        ..Default::default()
+    };
+    let c = rules
+        .confirm(&provider, "m", &thread, &ask, &shadow)
+        .await
+        .expect("a shadow task is confirmed");
+    assert!(c.active.is_none());
+    assert_eq!(c.shadow_verdict("d-shadow-task"), Some(true), "{c:#?}");
+    assert_eq!(provider.1.load(Ordering::SeqCst), 2);
+}
+
 #[test]
 fn the_sweep_confirms_a_task_candidate_against_every_eligible_task_rule_and_nothing_else() {
     use super::super::describe::{ClassifierRules, Envelope};

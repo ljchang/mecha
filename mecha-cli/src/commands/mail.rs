@@ -1720,20 +1720,22 @@ async fn classify(
     // whether it is too aggressive — and a number nobody can see is a rule
     // nobody can grade.
     println!(
-        "\n{ok} classified ({escalated} read in full on a second pass{}{}), \
-         {prefiltered} disposed without a model{}, {failed} failed",
+        "\n{ok} classified ({escalated} read in full on a second pass{}), \
+         {prefiltered} disposed without a model{}, {failed} failed{}",
         if requeued_ok > 0 {
             format!(", {requeued_ok} retried whole from the store")
         } else {
             String::new()
         },
-        if rules_body > 0 {
-            format!(", {rules_body} read in full for description rules")
+        if rules_only > 0 {
+            format!(" for triage ({rules_only} of them read by the model for description rules)")
         } else {
             String::new()
         },
-        if rules_only > 0 {
-            format!(" for triage ({rules_only} of them read by the model for description rules)")
+        // Across both paths, so a total of its own rather than under either
+        // (review of #855, pass 4).
+        if rules_body > 0 {
+            format!("; {rules_body} read in full for description rules")
         } else {
             String::new()
         }
@@ -1842,11 +1844,8 @@ async fn ask_rules_only(
     Ok(record)
 }
 
-/// The confirmation pass for a reading that has a task or send candidate
-/// (MAIL-RULES-DESIGN.md §4.2): a second quarantined call with no learned
-/// rules and no correction examples, over the same text the main pass's
-/// final answer read. `None` when nothing needed confirming. A failed call
-/// is recorded as failed, which the engine reads as disagreement.
+/// The confirmation pass (`ClassifierRules::confirm`), with its failure on
+/// stderr where the sweep's other notes go.
 async fn confirm_reading(
     provider: &dyn mecha_core::provider::Provider,
     model: &str,
@@ -1855,27 +1854,17 @@ async fn confirm_reading(
     ask: &mecha_core::mail_triage::rule_frame::RuleAsk<'_>,
     reading: &mecha_core::mail_triage::rule_frame::RuleReading,
 ) -> Option<mecha_core::mail_triage::confirm::Confirmation> {
-    use mecha_core::mail_triage::confirm;
-    let offered = described.active_confirmation(ask, reading);
-    let shadow = described.shadow_confirmation(reading);
-    if offered.is_empty() && shadow.is_empty() {
-        return None;
+    let out = described
+        .confirm(provider, model, thread, ask, reading)
+        .await;
+    if let Some(failed) = out
+        .as_ref()
+        .and_then(|c| c.active.as_ref())
+        .and_then(|a| a.failed.as_ref())
+    {
+        eprintln!("      (confirmation pass failed; its tasks propose: {failed})");
     }
-    let mut out = confirm::Confirmation {
-        version: confirm::CONFIRMATION_VERSION.clone(),
-        ..Default::default()
-    };
-    if !offered.is_empty() {
-        let active = confirm::confirm_active(provider, model, thread, &offered).await;
-        if let Some(failed) = &active.failed {
-            eprintln!("      (confirmation pass failed; its tasks propose: {failed})");
-        }
-        out.active = Some(active);
-    }
-    if !shadow.is_empty() {
-        out.shadow = confirm::confirm_each(provider, model, thread, &shadow).await;
-    }
-    Some(out)
+    out
 }
 
 /// The whole conversation, as text, for the second pass.

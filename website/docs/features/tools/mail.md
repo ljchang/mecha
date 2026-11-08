@@ -841,7 +841,9 @@ that resembles a description. A description rule can also make a **task**
 automatically, but only when a second, separate check agrees: one that sees
 just your descriptions and the message, without anything the classifier has
 learned from past corrections. When the two disagree, the task is offered
-instead, and the ledger row shows both answers. Replies and forwards from a
+instead, and the ledger row shows both answers. An update that changes
+the second check's instructions asks you to approve such a rule again, all
+of its groups, as an edit to its files does. Replies and forwards from a
 description rule stay in shadow for now. The classifier's lists hold at most 12
 description entries (a rule with both shadow and active groups takes two),
 and adding one more is refused with the rules to lower.

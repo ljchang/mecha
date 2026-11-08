@@ -2401,7 +2401,10 @@ records `would have proposed: the confirmation pass disagreed` or `not
 confirmed`. The version enters the match
 digest of exactly the groups the pass decides, and the approval digest of a
 description rule with a task or send, so a changed instruction separates the
-measurement and lapses those approvals. A description rule's `task` therefore
+measurement and lapses those approvals. The approval digest is per rule, so the
+lapse takes every group of such a rule, its mailbox actions included, as an
+alias or limits change already does; and the first build carrying the version
+lapses every such rule once (none was installed when it shipped). A description rule's `task` therefore
 leaves `shadow` in this phase; its sends stay there until P4b-2.
 `Reflexion::learnable`'s comment gains the sentence naming the confirmation
 pass as why the triage exemption's premise still holds.

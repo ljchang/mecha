@@ -354,6 +354,39 @@ impl ClassifierRules {
             .collect()
     }
 
+    /// The confirmation pass for a reading that has a task or send candidate
+    /// (MAIL-RULES-DESIGN.md §4.2): a second quarantined call with no learned
+    /// rules and no correction examples, over the same text the main pass's
+    /// final answer read. `None` when nothing needed confirming, and then no
+    /// call is made. A failed call is recorded as failed, which the engine
+    /// demotes on and reports as "not confirmed".
+    pub async fn confirm(
+        &self,
+        provider: &dyn crate::provider::Provider,
+        model: &str,
+        thread: &crate::mail_triage::ThreadInput,
+        ask: &RuleAsk<'_>,
+        reading: &RuleReading,
+    ) -> Option<crate::mail_triage::confirm::Confirmation> {
+        use crate::mail_triage::confirm;
+        let offered = self.active_confirmation(ask, reading);
+        let shadow = self.shadow_confirmation(reading);
+        if offered.is_empty() && shadow.is_empty() {
+            return None;
+        }
+        let mut out = confirm::Confirmation {
+            version: confirm::CONFIRMATION_VERSION.clone(),
+            ..Default::default()
+        };
+        if !offered.is_empty() {
+            out.active = Some(confirm::confirm_active(provider, model, thread, &offered).await);
+        }
+        if !shadow.is_empty() {
+            out.shadow = confirm::confirm_each(provider, model, thread, &shadow).await;
+        }
+        Some(out)
+    }
+
     /// Whether this reading needs the full body before it is final: a match,
     /// in either list, on a rule with a send in a group that is not off.
     /// Per thread, across rules: one such match escalates every verdict.
