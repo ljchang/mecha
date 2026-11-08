@@ -14874,7 +14874,7 @@ justification = "echo is off on this box"
             assistant(
                 vec![Block::ToolUse {
                     id: format!("r{i}"),
-                    name: if i % 2 == 0 { "peek" } else { "look" }.into(),
+                    name: if i.is_multiple_of(2) { "peek" } else { "look" }.into(),
                     input: json!({"path": "src/lib.rs"}),
                 }],
                 StopReason::ToolUse,
