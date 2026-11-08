@@ -886,6 +886,20 @@ class Imports(unittest.TestCase):
                         "another file's head, kept on purpose")
         self.assertTrue(mecha_history.needed("super::helpers::*", "", ""), "a file this cannot read")
 
+    def test_a_named_path_through_a_module_is_decided_by_the_module(self):
+        # Pass 10: `super::helpers::assert_x` named in the body was kept
+        # without asking whether `helpers` exists; the head decides.
+        run_file = "fn kept() {}\n\nmod support {\n    pub fn s() {}\n}\n"
+        self.assertFalse(mecha_history.needed("super::helpers::assert_x", "assert_x()", run_file),
+                         "the PR's module, never the run's, however the leaf is named")
+        self.assertTrue(mecha_history.needed("super::support::s", "", run_file), "the run's root has it")
+        self.assertTrue(mecha_history.needed("super::super::*", "", run_file),
+                         "super::super lands in a file this cannot read: kept")
+        self.assertTrue(mecha_history.needed("crate::config::Config", "Config::default()", run_file),
+                        "a crate path's head is another file: kept when named")
+        self.assertFalse(mecha_history.needed("crate::config::Config", "", run_file),
+                         "and not when nothing names it")
+
     def test_only_a_root_declaration_counts(self):
         self.assertTrue(mecha_history.needed("super::helper", "", "pub(crate) async fn helper() {}\n"))
         self.assertTrue(mecha_history.needed("super::helper", "", "use crate::x::{\n    helper,\n};\n"))

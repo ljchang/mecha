@@ -617,23 +617,27 @@ def needed(path, body, run_file=""):
     if first not in ("super", "self", "crate"):
         return True
     segs = path.split(" as ")[0].split("::")
+    # Resolution hangs on the *head* (review of #857, pass 10): for
+    # `super::m::X` or `super::m::*` it is whether the run's file root has
+    # `m` — a support module the PR created and an independent solution
+    # never wrote is E0432 for the whole file, whatever the leaf. Asked
+    # before the body is consulted, because a grafted test naming `X` does
+    # not make `m` exist. `super::super::…` and `crate::…` land in a file
+    # this cannot read, and so does a whole test file's `super`: those are
+    # decided as before, since dropping a real import fails the build as
+    # surely as keeping an unresolved one.
+    through_module = first == "super" and len(segs) > 2 and segs[1] != "super"
+    if through_module and run_file:
+        return declared_at_root(segs[1], run_file)
     if segs[-1] == "*":
-        # A glob, decided case by case rather than by falling through
-        # (review of #857, pass 9). `super::*` / `self::*` name the module
-        # itself, which always resolves. `super::m::*` resolves only if the
-        # run's file root has `m` — a support module the PR created and an
-        # independent solution never wrote is E0432 for the whole file. A
-        # `crate::` glob's head is in another file this cannot read, and is
-        # kept: dropping it loses a real import as surely as keeping an
-        # unresolved one fails the build, and the PR creating the module it
-        # globs is the rarer of the two.
-        if first == "super" and len(segs) > 2 and run_file:
-            return declared_at_root(segs[1], run_file)
-        return True  # the module itself, or a file this cannot read
+        # `super::*` / `self::*` name the module itself, which always
+        # resolves; the rest of the globs are in a file this cannot read
+        # (pass 9).
+        return True
     bound = path.split(" as ")[-1].split("::")[-1]
     if re.search(rf"\b{re.escape(bound)}\b", body):
         return True
-    return declared_at_root(segs[-1], run_file)
+    return len(segs) == 2 and declared_at_root(segs[-1], run_file)
 
 
 def declared_at_root(name, run_file):

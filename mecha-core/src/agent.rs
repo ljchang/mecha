@@ -14857,11 +14857,6 @@ justification = "echo is off on this box"
             .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
     }
 
-    /// And a *failed* write is a guess, not work: `fs_edit` missing with a new
-    /// `old` each turn answers the same error every time, and that streak on
-    /// one file is what boredom exists to name. Keyed whole like a success,
-    /// three guesses were three keys and the shape key saw one target, so
-    /// nothing fired (review of #857, pass 2).
     /// The half of the rule that kept the old behaviour: two *declared reads*
     /// reaching one file and getting the same bytes are one thing learned
     /// twice, keyed by target through the registry's `effect()`. The only
@@ -14921,6 +14916,11 @@ justification = "echo is off on this box"
         }
     }
 
+    /// And a *failed* write is a guess, not work: `fs_edit` missing with a new
+    /// `old` each turn answers the same error every time, and that streak on
+    /// one file is what boredom exists to name. Keyed whole like a success,
+    /// three guesses were three keys and the shape key saw one target, so
+    /// nothing fired (review of #857, pass 2).
     #[tokio::test]
     async fn different_guesses_failing_on_one_file_are_still_named() {
         let guess = |i: usize| {
