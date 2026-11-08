@@ -171,7 +171,7 @@ candidate dispositions survive, and separate historical interpretations remain
 untouched. V3 exports the actual reopened generated/probe interpretations for
 independent audit. No model verdict grants permission or promotes a learned rule.
 
-**Qualification is in progress; semantic reliability remains unproven.**
+**Software qualification passed; the fresh semantic gate failed.**
 Focused regression tests cover authenticated metadata, unchanged legacy bytes,
 original-citation replacement, unsupported/conflicting candidates, canonical
 reopen and retained-payload exports. The current Spark workspace build, strict
@@ -181,8 +181,18 @@ memory-enabled tests (29 ignored) pass. The standalone subset passed 273 checks;
 native binary against three authored HTTP responses. Full SQLite authority,
 request/schema and retained-render audits pass on those actual artifacts.
 The final schema-auditor mismatch was corrected and independently reviewed;
-CI now builds and runs this native contract check. Fresh model qualification
-and the required final privacy scan remain pending.
+CI now builds and runs this native contract check. The required owner-corpus
+privacy scan passed before pushing implementation `8383f6d68`. A separate
+frozen eight-case qwen3.6-35b-a3b run completed only three full workflows:
+three Unknown diagnostics lacked required missing-data questions, two evaluations
+omitted original-citation assessments, and one generator emitted an invalid
+support judgment (failures overlap across cases). All 23 available model replies
+are preserved without repair or retry. Independent semantic audit and final
+scoring are recorded in HISTORY: 20 admitted units inspected without unsupported
+factual premises, but 13 citation defects across the three complete formal audits
+(33 qualitative findings across raw/partial outputs). Only four generated
+retained bearings matched the current criterion out of eight planned cases.
+Missing outcomes remain unknown; concepts remain gated.
 See `MECHA-MEMORY-DESIGN.md` §31.11 and the prototype README for contracts.
 
 The previous immutable fresh qwen3.8-27b cohort at `05f47d317` failed: 6/8 complete

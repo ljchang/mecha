@@ -48,7 +48,49 @@ can agree with one another while disagreeing with the producer.
 Workspace/all-target build, formatting, strict all-feature Clippy, 6,352 default
 tests (25 ignored) and 6,844 memory-enabled tests (29 ignored) passed on Spark.
 Nine focused v3 regressions and 273 standalone checks passed. These verify
-mechanics; no new semantic model qualification is implied.
+mechanics; semantic qualification is separate.
+
+The subsequent frozen cohort at `8383f6d68` used the already-resident
+qwen3.6-35b-a3b and eight independently authored synthetic cases. Source, helper,
+fixture, audit rubric and copied binary were frozen before inference. All eight
+attempts and 23 replies remain preserved; no retries, prompt edits or model swaps
+occurred. Three workflows completed. Three Unknown diagnostics omitted required
+questions, two evaluations omitted citation assessments, and one generator used
+invalid judgment premise identifiers; these failures overlap across cases.
+Five generated and six probe outcomes were independently recoverable, without
+turning partial outcomes into complete workflows. Four of eight generated current
+criterion states and four actual retained generated bearings were correct;
+five actual retained probe bearings were correct. One wrong probe bearing was
+Supported but withheld for unsupported premises. No wrong known generated bearing
+was Supported or retained among observed outcomes; missing outcomes stay unknown.
+
+Independent Codex reviewers inspected all available raw outputs across eight
+cases and all 20 admitted generated units from five validated generated outcomes;
+none of those 20 had an unsupported factual premise under the frozen rubric.
+They identified 33 original-citation assessment defects across the available raw
+outputs, including missing assessments in refused replies. Ten generator slots
+from the failed generator had no evaluator assessment and were recorded separately
+as unevaluated. The strict scorer qualifies only three complete manual/metadata/
+citation audits and counts 13 citation defects in those complete cases. All-eight
+citation/unsupported-fact metrics remain unknown, not zero. A true claim can carry
+an inadequate citation: split invocation/receipt evidence, criterion fragments
+and digest metadata were repeatedly overclaimed as direct support. One complete
+case retained Unknown rather than the correct Bad in both generated and probe
+paths. Two causal probes confused missing evidence with contradiction. The gate
+therefore fails for semantics as well as completion.
+
+Observed cost was 196,862 input and 25,288 output tokens over 342.314 seconds of
+summed case wall time. The conservative complete-cost field remains false because
+some stages failed. Post-run source/binary/helper/fixture checks passed. Resident
+model identity/status/settings were unchanged; only discovery response `created`
+timestamps changed. The previous qwen3.8 cohort uses different cases and model,
+so these counts are not a controlled improvement or regression comparison.
+Results and qualitative audits live in
+`results/memory-evidence-revision-20261108/fresh-resident-qwen36/`.
+Concept learning remains gated. Next work should simplify generated claims and
+make current criterion, factual premises and individual citation obligations
+explicit, then use another independently frozen cohort. Do not repair or replay
+this cohort into a claimed fresh pass.
 
 ### Citation/schema and evaluator repair (2026-11-08, prototype branch)
 

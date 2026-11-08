@@ -3116,9 +3116,10 @@ leaves concepts/rumination deferred; it does not justify relaxing admission.
 ### 31.11 Evidence reasoning and candidate judgment revision
 
 Implemented and mechanically qualified on the prototype branch, 8 November 2026;
-see HISTORY. Fresh semantic qualification remains separate.
+see HISTORY. The separate fresh eight-case model qualification failed;
+mechanical success has not established dependable semantic evaluation.
 
-The next repair addresses three distinct failures: historical action success
+This repair addresses three distinct failures: historical action success
 mistaken for current success, true statements retained with irrelevant original
 citations, and an early Unknown judgment displacing a later supported one.
 Implementation follows `superpowers/plans/2026-11-08-evidence-reasoning-revision.md`.
