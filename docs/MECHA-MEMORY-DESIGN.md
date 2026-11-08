@@ -2,6 +2,16 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+
+**Native-evidence and concept-rumination addendum, 2026-11-08:** §§31.14–31.15
+now have separate default-off implementations: complete source-bound native facts
+with read-only appraisal, and one provisional concept revision that preserves
+prior evidence, counterexamples and access restrictions. The older v4 support
+contract remains unchanged. Native concept admission, useful transfer and automatic
+learning remain open; qualification and the fixed paired experiment are recorded
+in HISTORY, with current next work in HANDOFF. See the
+[native evidence and rumination plan](superpowers/plans/2026-11-08-native-evidence-concept-rumination.md).
+
 **Situated implementation addendum, 2026-11-07:** §31.7 is implemented in a
 new explicit v7 synthetic store with shared interpretation generation, exact
 source-linked hypotheses, host-only needs assessment and current/historical
@@ -3244,6 +3254,11 @@ sufficiency, abstention or decision accuracy. Implementation steps are in
 
 ### 31.14 Next evidence boundary: complete typed native values
 
+**Implemented addendum (8 November 2026):** the separate read-only native
+evidence API and paired workflow now exist. See HISTORY for qualification;
+durable report integration and semantic reliability remain open. The proposal
+below records the rationale rather than a claim that the API is still unbuilt.
+
 Proposed, not implemented by the compact-reader repair. The v4 extractor is asked
 to describe data in 128-character observations and cite at most 300-character source
 chunks. Native JSON envelopes can split inside escaped values, and a faithfully
@@ -3275,3 +3290,44 @@ existing SQLite schema may suffice, but old v4 quotation limits, identities and
 report meaning remain unchanged. Compare against direct reasoning under matched
 sources/model/budgets, account for every call and token, and freeze a fresh cohort
 only after implementation. Development replay alone cannot qualify this design.
+
+### 31.15 Bounded provisional concept rumination
+
+The first concept-learning increment reuses existing provisional concept storage
+and explicitly selected synthetic episodes. It does not admit externally bound
+native captures through the older guardless concept path. Native reader guards
+remain insufficient for promotion, and owner-memory ingestion stays separate.
+
+One explicit cycle binds a current concept revision, preserves all its consulted
+sources, and adds exact counterexample excerpts. The source union must fit the
+existing two-to-eight-record admission limit. The prior statement is supplied as
+an untrusted provisional hypothesis, not an instruction or independent evidence.
+A model may propose a revised principle/applicability, leave it unchanged, or
+abstain. Every outcome rechecks the expected revision and complete dependencies;
+a revision must retain prior and newly supplied counterexamples before the
+existing optimistic retention transaction runs. Invalid output changes nothing.
+
+This is a one-call, explicitly invoked operation, not a nightly scheduler or
+rule installer. Mechanical lifecycle tests demonstrate retained provenance and
+revision safety; useful abstraction and transfer require a separate fixed model
+comparison with untouched held-out decisions. Implementation steps are in
+`superpowers/plans/2026-11-08-native-evidence-concept-rumination.md`.
+
+**Reuse boundary for the first learning experiment:** reuse the existing
+`LocalTrialProvider`, recorded-provider audit, cancellation and independent-arm
+machinery. Use unbound synthetic episodes; `memory_situated_trial` creates bound
+sources and its database cannot enter the current concept path. Keep
+`learning::Learner::learn` and the nightly script separate: their outputs become
+behavioral instructions, whereas concepts remain provisional retrieved data.
+Existing counterfactual replay measures interventions on recorded decisions;
+it does not by itself measure concept generalization.
+
+The smallest next experiment has two matched contrasts. First induce a concept
+from training episodes and compare untouched decisions with identical original
+evidence, with versus without the concept. Then add a counterexample, run one
+revision, and compare new untouched decisions with the same expanded evidence
+in both arms. Include an applicable case, a near-match exception and insufficient
+evidence. Independently grade fixture-defined outcomes, premise coverage and
+abstention; report model assessments separately. Include generation/revision
+costs. Hold retrieval fixed initially, since a concept's complete source bundle
+could otherwise supply extra information and confound the comparison.

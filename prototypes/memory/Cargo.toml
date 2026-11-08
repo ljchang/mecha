@@ -16,6 +16,9 @@ serde_json = "1"
 sha2 = "0.11"
 uuid = { version = "1", features = ["v4"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
 # Shared memory tests gate core-only GoalMemory coverage on this core feature.
 # The standalone harness deliberately has no tool/runtime feature of its own.
 [lints.rust]

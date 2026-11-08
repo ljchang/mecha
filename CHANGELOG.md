@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental native appraisal selects host-issued IDs for complete typed source
+  evidence and rechecks all dependencies without retaining a model judgment. A
+  paired synthetic runner compares raw and typed presentations under matched
+  budgets. Provisional concept rumination preserves prior evidence, counterexamples
+  and access scopes through one explicit revision cycle. Both remain default-off;
+  semantic reliability, native concept admission and automatic learning are unqualified.
+
 - Experimental atomic appraisals use a compact contextual presentation that
   preserves source provenance without repeating stored draft text. The synthetic
   runner reports storage, canonical export and recall separately, retaining audit

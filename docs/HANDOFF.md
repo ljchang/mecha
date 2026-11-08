@@ -154,7 +154,39 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Current appraisal priority: qualify evidence-aware support before concept learning.**
+**Current memory priority: qualify native appraisal and measure useful concept revision.**
+
+`NativeEvidenceRequest` and `memory_native_workflow` implement the read-only typed
+fact experiment from design §31.14. The opaque request preserves original values,
+IDs and authenticated metadata, with whole-value omissions and complete source
+rechecks. Raw and typed arms share one-call budgets and independent deadlines.
+The actual resident model is now Qwen3.8-27b; comparisons with older Qwen3.6 results
+are not controlled model comparisons. Current qualification artifacts live in
+Spark's isolated `/home/ljchang/Github/mecha-memory-native-concepts-20261108/results/memory-native-concepts-20261108`.
+
+Software qualification passes: 6,352 default / 6,901 memory-enabled workspace
+tests (25/29 ignored), 303 standalone and 182 actual-binary Python checks, plus
+build, strict Clippy and formatting. The test-only standalone Tokio dependency
+is declared explicitly. The fresh model pilot is **incomplete**: seven of sixteen
+planned replies, three complete pairs. In those pairs raw/typed labels were 1/3
+and 2/3; fully supported responses were 0/3 for both. One additional unpaired
+typed response was fully supported. An owner model switch blocked setup; the
+remaining experiment was stopped without touching the switch or its other live
+holder. Nine prepared schemas compile; source/database/freeze checks pass.
+HISTORY records missing slots and fixture ambiguities. Do not resume under a
+different model and call it the same controlled comparison, or claim abstention
+was qualified: both unknown cases were unstarted.
+
+`concept::rumination` implements one explicit provisional revision over existing
+synthetic concept storage. Complete prior consulted sources, mandatory old/new
+counterexamples and inherited restrictions survive revision. Unchanged/abstained
+outcomes retain nothing new. This is a core prepare/finish/callback API, not a new
+production tool or automatic nightly loop. Source-verified behavior and focused
+checks are in HISTORY; useful transfer and native concept admission remain open.
+
+The earlier v4 failure below remains a historical result, not the score of this
+new experiment.
+
 
 The explicit atomic-observation v4 comparison is now implemented and mechanically
 qualified. `memory_support_atomic` separates extraction, original-citation checking
@@ -177,10 +209,10 @@ authorized host audit, and `memory_atomic_workflow::pipeline` distinguishes
 retain, stored_export and recall outcomes. Saved-store replay improved complete
 recall from 3/8 to 8/8 with all nine dependencies and unchanged source hashes.
 Spark passed 6,352 default / 6,876 memory-enabled tests, 286 standalone and 182
-Python checks with zero skips; full conditions are in HISTORY. Next: complete typed native event facts and source
-locators, then test criterion application, temporal relevance and abstention on
-fresh cases. The earlier semantic failures remain; concepts remain gated.
-See HISTORY, `MECHA-MEMORY-DESIGN.md` §§31.12–31.14 and the prototype README. The v3
+Python checks with zero skips; full conditions are in HISTORY. The new read-only
+native fact view is implemented above. Criterion application, temporal relevance
+and abstention remain qualification targets; native concept admission stays gated.
+See HISTORY, `MECHA-MEMORY-DESIGN.md` §§31.12–31.15 and the prototype README. The v3
 results below remain historical failures, not the current software qualification.
 
 The default-off synthetic v8 path captures bounded action inputs and independent
@@ -235,13 +267,14 @@ failure. Require all eight workflows/audits, zero false support or wrong-bearing
 support, zero original-citation defects, and sufficient useful known/uncertain
 responses. Mechanical success alone does not open the learning gate.
 
-After that gate works, the next requested phase is concept learning and one
-bounded rumination cycle (`MECHA-MEMORY-DESIGN.md` §31.9). Reuse the existing provisional concept/revision store,
-source bundles and counterfactual replay. Native external-source concept admission
-is still deliberately unsupported by `memory/concept.rs`; add a narrowly guarded
-producer rather than weakening guardless authorization. Test transfer, a near-match
-and a counterexample before revising one concept. Existing `learning.rs` rules
-enter instruction prompts and remain distinct from provisional conceptual knowledge.
+The first bounded synthetic rumination cycle is now implemented (§31.15). Next,
+freeze a concept-learning comparison: induce from training episodes, evaluate
+held-out decisions with identical original evidence with/without the concept,
+add a counterexample, then evaluate the revised concept on untouched variants.
+Test transfer, a near-match and insufficient evidence separately. Native external
+sources still require a narrowly qualified admission/recall contract; do not weaken
+guardless authorization. Existing `learning.rs` rules enter instruction prompts
+and remain distinct from provisional conceptual knowledge.
 No default nightly migration is planned. Automatic needs-driven goal/context
 orchestration, safe failed-lookup capture and longer-episode qualification remain
 open; retire old appraisal duplication only after consumer parity and measured benefit.
@@ -273,7 +306,7 @@ provenance gap corrected by admission and historical-binding refusal in
 `12e2432c4`; nested program capture remains unsupported.
 
 Living Site remains owner-private:
-https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#action-outcome-evidence-and-factual-support
+https://mecha-compositional-reappraisal.luke-j-chang.chatgpt.site/#complete-native-evidence-and-provisional-concept-rumination
 Publication snapshots and the current scorecard are recorded in the Site's
 revision ledger and PR #846. Existing IDs, scripts/SVG, internal links and dist
 mirrors are preserved; browser checks verify rendered math and layout. The Site
@@ -2104,10 +2137,13 @@ binary is absent |
 
 ## Environment as left
 
-**2026-11-08 memory increment:** isolated Spark builds and saved synthetic-store
-reads only; no service restart or production installation. Earlier deployed
-artifacts, model settings and service-health claims below were not reverified.
-The main eval inventory was recounted: 36 cases / 15 tags.
+**2026-11-08 memory increment:** isolated Spark builds and synthetic model
+comparisons only; no service restart or production installation. The resident
+model was Qwen3.8-27b with one slot and 262144 context, verified through its
+model-specific props with autoload disabled. Earlier deployed artifacts and
+service-health claims below were not reverified. The main eval inventory was
+recounted: 36 cases / 15 tags. Test-only HUD assets were built in the isolated
+checkout; the interpreter worker was verified against its committed binary hash.
 
 **Verified 2026-09-09 15:56 UTC for the anticipation worktree:** baseline build
 and workspace tests passed; final strict workspace tests and Clippy passed

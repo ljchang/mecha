@@ -13,6 +13,46 @@ unpublished harness compiles the **same source and synthetic fixture**, without
 pulling in unrelated Mecha dependencies. It is not another implementation or
 a new production service.
 
+## Complete native evidence and provisional concept rumination
+
+The default-off library now has two separate experimental interfaces. Neither
+changes production capture, installs instructions, or replaces mecha-graph.
+
+`Memory::prepare_native_evidence` derives complete typed values from authenticated
+prepared sources. Action inputs, execution receipts, observed artifact bytes,
+historical criteria and checks remain distinct. Host-issued fact IDs bind source
+revision, field and metadata. Ordinary JSON-looking prose remains attributed text.
+`finish_native_appraisal` checks source freshness and exact ID membership, but its
+result remains a provisional model judgment; it is not a durable support report.
+Oversized values are explicitly omitted, never clipped into misleading facts.
+
+The paired runner uses the same facts, criterion, IDs, schema and one-call budget
+in both arms: original envelope strings versus typed values. It preserves source
+and database hashes, requests, responses, usage and failures. Run with a **new**
+absolute output directory, an already resident local model and the service's
+shared holds directory:
+
+```sh
+MECHA_SESSION_KIND=test cargo run -p mecha-core --features memory-prototype \
+  --example memory_native_trial -- --synthetic-only /tmp/mecha-native-trial \
+  http://127.0.0.1:8080 RESIDENT_MODEL /absolute/shared/holds 70510 CASE_FILE 0
+```
+
+`Memory::{prepare_concept_rumination,finish_concept_rumination,ruminate_concept}`
+adds one explicit revision cycle around existing concept learning. Supply a current
+concept revision and exact new counterexample excerpts. The request retains every
+previously consulted episode and mandatory counterexample, refusing a source union
+above eight records. A revised concept inherits its previous access restrictions
+and remains provisional. Unchanged or abstained outcomes write nothing, including
+none of the newly consulted evidence. Every outcome rechecks current source and
+concept revisions; malformed output cannot replace the previous concept.
+
+These concept APIs currently accept the existing unbound synthetic source path.
+Native external-source admission remains deliberately unsupported. No scheduler,
+production adapter or automatic candidate discovery is added. Lifecycle regression
+tests establish mechanics; useful abstraction, transfer and better decisions need a
+separate held-out model comparison.
+
 ## Connected task, appraisal and recall demonstration
 
 The feature-gated `mecha-core` example connects ordinary `Agent::run_in` tools

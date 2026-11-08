@@ -14,6 +14,88 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+
+### Complete native evidence and bounded concept rumination (2026-11-08, prototype branch)
+
+`Memory::prepare_native_evidence` creates an opaque request from reauthenticated
+prepared interpretation sources. Native envelopes retain complete values and
+source revision/field, original source kind, role, influence and capture metadata.
+Ordinary JSON-looking prose stays text. Whole values that exceed the bounded view
+become explicit non-citable omissions while remaining authorization dependencies.
+`finish_native_appraisal` validates a request-bound selection of fact IDs and
+rechecks all sources; it returns a provisional read-only judgment, never a v4
+support report or stored interpretation.
+
+`memory_native_workflow::run_case` compares raw envelope strings with typed values
+using the same sources, IDs, criterion, response schema and one-call budget per
+arm. It exports actual requests/replies, failures, usage and source/database
+hashes. Independent review caught arm-local cancellation suppressing its sibling;
+`paired` now creates independent child tokens and only root cancellation stops
+both. The regression failed before the repair and passed afterward.
+
+`concept::rumination` adds `prepare_concept_rumination`,
+`finish_concept_rumination` and one-callback `ruminate_concept`. The opaque receipt
+binds a current concept revision, its complete consulted source union and exact
+mandatory prior/new counterexamples. Revision preserves those obligations and
+inherits explicit restrictions on the previous concept as well as source scopes.
+Self-review caught scope inheritance and nested duplicate-key gaps; both were
+reproduced before their fixes. Every outcome rechecks current authorization,
+source revisions and scopes. Unchanged and abstained outcomes write nothing and
+do not retain newly consulted evidence. Native external-source concept admission
+remains refused; no scheduler, rule installation or schema migration was added.
+
+Focused qualification passed eight native tests, seven workflow tests and 22
+concept-filter tests (ten new rumination tests). Independent component and broad
+reviews found no unresolved P0–P2 issue at `252422099`. Integrated Spark checks
+passed workspace/all-target build, strict all-target/all-feature Clippy, 6,352
+default tests (25 ignored), 6,901 memory-enabled tests (29 ignored), 303 standalone
+tests and 182 Python tests with both actual native binaries and zero skips.
+Workspace and standalone formatting passed. Backend-required runs used the
+source-pinned interpreter worker and a HUD renderer built from this checkout.
+Initial missing-backend failures and the concurrent cold-worker installation
+failure are preserved. The standalone run exposed a missing test-only Tokio
+dependency; adding it to the independent harness fixed compilation without
+changing production dependencies or the frozen model executable. No existing
+locked dependency version changed. The 380 frozen implementation files remained
+unchanged. Mechanical tests do not establish useful abstraction or generalization.
+
+The fresh raw/typed pilot was stopped **incomplete** after seven of sixteen
+planned model replies. Implementation, executable and eight independently authored
+cases were frozen before inference (source `252422099`, resident Qwen3.8-27b,
+seed 70510, temperature 0.6, thinking requested off, one 6,144-output-token call
+and 540-second total deadline per arm, alternating order). Three pairs completed;
+raw labels were correct in 1/3 and typed in 2/3, but neither arm had a fully
+supported response in those three matched pairs. A fourth, unpaired typed reply
+was correct and fully supported. Its raw sibling exhausted its setup deadline
+without dispatching inference. A pending owner model switch, waiting behind a
+separate live Mecha hold, blocked new holds. The fifth case was cancelled before
+any call, and cases six through eight never started. Both owner processes and the
+pending switch were left untouched. No retry, prompt edit or model replacement
+was used to fill missing responses. Unknown-case behavior remains unmeasured.
+
+An independent reviewer established all eight expected states before receiving
+blinded A/B replies, then audited the seven replies and the setup-failure slot.
+Reference validity was not semantic sufficiency: wrong current-criterion judgments,
+missing input premises, historical-check substitution and unfinished explanations
+remained. The current criterion and broad goal wording conflict in changed-goal
+fixtures; that ambiguity and the synthetic observation ordering are recorded,
+not silently repaired. The expected states agreed with the frozen annotations;
+the independent audit correctly accepted the current criterion itself as the
+target-value premise where sufficient. The partial cohort cannot establish a
+format advantage or generalization benefit.
+
+All seven returned responses passed structural finalization. All nine prepared
+schemas compiled with the resident engine's pinned `27637851` converter. Independent
+hash verification covered 82 saved artifacts across five prepared cases; original
+sources and SQLite files stayed unchanged. All 380 frozen implementation hashes,
+the executable and frozen cases/annotations passed the post-stop check. Reported
+usage was raw 16,870 input / 671 output tokens and typed 21,865 / 687; denominators
+are three and four calls respectively. Wall time includes shared-server delays
+and the raw setup timeout, so no efficiency comparison is claimed. Exact records,
+partial-cohort accounting, audits and check logs are under
+`results/memory-native-concepts-20261108/`. The next learning experiment uses
+independently graded synthetic outcomes rather than promoting these appraisals.
+
 ### Compact appraisal reader and persistence diagnostics (2026-11-08, prototype branch)
 
 `interpretation_reader::serialize_records` presents atomic-v4 appraisals as

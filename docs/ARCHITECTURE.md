@@ -12986,6 +12986,16 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   judgment and binds each stage. Final retention replays both stages and checks
   source authority again. Accepted premise membership is a structural gate,
   not a proof of joint sufficiency or temporal applicability.
+- **Typed native facts preserve evidence, not semantic authority.**
+  `NativeEvidenceRequest` is derived from authenticated prepared sources and
+  rechecked before dispatch and after inference. Native envelopes are selected by
+  authenticated role and original field; JSON-looking prose remains attributed
+  text. Fact IDs bind complete values, original locators and metadata. A value
+  that exceeds the bounded view becomes an explicit non-citable omission; the
+  omitted source still belongs to the authorization closure. Raw and typed trial
+  arms share that closure, IDs, criterion and response contract. A valid selection
+  proves reference integrity, never premise sufficiency, temporal applicability
+  or world truth. Read-only native appraisals cannot acquire v4 support status.
 - **A contextual presentation is not a canonical stored record.** Atomic-v4
   interpretations serialize through the explicit `interpretation_reader_v1`
   presentation only inside ContextPacket. The complete SupportReport and source
@@ -13224,6 +13234,16 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   and counterexamples. After inference, source freshness and unchanged scopes
   are rechecked atomically. Otherwise omitting a citation could launder private
   input into a less restricted abstraction. No transaction spans inference.
+- **Rumination cannot discard opposition or inherited restrictions.**
+  `prepare_concept_rumination` binds the previous revision and every consulted
+  source, then adds exact host-selected counterexamples. The union must fit the
+  existing eight-source bound. A revised draft preserves all mandatory excerpts
+  and the previous concept's own scopes as well as source scopes. Checking scope
+  equality without inheriting it would silently remove a concept-only restriction.
+  Every outcome rechecks freshness and authorization, including unchanged and
+  abstained; those outcomes write nothing and do not retain newly consulted
+  evidence. The explicit one-call operation stays provisional and cannot bypass
+  the older concept path's refusal of externally bound native sources.
 - **Concept retrieval carries its evidence with it.** `knowledge_bundle` checks
   the complete closure against current restrictions, historical freshness and
   source/time filters before adding it atomically under the packet budget.
