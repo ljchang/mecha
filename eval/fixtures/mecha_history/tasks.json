@@ -91,11 +91,17 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:04:52Z",
         "by": "baseline",
         "pin": "7a3f1263a902da018f26fe380575f1de38f49f0e",
+        "merge": "1ccd003b67254804b4107006eaa70d8d3fc9c170",
         "failing": {
           "mecha-core": []
+        },
+        "must_pass": "baselines/pr-421.json",
+        "must_pass_sha256": "e28f1b08537796bad43f89d61cda3c0e8ab40e6787222318145772c501dde180",
+        "must_pass_count": {
+          "mecha-core": 2327
         }
       }
     },
@@ -138,13 +144,19 @@
       ],
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:02:29Z",
         "by": "baseline",
         "pin": "e9352db6244cdf98ab8960a0b2219cd1e0ca0fa7",
+        "merge": "7da23dd2508ab1e8a5edb59d1da81a085c451671",
         "failing": {
           "mecha-core": [
             "imagegen::tests::a_persona_draws_itself_without_casting_itself"
           ]
+        },
+        "must_pass": "baselines/pr-525.json",
+        "must_pass_sha256": "0a4c9c212bd1423f7757c35f506c8d7efa79ac0409e3cdbc064f4ecb598d8ee9",
+        "must_pass_count": {
+          "mecha-core": 2616
         }
       }
     },
@@ -200,11 +212,17 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:10:20Z",
         "by": "baseline",
         "pin": "b6610c9d4fa54a8f27c5e9bb0e1e68955ff1102f",
+        "merge": "fd1a74a1581c3c9a5d3ca9b993a4b9d5ce515874",
         "failing": {
           "mecha-core": []
+        },
+        "must_pass": "baselines/pr-813.json",
+        "must_pass_sha256": "4f1616e4ecdd606de4669cbbe78448a238d6f20a4664880994e6f1bf2c032f9d",
+        "must_pass_count": {
+          "mecha-core": 3894
         }
       }
     },
@@ -247,13 +265,19 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:20:00Z",
         "by": "baseline",
         "pin": "8ec8c1abec03590f4fa27d813cba9550945b8c36",
+        "merge": "5cb31fed48afbbda7ecba2cc84db9d6aa8fe7385",
         "failing": {
           "mecha-core": [
             "imagegen::tests::a_persona_draws_itself_without_casting_itself"
           ]
+        },
+        "must_pass": "baselines/pr-476.json",
+        "must_pass_sha256": "1192eaa9b2ad7a659fbfe7a2515359c2e440e52bd90bbf02d80525e642b8fb27",
+        "must_pass_count": {
+          "mecha-core": 2513
         }
       }
     },
@@ -286,12 +310,19 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:28:55Z",
         "by": "baseline",
         "pin": "b439795712e525f4c064dffb5384e3fcd11abd76",
+        "merge": "5c4aa9628e5f9dcd98394dddc8b74d9287aee981",
         "failing": {
           "mecha-cli": [],
           "mecha-core": []
+        },
+        "must_pass": "baselines/pr-726.json",
+        "must_pass_sha256": "2d3905ea42d927abf1e3ba27383b507da212a8538829b613c4dbb70e6884861a",
+        "must_pass_count": {
+          "mecha-cli": 1367,
+          "mecha-core": 3455
         }
       }
     },
@@ -324,12 +355,19 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:37:58Z",
         "by": "baseline",
         "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
+        "merge": "ad1e3c425e7e2d885dcdf1f29de1ee12b830a121",
         "failing": {
           "mecha-cli": [],
           "mecha-core": []
+        },
+        "must_pass": "baselines/pr-759.json",
+        "must_pass_sha256": "88524dd404a9358fc7f767f940baf768c0bd639ec651ecf3d8853b5b789c8a7d",
+        "must_pass_count": {
+          "mecha-cli": 1387,
+          "mecha-core": 3597
         }
       }
     },
@@ -386,11 +424,17 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:43:28Z",
         "by": "baseline",
         "pin": "2188ea4aae1b44ee7ab41717e7e3dc849b17eb9b",
+        "merge": "8e892ac429feefa115a546b88107e64f8085bab2",
         "failing": {
           "mecha-core": []
+        },
+        "must_pass": "baselines/pr-798.json",
+        "must_pass_sha256": "7b4218df882959e49aa98e3b9c236229bfc4d431f3fc369aef5a48e405a1a831",
+        "must_pass_count": {
+          "mecha-core": 3852
         }
       }
     },
@@ -433,13 +477,19 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:12:59Z",
         "by": "baseline",
         "pin": "360a486f0e4d9a834344523f629b58fdec4a975a",
+        "merge": "73eadbcad15601aaf9bbec4b95ed31a70fe65005",
         "failing": {
           "mecha-core": [
             "imagegen::tests::a_persona_draws_itself_without_casting_itself"
           ]
+        },
+        "must_pass": "baselines/pr-466.json",
+        "must_pass_sha256": "ab3a881db6219dde0d5367d21c443eb7297942ddd0372cd35ae509d5480d966c",
+        "must_pass_count": {
+          "mecha-core": 2453
         }
       }
     },
@@ -482,11 +532,17 @@
       },
       "baseline": {
         "r": 2,
-        "date": "2026-11-07",
+        "at": "2026-11-08T00:17:17Z",
         "by": "baseline",
         "pin": "2f495af5f27b0d004424026fa0cf3d73d27554cf",
+        "merge": "93239051a186e5e650263d3a89b3b9a9f3929d42",
         "failing": {
           "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-471.json",
+        "must_pass_sha256": "e8a1e0c34480dc5f6c97f55a34e523c7a885183e7a7a4fdda1161c4be7283b6f",
+        "must_pass_count": {
+          "mecha-cli": 1111
         }
       }
     }

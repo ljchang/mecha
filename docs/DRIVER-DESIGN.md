@@ -498,10 +498,13 @@ the text above:
   That brings the pin's whole history and nothing after it, with no remote
   and no ref naming the source. The source's own test fails on a plain
   `git clone`.
-- **Grafted tests sit in a module of their own** (`mod hidden_grade { use
-  super::*; … }` inside the file's `mod tests`). A test the run wrote under
-  the hidden test's name is then not a compile error charged to the model,
-  and the per-test verdict is read from libtest's own lines.
+- **Grafted tests sit in a module of their own** (`mod
+  hidden_grade_<nonce> { use super::*; … }` inside the file's `mod tests`).
+  A test the run wrote under the hidden test's name is then not a compile
+  error charged to the model, and the per-test verdict is read from
+  libtest's own lines. The nonce is drawn at grade time, after the run. For
+  a test grafted into the crate, only a result under that module decides,
+  so a `mod hidden_grade` the run wrote itself stands in for nothing.
 - **D3a is a verb** (`validate <task> [r]`), run on clones it makes and
   removes. **D3b is a verb** (`check-prompts`): `check-private.py --text`,
   a mode added for this, which reads every line, `#` headings included, with
@@ -554,15 +557,21 @@ the text above:
   code: the grade executes it, so a test binary that forges libtest's
   output from inside the process is beyond this grade, and the driver
   reads diffs that touch `Cargo.toml` or a build script.
-- **Regressions are counted against the pin's own failures.** An old pin can
-  fail some of its own unit tests. At 525's pin one fails deterministically,
-  so its oracle grade (the merge's own diff, applied to the clone) failed.
-  `baseline <task> [r]` records the touched crates' unit tests that fail on
-  the pin, in the grade's jail, over r runs. The grade does not count them,
-  and it counts a grafted hidden test once, under the hidden check. A task
-  with no baseline on record, or one measured on another pin, is not
-  offered. This is SWE-bench's
-  PASS_TO_PASS, measured rather than assumed.
+- **Regressions are SWE-bench's PASS_TO_PASS, measured.** `baseline <task>
+  [r]` runs the touched crates' unit tests in the grade's jail, r times on
+  the pin and r times on the merge. It records two things:
+  - **the tests that pass every time on both.** The run must leave every one
+    of these `ok`. A test it ignores, deletes or cfg's out counts against it
+    just as a failure does, so the check never reduces to "nothing FAILED".
+    The set lives in `baselines/<task>.json`, its sha256 recorded in
+    `tasks.json`.
+  - **the pin's own failures**, which are never charged to a run. At 525's
+    pin an imagegen test fails deterministically, so before this its oracle
+    grade (the merge's own diff, applied to the clone) failed.
+
+  A grafted hidden test is counted once, under the hidden check. A task is
+  not offered if it has no baseline, or one measured on another pin or
+  merge, or one whose file has changed.
 - **Where the bank stands (2026-11-07).** Admitted by `validate` (r = 5):
   421, 525, 813. Interface-named by `validate`, and admitted under the
   ruling: 466, 471, 476, 726, 759, 798. Replaced or rejected: 780 (its tests

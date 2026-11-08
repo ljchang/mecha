@@ -57,6 +57,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -73,7 +74,14 @@ ATTR = re.compile(r"\+\s*(#\[|///|//)")
 TEST_ATTR = re.compile(r"\+\s*#\[(tokio::)?test")
 RESULT = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)", re.M)
 FAILURE = re.compile(r"^---- (\S+) stdout ----\n(.*?)(?=^---- |^failures:$|\Z)", re.M | re.S)
-GRAFT_MOD = "hidden_grade"
+GRAFT_MOD = "hidden_grade"  # a prefix: each grade adds a nonce (`graft_module`)
+
+
+def graft_module():
+    """The module a grade grafts into, named at grade time, after the run:
+    a run that writes its own `mod hidden_grade` cannot stand in for it
+    (review of #852, pass 7)."""
+    return f"{GRAFT_MOD}_{secrets.token_hex(8)}"
 OFFERED = {"admitted", "interface-named"}
 INTERFACE = re.compile(r"^## Interface\s*$", re.M)
 ITEM = re.compile(r"(#\[|///|(pub(\([^)]*\))? )?(async |unsafe |const )*(fn|struct|enum|trait|type|impl|const|static|use|mod|macro_rules!)\b)")
@@ -143,12 +151,17 @@ def toolchain_dir(t, commit):
     host = run(["rustc", "-vV"], check=True).stdout
     triple = re.search(r"^host: (\S+)", host, re.M).group(1)
     d = os.path.join(home, "toolchains", f"{channel}-{triple}")
-    if not os.path.isfile(os.path.join(d, "bin", "cargo")):
+    exact = want and os.path.join(home, "toolchains", f"{want}-{triple}")
+    if exact and os.path.isfile(os.path.join(exact, "bin", "cargo")):
+        # The admitted version by its own name: immune to `stable` moving.
+        d = exact
+    elif not os.path.isfile(os.path.join(d, "bin", "cargo")):
         die(f"toolchain {channel} is not installed ({d}); `rustup toolchain install {channel}`")
     if want:
         got = run([os.path.join(d, "bin", "rustc"), "-V"], check=True).stdout.split()[1]
         if got != want:
-            die(f"toolchain {channel} is {got} now, and this task was admitted on {want}")
+            die(f"toolchain {channel} is {got} now, and this task was admitted on {want}; "
+                f"`rustup toolchain install {want}` brings it back")
     return d
 
 
@@ -446,7 +459,7 @@ class TreeRefused(Exception):
     answers `passed: false`, never a harness error."""
 
 
-def graft_plan(tree, merge):
+def graft_plan(tree, merge, module):
     """{path: new text} for every file the graft writes, or TreeRefused.
     Whole new integration-test files are copied; added items in an existing
     test module go into a module of their own (`hidden_grade`), so a test the
@@ -463,17 +476,17 @@ def graft_plan(tree, merge):
         with open(p) as fh:
             src = fh.read().split("\n")
         # Bottom of the file first, so an insertion never moves a later one.
-        for module, indent, items in sorted(groups, key=lambda g: g[0] is not None):
+        for into, indent, items in sorted(groups, key=lambda g: g[0] is not None):
             inner = indent + "    "
-            block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {GRAFT_MOD} {{",
+            block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {module} {{",
                      f"{inner}#[allow(unused_imports)]", f"{inner}use super::*;", ""]
             block += "\n\n".join(items).split("\n") + [f"{indent}}}", ""]
-            if module is None:
+            if into is None:
                 src += block
                 continue
-            at = [i for i, l in enumerate(src) if re.match(rf"mod {module}\s*\{{", l)]
+            at = [i for i, l in enumerate(src) if re.match(rf"mod {into}\s*\{{", l)]
             if not at:
-                raise TreeRefused(f"{path}: no `mod {module}` in the run's tree to graft into")
+                raise TreeRefused(f"{path}: no `mod {into}` in the run's tree to graft into")
             src[at[-1] + 1:at[-1] + 1] = block
         writes[path] = "\n".join(src)
     return writes
@@ -487,10 +500,10 @@ def graft_apply(tree, writes):
             fh.write(text)
 
 
-def graft(tree, merge):
+def graft(tree, merge, module):
     """Plan and apply; returns the names placed. Grafting twice would be a
     duplicate module; `cmd_grade` holds the once (`claim`)."""
-    graft_apply(tree, graft_plan(tree, merge))
+    graft_apply(tree, graft_plan(tree, merge, module))
     return [n for _, _, n in hidden_tests(merge)]
 
 
@@ -507,7 +520,7 @@ def jailed_status(tc, tree):
     return [l[3:] for l in r.stdout.splitlines() if l.strip()]
 
 
-def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False):
+def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None):
     """{name: pass|fail|skipped|build-error|not-run}, one cargo call per target.
 
     Under MECHA_TEST_REQUIRE_BACKENDS=1: a hidden test that skips when its
@@ -522,11 +535,13 @@ def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False):
         sel = {"lib": ["--lib"], "bin": ["--bin", "mecha"]}.get(target) or ["--test", target[5:]]
         r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *names, jobs=jobs, require_backends=True,
                   confined=confined)
-        out.update(statuses(r.stdout + r.stderr, names, why))
+        # A whole new test file is the merge's own text, written by the graft;
+        # a test grafted into the crate counts only under this grade's module.
+        out.update(statuses(r.stdout + r.stderr, names, why, None if target.startswith("test:") else module))
     return out
 
 
-def statuses(text, names, why=None):
+def statuses(text, names, why=None, module=None):
     """Each hidden test's verdict from one cargo call's output. A test the
     run wrote under the same name is the run's, not the grade's: where the
     grafted copy (in `hidden_grade`) ran, only it counts."""
@@ -538,8 +553,9 @@ def statuses(text, names, why=None):
     built = "test result:" in text or seen
     for name in names:
         hits = seen.get(name, [])
-        grafted = [h for h in hits if f"::{GRAFT_MOD}::" in h[0] or h[0].startswith(f"{GRAFT_MOD}::")]
-        hits = grafted or hits
+        if module:
+            # Only the copy the graft wrote decides; none reporting is not-run.
+            hits = [h for h in hits if f"::{module}::" in f"::{h[0]}"]
         if not built:
             out[name] = "build-error"
             if why is not None:
@@ -578,6 +594,10 @@ def offered(t):
     base = rec.get("failing")
     if rec.get("pin") != t["pin"] or not isinstance(base, dict) or set(base) != set(t["crates"]):
         return False
+    if rec.get("merge") != t["merge"] or not rec.get("must_pass_sha256"):
+        return False
+    if not os.path.isfile(must_pass_path(t)) or sha256(must_pass_path(t)) != rec["must_pass_sha256"]:
+        return False
     # A test that calls an item the pin lacks is unsolvable without its name.
     if state == "interface-named":
         with open(prompt_path(t)) as fh:
@@ -605,7 +625,12 @@ def cmd_list():
             continue
         with open(prompt_path(t)) as fh:
             body = fh.read().rstrip()
-        out.append({"id": t["id"], "prompt": body + environment_note(t),
+        try:
+            note = environment_note(t)
+        except SystemExit:
+            print(f"mecha_history: {t['id']} is not offered: its toolchain (above)", file=sys.stderr)
+            continue
+        out.append({"id": t["id"], "prompt": body + note,
                     "tags": [t["author"], t["admission"]["state"], *t["crates"]]})
     json.dump(out, sys.stdout)
 
@@ -724,7 +749,8 @@ def cmd_grade(task_id):
     refused = restore_setup(ws, t)
     if not refused:
         try:
-            writes = graft_plan(ws, t["merge"])
+            module = graft_module()
+            writes = graft_plan(ws, t["merge"], module)
         except TreeRefused as e:
             refused = str(e)
     if refused:
@@ -735,13 +761,15 @@ def cmd_grade(task_id):
     graft_apply(ws, writes)
     names = [n for _, _, n in tests]
     try:
-        hidden = run_hidden(tc, ws, tests, jobs=4, confined=True)
+        hidden = run_hidden(tc, ws, tests, jobs=4, confined=True, module=module)
         checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
-        pre = t["baseline"]["failing"]
+        pre, keep = t["baseline"]["failing"], must_pass(t)
         for crate in t["crates"]:
-            ok, failed, detail = regressions(tc, ws, crate)
-            if failed is not None:
-                ok, detail = counted(failed, pre.get(crate, []))
+            results, why = regressions(tc, ws, crate)
+            if results is None:
+                ok, detail = False, why
+            else:
+                ok, detail = counted(results, pre.get(crate, []), keep.get(crate, []), module)
             checks.append({"name": f"regressions: {crate} {' '.join(selection(crate))}", "passed": ok, "detail": detail})
     except TreeRefused as e:
         json.dump({"passed": False, "detail": str(e), "changed": changed,
@@ -759,53 +787,87 @@ def selection(crate):
 
 
 def regressions(tc, tree, crate):
-    """(passed, the failing test paths or None when nothing ran, detail)."""
+    """({test path: ok|FAILED|ignored}, or None when nothing ran, and why)."""
     r = cargo(tc, tree, "test", "-p", crate, *selection(crate), "--no-fail-fast", jobs=4, confined=True)
-    failed = sorted({p for p, v in RESULT.findall(r.stdout) if v == "FAILED"})
-    if r.returncode == 0:
-        return True, failed, "passed"
-    if failed:
-        return False, failed, f"{len(failed)} failed: {', '.join(failed[:5])}"
-    return False, None, first_error(r.stderr)
+    results = {}
+    for path, verdict in RESULT.findall(r.stdout):
+        # A path reported twice keeps its worst verdict.
+        results[path] = verdict if results.get(path, "ok") == "ok" else results[path]
+    if not results and r.returncode != 0:
+        return None, first_error(r.stderr)
+    return results, None
 
 
-def counted(failed, on_pin):
-    """A test the pin already fails is the pin's, never the run's; a grafted
-    hidden test is judged by the hidden check, once."""
-    hidden = [f for f in failed if f"::{GRAFT_MOD}::" in f"::{f}"]
-    known = [f for f in failed if f in on_pin and f not in hidden]
-    new = [f for f in failed if f not in hidden and f not in known]
+def counted(results, on_pin, keep, module=GRAFT_MOD):
+    """PASS_TO_PASS: every test that passes on both the pin and the merge
+    must be `ok` again; one ignored, deleted or cfg'd out is the run's, as a
+    failure is (review of #852, pass 7). A failure the pin already has is
+    the pin's; a grafted hidden test is judged by the hidden check, once."""
+    hidden = {p for p in results if f"::{module}::" in f"::{p}"}
+    failed = sorted(p for p, v in results.items() if v == "FAILED" and p not in hidden)
+    known = [p for p in failed if p in on_pin]
+    new = [p for p in failed if p not in on_pin]
+    gone = sorted(p for p in keep if results.get(p) != "ok" and p not in new)
+    why = []
     if new:
-        return False, f"{len(new)} failed: {', '.join(new[:5])}"
+        why.append(f"{len(new)} failed: {', '.join(new[:5])}")
+    if gone:
+        why.append(f"{len(gone)} that pass on the pin and the merge did not pass "
+                   f"(ignored, removed or not run): {', '.join(gone[:5])}")
+    if why:
+        return False, "; ".join(why)
     return True, "passed" + (f" ({len(known)} failing on the pin too, not counted)" if known else "")
 
 
+def must_pass_path(t):
+    return os.path.join(BANK, "baselines", f"{t['id']}.json")
+
+
+def must_pass(t):
+    with open(must_pass_path(t)) as fh:
+        return json.load(fh)
+
+
 def cmd_baseline(task_id, r):
-    """The touched crates' unit tests the pin already fails, in the grade's own
-    jail, over r runs (their union), recorded in tasks.json: the grade does
-    not charge a run with them."""
+    """The touched crates' unit tests, in the grade's own jail, r runs each on
+    the pin and on the merge: the pin's failures (their union), which the
+    grade does not charge a run with, and PASS_TO_PASS, the tests `ok` in
+    every run on both, which the run must leave passing. The second is
+    written to baselines/<task>.json, its sha256 recorded in tasks.json."""
     t = find(task_id)
-    failing = {}
+    failing, both = {}, {}
     with tempfile.TemporaryDirectory(prefix="mecha-history-") as tmp:
-        tree = os.path.join(tmp, "pin")
-        tc = prepare(t, tree, t["pin"])
+        runs = {}
+        for side, commit in (("pin", t["pin"]), ("merge", t["merge"])):
+            tree = os.path.join(tmp, side)
+            tc = prepare(t, tree, commit)
+            for crate in t["crates"]:
+                for _ in range(r):
+                    results, why = regressions(tc, tree, crate)
+                    if results is None:
+                        die(f"{crate}'s unit tests do not run on the {side}: {why}")
+                    runs.setdefault((side, crate), []).append(results)
         for crate in t["crates"]:
-            seen = set()
-            for _ in range(r):
-                ok, failed, detail = regressions(tc, tree, crate)
-                if failed is None:
-                    die(f"{crate}'s unit tests do not run on the pin: {detail}")
-                seen.update(failed)
-            failing[crate] = sorted(seen)
+            pin_runs, merge_runs = runs[("pin", crate)], runs[("merge", crate)]
+            failing[crate] = sorted({p for res in pin_runs for p, v in res.items() if v == "FAILED"})
+            ok = lambda rs: set.intersection(*({p for p, v in res.items() if v == "ok"} for res in rs))
+            both[crate] = sorted(ok(pin_runs) & ok(merge_runs))
+    path = must_pass_path(t)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(both, fh, indent=0)
+        fh.write("\n")
     data = bank()
     for rec in data["tasks"]:
         if rec["id"] == t["id"]:
-            rec["baseline"] = {"r": r, "date": datetime.date.today().isoformat(), "by": "baseline",
-                               "pin": t["pin"], "failing": failing}
+            rec["baseline"] = {"r": r, "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "by": "baseline",
+                               "pin": t["pin"], "merge": t["merge"], "failing": failing,
+                               "must_pass": os.path.relpath(path, BANK), "must_pass_sha256": sha256(path),
+                               "must_pass_count": {c: len(v) for c, v in both.items()}}
     with open(TASKS, "w") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
-    print(json.dumps({"task": t["id"], "failing": failing}))
+    print(json.dumps({"task": t["id"], "failing": failing, "must_pass": {c: len(v) for c, v in both.items()}}))
 
 
 def cmd_validate(task_id, r):
@@ -821,8 +883,15 @@ def cmd_validate(task_id, r):
         pin_tree, merge_tree = os.path.join(tmp, "pin"), os.path.join(tmp, "merge")
         pin_why, merge_why = {}, {}
         tc = prepare(t, pin_tree, t["pin"])
-        graft(pin_tree, t["merge"])
-        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True) for _ in range(r)]
+        module = graft_module()
+        try:
+            graft(pin_tree, t["merge"], module)
+        except TreeRefused as e:
+            res["verdict"] = f"graft-failed: {e}"
+            print(json.dumps(res))
+            return
+        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True, module=module)
+               for _ in range(r)]
         tc_m = prepare(t, merge_tree, t["merge"])
         merge = [run_hidden(tc_m, merge_tree, tests, jobs=4, why=merge_why, confined=True) for _ in range(r)]
     res["pin"], res["merge"], res["pin_why"], res["merge_why"] = pin, merge, pin_why, merge_why

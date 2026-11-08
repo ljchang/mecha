@@ -186,17 +186,28 @@ class Regressions(unittest.TestCase):
         self.assertFalse(mecha_history.is_test_item("#[cfg(not(test))]\nfn f() {}"))
 
     def test_a_test_the_pin_already_fails_is_not_the_runs(self):
-        self.assertEqual(mecha_history.counted(["a::slow"], ["a::slow"]),
+        self.assertEqual(mecha_history.counted({"a::slow": "FAILED", "a::ok": "ok"}, ["a::slow"], ["a::ok"]),
                          (True, "passed (1 failing on the pin too, not counted)"))
 
     def test_a_new_failure_is_the_runs(self):
-        ok, detail = mecha_history.counted(["a::slow", "b::fresh"], ["a::slow"])
+        ok, detail = mecha_history.counted({"a::slow": "FAILED", "b::fresh": "FAILED"}, ["a::slow"], [])
         self.assertFalse(ok)
         self.assertEqual(detail, "1 failed: b::fresh")
 
+    def test_a_test_that_must_pass_and_is_ignored_or_gone_is_the_runs(self):
+        # PASS_TO_PASS, not "nothing FAILED" (review of #852, pass 7).
+        for results in ({"a::kept": "ignored"}, {}):
+            ok, detail = mecha_history.counted(results, [], ["a::kept"])
+            self.assertFalse(ok, results)
+            self.assertIn("did not pass (ignored, removed or not run): a::kept", detail)
+        self.assertEqual(mecha_history.counted({"a::kept": "ok", "a::new": "ok"}, [], ["a::kept"]), (True, "passed"))
+
     def test_a_hidden_test_is_judged_once_by_the_hidden_check(self):
-        self.assertEqual(mecha_history.counted(["x::hidden_grade::t"], []), (True, "passed"))
-        self.assertEqual(mecha_history.counted(["hidden_grade::t"], []), (True, "passed"))
+        m = "hidden_grade_0f"
+        self.assertEqual(mecha_history.counted({f"x::{m}::t": "FAILED"}, [], [], m), (True, "passed"))
+        self.assertEqual(mecha_history.counted({f"{m}::t": "FAILED"}, [], [], m), (True, "passed"))
+        # A module the run named `hidden_grade` is the run's, not the grade's.
+        self.assertFalse(mecha_history.counted({"x::hidden_grade::t": "FAILED"}, [], [], m)[0])
 
 
 class Source(unittest.TestCase):
@@ -248,11 +259,15 @@ class Source(unittest.TestCase):
             "prompt": "prompts/pr-1.md",
             "repair": [{"path": "demo/fixture.json", "from": self.merge}],
             "admission": {"state": "admitted"},
-            "baseline": {"pin": None, "failing": {"demo": []}},
         }
-        self.task["baseline"]["pin"] = self.pin
         self.other = dict(self.task, id="pr-2", prompt="prompts/pr-2.md", admission={"state": "interface-named"})
         for t in (self.task, self.other):
+            path = os.path.join(self.bank, "baselines", f"{t['id']}.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            write(path, '{"demo": ["tests::adds"]}\n')
+            t["baseline"] = {"pin": self.pin, "merge": self.merge, "failing": {"demo": []},
+                             "must_pass": f"baselines/{t['id']}.json",
+                             "must_pass_sha256": mecha_history.sha256(path)}
             write(os.path.join(self.bank, t["prompt"]), "# Make it saturate\n\nThe sum wraps.\n")
             t["prompt_check"] = {"sha256": mecha_history.sha256(os.path.join(self.bank, t["prompt"])), "store_present": True}
         self.write_bank()
@@ -326,12 +341,23 @@ class Source(unittest.TestCase):
         self.write_bank()
         self.assertEqual(json.loads(self.source("list").stdout), [])
 
-    def test_a_stable_toolchain_that_moved_since_admission_refuses(self):
-        self.task["toolchain"]["version"] = "1.90.0"
+    def test_a_stable_toolchain_that_moved_since_admission_drops_its_task_not_the_list(self):
+        self.task["toolchain"] = {"channel": "stable", "version": "1.90.0"}
         self.write_bank()
         r = self.source("list")
-        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), [])
         self.assertIn("admitted on 1.90.0", r.stderr)
+        self.assertIn("pr-1 is not offered", r.stderr)
+        # The admitted version installed by its own name is used, whatever
+        # `stable` has become (review of #852, pass 7).
+        exact = os.path.join(self.rustup, "toolchains", "1.90.0-test-triple", "bin")
+        os.makedirs(exact)
+        executable(os.path.join(exact, "cargo"), "#!/bin/sh\nexit 0\n")
+        executable(os.path.join(exact, "rustc"), "#!/bin/sh\necho 'rustc 1.90.0 (made up)'\n")
+        tasks = json.loads(self.source("list").stdout)
+        self.assertEqual([t["id"] for t in tasks], ["pr-1"])
+        self.assertIn(exact, tasks[0]["prompt"])
 
     # --- setup / teardown ---
 
@@ -386,12 +412,12 @@ class Source(unittest.TestCase):
             text = read(lib).replace(
                 "    #[test]\n    fn adds()", "    #[test]\n    fn saturates_at_the_top() {}\n\n    #[test]\n    fn adds()")
             write(lib, text)
-            mecha_history.graft(self.ws, self.merge)
+            mecha_history.graft(self.ws, self.merge, "hidden_grade_t")
         finally:
             del os.environ["MECHA_HISTORY_REPO"]
         grafted = read(lib)
         start = grafted.index("mod tests {")
-        module = grafted.index("    mod hidden_grade {", start)
+        module = grafted.index("    mod hidden_grade_t {", start)
         self.assertLess(module, grafted.index("fn helper()"), "grafted after the module's own items")
         block = grafted[module:grafted.index("fn helper()", module)]
         self.assertIn("use super::*;", block)
@@ -410,7 +436,7 @@ class Source(unittest.TestCase):
         # A top-level `#[cfg(test)]` test in an ordinary file goes into a
         # test-only module at the end; the PR's non-test code never does.
         other = read(os.path.join(self.ws, "demo", "src", "other.rs"))
-        tail = other[other.index("#[cfg(test)]\nmod hidden_grade {"):]
+        tail = other[other.index("#[cfg(test)]\nmod hidden_grade_t {"):]
         self.assertIn("\nfn top_level_test() {", tail)
         self.assertIn("\n/// A test at the top of an ordinary source file.", tail)
         self.assertNotIn("added_code() -> u32", other)
@@ -419,8 +445,8 @@ class Source(unittest.TestCase):
         # A test module the PR added whole is grafted once, as one item.
         third = read(os.path.join(self.ws, "demo", "src", "third.rs"))
         self.assertEqual(third.count("fn a_new_module_test()"), 1, third)
-        self.assertEqual(third.count("mod hidden_grade {"), 1, third)
-        tail = third[third.index("mod hidden_grade {"):]
+        self.assertEqual(third.count("mod hidden_grade_t {"), 1, third)
+        tail = third[third.index("mod hidden_grade_t {"):]
         self.assertIn("\n/// The module is new, attributes and all.\n#[cfg(test)]\nmod tests {", tail)
 
     def with_home(self):
@@ -550,11 +576,18 @@ class Source(unittest.TestCase):
                          {"needs_a_worker": "skipped", "asserts": "fail"})
 
     def test_the_grafted_copy_decides_over_a_same_named_test_the_run_wrote(self):
+        m = "hidden_grade_5e"
         out = ("test tests::saturates_at_the_top ... FAILED\n"
-               "test tests::hidden_grade::saturates_at_the_top ... ok\n\nfailures:\n\n"
+               f"test tests::{m}::saturates_at_the_top ... ok\n\nfailures:\n\n"
                "---- tests::saturates_at_the_top stdout ----\npanicked at src/lib.rs:1:1:\nthe run's own\n\n"
                "failures:\n\ntest result: FAILED. 1 passed; 1 failed\n")
-        self.assertEqual(mecha_history.statuses(out, ["saturates_at_the_top"]), {"saturates_at_the_top": "pass"})
+        self.assertEqual(mecha_history.statuses(out, ["saturates_at_the_top"], module=m), {"saturates_at_the_top": "pass"})
+        # A `hidden_grade` the run wrote itself, with the grafted copy cfg'd
+        # out, is not the grade's copy (review of #852, pass 7).
+        forged = ("test anywhere::hidden_grade::saturates_at_the_top ... ok\n"
+                  "test tests::saturates_at_the_top ... ok\n\ntest result: ok. 2 passed\n")
+        self.assertEqual(mecha_history.statuses(forged, ["saturates_at_the_top"], module=m),
+                         {"saturates_at_the_top": "not-run"})
         self.assertEqual(mecha_history.statuses("error[E0425]: nope\n", ["x"]), {"x": "build-error"})
 
     def test_the_grade_builds_in_a_jail_with_no_network_and_no_home(self):
