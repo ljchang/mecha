@@ -317,7 +317,7 @@ pub const CATALOG: &[Entry] = &[
         id: "gemma-4-26b-a4b",
         provider: "gemma26",
         label: "Gemma 4 26B-A4B UD-Q4_K_M, with its vision projector and MTP draft file",
-        note: "the Qwen models' context window, and llama-server's own sampling",
+        note: "production's own context window, and llama-server's own sampling",
         // One revision for all three: a draft from another revision
         // mis-drafts silently.
         pins: &[

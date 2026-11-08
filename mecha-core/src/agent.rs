@@ -4173,9 +4173,16 @@ impl Agent {
                             // A write is keyed whole, a read by its target:
                             // six different edits to one file are six pieces
                             // of work, never one edit repeated (`Boredom::key`).
-                            let reads = crate::boredom::Boredom::reads(
-                                self.registry.get(name).and_then(|t| t.effect()),
-                            );
+                            // A *failed* call is keyed by target whatever it
+                            // declares: it changed nothing, so its arguments
+                            // are guesses rather than work — `fs_edit` missing
+                            // with a new `old` each turn is the guessing loop
+                            // this exists to name, and the shape key sees one
+                            // target there (review of #857, pass 2).
+                            let reads = is_error
+                                || crate::boredom::Boredom::reads(
+                                    self.registry.get(name).and_then(|t| t.effect()),
+                                );
                             crate::boredom::Outcome {
                                 tool: name,
                                 key: crate::boredom::Boredom::key(name, input, content, reads),
@@ -14847,6 +14854,59 @@ justification = "echo is off on this box"
             .messages
             .iter()
             .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// And a *failed* write is a guess, not work: `fs_edit` missing with a new
+    /// `old` each turn answers the same error every time, and that streak on
+    /// one file is what boredom exists to name. Keyed whole like a success,
+    /// three guesses were three keys and the shape key saw one target, so
+    /// nothing fired (review of #857, pass 2).
+    #[tokio::test]
+    async fn different_guesses_failing_on_one_file_are_still_named() {
+        let guess = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("g{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": format!("guess {i}"), "new": "b"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(guess).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(MissingEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("edit it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// `fs_edit` when `old` is not in the file: a workspace write that errors
+    /// the same way whatever was guessed.
+    struct MissingEdit;
+    #[async_trait]
+    impl Tool for MissingEdit {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "Replace text in a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Workspace)
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("`old` does not appear in the file"))
+        }
     }
 
     /// `fs_edit`'s shape: a workspace write whose result is a receipt that

@@ -10532,7 +10532,12 @@ edits to one file one edit repeated six times: in the driven pilot 15 of 16
 trials were told they were stuck mid-refactor, and Claude obeyed the second
 rung and stopped with ten edits left. An undeclared tool is keyed whole,
 because the costly error here is interrupting work, and keying whole can only
-make two calls less alike. The identical edit repeated is still one key.
+make two calls less alike. The identical edit repeated is still one key. **A
+call that errored is keyed by target whatever it declares**: it changed
+nothing, so its arguments are guesses rather than work — `fs_edit` missing
+with a new `old` each turn is one unchanging error on one file, the guessing
+loop this exists to name, and the shape key sees a single target there
+(review of #857).
 
 **A second key counts the same failure on new targets** (`boredom::error_shape`:
 the error with quoted spans, paths and numbers masked, per tool). The first

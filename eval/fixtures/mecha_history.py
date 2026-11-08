@@ -463,17 +463,29 @@ USE_DECL = re.compile(r"(pub(\([^)]*\))?\s+)?use\s")
 USE_TOKEN = re.compile(r"::|[{},*]|\w+")
 
 
+ATTR_LINE = re.compile(r"\s*#\[.*\]\s*$")
+DOC_LINE = re.compile(r"\s*(///|//!|//|$)")
+
+
 def use_statements(lines, start, end, indent):
     """The `use` declarations written at `indent` directly inside
-    lines[start..end], each as its text (joined over the lines it spans)."""
+    lines[start..end], each as (its attribute lines, its text joined over the
+    lines it spans). An attribute rides with the declaration it sits on — a
+    `#[cfg(...)]` gate re-said without it would import where the PR did not;
+    a doc line is documentation and does not."""
     out, i = [], start
     while i <= end and i < len(lines):
         rest = lines[i][len(indent):] if lines[i].startswith(indent) else None
         if rest is not None and not rest.startswith(" ") and USE_DECL.match(rest):
+            attrs, k = [], i - 1
+            while k >= start and (ATTR_LINE.match(lines[k]) or DOC_LINE.match(lines[k]) and lines[k].strip()):
+                if ATTR_LINE.match(lines[k]):
+                    attrs.insert(0, lines[k].strip())
+                k -= 1
             j = i
             while j <= end and not lines[j].split("//")[0].rstrip().endswith(";"):
                 j += 1
-            out.append("\n".join(lines[i:j + 1]))
+            out.append((tuple(attrs), "\n".join(lines[i:j + 1])))
             i = j + 1
             continue
         i += 1
@@ -528,16 +540,17 @@ def use_paths(text):
 
 
 def module_imports(lines, module):
-    """The paths `module`'s own `use` declarations import, in order, once
-    each; a declaration that does not parse is left out."""
-    out = []
+    """[(path, attribute lines)] for `module`'s own `use` declarations, in
+    order, once per path; a declaration that does not parse is left out."""
+    out, seen = [], set()
     for name, start, end in test_modules(lines):
         if name != module:
             continue
-        for text in use_statements(lines, start + 1, end - 1, "    "):
+        for attrs, text in use_statements(lines, start + 1, end - 1, "    "):
             for p in use_paths(text) or []:
-                if p not in out:
-                    out.append(p)
+                if p not in seen:
+                    seen.add(p)
+                    out.append((p, attrs))
     return out
 
 
@@ -551,8 +564,8 @@ def added_imports(merge, path, module):
     merged = git("show", f"{merge}:{path}").split("\n")
     r = run(["git", "-C", repo(), "show", f"{merge}^1:{path}"])
     pinned = r.stdout.split("\n") if r.returncode == 0 else []  # a file the PR created
-    before = set(module_imports(pinned, module))
-    return [p for p in module_imports(merged, module) if p not in before]
+    before = {p for p, _ in module_imports(pinned, module)}
+    return [(p, attrs) for p, attrs in module_imports(merged, module) if p not in before]
 
 
 def repoint(path):
@@ -566,10 +579,23 @@ def repoint(path):
 
 
 def plain_use(item):
-    """The paths of an item that is a bare `use` declaration — its text
-    starts at its first attribute or doc line, so one that starts with `use`
-    has neither — or None for anything else."""
-    return use_paths(item) if USE_DECL.match(item.lstrip(" ")) else None
+    """(attribute lines, paths) for an item that is a `use` declaration past
+    its leading attribute and doc lines — `whole_items` starts an item at the
+    first of those, and a `super::`-relative path under a doc comment is as
+    wrong one level deeper as a bare one (review of #857, pass 2) — or None
+    for anything else. A multi-line attribute is not split off, so an item
+    carrying one is left as the graft always placed it."""
+    lines = item.split("\n")
+    attrs, i = [], 0
+    while i < len(lines) and (ATTR_LINE.match(lines[i]) or (DOC_LINE.match(lines[i]) and lines[i].strip())):
+        if ATTR_LINE.match(lines[i]):
+            attrs.append(lines[i].strip())
+        i += 1
+    body = "\n".join(lines[i:])
+    if not USE_DECL.match(body.lstrip(" ")):
+        return None
+    paths = use_paths(body)
+    return (tuple(attrs), paths) if paths is not None else None
 
 
 def graft_plan(tree, merge, module):
@@ -607,17 +633,21 @@ def graft_plan(tree, merge, module):
                 # a `super::`-relative path written for the test module is
                 # wrong one level inside it whether the PR added it or not, and
                 # a one-line list rustfmt kept whole is an item holding both
-                # (review of #857, pass 1).
-                imports = added_imports(merge, path, into)
+                # (review of #857, pass 1). Past its doc lines too, and with
+                # its attributes carried onto each path it names (pass 2).
+                imports = dict(added_imports(merge, path, into))  # path -> attribute lines
                 kept = []
                 for it in items:
-                    paths = plain_use(it)
-                    if paths is None:
+                    found = plain_use(it)
+                    if found is None:
                         kept.append(it)
-                    else:
-                        imports += [q for q in paths if q not in imports]
+                        continue
+                    attrs, paths = found
+                    for q in paths:
+                        imports[q] = attrs  # the declaration's own attributes
                 items = kept
-                for q in imports:
+                for q, attrs in imports.items():
+                    block += [f"{indent}{a}" for a in attrs]
                     block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")
                 if imports:
                     block.append("")

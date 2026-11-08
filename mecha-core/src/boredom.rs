@@ -307,10 +307,12 @@ impl Boredom {
     /// guard's rule: identical arguments with a changing result is polling,
     /// and a poll must never grade as stuck.
     ///
-    /// `reads` is the tool's declared [`Effect`](crate::tool::effect::Effect),
-    /// `Read` or `ReadThatRecords`, and nothing else: an undeclared tool is
-    /// keyed whole, because the error that costs is interrupting work, and
-    /// keying whole can only make two calls *less* alike.
+    /// `reads` is true for a declared read ([`Boredom::reads`]) and for any
+    /// call that errored: a failed write changed nothing, so its arguments are
+    /// guesses, not work, and keyed by target `fs_edit` missing with a new
+    /// `old` each turn is the streak this names. An undeclared tool that
+    /// succeeded is keyed whole, because the error that costs is interrupting
+    /// work, and keying whole can only make two calls *less* alike.
     ///
     /// A 64-bit hash rather than the strings: nothing adversarial is being
     /// resisted, a collision needs two different outcomes to repeat three

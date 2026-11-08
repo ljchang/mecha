@@ -719,8 +719,30 @@ class Imports(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def history(self, name, pin, merge):
+        """A repository of its own with `pin` then `merge` as src/setup.rs,
+        made the source; its merge commit."""
+        repo = os.path.join(self.tmp.name, name)
+        os.makedirs(os.path.join(repo, "src"))
+        git(repo, "init", "-q")
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "t")
+        write(os.path.join(repo, "src", "setup.rs"), pin)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "pin")
+        write(os.path.join(repo, "src", "setup.rs"), merge)
+        git(repo, "commit", "-q", "-am", "the change")
+        os.environ["MECHA_HISTORY_REPO"] = repo
+        return git(repo, "rev-parse", "HEAD").strip()
+
+    def graft_block(self, merge):
+        text = mecha_history.graft_plan(self.tree, merge, "hidden_grade_t")["src/setup.rs"]
+        start = text.index("mod hidden_grade_t {")
+        return text[start:text.index("\n    }\n", start)]  # the graft's module only, not the run's own
+
     def test_an_edit_to_a_test_modules_import_list_is_carried_into_the_graft(self):
-        self.assertEqual(mecha_history.added_imports(self.merge, "src/setup.rs", "tests"), ["super::resident"])
+        self.assertEqual(mecha_history.added_imports(self.merge, "src/setup.rs", "tests"),
+                         [("super::resident", ())])
         text = mecha_history.graft_plan(self.tree, self.merge, "hidden_grade_t")["src/setup.rs"]
         block = text[text.index("mod hidden_grade_t {"):]
         # Said from one level deeper: `super` there is `tests`, not the file.
@@ -733,28 +755,29 @@ class Imports(unittest.TestCase):
         # added and reads as an item. Copied as it was, `super` would be
         # `tests` inside the graft: E0432 on `kept`, E0252 on `resident`
         # (review of #857, pass 1).
-        repo = os.path.join(self.tmp.name, "one-line")
-        os.makedirs(os.path.join(repo, "src"))
-        git(repo, "init", "-q")
-        git(repo, "config", "user.email", "t@example.com")
-        git(repo, "config", "user.name", "t")
         one = lambda text: text.replace("use super::{\n        kept,\n    };", "use super::{kept};").replace(
             "use super::{\n        kept, resident,\n    };", "use super::{kept, resident};")
-        write(os.path.join(repo, "src", "setup.rs"), one(PIN_LISTED))
-        git(repo, "add", "-A")
-        git(repo, "commit", "-q", "-m", "pin")
-        write(os.path.join(repo, "src", "setup.rs"), one(MERGE_LISTED))
-        git(repo, "commit", "-q", "-am", "the change")
-        merge = git(repo, "rev-parse", "HEAD").strip()
+        merge = self.history("one-line", one(PIN_LISTED), one(MERGE_LISTED))
         write(os.path.join(self.tree, "src", "setup.rs"), one(read(os.path.join(self.tree, "src", "setup.rs"))))
-        os.environ["MECHA_HISTORY_REPO"] = repo
-        text = mecha_history.graft_plan(self.tree, merge, "hidden_grade_t")["src/setup.rs"]
-        start = text.index("mod hidden_grade_t {")
-        block = text[start:text.index("\n    }\n", start)]  # the graft's module only, not the run's own
+        block = self.graft_block(merge)
         self.assertNotIn("use super::{", block, "a relative list is never copied into the graft as written")
         self.assertEqual(block.count("use super::super::resident;"), 1, "said once")
         self.assertIn("use super::super::kept;", block)
         self.assertIn("fn the_resident_one_is_two()", block)
+
+    def test_a_use_under_a_doc_line_or_attribute_is_re_said_with_its_attributes(self):
+        # `whole_items` starts an item at its doc line, so a doc-commented
+        # `use` was both re-said and copied verbatim (review of #857, pass 2).
+        # A `#[cfg]` gate must ride with the import it gates.
+        added = ("    /// The resident one.\n    use super::resident;\n"
+                 "    #[cfg(unix)]\n    use super::kept as unix_kept;\n\n")
+        merge = self.history("attributed", PIN_LISTED,
+                             MERGE_LISTED.replace("    #[test]\n    fn keeps()", added + "    #[test]\n    fn keeps()", 1))
+        block = self.graft_block(merge)
+        self.assertNotIn("\n    use super::resident;", block, "never copied as written")
+        self.assertEqual(block.count("use super::super::resident;"), 1, "said once")
+        self.assertIn("    #[cfg(unix)]\n    #[allow(unused_imports)] use super::super::kept as unix_kept;", block)
+        self.assertNotIn("The resident one.", block, "a doc line is documentation, not part of the import")
 
     def test_a_use_declaration_flattens_to_the_paths_it_imports(self):
         self.assertEqual(
