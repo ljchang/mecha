@@ -2394,9 +2394,11 @@ rides on the triage record's `rules.confirmation` with
 `CONFIRMATION_VERSION`, a digest of the compiled strings. The engine runs an
 automatic description task only when the active confirmation, under this
 build, chose the same rule; otherwise the task is offered with the reason
-`unconfirmed`, and the row's `matched_because.confirmation` names what the pass
-chose. A shadow task's would-have row records `would have proposed: the
-confirmation pass disagreed` or `not confirmed`. The version enters the match
+`unconfirmed` (the pass chose otherwise, or gave no answer), and the row's
+`matched_because.confirmation` names what the pass chose: a rule, `none`, or
+`not confirmed` when it decided nothing. A shadow task's would-have row
+records `would have proposed: the confirmation pass disagreed` or `not
+confirmed`. The version enters the match
 digest of exactly the groups the pass decides, and the approval digest of a
 description rule with a task or send, so a changed instruction separates the
 measurement and lapses those approvals. A description rule's `task` therefore
@@ -2408,8 +2410,11 @@ Refusals (`rules.refused`, and the confirmation's own) are recorded with
 `RuleRefusal::label` text but not yet shown on the page; the description-rule
 test (P4a-2) is where they surface, beside the cost it reports.
 
-Implementation choices, not owner rulings: a failed confirmation call is
-recorded as failed and disagrees, never retried into agreement; a
+Implementation choices, not owner rulings: a failed confirmation call, or an
+answer whose quote was refused, demotes exactly as a disagreement does and is
+never retried into agreement, but is recorded on both shapes as `not
+confirmed` rather than as a judgement, so an outage is not counted in the
+measurement promotion is decided on; a
 confirmation from another build's frame confirms nothing; the shadow
 confirmation of a rule with no gate-failing text (every rule until P7) is the
 only shadow case.

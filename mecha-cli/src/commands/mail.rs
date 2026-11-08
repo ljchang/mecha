@@ -4226,7 +4226,6 @@ mod classify_exit_tests {
         assert!(!run_accomplished_nothing(0, 0, 0));
     }
 
-    /// A clean fan-out is plain JSON and must stay exactly as it was.
     #[test]
     fn the_attachment_key_the_sweep_reads_is_the_one_mail_recent_writes() {
         // Review of #854: nothing else joins the reader to the writer.
@@ -4241,6 +4240,7 @@ mod classify_exit_tests {
         );
     }
 
+    /// A clean fan-out is plain JSON and must stay exactly as it was.
     #[test]
     fn recent_rows_parse_without_a_note() {
         let (rows, note) = parse_recent(r#"[{"account":"campus"}]"#).unwrap();

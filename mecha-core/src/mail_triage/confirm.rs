@@ -131,13 +131,18 @@ impl Confirmation {
     }
 
     /// The shadow verdict for `rule` under this build: `Some(true)` agrees,
-    /// `Some(false)` disagrees, `None` was not asked (or another build asked).
+    /// `Some(false)` disagrees, `None` was not asked, another build asked, or
+    /// the answer decided nothing — a failed call, a left-out candidate, or a
+    /// "matches" whose quote was refused, as [`Self::active_choice`] reads a
+    /// dropped answer (review of #855, pass 3).
     pub fn shadow_verdict(&self, rule: &str) -> Option<bool> {
         (self.version == *CONFIRMATION_VERSION)
             .then(|| {
                 self.shadow
                     .iter()
-                    .find(|s| s.name == rule && s.answered && s.failed.is_none())
+                    .find(|s| {
+                        s.name == rule && s.answered && s.failed.is_none() && s.refused.is_none()
+                    })
                     .map(|s| s.agrees)
             })
             .flatten()
@@ -489,7 +494,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(c.shadow_verdict("invoices"), Some(true));
-        assert_eq!(c.shadow_verdict("renewals"), Some(false));
+        assert_eq!(
+            c.shadow_verdict("renewals"),
+            None,
+            "a refused quote decided nothing, on either side"
+        );
         assert_eq!(c.shadow_verdict("unasked"), None);
         // A failed call, or a candidate left out, says nothing: not
         // confirmed, never disagreed.

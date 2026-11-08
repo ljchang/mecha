@@ -3242,6 +3242,83 @@ async fn an_automatic_description_task_needs_the_confirmation_pass_to_agree() {
     assert_eq!(sink.0.lock().unwrap().len(), 1);
 }
 
+/// Review of #855, pass 3: the demotion happens at planning, not only at
+/// dispatch, so an unconfirmed task is never an automatic one anywhere —
+/// not in the claimed row, not against the sink hold, not against a cap.
+#[tokio::test]
+async fn an_unconfirmed_task_is_demoted_before_it_is_planned() {
+    // No sink: an automatic task would be held for it; an offer is not.
+    let mut f = Fixture::new();
+    let r = described_rule(&f, "bookings", "", TASK);
+    f.mode(&r, ActionGroup::Board, Mode::Auto);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    let report = f.run(None).await;
+    assert_eq!(
+        report.rows[0].outcome,
+        Outcome::Offered,
+        "{:#?}",
+        report.rows
+    );
+    assert!(
+        f.store
+            .ledger()
+            .unwrap()
+            .iter()
+            .all(|row| row.mode != Mode::Auto),
+        "no row of an unconfirmed task is written as automatic: {:#?}",
+        f.store.ledger().unwrap()
+    );
+
+    // Two threads, one global cap: the unconfirmed first leaves the cap to
+    // the confirmed second.
+    let mut f = Fixture::new();
+    std::fs::write(f.store.root().join("limits.toml"), "daily_cap = 1\n").unwrap();
+    let r = described_rule(&f, "bookings", "", TASK);
+    f.mode(&r, ActionGroup::Board, Mode::Auto);
+    f.options.pass = Pass::AfterClassify;
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        let mut second = cs[0].clone();
+        second.message.provider_message_id = "message-beta".into();
+        second.message.thread_id = "thread-beta".into();
+        let rules = second.classified.as_mut().unwrap().rules.as_mut().unwrap();
+        let active = rules
+            .confirmation
+            .as_mut()
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap();
+        active.choice = Some(RuleHit {
+            name: "bookings".into(),
+            quote: "booking for Friday".into(),
+        });
+        cs.push(second);
+    }
+    let sink = Sink::default();
+    let report = f.run(Some(&sink)).await;
+    let by_thread = |t: &str| {
+        report
+            .rows
+            .iter()
+            .find(|row| row.message.thread_id == t)
+            .unwrap_or_else(|| panic!("no row for {t}: {:#?}", report.rows))
+            .outcome
+    };
+    assert_eq!(
+        by_thread("thread-beta"),
+        Outcome::Done,
+        "{:#?}",
+        report.rows
+    );
+    assert_ne!(by_thread("thread-alpha"), Outcome::Done);
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn a_shadow_task_records_what_the_confirmation_pass_said() {
     let mut f = Fixture::new();
