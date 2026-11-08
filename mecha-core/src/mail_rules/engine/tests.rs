@@ -3182,7 +3182,10 @@ async fn an_automatic_description_task_needs_the_confirmation_pass_to_agree() {
         report.rows
     );
     assert_eq!(report.rows[0].mode, Mode::Propose);
-    assert!(report.rows[0].reason.starts_with("unconfirmed"));
+    assert_eq!(
+        report.rows[0].reason,
+        "unconfirmed: the confirmation pass did not choose this rule"
+    );
     assert!(report.rows[0]
         .matched_because
         .contains(r#""confirmation":"none""#));
@@ -3201,6 +3204,41 @@ async fn an_automatic_description_task_needs_the_confirmation_pass_to_agree() {
     told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
     let report = f.run(Some(&sink)).await;
     assert_eq!(report.rows[0].outcome, Outcome::Offered);
+    assert_eq!(
+        report.rows[0].reason, "unconfirmed: the confirmation pass gave no answer",
+        "no answer is not a disagreement (review of #855, pass 2)"
+    );
+    assert_eq!(sink.0.lock().unwrap().len(), 1);
+
+    // The call failed: proposed, and the row says so rather than "none".
+    f.mail.next("delta");
+    told(&f, &r, RuleList::Active, true, RuleInput::Snippet);
+    confirmed(&f, Some("none"), &[]);
+    {
+        let mut cs = f.mail.candidates.lock().unwrap();
+        let rules = cs[0].classified.as_mut().unwrap().rules.as_mut().unwrap();
+        let active = rules
+            .confirmation
+            .as_mut()
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap();
+        active.failed = Some("the model server did not answer".into());
+    }
+    let report = f.run(Some(&sink)).await;
+    assert_eq!(report.rows[0].outcome, Outcome::Offered);
+    assert_eq!(
+        report.rows[0].reason,
+        "unconfirmed: the confirmation pass gave no answer"
+    );
+    assert!(
+        report.rows[0]
+            .matched_because
+            .contains(r#""confirmation":"not confirmed""#),
+        "{}",
+        report.rows[0].matched_because
+    );
     assert_eq!(sink.0.lock().unwrap().len(), 1);
 }
 

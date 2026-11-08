@@ -76,6 +76,9 @@ pub struct Confirmation {
     pub shadow: Vec<ShadowConfirmation>,
 }
 
+/// What a row says when the active confirmation decided nothing.
+pub const NOT_CONFIRMED: &str = "not confirmed";
+
 /// The choose-one answer for active groups.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveConfirmation {
@@ -141,15 +144,20 @@ impl Confirmation {
     }
 
     /// What the active confirmation chose, under this build: a rule's name,
-    /// "none", or `None` when no active confirmation from this build exists.
+    /// `"none"` for a grounded "none of them", [`NOT_CONFIRMED`] when the call
+    /// failed or its answer was dropped, or `None` when no active
+    /// confirmation from this build exists.
     pub fn active_choice(&self) -> Option<String> {
         (self.version == *CONFIRMATION_VERSION)
             .then_some(self.active.as_ref())
             .flatten()
-            .map(|a| {
-                a.choice
-                    .as_ref()
-                    .map_or_else(|| "none".to_string(), |hit| hit.name.clone())
+            .map(|a| match &a.choice {
+                Some(hit) => hit.name.clone(),
+                // An outage or a dropped answer decided nothing, and is never
+                // reported as a judgement (review of #855, pass 2) — the same
+                // line `ShadowConfirmation::answered` holds.
+                None if a.failed.is_some() || !a.refused.is_empty() => NOT_CONFIRMED.into(),
+                None => "none".into(),
             })
     }
 }
@@ -433,9 +441,35 @@ mod tests {
         assert!(a.choice.is_none());
         assert_eq!(a.refused[0].reason, RuleRefusal::QuoteNotInMessage);
 
+        let refused = Confirmation {
+            version: CONFIRMATION_VERSION.clone(),
+            active: Some(a),
+            shadow: vec![],
+        };
+        assert_eq!(refused.active_choice().as_deref(), Some(NOT_CONFIRMED));
+
+        let p = Fixed(r#"{"reasoning":"x","rule":"none"}"#.into());
+        let a = confirm_active(&p, "m", &thread(), &entries()).await;
+        let none = Confirmation {
+            version: CONFIRMATION_VERSION.clone(),
+            active: Some(a),
+            shadow: vec![],
+        };
+        assert_eq!(none.active_choice().as_deref(), Some("none"));
+
         let p = Fixed("not json".into());
         let a = confirm_active(&p, "m", &thread(), &entries()).await;
         assert!(a.choice.is_none() && a.failed.is_some());
+        let failed = Confirmation {
+            version: CONFIRMATION_VERSION.clone(),
+            active: Some(a),
+            shadow: vec![],
+        };
+        assert_eq!(
+            failed.active_choice().as_deref(),
+            Some(NOT_CONFIRMED),
+            "an outage is not a judgement"
+        );
     }
 
     #[tokio::test]

@@ -22,7 +22,8 @@ struct Described {
     confirmed: bool,
     /// The shadow confirmation's verdict on this rule, when it gave one.
     shadow_confirmed: Option<bool>,
-    /// What the active confirmation chose, for the row: a name or "none".
+    /// What the active confirmation chose, for the row: a name, "none", or
+    /// "not confirmed" when it decided nothing.
     confirmation_choice: Option<String>,
 }
 
@@ -1103,10 +1104,22 @@ impl Run<'_> {
                 // §4.2: for a task or send, the main pass's match is a
                 // candidate; an automatic one runs only when the confirmation
                 // pass, with no learned rules in it, chose the same rule.
-                let unconfirmed = described.is_some_and(|d| {
-                    super::describe::confirmation_decides(action.group()) && !d.confirmed
+                // Keyed on the rule, not on the record, so a description rule
+                // that ever arrived here without one fails closed (review of
+                // #855, pass 2). `Some` carries the row's reason.
+                let unconfirmed = (rule.definition.is_description()
+                    && super::describe::confirmation_decides(action.group())
+                    && !described.is_some_and(|d| d.confirmed))
+                .then(|| {
+                    let choice = described.and_then(|d| d.confirmation_choice.as_deref());
+                    match choice {
+                        Some(c) if c != crate::mail_triage::confirm::NOT_CONFIRMED => {
+                            "unconfirmed: the confirmation pass did not choose this rule"
+                        }
+                        _ => "unconfirmed: the confirmation pass gave no answer",
+                    }
                 });
-                if unconfirmed && mode == Mode::Auto {
+                if unconfirmed.is_some() && mode == Mode::Auto {
                     mode = Mode::Propose;
                 }
                 let mut row = self.snapshot_described(rule, index, c, mode, described)?;
@@ -1270,7 +1283,7 @@ impl Run<'_> {
                     // and reactivates a group, or can trip its failure brake.
                     let resolved = self.modes(rule)?[&action.group()].clone();
                     let mut mode = resolved.effective;
-                    if unconfirmed && mode == Mode::Auto {
+                    if unconfirmed.is_some() && mode == Mode::Auto {
                         mode = Mode::Propose;
                     }
                     let inputs_changed = self.check_inputs(rule)?;
@@ -1329,11 +1342,7 @@ impl Run<'_> {
                     } else if mode == Mode::Propose {
                         (
                             Outcome::Offered,
-                            if unconfirmed {
-                                "unconfirmed: the confirmation pass did not choose this rule".into()
-                            } else {
-                                String::new()
-                            },
+                            unconfirmed.unwrap_or_default().into(),
                             FailureKind::Unknown,
                         )
                     } else if let Some(cap) = cap {
