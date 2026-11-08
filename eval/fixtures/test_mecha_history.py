@@ -719,26 +719,58 @@ class Imports(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def history(self, name, pin, merge):
-        """A repository of its own with `pin` then `merge` as src/setup.rs,
-        made the source; its merge commit."""
+    def history(self, name, pin, merge, path="src/setup.rs"):
+        """A repository of its own with `pin` then `merge` at `path`, made the
+        source; its merge commit."""
         repo = os.path.join(self.tmp.name, name)
-        os.makedirs(os.path.join(repo, "src"))
+        os.makedirs(os.path.dirname(os.path.join(repo, path)))
         git(repo, "init", "-q")
         git(repo, "config", "user.email", "t@example.com")
         git(repo, "config", "user.name", "t")
-        write(os.path.join(repo, "src", "setup.rs"), pin)
+        write(os.path.join(repo, path), pin)
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "pin")
-        write(os.path.join(repo, "src", "setup.rs"), merge)
+        write(os.path.join(repo, path), merge)
         git(repo, "commit", "-q", "-am", "the change")
         os.environ["MECHA_HISTORY_REPO"] = repo
         return git(repo, "rev-parse", "HEAD").strip()
 
-    def graft_block(self, merge):
-        text = mecha_history.graft_plan(self.tree, merge, "hidden_grade_t")["src/setup.rs"]
+    def graft_block(self, merge, path="src/setup.rs", close="\n    }\n"):
+        text = mecha_history.graft_plan(self.tree, merge, "hidden_grade_t")[path]
         start = text.index("mod hidden_grade_t {")
-        return text[start:text.index("\n    }\n", start)]  # the graft's module only, not the run's own
+        return text[start:text.index(close, start)]  # the graft's module only, not the run's own
+
+    def test_a_whole_test_files_top_level_import_edit_is_carried_too(self):
+        # `hud/tests.rs` and twenty more are test code with no `mod tests`:
+        # their items take the top-level path, which carried no imports
+        # (review of #857, pass 3).
+        pin = "use super::{kept};\n\n#[test]\nfn keeps() {\n    assert_eq!(kept(), 1);\n}\n"
+        merge = ("use super::{kept, resident};\n\n#[test]\nfn keeps() {\n    assert_eq!(kept(), 1);\n}\n\n"
+                 "#[test]\nfn the_resident_one_is_two() {\n    assert_eq!(resident(), 2);\n}\n")
+        path = "src/x/tests.rs"
+        merge_sha = self.history("whole-file", pin, merge, path)
+        os.makedirs(os.path.dirname(os.path.join(self.tree, path)), exist_ok=True)
+        write(os.path.join(self.tree, path), pin)
+        self.assertEqual(mecha_history.added_imports(merge_sha, path, None), [("super::resident", ())])
+        block = self.graft_block(merge_sha, path, close="\n}\n")
+        self.assertNotIn("use super::{", block, "never copied as written")
+        self.assertEqual(block.count("use super::super::resident;"), 1)
+        self.assertIn("use super::super::kept;", block)
+        self.assertIn("fn the_resident_one_is_two()", block)
+
+    def test_a_use_under_an_attribute_spread_over_lines_is_left_as_it_was(self):
+        # An attribute this cannot read whole must not be dropped: the import
+        # is left to the item, never also re-said ungated (review of #857,
+        # pass 3).
+        added = "    #[cfg(\n        unix\n    )]\n    use super::resident;\n\n"
+        merge = self.history("multi-line-attr", PIN_LISTED,
+                             MERGE_LISTED.replace("    use super::{\n        kept, resident,\n    };",
+                                                  "    use super::{\n        kept,\n    };", 1)
+                             .replace("    #[test]\n    fn keeps()", added + "    #[test]\n    fn keeps()", 1))
+        self.assertEqual(mecha_history.added_imports(merge, "src/setup.rs", "tests"), [])
+        block = self.graft_block(merge)
+        self.assertNotIn("super::super::resident", block, "never re-said without its gate")
+        self.assertIn("    #[cfg(\n        unix\n    )]\n    use super::resident;", block)
 
     def test_an_edit_to_a_test_modules_import_list_is_carried_into_the_graft(self):
         self.assertEqual(mecha_history.added_imports(self.merge, "src/setup.rs", "tests"),

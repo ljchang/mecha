@@ -400,6 +400,13 @@ def whole_items(lines, added, start, end, indent):
     return items
 
 
+def whole_test_file(path):
+    """A file that is test code from top to bottom (`tests.rs`, `x_tests.rs`,
+    anything under `tests/`): its top-level items are the tests, with no
+    `mod tests` around them."""
+    return bool(re.search(r"(^|/)(\w+_)?tests\.rs$", path) or "/tests/" in path)
+
+
 def added_items(merge):
     """{path: [(module, indent, [item text])]}: the test items the PR added,
     whole (attributes, doc lines, body), from the merged file. `module` is the
@@ -418,7 +425,7 @@ def added_items(merge):
             start, n = int(m.group(1)), int(m.group(2) or 1)
             added.update(range(start, start + n))
         groups = []
-        whole_file = bool(re.search(r"(^|/)(\w+_)?tests\.rs$", path) or "/tests/" in path)
+        whole_file = whole_test_file(path)
         # A module whose own header the PR added is new as a whole: it is one
         # top-level item, its attributes with it, never also its items
         # (review of #852, pass 3).
@@ -472,7 +479,10 @@ def use_statements(lines, start, end, indent):
     lines[start..end], each as (its attribute lines, its text joined over the
     lines it spans). An attribute rides with the declaration it sits on — a
     `#[cfg(...)]` gate re-said without it would import where the PR did not;
-    a doc line is documentation and does not."""
+    a doc line is documentation and does not. A declaration under an
+    attribute this cannot read whole (one spread over lines) is left out,
+    so it is left as the graft always placed it — never re-said ungated
+    beside its own verbatim copy (review of #857, pass 3)."""
     out, i = [], start
     while i <= end and i < len(lines):
         rest = lines[i][len(indent):] if lines[i].startswith(indent) else None
@@ -482,10 +492,12 @@ def use_statements(lines, start, end, indent):
                 if ATTR_LINE.match(lines[k]):
                     attrs.insert(0, lines[k].strip())
                 k -= 1
+            unreadable = k >= start and lines[k].rstrip().endswith("]")
             j = i
             while j <= end and not lines[j].split("//")[0].rstrip().endswith(";"):
                 j += 1
-            out.append((tuple(attrs), "\n".join(lines[i:j + 1])))
+            if not unreadable:
+                out.append((tuple(attrs), "\n".join(lines[i:j + 1])))
             i = j + 1
             continue
         i += 1
@@ -541,12 +553,14 @@ def use_paths(text):
 
 def module_imports(lines, module):
     """[(path, attribute lines)] for `module`'s own `use` declarations, in
-    order, once per path; a declaration that does not parse is left out."""
+    order, once per path; a declaration that does not parse is left out.
+    `module` None is a whole test file's own top level (review of #857,
+    pass 3: `hud/tests.rs` and twenty more have no `mod tests` at all)."""
+    spans = ([(0, len(lines) - 1, "")] if module is None else
+             [(start + 1, end - 1, "    ") for name, start, end in test_modules(lines) if name == module])
     out, seen = [], set()
-    for name, start, end in test_modules(lines):
-        if name != module:
-            continue
-        for attrs, text in use_statements(lines, start + 1, end - 1, "    "):
+    for start, end, indent in spans:
+        for attrs, text in use_statements(lines, start, end, indent):
             for p in use_paths(text) or []:
                 if p not in seen:
                     seen.add(p)
@@ -628,29 +642,33 @@ def graft_plan(tree, merge, module):
             inner = indent + "    "
             block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {module} {{",
                      f"{inner}#[allow(unused_imports)]", f"{inner}use super::*;", ""]
-            if into is not None:
-                # Every bare `use` item is re-said path by path, never copied:
-                # a `super::`-relative path written for the test module is
-                # wrong one level inside it whether the PR added it or not, and
-                # a one-line list rustfmt kept whole is an item holding both
-                # (review of #857, pass 1). Past its doc lines too, and with
-                # its attributes carried onto each path it names (pass 2).
-                imports = dict(added_imports(merge, path, into))  # path -> attribute lines
-                kept = []
-                for it in items:
-                    found = plain_use(it)
-                    if found is None:
-                        kept.append(it)
-                        continue
-                    attrs, paths = found
-                    for q in paths:
-                        imports[q] = attrs  # the declaration's own attributes
-                items = kept
-                for q, attrs in imports.items():
-                    block += [f"{indent}{a}" for a in attrs]
-                    block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")
-                if imports:
-                    block.append("")
+            # On every path the graft's module is one level deeper than the PR
+            # wrote its items, so every bare `use` item is re-said path by
+            # path, never copied: a `super::`-relative path is wrong one level
+            # down whether the PR added it or not, and a one-line list rustfmt
+            # kept whole is an item holding both (review of #857, pass 1).
+            # Past its doc lines too, with its attributes carried onto each
+            # path it names (pass 2). The imports the PR added are carried
+            # where the tests' own scope is a test module or a whole test
+            # file's top level (pass 3); an ordinary source file's top-level
+            # imports are its production code, the run's to write.
+            imports = (dict(added_imports(merge, path, into))  # path -> attribute lines
+                       if into is not None or whole_test_file(path) else {})
+            kept = []
+            for it in items:
+                found = plain_use(it)
+                if found is None:
+                    kept.append(it)
+                    continue
+                attrs, paths = found
+                for q in paths:
+                    imports[q] = attrs  # the declaration's own attributes
+            items = kept
+            for q, attrs in imports.items():
+                block += [f"{indent}{a}" for a in attrs]
+                block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")
+            if imports:
+                block.append("")
             block += "\n\n".join(items).split("\n") + [f"{indent}}}", ""]
             if into is None:
                 src += block
