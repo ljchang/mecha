@@ -596,22 +596,29 @@ def repoint(path):
     return path
 
 
-def needed(path, body):
-    """Whether an import the PR added to a test module is grafted beside
-    `body`, the grafted items' text. An unresolved `use` fails the whole
-    file — every hidden test in it, and the crate's regressions — so a path
-    into the run's own code (`super::`, `self::`, `crate::`) is carried only
-    when the name it binds appears in the grafted tests, or it is a glob: the
-    PR may have added it for a test it *edited*, which is not grafted, naming
-    a helper an independent solution has no reason to write (review of #857,
-    pass 5). A library path (`std::`, `core::`, a dependency) resolves
-    whatever the run wrote, and is kept: a trait imported for its methods
-    (`use std::io::Write;`) is named nowhere in a test body."""
+def needed(path, body, run_file=""):
+    """Whether an import is grafted beside `body`, the grafted items' text.
+    An unresolved `use` fails the whole file — every hidden test in it, and
+    the crate's regressions — so a path into the run's own code (`super::`,
+    `self::`, `crate::`) is carried only when it is a glob, when the name it
+    binds appears in the grafted tests, or when `run_file` — the run's own
+    file, where `super` of a test module resolves — declares or imports the
+    name, so the import resolves: a crate trait imported for its methods is
+    named nowhere in a test body. Otherwise the PR may have added it for a
+    test it *edited*, which is not grafted, naming a helper an independent
+    solution has no reason to write (review of #857, passes 5 and 6). A
+    library path (`std::`, `core::`, a dependency) resolves whatever the run
+    wrote, and is kept: `use std::io::Write;` is named nowhere either."""
     first = path.split("::")[0]
     if first not in ("super", "self", "crate"):
         return True
     bound = path.split(" as ")[-1].split("::")[-1]
-    return bound == "*" or re.search(rf"\b{re.escape(bound)}\b", body) is not None
+    if bound == "*" or re.search(rf"\b{re.escape(bound)}\b", body):
+        return True
+    name = re.escape(path.split(" as ")[0].split("::")[-1])
+    declared = (rf"\b(fn|struct|enum|union|trait|type|const|static|mod)\s+{name}\b"
+                rf"|macro_rules!\s*{name}\b|^\s*(pub(\([^)]*\))?\s+)?use\s[^;]*\b{name}\b")
+    return bool(run_file) and re.search(declared, run_file, re.M) is not None
 
 
 def plain_use(item):
@@ -658,7 +665,8 @@ def graft_plan(tree, merge, module):
         if not os.path.isfile(p):
             raise TreeRefused(f"{path}: the run's tree has no such file to graft the hidden tests into")
         with open(p) as fh:
-            src = fh.read().split("\n")
+            run_file = fh.read()
+        src = run_file.split("\n")
         # Bottom of the file first, so an insertion never moves a later one.
         for into, indent, items in sorted(groups, key=lambda g: g[0] is not None):
             inner = indent + "    "
@@ -688,7 +696,12 @@ def graft_plan(tree, merge, module):
                     from_items.add(q)
             items = kept
             body = "\n".join(items)
-            imports = {q: a for q, a in imports.items() if q in from_items or needed(q, body)}
+            # Every path through `needed`, the ones a one-line list brought
+            # in as an item too — that form skipped it (review of #857, pass
+            # 6). `super` of a test module is the run's file; of a whole test
+            # file or a top-level group, another file this cannot read.
+            here = run_file if into is not None else ""
+            imports = {q: a for q, a in imports.items() if needed(q, body, here)}
             for q, attrs in imports.items():
                 block += [f"{indent}{a}" for a in attrs]
                 block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")

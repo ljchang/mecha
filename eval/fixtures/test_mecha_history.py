@@ -755,7 +755,10 @@ class Imports(unittest.TestCase):
         block = self.graft_block(merge_sha, path, close="\n}\n")
         self.assertNotIn("use super::{", block, "never copied as written")
         self.assertEqual(block.count("use super::super::resident;"), 1)
-        self.assertIn("use super::super::kept;", block)
+        # No grafted test names `kept`, and this file's `super` is another
+        # file the graft cannot read, so it is not re-said — losing an unused
+        # import costs nothing, and an unresolved one fails the file (pass 6).
+        self.assertNotIn("super::super::kept", block)
         self.assertIn("fn the_resident_one_is_two()", block)
 
     def test_a_use_under_an_attribute_spread_over_lines_is_left_as_it_was(self):
@@ -831,6 +834,34 @@ class Imports(unittest.TestCase):
         block = self.graft_block(merge)
         self.assertIn("use super::super::resident;", block, "a grafted test names it")
         self.assertNotIn("helper", block, "only the edited, ungrafted test needed it")
+
+    def test_a_one_line_list_cannot_carry_an_edited_tests_import_past_the_guard(self):
+        # A one-line list is a wholly added line, so its paths came in as an
+        # item and skipped `needed` (review of #857, pass 6).
+        pin = PIN_LISTED.replace("    use super::{\n        kept,\n    };", "    use super::{kept};")
+        merge = self.history(
+            "one-line-edited", pin,
+            pin.replace("fn kept() -> u32 {\n    1\n}\n",
+                        "fn kept() -> u32 {\n    1\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+                        "fn resident() -> u32 {\n    2\n}\n", 1)
+            .replace("    use super::{kept};", "    use super::{helper, kept, resident};", 1)
+            .replace("    #[test]\n    fn keeps() {\n        assert_eq!(kept(), 1);\n",
+                     "    #[test]\n    fn the_resident_one_is_two() {\n        assert_eq!(resident(), 2);\n    }\n\n"
+                     "    #[test]\n    fn keeps() {\n        assert_eq!(kept(), helper());\n", 1))
+        write(os.path.join(self.tree, "src", "setup.rs"),
+              pin.replace("#[cfg(test)]", "fn resident() -> u32 {\n    2\n}\n\n#[cfg(test)]", 1))
+        block = self.graft_block(merge)
+        self.assertNotIn("helper", block, "the run never wrote it, and no grafted test names it")
+        self.assertIn("use super::super::resident;", block)
+        self.assertIn("use super::super::kept;", block, "the run's file declares it, so it resolves")
+
+    def test_a_crate_import_the_runs_file_declares_is_kept_though_unnamed(self):
+        # A crate trait imported for its methods is named nowhere in a test
+        # body; the run's file declaring it is what makes the import resolve.
+        run_file = "trait Greet {\n    fn greet(&self);\n}\n"
+        self.assertTrue(mecha_history.needed("super::Greet", "x.greet()", run_file))
+        self.assertFalse(mecha_history.needed("super::helper", "x.greet()", run_file))
+        self.assertTrue(mecha_history.needed("super::kept as k", "", "use super::{kept};\n"))
 
     def test_a_library_import_is_kept_and_a_crate_one_only_when_named(self):
         self.assertTrue(mecha_history.needed("std::io::Write", "fn t() { w.write_all(b\"x\") }"),
