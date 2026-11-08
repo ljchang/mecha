@@ -57,9 +57,9 @@ class Guard(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_guard(self, *args, home=None):
+    def run_guard(self, *args, home=None, cwd=None):
         env = dict(os.environ, MECHA_HOME=home or self.home, CHECK_PRIVATE_JOURNAL="0")
-        return subprocess.run([sys.executable, GUARD, *args], cwd=self.repo, env=env,
+        return subprocess.run([sys.executable, GUARD, *args], cwd=cwd or self.repo, env=env,
                               capture_output=True, text=True)
 
     def stage(self, name, text):
@@ -132,6 +132,55 @@ class Guard(unittest.TestCase):
         self.assertIn("commit message:1-3", r.stdout)
         open(msg, "w").write("Fix the fixture\n\nIt said something made up.\n")
         self.assertEqual(self.run_guard("--message", msg).returncode, 0)
+
+    def test_a_text_is_checked_headings_included(self):
+        # `--message` skips `#` lines as git's; a markdown prompt's headings
+        # are not git's, so `--text` reads them (DRIVER-DESIGN.md D3b).
+        doc = os.path.join(self.tmp.name, "prompt.md")
+        open(doc, "w").write(f"# {SAID}\n\nMake the change.\n")
+        self.assertEqual(self.run_guard("--message", doc).returncode, 0)
+        r = self.run_guard("--text", doc)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("text:1", r.stdout)
+        self.assertNotIn("lighthouse", r.stdout)
+        open(doc, "w").write("# Count the bytes\n\nMake the change.\n")
+        self.assertEqual(self.run_guard("--text", doc).returncode, 0)
+
+    def test_a_text_that_is_missing_or_unnamed_is_refused(self):
+        # check-prompts reads any non-zero exit as "not admitted".
+        for args in (["--text"], ["--text", os.path.join(self.repo, "absent.md")]):
+            r = self.run_guard(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("refusing", r.stdout)
+
+    def test_a_committed_text_does_not_excuse_itself(self):
+        # Checked after it lands, a prompt is in HEAD; its own copy must not
+        # count as the repository already saying it (review of #852).
+        self.stage("prompt.md", f"# {SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "add")
+        r = self.run_guard("--text", os.path.join(self.repo, "prompt.md"))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        # The repository's other files still excuse what they say.
+        self.stage("harness.md", f"{SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
+        self.assertEqual(self.run_guard("--text", os.path.join(self.repo, "prompt.md")).returncode, 0)
+
+    def test_a_committed_text_does_not_excuse_itself_from_any_directory(self):
+        # The exclusion is the toplevel's path, so it must hold wherever the
+        # guard runs from, not only at the toplevel (review of #852, pass 2).
+        for d in ("bank", "elsewhere"):
+            os.makedirs(os.path.join(self.repo, d), exist_ok=True)
+        self.stage("bank/prompt.md", f"# {SAID}\n")
+        self.stage("elsewhere/keep.md", "Nothing to say.\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "add")
+        prompt = os.path.join(self.repo, "bank", "prompt.md")
+        for cwd in ("bank", "elsewhere"):
+            r = self.run_guard("--text", prompt, cwd=os.path.join(self.repo, cwd))
+            self.assertEqual(r.returncode, 1, (cwd, r.stdout))
+        # And another file anywhere in the tree still excuses it, from below.
+        self.stage("harness.md", f"{SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
+        self.assertEqual(self.run_guard("--text", prompt, cwd=os.path.join(self.repo, "bank")).returncode, 0)
 
     def test_a_push_reads_every_commit_not_only_the_ends(self):
         # Added in one --no-verify commit and rewritten in the next: the

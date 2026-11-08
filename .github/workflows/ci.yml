@@ -291,6 +291,17 @@ jobs:
       # router through: its answer, and that asking never loads a model.
       - run: python3 scripts/test_served_props.py
 
+  # The history task source a driven run is set up and graded by
+  # (eval/fixtures/mecha_history.py, DRIVER-DESIGN.md §3): that the run's clone
+  # cannot see the answer, and that the PR's tests are grafted where they
+  # build. Its own job, for the reason the next one gives.
+  history-source:
+    name: history task source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 -W error::ResourceWarning eval/fixtures/test_mecha_history.py
+
   # The router's model lookup (scripts/start-router.sh), against caches of the
   # shapes that broke it. Its own job for the reason above: a failure here must
   # not read as the idle gate failing.
