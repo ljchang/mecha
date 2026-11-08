@@ -1505,6 +1505,7 @@ mod tests {
         const WRITES: bool = true;
         // (file, implementing type, registered name if a literal, class)
         const PINNED: &[(&str, &str, Option<&str>, bool)] = &[
+            ("mecha-core/src/memory_runtime.rs", "BoundRead", None, PURE),
             (
                 "mecha-core/src/tool/request_access.rs",
                 "RequestAccess",

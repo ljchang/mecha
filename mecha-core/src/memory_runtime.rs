@@ -315,7 +315,7 @@ impl Tool for BoundRead {
         FsRead.input_schema()
     }
     fn read_only(&self) -> bool {
-        FsRead.read_only()
+        true
     }
     fn capabilities(&self) -> Capabilities {
         FsRead.capabilities()
