@@ -90,11 +90,33 @@ pub fn reply_subject(subject: &str) -> String {
 }
 
 /// Fill the closed slots. The template has passed [`validate_template`].
+///
+/// One pass over the template: a slot's value is never rescanned, so a
+/// subject that reads `{today}` stays those words (review of #856).
 pub fn render(template: &str, display_name: &str, subject: &str, today: &str) -> String {
-    template
-        .replace("{sender_first_name}", &sender_first_name(display_name))
-        .replace("{subject}", &reply_subject(subject))
-        .replace("{today}", today)
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        match &after[..close] {
+            "sender_first_name" => out.push_str(&sender_first_name(display_name)),
+            "subject" => out.push_str(&reply_subject(subject)),
+            "today" => out.push_str(today),
+            other => {
+                out.push('{');
+                out.push_str(other);
+                out.push('}');
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn header_values<'a>(c: &'a Candidate, name: &'a str) -> impl Iterator<Item = &'a str> {
@@ -206,6 +228,16 @@ mod tests {
                 "2026-11-07"
             ),
             "Hi Dana — Re: Booking, 2026-11-07"
+        );
+        // A slot's value is never rescanned for slots.
+        assert_eq!(
+            render(
+                "{subject} / {today}",
+                "Dana",
+                "{today} {sender_first_name}",
+                "2026-11-07"
+            ),
+            "Re: {today} {sender_first_name} / 2026-11-07"
         );
     }
 }

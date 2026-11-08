@@ -861,7 +861,9 @@ template = "reply.md"   # beside rule.toml
 
 `reply.md` is what you would type, with at most three slots filled in for
 you: `{sender_first_name}`, `{subject}` and `{today}`; any other `{...}`
-makes the rule refuse to load. Install a rule with its template from a
+makes the rule refuse to load. `{subject}` is the reply's subject line, so
+it carries its `Re:` — "thanks for {subject}" reads "thanks for Re: …". A
+rule has at most one reply. Install a rule with its template from a
 directory: `mecha mail rule add ~/office-hours/`. In `propose`, each match
 puts the reply in your **outbox** to release, edit or reject — it answers
 only the sender's From address, never a Reply-To — and the ledger records

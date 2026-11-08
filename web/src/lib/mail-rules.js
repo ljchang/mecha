@@ -9,7 +9,10 @@
 // - **A rate over nothing is a dash, never 0%.** The JSON carries `null` for
 //   an empty denominator; `pct` keeps it a dash.
 
-export const GROUPS = ['mailbox', 'private_record', 'report', 'board'];
+// The groups whose mode the page can change: `ActionGroup::supported()`,
+// pinned against the Rust source by `web/test/mail-rules.mjs` so a group the
+// engine supports is never greyed out here (review of #856).
+export const GROUPS = ['mailbox', 'private_record', 'report', 'board', 'fixed_words'];
 
 /**
  * Every `/api/mail/rules…` path the page reaches, `X` for a segment it fills

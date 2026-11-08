@@ -29,6 +29,7 @@ import {
   pauseAllNotice,
   when,
   RULES_ENDPOINTS,
+  GROUPS,
 } from '../src/lib/mail-rules.js';
 import { readFileSync } from 'node:fs';
 
@@ -143,6 +144,13 @@ t('an empty body is the status', errorOf(500, '').message === 'HTTP 500');
 // MailRules.svelte calls through wrappers check-demo.mjs cannot scan, so it
 // reads RULES_ENDPOINTS instead; a path missing from that list would make the
 // guard's pass vacuous again (review of #850).
+// GROUPS is the engine's supported set, read from the Rust source rather
+// than restated, so a group added there cannot stay greyed out here.
+const definition = readFileSync(new URL('../../mecha-core/src/mail_rules/definition.rs', import.meta.url), 'utf8');
+const supportedBody = definition.match(/pub fn supported\(self\) -> bool \{([\s\S]*?)\n    \}/)?.[1] ?? '';
+const supported = [...supportedBody.matchAll(/Self::(\w+)/g)].map(([, n]) => n.replace(/(?<!^)([A-Z])/g, '_$1').toLowerCase());
+t('the supported set is read at all (the scan is not vacuous)', supported.length >= 5);
+t('GROUPS is exactly the engine’s supported groups', JSON.stringify([...supported].sort()) === JSON.stringify([...GROUPS].sort()));
 const page = readFileSync(new URL('../src/lib/MailRules.svelte', import.meta.url), 'utf8');
 const used = [...page.matchAll(/[`'"](\/api\/mail\/rules[^`'"]*)/g)].map(([, p]) => p.split('?')[0].replace(/\$\{[^}]*\}/g, 'X'));
 t('the page reaches rules paths at all (the scan is not vacuous)', used.length >= 10);

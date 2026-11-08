@@ -236,6 +236,17 @@ impl RuleDefinition {
                 "duplicate action in effect"
             );
         }
+        // Two replies would stage two drafts to one sender for one message,
+        // which no rule means (review of #856); a reply beside a forward or
+        // a send is §4.3's one rule answering through its slot.
+        ensure!(
+            rule.actions
+                .iter()
+                .filter(|a| a.group() == ActionGroup::FixedWords)
+                .count()
+                <= 1,
+            "a rule replies at most once per message; keep one reply"
+        );
         Ok(rule)
     }
 

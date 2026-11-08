@@ -530,7 +530,16 @@ pub fn brake_evidence(rule: &str, rows: &[LedgerRow]) -> BrakeEvidence {
             .or_default();
         if row.is_action_failure() {
             *streak += 1;
-        } else if matches!(row.outcome, Outcome::Done | Outcome::Sent) {
+        } else if matches!(
+            row.outcome,
+            // A staged reply, and what the owner did with it, are this
+            // group's successes (review of #856).
+            Outcome::Done
+                | Outcome::Sent
+                | Outcome::Staged
+                | Outcome::ReleasedUnchanged
+                | Outcome::Edited
+        ) {
             *streak = 0;
         }
     }
@@ -942,7 +951,10 @@ impl Run<'_> {
                     later.correction_of.as_deref() == Some(staged.id.as_str())
                         && matches!(
                             later.outcome,
-                            Outcome::ReleasedUnchanged | Outcome::Edited | Outcome::Rejected
+                            Outcome::ReleasedUnchanged
+                                | Outcome::Edited
+                                | Outcome::Rejected
+                                | Outcome::Undone
                         )
                 })
             })

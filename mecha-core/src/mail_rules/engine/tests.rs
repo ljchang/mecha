@@ -3792,6 +3792,30 @@ async fn what_the_owner_did_with_a_staged_reply_is_written_back_once() {
     assert_eq!(rejected[0].outbox_item.as_deref(), Some("item-1"));
 }
 
+/// Review of #856: one outbound slot per message, so a rule with two
+/// replies would stage two drafts for one message; it does not load.
+#[test]
+fn a_rule_with_two_replies_does_not_install() {
+    let f = Fixture::new();
+    let error = f
+        .store
+        .install(
+            "twice",
+            &format!(
+                "description = 'Twice'\n[match]\nfrom_domain = ['example.com']\n{REPLY}[[action]]\ndo = 'reply'\ntemplate = 'other.md'\n"
+            ),
+            &BTreeMap::from([
+                ("reply.md".to_string(), "Hello.".to_string()),
+                ("other.md".to_string(), "Hello again.".to_string()),
+            ]),
+        )
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("replies at most once"),
+        "{error:#}"
+    );
+}
+
 #[test]
 fn a_template_naming_a_slot_outside_the_closed_set_does_not_install() {
     let f = Fixture::new();
