@@ -178,6 +178,32 @@ class CommittedBank(unittest.TestCase):
             mecha_history.BANK = old
         self.assertEqual(unoffered, [])
 
+    def test_each_holdout_is_its_draw_taken_in_order_to_its_size(self):
+        """A record's `holdout` must name a draw the bank made, the draw's
+        tasks must be a prefix of its shuffled order (no hand-picking, no
+        gap), and the call naming it must offer exactly `k` (review of #861:
+        a typo'd name would drop a task from both banks without a word)."""
+        path = os.path.join(HERE, "mecha_history", "tasks.json")
+        with open(path) as fh:
+            b = json.load(fh)
+        draws = b.get("holdout_draws", {})
+        self.assertTrue(draws)
+        for t in b["tasks"]:
+            if "holdout" in t:
+                self.assertIn(t["holdout"], draws, f"{t['id']} names a holdout the bank never drew")
+        old = mecha_history.BANK
+        mecha_history.BANK = os.path.dirname(path)
+        try:
+            for name, d in draws.items():
+                taken = [t for t in b["tasks"] if t.get("holdout") == name]
+                self.assertEqual([str(t["pr"]) for t in taken], [str(n) for n in d["shuffled_order"][:len(taken)]], name)
+                offered = [t["id"] for t in taken if mecha_history.offered(t, name)]
+                self.assertEqual(len(offered), d["k"], f"{name} offers {offered}")
+                # And never to exploration.
+                self.assertFalse([t["id"] for t in taken if mecha_history.offered(t)], name)
+        finally:
+            mecha_history.BANK = old
+
 
 class Regressions(unittest.TestCase):
     def test_a_grafted_test_runs_alone_and_the_regression_pass_skips_it(self):
@@ -205,9 +231,13 @@ class Regressions(unittest.TestCase):
             self.assertEqual(calls[-1][-1], "t_one")
             mecha_history.regressions("tc", "tree", "mecha-core")
             self.assertNotIn("--skip", calls[-1])
-            # A whole test file is the merge's own text: bare names there too.
-            mecha_history.run_hidden("tc", "tree", [("mecha-core", "test:it", "t_one")], module="hidden_grade_abc")
+            # A whole new test file is the merge's own text: bare names there.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "test:it", "t_one")], module="hidden_grade_abc",
+                                     fresh={("mecha-core", "test:it")})
             self.assertEqual(calls[-1][-1], "t_one")
+            # A test added to an existing test file is grafted: only its copy runs.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "test:it", "t_one")], module="hidden_grade_abc")
+            self.assertEqual(calls[-1][-1], "hidden_grade_abc::t_one", "the run's own t_one in tests/it.rs would run too")
         finally:
             mecha_history.cargo = old
 
@@ -634,6 +664,13 @@ class Source(unittest.TestCase):
                          ["    #[test]\n    fn appended() {\n        assert!(false);\n    }"])
         # But a body line the diff kept is the old test's, not a new one.
         self.assertEqual(mecha_history.whole_items(lines, {4, 5, 6, 7}, 0, 8, "    "), [])
+
+    def test_an_item_never_closed_before_the_end_of_the_file_is_not_whole_and_does_not_raise(self):
+        # `ITEM` matches `///`: a stray doc line before a module's closing
+        # brace opens nothing and ends on no `;`, so its scan runs off the end.
+        lines = ["mod tests {", "    /// a stray note", "}"]
+        self.assertEqual(mecha_history.whole_items(lines, {2}, 1, 1, "    ", set()), [])
+        self.assertEqual(mecha_history.whole_items(lines, {2}, 1, 1, "    "), [])
 
     def test_a_new_name_is_whole_however_much_of_its_tail_the_diff_gave_away(self):
         # pr-155's shape: the appended test ends like the one before it (a

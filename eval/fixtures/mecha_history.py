@@ -413,6 +413,8 @@ def whole_items(lines, added, start, end, indent, pin_names=None):
                 if opened and line in (indent + "}", indent + "};"):
                     break
                 j += 1
+            if j >= len(lines):
+                break  # never closed before the end of the file: never whole (review of #861)
             # Every line added, except perhaps the item's own closing brace:
             # a PR that shortens one test and appends another right after it
             # gets that brace attributed to the old test's unchanged `}` by
@@ -820,7 +822,14 @@ def jailed_status(tc, tree):
     return [l[3:] for l in r.stdout.splitlines() if l.strip()]
 
 
-def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None):
+def fresh_targets(merge):
+    """{(crate, `test:<file>`)} for each integration-test file the PR added:
+    the graft copies those whole, so their tests keep their own names. A test
+    the PR added to an existing test file is grafted into the module."""
+    return {(p.split("/")[0], "test:" + os.path.splitext(os.path.basename(p))[0]) for p in new_test_files(merge)}
+
+
+def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None, fresh=frozenset()):
     """{name: pass|fail|skipped|build-error|not-run}, one cargo call per target.
 
     Under MECHA_TEST_REQUIRE_BACKENDS=1: a hidden test that skips when its
@@ -833,7 +842,10 @@ def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None
         by_target.setdefault((crate, target), []).append(name)
     for (crate, target), names in sorted(by_target.items()):
         sel = {"lib": ["--lib"], "bin": ["--bin", "mecha"]}.get(target) or ["--test", target[5:]]
-        grafted = module if not target.startswith("test:") else None
+        # Keyed on the file being new, never on the target's kind: a test added
+        # to an existing `tests/*.rs` is grafted into the module like any other
+        # (review of #861).
+        grafted = None if (crate, target) in fresh else module
         # Filtered to the grafted copies alone where there is a module: a
         # bare name is a substring filter, so the tree's own test of that
         # name ran beside its grafted copy in one process, and two tests
@@ -844,7 +856,7 @@ def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None
                   confined=confined)
         # A whole new test file is the merge's own text, written by the graft;
         # a test grafted into the crate counts only under this grade's module.
-        out.update(statuses(r.stdout + r.stderr, names, why, None if target.startswith("test:") else module))
+        out.update(statuses(r.stdout + r.stderr, names, why, grafted))
     return out
 
 
@@ -1076,7 +1088,7 @@ def cmd_grade(task_id):
     graft_apply(ws, writes)
     names = [n for _, _, n in tests]
     try:
-        hidden = run_hidden(tc, ws, tests, jobs=4, confined=True, module=module)
+        hidden = run_hidden(tc, ws, tests, jobs=4, confined=True, module=module, fresh=fresh_targets(t["merge"]))
         checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
         pre, keep = t["baseline"]["failing"], must_pass(t)
         for crate in t["crates"]:
@@ -1210,7 +1222,8 @@ def cmd_validate(task_id, r):
             res["verdict"] = f"graft-failed: {e}"
             print(json.dumps(res))
             return
-        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True, module=module)
+        fresh = fresh_targets(t["merge"])
+        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True, module=module, fresh=fresh)
                for _ in range(r)]
         tc_m = prepare(t, merge_tree, t["merge"])
         merge = [run_hidden(tc_m, merge_tree, tests, jobs=4, why=merge_why, confined=True) for _ in range(r)]
