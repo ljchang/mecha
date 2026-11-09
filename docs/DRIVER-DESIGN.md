@@ -73,6 +73,38 @@ There are two modes, and they never trade places:
   derived from. This is the only mode whose numbers go in a PR description
   or a design doc's results section.
 
+**As built (2026-11-09): measurement runs driven trials.** A manifest's
+`[tasks]` says `driven = true` and a `workspace_root`, and then each trial is
+the pilot's run under `mecha exp`'s bookkeeping:
+
+- the child is marked `driven`, not `experiment`, so D1b's guardrails hold
+  for a measured run exactly as for an explored one, and the condition hash
+  takes a `kind=driven` term so the two never pair;
+- the clone lives at `<workspace_root>/<experiment>/<trial>/workspace`,
+  outside the mecha home (`exp run` refuses a root that overlaps it either
+  way, through a symlink included), and the fixture is not staged, because
+  the source's setup refuses a clone that is not empty;
+- the child gets `CARGO_HOME` inside its clone (R7), and the source gets
+  `MECHA_BIN`, so the marker is written by the build that reads it;
+- the source's `teardown <task> --spent` runs once the trial is over,
+  however it ended (a child that crashed before its grade included, since
+  a failed row is never rerun), and removes `target/` and `vendor/` (6.6 of
+  a clone's 6.8 GB, measured on the smoke trial), keeping the tree and its
+  history for the audit; without `--spent`, the pilot's call, it prunes a
+  graded tree only;
+- the grade may name the paths the run `changed`, a field the contract now
+  carries and the trial row records (`null`, when the source's git failed,
+  stays unknown rather than reading as nothing changed); any field it does
+  not name still fails the grade. The smoke trial's first run failed on exactly that, which is
+  what it was for. Setup excludes `.cache/` from the clone's status,
+  because the jail's `HOME` is the clone and font caches landed there;
+- trials are `single` (a lifetime, and so a principal, is refused) and
+  `--jobs` stays 1, one build at a time (§8).
+
+The trial's record, logs and session stay in the experiment store and its
+arm homes, as for any trial. The holdout is drawn under §3's rule from tasks
+the exploration never read; the pilot's nine are all in the seen set.
+
 ## 2. The session kind
 
 **D1. A thirteenth `SessionKind`, `Driven`, wire form `"driven"`.** It marks
