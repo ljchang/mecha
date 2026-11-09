@@ -1020,6 +1020,60 @@
           "mecha-cli": 971
         }
       }
+    },
+    {
+      "id": "pr-360",
+      "pr": 360,
+      "author": "history",
+      "merge": "7aedce0205f8cb038670421b5381763f798cdc97",
+      "pin": "1b5d3b9a4786b5dd4ef490699d71f66a0cbc9e51",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-360.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T09:36Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `mixed_models_note` in this scope",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "9e1608728e03017b7e3ecea287f507b84887ff19f01c65376d70ba6544923dbe",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:39:25Z",
+        "by": "baseline",
+        "pin": "1b5d3b9a4786b5dd4ef490699d71f66a0cbc9e51",
+        "merge": "7aedce0205f8cb038670421b5381763f798cdc97",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-360.json",
+        "must_pass_sha256": "180d7850294ea774379fac40cea06a796c52116f8e567531ea9192b6532d8fdb",
+        "must_pass_count": {
+          "mecha-cli": 975
+        }
+      }
     }
   ]
 }
