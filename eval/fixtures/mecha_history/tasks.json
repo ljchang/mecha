@@ -876,6 +876,53 @@
         "sha256": "30fbd7bd229c760c714c40258a8056adc11e11bdeaea9c21964e6e7f6da0ca0f",
         "store_present": true
       }
+    },
+    {
+      "id": "pr-98",
+      "pr": 98,
+      "author": "history",
+      "merge": "10d330eeff05ff0184fa4bf5b8c987c87b34c7e9",
+      "pin": "8bfa46e12fc1103681e62f38c3fd7cbfbaa20638",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-98.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T08:30Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find struct, variant or union type `Surprise` in this scope",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "prompt_check": {
+        "sha256": "4a8151ad0a50d766aca9f150aaa696db71cb03f344f3af4cf397d95cd7871be8",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T08:35:06Z",
+        "by": "baseline",
+        "pin": "8bfa46e12fc1103681e62f38c3fd7cbfbaa20638",
+        "merge": "10d330eeff05ff0184fa4bf5b8c987c87b34c7e9",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-98.json",
+        "must_pass_sha256": "7c73ab8f5de54528bbfa52143b3c7fde51ad826041a205b236ead48562cec3b5",
+        "must_pass_count": {
+          "mecha-cli": 562,
+          "mecha-core": 940
+        }
+      }
     }
   ]
 }
