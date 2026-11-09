@@ -180,6 +180,37 @@ class CommittedBank(unittest.TestCase):
 
 
 class Regressions(unittest.TestCase):
+    def test_a_grafted_test_runs_alone_and_the_regression_pass_skips_it(self):
+        # pr-101's oracle: the tree's own copy of a hidden test ran beside its
+        # grafted copy, and the two shared a fixture keyed by name and pid.
+        calls = []
+
+        class Done:
+            returncode, stderr = 0, ""
+            stdout = "test outbox::tests::hidden_grade_abc::t_one ... ok\n\ntest result: ok. 1 passed\n"
+
+        def fake(tc, tree, *args, **kw):
+            calls.append(args)
+            return Done()
+
+        old, mecha_history.cargo = mecha_history.cargo, fake
+        try:
+            out = mecha_history.run_hidden("tc", "tree", [("mecha-core", "lib", "t_one")], module="hidden_grade_abc")
+            self.assertEqual(out, {"t_one": "pass"})
+            self.assertEqual(calls[-1][-1], "hidden_grade_abc::t_one", "the tree's own t_one would run too")
+            mecha_history.regressions("tc", "tree", "mecha-core", "hidden_grade_abc")
+            self.assertEqual(calls[-1][-3:], ("--", "--skip", "hidden_grade_abc::"))
+            # No graft (validate's merge runs, baseline): bare names, no skip.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "lib", "t_one")])
+            self.assertEqual(calls[-1][-1], "t_one")
+            mecha_history.regressions("tc", "tree", "mecha-core")
+            self.assertNotIn("--skip", calls[-1])
+            # A whole test file is the merge's own text: bare names there too.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "test:it", "t_one")], module="hidden_grade_abc")
+            self.assertEqual(calls[-1][-1], "t_one")
+        finally:
+            mecha_history.cargo = old
+
     def test_a_test_item_is_one_whose_leading_attributes_say_so(self):
         self.assertTrue(mecha_history.is_test_item("/// doc\n#[cfg(test)]\n#[test]\nfn t() {}"))
         self.assertFalse(mecha_history.is_test_item("pub fn f() {\n    #[cfg(test)]\n    { 0 }\n}"))

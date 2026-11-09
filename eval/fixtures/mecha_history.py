@@ -799,7 +799,14 @@ def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None
         by_target.setdefault((crate, target), []).append(name)
     for (crate, target), names in sorted(by_target.items()):
         sel = {"lib": ["--lib"], "bin": ["--bin", "mecha"]}.get(target) or ["--test", target[5:]]
-        r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *names, jobs=jobs, require_backends=True,
+        grafted = module if not target.startswith("test:") else None
+        # Filtered to the grafted copies alone where there is a module: a
+        # bare name is a substring filter, so the tree's own test of that
+        # name ran beside its grafted copy in one process, and two tests
+        # sharing a fixture keyed by name and pid wiped each other's store
+        # (pr-101's oracle grade, admitting holdout boredom-1).
+        filters = [f"{grafted}::{n}" for n in names] if grafted else names
+        r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *filters, jobs=jobs, require_backends=True,
                   confined=confined)
         # A whole new test file is the merge's own text, written by the graft;
         # a test grafted into the crate counts only under this grade's module.
@@ -1031,7 +1038,7 @@ def cmd_grade(task_id):
         checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
         pre, keep = t["baseline"]["failing"], must_pass(t)
         for crate in t["crates"]:
-            results, why = regressions(tc, ws, crate)
+            results, why = regressions(tc, ws, crate, module)
             if results is None:
                 ok, detail = False, why
             else:
@@ -1052,9 +1059,14 @@ def selection(crate):
     return ["--bin", "mecha"] if crate == "mecha-cli" else ["--lib"]
 
 
-def regressions(tc, tree, crate):
-    """({test path: ok|FAILED|ignored}, or None when nothing ran, and why)."""
-    r = cargo(tc, tree, "test", "-p", crate, *selection(crate), "--no-fail-fast", jobs=4, confined=True)
+def regressions(tc, tree, crate, module=None):
+    """({test path: ok|FAILED|ignored}, or None when nothing ran, and why).
+    `module`, the graft's, is skipped: its tests are judged by the hidden
+    check alone (`counted` ignores them), and running them here would race a
+    same-named test of the tree's own over a shared fixture, failing the
+    tree's copy and charging the run with it."""
+    skip = ["--", "--skip", f"{module}::"] if module else []
+    r = cargo(tc, tree, "test", "-p", crate, *selection(crate), "--no-fail-fast", *skip, jobs=4, confined=True)
     results = {}
     for path, verdict in RESULT.findall(r.stdout):
         # A path reported twice keeps its worst verdict.
