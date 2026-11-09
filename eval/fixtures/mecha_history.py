@@ -252,7 +252,9 @@ def prepare(t, tree, commit, cargo_too=True):
         with open(dest, "w") as fh:
             fh.write(git("show", f"{fix['from']}:{fix['path']}"))
     with open(os.path.join(tree, ".git", "info", "exclude"), "a") as fh:
-        fh.write("\n# mecha_history setup\n/vendor/\n/.cargo/\n/.cargo-home/\n")
+        # `.cache/`: the jail's HOME is the clone, so fontconfig and its kind
+        # write caches here that are no part of the run's change.
+        fh.write("\n# mecha_history setup\n/vendor/\n/.cargo/\n/.cargo-home/\n/.cache/\n")
         fh.write("".join(f"/{fix['path']}\n" for fix in t.get("repair", [])))
     os.makedirs(os.path.join(tree, ".cargo-home"), exist_ok=True)
     tc = toolchain_dir(t, commit)
@@ -984,11 +986,22 @@ def cmd_setup(task_id):
     json.dump({"task": t["id"], "workspace": ws, "cargo": f"{tc}/bin/cargo"}, sys.stdout)
 
 
+PRUNED = ("target", "vendor")  # setup's build products: regenerable, ~6.6 GB a clone
+
+
 def cmd_teardown(task_id):
     t = find(task_id)
     r = run([mecha(), "driven", "unmark", t["id"]])
     if r.returncode != 0:
         die(f"could not remove the driven marker: {(r.stderr or r.stdout).strip()}")
+    # A graded tree is never graded again (`claim`), so nothing reads its
+    # build products: they go, and the tree and its history stay for the
+    # audit. An ungraded tree keeps them: a crashed grade may be retried by
+    # hand from a fresh setup, but this one is not ours to judge spent.
+    ws = os.environ.get("MECHA_EXPERIMENT_WORKSPACE")
+    if ws and os.path.exists(claim_path(ws)):
+        for d in PRUNED:
+            shutil.rmtree(os.path.join(ws, d), ignore_errors=True)
 
 
 def cmd_grade(task_id):

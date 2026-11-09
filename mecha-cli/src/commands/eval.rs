@@ -1820,6 +1820,7 @@ mod tests {
             .unwrap()
         };
         let planned = mecha_core::experiment::Trial {
+            changed: Vec::new(),
             owner_actions: None,
             fixture_checked: None,
             id: "bare__c__r1".into(),

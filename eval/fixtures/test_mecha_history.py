@@ -379,10 +379,38 @@ class Source(unittest.TestCase):
         self.assertIn(f'rustc = "{self.rustup}/toolchains/stable-test-triple/bin/rustc"', config)
         self.assertTrue(os.path.isdir(os.path.join(self.ws, ".cargo-home")))
         self.assertEqual(git(self.ws, "status", "--porcelain").strip(), "")
+        # The jail's HOME is the clone: a font cache written there is not the
+        # run's change (a driven smoke trial's `changed` held 80 of them).
+        os.makedirs(os.path.join(self.ws, ".cache", "fontconfig"))
+        write(os.path.join(self.ws, ".cache", "fontconfig", "x.cache-9"), "x\n")
+        self.assertEqual(git(self.ws, "status", "--porcelain").strip(), "")
         # And the home-side marker names the clone.
         self.assertEqual(read(self.calls).split(), ["driven", "mark", "pr-1", "--clone", self.ws, "--for", "6h"])
         self.source("teardown", "pr-1")
         self.assertIn("driven unmark pr-1", read(self.calls))
+
+    def test_teardown_prunes_build_products_only_from_a_graded_tree(self):
+        home = os.path.join(self.tmp.name, "mecha-home")
+        old = os.environ.get("MECHA_HOME")
+        os.environ["MECHA_HOME"] = home
+        try:
+            self.assertEqual(self.source("setup", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
+            for d in mecha_history.PRUNED:
+                os.makedirs(os.path.join(self.ws, d), exist_ok=True)
+                write(os.path.join(self.ws, d, "big"), "x\n")
+            # Not graded yet: teardown leaves the build products alone.
+            self.assertEqual(self.source("teardown", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
+            self.assertTrue(all(os.path.exists(os.path.join(self.ws, d, "big")) for d in mecha_history.PRUNED))
+            # Graded: they go, and the tree and its history stay.
+            mecha_history.claim(self.ws, "pr-1")
+            self.assertEqual(self.source("teardown", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
+            self.assertFalse(any(os.path.exists(os.path.join(self.ws, d)) for d in mecha_history.PRUNED))
+            self.assertEqual(git(self.ws, "rev-parse", "HEAD").strip(), self.pin)
+        finally:
+            if old is None:
+                del os.environ["MECHA_HOME"]
+            else:
+                os.environ["MECHA_HOME"] = old
 
     def test_setup_refuses_a_task_that_is_not_offered_and_a_used_workspace(self):
         r = self.source("setup", "pr-2")
