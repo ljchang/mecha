@@ -204,6 +204,32 @@ class CommittedBank(unittest.TestCase):
         finally:
             mecha_history.BANK = old
 
+    def test_a_copy_or_a_revision_says_what_is_true(self):
+        """`copied_from` and `revises` are claims a reader cannot re-derive, so
+        the bank checks them: a revision names a task in the bank on the same
+        pin and merge, and a copied baseline is byte-for-byte the one it names
+        (review of #858)."""
+        with open(os.path.join(HERE, "mecha_history", "tasks.json")) as fh:
+            tasks = {t["id"]: t for t in json.load(fh)["tasks"]}
+        checked = 0
+        for t in tasks.values():
+            rev = t.get("revises")
+            if rev:
+                src = tasks.get(rev["task"])
+                self.assertIsNotNone(src, f"{t['id']} revises {rev['task']}, which is not in the bank")
+                self.assertEqual((t["pin"], t["merge"]), (src["pin"], src["merge"]), t["id"])
+                checked += 1
+            for block in ("baseline", "admission"):
+                origin = (t.get(block) or {}).get("copied_from")
+                if origin:
+                    self.assertIn(origin, tasks, f"{t['id']}'s {block} is copied from a task not in the bank")
+                    self.assertEqual((t["pin"], t["merge"]), (tasks[origin]["pin"], tasks[origin]["merge"]))
+            origin = (t.get("baseline") or {}).get("copied_from")
+            if origin:
+                self.assertEqual(t["baseline"]["must_pass_sha256"], tasks[origin]["baseline"]["must_pass_sha256"],
+                                 f"{t['id']}'s baseline is not the one it says it copied")
+        self.assertTrue(checked, "no revision in the bank: the check above is vacuous")
+
 
 class Regressions(unittest.TestCase):
     def test_a_grafted_test_runs_alone_and_the_regression_pass_skips_it(self):
@@ -440,6 +466,11 @@ class Source(unittest.TestCase):
         self.assertIn(f'rustc = "{self.rustup}/toolchains/stable-test-triple/bin/rustc"', config)
         self.assertTrue(os.path.isdir(os.path.join(self.ws, ".cargo-home")))
         self.assertEqual(git(self.ws, "status", "--porcelain").strip(), "")
+        # The jail's HOME is the clone: a font cache written there is not the
+        # run's change (a driven smoke trial's `changed` held 80 of them).
+        os.makedirs(os.path.join(self.ws, ".cache", "fontconfig"))
+        write(os.path.join(self.ws, ".cache", "fontconfig", "x.cache-9"), "x\n")
+        self.assertEqual(git(self.ws, "status", "--porcelain").strip(), "")
         # And the home-side marker names the clone.
         self.assertEqual(read(self.calls).split(), ["driven", "mark", "pr-1", "--clone", self.ws, "--for", "6h"])
         self.source("teardown", "pr-1")
@@ -463,6 +494,36 @@ class Source(unittest.TestCase):
         r = self.source("--holdout", "h-2", "list")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("no holdout `h-2`", r.stderr)
+
+    def test_teardown_prunes_build_products_only_from_a_graded_tree(self):
+        home = os.path.join(self.tmp.name, "mecha-home")
+        old = os.environ.get("MECHA_HOME")
+        os.environ["MECHA_HOME"] = home
+        try:
+            self.assertEqual(self.source("setup", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
+            for d in mecha_history.PRUNED:
+                os.makedirs(os.path.join(self.ws, d), exist_ok=True)
+                write(os.path.join(self.ws, d, "big"), "x\n")
+            # Not graded yet: teardown leaves the build products alone.
+            self.assertEqual(self.source("teardown", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
+            self.assertTrue(all(os.path.exists(os.path.join(self.ws, d, "big")) for d in mecha_history.PRUNED))
+            # Spent (exp, after a trial that died before its grade): they go
+            # though the tree was never graded, since nothing will grade it.
+            self.assertEqual(self.source("teardown", "pr-1", "--spent", extra={"MECHA_HOME": home}).returncode, 0)
+            self.assertFalse(any(os.path.exists(os.path.join(self.ws, d)) for d in mecha_history.PRUNED))
+            for d in mecha_history.PRUNED:
+                os.makedirs(os.path.join(self.ws, d), exist_ok=True)
+                write(os.path.join(self.ws, d, "big"), "x\n")
+            # Graded: they go, and the tree and its history stay.
+            mecha_history.claim(self.ws, "pr-1")
+            self.assertEqual(self.source("teardown", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
+            self.assertFalse(any(os.path.exists(os.path.join(self.ws, d)) for d in mecha_history.PRUNED))
+            self.assertEqual(git(self.ws, "rev-parse", "HEAD").strip(), self.pin)
+        finally:
+            if old is None:
+                del os.environ["MECHA_HOME"]
+            else:
+                os.environ["MECHA_HOME"] = old
 
     def test_setup_refuses_a_task_that_is_not_offered_and_a_used_workspace(self):
         r = self.source("setup", "pr-2")
