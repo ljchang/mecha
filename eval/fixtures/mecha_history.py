@@ -36,6 +36,14 @@ so its signature, never its body, is named), and whose prompt still has the
 sha256 its privacy check recorded: a prompt edited after the check is not
 offered. Any other state, `rejected` among them, is never offered.
 
+**A holdout is a bank of its own** (DRIVER-DESIGN.md §3: what exploration
+reads never enters a measurement holdout, so a holdout task must never reach
+exploration). A record with a `holdout` field is offered only by a source
+called as `mecha_history.py --holdout <name> <verb>`, the name one of the
+bank's `holdout_draws`, and that call offers only that holdout's tasks; a
+call without the flag never offers one. `mecha exp` passes the flag as part
+of the manifest's `source` argv, ahead of every verb.
+
 **What setup builds, and why** (DRIVER-DESIGN.md §8, measured 2026-11-07
 inside the owner's jail). `[sandbox]`'s bwrap clears the environment and
 pins PATH to the system directories, so cargo is not on it and is run by
@@ -880,7 +888,15 @@ def first_error(text):
 # --- verbs -----------------------------------------------------------------
 
 
-def offered(t):
+# The holdout this call serves (`--holdout <name>`), or None for exploration.
+HOLDOUT = None
+
+
+def offered(t, holdout=None):
+    """Whether `list` offers the task and `setup` builds it, for a call that
+    serves `holdout` (None: exploration)."""
+    if t.get("holdout") != holdout:
+        return False
     state = t["admission"]["state"]
     if state not in OFFERED:
         return False
@@ -920,7 +936,7 @@ def environment_note(t):
 def cmd_list():
     out = []
     for t in bank()["tasks"]:
-        if not offered(t):
+        if not offered(t, HOLDOUT):
             continue
         with open(prompt_path(t)) as fh:
             body = fh.read().rstrip()
@@ -1007,7 +1023,7 @@ def mecha():
 
 def cmd_setup(task_id):
     t = find(task_id)
-    if not offered(t):
+    if not offered(t, HOLDOUT):
         die(f"task `{task_id}` is not offered (admission `{t['admission']['state']}`, or its prompt changed since its check)")
     ws = workspace()
     skip = os.environ.get("MECHA_HISTORY_SKIP_CARGO") == "1"  # this source's own tests
@@ -1243,6 +1259,13 @@ def main(argv):
     if not argv:
         print(__doc__, file=sys.stderr)
         return 2
+    global HOLDOUT
+    if argv[0] == "--holdout":
+        if len(argv) < 3:
+            die("--holdout takes a name and then a verb")
+        if argv[1] not in bank().get("holdout_draws", {}):
+            die(f"no holdout `{argv[1]}` in the bank's holdout_draws")
+        HOLDOUT, argv = argv[1], argv[2:]
     verb, rest = argv[0], argv[1:]
     if verb == "list":
         cmd_list()

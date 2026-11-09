@@ -173,7 +173,7 @@ class CommittedBank(unittest.TestCase):
         old = mecha_history.BANK
         mecha_history.BANK = os.path.dirname(path)
         try:
-            unoffered = [t["id"] for t in admitted if not mecha_history.offered(t)]
+            unoffered = [t["id"] for t in admitted if not mecha_history.offered(t, t.get("holdout"))]
         finally:
             mecha_history.BANK = old
         self.assertEqual(unoffered, [])
@@ -414,6 +414,25 @@ class Source(unittest.TestCase):
         self.assertEqual(read(self.calls).split(), ["driven", "mark", "pr-1", "--clone", self.ws, "--for", "6h"])
         self.source("teardown", "pr-1")
         self.assertIn("driven unmark pr-1", read(self.calls))
+
+    def test_a_holdout_task_is_offered_only_to_a_call_that_names_its_holdout(self):
+        # Exploration must never be offered a measurement holdout's task.
+        self.other = dict(self.other, admission={"state": "admitted"}, holdout="h-1")
+        with open(os.path.join(self.bank, "tasks.json"), "w") as fh:
+            json.dump({"holdout_draws": {"h-1": {}}, "tasks": [self.task, self.other]}, fh)
+        self.assertEqual([t["id"] for t in json.loads(self.source("list").stdout)], ["pr-1"])
+        r = self.source("setup", "pr-2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not offered", r.stderr)
+        # Named, the call offers that holdout and nothing else.
+        r = self.source("--holdout", "h-1", "list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([t["id"] for t in json.loads(r.stdout)], ["pr-2"])
+        self.assertIn("not offered", self.source("--holdout", "h-1", "setup", "pr-1").stderr)
+        # A holdout the bank never drew is refused, never an empty list.
+        r = self.source("--holdout", "h-2", "list")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no holdout `h-2`", r.stderr)
 
     def test_setup_refuses_a_task_that_is_not_offered_and_a_used_workspace(self):
         r = self.source("setup", "pr-2")

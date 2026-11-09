@@ -453,7 +453,12 @@ changed) and by subsystem. `sample.rs` offers uniform draws only
 eligible set, its seed and eligibility rule recorded before it ran. The
 driver does not hand-pick. Whatever the
 driver reads during exploration moves to a **seen** set and never enters a
-measurement holdout.
+measurement holdout. The converse is structural in the source: a record
+carrying `holdout: <name>` is offered only to `mecha_history.py --holdout
+<name>` (which offers nothing else), so an exploration draw over `list`
+cannot reach a holdout task, and a measurement names its holdout in the
+manifest's `source` argv. The first, `boredom-1`, holds 8 tasks (seed
+20261109, rule recorded before the draw, in `holdout_draws`).
 
 The second source is **the open leftovers**: the minors that review passes
 left, as `HANDOFF.md` and the PR threads list them. These have no ground
