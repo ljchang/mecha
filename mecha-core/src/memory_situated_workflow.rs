@@ -9,7 +9,7 @@ use crate::{
         context::Situation,
         host_capture::{ArtifactCheck, CaptureReceipt, CheckVerdict, ConfirmedCriterion},
         interpretation::InterpretationContext,
-        Access, Memory,
+        Access, Memory, StorageAccess,
     },
     memory_experience_bridge::{CaptureRequest, FreezeRequest, LocalAuthority},
     message::{Block, CompletionRequest, CompletionResponse, Message, StopReason, Usage},
@@ -192,13 +192,39 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: Future<Output = Result<Box<dyn Provider>>>,
 {
+    run_native_session_with_storage(
+        database,
+        StorageAccess::plaintext_fixture(),
+        authority,
+        request,
+        root,
+        factory,
+        cancel,
+    )
+    .await
+}
+
+/// Run a native synthetic session with an explicit host-owned storage capability.
+pub async fn run_native_session_with_storage<F, Fut>(
+    database: &Path,
+    storage: StorageAccess,
+    authority: &LocalAuthority,
+    request: &NativeSessionRequest,
+    root: &Path,
+    factory: F,
+    cancel: &CancellationToken,
+) -> Result<TaskReport>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<Box<dyn Provider>>>,
+{
     request.validate()?;
     ensure!(
         database.is_absolute() && root.is_absolute() && !root.exists(),
         "native session requires an explicit database and NEW absolute task directory"
     );
     let access = request.access();
-    let memory = Memory::open_read_only(database)?;
+    let memory = Memory::open_read_only_with_storage(database, storage.clone())?;
     memory.require_host_capture_version(true)?;
     memory.check_access(&access)?;
     drop(memory);
@@ -224,7 +250,7 @@ where
         ensure!(provider.local(), "native session requires a local provider");
         let provider = crate::memory_bridge_trial::recorded_provider(provider, &root.join("provider-audit.jsonl"), 16384, run_cancel.clone())?;
         let current = request.interpretation_context_id.as_ref().map(|id| InterpretationContext::new(request.criterion.clone(), id.clone())).transpose()?;
-        execute_task(database, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request)).await
+        execute_task(database, &storage, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request)).await
     }.await;
     timer.abort();
     match &result {
@@ -262,11 +288,36 @@ pub async fn appraise_native_session(
         crate::memory::interpretation::NativeConceptAppraisal,
     >,
 > {
+    appraise_native_session_with_storage(
+        database,
+        StorageAccess::plaintext_fixture(),
+        authority,
+        request,
+        provider,
+        cancel,
+    )
+    .await
+}
+
+/// Appraise with owner-selected storage, separate from the serialized or model input.
+pub async fn appraise_native_session_with_storage(
+    database: &Path,
+    storage: StorageAccess,
+    authority: &LocalAuthority,
+    request: &NativeSessionAppraisalRequest,
+    provider: &dyn Provider,
+    cancel: &CancellationToken,
+) -> Result<
+    crate::memory_factual_support::PassOutcome<
+        crate::memory::interpretation::NativeConceptAppraisal,
+    >,
+> {
     ensure!(
         database.is_absolute(),
         "native appraisal requires an explicit absolute database"
     );
-    let memory = Memory::open_read_only(database)?.with_source_guard(Arc::new(authority.clone()));
+    let memory = Memory::open_read_only_with_storage(database, storage)?
+        .with_source_guard(Arc::new(authority.clone()));
     let prepared = memory.prepare_native_concept_evidence(
         &request.receipt,
         &request.previous,
@@ -459,6 +510,7 @@ async fn execute(
 ) -> Result<TaskReport> {
     execute_task(
         database,
+        &StorageAccess::plaintext_fixture(),
         authority,
         access,
         criterion,
@@ -475,6 +527,7 @@ async fn execute(
 #[allow(clippy::too_many_arguments)]
 async fn execute_task(
     database: &Path,
+    storage: &StorageAccess,
     authority: &LocalAuthority,
     access: &Access,
     criterion: &ConfirmedCriterion,
@@ -541,8 +594,9 @@ async fn execute_task(
     let mut registry = Registry::new();
     registry.insert(Arc::new(FsRead));
     registry.insert(Arc::new(FsWrite));
-    let mut tool = GoalMemory::open_with_source_guard(
+    let mut tool = GoalMemory::open_with_storage_and_source_guard(
         database,
+        storage.clone(),
         access.clone(),
         account.into(),
         Situation {
@@ -608,7 +662,8 @@ async fn execute_task(
         run_error = Some("task cancelled".into());
     }
     let check = authority.check_artifact(&confirmation)?;
-    let mut memory = Memory::open(database)?.with_source_guard(Arc::new(authority.clone()));
+    let mut memory = Memory::open_with_storage(database, storage.clone())?
+        .with_source_guard(Arc::new(authority.clone()));
     let capture_request = CaptureRequest {
         confirmation: confirmation.clone(),
         domain: access.domain.clone(),
@@ -1002,14 +1057,272 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn native_fixture() -> (PathBuf, PathBuf, LocalAuthority, NativeSessionRequest) {
+    struct EncryptedFixture {
+        root: PathBuf,
+        database: PathBuf,
+        key: PathBuf,
+        policy: crate::memory::KeyFilePolicy,
+        authority: LocalAuthority,
+        request: NativeSessionRequest,
+    }
+
+    impl EncryptedFixture {
+        fn new() -> Result<Self> {
+            use std::os::unix::fs::DirBuilderExt;
+            let root = native_fixture_root();
+            let authority = LocalAuthority::create(&root.join("authority"))?;
+            let request = native_fixture_request();
+            let data = root.join("data");
+            let owner = root.join("owner");
+            fs::create_dir(&data)?;
+            fs::DirBuilder::new().mode(0o700).create(&owner)?;
+            let database = data.join("encrypted.memory-prototype.sqlite");
+            let key = owner.join("memory.key");
+            let policy = crate::memory::KeyFilePolicy::new(&[data, root.join("authority")])?;
+            let storage = crate::memory::StorageAccess::generate_key_file(&key, &policy)?;
+            Memory::create_supported_situated_with_storage(&database, &request.domain, storage)?;
+            Ok(Self {
+                root,
+                database,
+                key,
+                policy,
+                authority,
+                request,
+            })
+        }
+
+        fn storage(&self) -> Result<crate::memory::StorageAccess> {
+            crate::memory::StorageAccess::load_key_file(&self.key, &self.policy)
+        }
+
+        async fn run(&self, name: &str, messages: Vec<Message>) -> Result<TaskReport> {
+            run_native_session_with_storage(
+                &self.database,
+                self.storage()?,
+                &self.authority,
+                &self.request,
+                &self.root.join(name),
+                |_| async { Ok(Box::new(Script::new(messages)) as Box<dyn Provider>) },
+                &CancellationToken::new(),
+            )
+            .await
+        }
+    }
+
+    impl Drop for EncryptedFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn encrypted_native_session_checks_storage_before_the_provider_or_task_root() -> Result<()>
+    {
+        use crate::memory::StorageAccess;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let fixture = EncryptedFixture::new()?;
+        let wrong = StorageAccess::generate_key_file(
+            &fixture.key.with_file_name("wrong.key"),
+            &fixture.policy,
+        )?;
+        let task_root = fixture.root.join("task");
+        let calls = AtomicUsize::new(0);
+        let original = fs::read(&fixture.database)?;
+        for storage in [StorageAccess::plaintext_fixture(), wrong] {
+            let result = run_native_session_with_storage(
+                &fixture.database,
+                storage,
+                &fixture.authority,
+                &fixture.request,
+                &task_root,
+                |_| async {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    anyhow::bail!("provider should not be called");
+                },
+                &CancellationToken::new(),
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            assert!(!task_root.exists());
+            assert_eq!(fs::read(&fixture.database)?, original);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn encrypted_native_interpretation_recall_reopens_and_honors_source_withdrawal(
+    ) -> Result<()> {
+        use crate::memory::interpretation::{
+            finish_support, ProposedUnit, SourceCitation, SourceKind, SupportCheck,
+            SupportProposal, SupportReply, SupportStatus, UnitKind,
+        };
+
+        let mut fixture = EncryptedFixture::new()?;
+        let escape = fixture.root.join("escaped.json");
+        let attempts = [
+            call("key-read", "fs_read", json!({"path": fixture.key})),
+            call(
+                "authority-read",
+                "fs_read",
+                json!({"path": fixture.root.join("authority/authority")}),
+            ),
+            call(
+                "escaped-write",
+                "fs_write",
+                json!({"path":escape,"content":"escaped"}),
+            ),
+        ];
+        let first = fixture
+            .run(
+                "first",
+                vec![
+                    Message::assistant(
+                        attempts
+                            .into_iter()
+                            .flat_map(|message| message.content)
+                            .collect(),
+                    ),
+                    call(
+                        "write",
+                        "fs_write",
+                        json!({"path":"output.json","content":r#"[{"route":"Slate"}]"#}),
+                    ),
+                    Message::assistant(vec![Block::text("Calibration artifact saved.")]),
+                ],
+            )
+            .await?;
+        assert!(
+            first.run_error.is_none() && first.capture_error.is_none(),
+            "{first:?}"
+        );
+        assert_eq!(first.check.verdict, CheckVerdict::Failed);
+        assert!(!escape.exists());
+        assert_eq!(
+            fs::read_to_string(&first.artifact)?,
+            r#"[{"route":"Slate"}]"#
+        );
+        let transcript = Session::read(&first.transcript)?;
+        for rejected in ["key-read", "authority-read", "escaped-write"] {
+            assert!(transcript.convo.messages.iter().flat_map(|message| &message.content).any(|block| {
+                matches!(block, Block::ToolResult {tool_use_id, is_error: true, ..} if tool_use_id == rejected)
+            }), "missing recorded jail refusal for {rejected}");
+        }
+        let key_text = fs::read_to_string(&fixture.key)?;
+        let authority_text = fs::read_to_string(fixture.root.join("authority/authority"))?;
+        let first_root = fixture.root.join("first");
+        for path in [
+            first.transcript.clone(),
+            first_root.join("started.json"),
+            first_root.join("report.json"),
+            first_root.join("provider-audit.jsonl"),
+        ] {
+            let content = fs::read_to_string(path)?;
+            assert!(!content.contains(key_text.trim_end()));
+            assert!(!content.contains(authority_text.trim_end()));
+        }
+
+        fixture.authority = LocalAuthority::open(&fixture.root.join("authority"))?;
+        let mut db = Memory::open_with_storage(&fixture.database, fixture.storage()?)?
+            .with_source_guard(Arc::new(fixture.authority.clone()));
+        let access = fixture.request.access();
+        let context =
+            InterpretationContext::new(fixture.request.criterion.clone(), "keyed-context".into())?;
+        let prepared = db.prepare_interpretation(
+            first
+                .receipt
+                .as_ref()
+                .context("missing failed-check capture")?,
+            &[],
+            &context,
+            &db.snapshot()?,
+            &access,
+        )?;
+        let citation = SourceCitation {
+            source_id: prepared
+                .sources()
+                .iter()
+                .find(|s| s.kind == SourceKind::ArtifactObservation && s.text.contains("Slate"))
+                .context("failed-check artifact was not captured")?
+                .id
+                .clone(),
+            quote: r#"\"route\":\"Slate\""#.into(),
+        };
+        let proposal = SupportProposal {
+            units: vec![ProposedUnit {
+                id: "u1".into(),
+                kind: UnitKind::RecordedEvent,
+                text: "The calibration output names Slate.".into(),
+                citations: vec![citation.clone()],
+            }],
+            judgments: vec![],
+        };
+        let supported = finish_support(
+            db.prepare_support(&prepared, proposal, &access)?,
+            SupportReply {
+                checks: vec![SupportCheck {
+                    target: "unit:u1".into(),
+                    status: SupportStatus::Supported,
+                    unsupported_factual_premise: false,
+                    citations: vec![citation],
+                    reason: "The output contains the selected name.".into(),
+                    questions: vec![],
+                }],
+            },
+            "authored",
+        )?;
+        let retained = db.retain_evaluated_interpretation(prepared, supported, &access)?;
+        drop(db);
+
+        fixture.request.interpretation_context_id = Some("keyed-context".into());
+        let recall = || {
+            vec![
+                call(
+                    "recall",
+                    "goal_context",
+                    json!({"memory":{"query":"calibration"}}),
+                ),
+                call(
+                    "write",
+                    "fs_write",
+                    json!({"path":"output.json","content":r#"[{"route":"Quill"}]"#}),
+                ),
+                Message::assistant(vec![Block::text("Calibration artifact saved.")]),
+            ]
+        };
+        let second = fixture.run("second", recall()).await?;
+        assert!(
+            second.run_error.is_none() && second.capture_error.is_none(),
+            "{second:?}"
+        );
+        assert!(second.taint.private && second.taint.untrusted);
+        assert_eq!(second.check.verdict, CheckVerdict::Passed);
+        let text = fs::read_to_string(&second.transcript)?;
+        assert!(text.contains("SelectedCurrent") && text.contains(&retained.reference.revision));
+        assert!(fixture.run("second", recall()).await.is_err());
+
+        fixture
+            .authority
+            .withdraw(&fixture.authority.binding(&first.confirmation)?.locator)?;
+        let third = fixture.run("third", recall()).await?;
+        assert!(
+            third.run_error.is_none() && third.capture_error.is_none(),
+            "{third:?}"
+        );
+        let text = fs::read_to_string(&third.transcript)?;
+        assert!(!text.contains(&retained.reference.revision));
+        assert!(!text.contains("Slate"));
+        Ok(())
+    }
+
+    fn native_fixture_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!("native-contract-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        let db = root.join("native.memory-prototype.sqlite");
-        drop(Memory::create_supported_situated(&db, "native-contract").unwrap());
-        let authority = LocalAuthority::create(&root.join("authority")).unwrap();
-        let request = NativeSessionRequest {
+        root.canonicalize().unwrap()
+    }
+
+    fn native_fixture_request() -> NativeSessionRequest {
+        NativeSessionRequest {
             prompt: "Read calibration evidence and save the selected route to output.json.".into(),
             files: BTreeMap::new(),
             criterion: criterion(Goal::Complete),
@@ -1018,7 +1331,15 @@ mod tests {
             scopes: ["synthetic:contract".into()].into(),
             account: "separate-account".into(),
             interpretation_context_id: None,
-        };
+        }
+    }
+
+    fn native_fixture() -> (PathBuf, PathBuf, LocalAuthority, NativeSessionRequest) {
+        let root = native_fixture_root();
+        let request = native_fixture_request();
+        let db = root.join("native.memory-prototype.sqlite");
+        drop(Memory::create_supported_situated(&db, &request.domain).unwrap());
+        let authority = LocalAuthority::create(&root.join("authority")).unwrap();
         (root, db, authority, request)
     }
 

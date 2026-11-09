@@ -1,5 +1,5 @@
 //! Opt-in, synthetic-data memory prototype. No live connectors or default tool registration.
-//! Ordinary SQLite here is not qualified for private production data.
+//! Explicit storage selection supports synthetic fixtures and keyed SQLCipher stores.
 pub mod concept;
 pub mod context;
 pub mod decision;
@@ -19,11 +19,15 @@ pub mod model_evaluation;
 pub mod plan_assessment;
 pub mod plan_extraction;
 mod recall;
+mod recovery;
+pub use recovery::{restore_encrypted, BackupReport, RestoreAuthority, RestoreReport};
 mod sql;
+mod storage;
 mod store;
 mod transcript;
 pub use model::*;
 pub use recall::{RecallHit, RecallQuery};
+pub use storage::{KeyFilePolicy, StorageAccess};
 pub use store::Memory;
 pub use transcript::transcript_source;
 
@@ -74,3 +78,6 @@ mod interpretation_tests;
 
 #[cfg(test)]
 mod support_tests;
+
+#[cfg(test)]
+pub(crate) mod storage_tests;

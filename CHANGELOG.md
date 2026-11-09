@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental memory adds explicit keyed storage, complete encrypted database
+  snapshots and restore into a fresh historical copy. Restore preserves current
+  forgetting and refuses weaker access scopes using a separately selected current
+  store. Keys remain host-only; source authorization still applies. JSONL and task
+  artifacts are outside database encryption, and full disaster recovery is not
+  provided. Existing plaintext stores remain plaintext under the shared engine.
+
 - Experimental native memory packets use compact authenticated metadata while
   retaining full original text and provenance under the existing reader budget.
   Explicit concept-aware appraisal separates hypotheses from observed facts,

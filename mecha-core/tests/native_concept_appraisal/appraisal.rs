@@ -3,7 +3,10 @@ use super::*;
 use mecha_core::{
     memory::interpretation::{ConceptApplicability, InterpretationContext, NativeCriterionState},
     memory_factual_support::GenerationBudget,
-    memory_situated_workflow::{appraise_native_session, NativeSessionAppraisalRequest},
+    memory_situated_workflow::{
+        appraise_native_session, appraise_native_session_with_storage,
+        NativeSessionAppraisalRequest,
+    },
 };
 
 struct Appraise {
@@ -160,7 +163,42 @@ fn request(
 #[tokio::test]
 async fn reopened_native_session_appraisal_keeps_hypotheses_provisional_and_sources_revocable(
 ) -> Result<()> {
-    let fixture = Fixture::new()?;
+    authored_native_appraisal(false).await
+}
+
+#[tokio::test]
+async fn encrypted_native_sessions_and_appraisal_reopen_with_the_explicit_key() -> Result<()> {
+    authored_native_appraisal(true).await
+}
+
+async fn appraise(
+    fixture: &Fixture,
+    authority: &LocalAuthority,
+    request: &NativeSessionAppraisalRequest,
+    provider: &dyn Provider,
+) -> Result<
+    mecha_core::memory_factual_support::PassOutcome<
+        mecha_core::memory::interpretation::NativeConceptAppraisal,
+    >,
+> {
+    let cancel = CancellationToken::new();
+    if fixture.key.is_some() {
+        appraise_native_session_with_storage(
+            &fixture.database,
+            fixture.storage()?,
+            authority,
+            request,
+            provider,
+            &cancel,
+        )
+        .await
+    } else {
+        appraise_native_session(&fixture.database, authority, request, provider, &cancel).await
+    }
+}
+
+async fn authored_native_appraisal(encrypted: bool) -> Result<()> {
+    let fixture = Fixture::new(encrypted)?;
     let access = fixture.access();
     let (first, _) = fixture
         .run("appraisal-first", Task::Independent(READY))
@@ -204,15 +242,14 @@ async fn reopened_native_session_appraisal_keeps_hypotheses_provisional_and_sour
     let before = serde_json::to_value(db.snapshot()?)?;
     drop(db);
     let authority = LocalAuthority::open(&fixture.authority)?;
-    let result = appraise_native_session(
-        &fixture.database,
+    let result = appraise(
+        &fixture,
         &authority,
         &req,
         &Appraise {
             changed: false,
             withdraw: None,
         },
-        &CancellationToken::new(),
     )
     .await?;
     let appraisal = result.result.map_err(|e| anyhow::anyhow!("{e:?}"))?;
@@ -225,15 +262,14 @@ async fn reopened_native_session_appraisal_keeps_hypotheses_provisional_and_sour
     assert_eq!(serde_json::to_value(fixture.open()?.snapshot()?)?, before);
 
     let changed = request(&fixture, &reuse, true)?;
-    let result = appraise_native_session(
-        &fixture.database,
+    let result = appraise(
+        &fixture,
         &authority,
         &changed,
         &Appraise {
             changed: true,
             withdraw: None,
         },
-        &CancellationToken::new(),
     )
     .await?;
     let changed_appraisal = result.result.map_err(|e| anyhow::anyhow!("{e:?}"))?;
@@ -268,15 +304,14 @@ async fn reopened_native_session_appraisal_keeps_hypotheses_provisional_and_sour
     let (inspection, packet) = fixture.run("appraisal-revised-read", Task::Inspect).await?;
     assert!(references(&packet.context("revised recall missing")?)?.contains(&revised));
     let req = request(&fixture, &inspection, false)?;
-    let result = appraise_native_session(
-        &fixture.database,
+    let result = appraise(
+        &fixture,
         &authority,
         &req,
         &Appraise {
             changed: false,
             withdraw: None,
         },
-        &CancellationToken::new(),
     )
     .await?;
     assert_eq!(
@@ -288,24 +323,125 @@ async fn reopened_native_session_appraisal_keeps_hypotheses_provisional_and_sour
         NativeCriterionState::Unknown
     );
 
+    // A complete encrypted snapshot retains native capture closure, concepts,
+    // rumination revisions and the appraisal inputs, but not external authority.
+    let snapshot = if encrypted {
+        let destination = fixture
+            .database
+            .with_file_name("snapshot.memory-prototype.sqlite");
+        let owner = fixture.key.as_ref().unwrap().parent().unwrap();
+        let policy = KeyFilePolicy::new(&[
+            fixture.database.parent().unwrap().to_path_buf(),
+            fixture.authority.clone(),
+        ])?;
+        let key = StorageAccess::generate_key_file(&owner.join("snapshot.key"), &policy)?;
+        fixture
+            .open()?
+            .backup_encrypted(&destination, key.clone())?;
+        let naked = Memory::open_read_only_with_storage(&destination, key.clone())?;
+        assert!(naked.read(&revised, &access)?.is_none());
+        let guarded = naked.with_source_guard(Arc::new(LocalAuthority::open(&fixture.authority)?));
+        assert!(guarded.read(&revised, &access)?.is_some());
+        let copied = appraise_native_session_with_storage(
+            &destination,
+            key.clone(),
+            &authority,
+            &req,
+            &Appraise {
+                changed: false,
+                withdraw: None,
+            },
+            &CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(
+            copied
+                .result
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?
+                .appraisal
+                .state,
+            NativeCriterionState::Unknown
+        );
+        let restored_path = fixture
+            .database
+            .with_file_name("restored.memory-prototype.sqlite");
+        let restored_key = StorageAccess::generate_key_file(&owner.join("restored.key"), &policy)?;
+        mecha_core::memory::restore_encrypted(
+            &destination,
+            key.clone(),
+            &restored_path,
+            restored_key.clone(),
+            &mecha_core::memory::RestoreAuthority::current(&fixture.database, fixture.storage()?),
+        )?;
+        let restored = Memory::open_read_only_with_storage(&restored_path, restored_key.clone())?
+            .with_source_guard(Arc::new(LocalAuthority::open(&fixture.authority)?));
+        assert!(restored.read(&revised, &access)?.is_some());
+        Some((destination, key, restored_path, restored_key))
+    } else {
+        None
+    };
+
     let locator = a["binding"]["locator"]
         .as_str()
         .context("missing original locator")?
         .to_string();
-    let withdrawn = appraise_native_session(
-        &fixture.database,
+    let withdrawn = appraise(
+        &fixture,
         &authority,
         &req,
         &Appraise {
             changed: false,
             withdraw: Some((fixture.authority.clone(), locator)),
         },
-        &CancellationToken::new(),
     )
     .await;
     assert!(
         withdrawn.is_err(),
         "source withdrawal during inference returned an outcome"
     );
+    if let Some((path, key, restored_path, restored_key)) = snapshot {
+        let copied = Memory::open_read_only_with_storage(&path, key.clone())?
+            .with_source_guard(Arc::new(LocalAuthority::open(&fixture.authority)?));
+        assert!(
+            copied.read(&revised, &access)?.is_none(),
+            "snapshot bypassed current source withdrawal"
+        );
+        let historical = Memory::open_read_only_with_storage(&restored_path, restored_key.clone())?
+            .with_source_guard(Arc::new(LocalAuthority::open(&fixture.authority)?));
+        assert!(
+            historical.read(&revised, &access)?.is_none(),
+            "restored copy bypassed source withdrawal"
+        );
+        // An uncited original still belongs to the concept's dependency closure.
+        let uncited = b_sources
+            .iter()
+            .find(|s| s.evidence != support[1].evidence)
+            .context("missing independent uncited synthetic source")?;
+        let source = match copied
+            .with_source_guard(Arc::new(LocalAuthority::open(&fixture.authority)?))
+            .read(&uncited.evidence, &access)?
+        {
+            Some(mecha_core::memory::Record::Evidence(e)) => e.source,
+            _ => anyhow::bail!("independent synthetic source unexpectedly unavailable"),
+        };
+        fixture.open()?.forget(&source)?;
+        let purged_path = fixture
+            .database
+            .with_file_name("purged.memory-prototype.sqlite");
+        mecha_core::memory::restore_encrypted(
+            &path,
+            key,
+            &purged_path,
+            restored_key.clone(),
+            &mecha_core::memory::RestoreAuthority::current(&fixture.database, fixture.storage()?),
+        )?;
+        let purged = Memory::open_read_only_with_storage(&purged_path, restored_key)?
+            .with_source_guard(Arc::new(LocalAuthority::open(&fixture.authority)?));
+        assert!(
+            purged.read(&revised, &access)?.is_none(),
+            "restore resurrected a dependent native concept"
+        );
+    }
+
     Ok(())
 }

@@ -3,7 +3,7 @@ use crate::{
     memory::{
         decision::{EvidenceView, Objective},
         durable::{HostObservation, TaskSpec},
-        Capture, SourceKey,
+        Capture, SourceKey, StorageAccess,
     },
     memory_action_runtime::{self as action, ActionSpec, FixtureState, FixtureVersion, WORKLOAD},
     memory_decision_runtime::{self as model, ModelSpec},
@@ -21,16 +21,27 @@ impl Fixture {
     async fn new(state: FixtureState) -> Self {
         Self::with_completion(state, true).await
     }
+
     async fn with_completion(state: FixtureState, complete: bool) -> Self {
+        Self::with_encryption(state, complete, false).await
+    }
+
+    async fn with_encryption(state: FixtureState, complete: bool, encrypted: bool) -> Self {
         let root = std::env::temp_dir().join(format!("mecha-reappraisal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let access = Access {
             domain: "synthetic-reappraisal".into(),
             scopes: ["fixture".into()].into(),
         };
-        let mut db = Memory::create_durable_action(
+        let storage = if encrypted {
+            crate::memory::storage_tests::fixture_key(&root)
+        } else {
+            StorageAccess::plaintext_fixture()
+        };
+        let mut db = Memory::create_durable_action_with_storage(
             &root.join("test.memory-prototype.sqlite"),
             &access.domain,
+            storage,
         )
         .unwrap();
         let source = Capture {
@@ -1417,4 +1428,14 @@ async fn provenance_reuses_checks_first_schema_and_bounded_parser() {
     v["reason"] = json!("valid");
     v.as_object_mut().unwrap().remove("candidate_checks");
     assert!(pair.finish(Arm::SourceAndOutcome, &v.to_string()).is_err());
+}
+
+#[tokio::test]
+async fn keyed_outcome_guard_rechecks_the_live_store_after_forgetting() {
+    let f = Fixture::with_encryption(FixtureState::Baseline, true, true).await;
+    let pair = f.pair(4, 7);
+    pair.recheck(&f.db, &f.access).unwrap();
+    let mut other = Memory::open_with_storage(&f.path(), f.db.storage_access()).unwrap();
+    other.forget(&f.source.source).unwrap();
+    assert!(pair.recheck(&f.db, &f.access).is_err());
 }

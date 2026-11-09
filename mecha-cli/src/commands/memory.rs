@@ -1,24 +1,65 @@
 //! Explicit, synthetic-only entry point for the default-off memory prototype.
 use anyhow::{ensure, Context, Result};
 use clap::{Args as ClapArgs, Subcommand};
-use mecha_core::memory::{evaluation, fixture, transcript_source, Memory, Query, RecallQuery};
+use mecha_core::{
+    memory::{
+        evaluation, fixture, transcript_source, KeyFilePolicy, Memory, Query, RecallQuery,
+        StorageAccess,
+    },
+    memory_trial_provider::{LocalTrialConfig, LocalTrialProvider},
+    provider::Provider,
+};
 use serde_json::json;
-use std::path::PathBuf;
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
+use tokio_util::sync::CancellationToken;
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Acknowledge this is an unencrypted, synthetic-data prototype.
+    /// Acknowledge this is a synthetic-data prototype.
     #[arg(long, required = true)]
     pub experimental: bool,
     /// Explicit file ending in .memory-prototype.sqlite; never a live store.
     #[arg(long)]
     pub db: PathBuf,
+    /// Owner-selected key file for SQLite memory only. The host stores session JSONL,
+    /// task artifacts, provider audits and host-authority files in plaintext.
+    #[arg(long)]
+    pub key_file: Option<PathBuf>,
+    /// Additional directory the key file must be outside. Repeat for multiple roots.
+    #[arg(long, requires = "key_file")]
+    pub key_exclude_root: Vec<PathBuf>,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 pub enum Cmd {
+    /// Generate a new private key file without opening or creating the database.
+    KeyGenerate,
+    /// Write a NEW encrypted database snapshot. Does not back up keys, JSONL,
+    /// host authority, task artifacts or provider audits.
+    Backup {
+        #[arg(long)]
+        destination: PathBuf,
+        #[arg(long)]
+        destination_key: PathBuf,
+    },
+    /// Restore a NEW offline historical encrypted copy using CURRENT deletion/access
+    /// authority. Newer facts/withdrawals are not merged; no live installation,
+    /// source-file recovery or future cross-copy forgetting is provided.
+    Restore {
+        #[arg(long)]
+        current: PathBuf,
+        #[arg(long)]
+        current_key: PathBuf,
+        #[arg(long)]
+        destination: PathBuf,
+        #[arg(long)]
+        destination_key: PathBuf,
+    },
     /// Create an empty synthetic prototype database.
     Init,
     /// Create a NEW v8 synthetic native-evidence store and host authority.
@@ -449,9 +490,145 @@ pub enum DurableReadCommand {
     },
 }
 
+fn key_policy(args: &Args) -> Result<KeyFilePolicy> {
+    let mut roots = args.key_exclude_root.clone();
+    roots.push(std::env::current_dir()?.canonicalize()?);
+    roots.push(
+        args.db
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
+    match &args.cmd {
+        Cmd::InitNative { authority, .. } => roots.push(authority.clone()),
+        Cmd::Restore {
+            current,
+            destination,
+            ..
+        } => {
+            for path in [current, destination] {
+                roots.push(
+                    path.parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."))
+                        .to_path_buf(),
+                );
+            }
+        }
+        Cmd::Backup { destination, .. } => roots.push(
+            destination
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+                .to_path_buf(),
+        ),
+        Cmd::NativeSession {
+            authority, root, ..
+        } => {
+            roots.push(authority.clone());
+            roots.push(root.clone());
+        }
+        Cmd::KeyGenerate
+        | Cmd::Inspect
+        | Cmd::Query { .. }
+        | Cmd::Recall { .. }
+        | Cmd::Forget { .. }
+        | Cmd::ForgetSessionRecord { .. } => {}
+        Cmd::Init
+        | Cmd::InitDurable { .. }
+        | Cmd::InitModel { .. }
+        | Cmd::InitAction { .. }
+        | Cmd::DurableAct(_)
+        | Cmd::EvaluateOutcomeRecall(_)
+        | Cmd::DurableDecide(_)
+        | Cmd::DurableRead(_)
+        | Cmd::ImportSession { .. }
+        | Cmd::Evaluate
+        | Cmd::EvaluateMentions
+        | Cmd::EvaluateModel { .. }
+        | Cmd::WorkflowTrial { .. }
+        | Cmd::ExtractPlan { .. }
+        | Cmd::EvaluatePlans { .. }
+        | Cmd::DistillConcept { .. }
+        | Cmd::Demo => {
+            anyhow::bail!("this memory command does not support --key-file");
+        }
+    }
+    KeyFilePolicy::new(&roots)
+}
+
 pub async fn execute(args: Args) -> Result<()> {
+    execute_with_native_provider(args, |config, cancel| async move {
+        Ok(Box::new(LocalTrialProvider::new(config, cancel).await?) as Box<dyn Provider>)
+    })
+    .await
+}
+
+async fn execute_with_native_provider<F, Fut>(args: Args, native_provider: F) -> Result<()>
+where
+    F: FnOnce(LocalTrialConfig, CancellationToken) -> Fut,
+    Fut: Future<Output = Result<Box<dyn Provider>>>,
+{
     ensure!(args.experimental, "--experimental is required");
+    let policy = args
+        .key_file
+        .as_ref()
+        .map(|_| key_policy(&args))
+        .transpose()?;
+    let key_selection = args.key_file.as_deref().zip(policy.as_ref());
+    let storage = match (key_selection, &args.cmd) {
+        (Some((key, policy)), command) if !matches!(command, Cmd::KeyGenerate) => {
+            StorageAccess::load_key_file(key, policy)?
+        }
+        _ => StorageAccess::plaintext_fixture(),
+    };
+    let open_read_only = || Memory::open_read_only_with_storage(&args.db, storage.clone());
     let result = match args.cmd {
+        Cmd::KeyGenerate => {
+            let (key, policy) = key_selection.context("--key-file is required for key-generate")?;
+            StorageAccess::generate_key_file(key, policy)?;
+            json!({"key_created":true,"database_created":false})
+        }
+        Cmd::Backup {
+            destination,
+            destination_key,
+        } => {
+            ensure!(
+                storage.is_encrypted(),
+                "backup requires --key-file and an encrypted source"
+            );
+            let destination_storage = StorageAccess::load_key_file(
+                &destination_key,
+                policy.as_ref().context("backup key policy missing")?,
+            )?;
+            serde_json::to_value(
+                open_read_only()?.backup_encrypted(&destination, destination_storage)?,
+            )?
+        }
+        Cmd::Restore {
+            current,
+            current_key,
+            destination,
+            destination_key,
+        } => {
+            use mecha_core::memory::{restore_encrypted, RestoreAuthority};
+            ensure!(
+                storage.is_encrypted(),
+                "restore requires --key-file and an encrypted backup"
+            );
+            let policy = policy.as_ref().context("restore key policy missing")?;
+            let current_storage = StorageAccess::load_key_file(&current_key, policy)?;
+            let destination_storage = StorageAccess::load_key_file(&destination_key, policy)?;
+            let authority = RestoreAuthority::current(&current, current_storage);
+            serde_json::to_value(restore_encrypted(
+                &args.db,
+                storage.clone(),
+                &destination,
+                destination_storage,
+                &authority,
+            )?)?
+        }
         Cmd::Init => {
             let memory = Memory::create(&args.db, "synthetic-demo")?;
             json!({"snapshot":memory.snapshot()?,"fixture_only":true})
@@ -470,8 +647,10 @@ pub async fn execute(args: Args) -> Result<()> {
                     && !authority.exists(),
                 "native initialization requires NEW absolute database and authority paths"
             );
-            let memory = Memory::create_supported_situated(&args.db, &domain)?;
-            LocalAuthority::create(&authority)?;
+            let memory =
+                Memory::create_supported_situated_with_storage(&args.db, &domain, storage.clone())?;
+            LocalAuthority::create(&authority)
+                .context("native database created but host authority initialization failed")?;
             json!({"snapshot":memory.snapshot()?,"fixture_only":true,"native_capture":true,"authority":authority})
         }
         Cmd::NativeSession {
@@ -486,9 +665,7 @@ pub async fn execute(args: Args) -> Result<()> {
         } => {
             use mecha_core::{
                 memory_experience_bridge::LocalAuthority,
-                memory_situated_workflow::{run_native_session, NativeSessionRequest},
-                memory_trial_provider::{LocalTrialConfig, LocalTrialProvider},
-                provider::Provider,
+                memory_situated_workflow::{run_native_session_with_storage, NativeSessionRequest},
             };
             use std::io::Read;
             ensure!(synthetic_input, "--synthetic-input is required");
@@ -503,31 +680,29 @@ pub async fn execute(args: Args) -> Result<()> {
             ensure!(bytes.len() <= 1_048_576, "oversized native request file");
             let request: NativeSessionRequest = serde_json::from_slice(&bytes)?;
             let authority = LocalAuthority::open(&authority)?;
-            let cancel = tokio_util::sync::CancellationToken::new();
+            let cancel = CancellationToken::new();
             let signal_cancel = cancel.clone();
             let signal = tokio::spawn(async move {
                 if tokio::signal::ctrl_c().await.is_ok() {
                     signal_cancel.cancel();
                 }
             });
-            let result = run_native_session(
+            let result = run_native_session_with_storage(
                 &args.db,
+                storage.clone(),
                 &authority,
                 &request,
                 &root,
-                |run_cancel| async move {
-                    Ok(Box::new(
-                        LocalTrialProvider::new(
-                            LocalTrialConfig {
-                                endpoint,
-                                model,
-                                holds_dir,
-                                seed,
-                            },
-                            run_cancel,
-                        )
-                        .await?,
-                    ) as Box<dyn Provider>)
+                |run_cancel| {
+                    native_provider(
+                        LocalTrialConfig {
+                            endpoint,
+                            model,
+                            holds_dir,
+                            seed,
+                        },
+                        run_cancel,
+                    )
                 },
                 &cancel,
             )
@@ -605,7 +780,7 @@ pub async fn execute(args: Args) -> Result<()> {
             neighbors,
             max_bytes,
         } => {
-            let memory = Memory::open(&args.db)?;
+            let memory = open_read_only()?;
             let mut snapshot = memory.snapshot()?;
             if let Some(sequence) = known_at {
                 snapshot.sequence = sequence;
@@ -926,12 +1101,12 @@ pub async fn execute(args: Args) -> Result<()> {
             line,
         } => {
             ensure!(line > 0, "line must be positive");
-            let mut memory = Memory::open(&args.db)?;
+            let mut memory = Memory::open_with_storage(&args.db, storage.clone())?;
             serde_json::to_value(memory.forget(&transcript_source(&account, &session, line))?)?
         }
         Cmd::Demo => fixture::demo(&args.db)?,
         Cmd::Inspect => {
-            let memory = Memory::open(&args.db)?;
+            let memory = open_read_only()?;
             json!({"snapshot": memory.snapshot()?, "fixture_only": true})
         }
         Cmd::Query {
@@ -941,7 +1116,7 @@ pub async fn execute(args: Args) -> Result<()> {
             include_possible,
             limit,
         } => {
-            let memory = Memory::open(&args.db)?;
+            let memory = open_read_only()?;
             let mut snapshot = memory.snapshot()?;
             if let Some(sequence) = known_at {
                 snapshot.sequence = sequence;
@@ -958,7 +1133,7 @@ pub async fn execute(args: Args) -> Result<()> {
             )?)?
         }
         Cmd::Forget { source_id } => {
-            let mut memory = Memory::open(&args.db)?;
+            let mut memory = Memory::open_with_storage(&args.db, storage.clone())?;
             serde_json::to_value(memory.forget(&fixture::source_key(&source_id))?)?
         }
     };
@@ -1990,5 +2165,131 @@ mod action_cli_tests {
             "--synthetic-input"
         ])
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod native_storage_cli_tests {
+    use super::*;
+    use clap::Parser;
+    use std::{
+        fs,
+        os::unix::fs::DirBuilderExt,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn parse_memory(arguments: &[&str]) -> Result<Args> {
+        let cli = crate::Cli::try_parse_from(arguments)?;
+        if let crate::Command::Memory(args) = cli.command {
+            Ok(args)
+        } else {
+            anyhow::bail!("expected experimental memory command")
+        }
+    }
+
+    #[tokio::test]
+    async fn native_cli_storage_reaches_preflight_without_using_a_real_provider() -> Result<()> {
+        let fixture = Fixture(std::env::temp_dir().canonicalize()?.join(format!(
+            "native-memory-cli-storage-{}",
+            uuid::Uuid::new_v4()
+        )));
+        fs::create_dir(&fixture.0)?;
+        let data = fixture.0.join("data");
+        let owner = fixture.0.join("owner");
+        fs::create_dir(&data)?;
+        fs::DirBuilder::new().mode(0o700).create(&owner)?;
+        let db = data.join("native.memory-prototype.sqlite");
+        let authority = data.join("authority");
+        let key = owner.join("key");
+        let wrong = owner.join("wrong");
+        let task = fixture.0.join("task");
+        let request = fixture.0.join("request.json");
+        fs::write(
+            &request,
+            serde_json::to_vec(&json!({
+                "prompt":"Write the authored output.",
+                "files":{},
+                "criterion":{
+                    "goal":"task:check",
+                    "goal_text":"Write the selected row.",
+                    "criterion_text":"The row must match the authored contract.",
+                    "criterion_revision":"a".repeat(64),
+                    "confirmation_digest":"b".repeat(64)
+                },
+                "expected_rows":[{"route":"Citrine"}],
+                "domain":"synthetic",
+                "scopes":["synthetic:cli"],
+                "account":"synthetic"
+            }))?,
+        )?;
+        let db_path = db.to_str().unwrap();
+        let auth_path = authority.to_str().unwrap();
+        let root_path = task.to_str().unwrap();
+        let req_path = request.to_str().unwrap();
+        let key_path = key.to_str().unwrap();
+        let args = |key| {
+            [
+                "mecha",
+                "memory",
+                "--experimental",
+                "--db",
+                db_path,
+                "--key-file",
+                key,
+            ]
+        };
+        for path in [key_path, wrong.to_str().unwrap()] {
+            let mut generate = args(path).to_vec();
+            generate.push("key-generate");
+            execute(parse_memory(&generate)?).await?;
+        }
+        let mut init = args(key_path).to_vec();
+        init.extend([
+            "init-native",
+            "--synthetic-input",
+            "--domain",
+            "synthetic",
+            "--authority",
+            auth_path,
+        ]);
+        execute(parse_memory(&init)?).await?;
+        let bytes = fs::read(&db)?;
+        let calls = AtomicUsize::new(0);
+        for (path, expected) in [(wrong.to_str().unwrap(), 0), (key_path, 1)] {
+            let mut native = args(path).to_vec();
+            native.extend([
+                "native-session",
+                "--synthetic-input",
+                "--request",
+                req_path,
+                "--authority",
+                auth_path,
+                "--root",
+                root_path,
+                "--endpoint",
+                "http://127.0.0.1:1",
+                "--model",
+                "authored",
+                "--holds-dir",
+                data.to_str().unwrap(),
+            ]);
+            let result = execute_with_native_provider(parse_memory(&native)?, |_, _| async {
+                calls.fetch_add(1, Ordering::Relaxed);
+                anyhow::bail!("authored stop after preflight");
+            })
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls.load(Ordering::Relaxed), expected);
+            assert_eq!(task.join("started.json").exists(), expected == 1);
+            assert_eq!(fs::read(&db)?, bytes);
+        }
+        Ok(())
     }
 }

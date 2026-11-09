@@ -6,7 +6,7 @@ use crate::memory::{
     context::{ContextPolicy, ContextRequest, Situation},
     host_capture::ExternalSourceGuard,
     interpretation::InterpretationRead,
-    Access, Memory, RecallQuery,
+    Access, Memory, RecallQuery, StorageAccess,
 };
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
@@ -55,8 +55,28 @@ impl GoalMemory {
         situation: Situation,
         guard: Arc<dyn ExternalSourceGuard>,
     ) -> Result<Self> {
+        Self::open_with_storage_and_source_guard(
+            path,
+            StorageAccess::plaintext_fixture(),
+            access,
+            account,
+            situation,
+            guard,
+        )
+    }
+
+    /// Opens owner-selected storage and source authority without exposing either to the tool.
+    pub fn open_with_storage_and_source_guard(
+        path: &Path,
+        storage: StorageAccess,
+        access: Access,
+        account: String,
+        situation: Situation,
+        guard: Arc<dyn ExternalSourceGuard>,
+    ) -> Result<Self> {
         Self::open_configured(
             path,
+            storage,
             access,
             account,
             situation,
@@ -72,11 +92,20 @@ impl GoalMemory {
         situation: Situation,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
-        Self::open_configured(path, access, account, situation, clock, None)
+        Self::open_configured(
+            path,
+            StorageAccess::plaintext_fixture(),
+            access,
+            account,
+            situation,
+            clock,
+            None,
+        )
     }
 
     fn open_configured(
         path: &Path,
+        storage: StorageAccess,
         access: Access,
         account: String,
         situation: Situation,
@@ -93,7 +122,7 @@ impl GoalMemory {
                 && situation.needs.as_ref().is_none_or(|n| n.len() <= 1024),
             "oversized memory situation"
         );
-        let mut memory = Memory::open_read_only(path)?;
+        let mut memory = Memory::open_read_only_with_storage(path, storage)?;
         if let Some(guard) = guard {
             memory = memory.with_source_guard(guard);
         }

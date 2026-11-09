@@ -12924,6 +12924,48 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **One SQLite linkage serves both old plaintext stores and encrypted memory.**
+  The workspace and standalone harness use the pinned SQLCipher-enabled engine;
+  existing stores remain plaintext unless an explicit key capability is selected.
+  Qualify old-schema/FTS/WAL behavior when changing that dependency. SQLCipher
+  registers extra functions on plaintext handles too, so the HUD authorizer
+  refuses `sqlcipher_export` at preparation, independently of read-only flags.
+- **Decryption authority does not replace source or scope authorization.**
+  `StorageAccess` is an opaque host-only capability, separate from `Access`.
+  Every independent memory, interpretation and durable guard reopen carries it;
+  source freshness, identity, scopes and security epochs are still checked anew.
+  Plaintext fixture wrappers never discover keys or retry without encryption.
+  Native execution and separate concept appraisal take storage as a host argument,
+  not a field in model requests, checkpoints or captured memory.
+- **Inspect the opened key, not just its path or mode.** `KeyFilePolicy` excludes
+  task/output roots, including filesystem aliases, and requires owner-private
+  directory/file descriptors. On macOS it also refuses extended ACLs and volumes
+  that ignore ownership: a restrictive ACL regression showed that 0600/0700 alone
+  did not establish the advertised private-key policy. New keys are inspected
+  while empty, before secret bytes are written. Keys are zeroizing and cannot be
+  serialized; connection-local keying avoids key-bearing SQL literals. This does
+  not protect external JSONL/artifacts or revoke already loaded handles when a
+  key file is removed. Host-owned ancestry remains required; same-user ancestor
+  replacement between path operations is outside this bounded file policy.
+- **A backup is the complete database, not a filtered memory export.**
+  `backup_encrypted` pins a read transaction while a private keyed connection
+  exports every table, including FTS shadows and `sqlite_sequence`. Independent
+  verification compares typed row inventories and schema before no-clobber
+  publication. Public readers remain query-only. A file published before a
+  directory-sync error may be valid; report durability uncertainty and preserve
+  it rather than deleting or overwriting an output after publication.
+- **Restoring history must not restore old privacy decisions.**
+  `RestoreAuthority` names the current store explicitly. `restore_encrypted`
+  holds its IMMEDIATE transaction through publication, seeds the shared
+  `forget::purge_seeded` closure with both suppression digests and restricted IDs,
+  and preserves opaque restrictions for objects absent from the old snapshot.
+  Every surviving object's restored head must require all current-head scopes:
+  scope tightening does not advance the deletion epoch. Missing current heads
+  refuse. This creates an offline historical copy, not a merge of later factual
+  revisions or withdrawals. It cannot certify the latest deletion state when the
+  owner-selected authority itself is an undetectably stale copy; full disaster
+  recovery requires independent durable authority. External source guards remain
+  necessary, and future forgetting does not propagate to retained copies.
 - **A contextual interpretation is neither an observation nor a learned rule.**
   Explicit v7 files add a guarded Interpretation record and canonical receipt.
   Preparation authenticates the capture against its database row; a deserialized

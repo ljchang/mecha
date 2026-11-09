@@ -1506,3 +1506,92 @@ fn assert_canonical_or_native_reader(hit: &Hit, rendered: &serde_json::Value) {
     envelope["record"] = canonical["record"].clone();
     assert_eq!(envelope, canonical);
 }
+#[test]
+fn encrypted_restore_purges_receipt_siblings_interpretations_and_recaptured_descendants(
+) -> anyhow::Result<()> {
+    let scratch = super::storage_tests::KeyScratch::new()?;
+    let data = scratch.keys.parent().unwrap().join("store");
+    let key =
+        |name: &str| StorageAccess::generate_key_file(&scratch.keys.join(name), &scratch.policy);
+    let current_key = key("current.key")?;
+    let backup_key = key("backup.key")?;
+    let output_key = key("output.key")?;
+    let path = data.join("current.memory-prototype.sqlite");
+    let backup = data.join("backup.memory-prototype.sqlite");
+    let destination = data.join("restored.memory-prototype.sqlite");
+    let live = Arc::new(AtomicBool::new(true));
+    let guard = Arc::new(Guard(live));
+    let mut db =
+        Memory::create_supported_situated_with_storage(&path, "test", current_key.clone())?
+            .with_source_guard(guard.clone());
+    let p = prepared_supported(&mut db);
+    let mut offered = proposal(&p);
+    offered.units[0].kind = UnitKind::Hypothesis;
+    let evaluated = evaluate(
+        &db,
+        &p,
+        offered,
+        reply(&p, SupportStatus::Unknown, SupportStatus::Unknown),
+    );
+    let first = db.retain_evaluated_interpretation(p, evaluated, &access())?;
+    let mut next = rich_input("second");
+    next.consulted.push(first.reference.clone());
+    next.originals[0].text = "Synthetic copied speculation about artifact".into();
+    let second = db.admit_host_capture_with_evidence(next.clone(), &access())?;
+    // Opaque prepared state predating forgetting is never made valid by restore.
+    let pending = prepare(&db, &second);
+    let pending_evaluated = evaluate(
+        &db,
+        &pending,
+        proposal(&pending),
+        reply(&pending, SupportStatus::Unknown, SupportStatus::Unknown),
+    );
+    db.backup_encrypted(&backup, backup_key.clone())?;
+    db.forget(&rich_input("rich").originals[0].source)?;
+    restore_encrypted(
+        &backup,
+        backup_key,
+        &destination,
+        output_key.clone(),
+        &RestoreAuthority::current(&path, current_key),
+    )?;
+    let mut restored =
+        Memory::open_with_storage(&destination, output_key)?.with_source_guard(guard);
+    for reference in second
+        .originals
+        .iter()
+        .chain([&second.projection, &first.reference])
+    {
+        assert!(restored.read(reference, &access())?.is_none());
+    }
+    assert!(restored
+        .retain_evaluated_interpretation(pending, pending_evaluated, &access())
+        .is_err());
+    assert!(restored
+        .admit_host_capture_with_evidence(next.clone(), &access())
+        .is_err());
+    next.identity.prefix_digest = "0".repeat(64);
+    assert!(restored
+        .admit_host_capture_with_evidence(next, &access())
+        .is_err());
+    assert!(restored
+        .admit_host_capture_with_evidence(rich_input("rich"), &access())
+        .is_err());
+    assert_eq!(
+        restored
+            .conn
+            .query_row("SELECT count(*) FROM external_binding", [], |r| r
+                .get::<_, i64>(0))?,
+        0
+    );
+    assert_eq!(
+        restored
+            .conn
+            .query_row("SELECT count(*) FROM memory_fts", [], |r| r
+                .get::<_, i64>(0))?,
+        0
+    );
+    assert_eq!(restored.conn.query_row("SELECT count(*) FROM host_capture_receipt WHERE state='forgotten' AND payload_hash IS NULL AND receipt_id IS NULL AND originals IS NULL",[],|r|r.get::<_,i64>(0))?,2);
+    assert_eq!(restored.conn.query_row("SELECT count(*) FROM interpretation_receipt WHERE state='forgotten' AND payload_hash IS NULL AND object_id IS NULL",[],|r|r.get::<_,i64>(0))?,1);
+    Ok(())
+}

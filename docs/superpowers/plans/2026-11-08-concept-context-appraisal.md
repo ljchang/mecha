@@ -64,7 +64,7 @@
 - [x] Integrate reviewed patches and run authored end-to-end evidence checks under the unchanged packet limit.
 - [x] Run workspace build, formatting, strict Clippy, default and memory-feature suites and applicable actual CLI checks on isolated Spark; preserve exact-source manifests.
 - [x] Independent combined review; fix major/medium defects and qualify changed behavior.
-- [ ] Run handoff and privacy procedures, update draft PR and Site with verified outcomes and remaining cutover checklist; finish exact-head CI/review loop.
+- [x] Run handoff and privacy procedures, update draft PR and Site with verified outcomes and remaining cutover checklist; finish exact-head CI/review loop.
 
 ### Task 4: Encryption and recovery qualification
 

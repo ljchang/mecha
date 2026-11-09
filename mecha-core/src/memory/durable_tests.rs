@@ -11,11 +11,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_encryption(false)
+    }
+    fn with_encryption(encrypted: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("mecha-durable-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
-        let mut db =
-            Memory::create_durable(&dir.join("fixture.memory-prototype.sqlite"), "synthetic")
-                .unwrap();
+        let storage = if encrypted {
+            super::storage_tests::fixture_key(&dir)
+        } else {
+            StorageAccess::plaintext_fixture()
+        };
+        let mut db = Memory::create_durable_with_storage(
+            &dir.join("fixture.memory-prototype.sqlite"),
+            "synthetic",
+            storage,
+        )
+        .unwrap();
         let access = Access {
             domain: "synthetic".into(),
             scopes: ["fixture".into()].into(),
@@ -545,4 +556,26 @@ fn explicit_v4_is_readable_and_legacy_finish_is_refused() {
         "explicit v4 must be supported"
     );
     assert!(f.db.durable_reserve_reconsideration(&r, &f.access).is_err());
+}
+
+#[test]
+fn keyed_dispatch_guard_checks_live_epoch_and_store_identity() {
+    for replace in [false, true] {
+        let mut f = Fixture::with_encryption(true);
+        let receipt = f.create();
+        let permit = f.db.durable_reserve_dispatch(&receipt, &f.access).unwrap();
+        let guard = f.db.durable_dispatch_guard(&permit, &f.access).unwrap();
+        guard.check().unwrap();
+        let storage = f.db.storage_access();
+        if replace {
+            std::fs::rename(f.path(), f.dir.join("original.memory-prototype.sqlite")).unwrap();
+            // Use the same key so a wrong-key error cannot mask a broken
+            // canonical instance check.
+            Memory::create_durable_with_storage(&f.path(), "synthetic", storage).unwrap();
+        } else {
+            let mut reopened = Memory::open_with_storage(&f.path(), storage).unwrap();
+            reopened.forget(&f.source.source).unwrap();
+        }
+        assert!(guard.check().is_err());
+    }
 }

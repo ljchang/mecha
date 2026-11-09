@@ -3,14 +3,59 @@ use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, path::Path, time::Duration};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use uuid::Uuid;
 
 pub(super) fn configure(conn: &Connection) -> Result<()> {
     conn.busy_timeout(Duration::from_secs(3))?;
-    conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")?;
+    conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA temp_store=MEMORY;")?;
+    let pragma = |name| conn.pragma_query_value(None, name, |row| row.get::<_, i64>(0));
+    let journal: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    ensure!(
+        pragma("foreign_keys")? == 1
+            && pragma("secure_delete")? == 1
+            && journal.eq_ignore_ascii_case("delete")
+            && pragma("synchronous")? == 2
+            && pragma("temp_store")? == 2,
+        "could not establish memory store durability and temporary storage settings"
+    );
     Ok(())
 }
+
+pub(super) fn configure_read_only(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_secs(3))?;
+    conn.execute_batch("PRAGMA query_only=ON; PRAGMA temp_store=MEMORY;")?;
+    let pragma = |name| conn.pragma_query_value(None, name, |row| row.get::<_, i64>(0));
+    ensure!(
+        pragma("query_only")? == 1 && pragma("temp_store")? == 2,
+        "could not establish read-only memory settings"
+    );
+    Ok(())
+}
+
+pub(super) fn identity(conn: &Connection) -> Result<(String, String)> {
+    check_identity(conn)?;
+    Ok(conn.query_row(
+        "SELECT instance,domain FROM meta WHERE singleton=1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+pub(super) fn validate_existing_path(path: &Path) -> Result<PathBuf> {
+    let path = validate_path(path)?;
+    let meta = std::fs::symlink_metadata(&path)?;
+    ensure!(
+        meta.is_file() && !meta.file_type().is_symlink(),
+        "expected a regular prototype file"
+    );
+    Ok(path)
+}
+
 pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -26,13 +71,14 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn validate_path(path: &Path) -> Result<()> {
-    ensure!(
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.ends_with(".memory-prototype.sqlite")),
-        "expected .memory-prototype.sqlite suffix"
-    );
+pub(super) fn validate_path(path: &Path) -> Result<PathBuf> {
+    let name = path
+        .file_name()
+        .filter(|name| {
+            name.to_str()
+                .is_some_and(|name| name.ends_with(".memory-prototype.sqlite"))
+        })
+        .context("expected .memory-prototype.sqlite suffix")?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -44,7 +90,9 @@ pub(super) fn validate_path(path: &Path) -> Result<()> {
             .any(|c| c.as_os_str() == ".mecha" || c.as_os_str() == ".mecha-graph"),
         "live Mecha directories are not prototype roots"
     );
-    Ok(())
+    // Retain legitimate ancestor aliases (such as /var on macOS) while
+    // leaving the final name unresolved for exclusive/no-follow opens.
+    Ok(parent.join(name))
 }
 pub(super) fn validate_text(text: &str) -> Result<()> {
     ensure!(

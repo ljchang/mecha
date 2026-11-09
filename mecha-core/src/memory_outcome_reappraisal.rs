@@ -10,7 +10,7 @@ use crate::{
             Assessment, Passage, Projection, RecallView, Request,
         },
         model_evaluation::{Call, ModelReply},
-        Access, Hit, Memory, RecallHit, RecallQuery, Record, RevisionRef, Snapshot,
+        Access, Hit, Memory, RecallHit, RecallQuery, Record, RevisionRef, Snapshot, StorageAccess,
     },
     memory_action_runtime,
 };
@@ -100,6 +100,7 @@ pub struct PreparedPair {
 #[derive(Clone)]
 pub struct OutcomeGuard {
     path: PathBuf,
+    storage: StorageAccess,
     action_id: String,
     access: Access,
     fingerprint: Value,
@@ -108,7 +109,7 @@ pub struct OutcomeGuard {
 impl OutcomeGuard {
     pub fn check(&self) -> Result<()> {
         (|| {
-            let db = Memory::open_read_only(&self.path)?;
+            let db = Memory::open_read_only_with_storage(&self.path, self.storage.clone())?;
             self.check_in(&db, &self.access)
         })()
         .map_err(|_: anyhow::Error| anyhow::anyhow!("outcome sources invalidated"))
@@ -264,6 +265,7 @@ fn prepare_pair_inner(
     };
     let binding = OutcomeGuard {
         path: decision::source_store_path(db)?,
+        storage: db.storage_access(),
         action_id: action.id().into(),
         access: access.clone(),
         fingerprint,

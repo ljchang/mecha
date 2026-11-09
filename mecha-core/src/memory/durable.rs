@@ -130,12 +130,13 @@ impl DispatchPermit {
 /// across hooks/approval; each check reopens the exact bound store read-only.
 pub(crate) struct DispatchGuard {
     path: PathBuf,
+    storage: StorageAccess,
     receipt: Receipt,
     access: Access,
 }
 impl DispatchGuard {
     pub(crate) fn check(&self) -> Result<()> {
-        let db = Memory::open_read_only(&self.path)?;
+        let db = Memory::open_read_only_with_storage(&self.path, self.storage.clone())?;
         db.check_access(&self.access)?;
         db.check_receipt_instance(&self.receipt)?;
         require_read_schema(&db.conn)?;
@@ -178,13 +179,15 @@ impl Memory {
     /// Explicitly creates a new lifecycle-capable file. Existing v1/v2 stores are
     /// never silently upgraded; create a separate synthetic v3 store instead.
     pub fn create_durable(path: &Path, domain: &str) -> Result<Self> {
-        let mut db = Self::create(path, domain)?;
-        let tx = db
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(SCHEMA)?;
-        tx.commit()?;
-        Ok(db)
+        Self::create_durable_with_storage(path, domain, StorageAccess::plaintext_fixture())
+    }
+
+    pub fn create_durable_with_storage(
+        path: &Path,
+        domain: &str,
+        storage: StorageAccess,
+    ) -> Result<Self> {
+        Self::create_schema_with_storage(path, domain, SCHEMA, storage)
     }
     pub fn durable_create(
         &mut self,
@@ -348,6 +351,7 @@ impl Memory {
             .context("resolve durable store path")?;
         let guard = DispatchGuard {
             path,
+            storage: self.storage_access(),
             receipt: copy_receipt(&permit.receipt),
             access: access.clone(),
         };

@@ -1,4 +1,8 @@
-use super::{sql::*, *};
+use super::{
+    sql::*,
+    storage::{connect_existing, connect_new_reserved},
+    *,
+};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::{collections::BTreeSet, fs::OpenOptions, path::Path};
@@ -9,6 +13,7 @@ pub struct Memory {
     pub(super) conn: Connection,
     pub(super) instance: String,
     domain: String,
+    storage: StorageAccess,
     pub(super) source_guard: Option<std::sync::Arc<dyn host_capture::ExternalSourceGuard>>,
 }
 
@@ -20,7 +25,21 @@ impl Memory {
 
     /// Base schema, version extension and identity commit in a single transaction.
     pub(super) fn create_schema(path: &Path, domain: &str, extension: &str) -> Result<Self> {
-        validate_path(path)?;
+        Self::create_schema_with_storage(
+            path,
+            domain,
+            extension,
+            StorageAccess::plaintext_fixture(),
+        )
+    }
+
+    pub(super) fn create_schema_with_storage(
+        path: &Path,
+        domain: &str,
+        extension: &str,
+        storage: StorageAccess,
+    ) -> Result<Self> {
+        let path = validate_path(path)?;
         ensure!(
             !domain.trim().is_empty() && domain.len() <= 256,
             "invalid domain"
@@ -33,11 +52,11 @@ impl Memory {
             options.mode(0o600);
         }
         let file = options
-            .open(path)
+            .open(&path)
             .context("prototype requires a new file")?;
         drop(file);
         let result = (|| {
-            let mut conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+            let mut conn = connect_new_reserved(&path, &storage)?;
             configure(&conn)?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch(include_str!("schema.sql"))?;
@@ -53,6 +72,7 @@ impl Memory {
                 source_guard: None,
                 instance,
                 domain: domain.into(),
+                storage,
             })
         })();
         if result.is_err() {
@@ -63,56 +83,64 @@ impl Memory {
         result
     }
 
-    /// Checks identity read-only before enabling writes; never upgrades another DB.
+    /// Checks identity read-only before enabling writes. Does not upgrade a file.
     pub fn open(path: &Path) -> Result<Self> {
-        validate_path(path)?;
-        let meta = std::fs::symlink_metadata(path)?;
-        ensure!(
-            meta.is_file() && !meta.file_type().is_symlink(),
-            "expected a regular prototype file"
-        );
-        let probe = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        check_identity(&probe)?;
+        Self::open_with_storage(path, StorageAccess::plaintext_fixture())
+    }
+
+    pub fn open_with_storage(path: &Path, storage: StorageAccess) -> Result<Self> {
+        let path = validate_existing_path(path)?;
+        let probe = connect_existing(&path, &storage, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let expected = identity(&probe)?;
         drop(probe);
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        check_identity(&conn)?;
+        let conn = connect_existing(&path, &storage, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let (instance, domain) = identity(&conn)?;
+        ensure!(
+            instance == expected.0 && domain == expected.1,
+            "memory store changed during writable open"
+        );
         configure(&conn)?;
-        let (instance, domain) = conn.query_row(
-            "SELECT instance,domain FROM meta WHERE singleton=1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
         Ok(Self {
             conn,
             source_guard: None,
             instance,
             domain,
+            storage,
         })
     }
 
-    /// A genuinely read-only handle: no journal/schema changes or write fallback.
+    /// A genuinely read-only handle with query-only SQL.
     pub fn open_read_only(path: &Path) -> Result<Self> {
-        validate_path(path)?;
-        let meta = std::fs::symlink_metadata(path)?;
-        ensure!(
-            meta.is_file() && !meta.file_type().is_symlink(),
-            "expected a regular prototype file"
-        );
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        conn.busy_timeout(std::time::Duration::from_secs(3))?;
-        conn.execute_batch("PRAGMA query_only=ON; PRAGMA temp_store=MEMORY;")?;
-        check_identity(&conn)?;
-        let (instance, domain) = conn.query_row(
-            "SELECT instance,domain FROM meta WHERE singleton=1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        Self::open_read_only_with_storage(path, StorageAccess::plaintext_fixture())
+    }
+
+    pub fn open_read_only_with_storage(path: &Path, storage: StorageAccess) -> Result<Self> {
+        let path = validate_existing_path(path)?;
+        let conn = connect_existing(&path, &storage, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        configure_read_only(&conn)?;
+        let (instance, domain) = identity(&conn)?;
         Ok(Self {
             conn,
             source_guard: None,
             instance,
             domain,
+            storage,
         })
+    }
+
+    pub(crate) fn reopen_read_only(&self) -> Result<Self> {
+        let path = Path::new(self.conn.path().context("missing memory path")?);
+        let mut live = Self::open_read_only_with_storage(path, self.storage_access())?;
+        ensure!(
+            live.instance == self.instance && live.domain == self.domain,
+            "memory store was replaced"
+        );
+        live.source_guard.clone_from(&self.source_guard);
+        Ok(live)
+    }
+
+    pub(crate) fn storage_access(&self) -> StorageAccess {
+        self.storage.clone()
     }
 
     pub fn capture(&mut self, input: Capture) -> Result<RevisionRef> {

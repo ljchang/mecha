@@ -2,12 +2,19 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Protected storage addendum, 2026-11-09:** explicit keyed native storage,
+complete encrypted v8 snapshots and bounded historical restore are implemented
+on the prototype branch. Restore requires current deletion/access authority and
+refuses scope rollback; it does not supply full disaster recovery or merge newer
+facts and withdrawals. See HISTORY for qualification and HANDOFF for current
+operational gaps. The original design below remains the proposal record.
+
 **Compact native context and concept appraisal addendum, 2026-11-09:** §31.17's
 reader and explicit hypothesis-aware appraisal are implemented. Full originals,
 canonical stored records and all provenance remain intact. The new read-only core
 workflow reuses shared generation and factual validation without promoting
 hypotheses into observations. See HISTORY for qualification and HANDOFF for the
-remaining encrypted-storage/recovery work; model benefit remains unestablished.
+remaining operational qualification; model benefit remains unestablished.
 
 **Concept-benefit pilot addendum, 2026-11-08:** the explicit lifecycle in §31.15
 is implemented by `memory_concept_workflow` and an independent finite-world

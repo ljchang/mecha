@@ -556,17 +556,28 @@ impl Memory {
         Self::create_schema(path, domain, SCHEMA)
     }
     pub fn create_supported_situated(path: &Path, domain: &str) -> Result<Self> {
-        Self::create_schema(
+        Self::create_supported_situated_with_storage(
+            path,
+            domain,
+            StorageAccess::plaintext_fixture(),
+        )
+    }
+
+    pub fn create_supported_situated_with_storage(
+        path: &Path,
+        domain: &str,
+        storage: StorageAccess,
+    ) -> Result<Self> {
+        Self::create_schema_with_storage(
             path,
             domain,
             &SCHEMA.replace("user_version=7", "user_version=8"),
+            storage,
         )
     }
+
     pub(super) fn live_identity(&self) -> Result<()> {
-        if let Some(path) = self.conn.path() {
-            let live = Self::open_read_only(Path::new(path))?;
-            ensure!(live.instance == self.instance, "memory store was replaced");
-        }
+        self.reopen_read_only()?;
         Ok(())
     }
     pub fn prepare_interpretation(
@@ -797,9 +808,7 @@ impl Memory {
         let tx = self.conn.unchecked_transaction()?;
         let selected = read(&tx)?;
         tx.commit()?;
-        let live =
-            Self::open_read_only(Path::new(self.conn.path().context("missing memory path")?))?;
-        ensure!(live.instance == self.instance, "memory store was replaced");
+        let live = self.reopen_read_only()?;
         let tx = live.conn.unchecked_transaction()?;
         let current = read(&tx)?;
         ensure!(
@@ -942,9 +951,7 @@ impl Memory {
         tx.commit()?;
         // Reopen after ending selection's snapshot: a concurrent local source
         // update is as disqualifying as an external guard withdrawal.
-        let live =
-            Self::open_read_only(Path::new(self.conn.path().context("missing memory path")?))?;
-        ensure!(live.instance == self.instance, "memory store was replaced");
+        let live = self.reopen_read_only()?;
         let final_tx = live.conn.unchecked_transaction()?;
         let final_checks = SourceChecks::new(self.source_guard.as_deref());
         for hit in &packet.records {

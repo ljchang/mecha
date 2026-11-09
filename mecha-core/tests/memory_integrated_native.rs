@@ -8,10 +8,12 @@ use mecha_core::{
         host_capture::{
             ActionInvocation, ArtifactObservation, CheckVerdict, ConfirmedCriterion, ContentStatus,
         },
-        Access, Memory, Record, RevisionRef,
+        Access, KeyFilePolicy, Memory, Record, RevisionRef, StorageAccess,
     },
     memory_experience_bridge::LocalAuthority,
-    memory_situated_workflow::{run_native_session, NativeSessionRequest, TaskReport},
+    memory_situated_workflow::{
+        run_native_session, run_native_session_with_storage, NativeSessionRequest, TaskReport,
+    },
     message::{Block, CompletionRequest, CompletionResponse, Message, StopReason, Usage},
     provider::{Provider, StreamSink},
 };
@@ -190,12 +192,23 @@ struct Fixture {
     database: PathBuf,
     authority: PathBuf,
     request: NativeSessionRequest,
+    key: Option<PathBuf>,
 }
 
 impl Fixture {
-    fn new() -> Result<Self> {
+    fn new(encrypted: bool) -> Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
         let root = support::tmpdir("integrated-native");
-        let database = root.join("test.memory-prototype.sqlite");
+        let db_dir = root.join("data");
+        fs::create_dir(&db_dir)?;
+        let database = db_dir.join("test.memory-prototype.sqlite");
+        let key = if encrypted {
+            let owner = root.join("owner");
+            fs::DirBuilder::new().mode(0o700).create(&owner)?;
+            Some(owner.join("memory.key"))
+        } else {
+            None
+        };
         let authority = root.join("authority");
         drop(LocalAuthority::create(&authority)?);
         let request = NativeSessionRequest {
@@ -214,20 +227,43 @@ impl Fixture {
             account: "synthetic".into(),
             interpretation_context_id: None,
         };
-        drop(Memory::create_supported_situated(
+        let storage = if let Some(key) = &key {
+            StorageAccess::generate_key_file(
+                key,
+                &KeyFilePolicy::new(&[db_dir, authority.clone()])?,
+            )?
+        } else {
+            StorageAccess::plaintext_fixture()
+        };
+        drop(Memory::create_supported_situated_with_storage(
             &database,
             &request.domain,
+            storage,
         )?);
         Ok(Self {
             root,
             database,
             authority,
             request,
+            key,
         })
     }
 
+    fn storage(&self) -> Result<StorageAccess> {
+        match &self.key {
+            Some(key) => StorageAccess::load_key_file(
+                key,
+                &KeyFilePolicy::new(&[
+                    self.database.parent().unwrap().to_path_buf(),
+                    self.authority.clone(),
+                ])?,
+            ),
+            None => Ok(StorageAccess::plaintext_fixture()),
+        }
+    }
+
     fn open(&self) -> Result<Memory> {
-        Ok(Memory::open(&self.database)?
+        Ok(Memory::open_with_storage(&self.database, self.storage()?)?
             .with_source_guard(Arc::new(LocalAuthority::open(&self.authority)?)))
     }
 
@@ -246,15 +282,30 @@ impl Fixture {
             task,
             packet: packet.clone(),
         };
-        let report = run_native_session(
-            &self.database,
-            &authority,
-            &self.request,
-            &root,
-            |_| async { Ok(Box::new(provider) as Box<dyn Provider>) },
-            &CancellationToken::new(),
-        )
-        .await?;
+        let factory = |_| async { Ok(Box::new(provider) as Box<dyn Provider>) };
+        let cancel = CancellationToken::new();
+        let report = if self.key.is_some() {
+            run_native_session_with_storage(
+                &self.database,
+                self.storage()?,
+                &authority,
+                &self.request,
+                &root,
+                factory,
+                &cancel,
+            )
+            .await?
+        } else {
+            run_native_session(
+                &self.database,
+                &authority,
+                &self.request,
+                &root,
+                factory,
+                &cancel,
+            )
+            .await?
+        };
         ensure!(
             report.run_error.is_none(),
             "native run failed: {:?}",
@@ -406,7 +457,7 @@ async fn full_native_artifact_citations_fit_revised_context_without_losing_linea
 }
 
 async fn authored_lifecycle(full_citations: bool) -> Result<()> {
-    let fixture = Fixture::new()?;
+    let fixture = Fixture::new(false)?;
     let access = fixture.access();
     let (first, _) = fixture.run("first", Task::Independent(READY)).await?;
     let (second, _) = fixture.run("second", Task::Independent(READY)).await?;

@@ -113,13 +113,14 @@ pub(crate) struct ModelPermit {
 /// No database transaction or connection survives a check or spans inference.
 pub struct ModelGuard {
     path: PathBuf,
+    storage: StorageAccess,
     receipt: ModelReceipt,
     kind: AttemptKind,
     access: Access,
 }
 impl ModelGuard {
     pub fn check(&self) -> Result<()> {
-        let db = Memory::open_read_only(&self.path)?;
+        let db = Memory::open_read_only_with_storage(&self.path, self.storage.clone())?;
         let tx = db.conn.unchecked_transaction()?;
         let row = checked(&tx, &db.instance, &self.receipt, &self.access)?;
         check_content(&tx, &row, &self.access)?;
@@ -326,14 +327,15 @@ fn save(
 impl Memory {
     /// Creates a new v4 file. No existing store is migrated or replaced.
     pub fn create_durable_model(path: &Path, domain: &str) -> Result<Self> {
-        let mut db = Self::create(path, domain)?;
-        let tx = db
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(durable::SCHEMA)?;
-        tx.execute_batch(SCHEMA)?;
-        tx.commit()?;
-        Ok(db)
+        Self::create_durable_model_with_storage(path, domain, StorageAccess::plaintext_fixture())
+    }
+
+    pub fn create_durable_model_with_storage(
+        path: &Path,
+        domain: &str,
+        storage: StorageAccess,
+    ) -> Result<Self> {
+        Self::create_schema_with_storage(path, domain, &[durable::SCHEMA, SCHEMA].concat(), storage)
     }
     pub(crate) fn durable_bind_model(
         &mut self,
@@ -546,6 +548,7 @@ impl Memory {
             Path::new(self.conn.path().context("model store has no file path")?).canonicalize()?;
         let guard = ModelGuard {
             path,
+            storage: self.storage_access(),
             receipt: copy(&permit.receipt),
             kind: permit.kind,
             access: access.clone(),

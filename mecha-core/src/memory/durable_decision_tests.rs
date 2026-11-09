@@ -11,11 +11,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_encryption(false)
+    }
+    fn with_encryption(encrypted: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("mecha-model-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
-        let mut db =
-            Memory::create_durable_model(&dir.join("test.memory-prototype.sqlite"), "synthetic")
-                .unwrap();
+        let storage = if encrypted {
+            super::storage_tests::fixture_key(&dir)
+        } else {
+            StorageAccess::plaintext_fixture()
+        };
+        let mut db = Memory::create_durable_model_with_storage(
+            &dir.join("test.memory-prototype.sqlite"),
+            "synthetic",
+            storage,
+        )
+        .unwrap();
         let access = Access {
             domain: "synthetic".into(),
             scopes: ["fixture".into()].into(),
@@ -637,4 +648,20 @@ fn explicitly_versioned_action_store_keeps_existing_model_records_readable() {
         f.db.durable_model_spec(&r, &f.access).is_ok(),
         "v5 must retain model access"
     );
+}
+
+#[test]
+fn keyed_model_guard_detects_an_independently_changed_source() {
+    let mut f = Fixture::with_encryption(true);
+    let receipt = f.bind();
+    let permit =
+        f.db.reserve_model_attempt(&receipt, AttemptKind::Initial, json!({}), &f.access)
+            .unwrap();
+    let guard = f.db.model_attempt_guard(&permit, &f.access).unwrap();
+    guard.check().unwrap();
+    let mut other = Memory::open_with_storage(&f.path(), f.db.storage_access()).unwrap();
+    let mut changed = f.source.clone();
+    changed.scopes.insert("extra".into());
+    other.capture(changed).unwrap();
+    assert!(guard.check().is_err());
 }

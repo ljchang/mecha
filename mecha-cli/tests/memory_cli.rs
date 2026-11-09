@@ -731,3 +731,381 @@ fn native_session_execution_failure_is_nonzero_with_preserved_report() {
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains(root.join("report.json").to_str().unwrap()));
 }
+
+#[cfg(all(unix, feature = "memory-prototype"))]
+#[test]
+fn key_generate_init_and_inspect_are_separate_processes() {
+    use std::{fs, os::unix::fs::DirBuilderExt};
+
+    let f = Fixture::new();
+    let root = f.0.canonicalize().unwrap();
+    let data = root.join("data");
+    let owner = root.join("owner");
+    fs::create_dir(&data).unwrap();
+    fs::DirBuilder::new().mode(0o700).create(&owner).unwrap();
+    let key = owner.join("memory.key");
+    let db = data.join("encrypted.memory-prototype.sqlite");
+    let authority = data.join("authority");
+    let args = [
+        "memory",
+        "--experimental",
+        "--db",
+        db.to_str().unwrap(),
+        "--key-file",
+        key.to_str().unwrap(),
+    ];
+    let invoke = |suffix: &[&str]| {
+        let mut combined = args.to_vec();
+        combined.extend_from_slice(suffix);
+        f.run(&combined)
+    };
+
+    let excluded = invoke(&[
+        "--key-exclude-root",
+        data.to_str().unwrap(),
+        "--key-exclude-root",
+        owner.to_str().unwrap(),
+        "key-generate",
+    ]);
+    assert!(!excluded.status.success());
+    assert!(!key.exists());
+    let generated = invoke(&["key-generate"]);
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let secret = fs::read_to_string(&key).unwrap();
+    let secret = secret.trim_end();
+    assert!(!secret.is_empty());
+    assert!(!String::from_utf8_lossy(&generated.stdout).contains(secret));
+    assert!(!db.exists());
+
+    let legacy = invoke(&["init-durable", "--domain", "synthetic-demo"]);
+    assert!(!legacy.status.success());
+    assert!(String::from_utf8_lossy(&legacy.stderr).contains("does not support"));
+    assert!(!db.exists());
+    assert!(!authority.exists());
+
+    let init = invoke(&[
+        "init-native",
+        "--synthetic-input",
+        "--domain",
+        "synthetic-demo",
+        "--authority",
+        authority.to_str().unwrap(),
+    ]);
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let initial: serde_json::Value = serde_json::from_slice(&init.stdout).unwrap();
+    let bytes = fs::read(&db).unwrap();
+    assert!(!bytes.starts_with(b"SQLite format 3\0"));
+    let inspect = invoke(&["inspect"]);
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let read: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(initial["snapshot"], read["snapshot"]);
+    assert_eq!(fs::read(&db).unwrap(), bytes);
+    assert!(!String::from_utf8_lossy(&inspect.stdout).contains(secret));
+    {
+        use mecha_core::memory::{fixture, Capture, KeyFilePolicy, Memory, StorageAccess};
+        let policy = KeyFilePolicy::new(std::slice::from_ref(&data)).unwrap();
+        let storage = StorageAccess::load_key_file(&key, &policy).unwrap();
+        let mut memory = Memory::open_with_storage(&db, storage).unwrap();
+        memory
+            .capture(Capture {
+                source: fixture::source_key("cli-evidence"),
+                text: "The authored zeolite calibration succeeded.".into(),
+                occurred_at: None,
+                scopes: fixture::access().scopes,
+                transcript: None,
+            })
+            .unwrap();
+    }
+    for command in ["query", "recall"] {
+        let found = invoke(&[command, "zeolite"]);
+        assert!(
+            found.status.success(),
+            "{}",
+            String::from_utf8_lossy(&found.stderr)
+        );
+        assert!(String::from_utf8_lossy(&found.stdout).contains("zeolite"));
+    }
+    let forgotten = invoke(&["forget", "cli-evidence"]);
+    assert!(
+        forgotten.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forgotten.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&forgotten.stdout).unwrap();
+    assert_eq!(report["revisions"], 1);
+    let absent = invoke(&["query", "zeolite"]);
+    assert!(absent.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&absent.stdout).unwrap(),
+        serde_json::json!([])
+    );
+    let unkeyed = f.run(&[
+        "memory",
+        "--experimental",
+        "--db",
+        db.to_str().unwrap(),
+        "inspect",
+    ]);
+    assert!(!unkeyed.status.success());
+}
+
+#[cfg(all(unix, feature = "memory-prototype"))]
+#[test]
+fn encrypted_backup_is_explicit_no_clobber_and_reopens_in_another_process() {
+    use std::{fs, os::unix::fs::DirBuilderExt};
+    let f = Fixture::new();
+    let root = f.0.canonicalize().unwrap();
+    let data = root.join("snapshot-data");
+    let owner = root.join("snapshot-owner");
+    fs::create_dir(&data).unwrap();
+    fs::DirBuilder::new().mode(0o700).create(&owner).unwrap();
+    let db = data.join("source.memory-prototype.sqlite");
+    let destination = data.join("snapshot.memory-prototype.sqlite");
+    let source_key = owner.join("source.key");
+    let target_key = owner.join("target.key");
+    let invoke = |database: &std::path::Path, key: &std::path::Path, suffix: &[&str]| {
+        let mut args = vec![
+            "memory",
+            "--experimental",
+            "--db",
+            database.to_str().unwrap(),
+            "--key-file",
+            key.to_str().unwrap(),
+        ];
+        args.extend_from_slice(suffix);
+        f.run(&args)
+    };
+    for key in [&source_key, &target_key] {
+        let result = invoke(&db, key, &["key-generate"]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let authority = data.join("authority");
+    let init = invoke(
+        &db,
+        &source_key,
+        &[
+            "init-native",
+            "--synthetic-input",
+            "--domain",
+            "synthetic-snapshot",
+            "--authority",
+            authority.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let before = fs::read(&db).unwrap();
+    let args = [
+        "backup",
+        "--destination",
+        destination.to_str().unwrap(),
+        "--destination-key",
+        target_key.to_str().unwrap(),
+    ];
+    let backup = invoke(&db, &source_key, &args);
+    assert!(
+        backup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&backup.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&backup.stdout).unwrap();
+    assert_eq!(report["schema_version"], 8);
+    assert!(report["scope"]
+        .as_str()
+        .unwrap()
+        .contains("excludes keys, JSONL"));
+    let inspect = invoke(&destination, &target_key, &["inspect"]);
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&init.stdout).unwrap()["snapshot"],
+        serde_json::from_slice::<serde_json::Value>(&inspect.stdout).unwrap()["snapshot"]
+    );
+    let snapshot_bytes = fs::read(&destination).unwrap();
+    assert!(!snapshot_bytes.starts_with(b"SQLite format 3\0"));
+    assert!(!invoke(&destination, &source_key, &["inspect"])
+        .status
+        .success());
+    assert!(!invoke(&db, &source_key, &args).status.success());
+    assert_eq!(fs::read(&destination).unwrap(), snapshot_bytes);
+    assert_eq!(fs::read(&db).unwrap(), before);
+    let unsafe_key = data.join("unsafe.key");
+    fs::copy(&target_key, &unsafe_key).unwrap();
+    let unsafe_destination = data.join("unsafe.memory-prototype.sqlite");
+    let denied = invoke(
+        &db,
+        &source_key,
+        &[
+            "backup",
+            "--destination",
+            unsafe_destination.to_str().unwrap(),
+            "--destination-key",
+            unsafe_key.to_str().unwrap(),
+        ],
+    );
+    assert!(!denied.status.success());
+    assert!(!unsafe_destination.exists());
+    for output in [&backup, &inspect, &denied] {
+        for key in [&source_key, &target_key] {
+            let secret = fs::read_to_string(key).unwrap();
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(secret.trim()));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(secret.trim()));
+        }
+    }
+}
+#[cfg(all(unix, feature = "memory-prototype"))]
+#[test]
+fn encrypted_restore_requires_current_authority_and_preserves_forgetting_across_processes() {
+    use mecha_core::memory::{fixture, Capture, KeyFilePolicy, Memory, StorageAccess};
+    use std::{fs, os::unix::fs::DirBuilderExt};
+    let f = Fixture::new();
+    let root = f.0.canonicalize().unwrap();
+    let data = root.join("restore-data");
+    let owner = root.join("restore-owner");
+    fs::create_dir(&data).unwrap();
+    fs::DirBuilder::new().mode(0o700).create(&owner).unwrap();
+    let current = data.join("current.memory-prototype.sqlite");
+    let backup = data.join("backup.memory-prototype.sqlite");
+    let destination = data.join("restored.memory-prototype.sqlite");
+    let keys: Vec<_> = ["current", "backup", "output"]
+        .iter()
+        .map(|s| owner.join(format!("{s}.key")))
+        .collect();
+    let policy = KeyFilePolicy::new(std::slice::from_ref(&data)).unwrap();
+    let caps: Vec<_> = keys
+        .iter()
+        .map(|k| StorageAccess::generate_key_file(k, &policy).unwrap())
+        .collect();
+    let mut db =
+        Memory::create_supported_situated_with_storage(&current, "synthetic-demo", caps[0].clone())
+            .unwrap();
+    let input = |id: &str| Capture {
+        source: fixture::source_key(id),
+        text: format!("Synthetic zeolite {id}"),
+        occurred_at: None,
+        scopes: fixture::access().scopes,
+        transcript: None,
+    };
+    db.capture(input("old")).unwrap();
+    let invoke = |database: &std::path::Path, key: &std::path::Path, suffix: &[&str]| {
+        let mut args = vec![
+            "memory",
+            "--experimental",
+            "--db",
+            database.to_str().unwrap(),
+            "--key-file",
+            key.to_str().unwrap(),
+        ];
+        args.extend_from_slice(suffix);
+        f.run(&args)
+    };
+    assert!(invoke(
+        &current,
+        &keys[0],
+        &[
+            "backup",
+            "--destination",
+            backup.to_str().unwrap(),
+            "--destination-key",
+            keys[1].to_str().unwrap()
+        ]
+    )
+    .status
+    .success());
+    db.capture(input("later")).unwrap();
+    for id in ["old", "later"] {
+        assert!(invoke(&current, &keys[0], &["forget", id]).status.success());
+    }
+    drop(db);
+    let args = [
+        "restore",
+        "--current",
+        current.to_str().unwrap(),
+        "--current-key",
+        keys[0].to_str().unwrap(),
+        "--destination",
+        destination.to_str().unwrap(),
+        "--destination-key",
+        keys[2].to_str().unwrap(),
+    ];
+    let result = invoke(&backup, &keys[1], &args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["snapshot_sequence"], 1);
+    assert_eq!(report["authority_sequence"], 2);
+    assert_eq!(report["security_epoch"], 2);
+    assert!(report["scope"]
+        .as_str()
+        .unwrap()
+        .contains("offline historical"));
+    assert!(invoke(&destination, &keys[2], &["inspect"])
+        .status
+        .success());
+    let query = invoke(&destination, &keys[2], &["query", "zeolite"]);
+    assert!(query.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&query.stdout).unwrap(),
+        serde_json::json!([])
+    );
+    let mut restored = Memory::open_with_storage(&destination, caps[2].clone()).unwrap();
+    for id in ["old", "later"] {
+        assert!(restored.capture(input(id)).is_err());
+    }
+    let bytes = fs::read(&destination).unwrap();
+    assert!(!invoke(&backup, &keys[1], &args).status.success());
+    assert_eq!(fs::read(&destination).unwrap(), bytes);
+    let unsafe_key = data.join("unsafe.key");
+    fs::copy(&keys[0], &unsafe_key).unwrap();
+    let denied = invoke(
+        &backup,
+        &keys[1],
+        &[
+            "restore",
+            "--current",
+            current.to_str().unwrap(),
+            "--current-key",
+            unsafe_key.to_str().unwrap(),
+            "--destination",
+            data.join("denied.memory-prototype.sqlite")
+                .to_str()
+                .unwrap(),
+            "--destination-key",
+            keys[2].to_str().unwrap(),
+        ],
+    );
+    assert!(!denied.status.success());
+    assert!(!data.join("denied.memory-prototype.sqlite").exists());
+    for output in [&result, &query, &denied] {
+        for key in &keys {
+            let secret = fs::read_to_string(key).unwrap();
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(secret.trim()));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(secret.trim()));
+        }
+    }
+}

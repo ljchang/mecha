@@ -165,7 +165,7 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Current memory priority: protected storage and recovery; semantic reliability remains open.**
+**Current memory priority: measured hybrid retrieval and operational gaps; semantic reliability remains open.**
 
 The explicit `memory init-native` / `native-session` path now reuses the existing
 situated executor with a bounded host request, v8 action/artifact capture and
@@ -201,11 +201,22 @@ versus 4/6 with concepts; revision added opposition without changing the rule.
 HISTORY retains complete denominators, costs, first failures and qualification.
 The owner-selected model is Qwen3.6-35b-a3b-uncensored; recheck residency before calls.
 
-Remaining priorities are explicit encrypted storage across every native
-workflow/guard reopen, verified fresh-path backup/restore preserving current
-forgetting, and later measured hybrid retrieval. Independently scored transfer,
-genuine in-scope model revision, broader capture/termination coverage, source-file
-protection and private-data qualification remain open. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
+Explicit encrypted native storage, complete encrypted snapshots and fresh-path
+historical restore are implemented and independently reviewed. Restore applies
+current forgetting and refuses weaker access scopes under a held current-store
+transaction. Combined Spark qualification passed 6,354 default and 7,008
+memory-enabled tests with zero failures (25/30 ignored), 372 standalone tests,
+29 CLI checks, strict Clippy, Rust 1.96.1 and package checks. The optimized Mac
+CLI separately passed 29 checks; HISTORY records scopes and preserved failures.
+See the prototype README for explicit key/backup/restore commands. This is database-only protection: external JSONL, authority files,
+artifacts and audits remain separate surfaces. Restore requires the current
+store and does not merge later facts/withdrawals or install a live replacement.
+
+Next are measured hybrid retrieval and operational qualification before private
+imports. Full disaster recovery needs separately durable deletion authority and
+key recovery. Independently scored transfer, genuine in-scope model revision,
+broader capture/termination coverage, source-file protection and private-data
+qualification remain open. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
 focused tests using these existing mechanisms. Owner-graph merger, nightly
 migration, a new wiki/store and automatic production learning remain deferred.
 

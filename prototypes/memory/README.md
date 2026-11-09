@@ -13,6 +13,110 @@ unpublished harness compiles the **same source and synthetic fixture**, without
 pulling in unrelated Mecha dependencies. It is not another implementation or
 a new production service.
 
+## Explicit encrypted storage
+
+The feature-gated main CLI accepts an owner-selected `--key-file` for native
+initialization/sessions and the supported inspect/query/recall/forget operations.
+Unconverted trial commands refuse encrypted selection before creating outputs.
+Core callers use `StorageAccess`, `Memory::open_with_storage`,
+`run_native_session_with_storage` and `appraise_native_session_with_storage`.
+Storage access is separate from source and scope authorization.
+
+For a new synthetic store, keep the key directory separate from the database,
+authority and future task roots. Canonicalize the temporary path on macOS:
+
+```bash
+MEMORY_DEMO_ROOT=$(mktemp -d)
+MEMORY_DEMO_ROOT=$(cd "$MEMORY_DEMO_ROOT" && pwd -P)
+mkdir -m 700 "$MEMORY_DEMO_ROOT/keys" "$MEMORY_DEMO_ROOT/store"
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/store/demo.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/memory.key" key-generate
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/store/demo.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/memory.key" \
+  init-native --synthetic-input --domain encrypted-demo \
+  --authority "$MEMORY_DEMO_ROOT/store/authority"
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/store/demo.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/memory.key" inspect
+```
+
+Build with `cargo build -p mecha-cli --features memory-prototype` first. The CLI
+excludes its current directory and relevant database/task/authority roots from
+key storage; repeat `--key-exclude-root` for additional host-selected exclusions.
+Key generation never overwrites. Loading requires exactly 64 hexadecimal bytes
+with an optional newline, private ownership/modes and no links or unsafe path
+components. macOS extended ACLs and ownership-ignoring mounts are refused.
+Wrong/missing keys do not trigger plaintext fallback or provider discovery.
+
+The database and its rollback pages are encrypted. Session JSONL, authority files,
+task artifacts and provider audits remain separate plaintext surfaces. Keep an
+owner-controlled key backup apart from database snapshots; key recovery is not
+provided. Removing a key file does not revoke an already loaded capability.
+This remains synthetic-only; operational checks do not qualify private ingestion.
+
+## Encrypted database snapshots
+
+`memory backup` accepts an encrypted v8 source and a new destination with an
+explicit destination key. It copies canonical tables, revisions, provenance,
+restrictions, receipts and FTS state, then independently reopens and verifies the
+copy before publishing it without overwriting another file. Source and destination
+keys may differ. For the synthetic store above:
+
+```bash
+mkdir -m 700 "$MEMORY_DEMO_ROOT/backups"
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/backups/copy.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/backup.key" key-generate
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/store/demo.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/memory.key" \
+  backup --destination "$MEMORY_DEMO_ROOT/backups/copy.memory-prototype.sqlite" \
+  --destination-key "$MEMORY_DEMO_ROOT/keys/backup.key"
+```
+
+This snapshots the database only. External source authority is still required to
+use copied native records. Later forgetting does not erase an older snapshot.
+An error after publication can mean that a valid output exists but directory
+sync failed; inspect the reported status rather than overwriting it on retry.
+Snapshot verification uses host-memory row hashes proportional to row count;
+corpus-scale performance is not yet qualified.
+
+## Restore with current deletion and access rules
+
+`memory restore` creates a new offline historical copy. It requires both the
+snapshot and the current authoritative encrypted v8 store. It applies current
+forgetting to the copied history, including derived concepts and capture records,
+and refuses a surviving object whose restored access scopes would be weaker than
+its current scopes. Missing or incompatible current authority is a refusal.
+
+```bash
+mkdir -m 700 "$MEMORY_DEMO_ROOT/restored"
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/restored/copy.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/restored.key" key-generate
+target/debug/mecha memory --experimental \
+  --db "$MEMORY_DEMO_ROOT/backups/copy.memory-prototype.sqlite" \
+  --key-file "$MEMORY_DEMO_ROOT/keys/backup.key" \
+  restore --current "$MEMORY_DEMO_ROOT/store/demo.memory-prototype.sqlite" \
+  --current-key "$MEMORY_DEMO_ROOT/keys/memory.key" \
+  --destination "$MEMORY_DEMO_ROOT/restored/copy.memory-prototype.sqlite" \
+  --destination-key "$MEMORY_DEMO_ROOT/keys/restored.key"
+```
+
+The result reports the snapshot and current-authority sequences and purge counts.
+The current store is locked against writers during this local operation; a busy
+store can cause a bounded refusal. Neither input is replaced. Retain current
+external source authority when reading native records from the restored copy.
+
+This does **not** merge newer facts, concept revisions or withdrawals: the old
+heads remain locally current within the historical copy. It does not activate
+that copy in Mecha or propagate future forgetting across copies. If the current
+store is lost, this operation cannot safely infer later deletion decisions from
+an old snapshot. Full disaster recovery requires a separately durable deletion
+record and key-recovery procedure; those are not implemented here.
+
 ## Explicit native test sessions
 
 The feature-gated `init-native` and `native-session` commands reuse the ordinary
@@ -959,9 +1063,10 @@ schema. Relations use typed JSON plus revision/dependency/search tables to test
 semantics before optimizing relational projections. No schema upgrade path is
 promised; fixtures are disposable.
 
-Do **not** import private data: ordinary SQLite is unencrypted, source suppression
-uses an instance-salted digest rather than a secret-key HMAC, and production key,
-backup, retention and permission management are not implemented. Filename and
+Do **not** import private data: encryption is explicit and database-only, while
+existing plaintext fixture entry points remain available. Source suppression uses
+an instance-salted digest rather than a secret-key HMAC; production key recovery,
+retention, external-file protection and permission management remain unqualified. Filename and
 domain checks prevent common mistakes; they do not classify arbitrary supplied
 text as synthetic or form a filesystem security sandbox.
 

@@ -62,12 +62,13 @@ pub(crate) struct ActionPermit {
 /// A cooperative execution boundary; it keeps no transaction across an effect.
 pub struct ActionGuard {
     path: PathBuf,
+    storage: StorageAccess,
     receipt: ActionReceipt,
     access: Access,
 }
 impl ActionGuard {
     pub fn check(&self) -> Result<()> {
-        let db = Memory::open_read_only(&self.path)?;
+        let db = Memory::open_read_only_with_storage(&self.path, self.storage.clone())?;
         db.check_access(&self.access)?;
         let tx = db.conn.unchecked_transaction()?;
         let row = checked(&tx, &db.instance, &self.receipt, &self.access)?;
@@ -193,15 +194,20 @@ fn check_content(conn: &Connection, instance: &str, row: &Row, access: &Access) 
 impl Memory {
     /// Creates v5 explicitly. Existing stores are never migrated or replaced.
     pub fn create_durable_action(path: &Path, domain: &str) -> Result<Self> {
-        let mut db = Self::create(path, domain)?;
-        let tx = db
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(durable::SCHEMA)?;
-        tx.execute_batch(durable_decision::SCHEMA)?;
-        tx.execute_batch(SCHEMA)?;
-        tx.commit()?;
-        Ok(db)
+        Self::create_durable_action_with_storage(path, domain, StorageAccess::plaintext_fixture())
+    }
+
+    pub fn create_durable_action_with_storage(
+        path: &Path,
+        domain: &str,
+        storage: StorageAccess,
+    ) -> Result<Self> {
+        Self::create_schema_with_storage(
+            path,
+            domain,
+            &[durable::SCHEMA, durable_decision::SCHEMA, SCHEMA].concat(),
+            storage,
+        )
     }
     pub(crate) fn bind_action(
         &mut self,
@@ -326,6 +332,7 @@ impl Memory {
             Path::new(self.conn.path().context("action store has no file path")?).canonicalize()?;
         let guard = ActionGuard {
             path,
+            storage: self.storage_access(),
             receipt: copy(&permit.receipt),
             access: access.clone(),
         };

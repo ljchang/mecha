@@ -14,6 +14,66 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Encrypted native memory and bounded historical recovery (2026-11-09, prototype branch)
+
+`StorageAccess` carries an opaque, zeroizing host capability through memory opens,
+independent interpretation/action/outcome guards, GoalMemory and native execution
+and appraisal. `KeyFilePolicy` excludes model-readable roots and filesystem
+aliases, validates private descriptors, and refuses macOS extended ACLs and
+ownership-ignoring volumes before loading or writing key bytes. Key generation
+is exclusive; wrong or missing keys never select plaintext. The shared engine is
+SQLCipher 4.19 / SQLite 3.53.4 through locked rusqlite 0.41.1 and vendored OpenSSL.
+Existing stores remain plaintext unless explicit storage access is selected.
+HUD's SQL authorizer refuses the newly available export function at preparation.
+
+`Memory::backup_encrypted` copies the complete encrypted v8 database through a
+private keyed export connection under a pinned source transaction. Schema, typed
+row inventories, FTS shadows and sequence state are independently verified before
+synced no-clobber publication. `restore_encrypted` reuses that exporter and the
+same `forget::purge_seeded` routine as ordinary forgetting. Current suppression
+and restricted IDs seed the full dependency/capture closure; post-backup forgotten
+objects retain only opaque restriction stubs. A current-authority IMMEDIATE
+transaction spans verification/publication. Every survivor must retain all
+current-head access scopes, even when the deletion epoch did not change.
+
+The explicit `key-generate`, `backup` and `restore` CLI paths keep storage
+capabilities out of model requests. Restore creates a separate offline historical
+copy and reports snapshot/current sequences. It does not merge newer facts or
+withdrawals, replace a live store, recover external files, recreate process-local
+permits or propagate future forgetting to retained copies. Current authority is
+required; an old snapshot alone cannot establish later deletion decisions. Full
+disaster recovery and private-data qualification remain open.
+
+Each of the three task patches passed independent review. E1's revised macOS
+checks covered key policy, native/guard reopens, CLI and standalone behavior;
+five frozen prior-engine compatibility groups and an optimized release CLI smoke
+also passed. Its scoped Spark gate passed 738 tests (0 failed, 6 ignored), thirteen
+actual encrypted CLI checks, strict Clippy and the all-target/all-feature check
+on Rust 1.96.1. E2's ten snapshot tests covered copy/inventory corruption, writer
+contention, path replacement and publication faults. The final E3 source passed
+416 affected core memory tests, four native integrations, sixteen CLI tests and
+373 standalone tests, plus strict all-feature Clippy. These are scoped counts,
+not combined full-workspace results. E3's initial CLI attempt failed four local
+listener binds under the sandbox; the authorized loopback retry passed unchanged.
+The initial failure details remain in the task report. Evidence lives in local
+`results/memory-encrypted-storage-20261109/qualification`. The final combined
+source also passed an optimized macOS CLI build and 29 actual CLI checks with
+four independent keys, backup/restore, refusal/no-clobber paths and current
+suppression-epoch reconciliation. That release smoke used an empty synthetic
+store; the native/core/CLI suites above exercise retained and forgotten content.
+All 1,465 source-manifest entries remained unchanged.
+
+The final combined Spark run `combined-20261109T071728Z` passed 6,354 default
+workspace tests (25 ignored), 7,008 memory-enabled tests (30 ignored), and 372
+standalone tests (none ignored), with zero failures. Formatting, the all-target
+build, feature CLI build, 29 actual CLI checks, strict all-target/all-feature
+Clippy and the corresponding workspace check on Rust 1.96.1 passed. The core
+source package included the qualified recovery sources and third-party notices;
+package verification checked thirteen exact source/notice postimages. Qualified
+source and index stayed unchanged throughout. Final documentation is a separate
+prose-only delta; PR #846 records publication and exact-head CI/review status.
+No real-model inference, private-source import or production activation occurred.
+
 ### Compact native context and concept-aware appraisal (2026-11-09, prototype branch)
 
 `PreparedRecords` now presents authenticated native metadata as typed fields while

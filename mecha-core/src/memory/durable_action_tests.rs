@@ -11,11 +11,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_encryption(false)
+    }
+    fn with_encryption(encrypted: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("mecha-action-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
-        let mut db =
-            Memory::create_durable_action(&dir.join("test.memory-prototype.sqlite"), "synthetic")
-                .unwrap();
+        let storage = if encrypted {
+            super::storage_tests::fixture_key(&dir)
+        } else {
+            StorageAccess::plaintext_fixture()
+        };
+        let mut db = Memory::create_durable_action_with_storage(
+            &dir.join("test.memory-prototype.sqlite"),
+            "synthetic",
+            storage,
+        )
+        .unwrap();
         let access = Access {
             domain: "synthetic".into(),
             scopes: ["fixture".into()].into(),
@@ -379,4 +390,19 @@ fn oversized_outcome_leaves_reservation_indeterminate_and_unreplayable() {
         .unwrap()
         .is_none());
     assert!(f.db.reserve_action(&r, &f.access).is_err());
+}
+
+#[test]
+fn keyed_action_guard_checks_current_cancelled_state() {
+    let mut f = Fixture::with_encryption(true);
+    let receipt = action(&mut f);
+    let permit = f.db.reserve_action(&receipt, &f.access).unwrap();
+    let guard = f.db.action_guard(&permit, &f.access).unwrap();
+    guard.check().unwrap();
+    let mut other = Memory::open_with_storage(&f.path(), f.db.storage_access()).unwrap();
+    let reopened = other
+        .durable_action_reopen(receipt.id(), &f.access)
+        .unwrap();
+    other.durable_action_cancel(&reopened, &f.access).unwrap();
+    assert!(guard.check().is_err());
 }
