@@ -769,7 +769,7 @@ mod tests {
         let s = provider_settings(gemma, 128, "http://127.0.0.1:8080").unwrap();
         let get = |k| s.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("model"), Some("\"gemma-4-26b-a4b\""));
-        assert_eq!(get("context_window"), Some("32768"));
+        assert_eq!(get("context_window"), Some("262144"));
         assert_eq!(get("vision"), Some("true"));
         assert_eq!(get("temperature"), None);
 

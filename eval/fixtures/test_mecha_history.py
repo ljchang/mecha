@@ -421,8 +421,11 @@ class Source(unittest.TestCase):
         self.assertLess(module, grafted.index("fn helper()"), "grafted after the module's own items")
         block = grafted[module:grafted.index("fn helper()", module)]
         self.assertIn("use super::*;", block)
+        # The PR's import, said once from the graft's module (`added_imports`),
+        # never also copied as an item: twice is E0252.
+        self.assertEqual(block.count("use std::u32::MAX;"), 1)
+        self.assertIn("\n    #[allow(unused_imports)] use std::u32::MAX;\n", block)
         # Placed verbatim, never re-indented.
-        self.assertIn("\n    use std::u32::MAX;\n", block)
         self.assertIn("\n    /// The top of the range does not wrap.\n", block)
         self.assertIn("\n    fn saturates_at_the_top() {\n", block)
         # A helper with no attribute of its own is still the PR's test code.
@@ -637,6 +640,295 @@ class Source(unittest.TestCase):
         for path, verdict in mecha_history.RESULT.findall(out):
             seen.setdefault(path.split("::")[-1], []).append(verdict)
         self.assertEqual(seen["saturates_at_the_top"], ["FAILED", "ok"])
+
+
+PIN_LISTED = """fn kept() -> u32 {
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        kept,
+    };
+
+    #[test]
+    fn keeps() {
+        assert_eq!(kept(), 1);
+    }
+}
+"""
+
+MERGE_LISTED = """fn kept() -> u32 {
+    1
+}
+
+fn resident() -> u32 {
+    2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        kept, resident,
+    };
+
+    #[test]
+    fn keeps() {
+        assert_eq!(kept(), 1);
+    }
+
+    #[test]
+    fn the_resident_one_is_two() {
+        assert_eq!(resident(), 2);
+    }
+}
+"""
+
+
+class Imports(unittest.TestCase):
+    """`pr-726`'s shape (the driven pilot, 2026-11-08): the PR adds a private
+    function, edits `mod tests`'s explicit `use super::{...}` list to name
+    it, and a hidden test calls it. The graft sits one level inside `tests`,
+    where `use super::*` reaches only what `tests` imports, so it must carry
+    the PR's own import edit — or every independent solution fails on
+    E0425, the model's code never having been the problem."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(os.path.join(self.repo, "src"))
+        git(self.repo, "init", "-q")
+        git(self.repo, "config", "user.email", "t@example.com")
+        git(self.repo, "config", "user.name", "t")
+        write(os.path.join(self.repo, "src", "setup.rs"), PIN_LISTED)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "pin")
+        write(os.path.join(self.repo, "src", "setup.rs"), MERGE_LISTED)
+        git(self.repo, "commit", "-q", "-am", "the change")
+        self.merge = git(self.repo, "rev-parse", "HEAD").strip()
+        # The run's tree: an independent solution, the function written and
+        # the test module's import list left as the pin had it.
+        self.tree = os.path.join(self.tmp.name, "tree")
+        os.makedirs(os.path.join(self.tree, "src"))
+        write(os.path.join(self.tree, "src", "setup.rs"),
+              PIN_LISTED.replace("#[cfg(test)]", "fn resident() -> u32 {\n    2\n}\n\n#[cfg(test)]", 1))
+        os.environ["MECHA_HISTORY_REPO"] = self.repo
+        self.addCleanup(lambda: os.environ.pop("MECHA_HISTORY_REPO", None))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def history(self, name, pin, merge, path="src/setup.rs"):
+        """A repository of its own with `pin` then `merge` at `path`, made the
+        source; its merge commit."""
+        repo = os.path.join(self.tmp.name, name)
+        os.makedirs(os.path.dirname(os.path.join(repo, path)))
+        git(repo, "init", "-q")
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "t")
+        write(os.path.join(repo, path), pin)
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "pin")
+        write(os.path.join(repo, path), merge)
+        git(repo, "commit", "-q", "-am", "the change")
+        os.environ["MECHA_HISTORY_REPO"] = repo
+        return git(repo, "rev-parse", "HEAD").strip()
+
+    def graft_block(self, merge, path="src/setup.rs", close="\n    }\n"):
+        text = mecha_history.graft_plan(self.tree, merge, "hidden_grade_t")[path]
+        start = text.index("mod hidden_grade_t {")
+        return text[start:text.index(close, start)]  # the graft's module only, not the run's own
+
+    def test_a_whole_test_files_top_level_import_edit_is_carried_too(self):
+        # `hud/tests.rs` and twenty more are test code with no `mod tests`:
+        # their items take the top-level path, which carried no imports
+        # (review of #857, pass 3).
+        pin = "use super::{kept};\n\n#[test]\nfn keeps() {\n    assert_eq!(kept(), 1);\n}\n"
+        merge = ("use super::{kept, resident};\n\n#[test]\nfn keeps() {\n    assert_eq!(kept(), 1);\n}\n\n"
+                 "#[test]\nfn the_resident_one_is_two() {\n    assert_eq!(resident(), 2);\n}\n")
+        path = "src/x/tests.rs"
+        merge_sha = self.history("whole-file", pin, merge, path)
+        os.makedirs(os.path.dirname(os.path.join(self.tree, path)), exist_ok=True)
+        write(os.path.join(self.tree, path), pin)
+        self.assertEqual(mecha_history.added_imports(merge_sha, path, None), [("super::resident", ())])
+        block = self.graft_block(merge_sha, path, close="\n}\n")
+        self.assertNotIn("use super::{", block, "never copied as written")
+        self.assertEqual(block.count("use super::super::resident;"), 1)
+        # No grafted test names `kept`, and this file's `super` is another
+        # file the graft cannot read, so it is not re-said — losing an unused
+        # import costs nothing, and an unresolved one fails the file (pass 6).
+        self.assertNotIn("super::super::kept", block)
+        self.assertIn("fn the_resident_one_is_two()", block)
+
+    def test_a_use_under_an_attribute_spread_over_lines_is_left_as_it_was(self):
+        # An attribute this cannot read whole must not be dropped: the import
+        # is left to the item, never also re-said ungated (review of #857,
+        # pass 3).
+        added = "    #[cfg(\n        unix\n    )]\n    use super::resident;\n\n"
+        merge = self.history("multi-line-attr", PIN_LISTED,
+                             MERGE_LISTED.replace("    use super::{\n        kept, resident,\n    };",
+                                                  "    use super::{\n        kept,\n    };", 1)
+                             .replace("    #[test]\n    fn keeps()", added + "    #[test]\n    fn keeps()", 1))
+        self.assertEqual(mecha_history.added_imports(merge, "src/setup.rs", "tests"), [])
+        block = self.graft_block(merge)
+        self.assertNotIn("super::super::resident", block, "never re-said without its gate")
+        self.assertIn("    #[cfg(\n        unix\n    )]\n    use super::resident;", block)
+
+    def test_an_edit_to_a_test_modules_import_list_is_carried_into_the_graft(self):
+        self.assertEqual(mecha_history.added_imports(self.merge, "src/setup.rs", "tests"),
+                         [("super::resident", ())])
+        text = mecha_history.graft_plan(self.tree, self.merge, "hidden_grade_t")["src/setup.rs"]
+        block = text[text.index("mod hidden_grade_t {"):]
+        # Said from one level deeper: `super` there is `tests`, not the file.
+        self.assertIn("use super::super::resident;", block)
+        self.assertNotIn("super::super::kept", block, "the pin already imported it")
+        self.assertIn("fn the_resident_one_is_two()", block)
+
+    def test_a_one_line_import_list_edited_is_never_copied_verbatim(self):
+        # rustfmt keeps a short list on one line, so the whole `use` line is
+        # added and reads as an item. Copied as it was, `super` would be
+        # `tests` inside the graft: E0432 on `kept`, E0252 on `resident`
+        # (review of #857, pass 1).
+        one = lambda text: text.replace("use super::{\n        kept,\n    };", "use super::{kept};").replace(
+            "use super::{\n        kept, resident,\n    };", "use super::{kept, resident};")
+        merge = self.history("one-line", one(PIN_LISTED), one(MERGE_LISTED))
+        write(os.path.join(self.tree, "src", "setup.rs"), one(read(os.path.join(self.tree, "src", "setup.rs"))))
+        block = self.graft_block(merge)
+        self.assertNotIn("use super::{", block, "a relative list is never copied into the graft as written")
+        self.assertEqual(block.count("use super::super::resident;"), 1, "said once")
+        self.assertIn("use super::super::kept;", block)
+        self.assertIn("fn the_resident_one_is_two()", block)
+
+    def test_a_use_under_a_doc_line_or_attribute_is_re_said_with_its_attributes(self):
+        # `whole_items` starts an item at its doc line, so a doc-commented
+        # `use` was both re-said and copied verbatim (review of #857, pass 2).
+        # A `#[cfg]` gate must ride with the import it gates.
+        added = ("    /// The resident one.\n    use super::resident;\n"
+                 "    #[cfg(unix)]\n    use super::kept as unix_kept;\n\n")
+        merge = self.history("attributed", PIN_LISTED,
+                             MERGE_LISTED.replace("    #[test]\n    fn keeps()", added + "    #[test]\n    fn keeps()", 1))
+        block = self.graft_block(merge)
+        self.assertNotIn("\n    use super::resident;", block, "never copied as written")
+        self.assertEqual(block.count("use super::super::resident;"), 1, "said once")
+        self.assertIn("    #[cfg(unix)]\n    #[allow(unused_imports)] use super::super::kept as unix_kept;", block)
+        self.assertNotIn("The resident one.", block, "a doc line is documentation, not part of the import")
+
+    def test_an_import_only_an_edited_test_uses_is_not_grafted(self):
+        # The PR adds `helper` for a test it *edited*, which is not grafted; an
+        # independent solution has no reason to write `helper`, and an
+        # unresolved `use` fails the whole file (review of #857, pass 5).
+        # The new test goes ahead of the edited one, so the diff cannot pair
+        # its closing brace with the edited test's and leave it half added.
+        merge = self.history(
+            "edited-test", PIN_LISTED,
+            PIN_LISTED.replace("fn kept() -> u32 {\n    1\n}\n",
+                               "fn kept() -> u32 {\n    1\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+                               "fn resident() -> u32 {\n    2\n}\n", 1)
+            .replace("        kept,\n", "        helper, kept, resident,\n", 1)
+            .replace("    #[test]\n    fn keeps() {\n        assert_eq!(kept(), 1);\n",
+                     "    #[test]\n    fn the_resident_one_is_two() {\n        assert_eq!(resident(), 2);\n    }\n\n"
+                     "    #[test]\n    fn keeps() {\n        assert_eq!(kept(), helper());\n", 1))
+        self.assertEqual([p for p, _ in mecha_history.added_imports(merge, "src/setup.rs", "tests")],
+                         ["super::helper", "super::resident"])
+        block = self.graft_block(merge)
+        self.assertIn("use super::super::resident;", block, "a grafted test names it")
+        self.assertNotIn("helper", block, "only the edited, ungrafted test needed it")
+
+    def test_a_one_line_list_cannot_carry_an_edited_tests_import_past_the_guard(self):
+        # A one-line list is a wholly added line, so its paths came in as an
+        # item and skipped `needed` (review of #857, pass 6).
+        pin = PIN_LISTED.replace("    use super::{\n        kept,\n    };", "    use super::{kept};")
+        merge = self.history(
+            "one-line-edited", pin,
+            pin.replace("fn kept() -> u32 {\n    1\n}\n",
+                        "fn kept() -> u32 {\n    1\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+                        "fn resident() -> u32 {\n    2\n}\n", 1)
+            .replace("    use super::{kept};", "    use super::{helper, kept, resident};", 1)
+            .replace("    #[test]\n    fn keeps() {\n        assert_eq!(kept(), 1);\n",
+                     "    #[test]\n    fn the_resident_one_is_two() {\n        assert_eq!(resident(), 2);\n    }\n\n"
+                     "    #[test]\n    fn keeps() {\n        assert_eq!(kept(), helper());\n", 1))
+        write(os.path.join(self.tree, "src", "setup.rs"),
+              pin.replace("#[cfg(test)]", "fn resident() -> u32 {\n    2\n}\n\n#[cfg(test)]", 1))
+        block = self.graft_block(merge)
+        self.assertNotIn("helper", block, "the run never wrote it, and no grafted test names it")
+        self.assertIn("use super::super::resident;", block)
+        self.assertIn("use super::super::kept;", block, "the run's file declares it, so it resolves")
+
+    def test_a_name_the_run_declared_only_inside_its_test_module_does_not_resolve(self):
+        # `super::super` from the graft is the file root; a `helper` inside
+        # `mod tests` passed a whole-file search and was E0432 (review of
+        # #857, pass 7).
+        merge = self.history(
+            "nested-helper", PIN_LISTED,
+            PIN_LISTED.replace("fn kept() -> u32 {\n    1\n}\n",
+                               "fn kept() -> u32 {\n    1\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+                               "fn resident() -> u32 {\n    2\n}\n", 1)
+            .replace("        kept,\n", "        helper, kept, resident,\n", 1)
+            .replace("    #[test]\n    fn keeps() {\n        assert_eq!(kept(), 1);\n",
+                     "    #[test]\n    fn the_resident_one_is_two() {\n        assert_eq!(resident(), 2);\n    }\n\n"
+                     "    #[test]\n    fn keeps() {\n        assert_eq!(kept(), helper());\n", 1))
+        write(os.path.join(self.tree, "src", "setup.rs"),
+              PIN_LISTED.replace("#[cfg(test)]", "fn resident() -> u32 {\n    2\n}\n\n#[cfg(test)]", 1)
+              .replace("    #[test]\n    fn keeps()", "    fn helper() -> u32 {\n        1\n    }\n\n    #[test]\n    fn keeps()", 1))
+        block = self.graft_block(merge)
+        self.assertNotIn("super::super::helper", block, "not at the root, so not reachable")
+        self.assertIn("use super::super::resident;", block)
+
+    def test_a_glob_is_decided_by_whether_its_module_resolves(self):
+        # Pass 9: a glob left the guard before the resolve check, so a support
+        # module the PR created and glob-imported was E0432 for every arm.
+        run_file = "fn kept() {}\n\nmod support {\n    pub fn s() {}\n}\n"
+        self.assertTrue(mecha_history.needed("super::*", "", run_file), "the module itself")
+        self.assertTrue(mecha_history.needed("super::support::*", "", run_file), "the run's root has it")
+        self.assertFalse(mecha_history.needed("super::helpers::*", "", run_file), "the PR's, never the run's")
+        self.assertTrue(mecha_history.needed("crate::persona::tests_support::*", "", run_file),
+                        "another file's head, kept on purpose")
+        self.assertTrue(mecha_history.needed("super::helpers::*", "", ""), "a file this cannot read")
+
+    def test_a_named_path_through_a_module_is_decided_by_the_module(self):
+        # Pass 10: `super::helpers::assert_x` named in the body was kept
+        # without asking whether `helpers` exists; the head decides.
+        run_file = "fn kept() {}\n\nmod support {\n    pub fn s() {}\n}\n"
+        self.assertFalse(mecha_history.needed("super::helpers::assert_x", "assert_x()", run_file),
+                         "the PR's module, never the run's, however the leaf is named")
+        self.assertTrue(mecha_history.needed("super::support::s", "", run_file), "the run's root has it")
+        self.assertTrue(mecha_history.needed("super::super::*", "", run_file),
+                         "super::super lands in a file this cannot read: kept")
+        self.assertTrue(mecha_history.needed("crate::config::Config", "Config::default()", run_file),
+                        "a crate path's head is another file: kept when named")
+        self.assertFalse(mecha_history.needed("crate::config::Config", "", run_file),
+                         "and not when nothing names it")
+
+    def test_only_a_root_declaration_counts(self):
+        self.assertTrue(mecha_history.needed("super::helper", "", "pub(crate) async fn helper() {}\n"))
+        self.assertTrue(mecha_history.needed("super::helper", "", "use crate::x::{\n    helper,\n};\n"))
+        self.assertFalse(mecha_history.needed("super::helper", "", "mod tests {\n    fn helper() {}\n}\n"))
+
+    def test_a_crate_import_the_runs_file_declares_is_kept_though_unnamed(self):
+        # A crate trait imported for its methods is named nowhere in a test
+        # body; the run's file declaring it is what makes the import resolve.
+        run_file = "trait Greet {\n    fn greet(&self);\n}\n"
+        self.assertTrue(mecha_history.needed("super::Greet", "x.greet()", run_file))
+        self.assertFalse(mecha_history.needed("super::helper", "x.greet()", run_file))
+        self.assertTrue(mecha_history.needed("super::kept as k", "", "use super::{kept};\n"))
+
+    def test_a_library_import_is_kept_and_a_crate_one_only_when_named(self):
+        self.assertTrue(mecha_history.needed("std::io::Write", "fn t() { w.write_all(b\"x\") }"),
+                        "a trait for its methods is named nowhere in the body")
+        self.assertTrue(mecha_history.needed("super::*", ""))
+        self.assertTrue(mecha_history.needed("super::a as b", "b()"))
+        self.assertFalse(mecha_history.needed("crate::x::helper", "helpers()"), "a word, not a prefix")
+
+    def test_a_use_declaration_flattens_to_the_paths_it_imports(self):
+        self.assertEqual(
+            mecha_history.use_paths("use super::{a, b::{c, d as e}, f::*, g::{self}};"),
+            ["super::a", "super::b::c", "super::b::d as e", "super::f::*", "super::g"])
+        self.assertEqual(mecha_history.use_paths("    pub(crate) use crate::x::Y; // why"), ["crate::x::Y"])
+        self.assertIsNone(mecha_history.use_paths("use super::{a, b;"), "unbalanced: left alone")
+        self.assertEqual(mecha_history.repoint("super::a"), "super::super::a")
+        self.assertEqual(mecha_history.repoint("self::a"), "super::a")
+        self.assertEqual(mecha_history.repoint("crate::a"), "crate::a")
 
 
 if __name__ == "__main__":

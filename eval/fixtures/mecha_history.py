@@ -400,6 +400,13 @@ def whole_items(lines, added, start, end, indent):
     return items
 
 
+def whole_test_file(path):
+    """A file that is test code from top to bottom (`tests.rs`, `x_tests.rs`,
+    anything under `tests/`): its top-level items are the tests, with no
+    `mod tests` around them."""
+    return bool(re.search(r"(^|/)(\w+_)?tests\.rs$", path) or "/tests/" in path)
+
+
 def added_items(merge):
     """{path: [(module, indent, [item text])]}: the test items the PR added,
     whole (attributes, doc lines, body), from the merged file. `module` is the
@@ -418,7 +425,7 @@ def added_items(merge):
             start, n = int(m.group(1)), int(m.group(2) or 1)
             added.update(range(start, start + n))
         groups = []
-        whole_file = bool(re.search(r"(^|/)(\w+_)?tests\.rs$", path) or "/tests/" in path)
+        whole_file = whole_test_file(path)
         # A module whose own header the PR added is new as a whole: it is one
         # top-level item, its attributes with it, never also its items
         # (review of #852, pass 3).
@@ -459,13 +466,228 @@ class TreeRefused(Exception):
     answers `passed: false`, never a harness error."""
 
 
+USE_DECL = re.compile(r"(pub(\([^)]*\))?\s+)?use\s")
+USE_TOKEN = re.compile(r"::|[{},*]|\w+")
+
+
+ATTR_LINE = re.compile(r"\s*#\[.*\]\s*$")
+DOC_LINE = re.compile(r"\s*(///|//!|//|$)")
+
+
+def use_statements(lines, start, end, indent):
+    """The `use` declarations written at `indent` directly inside
+    lines[start..end], each as (its attribute lines, its text joined over the
+    lines it spans). An attribute rides with the declaration it sits on — a
+    `#[cfg(...)]` gate re-said without it would import where the PR did not;
+    a doc line is documentation and does not. A declaration under an
+    attribute this cannot read whole (one spread over lines) is left out,
+    so it is left as the graft always placed it — never re-said ungated
+    beside its own verbatim copy (review of #857, pass 3)."""
+    out, i = [], start
+    while i <= end and i < len(lines):
+        rest = lines[i][len(indent):] if lines[i].startswith(indent) else None
+        if rest is not None and not rest.startswith(" ") and USE_DECL.match(rest):
+            attrs, k = [], i - 1
+            while k >= start and (ATTR_LINE.match(lines[k]) or DOC_LINE.match(lines[k]) and lines[k].strip()):
+                if ATTR_LINE.match(lines[k]):
+                    attrs.insert(0, lines[k].strip())
+                k -= 1
+            unreadable = k >= start and lines[k].rstrip().endswith("]")
+            j = i
+            while j <= end and not lines[j].split("//")[0].rstrip().endswith(";"):
+                j += 1
+            if not unreadable:
+                out.append((tuple(attrs), "\n".join(lines[i:j + 1])))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def use_paths(text):
+    """One `use` declaration flattened to the paths it imports, in order:
+    `use super::{a, b::{c, d as e}, f::*};` is `super::a`, `super::b::c`,
+    `super::b::d as e`, `super::f::*`. None when it does not parse — the
+    caller then leaves that declaration exactly as the graft always did."""
+    body = re.sub(r"//[^\n]*", "", text).strip()
+    m = re.match(r"(?:pub(?:\([^)]*\))?\s+)?use\s+(.*);$", body, re.S)
+    if not m:
+        return None
+    tokens = USE_TOKEN.findall(m.group(1))
+
+    def tree(i, prefix):
+        segs = []
+        while True:
+            tok = tokens[i]
+            if tok == "{":
+                i += 1
+                out = []
+                while tokens[i] != "}":
+                    sub, i = tree(i, prefix + segs)
+                    out += sub
+                    if tokens[i] == ",":
+                        i += 1
+                return out, i + 1
+            if tok == "*":
+                return ["::".join(prefix + segs + ["*"])], i + 1
+            if not re.match(r"\w+$", tok):
+                raise ValueError(tok)
+            segs.append(tok)
+            i += 1
+            if i < len(tokens) and tokens[i] == "::":
+                i += 1
+                continue
+            path = prefix + segs
+            if len(path) > 1 and path[-1] == "self":
+                path = path[:-1]  # `a::{self}` imports `a`
+            if i < len(tokens) and tokens[i] == "as":
+                return ["::".join(path) + " as " + tokens[i + 1]], i + 2
+            return ["::".join(path)], i
+
+    try:
+        paths, i = tree(0, [])
+    except (IndexError, ValueError):
+        return None
+    if i != len(tokens) or any(p in ("super", "self", "crate") for p in paths):
+        # A bare `super` (from `use super::{self};`) re-points to `use
+        # super::super;`, which does not compile: left as the graft placed it.
+        return None
+    return paths
+
+
+def module_imports(lines, module):
+    """[(path, attribute lines)] for `module`'s own `use` declarations, in
+    order, once per path; a declaration that does not parse is left out.
+    `module` None is a whole test file's own top level (review of #857,
+    pass 3: `hud/tests.rs` and twenty more have no `mod tests` at all)."""
+    spans = ([(0, len(lines) - 1, "")] if module is None else
+             [(start + 1, end - 1, "    ") for name, start, end in test_modules(lines) if name == module])
+    out, seen = [], set()
+    for start, end, indent in spans:
+        for attrs, text in use_statements(lines, start, end, indent):
+            for p in use_paths(text) or []:
+                if p not in seen:
+                    seen.add(p)
+                    out.append((p, attrs))
+    return out
+
+
+def added_imports(merge, path, module):
+    """What the PR added to `module`'s imports in `path`: the paths its `use`
+    declarations name at the merge and did not at the pin — a whole new `use`
+    line and an edit to an existing one alike. `pr-726` added
+    `ensure_resident` to `mod tests`'s `use super::{...}` list, the hidden
+    tests call it, and a graft that carried only whole items failed every
+    independent solution on E0425 (the driven pilot, 2026-11-08)."""
+    merged = git("show", f"{merge}:{path}").split("\n")
+    r = run(["git", "-C", repo(), "show", f"{merge}^1:{path}"])
+    pinned = r.stdout.split("\n") if r.returncode == 0 else []  # a file the PR created
+    before = {p for p, _ in module_imports(pinned, module)}
+    return [(p, attrs) for p, attrs in module_imports(merged, module) if p not in before]
+
+
+def repoint(path):
+    """An import written in a test module, said from the graft's own module
+    one level inside it, where `super` is the test module."""
+    if path == "super" or path.startswith("super::"):
+        return "super::" + path
+    if path.startswith("self::"):
+        return "super::" + path[len("self::"):]
+    return path
+
+
+def needed(path, body, run_file=""):
+    """Whether an import is grafted beside `body`, the grafted items' text.
+    An unresolved `use` fails the whole file — every hidden test in it, and
+    the crate's regressions — so a path into the run's own code (`super::`,
+    `self::`, `crate::`) is carried only when it is a glob, when the name it
+    binds appears in the grafted tests, or when `run_file` — the run's own
+    file, where `super` of a test module resolves — declares or imports the
+    name *at its root*, so the import resolves: a crate trait imported for
+    its methods is named nowhere in a test body. Root only, because that is
+    all `super::super` from the graft can see: a `helper` the run wrote
+    inside `mod tests` would pass a whole-file search and still be E0432
+    (review of #857, pass 7). rustfmt puts every root item in column 0, so
+    the declaration is matched there and nowhere deeper. Otherwise the PR may have added it for a
+    test it *edited*, which is not grafted, naming a helper an independent
+    solution has no reason to write (review of #857, passes 5 and 6). A
+    library path (`std::`, `core::`, a dependency) resolves whatever the run
+    wrote, and is kept: `use std::io::Write;` is named nowhere either."""
+    first = path.split("::")[0]
+    if first not in ("super", "self", "crate"):
+        return True
+    segs = path.split(" as ")[0].split("::")
+    # Resolution hangs on the *head* (review of #857, pass 10): for
+    # `super::m::X` or `super::m::*` it is whether the run's file root has
+    # `m` — a support module the PR created and an independent solution
+    # never wrote is E0432 for the whole file, whatever the leaf. Asked
+    # before the body is consulted, because a grafted test naming `X` does
+    # not make `m` exist. `super::super::…` and `crate::…` land in a file
+    # this cannot read, and so does a whole test file's `super`: those are
+    # decided as before, since dropping a real import fails the build as
+    # surely as keeping an unresolved one.
+    through_module = first == "super" and len(segs) > 2 and segs[1] != "super"
+    if through_module and run_file:
+        return declared_at_root(segs[1], run_file)
+    if segs[-1] == "*":
+        # `super::*` / `self::*` name the module itself, which always
+        # resolves; the rest of the globs are in a file this cannot read
+        # (pass 9).
+        return True
+    bound = path.split(" as ")[-1].split("::")[-1]
+    if re.search(rf"\b{re.escape(bound)}\b", body):
+        return True
+    return len(segs) == 2 and declared_at_root(segs[-1], run_file)
+
+
+def declared_at_root(name, run_file):
+    """Whether `run_file` declares or imports `name` at its root (column 0,
+    where rustfmt puts every root item) — all `super::super` from the graft
+    can see (review of #857, pass 7)."""
+    name = re.escape(name)
+    vis = r"(pub(\([^)]*\))?\s+)?"
+    declared = (rf"^{vis}((async|unsafe|const|extern(\s+\"\w+\")?)\s+)*"
+                rf"(fn|struct|enum|union|trait|type|const|static|mod)\s+{name}\b"
+                rf"|^macro_rules!\s*{name}\b|^{vis}use\s[^;]*\b{name}\b")
+    return bool(run_file) and re.search(declared, run_file, re.M) is not None
+
+
+def plain_use(item):
+    """(attribute lines, paths) for an item that is a `use` declaration past
+    its leading attribute and doc lines — `whole_items` starts an item at the
+    first of those, and a `super::`-relative path under a doc comment is as
+    wrong one level deeper as a bare one (review of #857, pass 2) — or None
+    for anything else. A multi-line attribute is not split off, so an item
+    carrying one is left as the graft always placed it."""
+    lines = item.split("\n")
+    attrs, i = [], 0
+    while i < len(lines) and (ATTR_LINE.match(lines[i]) or (DOC_LINE.match(lines[i]) and lines[i].strip())):
+        if ATTR_LINE.match(lines[i]):
+            attrs.append(lines[i].strip())
+        i += 1
+    body = "\n".join(lines[i:])
+    if not USE_DECL.match(body.lstrip(" ")):
+        return None
+    paths = use_paths(body)
+    return (tuple(attrs), paths) if paths is not None else None
+
+
 def graft_plan(tree, merge, module):
     """{path: new text} for every file the graft writes, or TreeRefused.
     Whole new integration-test files are copied; added items in an existing
     test module go into a module of their own (`hidden_grade`), so a test the
     run wrote under the same name is not a compile error charged to the
     model. Items are placed verbatim, never re-indented: a multi-line string
-    literal's lines are its value (review of #852, pass 5)."""
+    literal's lines are its value (review of #852, pass 5).
+
+    Grafted into a test module, the hidden tests sit one level deeper than
+    the PR wrote them, and `use super::*` reaches only what that module
+    imports. So the imports the PR added to it (`added_imports`), and every
+    path of every bare `use` item grafted with the tests, are said again from
+    the graft's module, re-pointed one level up (`repoint`), once each —
+    never copied as written, which would point `super` at the wrong module
+    and could import a name twice (E0252). An explicit import outranks the
+    glob, so nothing the run wrote can make one ambiguous."""
     writes = {}
     for path in new_test_files(merge):
         writes[path] = git("show", f"{merge}:{path}")
@@ -474,12 +696,47 @@ def graft_plan(tree, merge, module):
         if not os.path.isfile(p):
             raise TreeRefused(f"{path}: the run's tree has no such file to graft the hidden tests into")
         with open(p) as fh:
-            src = fh.read().split("\n")
+            run_file = fh.read()
+        src = run_file.split("\n")
         # Bottom of the file first, so an insertion never moves a later one.
         for into, indent, items in sorted(groups, key=lambda g: g[0] is not None):
             inner = indent + "    "
             block = ["", f"{indent}#[cfg(test)]", f"{indent}mod {module} {{",
                      f"{inner}#[allow(unused_imports)]", f"{inner}use super::*;", ""]
+            # On every path the graft's module is one level deeper than the PR
+            # wrote its items, so every bare `use` item is re-said path by
+            # path, never copied: a `super::`-relative path is wrong one level
+            # down whether the PR added it or not, and a one-line list rustfmt
+            # kept whole is an item holding both (review of #857, pass 1).
+            # Past its doc lines too, with its attributes carried onto each
+            # path it names (pass 2). The imports the PR added are carried
+            # where the tests' own scope is a test module or a whole test
+            # file's top level (pass 3); an ordinary source file's top-level
+            # imports are its production code, the run's to write.
+            imports = (dict(added_imports(merge, path, into))  # path -> attribute lines
+                       if into is not None or whole_test_file(path) else {})
+            kept = []
+            for it in items:
+                found = plain_use(it)
+                if found is None:
+                    kept.append(it)
+                    continue
+                attrs, paths = found
+                for q in paths:
+                    imports[q] = attrs  # the declaration's own attributes
+            items = kept
+            body = "\n".join(items)
+            # Every path through `needed`, the ones a one-line list brought
+            # in as an item too — that form skipped it (review of #857, pass
+            # 6). `super` of a test module is the run's file; of a whole test
+            # file or a top-level group, another file this cannot read.
+            here = run_file if into is not None else ""
+            imports = {q: a for q, a in imports.items() if needed(q, body, here)}
+            for q, attrs in imports.items():
+                block += [f"{indent}{a}" for a in attrs]
+                block.append(f"{indent}#[allow(unused_imports)] use {repoint(q)};")
+            if imports:
+                block.append("")
             block += "\n\n".join(items).split("\n") + [f"{indent}}}", ""]
             if into is None:
                 src += block

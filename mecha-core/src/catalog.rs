@@ -65,27 +65,6 @@ pub struct TierGeometry {
     pub slots: u32,
 }
 
-/// The same window at each of `tiers`, one slot.
-const fn one_slot(ctx: u32) -> [TierGeometry; 3] {
-    [
-        TierGeometry {
-            tier_gb: 32,
-            ctx,
-            slots: 1,
-        },
-        TierGeometry {
-            tier_gb: 64,
-            ctx,
-            slots: 1,
-        },
-        TierGeometry {
-            tier_gb: 128,
-            ctx,
-            slots: 1,
-        },
-    ]
-}
-
 /// Qwen3.8-27B's: the GB10's 256k at 128 GB, and 128k at 64 GB, where 256k
 /// (34 GiB) would ask more than production's 28 GiB. Dense at 27B, it is not
 /// offered at 32 GB.
@@ -101,7 +80,31 @@ const QWEN38_GEOMETRY: &[TierGeometry] = &[
         slots: 1,
     },
 ];
-const GEMMA_GEOMETRY: [TierGeometry; 3] = one_slot(32_768);
+/// Gemma 4 26B-A4B's: production's per-slot window at every tier — 256k at
+/// 64 and 128 GB, 128k at 32 GB — and the window it was trained to
+/// (`gemma4.context_length` = 262144 in the GGUF). It used to be 32k
+/// everywhere, a figure carried over from the retired standalone launcher and
+/// never measured; in the driven pilot (2026-11-08) that window compacted on
+/// every task and twice ended a run without one edit, re-reading files it had
+/// already read. Only 5 of its 30 layers attend globally (the rest a
+/// 1024-token sliding window), so the window is cheap: `kv_kib_per_token`.
+const GEMMA_GEOMETRY: &[TierGeometry] = &[
+    TierGeometry {
+        tier_gb: 32,
+        ctx: 131_072,
+        slots: 1,
+    },
+    TierGeometry {
+        tier_gb: 64,
+        ctx: 262_144,
+        slots: 1,
+    },
+    TierGeometry {
+        tier_gb: 128,
+        ctx: 262_144,
+        slots: 1,
+    },
+];
 
 /// One catalog entry.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -314,7 +317,7 @@ pub const CATALOG: &[Entry] = &[
         id: "gemma-4-26b-a4b",
         provider: "gemma26",
         label: "Gemma 4 26B-A4B UD-Q4_K_M, with its vision projector and MTP draft file",
-        note: "a 32k context — an eighth of the Qwen models' — and llama-server's own sampling",
+        note: "production's own context window, and llama-server's own sampling",
         // One revision for all three: a draft from another revision
         // mis-drafts silently.
         pins: &[
@@ -349,13 +352,15 @@ pub const CATALOG: &[Entry] = &[
                 role: Role::Draft,
             },
         ],
-        geometry: Geometry::PerTier(&GEMMA_GEOMETRY),
+        geometry: Geometry::PerTier(GEMMA_GEOMETRY),
         // No sampling lines and no image floor, deliberately: the GB10 serves
         // it on llama-server's defaults, so the provider has no temperature.
         lines: &["spec-type = draft-mtp", "n-gpu-layers-draft = 999"],
         temperature: None,
-        // An estimate, not measured: the GB10's note says 19–21 GiB in all.
-        kv_kib_per_token: 64,
+        // Measured on the GB10 (2026-11-08), its own preset's arguments, MTP
+        // draft and projector loaded: 19,267 MiB of GPU at 32k, 24,195 MiB at
+        // 256k — 4,928 MiB for 229,376 more tokens. Was 64, an estimate.
+        kv_kib_per_token: 22,
         state_mb_per_slot: 0,
     },
 ];
@@ -843,6 +848,40 @@ mod tests {
         }
     }
 
+    /// The GB10's router script and the catalog write gemma's preset twice,
+    /// and #857 had to edit both by hand to move its window: every setting
+    /// but the file paths must agree, or `model add` installs a different
+    /// model than the script serves (the shape of
+    /// `router_unit::tests::the_pinned_preset_is_the_script_s_production_section`).
+    #[test]
+    fn the_scripts_gemma_section_is_the_catalogs() {
+        let script = include_str!("../../scripts/start-router.sh");
+        let section = script
+            .split_once("\n[gemma-4-26b-a4b]\n")
+            .expect("the script's gemma section moved")
+            .1;
+        let section = &section[..section.find("\nEOF").unwrap()];
+        let paths = ["model", "mmproj", "model-draft"];
+        let settings = |text: &str| -> std::collections::BTreeMap<String, String> {
+            text.lines()
+                .filter_map(|l| l.split_once(" = "))
+                .filter(|(k, _)| !paths.contains(&k.trim()))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect()
+        };
+        let p = Paths {
+            model: "/m/w.gguf".into(),
+            mmproj: Some("/m/p.gguf".into()),
+            draft: Some("/m/d.gguf".into()),
+        };
+        let ours = section_text(entry("gemma-4-26b-a4b").unwrap(), 128, &p).unwrap();
+        assert_eq!(settings(section), settings(&ours));
+        assert!(
+            settings(section).contains_key("ctx-size"),
+            "the comparison is not vacuous"
+        );
+    }
+
     #[test]
     fn a_section_names_its_files_geometry_and_lines() {
         let e = entry("gemma-4-26b-a4b").unwrap();
@@ -853,7 +892,7 @@ mod tests {
         };
         let s = section_text(e, 128, &p).unwrap();
         assert!(s.starts_with("[gemma-4-26b-a4b]\nmodel = /m/w.gguf\nmmproj = /m/p.gguf\n"));
-        assert!(s.contains("ctx-size = 32768\nparallel = 1\n"));
+        assert!(s.contains("ctx-size = 262144\nparallel = 1\n"));
         assert!(s.contains("model-draft = /m/d.gguf\n"));
         assert!(!s.contains("cache-ram"));
         assert!(!s.contains("temp"));
