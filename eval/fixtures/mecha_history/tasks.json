@@ -1074,6 +1074,49 @@
           "mecha-cli": 975
         }
       }
+    },
+    {
+      "id": "pr-92",
+      "pr": 92,
+      "author": "history",
+      "merge": "79918a77f518442afc1d99e5c710391c1c1d0e0e",
+      "pin": "c991dbeb67c4309b11531952900da7e67a6120e3",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-92.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-09T09:46Z",
+        "by": "validate",
+        "pin": "every run fails an assertion (the task's own id, not a paraphrase of it; the discuss posture must not be the one that leaves `serves` unset)",
+        "merge": "every run passes"
+      },
+      "prompt_check": {
+        "sha256": "e7d4d5214533f9ee30810f6e41043061839e905894532094746b7fc6427d1064",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:49:33Z",
+        "by": "baseline",
+        "pin": "c991dbeb67c4309b11531952900da7e67a6120e3",
+        "merge": "79918a77f518442afc1d99e5c710391c1c1d0e0e",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-92.json",
+        "must_pass_sha256": "307f591b81e1f68024fdfb2bbe3be83e19545b3c752432f1c2a6b420dfc7220a",
+        "must_pass_count": {
+          "mecha-cli": 556
+        }
+      }
     }
   ]
 }
