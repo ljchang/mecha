@@ -815,6 +815,29 @@
           "mecha-core": 787
         }
       }
+    },
+    {
+      "id": "pr-393",
+      "pr": 393,
+      "author": "history",
+      "merge": "5513d7dc67532f83cbe733b07628e1cac0eecf6b",
+      "pin": "0805ae259dc56d62e78fc48257fe2b072e5ad2a5",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-393.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "rejected",
+        "date": "2026-11-09T08:40Z",
+        "by": "driver",
+        "reason": "white-box, as 780 was: two of its three hidden tests read the source text (include_str! of mail.rs and validate.rs) and assert its spelling (a `learning.lock()` before `mined_corrections()` before `append_reflexion(` inside `fn record_correction(`, exactly two `record_correction(` calls in `reflect`, a `store.lock()` within 600 bytes before `store.append_validation(`), so a correct fix spelled differently fails; rejected before a prompt was written or validate run (ruling confirmed by the coordinator, 2026-11-09)"
+      }
     }
   ]
 }
