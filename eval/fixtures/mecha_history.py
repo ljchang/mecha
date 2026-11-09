@@ -38,6 +38,14 @@ so its signature, never its body, is named), and whose prompt still has the
 sha256 its privacy check recorded: a prompt edited after the check is not
 offered. Any other state, `rejected` among them, is never offered.
 
+**A holdout is a bank of its own** (DRIVER-DESIGN.md §3: what exploration
+reads never enters a measurement holdout, so a holdout task must never reach
+exploration). A record with a `holdout` field is offered only by a source
+called as `mecha_history.py --holdout <name> <verb>`, the name one of the
+bank's `holdout_draws`, and that call offers only that holdout's tasks; a
+call without the flag never offers one. `mecha exp` passes the flag as part
+of the manifest's `source` argv, ahead of every verb.
+
 **What setup builds, and why** (DRIVER-DESIGN.md §8, measured 2026-11-07
 inside the owner's jail). `[sandbox]`'s bwrap clears the environment and
 pins PATH to the system directories, so cargo is not on it and is run by
@@ -374,11 +382,24 @@ def is_test_item(item):
     return False
 
 
-def whole_items(lines, added, start, end, indent):
+FN_HEAD = re.compile(r"\s*(?:pub(?:\([^)]*\))? )?(?:async |unsafe |const )*fn (\w+)")
+
+
+def fn_names(text):
+    """Every fn name declared in a file's text, at any depth."""
+    return {m.group(1) for line in text.split("\n") for m in [FN_HEAD.match(line)] if m}
+
+
+def whole_items(lines, added, start, end, indent, pin_names=None):
     """The items wholly added between `start` and `end` at `indent`: an
     attribute, doc line or item keyword begins one, and it runs to the line
     that closes it at its own indent (`}` or `};`, rustfmt's), or ends on the
-    line that opens it, or at a `;` before anything opened."""
+    line that opens it, or at a `;` before anything opened.
+
+    `pin_names`, the fn names the pin's copy of the file declares, admits a
+    second way to be new: a fn whose header (and every line above it) the PR
+    added, under a name the pin's file never had, is the PR's item whatever
+    the diff paired its tail with."""
     items, i = [], start
     while i <= end and i < len(lines):
         if (i + 1) in added and lines[i].startswith(indent) and ITEM.match(lines[i][len(indent):]):
@@ -396,7 +417,28 @@ def whole_items(lines, added, start, end, indent):
                 if opened and line in (indent + "}", indent + "};"):
                     break
                 j += 1
-            if all((k + 1) in added for k in range(i, j + 1)):
+            if j >= len(lines):
+                break  # never closed before the end of the file: never whole (review of #861)
+            # Every line added, except perhaps the item's own closing brace:
+            # a PR that shortens one test and appends another right after it
+            # gets that brace attributed to the old test's unchanged `}` by
+            # every diff algorithm, so a wholly new test ends on a context
+            # line (pr-387, found admitting holdout boredom-1). The body is
+            # still all the PR's; grafted into its own module, it collides
+            # with nothing.
+            closes = j > i and lines[j].rstrip() in (indent + "}", indent + "};")
+            body = range(i, j) if closes else range(i, j + 1)
+            # A new test can end on more context than its brace: one that ends
+            # like the test it follows (a cleanup line, then `}`) has all of
+            # those lines paired with the old test's unchanged tail (pr-155,
+            # admitting boredom-1). So a fn the pin's file never named, whose
+            # header and attributes the PR added, is new however many of its
+            # last lines the diff gave away.
+            head = next((k for k in range(i, j + 1) if FN_HEAD.match(lines[k])), None)
+            named_new = (pin_names is not None and head is not None
+                         and FN_HEAD.match(lines[head]).group(1) not in pin_names
+                         and all((k + 1) in added for k in range(i, head + 1)))
+            if named_new or all((k + 1) in added for k in body):
                 items.append("\n".join(lines[i:j + 1]))
             i = j + 1
             continue
@@ -423,6 +465,9 @@ def added_items(merge):
         if path in new_test_files(merge):
             continue
         lines = git("show", f"{merge}:{path}").split("\n")
+        # The pin's names; a file the PR added has none (`A` in its status).
+        pin = run(["git", "-C", repo(), "show", f"{merge}^1:{path}"])
+        pin_names = fn_names(pin.stdout) if pin.returncode == 0 else set()
         added = set()
         diff = git("diff", "-U0", f"{merge}^1", merge, "--", path)
         for m in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", diff, re.M):
@@ -435,7 +480,7 @@ def added_items(merge):
         # (review of #852, pass 3).
         modules = [m for m in test_modules(lines) if (m[1] + 1) not in added]
         for name, start, end in modules:
-            items = whole_items(lines, added, start + 1, end - 1, "    ")
+            items = whole_items(lines, added, start + 1, end - 1, "    ", pin_names)
             if items:
                 groups.append((name, "    ", items))
         inside = {k for _, start, end in modules for k in range(start, end + 1)}
@@ -445,7 +490,7 @@ def added_items(merge):
             if i in inside:
                 i += 1
                 continue
-            items = whole_items(lines, added, i, i, "")
+            items = whole_items(lines, added, i, i, "", pin_names)
             if items:
                 item = items[0]
                 if whole_file or is_test_item(item):
@@ -781,7 +826,14 @@ def jailed_status(tc, tree):
     return [l[3:] for l in r.stdout.splitlines() if l.strip()]
 
 
-def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None):
+def fresh_targets(merge):
+    """{(crate, `test:<file>`)} for each integration-test file the PR added:
+    the graft copies those whole, so their tests keep their own names. A test
+    the PR added to an existing test file is grafted into the module."""
+    return {(p.split("/")[0], "test:" + os.path.splitext(os.path.basename(p))[0]) for p in new_test_files(merge)}
+
+
+def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None, fresh=frozenset()):
     """{name: pass|fail|skipped|build-error|not-run}, one cargo call per target.
 
     Under MECHA_TEST_REQUIRE_BACKENDS=1: a hidden test that skips when its
@@ -794,11 +846,21 @@ def run_hidden(tc, tree, tests, jobs=None, why=None, confined=False, module=None
         by_target.setdefault((crate, target), []).append(name)
     for (crate, target), names in sorted(by_target.items()):
         sel = {"lib": ["--lib"], "bin": ["--bin", "mecha"]}.get(target) or ["--test", target[5:]]
-        r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *names, jobs=jobs, require_backends=True,
+        # Keyed on the file being new, never on the target's kind: a test added
+        # to an existing `tests/*.rs` is grafted into the module like any other
+        # (review of #861).
+        grafted = None if (crate, target) in fresh else module
+        # Filtered to the grafted copies alone where there is a module: a
+        # bare name is a substring filter, so the tree's own test of that
+        # name ran beside its grafted copy in one process, and two tests
+        # sharing a fixture keyed by name and pid wiped each other's store
+        # (pr-101's oracle grade, admitting holdout boredom-1).
+        filters = [f"{grafted}::{n}" for n in names] if grafted else names
+        r = cargo(tc, tree, "test", "-p", crate, *sel, "--", *filters, jobs=jobs, require_backends=True,
                   confined=confined)
         # A whole new test file is the merge's own text, written by the graft;
         # a test grafted into the crate counts only under this grade's module.
-        out.update(statuses(r.stdout + r.stderr, names, why, None if target.startswith("test:") else module))
+        out.update(statuses(r.stdout + r.stderr, names, why, grafted))
     return out
 
 
@@ -842,7 +904,15 @@ def first_error(text):
 # --- verbs -----------------------------------------------------------------
 
 
-def offered(t):
+# The holdout this call serves (`--holdout <name>`), or None for exploration.
+HOLDOUT = None
+
+
+def offered(t, holdout=None):
+    """Whether `list` offers the task and `setup` builds it, for a call that
+    serves `holdout` (None: exploration)."""
+    if t.get("holdout") != holdout:
+        return False
     state = t["admission"]["state"]
     if state not in OFFERED:
         return False
@@ -882,7 +952,7 @@ def environment_note(t):
 def cmd_list():
     out = []
     for t in bank()["tasks"]:
-        if not offered(t):
+        if not offered(t, HOLDOUT):
             continue
         with open(prompt_path(t)) as fh:
             body = fh.read().rstrip()
@@ -969,7 +1039,7 @@ def mecha():
 
 def cmd_setup(task_id):
     t = find(task_id)
-    if not offered(t):
+    if not offered(t, HOLDOUT):
         die(f"task `{task_id}` is not offered (admission `{t['admission']['state']}`, or its prompt changed since its check)")
     ws = workspace()
     skip = os.environ.get("MECHA_HISTORY_SKIP_CARGO") == "1"  # this source's own tests
@@ -1036,11 +1106,11 @@ def cmd_grade(task_id):
     graft_apply(ws, writes)
     names = [n for _, _, n in tests]
     try:
-        hidden = run_hidden(tc, ws, tests, jobs=4, confined=True, module=module)
+        hidden = run_hidden(tc, ws, tests, jobs=4, confined=True, module=module, fresh=fresh_targets(t["merge"]))
         checks = [{"name": f"hidden: {n}", "passed": v == "pass", "detail": v} for n, v in sorted(hidden.items())]
         pre, keep = t["baseline"]["failing"], must_pass(t)
         for crate in t["crates"]:
-            results, why = regressions(tc, ws, crate)
+            results, why = regressions(tc, ws, crate, module)
             if results is None:
                 ok, detail = False, why
             else:
@@ -1061,9 +1131,14 @@ def selection(crate):
     return ["--bin", "mecha"] if crate == "mecha-cli" else ["--lib"]
 
 
-def regressions(tc, tree, crate):
-    """({test path: ok|FAILED|ignored}, or None when nothing ran, and why)."""
-    r = cargo(tc, tree, "test", "-p", crate, *selection(crate), "--no-fail-fast", jobs=4, confined=True)
+def regressions(tc, tree, crate, module=None):
+    """({test path: ok|FAILED|ignored}, or None when nothing ran, and why).
+    `module`, the graft's, is skipped: its tests are judged by the hidden
+    check alone (`counted` ignores them), and running them here would race a
+    same-named test of the tree's own over a shared fixture, failing the
+    tree's copy and charging the run with it."""
+    skip = ["--", "--skip", f"{module}::"] if module else []
+    r = cargo(tc, tree, "test", "-p", crate, *selection(crate), "--no-fail-fast", *skip, jobs=4, confined=True)
     results = {}
     for path, verdict in RESULT.findall(r.stdout):
         # A path reported twice keeps its worst verdict.
@@ -1165,7 +1240,8 @@ def cmd_validate(task_id, r):
             res["verdict"] = f"graft-failed: {e}"
             print(json.dumps(res))
             return
-        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True, module=module)
+        fresh = fresh_targets(t["merge"])
+        pin = [run_hidden(tc, pin_tree, tests, jobs=4, why=pin_why, confined=True, module=module, fresh=fresh)
                for _ in range(r)]
         tc_m = prepare(t, merge_tree, t["merge"])
         merge = [run_hidden(tc_m, merge_tree, tests, jobs=4, why=merge_why, confined=True) for _ in range(r)]
@@ -1214,6 +1290,13 @@ def main(argv):
     if not argv:
         print(__doc__, file=sys.stderr)
         return 2
+    global HOLDOUT
+    if argv[0] == "--holdout":
+        if len(argv) < 3:
+            die("--holdout takes a name and then a verb")
+        if argv[1] not in bank().get("holdout_draws", {}):
+            die(f"no holdout `{argv[1]}` in the bank's holdout_draws")
+        HOLDOUT, argv = argv[1], argv[2:]
     verb, rest = argv[0], argv[1:]
     if verb == "list":
         cmd_list()

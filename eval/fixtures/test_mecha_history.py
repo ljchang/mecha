@@ -173,10 +173,36 @@ class CommittedBank(unittest.TestCase):
         old = mecha_history.BANK
         mecha_history.BANK = os.path.dirname(path)
         try:
-            unoffered = [t["id"] for t in admitted if not mecha_history.offered(t)]
+            unoffered = [t["id"] for t in admitted if not mecha_history.offered(t, t.get("holdout"))]
         finally:
             mecha_history.BANK = old
         self.assertEqual(unoffered, [])
+
+    def test_each_holdout_is_its_draw_taken_in_order_to_its_size(self):
+        """A record's `holdout` must name a draw the bank made, the draw's
+        tasks must be a prefix of its shuffled order (no hand-picking, no
+        gap), and the call naming it must offer exactly `k` (review of #861:
+        a typo'd name would drop a task from both banks without a word)."""
+        path = os.path.join(HERE, "mecha_history", "tasks.json")
+        with open(path) as fh:
+            b = json.load(fh)
+        draws = b.get("holdout_draws", {})
+        self.assertTrue(draws)
+        for t in b["tasks"]:
+            if "holdout" in t:
+                self.assertIn(t["holdout"], draws, f"{t['id']} names a holdout the bank never drew")
+        old = mecha_history.BANK
+        mecha_history.BANK = os.path.dirname(path)
+        try:
+            for name, d in draws.items():
+                taken = [t for t in b["tasks"] if t.get("holdout") == name]
+                self.assertEqual([str(t["pr"]) for t in taken], [str(n) for n in d["shuffled_order"][:len(taken)]], name)
+                offered = [t["id"] for t in taken if mecha_history.offered(t, name)]
+                self.assertEqual(len(offered), d["k"], f"{name} offers {offered}")
+                # And never to exploration.
+                self.assertFalse([t["id"] for t in taken if mecha_history.offered(t)], name)
+        finally:
+            mecha_history.BANK = old
 
     def test_a_copy_or_a_revision_says_what_is_true(self):
         """`copied_from` and `revises` are claims a reader cannot re-derive, so
@@ -206,6 +232,41 @@ class CommittedBank(unittest.TestCase):
 
 
 class Regressions(unittest.TestCase):
+    def test_a_grafted_test_runs_alone_and_the_regression_pass_skips_it(self):
+        # pr-101's oracle: the tree's own copy of a hidden test ran beside its
+        # grafted copy, and the two shared a fixture keyed by name and pid.
+        calls = []
+
+        class Done:
+            returncode, stderr = 0, ""
+            stdout = "test outbox::tests::hidden_grade_abc::t_one ... ok\n\ntest result: ok. 1 passed\n"
+
+        def fake(tc, tree, *args, **kw):
+            calls.append(args)
+            return Done()
+
+        old, mecha_history.cargo = mecha_history.cargo, fake
+        try:
+            out = mecha_history.run_hidden("tc", "tree", [("mecha-core", "lib", "t_one")], module="hidden_grade_abc")
+            self.assertEqual(out, {"t_one": "pass"})
+            self.assertEqual(calls[-1][-1], "hidden_grade_abc::t_one", "the tree's own t_one would run too")
+            mecha_history.regressions("tc", "tree", "mecha-core", "hidden_grade_abc")
+            self.assertEqual(calls[-1][-3:], ("--", "--skip", "hidden_grade_abc::"))
+            # No graft (validate's merge runs, baseline): bare names, no skip.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "lib", "t_one")])
+            self.assertEqual(calls[-1][-1], "t_one")
+            mecha_history.regressions("tc", "tree", "mecha-core")
+            self.assertNotIn("--skip", calls[-1])
+            # A whole new test file is the merge's own text: bare names there.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "test:it", "t_one")], module="hidden_grade_abc",
+                                     fresh={("mecha-core", "test:it")})
+            self.assertEqual(calls[-1][-1], "t_one")
+            # A test added to an existing test file is grafted: only its copy runs.
+            mecha_history.run_hidden("tc", "tree", [("mecha-core", "test:it", "t_one")], module="hidden_grade_abc")
+            self.assertEqual(calls[-1][-1], "hidden_grade_abc::t_one", "the run's own t_one in tests/it.rs would run too")
+        finally:
+            mecha_history.cargo = old
+
     def test_a_test_item_is_one_whose_leading_attributes_say_so(self):
         self.assertTrue(mecha_history.is_test_item("/// doc\n#[cfg(test)]\n#[test]\nfn t() {}"))
         self.assertFalse(mecha_history.is_test_item("pub fn f() {\n    #[cfg(test)]\n    { 0 }\n}"))
@@ -414,6 +475,25 @@ class Source(unittest.TestCase):
         self.assertEqual(read(self.calls).split(), ["driven", "mark", "pr-1", "--clone", self.ws, "--for", "6h"])
         self.source("teardown", "pr-1")
         self.assertIn("driven unmark pr-1", read(self.calls))
+
+    def test_a_holdout_task_is_offered_only_to_a_call_that_names_its_holdout(self):
+        # Exploration must never be offered a measurement holdout's task.
+        self.other = dict(self.other, admission={"state": "admitted"}, holdout="h-1")
+        with open(os.path.join(self.bank, "tasks.json"), "w") as fh:
+            json.dump({"holdout_draws": {"h-1": {}}, "tasks": [self.task, self.other]}, fh)
+        self.assertEqual([t["id"] for t in json.loads(self.source("list").stdout)], ["pr-1"])
+        r = self.source("setup", "pr-2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not offered", r.stderr)
+        # Named, the call offers that holdout and nothing else.
+        r = self.source("--holdout", "h-1", "list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([t["id"] for t in json.loads(r.stdout)], ["pr-2"])
+        self.assertIn("not offered", self.source("--holdout", "h-1", "setup", "pr-1").stderr)
+        # A holdout the bank never drew is refused, never an empty list.
+        r = self.source("--holdout", "h-2", "list")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no holdout `h-2`", r.stderr)
 
     def test_teardown_prunes_build_products_only_from_a_graded_tree(self):
         home = os.path.join(self.tmp.name, "mecha-home")
@@ -624,6 +704,60 @@ class Source(unittest.TestCase):
             ["fn added_here() {"])
         self.assertEqual(mecha_history.whole_items(lines, added, 15, 17, ""),
                          ["#[cfg(test)]\n#[test]\nfn added_at_the_top() {}"])
+
+    def test_a_new_test_whose_closing_brace_the_diff_gave_to_the_old_one_is_still_whole(self):
+        # pr-387's shape: the PR cut the tail of `shortened` and appended
+        # `appended`; every diff algorithm pairs the new test's `}` with the
+        # old test's unchanged one, so it ends on a context line.
+        lines = [
+            "    #[test]",              # 1 context
+            "    fn shortened() {",     # 2 context
+            "        assert!(true);",   # 3 context
+            "    }",                    # 4 added (the old test's new end)
+            "",                         # 5 added
+            "    #[test]",              # 6 added
+            "    fn appended() {",      # 7 added
+            "        assert!(false);",  # 8 added
+            "    }",                    # 9 CONTEXT: the diff's pairing
+        ]
+        added = {4, 5, 6, 7, 8}
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 8, "    "),
+                         ["    #[test]\n    fn appended() {\n        assert!(false);\n    }"])
+        # But a body line the diff kept is the old test's, not a new one.
+        self.assertEqual(mecha_history.whole_items(lines, {4, 5, 6, 7}, 0, 8, "    "), [])
+
+    def test_an_item_never_closed_before_the_end_of_the_file_is_not_whole_and_does_not_raise(self):
+        # `ITEM` matches `///`: a stray doc line before a module's closing
+        # brace opens nothing and ends on no `;`, so its scan runs off the end.
+        lines = ["mod tests {", "    /// a stray note", "}"]
+        self.assertEqual(mecha_history.whole_items(lines, {2}, 1, 1, "    ", set()), [])
+        self.assertEqual(mecha_history.whole_items(lines, {2}, 1, 1, "    "), [])
+
+    def test_a_new_name_is_whole_however_much_of_its_tail_the_diff_gave_away(self):
+        # pr-155's shape: the appended test ends like the one before it (a
+        # cleanup line, then `}`), so both lines pair with the old tail.
+        lines = [
+            "    #[test]",                          # 1 context
+            "    fn extended() {",                  # 2 context
+            "        assert!(true);",               # 3 added (appended asserts)
+            "        cleanup();",                   # 4 added
+            "    }",                                # 5 added
+            "",                                     # 6 added
+            "    #[test]",                          # 7 added
+            "    fn appended() {",                  # 8 added
+            "        assert!(false);",              # 9 added
+            "        cleanup();",                   # 10 CONTEXT
+            "    }",                                # 11 CONTEXT
+        ]
+        added = {3, 4, 5, 6, 7, 8, 9}
+        whole = ["    #[test]\n    fn appended() {\n        assert!(false);\n        cleanup();\n    }"]
+        # Without the pin's names this was {} for pr-155 even after 479d1fd1e.
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 10, "    "), [])
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 10, "    ", {"extended"}), whole)
+        # A name the pin already had is an edit to an old test, never a graft.
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 10, "    ", {"extended", "appended"}), [])
+        # Nor is a fn whose header the diff kept, whatever its name.
+        self.assertEqual(mecha_history.whole_items(lines, added - {8}, 0, 10, "    ", {"extended"}), [])
 
     def test_a_skip_for_want_of_a_backend_is_told_apart_from_a_failure(self):
         out = ("test tests::hidden_grade::needs_a_worker ... FAILED\n"
