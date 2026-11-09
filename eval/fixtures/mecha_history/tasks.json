@@ -966,6 +966,60 @@
           "mecha-cli": 695
         }
       }
+    },
+    {
+      "id": "pr-333",
+      "pr": 333,
+      "author": "history",
+      "merge": "5665b16ddf9a8f983b92d4326192782706839764",
+      "pin": "6e84b78626db047cf45db8870aea3b436fb0036b",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-333.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T09:22Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `skipped_line` in module `super`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "c887c9bc11960020dc3a75f6cbb81d7dca0dc90535ac8c4d90982258de6b89ae",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:26:23Z",
+        "by": "baseline",
+        "pin": "6e84b78626db047cf45db8870aea3b436fb0036b",
+        "merge": "5665b16ddf9a8f983b92d4326192782706839764",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-333.json",
+        "must_pass_sha256": "38743ac1509afc59cf2bf2e95940cfc46c0d414118bc86d4f7830a08567975a7",
+        "must_pass_count": {
+          "mecha-cli": 971
+        }
+      }
     }
   ]
 }
