@@ -603,6 +603,17 @@ fn native_session_requires_a_fresh_root_and_records_discovery_failure() {
 #[cfg(feature = "memory-prototype")]
 #[test]
 fn native_session_execution_failure_is_nonzero_with_preserved_report() {
+    native_session_execution_failure(false);
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_controlled_session_execution_failure_preserves_uncalled_recall_report() {
+    native_session_execution_failure(true);
+}
+
+#[cfg(feature = "memory-prototype")]
+fn native_session_execution_failure(controlled: bool) {
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -661,6 +672,10 @@ fn native_session_execution_failure_is_nonzero_with_preserved_report() {
                 (200, r#"{"role":"router"}"#)
             } else {
                 assert!(request.contains("autoload=false"));
+                let body: serde_json::Value =
+                    serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+                assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+                assert_eq!(body["max_tokens"], 4096);
                 completions += 1;
                 (
                     500,
@@ -690,7 +705,9 @@ fn native_session_execution_failure_is_nonzero_with_preserved_report() {
     })).unwrap()).unwrap();
     let root = f.0.join("native-task");
     let holds = f.0.join("holds");
-    let output = f.run(&[
+    let recall = f.0.join("recall.json");
+    std::fs::write(&recall, r#"{"mode":"lexical","query":"calibration"}"#).unwrap();
+    let mut args = vec![
         "memory",
         "--experimental",
         "--db",
@@ -709,7 +726,11 @@ fn native_session_execution_failure_is_nonzero_with_preserved_report() {
         "test-model",
         "--holds-dir",
         holds.to_str().unwrap(),
-    ]);
+    ];
+    if controlled {
+        args.extend(["--recall-request", recall.to_str().unwrap()]);
+    }
+    let output = f.run(&args);
     done.store(true, Ordering::Relaxed);
     assert_eq!(
         serving.join().unwrap(),
@@ -723,6 +744,14 @@ fn native_session_execution_failure_is_nonzero_with_preserved_report() {
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
     assert!(report["run_error"].is_string());
+    if controlled {
+        assert_eq!(report["recall"]["status"], "not_called");
+        assert_eq!(report["recall"]["entered_calls"], 0);
+        assert_eq!(report["recall"]["identity"]["mode"], "lexical");
+    } else {
+        assert!(report.get("recall").is_none());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("recall protocol"));
+    }
     assert!(std::path::Path::new(report["transcript"].as_str().unwrap()).is_file());
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
@@ -730,6 +759,72 @@ fn native_session_execution_failure_is_nonzero_with_preserved_report() {
     );
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains(root.join("report.json").to_str().unwrap()));
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_controlled_cli_rejects_recall_before_discovery_and_preserves_started_roots() {
+    let f = Fixture::new();
+    let database = f.0.join("test.memory-prototype.sqlite");
+    let authority = f.0.join("authority");
+    f.memory(&[
+        "init-native",
+        "--synthetic-input",
+        "--domain",
+        "native-cli",
+        "--authority",
+        authority.to_str().unwrap(),
+    ]);
+    let request = f.0.join("request.json");
+    std::fs::write(&request, serde_json::to_vec(&serde_json::json!({
+        "prompt":"Save a synthetic checked artifact.", "files":{},
+        "criterion":{"goal":"task:check", "goal_text":"Check rows.", "criterion_text":"Keep approved rows.", "criterion_revision":"a".repeat(64), "confirmation_digest":"b".repeat(64)},
+        "expected_rows":[], "domain":"native-cli", "scopes":["synthetic:test"], "account":"synthetic"
+    })).unwrap()).unwrap();
+    let recall = f.0.join("recall.json");
+    let root = f.0.join("controlled");
+    let holds = f.0.join("holds");
+    let args = [
+        "memory",
+        "--experimental",
+        "--db",
+        database.to_str().unwrap(),
+        "native-session",
+        "--synthetic-input",
+        "--request",
+        request.to_str().unwrap(),
+        "--recall-request",
+        recall.to_str().unwrap(),
+        "--authority",
+        authority.to_str().unwrap(),
+        "--root",
+        root.to_str().unwrap(),
+        "--endpoint",
+        "http://example.invalid",
+        "--model",
+        "unused",
+        "--holds-dir",
+        holds.to_str().unwrap(),
+    ];
+    for invalid in [
+        r#"{"mode":"lexical","query":" "}"#.to_owned(),
+        r#"{"mode":"lexical","query":"calibration","surprise":true}"#.to_owned(),
+        " ".repeat(1_048_577),
+        r#"{"mode":"dense","query":"calibration","endpoint":"http://example.invalid","expected_alias":"fixture","artifact_revision":"fixture-1","dimensions":2,"pooling":"last","normalization":"l2"}"#.to_owned(),
+    ] {
+        std::fs::write(&recall, invalid).unwrap();
+        assert!(!f.run(&args).status.success());
+        assert!(!root.exists(), "invalid host recall created a durable start");
+        assert!(!holds.exists(), "invalid host recall reached provider discovery");
+    }
+    std::fs::write(&recall, r#"{"mode":"lexical","query":"calibration"}"#).unwrap();
+    assert!(!f.run(&args).status.success());
+    let started: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("started.json")).unwrap()).unwrap();
+    assert_eq!(started["recall"]["mode"], "lexical");
+    let retained = std::fs::read(root.join("report.json")).unwrap();
+    assert!(!f.run(&args).status.success());
+    assert_eq!(std::fs::read(root.join("report.json")).unwrap(), retained);
 }
 
 #[cfg(all(unix, feature = "memory-prototype"))]

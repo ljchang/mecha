@@ -1113,6 +1113,15 @@ It uses the embedding service, keeps vectors in RAM and reports fallback separat
 from successful semantic retrieval. Key selection and existing output databases
 are refused. This does not enable vector search in ordinary chat.
 
+`native-session --recall-request /absolute/path/recall.json` selects controlled
+lexical or dense recall for one synthetic session. The host JSON supplies the
+exact query and, for dense mode, the explicit local embedding profile. One call
+is allowed under a 15-second retrieval deadline; source authority and the existing
+packet limits still apply. The saved report distinguishes successful recall from
+fallback, missing calls and failures. An unsatisfied recall protocol returns
+nonzero even when the saved answer is correct. Omit the flag for ordinary native
+prototype behavior; it does not change normal chat/web retrieval.
+
 Explicitly selected model-evaluation, extraction and native-session workflows
 can call resident local models through explicit settings; they bypass ordinary
 provider configuration. See the

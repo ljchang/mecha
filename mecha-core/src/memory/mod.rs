@@ -23,6 +23,12 @@ mod recall;
 mod recovery;
 pub use recovery::{restore_encrypted, BackupReport, RestoreAuthority, RestoreReport};
 mod sql;
+
+/// Apply the same searchable-token bounds before host-controlled runs start.
+pub(crate) fn validate_recall_query(text: &str) -> anyhow::Result<String> {
+    sql::fts_expression(text)
+}
+
 mod storage;
 mod store;
 mod transcript;

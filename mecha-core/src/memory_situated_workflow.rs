@@ -17,7 +17,7 @@ use crate::{
     session::{Record, Session, SessionKind, SessionMeta},
     tool::{
         builtin::{FsRead, FsWrite},
-        goal_memory::GoalMemory,
+        goal_memory::{GoalMemory, NativeRecallConfig, NativeRecallReport},
         ModeApprover, Registry, ToolCtx,
     },
 };
@@ -88,6 +88,58 @@ pub struct TaskReport {
     pub run_error: Option<String>,
     pub capture_error: Option<String>,
     pub confirmation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recall: Option<NativeRecallReport>,
+}
+
+/// Host-only wire contract for controlled retrieval. Fixed encoding semantics
+/// match the standalone hybrid experiment; no endpoint or profile enters tools.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeRecallRequest {
+    Lexical {
+        query: String,
+    },
+    Dense {
+        query: String,
+        endpoint: String,
+        expected_alias: String,
+        artifact_revision: String,
+        dimensions: usize,
+        pooling: String,
+        normalization: String,
+    },
+}
+
+impl NativeRecallRequest {
+    pub fn into_config(self) -> Result<NativeRecallConfig> {
+        match self {
+            Self::Lexical { query } => NativeRecallConfig::lexical(query),
+            Self::Dense {
+                query,
+                endpoint,
+                expected_alias,
+                artifact_revision,
+                dimensions,
+                pooling,
+                normalization,
+            } => NativeRecallConfig::dense(
+                query,
+                endpoint,
+                crate::embed::EncodingProfile::new(crate::embed::EncodingProfileSpec {
+                    expected_alias,
+                    artifact_revision,
+                    dimensions,
+                    pooling,
+                    normalization,
+                    query_instruction: crate::embed::QUERY_INSTRUCTION.into(),
+                    query_template: "Instruct: {instruction}\nQuery: {text}".into(),
+                    preprocessing_version: "verbatim-v1".into(),
+                    representation_version: "original-evidence-spans-v1".into(),
+                })?,
+            ),
+        }
+    }
 }
 
 /// Explicit host-authored contract for one synthetic native Test session.
@@ -218,7 +270,62 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: Future<Output = Result<Box<dyn Provider>>>,
 {
+    run_native_session_inner(
+        database, storage, authority, request, None, root, factory, cancel,
+    )
+    .await
+}
+
+/// Run the same native workflow with one host-controlled retrieval attempt.
+/// The opt-in does not alter default sessions, their request type or report wire.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_native_session_with_recall<F, Fut>(
+    database: &Path,
+    storage: StorageAccess,
+    authority: &LocalAuthority,
+    request: &NativeSessionRequest,
+    recall: NativeRecallConfig,
+    root: &Path,
+    factory: F,
+    cancel: &CancellationToken,
+) -> Result<TaskReport>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<Box<dyn Provider>>>,
+{
+    run_native_session_inner(
+        database,
+        storage,
+        authority,
+        request,
+        Some(recall),
+        root,
+        factory,
+        cancel,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_native_session_inner<F, Fut>(
+    database: &Path,
+    storage: StorageAccess,
+    authority: &LocalAuthority,
+    request: &NativeSessionRequest,
+    recall: Option<NativeRecallConfig>,
+    root: &Path,
+    factory: F,
+    cancel: &CancellationToken,
+) -> Result<TaskReport>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<Box<dyn Provider>>>,
+{
     request.validate()?;
+    ensure!(
+        recall.is_none() || request.interpretation_context_id.is_none(),
+        "controlled recall cannot combine interpretation reads"
+    );
     ensure!(
         database.is_absolute() && root.is_absolute() && !root.exists(),
         "native session requires an explicit database and NEW absolute task directory"
@@ -231,10 +338,11 @@ where
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new().mode(0o700).create(root)?;
     let root = root.canonicalize()?;
-    session_checkpoint(
-        &root.join("started.json"),
-        &json!({"protocol":"native-memory-session-v1","status":"started","synthetic_only":true,"request":request,"max_turns":6,"max_output_tokens":16384,"deadline_seconds":180}),
-    )?;
+    let mut started = json!({"protocol":"native-memory-session-v1","status":"started","synthetic_only":true,"request":request,"max_turns":6,"max_output_tokens":16384,"deadline_seconds":180});
+    if let Some(control) = &recall {
+        started["recall"] = serde_json::to_value(control.identity())?;
+    }
+    session_checkpoint(&root.join("started.json"), &started)?;
     let run_cancel = cancel.child_token();
     let timeout_cancel = run_cancel.clone();
     let timer = tokio::spawn(async move {
@@ -250,7 +358,7 @@ where
         ensure!(provider.local(), "native session requires a local provider");
         let provider = crate::memory_bridge_trial::recorded_provider(provider, &root.join("provider-audit.jsonl"), 16384, run_cancel.clone())?;
         let current = request.interpretation_context_id.as_ref().map(|id| InterpretationContext::new(request.criterion.clone(), id.clone())).transpose()?;
-        execute_task(database, &storage, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request)).await
+        execute_task(database, &storage, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request), recall).await
     }.await;
     timer.abort();
     match &result {
@@ -520,6 +628,7 @@ async fn execute(
         source,
         cancel,
         None,
+        None,
     )
     .await
 }
@@ -537,6 +646,7 @@ async fn execute_task(
     source: bool,
     cancel: &CancellationToken,
     native: Option<&NativeSessionRequest>,
+    recall: Option<NativeRecallConfig>,
 ) -> Result<TaskReport> {
     ensure!(
         root.is_absolute() && (native.is_some() || !root.exists()),
@@ -609,6 +719,13 @@ async fn execute_task(
     if let Some(current) = interpretation {
         tool = tool.with_interpretations(current.read_policy())?;
     }
+    let recall_handle = if let Some(control) = recall {
+        let (controlled, handle) = tool.with_native_recall(control)?;
+        tool = controlled;
+        Some(handle)
+    } else {
+        None
+    };
     registry.insert(Arc::new(tool));
     let approver = Arc::new(ModeApprover {
         mode: PermissionMode::Allow,
@@ -662,8 +779,15 @@ async fn execute_task(
         run_error = Some("task cancelled".into());
     }
     let check = authority.check_artifact(&confirmation)?;
-    let mut memory = Memory::open_with_storage(database, storage.clone())?
-        .with_source_guard(Arc::new(authority.clone()));
+    let memory = Memory::open_with_storage(database, storage.clone())
+        .map(|memory| memory.with_source_guard(Arc::new(authority.clone())));
+    // Controlled runs retain known delivery/check outcomes even when the fresh
+    // writable open fails. Preserve the legacy generic-error wire otherwise.
+    let memory = if recall_handle.is_some() {
+        memory
+    } else {
+        Ok(memory?)
+    };
     let capture_request = CaptureRequest {
         confirmation: confirmation.clone(),
         domain: access.domain.clone(),
@@ -672,11 +796,13 @@ async fn execute_task(
         consulted: vec![],
         records: SessionRecords::default(),
     };
-    let capture = if native.is_some() {
-        authority.capture_with_evidence(&mut memory, capture_request, access)
-    } else {
-        authority.capture(&mut memory, capture_request, access)
-    };
+    let capture = memory.and_then(|mut memory| {
+        if native.is_some() {
+            authority.capture_with_evidence(&mut memory, capture_request, access)
+        } else {
+            authority.capture(&mut memory, capture_request, access)
+        }
+    });
     let (receipt, capture_error) = match capture {
         Ok(value) => (Some(value), None),
         Err(error) => (None, Some(error.to_string())),
@@ -690,6 +816,7 @@ async fn execute_task(
         run_error,
         capture_error,
         confirmation,
+        recall: recall_handle.map(|handle| handle.report()),
     })
 }
 
@@ -973,6 +1100,8 @@ pub async fn run_authored(root: &Path) -> Result<AuthoredReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("memory_situated_workflow_recall_tests.rs");
 
     struct CancelledProvider {
         cancel: CancellationToken,

@@ -143,14 +143,15 @@ knowledge remain unchanged. GitHub automatic checks resumed after integrating ma
 current check conclusions remain on PR #846.
 
 **Next MVP gaps:** capture a safely classified failed memory lookup without losing
-the whole episode. The current `memory_experience_bridge::events` refuses every
-errored memory result to avoid losing consulted-source dependencies. In this pilot
-it rejected an empty-query validation failure before any useful recall. Investigate
-a typed no-retrieval receipt; arbitrary read errors must still fail closed. Separately,
-qualify lossless bounded evidence packing for longer episodes (the first comparison
-had 18/19 passages against a 16-passage bound). Dependable stopping remains open: the
-new default-off notice had no artifact-success gain. Preserve fixed comparisons
-and test fresh task schemas before expanding concepts or rumination.
+the whole episode. `memory_experience_bridge::events_mode` still refuses errored
+memory results to avoid losing consulted-source dependencies. The controlled
+`NativeRecallReport` preserves failure diagnostics, but does not yet provide a
+typed no-retrieval receipt that permits capture after a proven non-reading failure.
+Arbitrary read errors must still fail closed. Compact native packets address the
+reconstructed 19-revision fixture; broader longer-episode schemas and hard-bound
+behavior still need qualification. Dependable stopping remains open: the earlier
+default-off notice had no artifact-success gain. Preserve fixed comparisons and
+test fresh task schemas before expanding concepts or rumination.
 
 **Situated appraisal, source `02cfe11cc`:** explicit v7 source-linked hypotheses,
 shared generation machinery, host-only needs assessment and opt-in current/historical
@@ -241,10 +242,28 @@ postflight failed on the valid activated socket state `running`; separate
 read-only checks corroborated unchanged service/model identity without replaying
 the model. Detailed counts, costs and failure boundaries are in HISTORY.
 
-Next is a bounded opt-in native-session comparison that carries reopened evidence
-into a separately checked decision under a changed criterion. Reuse existing
-GoalMemory, artifact checking, deterministic appraisal and consulted-source
-capture. Ordinary runtime retrieval remains lexical; hybrid currently re-embeds
+The bounded opt-in native-session comparison is implemented through
+`run_native_session_with_recall`, `GoalMemory::with_native_recall` and the thin
+`--recall-request` CLI option. It carries reopened evidence into independently
+checked artifacts and v8 consulted-source capture. One exact host-selected query,
+one entered-call opportunity and a fixed retrieval deadline constrain both arms.
+Reports keep artifact correctness, recall protocol and capture outcomes separate.
+Independent source review, actual authored-CLI qualification and full Spark
+qualification passed: 6,363 default / 7,066 memory-enabled / 386 standalone /
+124 Python CLI / 210 authored Python tests, zero failures, with 25/30 existing
+workspace ignores. Strict lint and actual Rust 1.96.1 checking also passed.
+The first frozen sixteen-session comparison is independently audited: positive
+artifacts 1/6 lexical versus 0/6 dense; both no-evidence controls failed per arm.
+Fourteen sessions produced no artifact; both P04 dispatches exited nonzero without
+recall or capture. Each arm delivered
+decisive originals in 5/6 positive cases; both P04 runs skipped recall. Fourteen
+entered recalls completed without fallback, with valid recapture and withdrawn
+sources excluded. This does not establish decision benefit. Next, integrate bounded
+artifact-completion feedback through the existing checker and qualify no-evidence
+reasoning with fresh, explicitly scoped task alternatives; do not tune or replay
+the frozen cohort. HISTORY retains costs, diagnostic ambiguity and first failures.
+See `MECHA-MEMORY-DESIGN.md` §31.19 and the implementation plan. Ordinary runtime
+retrieval remains lexical; the bounded semantic path currently re-embeds
 the eligible pool per invocation and is not a corpus-scale index. Operational
 qualification still precedes private imports. Full disaster recovery needs
 separately durable deletion authority and
@@ -2289,6 +2308,12 @@ handoff is isolated on `docs/assistant-update-handoff`. Older credential,
 private-store, installed-artifact and remote-deployment claims below remain
 dated observations, not freshly verified state. This update supersedes their
 earlier binary, service and factory-version claims.
+
+**Source clarification, 2026-11-09:** the packaged `llama-local.service` now
+executes installed `mecha-router` with an explicit preset path. The older router
+warning below describes a dated installation, not the current packaged template.
+Voice/Parakeet working-tree consumers and portable benchmark builds still require
+branch/blob checks. This source audit did not inspect or change live unit overrides.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
@@ -4857,13 +4882,12 @@ is recoverable without the checkout's cwd. Record:
   timer unit that appears in neither of the skill's two lists (it runs the
   installed `mecha`, so "needs nothing" — but absent is not classified).
 
-- **Two macOS residues from #113's CI arm, parked deliberately** (that
-  lane's own flag, so they are not lost): `homeostat.rs` reads
-  `/proc/loadavg` and `/proc/meminfo` unconditionally, so on macOS load
-  and memory are permanently `None` — degrades honestly, but CI now says
-  macOS is supported and that is a silently reduced feature there. And
-  `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
-  clipboard line — cosmetic garbled output.
+- **macOS follow-ups from #113's CI arm:** the load reading still reaches
+  `/proc/loadavg` through `system::Reader::loadavg`, so it remains unavailable
+  on macOS. Memory availability now reaches the macOS source through
+  `homeostat::mem_available_kb` and `system::Reader::now`; the old missing-memory
+  claim is superseded by source inspection on 2026-11-09. The older OSC 52
+  clipboard-output observation remains unverified in this memory-focused pass.
 
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger

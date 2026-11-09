@@ -157,6 +157,73 @@ capture failures preserve reports and exit nonzero. A completed task with a fail
 independent artifact check is retained as a failed outcome, distinct from those
 execution failures.
 
+### Controlled lexical or vector recall
+
+Add `--recall-request /absolute/path/recall.json` to `native-session` to select
+one host-controlled recall operation. A lexical request is:
+
+```json
+{"mode":"lexical","query":"earlier measurements preserving faint signal detail"}
+```
+
+A dense request uses `"mode":"dense"` with the same `query`, plus explicit
+`endpoint`, `expected_alias`, `artifact_revision`, `dimensions`, `pooling` and
+`normalization` fields. Use the verified embedding service's encoding identity;
+the endpoint must be numeric loopback HTTP. The core supplies the fixed query
+instruction and original-evidence representation. Unknown fields, invalid profiles
+and combination with `interpretation_context_id` refuse before provider discovery.
+The recall-request file is bounded to 1 MiB; the query is at most 4,096 bytes and
+must contain one to 32 alphanumeric search terms, matching the shared reader.
+
+Both modes advertise the same exact-query tool schema and allow one attempted
+`goal_context` call, without bindings or follow-ups. Retrieval has a 15-second
+deadline within the existing session budget and retains the three-anchor,
+zero-neighbor, 20,000-byte packet limits. Dense preparation releases the database
+before embedding and rechecks current source authority before delivery. Vectors
+remain invocation-local. An unavailable embedding service may produce explicit
+lexical fallback; it does not count as completed dense retrieval.
+
+`started.json` records the protocol identity, and `report.json` adds host-only
+`recall` accounting for calls entering GoalMemory. Missing, repeated, rejected,
+cancelled or fallback recall
+makes the controlled CLI exit nonzero even if the artifact is correct. A wrong
+artifact after a valid completed run remains an ordinary measured outcome.
+The experiment also audits transcript attempts rejected before tool dispatch;
+those attempts are outside the tool-local counters.
+Without `--recall-request`, native-session behavior and report shape are unchanged.
+
+The portable fixture and protocol in `fixtures/native-vector-recall/` define
+eight lexical/dense pairs. `native_vector_trial.py` separately seeds authored
+native experiences, freezes the comparison, runs its sixteen slots and audits
+saved evidence. Raw artifact correctness, supporting original evidence and
+no-evidence abstention have separate scores. This small comparison does not
+establish general decision benefit or authorize ordinary chat integration.
+
+For an independently qualified binary and withdrawal helper, run each stage once:
+
+```sh
+python3 prototypes/memory/native_vector_trial.py seed \
+  --binary /absolute/qualified/mecha --root /absolute/new/seed
+python3 prototypes/memory/native_vector_trial.py freeze \
+  --binary /absolute/qualified/mecha \
+  --withdraw-binary /absolute/qualified/memory_native_withdraw \
+  --seed-root /absolute/new/seed --root /absolute/new/cohort \
+  --runtime /absolute/verified-runtime.json
+python3 prototypes/memory/native_vector_trial.py run --root /absolute/new/cohort
+python3 prototypes/memory/native_vector_trial.py audit --root /absolute/new/cohort
+```
+
+The runtime JSON is host-authored: `endpoint`, already-resident `model`, explicit
+`holds_dir`, the six dense-profile fields under `dense`, and an
+`observed_identity` receipt from preflight. Verify the actual configured model and
+embedding artifacts before freezing; an HTTP alias alone does not attest weights.
+The `seed` stage uses authored local replies and plaintext synthetic fixture
+storage. `run` performs real inference and refuses replay, including after a
+partial failure. `audit` is read-only; repeating it is reconciliation by the same
+scorer, not independent review. Preserve the original seed paths, all sixteen
+planned slots and first outputs. This comparison does not qualify encrypted
+operation; encrypted native storage has separate tests.
+
 Core callers can select canonical `CaptureReceipt.originals` using
 `Memory::{prepare_native_concept,retain_native_concept}` and
 `Memory::{prepare_native_concept_rumination,finish_native_concept_rumination}`.

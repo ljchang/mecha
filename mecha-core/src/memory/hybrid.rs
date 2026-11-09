@@ -125,6 +125,7 @@ pub struct HybridResult {
     pub counters: Option<HybridCounters>,
 }
 
+#[derive(Clone)]
 struct HybridContext {
     query: RecallQuery,
     access: Access,
@@ -237,8 +238,41 @@ impl Memory {
         vectors: Option<&HybridVectors>,
         mode: HybridMode,
     ) -> Result<HybridResult> {
+        match prepared.context.valid_at.as_deref() {
+            Some(at) => self.finish_hybrid_context_at(prepared, vectors, mode, at),
+            None => self.finish_hybrid_context_with_validity(prepared, vectors, mode, None),
+        }
+    }
+
+    /// Refresh host validity at delivery without advancing prepared knowledge or
+    /// weakening the complete corpus/authority recheck. Legacy callers keep the
+    /// preparation-time validity through the public wrapper above.
+    pub(crate) fn finish_hybrid_context_at(
+        &self,
+        prepared: &PreparedHybrid,
+        vectors: Option<&HybridVectors>,
+        mode: HybridMode,
+        valid_at: &str,
+    ) -> Result<HybridResult> {
+        self.finish_hybrid_context_with_validity(prepared, vectors, mode, Some(valid_at))
+    }
+
+    fn finish_hybrid_context_with_validity(
+        &self,
+        prepared: &PreparedHybrid,
+        vectors: Option<&HybridVectors>,
+        mode: HybridMode,
+        valid_at: Option<&str>,
+    ) -> Result<HybridResult> {
+        let refreshed = valid_at
+            .map(|at| -> Result<_> {
+                let mut context = prepared.context.clone();
+                context.valid_at = Some(normalize_time(at)?);
+                Ok(context)
+            })
+            .transpose()?;
         let tx = self.conn.unchecked_transaction()?;
-        let context = &prepared.context;
+        let context = refreshed.as_ref().unwrap_or(&prepared.context);
         let read = HybridRead::new(self, &tx, context);
         let vectors = vectors
             .map(|v| CheckedVectors::new(prepared, v))

@@ -2,6 +2,12 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Native vector recall addendum, 2026-11-09:** §31.19 is implemented and fully
+qualified on synthetic software checks. The first independently audited paired
+model comparison did not establish decision benefit: artifact completion and
+no-evidence reasoning remain blockers. See HISTORY for unchanged first results
+and HANDOFF for the next bounded work. This does not activate ordinary chat/web.
+
 **Protected storage addendum, 2026-11-09:** explicit keyed native storage,
 complete encrypted v8 snapshots and bounded historical restore are implemented
 on the prototype branch. Restore requires current deletion/access authority and
@@ -3549,3 +3555,114 @@ ordinary context path without an embedding prerequisite. No claim of
 improved decisions, concept transfer, corpus-scale speed or production readiness
 follows from this retrieval experiment. Implementation steps are in
 `superpowers/plans/2026-11-09-hybrid-retrieval.md`.
+
+
+### 31.19 Native-session vector recall and decision comparison
+
+**Design, 2026-11-09.** The owner authorized connecting vector recall to the
+existing native-session workflow, a measured decision comparison, parallel workers
+and PR/Site upkeep. Reuse Rust core, SQLite v8, guarded GoalMemory, native execution,
+frozen artifact checks, deterministic appraisal and native recapture. This explicit
+synthetic path remains separate from ordinary chat/web, owner-graph migration,
+private imports, persistent vectors and automatic concept promotion. No new global
+configuration, storage schema or provider-specific agent-loop logic is needed.
+
+Use an additive host-only recall control and a sibling native-session API. Existing
+request types, default tool behavior and legacy report bytes remain unchanged when
+it is absent. The thin CLI accepts an optional bounded absolute recall-request JSON
+file, parsed by a core-owned wire type. It selects lexical or dense mode, a nonempty
+exact query (at most 4,096 bytes), and for dense only an explicit numeric-loopback
+HTTP endpoint and validated encoding profile. Use the existing query instruction,
+representation and checked client. Both modes inherit one to 32 alphanumeric
+search terms; validate this shared lexical requirement before starting a run.
+Endpoint/profile errors and interpretation-mode
+incompatibility refuse before task-root creation or provider discovery. Opaque
+StorageAccess still travels through all opens; no storage key enters a DTO.
+
+Each controlled invocation admits one attempted goal_context call. Claim the slot
+atomically before validation, so malformed, mismatched, plain/no-memory, bound or
+concurrent calls cannot buy a second retrieval. The narrow schema advertises the
+same frozen query and no bindings in both arms; enforce equality at runtime. Refuse
+repeated/bound-query advice in the configured tool description as well. Call counts
+cover entries into GoalMemory; the experiment separately audits transcript attempts
+that the Agent may reject before dispatch. Refuse
+interpretation reads in this route. Preserve the first outcome, separately counting
+later rejections. Ordinary unconfigured routes remain unchanged. The fixed common
+packet budget is the existing three anchors, zero neighbors and 20,000 bytes.
+Mode, endpoint, profile, grading and diagnostics never enter model tool output.
+
+Lexical reads ordinary context. Dense prepares the eligible view, releases its
+SQLite transaction and mutex, awaits checked query/passage embedding, then performs
+fresh finalization in a separate blocking read. Preserve complete source closure,
+current access/forgetting, historical knowledge, live validity and external source
+guards. Both arms return exactly the existing ContextPacket inside GoalContext;
+nonempty evidence retains private/untrusted taint and local errors stay local.
+No vectors or raw original text are added to host diagnostic reports.
+
+Bound the whole controlled retrieval to 15 seconds, using the native run's
+cancellation token and existing checked transport caps. Cancellation or expiration
+withholds late output and is a typed unsuccessful disposition, not an empty
+successful packet. Blocking reads may finish after cancellation but remain read-only
+and may not publish late results. A drop-safe attempt guard records interruption if
+the Agent drops the future. Provider unavailability/malformed responses may use the
+existing fresh lexical fallback within the same deadline; explicitly record fallback
+rather than semantic completion. Failed transport counters are unavailable, never
+zero. Empty eligible pools can complete without HTTP. These bounds are experimental
+engineering defaults, not a measured latency guarantee.
+
+An optional host report records mode, profile/query identity, admitted/attempted and
+rejected calls, status/fallback, delivered revision/rank diagnostics, time and known
+transport costs. It is absent for legacy sessions. A durable start records the
+controlled protocol identity before discovery. Native recapture still parses the
+unchanged tool packet and reauthorizes all consulted dependencies. An errored memory
+result still refuses capture. Missing recall, fallback, rejection, timeout or
+interruption cannot become a successful requested-mode treatment merely because an
+artifact passed. The controlled CLI preserves the report and returns nonzero for an
+unsatisfied recall protocol, run error or capture error; a wrong artifact alone is
+still an observed outcome, not an execution exception.
+
+The first experiment predeclares eight paired follow-up tasks: four paraphrase,
+two exact-identifier and two no-evidence controls. Seed experiences use authored
+provider replies through actual native fs_read/fs_write, frozen artifact checking
+and v8 capture; identify these as authored experience, not chat-model learning.
+Scored follow-ups use the verified resident local chat model and the checked local
+embedding service. Keep model-visible prompts, query schema, current criterion,
+files and budgets identical across each pair. Only the retrieval mode differs.
+The second criterion changes the appropriate decision while preserving the observed
+facts; first-task answers remain historical evidence, never current instructions.
+Do not provide relevant source content or grader answers outside the recall path.
+
+Close the seed database and clone its complete bytes and full authority directory
+for each arm; historical snapshots alone do not freeze current access or erasure.
+Original bound seed files remain immutable, verified before/after each arm. Each arm
+has an opaque fresh output root and private independent writes; neither arm's capture
+may enter the other's candidate pool. Preserve current restrictions instead of
+resetting them to manufacture matching arms. Keep captures below existing 16-original
+and 64-consulted limits. Counterbalance lexical/dense order, use the same predeclared
+seed/settings, and retain every planned slot including failures and missing recall.
+
+Track portable fixture and protocol bytes in the repository and compute their
+hashes. Freeze source, artifact expectations, permitted sources, model/embedding
+identity, arm order and limits before scored inference. The experiment-only driver
+may invoke the existing native-session CLI; execution, retrieval and artifact
+authority remain core-owned. An independent audit checks saved artifacts, native
+receipts, source lineage, policies and original fixture expectations without using
+the retrieval scorer as its oracle. Report raw artifact correctness separately from
+qualified current-criterion success (one admitted exact call, no extra rejected
+calls, requested-mode completion and valid capture/lineage). Report no-evidence
+controls separately. Positive evidence-qualified success additionally requires the
+predeclared decisive original observation in both the delivered packet and recaptured
+source closure; an answer guessed after unrelated recall does not qualify. Report
+abstention separately from positive-case evidence coverage. Fallback/error rows stay
+in planned denominators and cannot receive semantic-success credit. Preserve the
+first results; do not tune cases or ranking thresholds after results. Equal or worse
+outcomes are a valid result, not a reason to silently rerun.
+
+Authored fault tests precede real inference: duplicate/mismatched/absent calls,
+concurrency, unavailable embeddings, cancellation including future drop, deadline,
+source withdrawal during embedding and between delivery/recapture, whole consulted
+closure, and actual lock release with a nonvacuous negative control. Full required
+workspace checks and exact staged/message privacy checks precede source publication.
+No claim of general decision benefit or production cutover follows from mechanics
+alone. Implementation steps are in
+`superpowers/plans/2026-11-09-native-vector-recall.md`.

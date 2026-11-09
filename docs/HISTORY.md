@@ -14,6 +14,107 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Controlled native vector recall (2026-11-09, prototype branch)
+
+`GoalMemory::with_native_recall` and `run_native_session_with_recall` connect
+host-selected lexical or checked dense recall to the existing native Agent,
+artifact checks, deterministic appraisal and v8 capture. The thin CLI accepts an
+explicit `--recall-request`; legacy callers and ordinary chat/web remain unchanged.
+One exact query and one atomically claimed entered call share the same three-anchor,
+zero-neighbor, 20,000-byte packet contract. The 15-second deadline covers retrieval
+and publication. Cancellation or deadline observed at publication prevents success;
+an unfinished dropped attempt records interruption. No SQLite lock or transaction
+crosses embedding. Final delivery refreshes validity
+and authorization while retaining the pinned knowledge sequence. No schema or
+persistent vector index is introduced.
+
+Review exposed late-ready deadline/cancellation publication, relations expiring
+during embedding, missing inherited token preflight and loss of diagnostics when
+capture could not reopen its store. Dedicated regressions now cover these paths.
+The final focused checks passed 16 GoalMemory, 20 hybrid, 18 native core and two
+CLI unit tests. The 21-process CLI suite passed before the final narrow fix; all
+five affected process tests then passed again. Strict scoped core/CLI Clippy
+passed. A local standalone-Clippy process lost its terminal receipt and is not
+counted as passing; the full Spark gate includes an explicit replacement check.
+
+The independently reviewed `native_vector_trial.py` freezes four authored native
+experiences and eight lexical/dense pairs before real inference. Raw correctness
+is separate from protocol-qualified decisions with decisive original evidence
+both delivered and recaptured. Missing/withdrawn cases remain separate controls;
+failed and unstarted slots remain in the denominator. Twenty-eight Python tests
+passed. The actual CLI gate passed all four authored seed captures and sixteen
+follow-ups, with eight matched initial request/schema pairs and, per arm, six
+supported positive decisions and two appropriate no-evidence responses. Those
+48 follow-up chat requests and 16 embedding requests / 225 inputs were authored,
+not real model inference. A final optional-`serves` scoring fix preserved the first
+run and its unchanged read-only re-audit; one additional actual CLI session with
+explicit `serves` passed using three authored chat replies and no embeddings.
+Final independent review found no remaining major/medium issue.
+
+The exact candidate completed full Spark qualification on 2026-11-09: default
+workspace 6,363 passed / zero failed / 25 ignored; memory-enabled workspace
+7,066 / zero / 30; standalone 386 / zero / zero; Python CLI 124 / zero / zero;
+authored Python 210 / zero / zero. Both all-target builds, formatting, standalone
+strict Clippy, workspace all-target/all-feature strict Clippy and actual Rust
+1.96.1 checking passed. Required sandbox backends remained enforced. Source,
+index and HEAD stayed unchanged throughout; final prose is reviewed separately.
+The standalone-Clippy terminal result replaces the earlier missing local receipt.
+
+The first model launcher stopped before seeds or model calls because an orphaned
+shell from `process_loss_after_real_read_leaves_spent_indeterminate_reservation`
+retained an inherited qualification lock. Its fixture directory had already been
+removed, leaving it waiting for a release marker. The exact owned shell was
+identified by command, deleted working directory and lock descriptor, then
+terminated; the original failed preflight and cleanup receipt remain. The unchanged
+release was launched with a new ID after confirming the lock released. No scored
+request was replayed, and no model service or product code changed. Waiting for
+test-child exit and excluding inherited orchestration locks are follow-ups.
+
+The first admitted Qwen3.6-35b-a3b-uncensored / Harrier cohort dispatched all sixteen
+planned sessions in one invocation, with 35 chat requests and no retries. The
+independent raw-artifact audit agreed with all original scores. Correct,
+evidence-supported positive artifacts were **1/6 lexical versus 0/6 dense**;
+both arms failed both no-evidence controls. Fourteen artifacts were absent. Only
+lexical P03 wrote the expected artifact; lexical N02 wrote the unrelated XQ9.
+Each arm completed requested-mode recall and valid consulted-source capture in
+7/8 sessions, delivering decisive original observations in 5/6 positive cases.
+Both P04 sessions skipped recall, invented a method and had no capture. All
+fourteen entered recalls completed without fallback. The withdrawn S4 closure
+was absent from both N02 packets and recaptures. No method or evidence row was
+reclassified after seeing the results.
+
+All eight initial request/schema pairs matched. Independent inspection confirmed
+the current criterion was present in every actual first system request, all
+starting database/authority seals matched the planned state, including the S4
+withdrawal marker in both N02 slots, and source/fixture/binary identities
+remained intact. Before/after runtime checks agreed; declared aliases and public
+artifact hashes are configuration evidence, not loaded-weight attestation. The
+model emitted final JSON in chat for many tasks that required `fs_write`. Those
+text choices are diagnostic, not substitute artifacts or a repaired score.
+Lexical P01's LT8 choice also exposes a fixture limitation: all domains share one
+goal, and “retains the entire record” is broad when archive evidence is retrieved.
+Preserve its exact-gold failure without calling it an unambiguous reasoning error.
+Missing/withdrawn cases showed unsupported cross-domain extrapolation; excluding
+withdrawn evidence does not itself make the model abstain.
+
+Lexical consumed 58,564 input / 678 output tokens across 20 chat calls and 24.801
+seconds of summed dispatch time; dense consumed 18,936 / 347 across 15 calls and
+18.906 seconds. Every started chat request has an accounted response. The seven
+entered dense recalls used fourteen embedding requests / 196 inputs. Summed
+recall-operation time was 0.162 seconds lexical and 3.823 seconds dense; the latter
+includes embedding and finalization, not embedding alone. Skipped calls have no
+embedding cost to invent, and unavailable counters remain unavailable. Faster
+termination without an artifact is not an efficiency gain. File hashing preceded
+inference, so this is not a disk-cold measurement. The trial used plaintext
+synthetic fixtures; it does not qualify private or encrypted production operation.
+
+This small comparison did not establish a vector decision benefit. Improve bounded
+artifact-completion feedback using the existing checker, clarify task/alternative
+scope, and freeze new cases before another comparison. Retain this first cohort
+unchanged. Ordinary chat/web activation, persistent indexing and owner-graph
+migration remain outside the increment. Exact-head GitHub checks and final
+publication state are maintained on draft PR #846, separately from Spark results.
+
 ### Source-grounded handoff correction (2026-11-09)
 
 The handoff still described the first concept comparison, programmatic tool calling
@@ -23,6 +124,13 @@ and `install::install_layout` reached through `features::enable`. The obsolete
 first-build items were removed or narrowed. This correction does not claim a new
 runtime deployment or semantic benefit; the earlier concept measurements remain
 unchanged. Broader operational narratives were not recertified by this audit.
+
+A later source pass also narrowed failed-lookup capture and longer-packet open
+items: retained recall diagnostics are not yet a typed non-reading capture receipt,
+and the reconstructed 19-revision packing fixture already fits. Packaged router
+launch no longer reads the working tree, and macOS memory sensing is implemented;
+live unit overrides and older clipboard behavior were not recertified. Broader
+operational narratives remain dated rather than newly verified.
 
 ### Checked embedding transport (2026-11-09, prototype branch)
 

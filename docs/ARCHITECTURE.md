@@ -12924,6 +12924,21 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **A completed answer is not proof that its recall protocol completed.**
+  Explicit native recall uses a host-owned exact query and an atomic attempted-call
+  budget. Malformed or repeated calls cannot buy more evidence. The optional host
+  report keeps retrieval status separate from artifact correctness; absent recall
+  and lexical fallback cannot qualify as completed dense treatment. Both modes use
+  the same model-visible schema and unchanged evidence packet, preserving native
+  recapture and complete consulted-source authority. Ordinary native sessions do
+  not acquire these controls or extra report fields.
+- **Publication must still satisfy the deadline and current validity.**
+  A timeout wrapper alone can prefer a late ready future over an expired timer.
+  Controlled recall checks cancellation and an absolute deadline again before
+  publishing evidence. It releases the database during embedding, then refreshes
+  relation validity while retaining the original knowledge sequence. Review found
+  that reusing attempt-start validity could deliver a relation that expired during
+  inference; current scopes and source checks alone did not catch that case.
 - **Semantic ranks cannot preserve stale source authority.** `PreparedHybrid`
   holds a bounded original-field corpus, policy and encoding identity, never a
   live transaction. Finalization reconstructs the complete eligible corpus,

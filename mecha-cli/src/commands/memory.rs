@@ -78,6 +78,9 @@ pub enum Cmd {
         /// Explicit host-only JSON contract, including frozen criterion/check rows.
         #[arg(long)]
         request: PathBuf,
+        /// Optional host-only single-query lexical/dense recall contract.
+        #[arg(long)]
+        recall_request: Option<PathBuf>,
         #[arg(long)]
         authority: PathBuf,
         #[arg(long)]
@@ -677,6 +680,7 @@ where
         Cmd::NativeSession {
             synthetic_input,
             request,
+            recall_request,
             authority,
             root,
             endpoint,
@@ -686,7 +690,10 @@ where
         } => {
             use mecha_core::{
                 memory_experience_bridge::LocalAuthority,
-                memory_situated_workflow::{run_native_session_with_storage, NativeSessionRequest},
+                memory_situated_workflow::{
+                    run_native_session_with_recall, run_native_session_with_storage,
+                    NativeRecallRequest, NativeSessionRequest,
+                },
             };
             use std::io::Read;
             ensure!(synthetic_input, "--synthetic-input is required");
@@ -700,6 +707,23 @@ where
                 .read_to_end(&mut bytes)?;
             ensure!(bytes.len() <= 1_048_576, "oversized native request file");
             let request: NativeSessionRequest = serde_json::from_slice(&bytes)?;
+            let recall = recall_request
+                .map(|path| -> Result<_> {
+                    ensure!(
+                        path.is_absolute(),
+                        "explicit absolute recall request path required"
+                    );
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(path)?
+                        .take(1_048_577)
+                        .read_to_end(&mut bytes)?;
+                    ensure!(
+                        bytes.len() <= 1_048_576,
+                        "oversized native recall request file"
+                    );
+                    serde_json::from_slice::<NativeRecallRequest>(&bytes)?.into_config()
+                })
+                .transpose()?;
             let authority = LocalAuthority::open(&authority)?;
             let cancel = CancellationToken::new();
             let signal_cancel = cancel.clone();
@@ -708,26 +732,41 @@ where
                     signal_cancel.cancel();
                 }
             });
-            let result = run_native_session_with_storage(
-                &args.db,
-                storage.clone(),
-                &authority,
-                &request,
-                &root,
-                |run_cancel| {
-                    native_provider(
-                        LocalTrialConfig {
-                            endpoint,
-                            model,
-                            holds_dir,
-                            seed,
-                        },
-                        run_cancel,
-                    )
-                },
-                &cancel,
-            )
-            .await;
+            let factory = |run_cancel| {
+                native_provider(
+                    LocalTrialConfig {
+                        endpoint,
+                        model,
+                        holds_dir,
+                        seed,
+                    },
+                    run_cancel,
+                )
+            };
+            let result = if let Some(recall) = recall {
+                run_native_session_with_recall(
+                    &args.db,
+                    storage.clone(),
+                    &authority,
+                    &request,
+                    recall,
+                    &root,
+                    factory,
+                    &cancel,
+                )
+                .await
+            } else {
+                run_native_session_with_storage(
+                    &args.db,
+                    storage.clone(),
+                    &authority,
+                    &request,
+                    &root,
+                    factory,
+                    &cancel,
+                )
+                .await
+            };
             signal.abort();
             let report_path = root.join("report.json");
             let report = result.with_context(|| {
@@ -737,13 +776,21 @@ where
                 )
             })?;
             let value = serde_json::to_value(&report)?;
-            if report.run_error.is_some() || report.capture_error.is_some() {
+            let recall_failed = report
+                .recall
+                .as_ref()
+                .is_some_and(|recall| !recall.protocol_satisfied());
+            if report.run_error.is_some() || report.capture_error.is_some() || recall_failed {
                 println!("{}", serde_json::to_string_pretty(&value)?);
+                let recall_diagnostic = report.recall.as_ref().map_or_else(String::new, |_| {
+                    format!("; recall protocol failed: {recall_failed}")
+                });
                 anyhow::bail!(
-                    "native session incomplete; inspect {} (execution: {}; capture: {})",
+                    "native session incomplete; inspect {} (execution: {}; capture: {}{})",
                     report_path.display(),
                     report.run_error.as_deref().unwrap_or("recorded"),
-                    report.capture_error.as_deref().unwrap_or("recorded")
+                    report.capture_error.as_deref().unwrap_or("recorded"),
+                    recall_diagnostic
                 );
             }
             value
@@ -2239,6 +2286,156 @@ mod native_storage_cli_tests {
         } else {
             anyhow::bail!("expected experimental memory command")
         }
+    }
+
+    struct AuthoredRecallProvider {
+        step: AtomicUsize,
+        recall: bool,
+    }
+    #[async_trait::async_trait]
+    impl Provider for AuthoredRecallProvider {
+        fn id(&self) -> &str {
+            "authored"
+        }
+        fn default_model(&self) -> &str {
+            "authored"
+        }
+        fn local(&self) -> bool {
+            true
+        }
+        async fn complete(
+            &self,
+            _: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<mecha_core::message::CompletionResponse> {
+            use mecha_core::message::{Block, CompletionResponse, Message, StopReason, Usage};
+            let step = self.step.fetch_add(1, Ordering::SeqCst);
+            let content = if self.recall && step == 0 {
+                Block::ToolUse {
+                    id: "recall".into(),
+                    name: "goal_context".into(),
+                    input: json!({"memory":{"query":"calibration"}}),
+                }
+            } else if step == usize::from(self.recall) {
+                Block::ToolUse {
+                    id: "write".into(),
+                    name: "fs_write".into(),
+                    input: json!({"path":"output.json","content":if self.recall {r#"[{"value":"wrong"}]"#} else {"[]"}}),
+                }
+            } else {
+                Block::text("Done.")
+            };
+            let stop_reason = if matches!(content, Block::ToolUse { .. }) {
+                StopReason::ToolUse
+            } else {
+                StopReason::EndTurn
+            };
+            Ok(CompletionResponse {
+                message: Message::assistant(vec![content]),
+                stop_reason,
+                usage: Usage::default(),
+                refusal: None,
+                model: "authored".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn native_cli_recall_protocol_failure_is_separate_from_artifact_failure() -> Result<()> {
+        let fixture = Fixture(
+            std::env::temp_dir()
+                .canonicalize()?
+                .join(format!("native-recall-cli-{}", uuid::Uuid::new_v4())),
+        );
+        fs::create_dir(&fixture.0)?;
+        let db = fixture.0.join("native.memory-prototype.sqlite");
+        let authority = fixture.0.join("authority");
+        let request = fixture.0.join("request.json");
+        let recall_request = fixture.0.join("recall.json");
+        fs::write(
+            &request,
+            serde_json::to_vec(
+                &json!({"prompt":"Save output.json.","files":{},"criterion":{"goal":"task:check","goal_text":"Check rows.","criterion_text":"Keep approved rows.","criterion_revision":"a".repeat(64),"confirmation_digest":"b".repeat(64)},"expected_rows":[],"domain":"synthetic","scopes":["synthetic:test"],"account":"synthetic"}),
+            )?,
+        )?;
+        fs::write(
+            &recall_request,
+            r#"{"mode":"lexical","query":"calibration"}"#,
+        )?;
+        execute(parse_memory(&[
+            "mecha",
+            "memory",
+            "--experimental",
+            "--db",
+            db.to_str().unwrap(),
+            "init-native",
+            "--synthetic-input",
+            "--domain",
+            "synthetic",
+            "--authority",
+            authority.to_str().unwrap(),
+        ])?)
+        .await?;
+        for recall in [false, true] {
+            let task = fixture.0.join(if recall {
+                "wrong-artifact"
+            } else {
+                "missing-recall"
+            });
+            let args = parse_memory(&[
+                "mecha",
+                "memory",
+                "--experimental",
+                "--db",
+                db.to_str().unwrap(),
+                "native-session",
+                "--synthetic-input",
+                "--request",
+                request.to_str().unwrap(),
+                "--recall-request",
+                recall_request.to_str().unwrap(),
+                "--authority",
+                authority.to_str().unwrap(),
+                "--root",
+                task.to_str().unwrap(),
+                "--endpoint",
+                "http://127.0.0.1:1",
+                "--model",
+                "authored",
+                "--holds-dir",
+                fixture.0.to_str().unwrap(),
+            ])?;
+            let result = execute_with_native_provider(args, |_, _| async {
+                Ok(Box::new(AuthoredRecallProvider {
+                    step: AtomicUsize::new(0),
+                    recall,
+                }) as Box<dyn Provider>)
+            })
+            .await;
+            let report: serde_json::Value =
+                serde_json::from_slice(&fs::read(task.join("report.json"))?)?;
+            assert!(
+                report["run_error"].is_null() && report["capture_error"].is_null(),
+                "{report}"
+            );
+            if recall {
+                assert!(
+                    result.is_ok(),
+                    "an artifact mismatch is a recorded outcome: {result:?}"
+                );
+                assert_eq!(report["check"]["verdict"], "Failed");
+                assert_eq!(report["recall"]["status"], "completed");
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("recall protocol failed: true"));
+                assert_eq!(report["check"]["verdict"], "Passed");
+                assert_eq!(report["recall"]["status"], "not_called");
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

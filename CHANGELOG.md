@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental native memory sessions accept an explicit `--recall-request` for
+  one bounded lexical or dense retrieval. The existing evidence packet and source
+  checks carry through to recapture; host reports distinguish completion, fallback,
+  cancellation and rejected calls from artifact correctness. A portable paired
+  synthetic trial measures decisions separately from supporting evidence.
+
 - Experimental memory adds bounded, invocation-local hybrid evidence retrieval
   and `memory evaluate-hybrid` for a frozen synthetic comparison. Dense candidates
   are independent of lexical matches, while complete source authorization,

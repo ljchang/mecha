@@ -161,7 +161,7 @@ impl Memory {
             ensure!(a < b, "occurrence interval must be nonempty");
         }
         // Literal terms only; OR admits partial overlap for a ranked baseline.
-        let mut expression = fts_expression(&query.text)?.replace(" AND ", " OR ");
+        let mut expression = super::validate_recall_query(&query.text)?.replace(" AND ", " OR ");
         if let Some(name) = mention {
             // Descriptive terms rank results but cannot exclude a named record.
             expression = format!("({expression}) OR {name}");
