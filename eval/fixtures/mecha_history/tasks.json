@@ -52,6 +52,128 @@
     },
     "note": "one uniform draw over the eligible set (sample.rs), seed and rule recorded before it ran; 780 was replaced by the next in order (466) because its tests read a private field; 807 was rejected at validation (its hidden tests skip without the monty worker) and replaced by the next in order (471)"
   },
+  "holdout_draws": {
+    "boredom-1": {
+      "recorded_at": "2026-11-09T05:05:43Z",
+      "purpose": "measurement holdout for the boredom on/off experiment (owner ruling 2026-11-09: proper path); never read during exploration",
+      "seed": 20261109,
+      "algorithm": "mecha_core::sample::shuffled over the eligible PR numbers in ascending order, then admit in shuffled order until 8 are admitted; a task rejected at admission is replaced by the next in order (scratchpad sample.py, verified equal to sample.rs on 4 vectors)",
+      "rule": "the pilot's rule unchanged: merged since 2026-09-30, 20-400 lines (additions+deletions), <=8 files, touches .rs, adds >=1 #[test], no persona/voice/image/web paths or titles; graded-by-live-service PRs excluded as in the pilot",
+      "merged_before": "2026-11-09T05:00:00Z",
+      "minus_seen": [
+        "421",
+        "466",
+        "471",
+        "476",
+        "525",
+        "726",
+        "759",
+        "780",
+        "793",
+        "798",
+        "807",
+        "813"
+      ],
+      "minus_driver_arc": {
+        "847": "the design",
+        "848": "driven kind",
+        "851": "driven guardrails",
+        "852": "the task source",
+        "857": "the change under test",
+        "858": "a bank task revision"
+      },
+      "k": 8,
+      "revision": {
+        "at": "2026-11-09T05:09:31Z",
+        "change": "window start 2026-09-30 -> 2026-08-15; everything else unchanged",
+        "why": "the recorded rule leaves 5 eligible (464 474 564 723 853) against k=8; counted from PR metadata and added #[test] lines only, before any draw and before any task's change was read"
+      },
+      "eligible": [
+        "64",
+        "70",
+        "71",
+        "72",
+        "82",
+        "83",
+        "91",
+        "92",
+        "93",
+        "94",
+        "97",
+        "98",
+        "101",
+        "103",
+        "121",
+        "130",
+        "150",
+        "155",
+        "239",
+        "245",
+        "257",
+        "263",
+        "267",
+        "279",
+        "286",
+        "333",
+        "356",
+        "360",
+        "387",
+        "393",
+        "400",
+        "402",
+        "464",
+        "474",
+        "564",
+        "723",
+        "853"
+      ],
+      "excluded": {
+        "553": "toolchain pin: graded by CI install (pilot exclusion)",
+        "709": "OAuth sign-in: live provider (pilot exclusion)",
+        "788": "TLS provider at runtime: live socket (pilot exclusion)"
+      },
+      "shuffled_order": [
+        "387",
+        "101",
+        "71",
+        "393",
+        "263",
+        "98",
+        "155",
+        "333",
+        "360",
+        "92",
+        "245",
+        "723",
+        "97",
+        "239",
+        "402",
+        "103",
+        "267",
+        "400",
+        "72",
+        "564",
+        "130",
+        "83",
+        "853",
+        "91",
+        "356",
+        "121",
+        "93",
+        "70",
+        "286",
+        "279",
+        "82",
+        "150",
+        "94",
+        "474",
+        "64",
+        "464",
+        "257"
+      ],
+      "drawn_at": "2026-11-09T05:09:31Z"
+    }
+  },
   "tasks": [
     {
       "id": "pr-421",
@@ -543,6 +665,63 @@
         "must_pass_sha256": "e8a1e0c34480dc5f6c97f55a34e523c7a885183e7a7a4fdda1161c4be7283b6f",
         "must_pass_count": {
           "mecha-cli": 1111
+        }
+      }
+    },
+    {
+      "id": "pr-387",
+      "pr": 387,
+      "author": "history",
+      "merge": "ada358af60d73e2c16d61fd00b90b6be2796da7b",
+      "pin": "2588d1001049ba154b874cf7513c0d368dee415d",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-387.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-09T06:39Z",
+        "by": "validate",
+        "pin": "every run fails an assertion (rejected by OwnerApproved)",
+        "merge": "every run passes",
+        "note": "needs the two mismatch fixtures repaired, which its pin compiles in; grafted only after the whole_items fix (479d1fd1e): the diff gives the new test's closing brace to the test above it"
+      },
+      "prompt_check": {
+        "sha256": "a3804aeef3a56c318f0bdc61fdc485e5716715b79465c114c3ab592ff9356985",
+        "store_present": true
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T07:12:20Z",
+        "by": "baseline",
+        "pin": "2588d1001049ba154b874cf7513c0d368dee415d",
+        "merge": "ada358af60d73e2c16d61fd00b90b6be2796da7b",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-387.json",
+        "must_pass_sha256": "730b64b9a13a992482c0ce39a498b993ddccea673e97927d53a9e6b36959dfc2",
+        "must_pass_count": {
+          "mecha-cli": 1033,
+          "mecha-core": 2213
         }
       }
     }
