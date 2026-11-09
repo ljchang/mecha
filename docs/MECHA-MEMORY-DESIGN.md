@@ -3450,3 +3450,102 @@ owner-only status transitions and uncertain-write recovery. Reuse local
 per-conversation plans, todos and checked feedback. Personal mail/calendar/notes
 can remain independently queryable; nightly migration and wholesale owner-graph
 replacement remain deferred.
+
+### 31.18 Bounded hybrid retrieval comparison
+
+**Design, 2026-11-09.** Following the qualified packet/appraisal and protected
+storage increments, compare lexical, dense and hybrid evidence retrieval using
+Mecha's existing loopback embedding service. This is an explicit synthetic
+prototype, not automatic production recall, concept learning or a private import.
+The owner authorized continuing this sequence with subagents. The implementation
+choices below are engineering defaults, not new owner requirements.
+
+Keep SQLite and canonical records unchanged. Build an invocation-local candidate
+view from the same eligible evidence corpus used by BM25. Embed only original
+indexable Evidence fields, not Concept/Interpretation records, summaries, unknown
+JSONL fields or host-only needs. Required literal mentions constrain anchors before
+ranking/selection. Dense retrieval must consider semantic-only candidates; reranking
+lexical top-k would not test the intended improvement. Existing lexical APIs and
+source-bound follow-up searches retain their behavior.
+
+The first experiment allows 256 eligible records, 256 KiB of original field bytes,
+512 nonoverlapping passages of at most 2,000 Unicode scalars, and the existing
+query/record/output limits. Split at UTF-8 boundaries with exact revision, field,
+byte-span and content-digest identities. Consider all original fields, including
+the end of a long field. Never choose the first N records or silently truncate a
+field to fit. Exceeding a bound yields an explicit lexical-only fallback before
+embedding. Hidden/future/ineligible records do not consume the eligible budget.
+The existing full-scan eligibility cost remains a documented scaling limitation.
+
+Preparation ends its SQLite read transaction before embedding. An opaque prepared
+request binds the instance, snapshot, access/filter policy, situation, literal
+mention, complete eligible corpus and embedding identity. Finalization starts a
+fresh read transaction and reconstructs the full eligible view before using any
+ranking. Changes to eligible identities, original/indexed bytes or effective access/source
+eligibility cause explicit lexical recomputation; removing only revoked winners would leave stale
+ranking statistics. Historical freshness remains evaluated at `known_at`; current
+restrictions and forgetting still override it. Existing final external-source
+checks remain separate and fresh. These are point-in-time checks, not an atomic
+snapshot of SQLite and external files.
+
+Use deterministic cosine ranks with f64 accumulation, collapse passage scores to
+one maximum per evidence revision, and fuse independent lexical/dense rankings
+with reciprocal rank fusion, k=60 and one-based ranks. No unmeasured cosine
+threshold or learned reranker is introduced. Tie-break by existing descending
+sequence and revision ordering. Label cosine, BM25 and RRF separately; none is a
+confidence probability. Reuse whole-anchor byte budgeting, independently checked
+neighbors and complete context/dependency assembly. The initial hybrid context
+API supports no source-bound follow-up selections; those remain on the legacy
+context route until separately integrated.
+
+The shared Embedder transport disables redirects and environmental proxies. A new
+checked batch API is additive: legacy persona signatures and cache formats remain
+unchanged. Checked input contains explicit query/passage tasks and a versioned
+encoding profile: expected alias, host-declared artifact revision, dimensions,
+pooling/normalization, query instruction/template, preprocessing and representation
+versions. An echoed model alias does not attest the loaded weights. The benchmark
+records host-configured artifact identity separately from server-reported identity.
+
+Checked calls reject oversized inputs rather than applying legacy truncation.
+Initial fixed limits are 8,000 Unicode scalars per formatted input, 16 inputs per
+HTTP request, 256 KiB serialized request, 8 MiB streamed response, 64 HTTP attempts
+and 120 seconds for the complete checked operation. Reject nonliteral-loopback
+HTTP endpoints, URL credentials/query/fragment, unexpected model, malformed or
+missing/duplicate indices, inconsistent dimensions, nonnumeric/nonfinite f32
+coordinates and zero norms. Reorder valid shuffled replies. Overflow splitting
+must preserve identity/order, stay within the same budgets and return no partial
+batch. Do not echo server bodies or input text in checked errors. Expected
+dimensions are bounded to 1..=8192. No normalization is silently applied by the
+client; f64 scoring avoids overflow on otherwise valid finite vectors.
+
+Embeddings remain in RAM for one invocation and can be shared across its three
+ranking arms. No persistent vector table, cross-query cache, schema migration,
+new database, new service or persona-index migration is included. Embedding
+unavailability, corpus bounds or changed eligibility explicitly report lexical
+fallback. Malformed supplied vectors are a contract error. An empty eligible or literal-matched
+anchor pool is a successful empty result without any embedding request, not a
+provider failure. The experiment keeps
+fallback/error rows in the planned denominator and does not credit them as
+successful dense/hybrid runs. A fallback still returns freshly authorized lexical
+context with the same literal-mention constraint when available.
+
+Freeze a small synthetic corpus and grading expectations before model calls.
+Include paraphrases, exact identifiers, multi-evidence questions and scoped/time
+or withdrawn distractors; record empty-gold cases separately. Gold and forbidden
+IDs stay host-only and never enter retrieval requests or embedding text. Compare
+all three modes with identical output budgets; report complete-evidence coverage,
+reciprocal rank, bytes, latency, fallback/error counts and unauthorized returns.
+For nonempty gold, reciprocal rank is 1/r for the first relevant returned anchor
+in ranked-anchor order, retaining only anchors present in the final packet; no
+relevant returned anchor scores zero. Complete coverage separately requires every
+gold revision anywhere in the delivered packet. Empty-gold rows have null coverage,
+complete and reciprocal-rank metrics and separately report returned records.
+Failed/fallback semantic treatments score zero in the planned nonempty-gold
+semantic denominator even if their reported lexical fallback packet contains gold.
+Record shared preparation/embedding costs once and per-mode finalization costs
+separately; show the shared cost charged to each semantic arm without presenting
+that derived total as an independently timed run. The lexical arm times the
+ordinary context path without an embedding prerequisite. No claim of
+improved decisions, concept transfer, corpus-scale speed or production readiness
+follows from this retrieval experiment. Implementation steps are in
+`superpowers/plans/2026-11-09-hybrid-retrieval.md`.

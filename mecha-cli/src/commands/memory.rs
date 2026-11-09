@@ -150,6 +150,26 @@ pub enum Cmd {
     Evaluate,
     /// Replay frozen synthetic searches with explicit mention bindings; no model.
     EvaluateMentions,
+    /// Compare lexical, dense and hybrid retrieval in a NEW synthetic fixture.
+    EvaluateHybrid {
+        #[arg(long, required = true)]
+        synthetic_input: bool,
+        /// Explicit base URL of the numeric loopback embeddings server.
+        #[arg(long)]
+        endpoint: String,
+        /// Alias that the server must report.
+        #[arg(long)]
+        expected_alias: String,
+        /// Host-declared identity of the embedding weights.
+        #[arg(long)]
+        artifact_revision: String,
+        #[arg(long)]
+        dimensions: usize,
+        #[arg(long)]
+        pooling: String,
+        #[arg(long)]
+        normalization: String,
+    },
     /// Compare retrieval with a resident local model on synthetic cases.
     EvaluateModel {
         /// Explicit loopback llama-server router URL; never loads a model.
@@ -546,6 +566,7 @@ fn key_policy(args: &Args) -> Result<KeyFilePolicy> {
         | Cmd::ImportSession { .. }
         | Cmd::Evaluate
         | Cmd::EvaluateMentions
+        | Cmd::EvaluateHybrid { .. }
         | Cmd::EvaluateModel { .. }
         | Cmd::WorkflowTrial { .. }
         | Cmd::ExtractPlan { .. }
@@ -1095,6 +1116,32 @@ where
             mecha_core::memory::model_evaluation::followup::mention_evaluation::run(&args.db)?
         }
         Cmd::Evaluate => serde_json::to_value(evaluation::run(&args.db)?)?,
+        Cmd::EvaluateHybrid {
+            synthetic_input,
+            endpoint,
+            expected_alias,
+            artifact_revision,
+            dimensions,
+            pooling,
+            normalization,
+        } => {
+            use mecha_core::memory_hybrid_workflow::{run, EvaluationOptions};
+            ensure!(synthetic_input, "--synthetic-input is required");
+            serde_json::to_value(
+                run(
+                    &args.db,
+                    &EvaluationOptions {
+                        endpoint,
+                        expected_alias,
+                        artifact_revision,
+                        dimensions,
+                        pooling,
+                        normalization,
+                    },
+                )
+                .await?,
+            )?
+        }
         Cmd::ForgetSessionRecord {
             account,
             session,

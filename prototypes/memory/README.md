@@ -816,6 +816,54 @@ generalization. Future model/strategy comparisons must freeze separate held-out
 episode families and common compute budgets. The full evaluation fixture lives
 inside `mecha-core/src/memory/fixtures` so published core source is self-contained.
 
+## Bounded hybrid retrieval comparison
+
+`evaluate-hybrid` creates a new **plaintext synthetic** fixture and compares
+ordinary lexical, dense cosine and reciprocal-rank-fused retrieval. It uses the
+existing embedding service only; no chat model or ordinary provider configuration
+is consulted. It refuses key selection and existing database paths. The explicit
+profile describes the service you have independently verified: an echoed alias
+does not attest its weights, pooling or normalization.
+
+The following profile was checked against the on-demand Harrier service on
+2026-11-09. Verify your own artifact before reusing these arguments:
+
+```sh
+target/debug/mecha memory --experimental \
+  --db /tmp/hybrid-eval.memory-prototype.sqlite evaluate-hybrid \
+  --synthetic-input --endpoint http://127.0.0.1:8081 \
+  --expected-alias harrier-oss-v1-0.6b \
+  --artifact-revision sha256:f3af313d8f58b59f282bdf7299a6ad738efdcb0644e7a98ee6deb106336e717a \
+  --dimensions 1024 --pooling last --normalization l2 \
+  > /tmp/hybrid-eval.json
+```
+
+The built-in fixture has 40 invented records, 16 nonempty-gold cases and two
+empty-gold controls. Queries, budgets and host-only expectations were frozen
+before inference. The report carries fixture/protocol hashes and the complete
+encoding profile. It reports coverage, complete evidence, reciprocal rank,
+unauthorized returns, packet sizes and costs. Semantic fallback/error rows earn
+zero in their planned nonempty-gold denominator; empty-gold scores are null.
+Keyword timing is independent. Preparation and embeddings are shared once between
+the semantic arms, whose totals including that shared work are explicitly derived.
+Failed embedding calls have unavailable transport counters, not zero counters.
+
+Vectors remain in RAM for the invocation. Dense search ranks all eligible original
+passages independently of lexical matches, then optionally combines the rankings
+with RRF60. Required mentions apply before dense selection and on every fallback.
+Preparation releases its read transaction before embedding; finalization checks
+the full eligible corpus again and preserves complete source/dependency bundles.
+Bounds are 256 eligible records, 256 KiB original fields and 512 passages of at
+most 2,000 Unicode scalars. Corpus limits, unavailable embeddings or changes in
+eligible evidence produce an explicit, freshly authorized lexical fallback.
+Current forgetting and restrictions continue to override historical snapshots.
+
+The command is a bounded authored retrieval diagnostic. It does not turn on vector
+search in normal chat, persist an index, or establish better decisions or useful
+concept transfer. V8 concept/relation closure is tested separately from this v1
+plain-evidence comparison. See `docs/HISTORY.md` for qualification and measured
+results; preserve failed runs instead of tuning this fixture after viewing them.
+
 ## Standalone qualification harness
 
 From the repository root:
@@ -1085,7 +1133,7 @@ An unknown or forgotten reference currently returns `None`; richer unavailable
 reasons are needed before production integration.
 
 The model comparison below measures one bounded query-expansion candidate.
-Vector retrieval and matched-compute context ablations remain future comparisons. Private-data evaluation still requires encryption, source-fidelity
+Bounded hybrid retrieval has an explicit synthetic comparison above; persistent vector indexing and matched-compute context ablations remain future work. Private-data evaluation still requires encryption, source-fidelity
 inventory and a protected snapshot bridge. Keep the current graph authoritative
 until paired evaluation and forgetting/restriction propagation pass.
 

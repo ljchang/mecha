@@ -217,8 +217,37 @@ authority files, artifacts and audits remain separate surfaces. Restore requires
 the current store and does not merge later facts/withdrawals or install a live
 replacement.
 
-Next are measured hybrid retrieval and operational qualification before private
-imports. Full disaster recovery needs separately durable deletion authority and
+Bounded hybrid retrieval is implemented under `MECHA-MEMORY-DESIGN.md` §31.18.
+The additive `Embedder::embed_checked` client passed 13 embedding and nine persona
+checks, scoped strict Clippy and independent review. The two-phase evidence
+selector passed independent review, 499 scoped core and 383 standalone tests
+(including 14 hybrid tests in each), plus strict feature-core Clippy. The
+core comparison workflow and thin `memory evaluate-hybrid` CLI are implemented
+and independently reviewed. Focused qualification passed 20 core/selector tests,
+three CLI tests and the checked-client deadline regression. Combined Spark
+qualification has passed 6,363 default and 7,041 memory-enabled workspace tests,
+386 standalone tests, 124 Python CLI checks and 182 authored Python tests. The
+default total combines unchanged wholly passed targets with an explicit replay
+after correcting a missing layout-backend test prerequisite; the first failure
+is preserved. Strict all-target/all-feature Clippy and the actual Rust 1.96.1
+all-target/all-feature check also passed; source and index remained unchanged.
+A frozen 40-record fixture has 16 scored cases and two empty-gold controls.
+The first Harrier comparison completed all 54 treatment rows. Independent audit
+found complete evidence coverage in 12/16 lexical, 16/16 dense and 15/16 hybrid
+cases, with no unauthorized returns. Dense beat fusion on this small cohort;
+one empty-gold control returned four irrelevant candidates in every arm. This
+does not establish abstention or decision benefit. The original runner's
+postflight failed on the valid activated socket state `running`; separate
+read-only checks corroborated unchanged service/model identity without replaying
+the model. Detailed counts, costs and failure boundaries are in HISTORY.
+
+Next is a bounded opt-in native-session comparison that carries reopened evidence
+into a separately checked decision under a changed criterion. Reuse existing
+GoalMemory, artifact checking, deterministic appraisal and consulted-source
+capture. Ordinary runtime retrieval remains lexical; hybrid currently re-embeds
+the eligible pool per invocation and is not a corpus-scale index. Operational
+qualification still precedes private imports. Full disaster recovery needs
+separately durable deletion authority and
 key recovery. Independently scored transfer, genuine in-scope model revision,
 broader capture/termination coverage, source-file protection and private-data
 qualification remain open. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
@@ -308,14 +337,13 @@ failure. Require all eight workflows/audits, zero false support or wrong-bearing
 support, zero original-citation defects, and sufficient useful known/uncertain
 responses. Mechanical success alone does not open the learning gate.
 
-The first bounded synthetic rumination cycle is now implemented (§31.15). Next,
-freeze a concept-learning comparison: induce from training episodes, evaluate
-held-out decisions with identical original evidence with/without the concept,
-add a counterexample, then evaluate the revised concept on untouched variants.
-Test transfer, a near-match and insufficient evidence separately. Native external
-sources still require a narrowly qualified admission/recall contract; do not weaken
-guardless authorization. Existing `learning.rs` rules enter instruction prompts
-and remain distinct from provisional conceptual knowledge.
+The first bounded synthetic rumination cycle and concept comparison are implemented
+in `memory_concept_workflow::run_trial`, including induction, paired decisions and
+counterexample revision. HISTORY records the fourteen-call pilot and its lack of
+measured choice benefit. Broader transfer and reliable revision remain unqualified.
+Native concept admission/recall uses explicit guarded APIs; do not weaken source
+authorization. Existing `learning.rs` rules enter instruction prompts and remain
+distinct from provisional conceptual knowledge.
 No default nightly migration is planned. Automatic needs-driven goal/context
 orchestration, safe failed-lookup capture and longer-episode qualification remain
 open; retire old appraisal duplication only after consumer parity and measured benefit.
@@ -875,7 +903,7 @@ line): 4132 passed, 0 failed, 5 ignored. Open, cheapest first:
     `merge_file`'s strips by one textual idiom (`trust ==
     LayerTrust::Project && layer.<t>.take()`), so a strip spelled
     differently is invisible to it.
-- **Step 7a-2 is #526, merged (`57424b7f`, 2026-10-03, 5 review passes) and not deployed (mecha-a3); `mecha features plan` exists only on main. Next in the lane: 7a-3, the first real install (layout, via the manifest).** `sidecar.rs` (a registry of
+- **Historical Step 7a-2 context (#526):** layout and further installers now exist in `install::install`, `install_layout` and `features::enable`; the first installer is no longer open work. The dated deployment/measurement details below were not reverified in this pass. `sidecar.rs` (a registry of
   the programs features run, provided-detection by user unit, PATH,
   directory, or a docker image with no socket, and a manifest reader) and a
   read-only `mecha features plan <id> [--verify]`. It re-pins the `tts` slot
@@ -6827,11 +6855,6 @@ is true now:
   `todo.rs`, so a run that never plans cannot declare a check.
   `ArtifactCase::criterion_feedback` observes a bound fixture after the run;
   it does not turn final completion into an enforced convergence loop.
-
-- **Programmatic tool calling** (a `code` tool that calls other tools from inside
-  a program). Two hazards to solve first, both named in the research: taint must
-  update *within* a running program, and approval for a program that makes
-  thirty calls is not thirty approvals.
 
 ### The learning system
 

@@ -1109,3 +1109,230 @@ fn encrypted_restore_requires_current_authority_and_preserves_forgetting_across_
         }
     }
 }
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn hybrid_cli_requires_explicit_fixture_and_encoding_identity() {
+    let f = Fixture::new();
+    let db = f.0.join("hybrid.memory-prototype.sqlite");
+    let base = ["memory", "--experimental", "--db", db.to_str().unwrap()];
+    let flags = [
+        "--synthetic-input",
+        "--endpoint",
+        "http://127.0.0.1:1",
+        "--expected-alias",
+        "synthetic-encoder",
+        "--artifact-revision",
+        "synthetic-artifact",
+        "--dimensions",
+        "2",
+        "--pooling",
+        "last",
+        "--normalization",
+        "l2",
+    ];
+    for (flag, width) in [(0, 1), (1, 2), (3, 2), (5, 2), (7, 2), (9, 2), (11, 2)] {
+        let mut argv = base.to_vec();
+        argv.push("evaluate-hybrid");
+        argv.extend(&flags[..flag]);
+        argv.extend(&flags[flag + width..]);
+        let output = f.run(&argv);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("required arguments") && stderr.contains(flags[flag]),
+            "{stderr}"
+        );
+    }
+    let mut argv = vec!["memory", "--db", db.to_str().unwrap(), "evaluate-hybrid"];
+    argv.extend(flags);
+    let output = f.run(&argv);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--experimental"));
+    assert!(!db.exists());
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn hybrid_cli_refusals_leave_destination_and_config_untouched() {
+    let f = Fixture::new();
+    let db = f.0.join("hybrid.memory-prototype.sqlite");
+    let wrong_suffix = f.0.join("hybrid.sqlite");
+    let existing = f.0.join("existing.memory-prototype.sqlite");
+    std::fs::write(&existing, b"existing file").unwrap();
+    for (path, endpoint, dimensions, key, expected) in [
+        (&db, "http://localhost:1", "2", false, "literal loopback"),
+        (&db, "http://192.0.2.1:1", "2", false, "literal loopback"),
+        (
+            &db,
+            "http://name:secret@127.0.0.1:1",
+            "2",
+            false,
+            "literal loopback",
+        ),
+        (&db, "http://127.0.0.1:1", "0", false, "dimensions"),
+        (
+            &db,
+            "http://127.0.0.1:1",
+            "2",
+            true,
+            "does not support --key-file",
+        ),
+        (
+            &wrong_suffix,
+            "http://127.0.0.1:1",
+            "2",
+            false,
+            "memory-prototype.sqlite",
+        ),
+        (
+            &existing,
+            "http://127.0.0.1:1",
+            "2",
+            false,
+            "requires a new file",
+        ),
+    ] {
+        let mut argv = vec!["memory", "--experimental", "--db", path.to_str().unwrap()];
+        if key {
+            argv.extend(["--key-file", "unreadable-key-must-not-be-opened"]);
+        }
+        argv.extend([
+            "evaluate-hybrid",
+            "--synthetic-input",
+            "--endpoint",
+            endpoint,
+            "--expected-alias",
+            "synthetic-encoder",
+            "--artifact-revision",
+            "synthetic-artifact",
+            "--dimensions",
+            dimensions,
+            "--pooling",
+            "last",
+            "--normalization",
+            "l2",
+        ]);
+        let output = f.run(&argv);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!stderr.contains("secret"), "{stderr}");
+    }
+    assert_eq!(std::fs::read(existing).unwrap(), b"existing file");
+    assert!(!wrong_suffix.exists());
+    assert!(!db.exists());
+    assert_eq!(std::fs::read_dir(f.0.join("home")).unwrap().count(), 1);
+}
+
+#[cfg(feature = "memory-prototype")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hybrid_cli_uses_one_checked_loopback_operation_per_nonempty_pool() {
+    use axum::{routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let submitted = Arc::new(Mutex::new(Vec::new()));
+    let spy = Arc::clone(&submitted);
+    let app = Router::new().route(
+        "/v1/embeddings",
+        post(move |Json(request): Json<Value>| {
+            let spy = Arc::clone(&spy);
+            async move {
+                let inputs = request["input"].as_array().unwrap();
+                let data: Vec<_> = (0..inputs.len())
+                    .rev()
+                    .map(|index| json!({"index":index,"embedding":[1.0,0.0]}))
+                    .collect();
+                spy.lock().unwrap().push(request);
+                Json(json!({"model":"synthetic-encoder","data":data}))
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let f = Fixture::new();
+    let args = [
+        "evaluate-hybrid",
+        "--synthetic-input",
+        "--endpoint",
+        &endpoint,
+        "--expected-alias",
+        "synthetic-encoder",
+        "--artifact-revision",
+        "synthetic-artifact",
+        "--dimensions",
+        "2",
+        "--pooling",
+        "last",
+        "--normalization",
+        "l2",
+    ];
+    let report = f.memory(&args);
+    assert_eq!(report["fixture_only"], true);
+    assert_eq!(
+        report["encoding"]["host_declared_artifact_revision"],
+        "synthetic-artifact"
+    );
+    for arm in report["modes"].as_array().unwrap() {
+        assert_eq!(arm["planned"], 18);
+        assert_eq!(arm["completed"], 18);
+        assert_eq!(arm["fallback"], 0);
+        assert_eq!(arm["unauthorized_returns"], 0);
+    }
+    assert_eq!(
+        report["cases"][0]["shared"]["embedding"]["server_reported_alias"],
+        "synthetic-encoder"
+    );
+    assert_eq!(report["cases"][0]["shared"]["embedding"]["attempts"], 3);
+    assert_eq!(report["cases"][17]["shared"]["embedding"]["attempts"], 0);
+
+    let db = f.0.join("test.memory-prototype.sqlite");
+    let original = std::fs::read(&db).unwrap();
+    let mut repeated = vec!["memory", "--experimental", "--db", db.to_str().unwrap()];
+    repeated.extend(args);
+    assert!(!f.run(&repeated).status.success());
+    assert_eq!(std::fs::read(db).unwrap(), original);
+    assert_eq!(std::fs::read_dir(f.0.join("home")).unwrap().count(), 1);
+
+    server.abort();
+    let requests = submitted.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        43,
+        "no duplicate arm calls or overwritten fixture"
+    );
+    let mut query_count = 0;
+    for request in requests.iter() {
+        assert_eq!(request["model"], "synthetic-encoder");
+        let keys = request.as_object().unwrap();
+        assert_eq!(
+            keys.len(),
+            3,
+            "only model identity, encoding format and text reach the server"
+        );
+        assert_eq!(request["encoding_format"], "float");
+        let input = request["input"].as_array().unwrap();
+        assert!((1..=16).contains(&input.len()));
+        for (index, text) in input.iter().enumerate() {
+            let text = text.as_str().unwrap();
+            if text.starts_with("Instruct: ") {
+                assert_eq!(index, 0);
+                query_count += 1;
+            }
+            assert!(!text.contains("compartment 17"));
+        }
+    }
+    assert_eq!(query_count, 17);
+    assert_eq!(
+        requests[0]["input"][0],
+        "Instruct: Given a question about a document, retrieve the passages of it that answer the question\nQuery: How should outdoor electronics stay dry through downpours?"
+    );
+    assert!(requests[..3].iter().any(|request| {
+        request["input"].as_array().unwrap().iter().any(|text| {
+            text == "A rubber gasket seats inside the enclosure lid and blocks rainwater ingress."
+        })
+    }));
+}

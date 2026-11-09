@@ -1105,10 +1105,18 @@ with `--key-file`; `key-generate`, `backup` and `restore` provide key creation,
 encrypted snapshots and bounded historical recovery. External JSONL, authority
 files and task artifacts are outside database encryption.
 
+`evaluate-hybrid --synthetic-input` compares lexical, dense and combined retrieval
+in a new plaintext synthetic fixture. It requires `--endpoint`, `--expected-alias`,
+`--artifact-revision`, `--dimensions`, `--pooling` and `--normalization` explicitly.
+Only numeric loopback HTTP is accepted; redirects and proxies are disabled.
+It uses the embedding service, keeps vectors in RAM and reports fallback separately
+from successful semantic retrieval. Key selection and existing output databases
+are refused. This does not enable vector search in ordinary chat.
+
 Explicitly selected model-evaluation, extraction and native-session workflows
 can call resident local models through explicit settings; they bypass ordinary
 provider configuration. See the
-[prototype guide](https://github.com/ljchang/mecha/blob/3024ddf79eb4a41da3248fa35cb1d6e9e9a6c9b5/prototypes/memory/README.md)
+[prototype guide](https://github.com/ljchang/mecha/blob/codex/mecha-memory-v2-prototype/prototypes/memory/README.md)
 for supported commands, acknowledgements and recovery limits. These commands do
 not migrate graph data or nightly jobs, or activate normal chat/web memory.
 Production integration and private-data qualification remain separate work.

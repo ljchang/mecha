@@ -12,6 +12,7 @@ pub mod fixture;
 mod forget;
 pub mod guard_coverage;
 pub mod host_capture;
+pub mod hybrid;
 pub mod interpretation;
 pub(crate) mod interpretation_reader;
 mod model;

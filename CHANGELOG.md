@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental memory adds bounded, invocation-local hybrid evidence retrieval
+  and `memory evaluate-hybrid` for a frozen synthetic comparison. Dense candidates
+  are independent of lexical matches, while complete source authorization,
+  historical filters, current forgetting and packet budgets remain in force.
+  Unavailable embeddings or changed eligibility report fresh lexical fallback.
+  This does not enable persistent indexing or ordinary chat integration.
+
+- Embedding transport no longer follows redirects or environmental proxies.
+  An additive checked API preserves full input, binds an explicit encoding
+  profile, validates indexed model responses, and bounds requests, responses
+  and overflow retries. Existing persona embedding APIs remain compatible.
+
 - Experimental memory adds explicit keyed storage, complete encrypted database
   snapshots and restore into a fresh historical copy. Restore preserves current
   forgetting and refuses weaker access scopes using a separately selected current

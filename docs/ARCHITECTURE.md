@@ -12924,6 +12924,28 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **Semantic ranks cannot preserve stale source authority.** `PreparedHybrid`
+  holds a bounded original-field corpus, policy and encoding identity, never a
+  live transaction. Finalization reconstructs the complete eligible corpus,
+  including nonmatching rows that affect BM25 statistics, before using vectors.
+  Changed identities, original/indexed bytes or effective restrictions trigger
+  fresh lexical selection with the same literal-mention constraint. Independent
+  dense candidates permit semantic-only anchors; max-per-revision collapse and
+  reciprocal-rank fusion avoid duplicate passage votes. Shared context assembly
+  retains whole dependency bundles and fresh final source checks. A dedicated v8
+  regression keeps an uncited consulted source authoritative for a recalled
+  concept. Current forgetting overrides historical snapshots. This bounded
+  invocation-local path does not introduce a persistent vector index.
+- **An encoding profile binds vectors; a model alias does not attest weights.**
+  `EncodingProfile` identifies the declared artifact, dimensions, pooling,
+  normalization and exact query/preprocessing representation. `embed_checked`
+  preserves complete inputs, requires complete indexed responses and refuses
+  malformed vectors without partial batches. Its operation deadline and attempt
+  budget span overflow splitting. Shared embedding transport disables redirects
+  and environmental proxies: a redirect-spy regression demonstrated that the old
+  client forwarded submitted text. Runtime alias checks and host artifact evidence
+  remain separate; neither a declared revision nor dimensions alone prove which
+  weights produced a vector. Legacy persona APIs and cache formats stay intact.
 - **One SQLite linkage per build; encryption dependencies follow the memory feature.**
   Ordinary workspace builds use bundled SQLite. Core's `memory-prototype` feature
   selects bundled SQLCipher/vendored OpenSSL and its optional direct key helpers;

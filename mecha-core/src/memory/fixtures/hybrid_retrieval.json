@@ -1,0 +1,617 @@
+{
+  "version": 1,
+  "fixture_only": true,
+  "corpus": {
+    "domain": "synthetic-demo",
+    "connector": "fixture",
+    "account": "synthetic",
+    "records": [
+      {
+        "source_id": "P01",
+        "text": "A rubber gasket seats inside the enclosure lid and blocks rainwater ingress.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P02",
+        "text": "The porous filter keeps grit out of the blower housing.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P03",
+        "text": "Transport the sample ampoule in a foam cradle to prevent fracture under vibration.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P04",
+        "text": "Adhesive pads under the pallet keep cargo from sliding during shipment.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P05",
+        "text": "Return the spent refrigerant cylinder to the depot for reclamation.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P06",
+        "text": "Discard the drained lubricant in the marked waste drum at the depot.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P07",
+        "text": "An audible buzzer sounds when the reservoir falls below its minimum fill mark.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "P08",
+        "text": "A red lamp lights when the coolant exceeds its upper temperature threshold.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X01",
+        "text": "The approved mounting fastener for Q7F4 is the brass socket screw.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X02",
+        "text": "Q7F4 maintenance log entry records the actuator calibration interval.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X03",
+        "text": "The rated storage temperature for Q7F9 is minus 12 Celsius.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X04",
+        "text": "Q7F9 maintenance log entry records the connector orientation.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X05",
+        "text": "The matching cartridge for J2M6 is a charcoal insert.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X06",
+        "text": "J2M6 maintenance log entry records the overnight restart window.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X07",
+        "text": "The authorized cleaning solvent for J2M8 is anhydrous isopropanol.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X08",
+        "text": "J2M8 maintenance log entry records the inventory count.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X09",
+        "text": "The approved mounting fastener for Q7F40 is the steel socket screw. The rated storage temperature for Q7F90 is minus 40 Celsius.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "X10",
+        "text": "The matching cartridge for J2M60 is a resin insert. The authorized cleaning solvent for J2M80 is distilled water.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M01",
+        "text": "Cell V4 accepts at most 18 millimeters of part thickness.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M02",
+        "text": "The measured thickness of the V4 candidate shim is 21 millimeters.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M03",
+        "text": "Cell V4 accepts incoming batches between 08:00 and 16:00.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M04",
+        "text": "Cold rack Z2 needs at least 45 minutes for precooling before loading.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M05",
+        "text": "The cold rack Z2 precooling run began at 11:20.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M06",
+        "text": "Cold rack Z2 shelves are reserved for four trays.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M07",
+        "text": "Process H6 requires a particulate certificate for every input batch.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M08",
+        "text": "For process H6, lot T91 has a certificate covering moisture alone.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M09",
+        "text": "Process H6 uses the north conveyor for unloading.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M10",
+        "text": "The limit for unsupervised carrier B3 trips is 14 kilograms of cargo.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M11",
+        "text": "The loaded B3 shipment weighs 16 kilograms excluding the carrier chassis.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "M12",
+        "text": "Carrier B3 follows the orange route when carrying empty trays.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D01",
+        "text": "The October acceptance entry sets the L6 vibration limit at 2 millimeters per second.",
+        "occurred_at": "2026-10-14T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D02",
+        "text": "The October acceptance entry sets the L6 vibration limit at 5 millimeters per second.",
+        "occurred_at": "2026-10-03T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D03",
+        "text": "The October acceptance entry records the L6 bench power supply setting.",
+        "occurred_at": "2026-10-14T13:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D04",
+        "text": "The public check-in schedule for dock R8 opens at 08:30.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D05",
+        "text": "The public check-in schedule for dock R8 opens at 06:00.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail",
+          "fixture-restricted"
+        ]
+      },
+      {
+        "source_id": "D06",
+        "text": "The Q1 relay's provisional trip setting is 12 amperes.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D07",
+        "text": "The G5 emergency bypass uses the quarter-turn lever at panel K.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D08",
+        "text": "The G5 emergency bypass uses the rotary dial at panel M.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D09",
+        "text": "The Q1 relay's approved trip setting is 7 amperes.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail"
+        ]
+      },
+      {
+        "source_id": "D10",
+        "text": "The sealed dispatch crate U8K3 is stored in compartment 17.",
+        "occurred_at": "2026-10-10T12:00:00Z",
+        "scopes": [
+          "fixture-mail",
+          "fixture-restricted"
+        ]
+      }
+    ],
+    "snapshot_after": {
+      "early": "D08",
+      "latest": "D10"
+    },
+    "forget_after_snapshots": [
+      "D08"
+    ]
+  },
+  "retrieval": {
+    "policy_defaults": {
+      "scopes": [
+        "fixture-mail"
+      ],
+      "account": null,
+      "session_id": null,
+      "occurred_after": null,
+      "occurred_before": null,
+      "required_mention": null,
+      "valid_at": null,
+      "limit": 4,
+      "neighbors": 0,
+      "max_bytes": 8192
+    },
+    "situation": {
+      "event": "Review a synthetic equipment record",
+      "goal": "Retrieve original evidence",
+      "needs": null
+    },
+    "bindings": [],
+    "cases": [
+      {
+        "id": "P01",
+        "query": "How should outdoor electronics stay dry through downpours?",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "P02",
+        "query": "How can a fragile vial survive a rattling trip without breaking?",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "P03",
+        "query": "Where should an empty canister of cooling gas go for recycling?",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "P04",
+        "query": "What warning can be heard if the tank is nearly empty?",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "X01",
+        "query": "Q7F4 approved mounting fastener",
+        "policy": {
+          "snapshot": "latest",
+          "required_mention": "Q7F4",
+          "limit": 1
+        }
+      },
+      {
+        "id": "X02",
+        "query": "Q7F9 rated storage temperature",
+        "policy": {
+          "snapshot": "latest",
+          "required_mention": "Q7F9",
+          "limit": 1
+        }
+      },
+      {
+        "id": "X03",
+        "query": "J2M6 matching cartridge",
+        "policy": {
+          "snapshot": "latest",
+          "required_mention": "J2M6",
+          "limit": 1
+        }
+      },
+      {
+        "id": "X04",
+        "query": "J2M8 authorized cleaning solvent",
+        "policy": {
+          "snapshot": "latest",
+          "required_mention": "J2M8",
+          "limit": 1
+        }
+      },
+      {
+        "id": "M01",
+        "query": "Retrieve the V4 permitted maximum thickness and the measured thickness of the candidate shim.",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "M02",
+        "query": "Retrieve the required Z2 precooling duration and when the precooling run began.",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "M03",
+        "query": "Retrieve the H6 batch certification requirement and the certification that lot T91 actually has.",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "M04",
+        "query": "Retrieve the B3 unsupervised cargo weight limit and the weight of the loaded shipment.",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "T01",
+        "query": "What does the October acceptance entry give as the L6 vibration limit?",
+        "policy": {
+          "snapshot": "latest",
+          "occurred_after": "2026-10-09T00:00:00Z",
+          "occurred_before": "2026-10-16T00:00:00Z"
+        }
+      },
+      {
+        "id": "T02",
+        "query": "When does the public check-in schedule for dock R8 open?",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "T03",
+        "query": "What Q1 relay trip setting was known at the earlier snapshot?",
+        "policy": {
+          "snapshot": "early"
+        }
+      },
+      {
+        "id": "T04",
+        "query": "Where is the G5 emergency bypass and how is it operated?",
+        "policy": {
+          "snapshot": "early"
+        }
+      },
+      {
+        "id": "E01",
+        "query": "What is the refractive index of the Q9W9 calibration prism?",
+        "policy": {
+          "snapshot": "latest"
+        }
+      },
+      {
+        "id": "E02",
+        "query": "Where is the U8K3 dispatch crate stored?",
+        "policy": {
+          "snapshot": "latest",
+          "required_mention": "U8K3"
+        }
+      }
+    ]
+  },
+  "grading": {
+    "labels": {
+      "P01": "paraphrase",
+      "P02": "paraphrase",
+      "P03": "paraphrase",
+      "P04": "paraphrase",
+      "X01": "exact_identifier",
+      "X02": "exact_identifier",
+      "X03": "exact_identifier",
+      "X04": "exact_identifier",
+      "M01": "multi_evidence",
+      "M02": "multi_evidence",
+      "M03": "multi_evidence",
+      "M04": "multi_evidence",
+      "T01": "policy_distractor",
+      "T02": "policy_distractor",
+      "T03": "policy_distractor",
+      "T04": "policy_distractor",
+      "E01": "empty_gold",
+      "E02": "empty_gold"
+    },
+    "gold": {
+      "P01": [
+        "P01"
+      ],
+      "P02": [
+        "P03"
+      ],
+      "P03": [
+        "P05"
+      ],
+      "P04": [
+        "P07"
+      ],
+      "X01": [
+        "X01"
+      ],
+      "X02": [
+        "X03"
+      ],
+      "X03": [
+        "X05"
+      ],
+      "X04": [
+        "X07"
+      ],
+      "M01": [
+        "M01",
+        "M02"
+      ],
+      "M02": [
+        "M04",
+        "M05"
+      ],
+      "M03": [
+        "M07",
+        "M08"
+      ],
+      "M04": [
+        "M10",
+        "M11"
+      ],
+      "T01": [
+        "D01"
+      ],
+      "T02": [
+        "D04"
+      ],
+      "T03": [
+        "D06"
+      ],
+      "T04": [
+        "D07"
+      ],
+      "E01": [],
+      "E02": []
+    },
+    "forbidden": {
+      "all_cases": {
+        "D05": "missing_required_scope",
+        "D08": "forgotten_source",
+        "D10": "missing_required_scope"
+      },
+      "by_case": {
+        "T01": {
+          "D02": "outside_occurrence_window"
+        },
+        "T03": {
+          "D09": "captured_after_snapshot"
+        },
+        "T04": {
+          "D09": "captured_after_snapshot"
+        }
+      }
+    },
+    "rationale": {
+      "P01": "The gasket prevents liquid entering the enclosure. P02 concerns grit entering a blower.",
+      "P02": "The foam cradle prevents a sample vial breaking under transport vibration. P04 stops sliding cargo and does not describe a fragile vial.",
+      "P03": "The spent refrigerant cylinder goes to the depot for reclamation. P06 disposes of lubricant.",
+      "P04": "The buzzer is the audible warning at low reservoir fill. P08 is a visual over-temperature warning.",
+      "X01": "The brass screw is the approved fastener for this exact code. X02 records calibration, and X09 specifies another code.",
+      "X02": "The minus-12 rating belongs to the requested code. X04 records orientation, and X09 specifies another code.",
+      "X03": "The charcoal insert belongs to the requested code. X06 records a restart window, and X10 specifies another code.",
+      "X04": "The solvent approval belongs to the requested code. X08 records inventory, and X10 specifies another code.",
+      "M01": "One capture supplies the 18 mm acceptance limit and the other supplies the 21 mm measurement.",
+      "M02": "The 45-minute requirement and 11:20 start are recorded separately.",
+      "M03": "The particulate requirement and the lot's moisture-only certificate are recorded separately.",
+      "M04": "The 14 kg restriction and actual 16 kg load are recorded separately.",
+      "T01": "The October 14 reading is within the requested window. D02 repeats the wording but falls outside it, and D03 documents power.",
+      "T02": "The authorized schedule opens at 08:30. Scope-restricted D05 deliberately repeats the public wording with a different time.",
+      "T03": "The 12 A provisional setting was known at `early`. D09 is a later capture even though its occurrence time is older than the snapshot.",
+      "T04": "The authorized quarter-turn lever and panel are in the same capture. D08 was purged after the requested snapshot.",
+      "E01": "No authorized or unauthorized source supplies this prism measurement. Eligible unrelated evidence can still be returned.",
+      "E02": "D10 answers the query but fails the scope policy, leaving no eligible U8K3 literal anchor."
+    }
+  }
+}

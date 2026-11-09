@@ -14,6 +14,131 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Source-grounded handoff correction (2026-11-09)
+
+The handoff still described the first concept comparison, programmatic tool calling
+and first layout installer as unbuilt. Source inspection confirmed
+`memory_concept_workflow::run_trial`, `tool::code::CodeTool` with setup registration,
+and `install::install_layout` reached through `features::enable`. The obsolete
+first-build items were removed or narrowed. This correction does not claim a new
+runtime deployment or semantic benefit; the earlier concept measurements remain
+unchanged. Broader operational narratives were not recertified by this audit.
+
+### Checked embedding transport (2026-11-09, prototype branch)
+
+`EncodingProfile` and `Embedder::embed_checked` add immutable encoding identity,
+complete mixed query/passage batches and strict indexed response validation.
+Checked calls reject oversized inputs and malformed vectors rather than silently
+truncating or returning partial batches. Request/response caps, a shared attempt
+budget and one operation timeout cover overflow splitting. Legacy persona API
+and response compatibility remain unchanged; both paths disable redirects and
+system proxies. Artifact revision is host-declared, distinct from server alias.
+
+An authored redirect-spy test first failed against the old client: a 307 response
+forwarded the submitted text to the second server. The final source passed 13
+embedding tests and nine persona search tests, strict scoped core Clippy and
+formatting. The independent patch review found no major/medium defects. Failed
+checked calls intentionally expose no partial transport counters; downstream
+reports must use unavailable values rather than zero. These are local synthetic
+mechanism checks, not full-workspace qualification or evidence of better retrieval.
+The separate hybrid selector then reused the existing recall budgeting and context
+assembler through `prepare_hybrid_context` and `finish_hybrid_context`. It ranks
+independent dense candidates, checks the complete eligible view after embedding,
+and recomputes lexical context with the same mention constraint on bound,
+availability or corpus-change fallback. Original fields remain complete bounded
+UTF-8 spans; vectors live only for the invocation. BM25, cosine and RRF diagnostics
+remain distinct and only describe anchors retained in the authorized packet.
+
+Review requested a missing semantic-route concept regression. The added v8 test
+covers two cited supports, an uncited consulted dependency, complete bundle
+assembly, tight-budget withholding and current scope narrowing after preparation.
+Final focused checks passed 499 core tests (one existing ignored), 383 standalone
+tests and strict feature-core Clippy; all 14 hybrid tests passed in both builds.
+Independent review and the scoped test-fix review found no remaining findings.
+The initial RRF test oracle was corrected after its 10/11 run: `1/61 + 1/63` is
+slightly greater than `2/62`. An exploratory broad test filter also hit 15 unrelated
+sandbox listener restrictions; these were not counted as passing tests. The
+comparison workflow and combined workspace qualification remain separate.
+
+Before any scored request, the 40-record fixture, 16 nonempty-gold cases, two
+empty controls and metric protocol were frozen. A single separate fixed-input
+Spark probe returned the expected Harrier alias and 1,024 dimensions. The running
+service's arguments and a fresh public GGUF hash corroborated its configured
+artifact; the HTTP alias is not weight attestation. No benchmark query or chat
+model request was sent in this probe.
+
+`memory_hybrid_workflow::run` and the thin `memory evaluate-hybrid` command then
+connected the frozen fixture, checked client, all three retrieval modes and
+explicit scoring. Twenty focused core/selector tests, three actual CLI tests,
+the checked-client deadline regression and strict scoped Clippy passed.
+Independent review recomputed all 54 authored treatment rows and three summaries
+and found no major/medium issue. A minor follow-up is fuller per-case submitted
+passage membership assertions in the HTTP spies; current checks cover counts,
+selected examples and restricted-input exclusion. The authored loopback run is
+mechanism evidence, not embedding-model quality.
+
+The first combined Spark run passed formatting and the default all-target build,
+then stopped with four document-backend failures: its isolated `MECHA_HOME` hid
+the installed layout prerequisite. Required-backend enforcement correctly refused
+to skip these tests. An explicit `MECHA_TEST_LAYOUT_DIR` selected the verified
+installation without changing product source or weakening enforcement. Cargo's
+target inventory reconciled 40 wholly passed groups with 23 resumed groups,
+replaying the entire failed target and excluding its earlier partial counts.
+Default qualification passed 6,363 tests with 25 ignored. The subsequent complete
+memory-enabled workspace suite passed 7,041 tests with 30 ignored. Both all-target
+builds passed; standalone passed 386 tests, Python CLI qualification passed 124,
+and authored Python tests passed 182, with no Python skips. Final lint and MSRV
+gates and the real scored comparison remained pending at this checkpoint.
+The subsequent strict all-target/all-feature Clippy and actual Rust 1.96.1
+all-target/all-feature check passed. The terminal qualification receipt verified
+unchanged source, index, backend prerequisite hashes and the preserved preceding
+checkout. The reviewed source delta was
+`f1f4f2abfba04df964339ab102a3a572346430360b9aad30d56db34a51431690`;
+the frozen feature CLI was
+`8645cd51508ef6616e3dec2d75d6f1ca3b288f355e1824462d25d7ee9c11e182`.
+
+Before scoring, independent runner/auditor review corrected an audit-only error:
+a semantic preparation failure still has a known shared preparation duration.
+The auditor had incorrectly expected null derived time. A hand-authored negative
+regression failed before the correction and passed after; fixture, protocol,
+metric definitions and product source remained frozen.
+
+The first real Harrier comparison used that frozen executable and the predeclared
+40-record fixture, 16 nonempty-gold cases and two empty controls. All 54 treatment
+rows completed, with no fallback, error, unauthorized return or literal-mention
+violation. Independent audit checked the report against 39 surviving original
+database records and the forgotten source's suppression. Complete evidence
+coverage was **12/16 lexical, 16/16 dense and 15/16 hybrid**; mean evidence coverage
+was 0.75, 1.0 and 0.9375, and MRR was 0.75, 1.0 and 0.890625 respectively.
+The four paraphrase cases accounted for the difference: lexical completed none,
+dense all four and hybrid three. Every arm completed all four exact-identifier,
+multi-evidence and policy-distractor cases. Hybrid missed P04 and ranked P03's
+gold fourth; these results do not support claiming fusion was the best method.
+E01 returned four irrelevant records in every arm; E02 returned none and made no
+embedding request. No abstention-quality or downstream decision claim follows.
+
+The invocation took 7.770758 seconds, including 6.683298 seconds of shared
+embedding and 0.143384 seconds of preparation. Seventeen embedding operations
+made 43 HTTP requests for 503 inputs (40,037 request bytes, 10,940,100 response
+bytes). Independent lexical retrieval totaled 0.126565 seconds; dense and hybrid
+finalization totaled 0.196611 and 0.181271 seconds. Their derived totals include
+the same shared cost and must not be added as independent experiments. The
+backend began inactive; artifact hashing had already read the model file, so this
+is not a disk-cold latency claim. Vectors were not persisted. The frozen report
+SHA-256 is `68138f89c815987764ec06b9d1ede565ce9cc4b2bbe301104833e9f7998716d5`;
+the independent audit receipt is
+`b0d8722d78a0cc4f74b189ddf250235d74957416c8a4b917169101991f00c089`.
+
+The scored CLI exited zero, but the original runner exited one: its metadata
+postflight required socket SubState `listening`, whereas an activated socket
+reported `running`. The first failed receipt remains intact. A separate read-only
+postflight confirmed active socket/proxy/backend, kernel listeners, unchanged
+unit/launcher/executable/artifact hashes and the expected live model arguments.
+Its receipt is `4007812c987df41469038bdf4cc710c1a66c04134563483d3811244e8243d1d0`.
+This later corroboration is separate from the original runner outcome. No model
+request was repeated and no cases, thresholds or rankings were tuned after the
+results. Local evidence is under `results/memory-hybrid-retrieval-20261109/`.
+
 ### Encrypted native memory and bounded historical recovery (2026-11-09, prototype branch)
 
 `StorageAccess` carries an opaque, zeroizing host capability through memory opens,
