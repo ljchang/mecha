@@ -860,7 +860,8 @@
         "r": 5,
         "date": "2026-11-09T08:26Z",
         "by": "validate",
-        "reason": "the merge does not pass its own tests every time: one of its two hidden tests, hermetic_kind_probe, is #[ignore] (the child half its parent test runs by exact path, session::tests::hermetic_kind_probe), so it reports ignored on all 5 merge runs; the parent, a_unit_test_ignores_the_shells_smoke_test_mark, failed 5/5 on the pin (the probe must actually run) and passed 5/5 on the merge"
+        "reason": "the merge does not pass its own tests every time: one of its two hidden tests, hermetic_kind_probe, is #[ignore] (the child half its parent test runs by exact path, session::tests::hermetic_kind_probe), so it reports ignored on all 5 merge runs; the parent, a_unit_test_ignores_the_shells_smoke_test_mark, failed 5/5 on the pin (the probe must actually run) and passed 5/5 on the merge",
+        "note": "the hidden set counted an #[ignore]d child probe (hermetic_kind_probe) as a hidden test; the rejection excludes the task rather than mis-grading one, and is kept (coordinator, 2026-11-09)"
       },
       "repair": [
         {
@@ -921,6 +922,48 @@
         "must_pass_count": {
           "mecha-cli": 562,
           "mecha-core": 940
+        }
+      }
+    },
+    {
+      "id": "pr-155",
+      "pr": 155,
+      "author": "history",
+      "merge": "9715dba74cb97f503969bc0eccb510e1c3ff2667",
+      "pin": "f5bfbd84ef74afcd841c0e26bd4ced57ecc3368b",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-155.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "rejected",
+        "r": 5,
+        "date": "2026-11-09T09:25Z",
+        "by": "oracle grade",
+        "reason": "the oracle fails: the merge bumps tower-http 0.6 to 0.7 in Cargo.toml and Cargo.lock, and the clone is vendored offline from the pin's lockfile, so the merge's own diff does not build (failed to select a version for the requirement `tower-http = \"^0.7\"` (locked to 0.7.1)); no run could solve it offline. validate had admitted it (pin 5/5 fail an assertion, ServeDir tags what it serves; merge 5/5 pass, vendored from the merge); null grade false"
+      },
+      "prompt_check": {
+        "sha256": "287242dd299968b7022f7746dab2902cacd098922c3bae3d0235e885124e3136",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:14:57Z",
+        "by": "baseline",
+        "pin": "f5bfbd84ef74afcd841c0e26bd4ced57ecc3368b",
+        "merge": "9715dba74cb97f503969bc0eccb510e1c3ff2667",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-155.json",
+        "must_pass_sha256": "f680485986f5114435a85775634fc541430db5e7297aa50837b3202daa2a4fda",
+        "must_pass_count": {
+          "mecha-cli": 695
         }
       }
     }
