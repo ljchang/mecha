@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "training": [
+    {
+      "id": "train_north",
+      "text": "Synthetic completed delivery episode N: shared readiness was true; the primary route was blocked by a local barrier; the alternate route was clear. Switching to the alternate route bypassed the local barrier and completed delivery at cost 3 instead of maintenance recovery at cost 8."
+    },
+    {
+      "id": "train_south",
+      "text": "Synthetic completed delivery episode S: shared readiness was true; the primary route was blocked by route-specific debris; the alternate route was clear. The alternate route avoided that debris and completed delivery at cost 3. Repeating the blocked primary route could not deliver."
+    }
+  ],
+  "counterexample": {
+    "id": "counter_shared",
+    "text": "Synthetic counterexample episode C: the primary route was obstructed and the alternate route was clear, but shared readiness was false. Switching routes did not restore the shared prerequisite and could not deliver. repair_shared restored readiness and delivered through its dedicated maintenance route at cost 8."
+  },
+  "cases": [
+    {
+      "id": "i_applicable",
+      "phase": "initial",
+      "question": "For this new synthetic delivery, which option is justified by the current observations under the stated contract?",
+      "options": [
+        "primary",
+        "alternate",
+        "repair_shared",
+        "insufficient_evidence"
+      ],
+      "facts": [
+        {
+          "id": "i_applicable_rules",
+          "text": "Synthetic delivery contract: choose the feasible complete delivery with the lowest cost. primary costs 2 and requires shared_ready and primary_clear. alternate costs 3 and requires shared_ready and alternate_clear. repair_shared costs 8: it restores shared readiness and delivers through a dedicated maintenance route, regardless of the two ordinary routes; it is always feasible. No other constraints apply. Each unknown boolean may independently be true or false. If no one choice is cheapest across every completion of the observations, choose insufficient_evidence and ask about the unknown observation. Equal cheapest options are all allowed."
+        },
+        {
+          "id": "i_applicable_shared_ready",
+          "text": "Current observation: shared_ready is true."
+        },
+        {
+          "id": "i_applicable_primary_clear",
+          "text": "Current observation: primary_clear is false."
+        },
+        {
+          "id": "i_applicable_alternate_clear",
+          "text": "Current observation: alternate_clear is true."
+        }
+      ]
+    },
+    {
+      "id": "i_exception",
+      "phase": "initial",
+      "question": "For this new synthetic delivery, which option is justified by the current observations under the stated contract?",
+      "options": [
+        "primary",
+        "alternate",
+        "repair_shared",
+        "insufficient_evidence"
+      ],
+      "facts": [
+        {
+          "id": "i_exception_rules",
+          "text": "Synthetic delivery contract: choose the feasible complete delivery with the lowest cost. primary costs 2 and requires shared_ready and primary_clear. alternate costs 3 and requires shared_ready and alternate_clear. repair_shared costs 8: it restores shared readiness and delivers through a dedicated maintenance route, regardless of the two ordinary routes; it is always feasible. No other constraints apply. Each unknown boolean may independently be true or false. If no one choice is cheapest across every completion of the observations, choose insufficient_evidence and ask about the unknown observation. Equal cheapest options are all allowed."
+        },
+        {
+          "id": "i_exception_shared_ready",
+          "text": "Current observation: shared_ready is true."
+        },
+        {
+          "id": "i_exception_primary_clear",
+          "text": "Current observation: primary_clear is true."
+        },
+        {
+          "id": "i_exception_alternate_clear",
+          "text": "Current observation: alternate_clear is true."
+        }
+      ]
+    },
+    {
+      "id": "i_unknown",
+      "phase": "initial",
+      "question": "For this new synthetic delivery, which option is justified by the current observations under the stated contract?",
+      "options": [
+        "primary",
+        "alternate",
+        "repair_shared",
+        "insufficient_evidence"
+      ],
+      "facts": [
+        {
+          "id": "i_unknown_rules",
+          "text": "Synthetic delivery contract: choose the feasible complete delivery with the lowest cost. primary costs 2 and requires shared_ready and primary_clear. alternate costs 3 and requires shared_ready and alternate_clear. repair_shared costs 8: it restores shared readiness and delivers through a dedicated maintenance route, regardless of the two ordinary routes; it is always feasible. No other constraints apply. Each unknown boolean may independently be true or false. If no one choice is cheapest across every completion of the observations, choose insufficient_evidence and ask about the unknown observation. Equal cheapest options are all allowed."
+        },
+        {
+          "id": "i_unknown_shared_ready",
+          "text": "Current observation: shared_ready is unknown; it has not been measured."
+        },
+        {
+          "id": "i_unknown_primary_clear",
+          "text": "Current observation: primary_clear is false."
+        },
+        {
+          "id": "i_unknown_alternate_clear",
+          "text": "Current observation: alternate_clear is true."
+        }
+      ]
+    },
+    {
+      "id": "r_applicable",
+      "phase": "revised",
+      "question": "For this new synthetic delivery, which option is justified by the current observations under the stated contract?",
+      "options": [
+        "primary",
+        "alternate",
+        "repair_shared",
+        "insufficient_evidence"
+      ],
+      "facts": [
+        {
+          "id": "r_applicable_rules",
+          "text": "Synthetic delivery contract: choose the feasible complete delivery with the lowest cost. primary costs 4 and requires shared_ready and primary_clear. alternate costs 6 and requires shared_ready and alternate_clear. repair_shared costs 11: it restores shared readiness and delivers through a dedicated maintenance route, regardless of the two ordinary routes; it is always feasible. No other constraints apply. Each unknown boolean may independently be true or false. If no one choice is cheapest across every completion of the observations, choose insufficient_evidence and ask about the unknown observation. Equal cheapest options are all allowed."
+        },
+        {
+          "id": "r_applicable_shared_ready",
+          "text": "Current observation: shared_ready is true."
+        },
+        {
+          "id": "r_applicable_primary_clear",
+          "text": "Current observation: primary_clear is false."
+        },
+        {
+          "id": "r_applicable_alternate_clear",
+          "text": "Current observation: alternate_clear is true."
+        }
+      ]
+    },
+    {
+      "id": "r_exception",
+      "phase": "revised",
+      "question": "For this new synthetic delivery, which option is justified by the current observations under the stated contract?",
+      "options": [
+        "primary",
+        "alternate",
+        "repair_shared",
+        "insufficient_evidence"
+      ],
+      "facts": [
+        {
+          "id": "r_exception_rules",
+          "text": "Synthetic delivery contract: choose the feasible complete delivery with the lowest cost. primary costs 4 and requires shared_ready and primary_clear. alternate costs 6 and requires shared_ready and alternate_clear. repair_shared costs 11: it restores shared readiness and delivers through a dedicated maintenance route, regardless of the two ordinary routes; it is always feasible. No other constraints apply. Each unknown boolean may independently be true or false. If no one choice is cheapest across every completion of the observations, choose insufficient_evidence and ask about the unknown observation. Equal cheapest options are all allowed."
+        },
+        {
+          "id": "r_exception_shared_ready",
+          "text": "Current observation: shared_ready is false."
+        },
+        {
+          "id": "r_exception_primary_clear",
+          "text": "Current observation: primary_clear is true."
+        },
+        {
+          "id": "r_exception_alternate_clear",
+          "text": "Current observation: alternate_clear is true."
+        }
+      ]
+    },
+    {
+      "id": "r_unknown",
+      "phase": "revised",
+      "question": "For this new synthetic delivery, which option is justified by the current observations under the stated contract?",
+      "options": [
+        "primary",
+        "alternate",
+        "repair_shared",
+        "insufficient_evidence"
+      ],
+      "facts": [
+        {
+          "id": "r_unknown_rules",
+          "text": "Synthetic delivery contract: choose the feasible complete delivery with the lowest cost. primary costs 4 and requires shared_ready and primary_clear. alternate costs 6 and requires shared_ready and alternate_clear. repair_shared costs 11: it restores shared readiness and delivers through a dedicated maintenance route, regardless of the two ordinary routes; it is always feasible. No other constraints apply. Each unknown boolean may independently be true or false. If no one choice is cheapest across every completion of the observations, choose insufficient_evidence and ask about the unknown observation. Equal cheapest options are all allowed."
+        },
+        {
+          "id": "r_unknown_shared_ready",
+          "text": "Current observation: shared_ready is true."
+        },
+        {
+          "id": "r_unknown_primary_clear",
+          "text": "Current observation: primary_clear is false."
+        },
+        {
+          "id": "r_unknown_alternate_clear",
+          "text": "Current observation: alternate_clear is unknown; it has not been measured."
+        }
+      ]
+    }
+  ]
+}

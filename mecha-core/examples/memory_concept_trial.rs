@@ -1,0 +1,87 @@
+//! One explicit synthetic cohort. No ambient stores or provider configuration.
+#[cfg(feature = "memory-prototype")]
+mod enabled {
+    use anyhow::{ensure, Context, Result};
+    use mecha_core::{
+        memory_concept_workflow::{load_fixture, run_trial, MODEL},
+        memory_factual_support::GenerationBudget,
+        memory_support_workflow::StageProviders,
+        memory_trial_provider::{LocalTrialConfig, LocalTrialProvider},
+        provider::Provider,
+    };
+    use std::{path::PathBuf, time::Duration};
+    use tokio_util::sync::CancellationToken;
+    const USAGE:&str="memory_concept_trial --synthetic-only NEW_ROOT ENDPOINT MODEL HOLDS_DIRECTORY 70510 PUBLIC_FIXTURE";
+    struct Resident {
+        endpoint: String,
+        holds: PathBuf,
+    }
+    #[async_trait::async_trait]
+    impl StageProviders for Resident {
+        async fn create(&self, _: &str, cancel: &CancellationToken) -> Result<Box<dyn Provider>> {
+            Ok(Box::new(
+                LocalTrialProvider::new_structured_with_timeout(
+                    LocalTrialConfig {
+                        endpoint: self.endpoint.clone(),
+                        model: MODEL.into(),
+                        holds_dir: self.holds.clone(),
+                        seed: 70510,
+                    },
+                    cancel.clone(),
+                    Duration::from_secs(540),
+                )
+                .await?,
+            ))
+        }
+    }
+    pub async fn run() -> Result<()> {
+        let args: Vec<_> = std::env::args().skip(1).collect();
+        ensure!(args.len() == 7 && args[0] == "--synthetic-only", USAGE);
+        let root = PathBuf::from(&args[1]);
+        let holds = PathBuf::from(&args[4]);
+        ensure!(
+            root.is_absolute() && !root.exists() && holds.is_absolute(),
+            USAGE
+        );
+        ensure!(
+            args[3] == MODEL && args[5] == "70510",
+            "frozen model and seed required"
+        );
+        let fixture = load_fixture(&PathBuf::from(&args[6])).context("public synthetic fixture")?;
+        let cancel = CancellationToken::new();
+        let signal_cancel = cancel.clone();
+        let signal = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                signal_cancel.cancel();
+            }
+        });
+        let result = run_trial(
+            &root,
+            &serde_json::to_value(fixture)?,
+            &Resident {
+                endpoint: args[2].clone(),
+                holds,
+            },
+            GenerationBudget::new(6144, Duration::from_secs(540))?,
+            &cancel,
+        )
+        .await;
+        signal.abort();
+        let report = result?;
+        println!("{}", serde_json::to_string(&report)?);
+        ensure!(
+            report["status"] == "completed",
+            "pilot has failed/withheld slots; inspect report.json"
+        );
+        Ok(())
+    }
+}
+#[cfg(feature = "memory-prototype")]
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    enabled::run().await
+}
+#[cfg(not(feature = "memory-prototype"))]
+fn main() {
+    eprintln!("requires --features memory-prototype and explicit --synthetic-only");
+}

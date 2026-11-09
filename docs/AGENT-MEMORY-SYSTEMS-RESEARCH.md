@@ -688,3 +688,62 @@ evidence-coverage behavior. Hybrid lexical/vector retrieval, aliases/coreference
 persistent-index scaling, and a more flexible separately versioned support scorer
 remain distinct follow-ups. The current small-corpus results do not establish
 that those additions are necessary, nor that retrieval latency is production-ready.
+
+## 12. Anthropic's memory components: implications for the existing prototype
+
+**2026-11-08 · primary-source review and Mecha source inspection, not a reproduced benchmark.**
+An independent agent reviewed [The components of agent memory](https://www.anthropic.com/research/components-of-agent-memory),
+its [knowledge-wiki cookbook](https://github.com/anthropics/claude-quickstarts/tree/main/managed-agents/knowledge-wiki),
+and [dynamic dreaming workflow](https://platform.claude.com/cookbook/managed-agents-cma-dreaming-with-a-dynamic-workflow).
+
+The article separates searchable transcripts, notes, derived representations,
+and injected context. It reports task-dependent gains from combining a wiki
+with source search, alongside tasks with no gain and a wiki larger than its
+source corpus. Offline processing can correct or reorganize memory; selecting
+more notes is not itself an improvement. These are vendor-reported results,
+including small or single-run comparisons, not qualification of Mecha's local
+model. The wiki cookbook explicitly lacks a grading harness; its extraction
+and consolidation stages cannot substitute for a downstream benefit test.
+
+**Our interpretation for Mecha:** retain the current SQLite design and measure
+the existing pieces before creating another memory subsystem. `prepare_concept`
+and `retain_concept` already preserve provisional principles, applicability,
+exact support and consulted sources. `prepare_concept_rumination` and
+`finish_concept_rumination` provide explicit correction while preserving
+counterexamples and restrictions. `knowledge_bundle` supplies the concept's
+evidence, and `GoalMemory` exposes bounded read-only context with external
+provenance. These mechanisms need behavioral qualification, not a wiki clone.
+
+Priorities after the fixed concept pilot:
+
+1. Separate **discovery from use**. Record whether `GoalMemory` was called,
+   which revisions entered the packet, and whether the answer used adequate
+   premises. A successful fixed-evidence experiment followed by a failed agent
+   run points to invocation, query or coverage before it points to a new database.
+2. Prefer **targeted correction** after a counterexample or source change.
+   Reuse the one-concept revision transaction; preserve unchanged/abstained
+   no-write outcomes. Do not migrate nightly jobs or install a new scheduler
+   merely because offline consolidation helped another model.
+3. Keep **active context bounded**. If measurements later justify navigation
+   aids, first try an authorized view of existing revision references. A second
+   canonical text store adds consistency and deletion obligations. Derived
+   references must retain the original access, freshness and provenance checks.
+4. Account for generation and revision cost as well as answer cost. If a
+   representation costs B tokens to build and saves S per comparable query,
+   token break-even requires more than B/S queries when S is positive. This
+   arithmetic does not establish accuracy or latency benefit.
+
+The trust boundary matters: a transcript proves that something was recorded;
+it does not make assistant prose, requested actions, external assertions and
+independently observed artifacts interchangeable. A read-only consumer cannot
+alter a memory but can still be misled by it. Concepts therefore remain
+`ConceptStatus::Provisional`, never implicit instructions or automatic inputs
+to `learning::Learner::learn`.
+
+This review does not alter the fixed fourteen-call pilot in
+[the implementation plan](superpowers/plans/2026-11-08-concept-benefit-pilot.md).
+A later three-arm comparison of source-only, initial-concept and revised-concept
+conditions on the same fresh tasks could isolate revision utility more directly.
+The current two-arm post-phase cannot establish that causal effect. Personal
+mecha-graph, autonomous salience, wiki construction and production activation
+remain separate decisions.

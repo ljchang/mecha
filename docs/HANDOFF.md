@@ -177,12 +177,22 @@ strata, the prose-citation sensitivity and all limitations. Keep this protocol
 experimental and preserve the prior cohorts. New artifacts use
 `results/memory-evaluator-repair-20261108` in the isolated Spark checkout.
 
-Next implement the already specified 14-call concept/revision pilot (§31.15): a
-thin `memory_concept_workflow`, example adapter and independent offline fixture
-scorer. Existing concept APIs suffice. Hold original evidence equal within pairs,
-use fixture-defined outcomes rather than this native evaluator as judge, and
-preserve failures in the planned denominator. No further prompt-tuning cycle is
-part of the completed comparison. Native admission and production use remain open.
+The explicit fourteen-call concept pilot is implemented and mechanically qualified.
+Its first Qwen3.6 cohort completed: both arms were 6/6 correct with sufficient
+cited premises, but arm-masked explanation support was 5/6 source-only versus
+4/6 with concepts. The baseline ceiling prevents a decision-benefit claim.
+Rumination added the counterexample and consulted source while leaving the
+principle/applicability unchanged; it did not demonstrate correction of a bad
+abstraction. HISTORY retains costs, audits and limits under
+`results/memory-concept-benefit-20261108`.
+
+Next use fresh, independently scored transfer cases that vary prerequisite
+structure and cost ordering, with source-only, initial-concept and revised-concept
+arms on the same tasks. Keep retrieval fixed for that comparison; separately
+instrument actual memory invocation and premise coverage before adding new
+retrieval infrastructure. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md`
+§12 supports targeted correction and bounded context, not a new wiki/store or
+nightly migration. Native concept admission and production use remain open.
 
 `concept::rumination` implements one explicit provisional revision over existing
 synthetic concept storage. Complete prior consulted sources, mandatory old/new

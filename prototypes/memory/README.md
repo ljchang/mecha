@@ -1681,3 +1681,51 @@ separate from these choice scores. Metadata-invalid reports retain raw responses
 but cannot earn qualified success. This small authored diagnostic measures neither
 production learning nor superiority over v3. See MECHA-MEMORY-DESIGN section 30
 and HISTORY for the dated run and limitations.
+
+
+## Equal-evidence concept and revision pilot
+
+`memory_concept_workflow` reuses the existing concept and rumination APIs in one
+explicit synthetic lifecycle: induce once, run three baseline/concept decision
+pairs, supply a counterexample and revise once, then run three new pairs. Both
+arms receive the same original evidence and current facts. Only the provisional
+concept differs. No owner store, native captured source, instruction-producing
+learner, nightly job or production configuration is involved.
+
+Build the feature-gated example and supply a fresh absolute output root, the
+selected already-resident model and explicit router holds directory:
+
+```sh
+cargo build -p mecha-core --features memory-prototype --example memory_concept_trial
+target/debug/examples/memory_concept_trial --synthetic-only \
+  /absolute/new/cohort http://127.0.0.1:8080 \
+  qwen3.6-35b-a3b-uncensored /absolute/router/holds 70510 \
+  "$PWD/mecha-core/src/memory/fixtures/concept_benefit_pilot.json"
+python3 prototypes/memory/concept_benefit_trial.py \
+  /absolute/new/cohort/report.json --output /absolute/new/scores.json
+```
+
+The example performs real inference: at most fourteen first responses, seed 70510,
+temperature 0.6, thinking disabled, 6144 output tokens and 540 seconds per stage
+including discovery. It refuses existing roots, model mismatch and pending
+switches; it never loads a model or retries. Qualify the code, public fixture,
+offline gold and engine schemas before running. All fourteen planned stages and
+twelve decision denominators survive failures. A durable started checkpoint is
+indeterminate after a crash, not permission to resume. The unchanged transport
+ceiling can reject a response smaller than the token allowance.
+
+The report preserves exact requests, raw replies, provider events, source/phase
+hashes, structural admission and durable retention separately. Whole database
+seals and current-source checks bracket each call. The offline scorer uses
+independently authored finite-world rules and enumerates unknown observations;
+a lucky match to a hidden state is not evidence-supported certainty. Choices,
+premise coverage and host acceptance are distinct; prose remains unreviewed until
+a separate audit. Costs include induction and revision. Authored-provider tests
+verify these contracts without demonstrating model benefit.
+
+The six explicit-rule cases can have a ceiling and do not establish general
+transfer. The post-phase measures revised-concept utility against equal raw
+evidence. Without an unchanged-concept third arm on those same cases, it cannot
+isolate revision's causal effect. Unchanged/abstained rumination is labeled
+unchanged-concept follow-up, never revision benefit. See the dated results in
+HISTORY and the current next step in HANDOFF.

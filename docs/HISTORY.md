@@ -15,6 +15,80 @@ still worth knowing about, because the next person will otherwise re-derive it.
 ## What shipped, and when
 
 
+### Equal-evidence concept pilot and memory review (2026-11-08, prototype branch)
+
+`memory_concept_workflow::run_trial` adds a feature-gated synthetic lifecycle over
+existing concept/rumination APIs. Two original episodes support one provisional
+concept; three decision pairs compare it with the same original evidence. One
+explicit counterexample drives a revision, followed by three new pairs with the
+counterexample in both arms. The thin `memory_concept_trial` example fixes the
+resident model, seed and bounded generation settings. No production default,
+database schema, dependency, owner-graph bridge or instruction learner changed.
+
+All fourteen planned slots persist before inference. A durable started record
+precedes discovery, each slot admits only its first response, and existing roots
+cannot resume. Phase database/fixture seals and current authorization checks run
+before and after calls, including failures. Successful retention is recorded
+before derived export. The offline Python scorer preserves twelve decision
+and six pair denominators, enumerates unknown finite-world observations, verifies
+actual artifact hashes/bindings, and separates raw choice, premise coverage,
+structural admission, false certainty and unreviewed prose. Revised-phase utility
+against sources alone does not isolate revision's causal contribution.
+
+Focused qualification passed nine Rust tests; the separate authored lifecycle
+export supplied fourteen schemas/responses, twelve contracts and six bound pairs.
+The scorer passed twenty-three tests and independently verified those artifacts.
+The dummy responses are adapter checks, not model-quality results. Spark then
+passed workspace all-target build, strict all-feature Clippy and formatting;
+6,352 default tests /25 ignored, 6,920 memory-enabled tests /30 ignored, 307
+standalone tests and actual-binary Python suites of 124 and 182 tests with no
+Python skips. Required sandbox backends were enabled. All fourteen authored
+schemas compiled using the pinned converter (binary hash recorded with prior
+commit metadata); the resident engine's converter revision was not verified.
+Qualification records 681 source hashes and the executable SHA256 under
+`results/memory-concept-benefit-20261108/qualification`.
+
+The frozen Qwen3.6-35b-a3b-uncensored cohort completed fourteen first responses
+without retries: one induction, six initial decisions, one revision and six
+follow-up decisions. Seed 70510, temperature 0.6, thinking disabled, 6144 output
+tokens and 540 seconds per stage were fixed. All six evidence pairs and every
+source hash triplet matched; source tree, executable and router metadata stayed
+unchanged. Independent checks verified 42 request/reply/provider artifacts and
+SQLite integrity/foreign keys. The same pinned converter compiled all fourteen
+actual schemas; this is separate from verifying the resident converter revision.
+
+Both arms had 6/6 correct choices with sufficient cited premises and both made
+2/2 required abstentions. An arm-masked independent AI prose audit found 5/6
+faithful explanations source-only versus 4/6 with the concept. All four missing-
+information questions were relevant. Both initial uncertainty explanations
+misapplied prerequisites or conflated repair with ordinary routes; the concept
+follow-up uncertainty explanation wrote a false cost comparison instead of
+establishing infeasibility. Parent inspection confirmed the cited defects.
+Correct labels and citations therefore did not establish fully faithful reasoning.
+
+The retained revision added one counterexample and expanded consulted originals
+from two to three. Principle, applicability and support excerpts were byte-equal
+as strings/values: the initial concept already required shared readiness. This
+was an evidence-enriched revision, not demonstrated correction of an incorrect
+rule. The applicability's parenthetical alternative involving repeated failure
+also leaves an untested cost-ordering boundary; fresh cases must vary that order.
+
+Six decision calls used 5,788 input/1,292 output tokens source-only versus 6,791/
+1,429 with concepts. Induction and revision added 1,641 input/760 output tokens.
+Summed per-stage elapsed time was 17.149s baseline, 17.611s concept decisions,
+plus 12.096s construction/revision; all usage was known. There was no observed
+decision gain or efficiency gain in these six explicit-rule configurations.
+The source-only ceiling, one response per condition and absence of an unchanged-
+concept third arm prevent broad transfer or causal revision claims. Preserve this
+cohort before designing harder fresh cases; no automatic learning was activated.
+
+An independent review of Anthropic's memory-components article and official
+examples found useful priorities that fit existing Mecha APIs: measure memory
+discovery separately from use, revise from specific counterexamples, preserve
+original evidence and count construction/revision costs. No new wiki, store or
+nightly service was added. The research analysis and source links are in
+`AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12.
+
 ### Native appraisal consistency and verdict controls (2026-11-08, prototype branch)
 
 `NativeEvidenceRequest::checked_input` and `checked_generation_request` add a
@@ -10271,6 +10345,13 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+The concept pilot's revision-mutation fixture initially used a nonexistent SQL
+column. Its provider failed before changing the database, so a generic rejection
+assertion passed without exercising the intended guard. The strengthened test
+changes the actual `lifecycle` field and requires both a changed source hash and
+a rejected post-call source check. A fault-injection test must prove its fault
+happened and identify the guard that rejected it; any error is not sufficient.
 
 A default-feature cargo test build overwrote a feature-enabled example at the
 same target path during atomic-memory qualification. The next HTTP smoke made

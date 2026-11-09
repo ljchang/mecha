@@ -2,6 +2,13 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Concept-benefit pilot addendum, 2026-11-08:** the explicit lifecycle in §31.15
+is implemented by `memory_concept_workflow` and an independent finite-world
+scorer. This adds no store, schema or production integration. See HISTORY for
+qualified results and HANDOFF for remaining work; source/contract acceptance is
+not semantic support. The [implementation plan](superpowers/plans/2026-11-08-concept-benefit-pilot.md)
+fixes fourteen first-response slots and the equal-evidence comparison. The
+post-phase tests revised-concept utility, not an isolated causal effect of revision.
 
 **Native-evidence and concept-rumination addendum, 2026-11-08:** §§31.14–31.15
 now have separate default-off implementations: complete source-bound native facts

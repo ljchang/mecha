@@ -134,6 +134,8 @@ pub mod memory_atomic_workflow;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_bridge_trial;
 #[cfg(feature = "memory-prototype")]
+pub mod memory_concept_workflow;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_decision_runtime;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_experience_bridge;

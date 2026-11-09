@@ -13255,6 +13255,18 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   abstained; those outcomes write nothing and do not retain newly consulted
   evidence. The explicit one-call operation stays provisional and cannot bypass
   the older concept path's refusal of externally bound native sources.
+- **A concept-benefit comparison must not give one arm extra source evidence.**
+  `memory_concept_workflow::run_trial` fixes original episodes and current facts
+  within each pair; only the provisional concept differs. A counterexample is
+  supplied to both follow-up arms. All fourteen slots exist before inference,
+  and a durable started checkpoint precedes provider discovery. A failed or
+  indeterminate slot cannot be replayed or removed from the denominator. Phase
+  seals and fresh authorization bracket every call, including failures; no
+  database transaction spans inference. Successful retention is recorded before
+  derived exports. Otherwise a failed export could hide a durable concept, or
+  an extra evidence bundle could masquerade as successful abstraction. The
+  independent finite-world scorer checks choices and premise coverage, not prose
+  entailment. A two-arm follow-up cannot isolate revision's causal contribution.
 - **Concept retrieval carries its evidence with it.** `knowledge_bundle` checks
   the complete closure against current restrictions, historical freshness and
   source/time filters before adding it atomically under the packet budget.

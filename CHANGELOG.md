@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental synthetic concept comparison adds an explicit induction, paired
+  decisions, counterexample revision and follow-up lifecycle. It preserves first
+  responses and failed slots, holds original evidence equal, and uses an offline
+  fixture scorer. Concepts remain provisional; the comparison does not activate
+  automatic learning or establish improved decisions.
+
 - Experimental native appraisal adds an opt-in checks-first response and paired
   typed comparison. Host checks reject invalid artifact citations and inconsistent
   verdicts while preserving raw replies. Separate literal-copy controls test all
