@@ -370,11 +370,24 @@ def is_test_item(item):
     return False
 
 
-def whole_items(lines, added, start, end, indent):
+FN_HEAD = re.compile(r"\s*(?:pub(?:\([^)]*\))? )?(?:async |unsafe |const )*fn (\w+)")
+
+
+def fn_names(text):
+    """Every fn name declared in a file's text, at any depth."""
+    return {m.group(1) for line in text.split("\n") for m in [FN_HEAD.match(line)] if m}
+
+
+def whole_items(lines, added, start, end, indent, pin_names=None):
     """The items wholly added between `start` and `end` at `indent`: an
     attribute, doc line or item keyword begins one, and it runs to the line
     that closes it at its own indent (`}` or `};`, rustfmt's), or ends on the
-    line that opens it, or at a `;` before anything opened."""
+    line that opens it, or at a `;` before anything opened.
+
+    `pin_names`, the fn names the pin's copy of the file declares, admits a
+    second way to be new: a fn whose header (and every line above it) the PR
+    added, under a name the pin's file never had, is the PR's item whatever
+    the diff paired its tail with."""
     items, i = [], start
     while i <= end and i < len(lines):
         if (i + 1) in added and lines[i].startswith(indent) and ITEM.match(lines[i][len(indent):]):
@@ -401,7 +414,17 @@ def whole_items(lines, added, start, end, indent):
             # with nothing.
             closes = j > i and lines[j].rstrip() in (indent + "}", indent + "};")
             body = range(i, j) if closes else range(i, j + 1)
-            if all((k + 1) in added for k in body):
+            # A new test can end on more context than its brace: one that ends
+            # like the test it follows (a cleanup line, then `}`) has all of
+            # those lines paired with the old test's unchanged tail (pr-155,
+            # admitting boredom-1). So a fn the pin's file never named, whose
+            # header and attributes the PR added, is new however many of its
+            # last lines the diff gave away.
+            head = next((k for k in range(i, j + 1) if FN_HEAD.match(lines[k])), None)
+            named_new = (pin_names is not None and head is not None
+                         and FN_HEAD.match(lines[head]).group(1) not in pin_names
+                         and all((k + 1) in added for k in range(i, head + 1)))
+            if named_new or all((k + 1) in added for k in body):
                 items.append("\n".join(lines[i:j + 1]))
             i = j + 1
             continue
@@ -428,6 +451,9 @@ def added_items(merge):
         if path in new_test_files(merge):
             continue
         lines = git("show", f"{merge}:{path}").split("\n")
+        # The pin's names; a file the PR added has none (`A` in its status).
+        pin = run(["git", "-C", repo(), "show", f"{merge}^1:{path}"])
+        pin_names = fn_names(pin.stdout) if pin.returncode == 0 else set()
         added = set()
         diff = git("diff", "-U0", f"{merge}^1", merge, "--", path)
         for m in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", diff, re.M):
@@ -440,7 +466,7 @@ def added_items(merge):
         # (review of #852, pass 3).
         modules = [m for m in test_modules(lines) if (m[1] + 1) not in added]
         for name, start, end in modules:
-            items = whole_items(lines, added, start + 1, end - 1, "    ")
+            items = whole_items(lines, added, start + 1, end - 1, "    ", pin_names)
             if items:
                 groups.append((name, "    ", items))
         inside = {k for _, start, end in modules for k in range(start, end + 1)}
@@ -450,7 +476,7 @@ def added_items(merge):
             if i in inside:
                 i += 1
                 continue
-            items = whole_items(lines, added, i, i, "")
+            items = whole_items(lines, added, i, i, "", pin_names)
             if items:
                 item = items[0]
                 if whole_file or is_test_item(item):

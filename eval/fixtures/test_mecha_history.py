@@ -616,6 +616,32 @@ class Source(unittest.TestCase):
         # But a body line the diff kept is the old test's, not a new one.
         self.assertEqual(mecha_history.whole_items(lines, {4, 5, 6, 7}, 0, 8, "    "), [])
 
+    def test_a_new_name_is_whole_however_much_of_its_tail_the_diff_gave_away(self):
+        # pr-155's shape: the appended test ends like the one before it (a
+        # cleanup line, then `}`), so both lines pair with the old tail.
+        lines = [
+            "    #[test]",                          # 1 context
+            "    fn extended() {",                  # 2 context
+            "        assert!(true);",               # 3 added (appended asserts)
+            "        cleanup();",                   # 4 added
+            "    }",                                # 5 added
+            "",                                     # 6 added
+            "    #[test]",                          # 7 added
+            "    fn appended() {",                  # 8 added
+            "        assert!(false);",              # 9 added
+            "        cleanup();",                   # 10 CONTEXT
+            "    }",                                # 11 CONTEXT
+        ]
+        added = {3, 4, 5, 6, 7, 8, 9}
+        whole = ["    #[test]\n    fn appended() {\n        assert!(false);\n        cleanup();\n    }"]
+        # Without the pin's names this was {} for pr-155 even after 479d1fd1e.
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 10, "    "), [])
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 10, "    ", {"extended"}), whole)
+        # A name the pin already had is an edit to an old test, never a graft.
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 10, "    ", {"extended", "appended"}), [])
+        # Nor is a fn whose header the diff kept, whatever its name.
+        self.assertEqual(mecha_history.whole_items(lines, added - {8}, 0, 10, "    ", {"extended"}), [])
+
     def test_a_skip_for_want_of_a_backend_is_told_apart_from_a_failure(self):
         out = ("test tests::hidden_grade::needs_a_worker ... FAILED\n"
                "test tests::hidden_grade::asserts ... FAILED\n\nfailures:\n\n"
