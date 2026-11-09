@@ -401,6 +401,13 @@ class Source(unittest.TestCase):
             # Not graded yet: teardown leaves the build products alone.
             self.assertEqual(self.source("teardown", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)
             self.assertTrue(all(os.path.exists(os.path.join(self.ws, d, "big")) for d in mecha_history.PRUNED))
+            # Spent (exp, after a trial that died before its grade): they go
+            # though the tree was never graded, since nothing will grade it.
+            self.assertEqual(self.source("teardown", "pr-1", "--spent", extra={"MECHA_HOME": home}).returncode, 0)
+            self.assertFalse(any(os.path.exists(os.path.join(self.ws, d)) for d in mecha_history.PRUNED))
+            for d in mecha_history.PRUNED:
+                os.makedirs(os.path.join(self.ws, d), exist_ok=True)
+                write(os.path.join(self.ws, d, "big"), "x\n")
             # Graded: they go, and the tree and its history stay.
             mecha_history.claim(self.ws, "pr-1")
             self.assertEqual(self.source("teardown", "pr-1", extra={"MECHA_HOME": home}).returncode, 0)

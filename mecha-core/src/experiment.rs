@@ -1432,9 +1432,11 @@ pub struct SourceGrade {
     /// them (a repository source does; a world-state benchmark may not).
     /// Recorded on the trial beside the checks, never read as a verdict.
     /// Named here rather than admitted by loosening the shape: a field this
-    /// build does not know still fails the grade.
+    /// build does not know still fails the grade. `None` — absent, or `null`
+    /// when the source could not tell (its git failed in the jail) — is kept
+    /// apart from an empty list, which says nothing changed.
     #[serde(default)]
-    pub changed: Vec<String>,
+    pub changed: Option<Vec<String>>,
 }
 
 impl SourceGrade {
@@ -1998,7 +2000,7 @@ impl Manifest {
             let env_digest = env.map(|c| c.digest.as_str());
             let features_on = env.map(|c| c.features_on.as_slice());
             let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
-                changed: Vec::new(),
+                changed: None,
                 owner_actions: None,
                 fixture_checked: None,
                 id: trial_id(arm_name, task, seed, rep),
@@ -2487,10 +2489,10 @@ pub struct Trial {
     /// The paths the run changed in its tree, as its source's `grade` named
     /// them (`SourceGrade::changed`). A driven trial's audit: the driver
     /// reads any diff that touches a build file, because the grade executes
-    /// the run's own code (`DRIVER-DESIGN.md` §3). Empty on rows whose
-    /// source names none, and on every row written before the field.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changed: Vec<String>,
+    /// the run's own code (`DRIVER-DESIGN.md` §3). `None` on rows whose
+    /// source could not say, and on every row written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
 }
 
 impl Trial {
@@ -3909,10 +3911,17 @@ rationale = "no notice, fewer turns"
         .unwrap();
         assert_eq!(
             g.changed,
-            vec!["src/a.rs".to_string(), "Cargo.toml".to_string()]
+            Some(vec!["src/a.rs".to_string(), "Cargo.toml".to_string()])
         );
         let plain: SourceGrade = serde_json::from_str(r#"{"passed": true}"#).unwrap();
-        assert!(plain.changed.is_empty());
+        assert_eq!(plain.changed, None);
+        // `null` is the source saying it could not tell: still a grade, and
+        // never read as "nothing changed" (review of #859, pass 1).
+        let unknown: SourceGrade =
+            serde_json::from_str(r#"{"passed": true, "changed": null}"#).unwrap();
+        assert_eq!(unknown.changed, None);
+        let none: SourceGrade = serde_json::from_str(r#"{"passed": true, "changed": []}"#).unwrap();
+        assert_eq!(none.changed, Some(Vec::new()));
         assert!(
             serde_json::from_str::<SourceGrade>(r#"{"passed": true, "verdict": "yes"}"#).is_err()
         );
@@ -3922,7 +3931,7 @@ rationale = "no notice, fewer turns"
             "condition_hash": "h", "status": "done"
         }))
         .unwrap();
-        assert!(old.changed.is_empty());
+        assert_eq!(old.changed, None);
     }
 
     #[test]
@@ -4698,7 +4707,7 @@ rationale = "r"
 
     fn done(arm: &str, task: &str, seed: u64, passed: bool, turns: u32) -> Trial {
         Trial {
-            changed: Vec::new(),
+            changed: None,
             owner_actions: None,
             fixture_checked: None,
             id: trial_id(arm, task, Some(seed), 1),

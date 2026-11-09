@@ -15,7 +15,9 @@ D3a, D3b), on the contract of docs/EXPERIMENT-DESIGN.md §21.1
 
 and four of its own, for the driver rather than `mecha exp`:
 
-    teardown <task>      -> removes the driven marker (`mecha driven unmark`)
+    teardown <task> [--spent] -> removes the driven marker (`mecha driven
+                            unmark`); prunes target/ and vendor/ from a
+                            graded tree, or from any tree with --spent
     validate <task> [r]  -> D3a: the hidden tests r times on the pin (each run
                             must fail an assertion) and r times on the merge
                             (each run must pass); one JSON line
@@ -989,17 +991,20 @@ def cmd_setup(task_id):
 PRUNED = ("target", "vendor")  # setup's build products: regenerable, ~6.6 GB a clone
 
 
-def cmd_teardown(task_id):
+def cmd_teardown(task_id, spent=False):
     t = find(task_id)
     r = run([mecha(), "driven", "unmark", t["id"]])
     if r.returncode != 0:
         die(f"could not remove the driven marker: {(r.stderr or r.stdout).strip()}")
     # A graded tree is never graded again (`claim`), so nothing reads its
     # build products: they go, and the tree and its history stay for the
-    # audit. An ungraded tree keeps them: a crashed grade may be retried by
-    # hand from a fresh setup, but this one is not ours to judge spent.
+    # audit. An ungraded tree keeps them unless the caller says it is spent
+    # (`--spent`: `mecha exp` after a trial that crashed before its grade,
+    # whose row is never rerun); otherwise a grade may still be retried.
     ws = os.environ.get("MECHA_EXPERIMENT_WORKSPACE")
-    if ws and os.path.exists(claim_path(ws)):
+    if ws:
+        ws = workspace()
+    if ws and (spent or os.path.exists(claim_path(ws))):
         for d in PRUNED:
             shutil.rmtree(os.path.join(ws, d), ignore_errors=True)
 
@@ -1217,7 +1222,7 @@ def main(argv):
     elif verb == "grade" and rest:
         cmd_grade(rest[0])
     elif verb == "teardown" and rest:
-        cmd_teardown(rest[0])
+        cmd_teardown(rest[0], spent="--spent" in rest[1:])
     elif verb == "validate" and rest:
         cmd_validate(rest[0], int(rest[1]) if len(rest) > 1 else 5)
     elif verb == "baseline" and rest:
