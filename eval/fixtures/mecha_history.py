@@ -392,7 +392,16 @@ def whole_items(lines, added, start, end, indent):
                 if opened and line in (indent + "}", indent + "};"):
                     break
                 j += 1
-            if all((k + 1) in added for k in range(i, j + 1)):
+            # Every line added, except perhaps the item's own closing brace:
+            # a PR that shortens one test and appends another right after it
+            # gets that brace attributed to the old test's unchanged `}` by
+            # every diff algorithm, so a wholly new test ends on a context
+            # line (pr-387, found admitting holdout boredom-1). The body is
+            # still all the PR's; grafted into its own module, it collides
+            # with nothing.
+            closes = j > i and lines[j].rstrip() in (indent + "}", indent + "};")
+            body = range(i, j) if closes else range(i, j + 1)
+            if all((k + 1) in added for k in body):
                 items.append("\n".join(lines[i:j + 1]))
             i = j + 1
             continue

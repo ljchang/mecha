@@ -564,6 +564,27 @@ class Source(unittest.TestCase):
         self.assertEqual(mecha_history.whole_items(lines, added, 15, 17, ""),
                          ["#[cfg(test)]\n#[test]\nfn added_at_the_top() {}"])
 
+    def test_a_new_test_whose_closing_brace_the_diff_gave_to_the_old_one_is_still_whole(self):
+        # pr-387's shape: the PR cut the tail of `shortened` and appended
+        # `appended`; every diff algorithm pairs the new test's `}` with the
+        # old test's unchanged one, so it ends on a context line.
+        lines = [
+            "    #[test]",              # 1 context
+            "    fn shortened() {",     # 2 context
+            "        assert!(true);",   # 3 context
+            "    }",                    # 4 added (the old test's new end)
+            "",                         # 5 added
+            "    #[test]",              # 6 added
+            "    fn appended() {",      # 7 added
+            "        assert!(false);",  # 8 added
+            "    }",                    # 9 CONTEXT: the diff's pairing
+        ]
+        added = {4, 5, 6, 7, 8}
+        self.assertEqual(mecha_history.whole_items(lines, added, 0, 8, "    "),
+                         ["    #[test]\n    fn appended() {\n        assert!(false);\n    }"])
+        # But a body line the diff kept is the old test's, not a new one.
+        self.assertEqual(mecha_history.whole_items(lines, {4, 5, 6, 7}, 0, 8, "    "), [])
+
     def test_a_skip_for_want_of_a_backend_is_told_apart_from_a_failure(self):
         out = ("test tests::hidden_grade::needs_a_worker ... FAILED\n"
                "test tests::hidden_grade::asserts ... FAILED\n\nfailures:\n\n"
