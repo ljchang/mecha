@@ -14,6 +14,57 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Integrated native memory sessions (2026-11-08, prototype branch)
+
+The explicit `memory init-native` / `native-session` CLI and
+`memory_situated_workflow::run_native_session` connect the existing agent executor
+to rich v8 capture using a bounded host request. Actual jailed file writes feed an
+independent artifact checker; no fixture overwrites the output. Started state is
+synced before provider discovery, existing task directories refuse replay, and
+execution/capture errors keep their report while making the CLI fail. Later
+invocations reopen the same explicit store and source authority. The old situated
+fixtures retain their v7 behavior. Normal chat/web memory and production deployment
+remain unchanged.
+
+Explicit native concept and rumination APIs resolve original fields, roles and
+session identity through canonical captures. Multiple passages or prefixes of one
+session cannot supply independent support. Selected inputs and complete metadata
+projection closures retain uncited dependencies and exact scope restrictions;
+preparation, retention and every rumination outcome recheck current authority.
+Native revisions preserve prior sources and opposition. Canonical provisional
+concepts may be recaptured without becoming instructions; concept/interpretation
+ancestors disqualify an episode as independent induction evidence. Native appraisal
+of a Concept-bearing closure still refuses explicitly.
+
+The authored end-to-end test executes two independent supporting tasks, reopens
+GoalMemory and uses cited artifact bytes in another real write, then executes a
+successful write whose output fails the same confirmed criterion. Provisional
+revision retains the in-scope counterexample and complete lineage. Reopening and
+source withdrawal verify current recall and invalidation of reused descendants.
+This is a mechanics result, not model concept learning or a decision-benefit result.
+
+The first revised reader bundle measured 21,042 bytes across 20 records and was
+correctly withheld by the unchanged 20,000-byte cap. Exact short verdict citations
+and one selected opposing artifact produced a 19,562-byte, 19-record packet. Every
+original and projection of the three source captures remained present; the opposing
+write result remained in the inherited closure rather than being a selected
+counterexample excerpt. An empty final assistant reply was rejected by the normal
+loop during fixture development; the final fixture keeps a short visible reply.
+Larger concept bundles remain a concrete presentation limit, not a solved scale
+problem.
+
+Observed regression tests failed on the old v8 capture path, guardless concept
+admission, missing CLI command and incomplete execution's zero exit status.
+Focused checks passed 313 standalone unit tests, seven situated-runner tests,
+thirteen CLI tests and the integrated acceptance case. Separate task and combined
+reviews found no major/medium issues. Two minor follow-ups remain: end-to-end
+forgetting after concept reuse (focused forgetting and integrated withdrawal are
+separately covered), and cleanup of native concept unit-test temporary directories.
+Full qualification and first-attempt model smoke records are kept under
+`results/memory-integrated-session-20261108`; PR #846 carries the exact-head check
+status and the living Site records the latest measured outcomes.
+
+
 
 ### Equal-evidence concept pilot and memory review (2026-11-08, prototype branch)
 

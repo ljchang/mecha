@@ -1,0 +1,24 @@
+{
+  "prompt": "Read state.txt. Save a JSON array with one object containing the observed status string to output.json, then finish.",
+  "files": {
+    "state.txt": "The observed status is ready."
+  },
+  "criterion": {
+    "goal": "task:record-status",
+    "goal_text": "Record the observed status.",
+    "criterion_text": "Save the observed status in a one-row JSON array with string key status.",
+    "criterion_revision": "1111111111111111111111111111111111111111111111111111111111111111",
+    "confirmation_digest": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expected_rows": [
+    {
+      "status": "ready"
+    }
+  ],
+  "domain": "synthetic-native-demo",
+  "scopes": [
+    "synthetic"
+  ],
+  "account": "synthetic",
+  "interpretation_context_id": null
+}

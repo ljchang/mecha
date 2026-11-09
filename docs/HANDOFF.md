@@ -154,52 +154,47 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Current memory priority: measure one concept and revision independently; native semantic appraisal remains unqualified.**
+**Current memory priority: qualify the connected native prototype; semantic reliability remains open.**
 
-`NativeEvidenceRequest` and `memory_native_workflow` implement the read-only typed
-fact experiment from design §31.14. The opaque request preserves original values,
-IDs and authenticated metadata, with whole-value omissions and complete source
-rechecks. Raw and typed arms share one-call budgets and independent deadlines.
-The owner selected Qwen3.6-35b-a3b-uncensored for subsequent measurements;
-recheck residency before each run. The separate complete raw/typed comparison
-returned 16 replies, all met: both arms had 3/8 correct states, 2/8 fully supported
-responses and 0/2 required abstentions. Earlier partial Qwen3.8 results remain
-separate, not a controlled model ranking.
+The explicit `memory init-native` / `native-session` path now reuses the existing
+situated executor with a bounded host request, v8 action/artifact capture and
+reopened guarded recall. It records started state before provider discovery and
+refuses replay of an existing task directory. Actual output is independently
+checked; execution/capture errors retain reports and exit nonzero. It does not
+activate normal chat/web memory or automatically collect private sensors.
 
-The opt-in checks-first response and six literal controls are implemented and
-qualified mechanically (6,352 default /6,911 memory-enabled tests, 307 standalone,
-182 actual-binary Python checks, strict Clippy/build/fmt). The fixed 30-response
-Qwen3.6 comparison is complete: all six controls passed. Direct/checked raw labels
-were 5/12 and 6/12, primary semantic passes 5/12 and 4/12, and accepted semantic
-passes 5/12 and 2/12. Both failed all four required unknown cases. Five checked
-responses were withheld; withholding is not improved reasoning. HISTORY records
-strata, the prose-citation sensitivity and all limitations. Keep this protocol
-experimental and preserve the prior cohorts. New artifacts use
-`results/memory-evaluator-repair-20261108` in the isolated Spark checkout.
+`prepare_native_concept` / `retain_native_concept` and native rumination siblings
+admit canonical native originals through an explicit guarded path. Session identity,
+roles and full metadata/source closure survive retention. Canonical concepts may
+be consulted and recaptured, but Concept/Interpretation-influenced episodes cannot
+become independent learning inputs. Appraisal of a Concept-bearing closure still
+refuses explicitly; integrating provisional concept meaning into appraisal needs an
+explicit role-aware contract, not relaxation of observation checks.
 
-The explicit fourteen-call concept pilot is implemented and mechanically qualified.
-Its first Qwen3.6 cohort completed: both arms were 6/6 correct with sufficient
-cited premises, but arm-masked explanation support was 5/6 source-only versus
-4/6 with concepts. The baseline ceiling prevents a decision-benefit claim.
-Rumination added the counterexample and consulted source while leaving the
-principle/applicability unchanged; it did not demonstrate correction of a bad
-abstraction. HISTORY retains costs, audits and limits under
-`results/memory-concept-benefit-20261108`.
+The authored integrated test exercises two native supporting episodes, reopened
+GoalMemory-guided writing, a successful write whose actual output fails the same
+criterion, provisional revision, reopened complete recall and withdrawal of source,
+concept and reused descendants. It establishes lifecycle behavior, not model
+learning. A larger authored bundle measured 21,042 bytes and was correctly omitted
+by the unchanged 20 KB reader cap; exact short citations fit 19,562 bytes with all
+three capture closures. Efficient bounded presentation of larger bundles remains a
+real MVP limitation. Focused tests/reviews pass. Qualification artifacts live under
+`results/memory-integrated-session-20261108`; PR #846 carries exact-head CI status.
 
-Next use fresh, independently scored transfer cases that vary prerequisite
-structure and cost ordering, with source-only, initial-concept and revised-concept
-arms on the same tasks. Keep retrieval fixed for that comparison; separately
-instrument actual memory invocation and premise coverage before adding new
-retrieval infrastructure. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md`
-§12 supports targeted correction and bounded context, not a new wiki/store or
-nightly migration. Native concept admission and production use remain open.
+Native semantic appraisal remains unqualified. The recorded raw/typed and
+checks-first cohorts did not establish reliable uncertainty or evidence reasoning.
+The completed fourteen-call synthetic concept pilot likewise established no choice
+benefit: both arms were 6/6 correct, with supported explanations 5/6 source-only
+versus 4/6 with concepts; revision added opposition without changing the rule.
+HISTORY retains complete denominators, costs, first failures and qualification.
+The owner-selected model is Qwen3.6-35b-a3b-uncensored; recheck residency before calls.
 
-`concept::rumination` implements one explicit provisional revision over existing
-synthetic concept storage. Complete prior consulted sources, mandatory old/new
-counterexamples and inherited restrictions survive revision. Unchanged/abstained
-outcomes retain nothing new. This is a core prepare/finish/callback API, not a new
-production tool or automatic nightly loop. Source-verified behavior and focused
-checks are in HISTORY; useful transfer and native concept admission remain open.
+Remaining priorities are bounded native concept presentation and role-aware
+appraisal integration; independently scored transfer and genuine in-scope model
+revision; broader capture/termination coverage; then private-data and operational
+qualification. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
+focused tests using these existing mechanisms. Owner-graph merger, nightly
+migration, a new wiki/store and automatic production learning remain deferred.
 
 The earlier v4 failure below remains a historical result, not the score of this
 new experiment.

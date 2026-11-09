@@ -310,6 +310,11 @@ pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
 pub(super) fn contains_interpretation(conn: &Connection, r: &RevisionRef) -> Result<bool> {
     Ok(conn.query_row("WITH RECURSIVE inputs(id) AS (SELECT ?1 UNION SELECT d.input FROM dependency d JOIN inputs i ON d.output=i.id) SELECT EXISTS(SELECT 1 FROM inputs JOIN revision r ON r.id=inputs.id JOIN object o ON o.id=r.object_id WHERE o.kind='interpretation')",[&r.revision],|r|r.get(0))?)
 }
+/// A recaptured provisional concept is derived meaning too. Keep this distinct
+/// from default interpretation withholding: provisional concepts remain readable.
+pub(super) fn contains_hypothesis(conn: &Connection, r: &RevisionRef) -> Result<bool> {
+    Ok(conn.query_row("WITH RECURSIVE inputs(id) AS (SELECT ?1 UNION SELECT d.input FROM dependency d JOIN inputs i ON d.output=i.id) SELECT EXISTS(SELECT 1 FROM inputs JOIN revision r ON r.id=inputs.id JOIN object o ON o.id=r.object_id WHERE o.kind IN ('interpretation','concept'))",[&r.revision],|r|r.get(0))?)
+}
 fn authenticate_receipt(conn: &Connection, r: &CaptureReceipt) -> Result<()> {
     let row=conn.query_row("SELECT projection_object,projection_revision,originals FROM host_capture_receipt WHERE receipt_id=?1 AND state='active'",[&r.id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).optional()?.context("capture receipt unavailable")?;
     let originals: Vec<RevisionRef> = serde_json::from_str(&row.2)?;
@@ -428,7 +433,7 @@ fn source_fields_impl(
                                 && p.text == e.text
                         })
                         .context("original does not match projection")?;
-                    let kind = if contains_interpretation(conn, r)? {
+                    let kind = if contains_hypothesis(conn, r)? {
                         SourceKind::InterpretationInfluenced
                     } else {
                         match p.kind {

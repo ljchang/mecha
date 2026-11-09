@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental native memory sessions connect actual jailed actions, independent
+  artifact checks, v8 capture and reopened recall through explicit `init-native`
+  and `native-session` commands. Guarded native concept/rumination APIs preserve
+  canonical episode identity, complete source dependencies and restrictions.
+  Concepts remain provisional; reuse cannot count as independent support, and
+  normal chat/web sessions and automatic learning remain unchanged.
+
 - Experimental synthetic concept comparison adds an explicit induction, paired
   decisions, counterexample revision and follow-up lifecycle. It preserves first
   responses and failed slots, holds original evidence equal, and uses an offline

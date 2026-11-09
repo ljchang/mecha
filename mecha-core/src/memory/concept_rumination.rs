@@ -1,6 +1,5 @@
 //! One explicit revision cycle for a provisional concept.
-//! Synthetic, unbound sources only: the conservative concept authorization
-//! boundary is unchanged. A structurally valid revision is not semantic proof.
+//! Legacy unbound and explicit native paths retain separate authorization receipts. A structurally valid revision is not semantic proof.
 
 use super::*;
 use crate::memory::plan_extraction::UniqueValue;
@@ -58,7 +57,32 @@ impl Memory {
         known_at: &Snapshot,
         access: &Access,
     ) -> Result<ConceptRuminationRequest> {
+        self.prepare_concept_rumination_mode(expected, counterexamples, known_at, access, false)
+    }
+    /// One explicit revision cycle over canonical native source observations.
+    pub fn prepare_native_concept_rumination(
+        &self,
+        expected: &RevisionRef,
+        counterexamples: &[ConceptExcerpt],
+        known_at: &Snapshot,
+        access: &Access,
+    ) -> Result<ConceptRuminationRequest> {
+        self.prepare_concept_rumination_mode(expected, counterexamples, known_at, access, true)
+    }
+    fn prepare_concept_rumination_mode(
+        &self,
+        expected: &RevisionRef,
+        counterexamples: &[ConceptExcerpt],
+        known_at: &Snapshot,
+        access: &Access,
+        native: bool,
+    ) -> Result<ConceptRuminationRequest> {
         self.check_access(access)?;
+        let guard = if native {
+            self.source_guard.as_deref()
+        } else {
+            None
+        };
         ensure!(counterexamples.len() <= 8, "at most eight counterexamples");
         let tx = self.conn.unchecked_transaction()?;
         ensure!(
@@ -69,12 +93,19 @@ impl Memory {
         );
         current(&tx, expected)?;
         ensure!(
-            fresh(&tx, expected, known_at.sequence)? && authorized(&tx, expected, access)?,
+            fresh(&tx, expected, known_at.sequence)?
+                && authorized_with_guard(&tx, expected, access, guard)?,
             "previous concept unavailable at snapshot or scope"
         );
         let Some(Record::Concept(previous)) = lookup(&tx, expected)? else {
             anyhow::bail!("expected a provisional concept")
         };
+        if native {
+            ensure!(
+                super::native::canonical(&tx, expected)?,
+                "expected canonical native concept"
+            );
+        }
         let previous_scopes = required_scopes(&tx, &expected.revision)?;
         tx.commit()?;
 
@@ -89,8 +120,12 @@ impl Memory {
             }
         }
         ensure!(union.len() <= 8, "rumination source union exceeds eight");
-        let sources =
-            self.prepare_concept(&union.into_values().collect::<Vec<_>>(), known_at, access)?;
+        let sources = self.prepare_concept_mode(
+            &union.into_values().collect::<Vec<_>>(),
+            known_at,
+            access,
+            native,
+        )?;
         let mut mandatory = Vec::new();
         for excerpt in previous.counterexamples.iter().chain(counterexamples) {
             validate_exact(&sources, excerpt)?;
@@ -131,7 +166,7 @@ impl Memory {
         // Preparation's separate short transactions do not pin source revisions
         // or scopes. Check the assembled receipt again before exposing text.
         let tx = self.conn.unchecked_transaction()?;
-        recheck(&tx, &request, access)?;
+        recheck(&tx, &request, access, guard)?;
         tx.commit()?;
         Ok(request)
     }
@@ -145,7 +180,34 @@ impl Memory {
         reply: &str,
         access: &Access,
     ) -> Result<RuminationOutcome> {
+        ensure!(
+            !request.sources.native,
+            "native receipt requires native rumination finish"
+        );
+        self.finish_concept_rumination_mode(request, reply, access)
+    }
+    /// Every native outcome rechecks current source authority, including no-write outcomes.
+    pub fn finish_native_concept_rumination(
+        &mut self,
+        request: ConceptRuminationRequest,
+        reply: &str,
+        access: &Access,
+    ) -> Result<RuminationOutcome> {
+        ensure!(request.sources.native, "expected native rumination receipt");
+        self.finish_concept_rumination_mode(request, reply, access)
+    }
+    fn finish_concept_rumination_mode(
+        &mut self,
+        request: ConceptRuminationRequest,
+        reply: &str,
+        access: &Access,
+    ) -> Result<RuminationOutcome> {
         self.check_access(access)?;
+        let guard = if request.sources.native {
+            self.source_guard.as_deref()
+        } else {
+            None
+        };
         ensure!(
             request.sources.instance == self.instance,
             "foreign rumination receipt"
@@ -155,14 +217,18 @@ impl Memory {
             "rumination reply exceeds 36000 bytes"
         );
         let tx = self.conn.unchecked_transaction()?;
-        recheck(&tx, &request, access)?;
+        recheck(&tx, &request, access, guard)?;
         let UniqueValue(value) = serde_json::from_str(reply).context("invalid rumination JSON")?;
         let response: Response =
             serde_json::from_value(value).context("invalid rumination response")?;
         if let Response::RevisedProvisional { draft } = response {
             let parsed: Draft =
                 serde_json::from_value(draft.clone()).context("invalid revised concept")?;
-            let selected = excerpts(&request.sources.sources, &parsed.counterexamples)?;
+            let selected = excerpts(
+                &request.sources.sources,
+                &parsed.counterexamples,
+                &request.sources.native_sources,
+            )?;
             ensure!(
                 request
                     .mandatory
@@ -189,6 +255,9 @@ impl Memory {
             !reason.trim().is_empty() && reason.len() <= 2000,
             "invalid rumination reason"
         );
+        // The first check preceded parsing; external authority is not part of
+        // SQLite's snapshot, so check it afresh before releasing either outcome.
+        recheck(&tx, &request, access, guard)?;
         tx.commit()?;
         Ok(if abstained {
             RuminationOutcome::Abstained {
@@ -224,28 +293,23 @@ impl Memory {
     }
 }
 
-fn recheck(conn: &Connection, request: &ConceptRuminationRequest, access: &Access) -> Result<()> {
+fn recheck(
+    conn: &Connection,
+    request: &ConceptRuminationRequest,
+    access: &Access,
+    guard: Option<&dyn host_capture::ExternalSourceGuard>,
+) -> Result<()> {
     current(conn, &request.expected)?;
     ensure!(
-        fresh(conn, &request.expected, i64::MAX)? && authorized(conn, &request.expected, access)?,
+        fresh(conn, &request.expected, i64::MAX)?
+            && authorized_with_guard(conn, &request.expected, access, guard)?,
         "previous concept became unavailable"
     );
     ensure!(
         required_scopes(conn, &request.expected.revision)? == request.previous_scopes,
         "previous concept scopes changed during rumination"
     );
-    for (reference, _) in &request.sources.sources {
-        current(conn, reference)?;
-        ensure!(
-            fresh(conn, reference, i64::MAX)? && authorized(conn, reference, access)?,
-            "rumination source became unavailable"
-        );
-        ensure!(
-            request.sources.source_scopes.get(&reference.revision)
-                == Some(&required_scopes(conn, &reference.revision)?),
-            "rumination source scopes changed"
-        );
-    }
+    recheck_sources(conn, &request.sources, access, guard)?;
     Ok(())
 }
 
@@ -263,7 +327,7 @@ fn validate_exact(request: &ConceptRequest, required: &ConceptExcerpt) -> Result
         field: required.field.clone(),
         quote: required.quote.clone(),
     };
-    let resolved = excerpts(&request.sources, &[selection])?;
+    let resolved = excerpts(&request.sources, &[selection], &request.native_sources)?;
     ensure!(
         same_excerpt(required, &resolved[0]),
         "counterexample must be an exact canonical source excerpt"

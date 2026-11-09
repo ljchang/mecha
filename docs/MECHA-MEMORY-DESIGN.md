@@ -3350,3 +3350,40 @@ evidence. Independently grade fixture-defined outcomes, premise coverage and
 abstention; report model assessments separately. Include generation/revision
 costs. Hold retrieval fixed initially, since a concept's complete source bundle
 could otherwise supply extra information and confound the comparison.
+
+### 31.16 Explicit integrated native test sessions
+
+Implemented as an explicit prototype path; see HISTORY for mechanics and limitations.
+
+The next integration milestone connects actual native execution, observed
+outcomes, reopened recall, provisional concepts and bounded revision. It remains
+an explicitly invoked synthetic Test-session path. Normal chat/web sessions,
+owner-information ingestion and nightly learning remain unchanged.
+
+Generalize the existing situated workflow's native executor rather than creating
+another executor. A host request supplies a public confirmed criterion, bounded
+workspace inputs, prompt and independently checked expected artifact rows. The
+agent writes the actual artifact through jailed tools; capture must never replace
+that output with fixture data. The v8 store retains original action inputs and
+observations. A durable started marker precedes provider discovery; an existing
+task directory cannot replay execution. Later invocations reopen the same database
+and source authority. Host-only needs remain outside model-visible memory.
+
+Native concept admission is a separate explicit API. The older guardless APIs
+remain closed to bound sources. Canonical capture metadata supplies original
+fields and session identity; multiple passages or prefixes from one session are
+one supporting episode. Projections are not original text. Retain the complete
+selected-source and metadata-projection dependency closure, including uncited
+inputs and every restriction. Recheck current authorization, freshness and exact
+closure scopes before exposing input and after inference. Each outcome, including
+unchanged or abstained rumination, must pass the checks. Initially refuse sources
+with interpreted ancestors rather than present derived meaning as independent
+observations. Concepts remain provisional retrieved data, never trusted rules.
+
+Acceptance uses two independently executed supporting episodes, a reopened recall
+that informs another native action, and an actual contradictory observation within
+the learned concept's stated scope. One revision must preserve opposition and
+source lineage across reopening. Authored providers establish mechanical contracts;
+a separately recorded model run establishes only that particular observed behavior.
+Neither demonstrates reliable general decision improvement. Source withdrawal,
+forgetting, scope changes and cancelled execution are negative acceptance cases.

@@ -13082,7 +13082,8 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   during supported read/search/recall/context eligibility and before returning
   a bundle. Missing authority withholds bound records. Unsupported producers
   retain guardless, conservative authorization; injecting a reader guard cannot
-  silently authorize concept promotion or legacy durable operations. Missing v6
+  silently authorize legacy concept or durable operations. The explicit native
+  concept API separately reconstructs and checks its full source closure. Missing v6
   schema must fail closed rather than look like an older unguarded database.
   These are bounded point-in-time checks, not an atomic filesystem/SQLite snapshot.
   Read phases memoize only exact external binding verdicts (authority, locator,
@@ -13245,6 +13246,26 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   and counterexamples. After inference, source freshness and unchanged scopes
   are rechecked atomically. Otherwise omitting a citation could launder private
   input into a less restricted abstraction. No transaction spans inference.
+- **Native episode identity comes from the capture, not the number of passages.**
+  `prepare_native_concept` resolves each selected original through its canonical
+  active capture. A native passage has no legacy transcript envelope; counting its
+  source key would mistake two passages from one session for two independent
+  experiences. Canonical domain/account/session identity supplies the episode
+  label, and original pointers and PassageKind preserve what was observed versus
+  requested or stated. Projection JSON is not an original text field.
+  The explicit native receipt retains selected originals and the complete
+  metadata-projection closure, bounded to 64 records. Every member's scopes,
+  currentness and external authority are rechecked before input release and
+  retention; a post-append failure rolls back. Legacy receipt/finish APIs cannot
+  be crossed with native ones. Filesystem checks remain point-in-time checks.
+- **Using a concept does not create independent evidence for it.** Native
+  recapture admits only a canonical provisional concept with complete native
+  dependencies and inherited restrictions. The later episode retains that
+  dependency and ordinary private/untrusted taint. Native induction refuses
+  Concept or Interpretation ancestors, preventing copied hypotheses from
+  supporting themselves. Such episodes remain recallable; native appraisal of a
+  Concept-bearing closure currently refuses explicitly rather than treating the
+  hypothesis as observed fact.
 - **Rumination cannot discard opposition or inherited restrictions.**
   `prepare_concept_rumination` binds the previous revision and every consulted
   source, then adds exact host-selected counterexamples. The union must fit the
@@ -13254,7 +13275,20 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   Every outcome rechecks freshness and authorization, including unchanged and
   abstained; those outcomes write nothing and do not retain newly consulted
   evidence. The explicit one-call operation stays provisional and cannot bypass
-  the older concept path's refusal of externally bound native sources.
+  the older concept path's refusal of externally bound native sources. The explicit
+  native rumination siblings additionally recheck their canonical native closure;
+  direct native revision cannot discard previously consulted sources or opposition.
+- **A test-session adapter reuses execution and observes its actual output.**
+  `memory_situated_workflow::run_native_session` generalizes the existing situated
+  runner through a bounded host request, while the old fixture adapters preserve
+  their behavior. A synced started record precedes provider discovery; an existing
+  task root refuses execution. Agent::run_in, jailed file tools, guarded GoalMemory,
+  frozen criteria and `capture_with_evidence` supply actual action/outcome evidence.
+  The separate support-comparison fixture can replace an artifact deliberately;
+  it must not serve as proof of a real observed workflow. Execution and capture
+  errors keep their report and make the CLI fail; an independently failed artifact
+  check is a recorded task outcome, not an execution exception. Private needs remain
+  host-only and their opaque context ID does not implement automatic assessment.
 - **A concept-benefit comparison must not give one arm extra source evidence.**
   `memory_concept_workflow::run_trial` fixes original episodes and current facts
   within each pair; only the provisional concept differs. A counterexample is

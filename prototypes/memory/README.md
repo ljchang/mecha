@@ -13,6 +13,60 @@ unpublished harness compiles the **same source and synthetic fixture**, without
 pulling in unrelated Mecha dependencies. It is not another implementation or
 a new production service.
 
+## Explicit native test sessions
+
+The feature-gated `init-native` and `native-session` commands reuse the ordinary
+agent loop with only jailed file tools and guarded GoalMemory. They retain actual
+invocation/observation evidence in v8, independently check the saved JSON rows,
+and reopen the explicit database for each invocation. They do not load ambient
+configuration, activate normal chat/web memory, or migrate personal information.
+
+```bash
+cargo build -p mecha-cli --features memory-prototype
+NATIVE_DEMO_ROOT=$(mktemp -d /tmp/mecha-native-demo.XXXXXX)
+target/debug/mecha memory --experimental --db "$NATIVE_DEMO_ROOT/demo.memory-prototype.sqlite" \
+  init-native --synthetic-input --domain synthetic-native-demo --authority "$NATIVE_DEMO_ROOT/authority"
+target/debug/mecha memory --experimental --db "$NATIVE_DEMO_ROOT/demo.memory-prototype.sqlite" \
+  native-session --synthetic-input --request "$PWD/prototypes/memory/fixtures/native-session.json" \
+  --authority "$NATIVE_DEMO_ROOT/authority" --root "$NATIVE_DEMO_ROOT/task-1" \
+  --endpoint http://127.0.0.1:8080 --model qwen3.6-35b-a3b-uncensored \
+  --holds-dir "$HOME/.mecha/holds" --seed 70511
+```
+
+The chosen model must already be resident; requests never auto-load or switch it.
+The request file is host input, not a model-authored tool argument. It supplies
+bounded initial files, public confirmed criterion, expected string-valued JSON
+rows, account/domain/scopes and an optional opaque interpretation context ID.
+That ID selects an existing interpretation; it does not collect private needs.
+
+The new task root contains `started.json`, a native transcript, provider audit and
+`report.json`; its `workspace/` alone is accessible to tools. A started root cannot
+replay an action. A later process uses the same database/authority with a new task
+root and explicit request. Keep original artifacts/transcripts intact: current
+source authority is rechecked, not assumed from historical success. Execution or
+capture failures preserve reports and exit nonzero. A completed task with a failed
+independent artifact check is retained as a failed outcome, distinct from those
+execution failures.
+
+Core callers can select canonical `CaptureReceipt.originals` using
+`Memory::{prepare_native_concept,retain_native_concept}` and
+`Memory::{prepare_native_concept_rumination,finish_native_concept_rumination}`.
+They must open memory with the corresponding `LocalAuthority` source guard.
+Support must span two distinct native sessions. All metadata and source dependencies
+remain attached, including uncited inputs and restrictions; all outcomes recheck
+current authority. Provisional concepts may be recalled and recaptured, but those
+influenced episodes cannot count as independent support. Native appraisal of a
+Concept-bearing closure currently refuses explicitly. Older guardless concept
+APIs still refuse native sources.
+
+`mecha-core/tests/memory_integrated_native.rs` demonstrates the complete authored
+lifecycle, including actual action, reopened concept-guided recall, an in-scope
+contradiction, revision and source withdrawal. Its full revised packet fits the
+existing 20 KB bound at 19,562 bytes; a larger authored version measured 21,042 bytes
+and was omitted in full. These are mechanics tests, not evidence of model learning
+or production scale. Larger-packet presentation and semantic qualification remain
+open.
+
 ## Complete native evidence and provisional concept rumination
 
 The default-off library now has two separate experimental interfaces. Neither
@@ -66,7 +120,8 @@ and remains provisional. Unchanged or abstained outcomes write nothing, includin
 none of the newly consulted evidence. Every outcome rechecks current source and
 concept revisions; malformed output cannot replace the previous concept.
 
-These concept APIs currently accept the existing unbound synthetic source path.
+These original concept APIs accept the existing unbound synthetic source path;
+the explicit native siblings above provide the separately guarded alternative.
 Native external-source admission remains deliberately unsupported. No scheduler,
 production adapter or automatic candidate discovery is added. Lifecycle regression
 tests establish mechanics; useful abstraction, transfer and better decisions need a

@@ -542,3 +542,192 @@ fn plan_evaluator_requires_explicit_input_and_rejects_oversized_files_before_net
     let output = f.run(&args);
     assert!(String::from_utf8_lossy(&output.stderr).contains("--synthetic-input"));
 }
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_session_requires_a_fresh_root_and_records_discovery_failure() {
+    let f = Fixture::new();
+    let database = f.0.join("test.memory-prototype.sqlite");
+    let authority = f.0.join("authority");
+    let init = f.memory(&[
+        "init-native",
+        "--synthetic-input",
+        "--domain",
+        "native-cli",
+        "--authority",
+        authority.to_str().unwrap(),
+    ]);
+    assert_eq!(init["native_capture"], true);
+    let request = f.0.join("request.json");
+    std::fs::write(&request, serde_json::to_vec(&serde_json::json!({
+        "prompt":"Save a synthetic checked artifact.", "files":{},
+        "criterion":{"goal":"task:check", "goal_text":"Check synthetic rows.", "criterion_text":"Keep approved rows.", "criterion_revision":"a".repeat(64), "confirmation_digest":"b".repeat(64)},
+        "expected_rows":[], "domain":"native-cli", "scopes":["synthetic:test"], "account":"synthetic"
+    })).unwrap()).unwrap();
+    let root = f.0.join("native-task");
+    let holds = f.0.join("holds");
+    let args = [
+        "memory",
+        "--experimental",
+        "--db",
+        database.to_str().unwrap(),
+        "native-session",
+        "--synthetic-input",
+        "--request",
+        request.to_str().unwrap(),
+        "--authority",
+        authority.to_str().unwrap(),
+        "--root",
+        root.to_str().unwrap(),
+        "--endpoint",
+        "http://example.invalid",
+        "--model",
+        "unused",
+        "--holds-dir",
+        holds.to_str().unwrap(),
+    ];
+    let failed = f.run(&args);
+    assert!(!failed.status.success());
+    assert!(root.join("started.json").is_file());
+    let report = std::fs::read(root.join("report.json")).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&report).unwrap()["status"],
+        "failed"
+    );
+    let replay = f.run(&args);
+    assert!(!replay.status.success());
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("NEW absolute task directory"));
+    assert_eq!(std::fs::read(root.join("report.json")).unwrap(), report);
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_session_execution_failure_is_nonzero_with_preserved_report() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", server.local_addr().unwrap());
+    server.set_nonblocking(true).unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let stopping = done.clone();
+    let serving = std::thread::spawn(move || {
+        let mut completions = 0;
+        while !stopping.load(Ordering::Relaxed) {
+            let Ok((mut stream, _)) = server.accept() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0u8; 4096];
+            let (header_end, length) = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(pos) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..pos]).to_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|s| s.strip_prefix("content-length: "))
+                        .map(|s| s.parse::<usize>().unwrap())
+                        .unwrap_or(0);
+                    break (pos + 4, length);
+                }
+            };
+            while bytes.len() < header_end + length {
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            let request = String::from_utf8_lossy(&bytes[..header_end]);
+            let (status, body) = if request.starts_with("GET /models ") {
+                (
+                    200,
+                    r#"{"data":[{"id":"test-model","status":{"value":"loaded"}}]}"#,
+                )
+            } else if request.starts_with("GET /props ") {
+                (200, r#"{"role":"router"}"#)
+            } else {
+                assert!(request.contains("autoload=false"));
+                completions += 1;
+                (
+                    500,
+                    r#"{"error":{"message":"authored unavailable completion"}}"#,
+                )
+            };
+            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        completions
+    });
+    let f = Fixture::new();
+    let database = f.0.join("test.memory-prototype.sqlite");
+    let authority = f.0.join("authority");
+    f.memory(&[
+        "init-native",
+        "--synthetic-input",
+        "--domain",
+        "native-cli",
+        "--authority",
+        authority.to_str().unwrap(),
+    ]);
+    let request = f.0.join("request.json");
+    std::fs::write(&request, serde_json::to_vec(&serde_json::json!({
+        "prompt":"Save a synthetic checked artifact.", "files":{},
+        "criterion":{"goal":"task:check", "goal_text":"Check synthetic rows.", "criterion_text":"Keep approved rows.", "criterion_revision":"a".repeat(64), "confirmation_digest":"b".repeat(64)},
+        "expected_rows":[], "domain":"native-cli", "scopes":["synthetic:test"], "account":"synthetic"
+    })).unwrap()).unwrap();
+    let root = f.0.join("native-task");
+    let holds = f.0.join("holds");
+    let output = f.run(&[
+        "memory",
+        "--experimental",
+        "--db",
+        database.to_str().unwrap(),
+        "native-session",
+        "--synthetic-input",
+        "--request",
+        request.to_str().unwrap(),
+        "--authority",
+        authority.to_str().unwrap(),
+        "--root",
+        root.to_str().unwrap(),
+        "--endpoint",
+        &endpoint,
+        "--model",
+        "test-model",
+        "--holds-dir",
+        holds.to_str().unwrap(),
+    ]);
+    done.store(true, Ordering::Relaxed);
+    assert_eq!(
+        serving.join().unwrap(),
+        1,
+        "failed actions must not retry inference"
+    );
+    assert!(
+        !output.status.success(),
+        "incomplete execution must exit nonzero"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
+    assert!(report["run_error"].is_string());
+    assert!(std::path::Path::new(report["transcript"].as_str().unwrap()).is_file());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        report
+    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains(root.join("report.json").to_str().unwrap()));
+}

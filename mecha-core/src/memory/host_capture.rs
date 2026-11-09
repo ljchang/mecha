@@ -492,8 +492,9 @@ fn admit(
                 && authorized_with_guard(&tx, dependency, access, guard)?,
             "host source unavailable"
         );
-        // Every closure member must be a sealed bridge record. Legacy Evidence
-        // may contain raw host lines and cannot become a projection dependency.
+        // Every closure member must be sealed bridge evidence or a canonical
+        // provisional derivative. Legacy Evidence may contain raw host lines.
+        // Concept status stays provisional; recapture does not promote it.
         for member in closure(&tx, dependency)? {
             let safe: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM external_binding WHERE revision=?1)",
@@ -504,7 +505,8 @@ fn admit(
                 (safe && matches!(lookup(&tx, &member)?, Some(Record::Evidence(_))))
                     || (matches!(version, 7 | 8)
                         && interpretation::canonical(&tx, &member)?
-                        && matches!(lookup(&tx, &member)?, Some(Record::Interpretation(_)))),
+                        && matches!(lookup(&tx, &member)?, Some(Record::Interpretation(_))))
+                    || (matches!(version, 7 | 8) && concept::canonical_native(&tx, &member)?),
                 "unsupported host dependency"
             );
             scopes.extend(required_scopes(&tx, &member.revision)?);

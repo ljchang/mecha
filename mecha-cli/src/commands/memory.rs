@@ -21,6 +21,35 @@ pub struct Args {
 pub enum Cmd {
     /// Create an empty synthetic prototype database.
     Init,
+    /// Create a NEW v8 synthetic native-evidence store and host authority.
+    InitNative {
+        #[arg(long, required = true)]
+        synthetic_input: bool,
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        authority: PathBuf,
+    },
+    /// Execute one synthetic Test session in a NEW jail; never replay a started root.
+    NativeSession {
+        #[arg(long, required = true)]
+        synthetic_input: bool,
+        /// Explicit host-only JSON contract, including frozen criterion/check rows.
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        authority: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        holds_dir: PathBuf,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+    },
     /// Create a NEW synthetic database with the durable lifecycle schema.
     InitDurable {
         #[arg(long)]
@@ -426,6 +455,102 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::Init => {
             let memory = Memory::create(&args.db, "synthetic-demo")?;
             json!({"snapshot":memory.snapshot()?,"fixture_only":true})
+        }
+        Cmd::InitNative {
+            synthetic_input,
+            domain,
+            authority,
+        } => {
+            use mecha_core::memory_experience_bridge::LocalAuthority;
+            ensure!(synthetic_input, "--synthetic-input is required");
+            ensure!(
+                args.db.is_absolute()
+                    && authority.is_absolute()
+                    && !args.db.exists()
+                    && !authority.exists(),
+                "native initialization requires NEW absolute database and authority paths"
+            );
+            let memory = Memory::create_supported_situated(&args.db, &domain)?;
+            LocalAuthority::create(&authority)?;
+            json!({"snapshot":memory.snapshot()?,"fixture_only":true,"native_capture":true,"authority":authority})
+        }
+        Cmd::NativeSession {
+            synthetic_input,
+            request,
+            authority,
+            root,
+            endpoint,
+            model,
+            holds_dir,
+            seed,
+        } => {
+            use mecha_core::{
+                memory_experience_bridge::LocalAuthority,
+                memory_situated_workflow::{run_native_session, NativeSessionRequest},
+                memory_trial_provider::{LocalTrialConfig, LocalTrialProvider},
+                provider::Provider,
+            };
+            use std::io::Read;
+            ensure!(synthetic_input, "--synthetic-input is required");
+            ensure!(
+                request.is_absolute() && authority.is_absolute(),
+                "explicit absolute request and authority paths required"
+            );
+            let mut bytes = Vec::new();
+            std::fs::File::open(request)?
+                .take(1_048_577)
+                .read_to_end(&mut bytes)?;
+            ensure!(bytes.len() <= 1_048_576, "oversized native request file");
+            let request: NativeSessionRequest = serde_json::from_slice(&bytes)?;
+            let authority = LocalAuthority::open(&authority)?;
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let signal_cancel = cancel.clone();
+            let signal = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    signal_cancel.cancel();
+                }
+            });
+            let result = run_native_session(
+                &args.db,
+                &authority,
+                &request,
+                &root,
+                |run_cancel| async move {
+                    Ok(Box::new(
+                        LocalTrialProvider::new(
+                            LocalTrialConfig {
+                                endpoint,
+                                model,
+                                holds_dir,
+                                seed,
+                            },
+                            run_cancel,
+                        )
+                        .await?,
+                    ) as Box<dyn Provider>)
+                },
+                &cancel,
+            )
+            .await;
+            signal.abort();
+            let report_path = root.join("report.json");
+            let report = result.with_context(|| {
+                format!(
+                    "native session failed; task report: {}",
+                    report_path.display()
+                )
+            })?;
+            let value = serde_json::to_value(&report)?;
+            if report.run_error.is_some() || report.capture_error.is_some() {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+                anyhow::bail!(
+                    "native session incomplete; inspect {} (execution: {}; capture: {})",
+                    report_path.display(),
+                    report.run_error.as_deref().unwrap_or("recorded"),
+                    report.capture_error.as_deref().unwrap_or("recorded")
+                );
+            }
+            value
         }
         Cmd::InitDurable { domain } => {
             let memory = Memory::create_durable(&args.db, &domain)?;

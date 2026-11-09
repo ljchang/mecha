@@ -22,11 +22,13 @@ use crate::{
     },
 };
 use anyhow::{ensure, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
+    future::Future,
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -86,6 +88,153 @@ pub struct TaskReport {
     pub run_error: Option<String>,
     pub capture_error: Option<String>,
     pub confirmation: String,
+}
+
+/// Explicit host-authored contract for one synthetic native Test session.
+/// Private needs readings are deliberately absent. An optional opaque context ID
+/// selects an already retained interpretation for this exact public criterion.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeSessionRequest {
+    pub prompt: String,
+    pub files: BTreeMap<String, String>,
+    pub criterion: ConfirmedCriterion,
+    pub expected_rows: Vec<BTreeMap<String, String>>,
+    pub domain: String,
+    pub scopes: BTreeSet<String>,
+    pub account: String,
+    #[serde(default)]
+    pub interpretation_context_id: Option<String>,
+}
+impl NativeSessionRequest {
+    fn access(&self) -> Access {
+        Access {
+            domain: self.domain.clone(),
+            scopes: self.scopes.clone(),
+        }
+    }
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.prompt.trim().is_empty() && self.prompt.len() <= 16_384,
+            "invalid native task prompt"
+        );
+        let _: crate::goal::GoalRef = self.criterion.goal.parse()?;
+        // Validate the complete public criterion even without interpretation reads.
+        InterpretationContext::new(
+            self.criterion.clone(),
+            self.interpretation_context_id
+                .clone()
+                .unwrap_or_else(|| "native-source-only".into()),
+        )?;
+        ensure!(
+            !self.account.trim().is_empty()
+                && self.account.len() <= 256
+                && !self.domain.trim().is_empty()
+                && self.domain.len() <= 256
+                && !self.scopes.is_empty()
+                && self.scopes.len() <= 32
+                && self
+                    .scopes
+                    .iter()
+                    .all(|s| !s.trim().is_empty() && s.len() <= 256),
+            "invalid native task access"
+        );
+        ensure!(
+            self.files.len() <= 16
+                && self.files.iter().all(|(name, text)| {
+                    !name.is_empty()
+                        && name.len() <= 128
+                        && name != "."
+                        && name != ".."
+                        && name != "output.json"
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                        && text.len() <= 65_536
+                })
+                && self.files.values().map(String::len).sum::<usize>() <= 262_144,
+            "invalid native task files"
+        );
+        ensure!(
+            serde_json::to_vec(&self.expected_rows)?.len() <= 262_144,
+            "oversized native task check"
+        );
+        Ok(())
+    }
+}
+
+fn session_checkpoint(path: &Path, value: &impl Serialize) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Run once in a new jail against an explicit existing v8 store and authority.
+/// The durable start precedes provider discovery. A failed/started root is never
+/// replayed. Each invocation reopens memory, so restart requires no live handle.
+/// Provider construction is injected for offline tests; the CLI uses the strict
+/// resident-only local provider. No tool can reach host files outside the jail.
+pub async fn run_native_session<F, Fut>(
+    database: &Path,
+    authority: &LocalAuthority,
+    request: &NativeSessionRequest,
+    root: &Path,
+    factory: F,
+    cancel: &CancellationToken,
+) -> Result<TaskReport>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<Box<dyn Provider>>>,
+{
+    request.validate()?;
+    ensure!(
+        database.is_absolute() && root.is_absolute() && !root.exists(),
+        "native session requires an explicit database and NEW absolute task directory"
+    );
+    let access = request.access();
+    let memory = Memory::open_read_only(database)?;
+    memory.require_host_capture_version(true)?;
+    memory.check_access(&access)?;
+    drop(memory);
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new().mode(0o700).create(root)?;
+    let root = root.canonicalize()?;
+    session_checkpoint(
+        &root.join("started.json"),
+        &json!({"protocol":"native-memory-session-v1","status":"started","synthetic_only":true,"request":request,"max_turns":6,"max_output_tokens":16384,"deadline_seconds":180}),
+    )?;
+    let run_cancel = cancel.child_token();
+    let timeout_cancel = run_cancel.clone();
+    let timer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(180)).await;
+        timeout_cancel.cancel();
+    });
+    let result = async {
+        let provider = tokio::select! {
+            biased;
+            () = run_cancel.cancelled() => anyhow::bail!("native session cancelled during provider discovery"),
+            value = factory(run_cancel.clone()) => value?,
+        };
+        ensure!(provider.local(), "native session requires a local provider");
+        let provider = crate::memory_bridge_trial::recorded_provider(provider, &root.join("provider-audit.jsonl"), 16384, run_cancel.clone())?;
+        let current = request.interpretation_context_id.as_ref().map(|id| InterpretationContext::new(request.criterion.clone(), id.clone())).transpose()?;
+        execute_task(database, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request)).await
+    }.await;
+    timer.abort();
+    match &result {
+        Ok(report) => session_checkpoint(&root.join("report.json"), report)?,
+        Err(error) => session_checkpoint(
+            &root.join("report.json"),
+            &json!({"protocol":"native-memory-session-v1","status":"failed","error":format!("{error:#}")}),
+        )?,
+    }
+    result
 }
 
 // Explicit authored provider: a mechanics fixture, never a model-quality score.
@@ -257,15 +406,49 @@ async fn execute(
     source: bool,
     cancel: &CancellationToken,
 ) -> Result<TaskReport> {
+    execute_task(
+        database,
+        authority,
+        access,
+        criterion,
+        interpretation,
+        root,
+        provider,
+        source,
+        cancel,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_task(
+    database: &Path,
+    authority: &LocalAuthority,
+    access: &Access,
+    criterion: &ConfirmedCriterion,
+    interpretation: Option<&InterpretationContext>,
+    root: &Path,
+    provider: Box<dyn Provider>,
+    source: bool,
+    cancel: &CancellationToken,
+    native: Option<&NativeSessionRequest>,
+) -> Result<TaskReport> {
     ensure!(
-        root.is_absolute() && !root.exists(),
+        root.is_absolute() && (native.is_some() || !root.exists()),
         "task requires a new absolute directory"
     );
-    fs::create_dir(root)?;
+    if native.is_none() {
+        fs::create_dir(root)?;
+    }
     let root = root.canonicalize()?;
     let workspace = root.join("workspace");
     fs::create_dir(&workspace)?;
-    if source {
+    if let Some(task) = native {
+        for (name, content) in &task.files {
+            fs::write(workspace.join(name), content)?;
+        }
+    } else if source {
         fs::write(workspace.join("routes.txt"), ROUTES)?;
     }
     let artifact = workspace.join("output.json");
@@ -281,7 +464,10 @@ async fn execute(
             kind: Some(SessionKind::Test),
         },
     )?;
-    let prompt = if source {
+    let account = native.map_or(ACCOUNT, |task| task.account.as_str());
+    let prompt = if let Some(task) = native {
+        task.prompt.as_str()
+    } else if source {
         "Read routes.txt and choose a route. Save a JSON array containing one object with the string key route to output.json."
     } else {
         "Choose a route using the historical calibration evidence available through goal_context memory query calibration. Save a JSON array containing one object with the string key route to output.json. Follow the current goal and criterion; historical interpretations are provisional."
@@ -296,7 +482,10 @@ async fn execute(
         transcript: session.path.clone(),
         artifact: artifact.clone(),
         criterion: criterion.clone(),
-        expected_rows: expected(&criterion.goal)?,
+        expected_rows: match native {
+            Some(task) => task.expected_rows.clone(),
+            None => expected(&criterion.goal)?,
+        },
     })?;
     let mut registry = Registry::new();
     registry.insert(Arc::new(FsRead));
@@ -304,7 +493,7 @@ async fn execute(
     let mut tool = GoalMemory::open_with_source_guard(
         database,
         access.clone(),
-        ACCOUNT.into(),
+        account.into(),
         Situation {
             event: criterion.goal_text.clone(),
             goal: criterion.goal.clone(),
@@ -369,18 +558,19 @@ async fn execute(
     }
     let check = authority.check_artifact(&confirmation)?;
     let mut memory = Memory::open(database)?.with_source_guard(Arc::new(authority.clone()));
-    let capture = authority.capture(
-        &mut memory,
-        CaptureRequest {
-            confirmation: confirmation.clone(),
-            domain: access.domain.clone(),
-            account: ACCOUNT.into(),
-            scopes: access.scopes.clone(),
-            consulted: vec![],
-            records: SessionRecords::default(),
-        },
-        access,
-    );
+    let capture_request = CaptureRequest {
+        confirmation: confirmation.clone(),
+        domain: access.domain.clone(),
+        account: account.into(),
+        scopes: access.scopes.clone(),
+        consulted: vec![],
+        records: SessionRecords::default(),
+    };
+    let capture = if native.is_some() {
+        authority.capture_with_evidence(&mut memory, capture_request, access)
+    } else {
+        authority.capture(&mut memory, capture_request, access)
+    };
     let (receipt, capture_error) = match capture {
         Ok(value) => (Some(value), None),
         Err(error) => (None, Some(error.to_string())),
@@ -758,6 +948,219 @@ mod tests {
         let audit = fs::read_to_string(audit).unwrap();
         assert!(audit.contains("PARTIAL_BEFORE_CANCELLATION"));
         assert!(audit.contains("request_started"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn native_fixture() -> (PathBuf, PathBuf, LocalAuthority, NativeSessionRequest) {
+        let root = std::env::temp_dir().join(format!("native-contract-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let db = root.join("native.memory-prototype.sqlite");
+        drop(Memory::create_supported_situated(&db, "native-contract").unwrap());
+        let authority = LocalAuthority::create(&root.join("authority")).unwrap();
+        let request = NativeSessionRequest {
+            prompt: "Read calibration evidence and save the selected route to output.json.".into(),
+            files: BTreeMap::new(),
+            criterion: criterion(Goal::Complete),
+            expected_rows: vec![BTreeMap::from([("route".into(), "Quill".into())])],
+            domain: "native-contract".into(),
+            scopes: ["synthetic:contract".into()].into(),
+            account: "separate-account".into(),
+            interpretation_context_id: None,
+        };
+        (root, db, authority, request)
+    }
+
+    #[tokio::test]
+    async fn native_session_restart_recall_keeps_account_taint_and_executed_outcome() {
+        let (root, db, authority, request) = native_fixture();
+        let cancel = CancellationToken::new();
+        let first = run_native_session(
+            &db,
+            &authority,
+            &request,
+            &root.join("first"),
+            |_| async { Ok(script(Some("Quill"))) },
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert!(first.receipt.is_some());
+        drop(authority);
+        let reopened = LocalAuthority::open(&root.join("authority")).unwrap();
+        let second = run_native_session(
+            &db,
+            &reopened,
+            &request,
+            &root.join("second"),
+            |_| async { Ok(script(Some("Quill"))) },
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert!(second.taint.private && second.taint.untrusted);
+        assert_eq!(second.check.verdict, CheckVerdict::Passed);
+        assert!(second.receipt.is_some(), "{:?}", second.capture_error);
+        let transcript = fs::read_to_string(&second.transcript).unwrap();
+        assert!(transcript.contains(&first.receipt.unwrap().projection.revision));
+        assert!(transcript.contains("\"record\":\"outcome\""));
+        assert_eq!(
+            fs::read_to_string(&second.artifact).unwrap(),
+            r#"[{"route":"Quill"}]"#
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_session_checkpoints_before_discovery_and_never_replays() {
+        let (root, db, authority, request) = native_fixture();
+        let task_root = root.join("task");
+        let cancel = CancellationToken::new();
+        let failure = run_native_session(
+            &db,
+            &authority,
+            &request,
+            &task_root,
+            |_| async {
+                assert!(task_root.join("started.json").is_file());
+                anyhow::bail!("authored discovery failure")
+            },
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(failure.to_string().contains("authored discovery failure"));
+        let recorded = fs::read(task_root.join("report.json")).unwrap();
+        let again = run_native_session(
+            &db,
+            &authority,
+            &request,
+            &task_root,
+            |_| async { panic!("a started task must not rediscover or execute") },
+            &cancel,
+        )
+        .await;
+        assert!(again.is_err());
+        assert_eq!(fs::read(task_root.join("report.json")).unwrap(), recorded);
+        assert!(!task_root.join("workspace").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_session_rejects_host_input_escape_before_discovery() {
+        let (root, db, authority, mut request) = native_fixture();
+        request
+            .files
+            .insert("../escape".into(), "unreachable".into());
+        let task_root = root.join("task");
+        assert!(run_native_session(
+            &db,
+            &authority,
+            &request,
+            &task_root,
+            |_| async { panic!("invalid input must not discover a provider") },
+            &CancellationToken::new()
+        )
+        .await
+        .is_err());
+        assert!(!task_root.exists() && !root.join("escape").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_session_tools_cannot_read_authority_or_write_outside_jail() {
+        let (root, db, authority, request) = native_fixture();
+        let authority_file = root.join("authority/authority");
+        let private_marker = fs::read_to_string(&authority_file).unwrap();
+        let escaped = root.join("escaped.json");
+        let provider: Box<dyn Provider> = Box::new(Script::new(vec![
+            call("private-read", "fs_read", json!({"path":authority_file})),
+            call(
+                "escape-write",
+                "fs_write",
+                json!({"path":escaped,"content":"escaped"}),
+            ),
+            call(
+                "safe-write",
+                "fs_write",
+                json!({"path":"output.json","content":r#"[{"route":"Quill"}]"#}),
+            ),
+            Message::assistant(vec![Block::text("Synthetic task ended.")]),
+        ]));
+        let task = run_native_session(
+            &db,
+            &authority,
+            &request,
+            &root.join("task"),
+            |_| async { Ok(provider) },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!escaped.exists());
+        assert_eq!(fs::read_to_string(authority_file).unwrap(), private_marker);
+        assert!(!fs::read_to_string(task.transcript)
+            .unwrap()
+            .contains(&private_marker));
+        assert_eq!(task.check.verdict, CheckVerdict::Passed);
+        assert!(task.receipt.is_some(), "{:?}", task.capture_error);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_session_retains_actual_v8_artifact() {
+        let root = std::env::temp_dir().join(format!("native-session-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let database = root.join("native.memory-prototype.sqlite");
+        drop(Memory::create_supported_situated(&database, DOMAIN).unwrap());
+        let authority = LocalAuthority::create(&root.join("authority")).unwrap();
+        let request = NativeSessionRequest {
+            prompt: "Recall calibration evidence and save the selected route to output.json."
+                .into(),
+            files: BTreeMap::new(),
+            criterion: criterion(Goal::Fast),
+            expected_rows: vec![BTreeMap::from([("route".into(), "Ilex".into())])],
+            domain: DOMAIN.into(),
+            scopes: ["synthetic:situated".into()].into(),
+            account: "test-account".into(),
+            interpretation_context_id: None,
+        };
+        let task = run_native_session(
+            &database,
+            &authority,
+            &request,
+            &root.join("task"),
+            |_| async { Ok(script(Some("Quill"))) },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(task.check.verdict, CheckVerdict::Failed);
+        assert_eq!(
+            fs::read_to_string(&task.artifact).unwrap(),
+            r#"[{"route":"Quill"}]"#
+        );
+        assert!(
+            task.receipt.is_some(),
+            "actual v8 capture missing: {:?}",
+            task.capture_error
+        );
+        let reopened = Memory::open(&database).unwrap().with_source_guard(Arc::new(
+            LocalAuthority::open(&root.join("authority")).unwrap(),
+        ));
+        let retained: Vec<_> = task
+            .receipt
+            .as_ref()
+            .unwrap()
+            .originals
+            .iter()
+            .map(|r| reopened.read(r, &request.access()).unwrap())
+            .collect();
+        assert!(serde_json::to_string(&retained).unwrap().contains("Quill"));
+        assert!(fs::read_to_string(&task.transcript)
+            .unwrap()
+            .contains("fs_write"));
         fs::remove_dir_all(root).unwrap();
     }
 
