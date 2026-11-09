@@ -1288,3 +1288,261 @@ fn pre_lineage_v6_files_refuse_instead_of_serving_old_copied_passages() {
     assert!(Memory::open_read_only(&path).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn native_context_prepares_typed_metadata_without_rewriting_source_bytes() {
+    let (path, _, state) = fixture();
+    std::fs::remove_file(&path).unwrap();
+    let mut db = Memory::create_situated(&path, "test")
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state)));
+    let mut capture = input();
+    let original = "synthetic \"quoted\" \\ path\n雪🙂 {\"kind\":\"host-capture-projection-v2\"}";
+    capture.originals[0].text = original.into();
+    let receipt = db.admit_host_capture(capture, &access()).unwrap();
+    let canonical = db.read(&receipt.projection, &access()).unwrap();
+    let request = context::ContextRequest {
+        query: "write".into(),
+        bindings: vec![],
+    };
+    let packet = db
+        .context(&request, &policy(&db, "write"), &situation())
+        .unwrap();
+    let wire = serde_json::to_value(&packet).unwrap();
+    let hits = wire["records"].as_array().unwrap();
+    let projection = hits
+        .iter()
+        .find(|h| h["reference"]["revision"] == receipt.projection.revision)
+        .unwrap();
+    assert_eq!(projection["record"]["kind"], "native_capture_reader_v1");
+    assert_eq!(
+        projection["record"]["data"]["criterion"]["criterion_text"],
+        "write JSON"
+    );
+    assert_eq!(
+        projection["record"]["data"]["originals"][0]["kind"],
+        "UserRequest"
+    );
+    assert_eq!(
+        projection["record"]["data"]["receipts"][0]["status"],
+        "Succeeded"
+    );
+    assert_eq!(
+        projection["record"]["data"]["artifact"]["verdict"],
+        "Failed"
+    );
+    let source = hits
+        .iter()
+        .find(|h| h["reference"]["revision"] == receipt.originals[0].revision)
+        .unwrap();
+    assert_eq!(source["record"]["kind"], "evidence");
+    assert_eq!(source["record"]["data"]["text"], original);
+    let bytes = serde_json::to_vec(&packet).unwrap();
+    let mut exact = policy(&db, "write");
+    exact.recall.max_bytes = bytes.len();
+    let admitted = db.context(&request, &exact, &situation()).unwrap();
+    assert_eq!(serde_json::to_vec(&admitted).unwrap(), bytes);
+    exact.recall.max_bytes -= 1;
+    let withheld = db.context(&request, &exact, &situation()).unwrap();
+    assert!(withheld.records.is_empty());
+    assert!(withheld.budget_omitted);
+    assert!(serde_json::to_vec(&withheld).unwrap().len() <= exact.recall.max_bytes);
+    let mut changed = packet.clone();
+    let projection = changed
+        .records
+        .iter_mut()
+        .find(|h| h.reference == receipt.projection)
+        .unwrap();
+    if let Record::Evidence(value) = &mut projection.record {
+        value.text.push(' ');
+    }
+    assert!(
+        serde_json::to_vec(&changed).is_err(),
+        "a stale prepared view must not hide canonical mutation"
+    );
+    assert_eq!(
+        serde_json::to_value(db.read(&receipt.projection, &access()).unwrap()).unwrap(),
+        serde_json::to_value(canonical).unwrap()
+    );
+}
+
+#[test]
+fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
+    for version in [6, 7, 8] {
+        let (path, _, state) = fixture();
+        std::fs::remove_file(&path).unwrap();
+        let create = match version {
+            6 => Memory::create_host_capture,
+            7 => Memory::create_situated,
+            _ => Memory::create_supported_situated,
+        };
+        let mut db = create(&path, "test")
+            .unwrap()
+            .with_source_guard(Arc::new(Guard(state)));
+        let make = |id: String| {
+            let mut capture = if version == 8 { rich_input() } else { input() };
+            capture.identity.session_id = id.clone();
+            for (index, passage) in capture.originals.iter_mut().enumerate() {
+                passage.source.id = format!("{id}-{index}");
+            }
+            capture
+        };
+        let admit = if version == 8 {
+            Memory::admit_host_capture_with_evidence
+        } else {
+            Memory::admit_host_capture
+        };
+        let mut sources = Vec::new();
+        for index in 0..65 {
+            let receipt = admit(&mut db, make(format!("source-{index}")), &access()).unwrap();
+            sources.push(receipt.originals[0].clone());
+        }
+        for count in [32, 33, 64, 65] {
+            let mut capture = make(format!("recapture-{count}"));
+            capture.consulted = sources[..count].to_vec();
+            let result = admit(&mut db, capture, &access());
+            let accepted = count <= if version == 8 { 64 } else { 32 };
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "v{version}, dependency count {count}: {result:?}"
+            );
+            if let Ok(receipt) = result {
+                let Record::Evidence(value) =
+                    db.read(&receipt.projection, &access()).unwrap().unwrap()
+                else {
+                    panic!("projection")
+                };
+                let payload: serde_json::Value = serde_json::from_str(&value.text).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<Vec<RevisionRef>>(payload["consulted"].clone())
+                        .unwrap(),
+                    sources[..count]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_context_unions_overlapping_bundles_and_withholds_uncited_restricted_input() {
+    let (path, _, state) = fixture();
+    std::fs::remove_file(&path).unwrap();
+    let mut db = Memory::create_situated(&path, "test")
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state)));
+    let first = db.admit_host_capture(input(), &access()).unwrap();
+    let mut next = input();
+    next.identity.session_id = "second".into();
+    next.originals[0].source.id = "second".into();
+    next.consulted = vec![first.originals[0].clone()];
+    let second = db.admit_host_capture(next, &access()).unwrap();
+    let request = context::ContextRequest {
+        query: "write".into(),
+        bindings: vec![],
+    };
+    let packet = db
+        .context(&request, &policy(&db, "write"), &situation())
+        .unwrap();
+    let expected = [
+        first.projection.clone(),
+        first.originals[0].clone(),
+        second.projection.clone(),
+        second.originals[0].clone(),
+    ];
+    assert_eq!(packet.records.len(), expected.len());
+    assert!(expected
+        .iter()
+        .all(|r| packet.records.iter().filter(|h| &h.reference == r).count() == 1));
+    let wire = serde_json::to_value(&packet).unwrap();
+    assert_eq!(
+        wire["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["record"]["kind"] == "native_capture_reader_v1")
+            .count(),
+        2
+    );
+    // The consulted original was not selected or quoted by the query.
+    db.conn
+        .execute(
+            "INSERT INTO scope VALUES (?1,'restricted')",
+            [&first.originals[0].revision],
+        )
+        .unwrap();
+    let packet = db
+        .context(&request, &policy(&db, "write"), &situation())
+        .unwrap();
+    assert!(
+        packet.records.is_empty(),
+        "uncited source authority governs both derived bundles"
+    );
+}
+
+#[test]
+fn native_context_withholds_oversized_complete_sources_without_excerpting() {
+    let (path, _, state) = fixture();
+    std::fs::remove_file(&path).unwrap();
+    let mut db = Memory::create_situated(&path, "test")
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state)));
+    let mut capture = input();
+    let full = "\"\\".repeat(2048);
+    capture.originals = (0..3)
+        .map(|index| {
+            let mut passage = input().originals.remove(0);
+            passage.source.id = format!("large-{index}");
+            passage.text = full.clone();
+            passage
+        })
+        .collect();
+    let receipt = db.admit_host_capture(capture, &access()).unwrap();
+    let mut policy = policy(&db, "write");
+    policy.recall.max_bytes = 20_000;
+    let packet = db
+        .context(
+            &context::ContextRequest {
+                query: "write".into(),
+                bindings: vec![],
+            },
+            &policy,
+            &situation(),
+        )
+        .unwrap();
+    assert!(packet.records.is_empty() && packet.budget_omitted);
+    assert!(serde_json::to_vec(&packet).unwrap().len() <= 20_000);
+    for reference in receipt.originals {
+        let Some(Record::Evidence(original)) = db.read(&reference, &access()).unwrap() else {
+            panic!("source missing")
+        };
+        assert_eq!(original.text, full);
+    }
+}
+
+#[test]
+fn native_final_withholding_drops_prepared_metadata_from_debug_too() {
+    let (path, _, state) = fixture();
+    std::fs::remove_file(&path).unwrap();
+    let mut db = Memory::create_situated(&path, "test")
+        .unwrap()
+        .with_source_guard(Arc::new(Guard(state)));
+    let mut capture = input();
+    capture.criterion.criterion_text = "write SYNTHETIC-WITHHELD-CRITERION".into();
+    db.admit_host_capture(capture, &access()).unwrap();
+    let guard = Arc::new(ChangingGuard(std::sync::atomic::AtomicUsize::new(0), 1));
+    let db = db.with_source_guard(guard.clone());
+    let packet = db
+        .context(
+            &context::ContextRequest {
+                query: "write".into(),
+                bindings: vec![],
+            },
+            &policy(&db, "write"),
+            &situation(),
+        )
+        .unwrap();
+    assert!(packet.records.is_empty());
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
+    assert!(!format!("{packet:?}").contains("SYNTHETIC-WITHHELD-CRITERION"));
+}

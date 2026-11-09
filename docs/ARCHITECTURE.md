@@ -13016,6 +13016,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   and taint. Five valid saved appraisals exceeded the 20 KB packet budget because
   prose, claims and support repeated the same quotations; raising the cap or
   dropping dependencies would hide the cause and weaken the contract.
+- **Compact native metadata is still a presentation, never new authority.**
+  `native_capture_reader_v1` is prepared from an authenticated capture projection
+  inside the read transaction. Its typed metadata removes escaped duplication;
+  original text and canonical stored records remain complete. Context budgeting
+  and serialization share the prepared representation, which rejects mutated
+  canonical hits. Final withholding also clears the private presentation cache,
+  including its Debug representation. Recapture compares new reader metadata
+  with canonical rows and requires complete authorized closure in both v7 and
+  v8 paths; otherwise deleting a dependency and its descriptor together could
+  forge a self-consistent but incomplete packet. Only rich v8 capture raises its
+  consulted-reference bound to 64; v6/v7 capture and unrelated limits stay intact.
 - **Successful storage and successful recall are separate facts.** The host-only
   `stored_interpretation` accessor authenticates the active receipt, context,
   canonical payload and complete current source closure, with a fresh final
@@ -13263,9 +13274,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   dependencies and inherited restrictions. The later episode retains that
   dependency and ordinary private/untrusted taint. Native induction refuses
   Concept or Interpretation ancestors, preventing copied hypotheses from
-  supporting themselves. Such episodes remain recallable; native appraisal of a
-  Concept-bearing closure currently refuses explicitly rather than treating the
-  hypothesis as observed fact.
+  supporting themselves. Such episodes remain recallable; legacy native appraisal
+  refuses Concept-bearing closure. The explicit `situated-native-concept-appraisal-v1`
+  path partitions canonical concepts into provisional hypotheses, with separate
+  IDs that cannot satisfy factual premise or artifact-evidence fields. Every
+  offered hypothesis requires an applicability assessment. The opaque request
+  seals the full closure, context, snapshot and exact per-member scopes; fresh
+  reconstruction and authority checks bracket inference, including failures.
+  Its 16 KiB reply bound is separate from the unchanged legacy 8 KiB bound.
+  `appraise_native_session` reuses the existing local structured pass and writes
+  nothing; accepting its shape does not establish semantic correctness or turn
+  it into a durable support report.
 - **Rumination cannot discard opposition or inherited restrictions.**
   `prepare_concept_rumination` binds the previous revision and every consulted
   source, then adds exact host-selected counterexamples. The union must fit the

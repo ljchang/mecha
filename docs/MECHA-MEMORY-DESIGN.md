@@ -2,6 +2,13 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Compact native context and concept appraisal addendum, 2026-11-09:** §31.17's
+reader and explicit hypothesis-aware appraisal are implemented. Full originals,
+canonical stored records and all provenance remain intact. The new read-only core
+workflow reuses shared generation and factual validation without promoting
+hypotheses into observations. See HISTORY for qualification and HANDOFF for the
+remaining encrypted-storage/recovery work; model benefit remains unestablished.
+
 **Concept-benefit pilot addendum, 2026-11-08:** the explicit lifecycle in §31.15
 is implemented by `memory_concept_workflow` and an independent finite-world
 scorer. This adds no store, schema or production integration. See HISTORY for
@@ -3387,3 +3394,52 @@ source lineage across reopening. Authored providers establish mechanical contrac
 a separately recorded model run establishes only that particular observed behavior.
 Neither demonstrates reliable general decision improvement. Source withdrawal,
 forgetting, scope changes and cancelled execution are negative acceptance cases.
+
+### 31.17 Larger context, concept appraisal and protected storage
+
+**Approved sequence, 2026-11-08; work in progress.** First compact native reader
+packets and introduce explicit concept-aware appraisal; then qualify encryption
+and recovery. Hybrid vector retrieval follows those foundations. Implementation
+steps are in `superpowers/plans/2026-11-08-concept-context-appraisal.md`.
+
+Keep full canonical records and original text. A versioned presentation can
+encode authenticated capture metadata directly instead of repeating escaped JSON.
+Prepare it within the authorized read transaction and budget its exact serialized
+bytes. Complete source dependencies, criterion, original roles and opposing
+evidence remain mandatory under the unchanged 20,000-byte limit. Oversized
+mandatory content is withheld. The native recapture bound must agree with the
+bounded 64-record concept closure; increasing that bound does not authorize
+dropping dependencies, expanding unrelated limits, or interpreting arbitrary
+JSON-looking text as host metadata.
+
+Concept-aware appraisal uses separate factual and hypothesis collections under
+an explicit request identity. Canonical concepts retain applicability, supporting
+sources and counterexamples; a model may assess applicability against observed
+facts. Concept IDs cannot stand in for factual premises or artifact observations.
+Every prepared and completed appraisal rechecks the full source union, including
+uncited inputs and concept-only scopes. Legacy factual-support APIs keep their
+existing refusal and retention contracts. Authored integration demonstrates
+wiring; useful transfer and appropriate uncertainty remain empirical questions.
+
+Reuse mecha-graph encryption mechanics where compatible, not its older crate
+linkage or missing-key plaintext fallback. Qualify one SQLCipher build across
+Mecha's SQLite consumers, explicit host-only key access and all independent
+guard reopens. Snapshots and restores target new paths and must preserve the
+complete schema and canonical payloads. An old snapshot cannot supply current
+forgetting authority: restored reads must apply current suppression/restriction
+state first. Full disaster recovery additionally needs independently durable
+deletion authority. Database encryption does not protect separate JSONL sources,
+exports or keys; those remain explicit private-data qualification requirements.
+
+Mecha core already owns `embed::Embedder` and `llama_units::Which::Embeddings`
+with on-demand serving. Evaluate those for the later versioned, rebuildable
+hybrid index rather than importing mecha-graph's older embedding client. Search
+must preserve eligible-only ranking, historical snapshots and derivative erasure.
+
+The owner-information boundary follows record meaning. Mecha-owned episodes,
+appraisals, concepts, reflections and persistent task knowledge currently behind
+graph MCP belong in the cutover inventory. Preserve task/project/session links,
+owner-only status transitions and uncertain-write recovery. Reuse local
+per-conversation plans, todos and checked feedback. Personal mail/calendar/notes
+can remain independently queryable; nightly migration and wholesale owner-graph
+replacement remain deferred.

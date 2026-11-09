@@ -397,17 +397,31 @@ fn draft(principle: &str, support: &[ConceptExcerpt], opposition: &[ConceptExcer
 
 #[tokio::test]
 async fn authored_native_recall_revision_and_withdrawal_preserve_lineage() -> Result<()> {
+    authored_lifecycle(false).await
+}
+
+#[tokio::test]
+async fn full_native_artifact_citations_fit_revised_context_without_losing_lineage() -> Result<()> {
+    authored_lifecycle(true).await
+}
+
+async fn authored_lifecycle(full_citations: bool) -> Result<()> {
     let fixture = Fixture::new()?;
     let access = fixture.access();
     let (first, _) = fixture.run("first", Task::Independent(READY)).await?;
     let (second, _) = fixture.run("second", Task::Independent(READY)).await?;
     let mut db = fixture.open()?;
-    let (a, a_sources) = episode(&db, &first, &access, READY, CheckVerdict::Passed)?;
-    let (b, b_sources) = episode(&db, &second, &access, READY, CheckVerdict::Passed)?;
+    let (a, mut a_sources) = episode(&db, &first, &access, READY, CheckVerdict::Passed)?;
+    let (b, mut b_sources) = episode(&db, &second, &access, READY, CheckVerdict::Passed)?;
     assert_ne!(a["identity"]["session_id"], b["identity"]["session_id"]);
     assert_eq!(a["criterion"], b["criterion"]);
     assert_eq!(a["consulted"], json!([]));
     assert_eq!(b["consulted"], json!([]));
+    if full_citations {
+        for source in [&mut a_sources[0], &mut b_sources[0]] {
+            full_original_quote(&db, source, &access)?;
+        }
+    }
     let support = [a_sources[0].clone(), b_sources[0].clone()];
     let source_refs = a_sources
         .iter()
@@ -445,7 +459,7 @@ async fn authored_native_recall_revision_and_withdrawal_preserve_lineage() -> Re
         .run("counterexample", Task::Independent(WRONG))
         .await?;
     let mut db = fixture.open()?;
-    let (contradiction, contradicting_sources) =
+    let (contradiction, mut contradicting_sources) =
         episode(&db, &wrong, &access, WRONG, CheckVerdict::Failed)?;
     assert_eq!(a["criterion"], contradiction["criterion"]);
     assert_eq!(contradiction["consulted"], json!([]));
@@ -457,7 +471,10 @@ async fn authored_native_recall_revision_and_withdrawal_preserve_lineage() -> Re
         b["identity"]["session_id"],
         contradiction["identity"]["session_id"]
     );
-    let opposition = &contradicting_sources[..1];
+    if full_citations {
+        full_original_quote(&db, &mut contradicting_sources[0], &access)?;
+    }
+    let opposition = &contradicting_sources[..if full_citations { 2 } else { 1 }];
     let prepared =
         db.prepare_native_concept_rumination(&concept, opposition, &db.snapshot()?, &access)?;
     let reply =
@@ -477,12 +494,96 @@ async fn authored_native_recall_revision_and_withdrawal_preserve_lineage() -> Re
     };
     assert!(matches!(stored.status, ConceptStatus::Provisional));
     assert_eq!(stored.support.len(), 2);
-    assert_eq!(stored.counterexamples.len(), 1);
-    let (_, packet) = fixture.run("revised-read", Task::Inspect).await?;
+    assert_eq!(
+        stored.counterexamples.len(),
+        if full_citations { 2 } else { 1 }
+    );
+    if full_citations {
+        let expanded = db.context(
+            &mecha_core::memory::context::ContextRequest {
+                query: NAME.into(),
+                bindings: vec![],
+            },
+            &mecha_core::memory::context::ContextPolicy {
+                access: access.clone(),
+                recall: mecha_core::memory::RecallQuery {
+                    text: NAME.into(),
+                    known_at: db.snapshot()?,
+                    account: Some("synthetic".into()),
+                    session_id: None,
+                    occurred_after: None,
+                    occurred_before: None,
+                    limit: 3,
+                    neighbors: 0,
+                    max_bytes: 100_000,
+                },
+                valid_at: None,
+            },
+            &mecha_core::memory::context::Situation {
+                event: fixture.request.prompt.clone(),
+                goal: GOAL.into(),
+                needs: None,
+            },
+        )?;
+        let mut canonical = serde_json::to_value(&expanded)?;
+        canonical["records"] = serde_json::to_value(&expanded.records)?;
+        let canonical_bytes = serde_json::to_vec(&canonical)?.len();
+        eprintln!(
+            "full citation canonical bytes={canonical_bytes}; reader bytes={}; manifest={}",
+            serde_json::to_vec(&expanded)?.len(),
+            serde_json::to_string(
+                &expanded
+                    .records
+                    .iter()
+                    .map(|h| &h.reference)
+                    .collect::<Vec<_>>()
+            )?
+        );
+        assert!(
+            canonical_bytes > 20_000,
+            "regression must exceed the unchanged packet cap"
+        );
+    }
+    let (revised_capture, packet) = fixture.run("revised-read", Task::Inspect).await?;
     let packet = packet.context("native revised recall absent")?;
     let visible = references(&packet)?;
     assert!(visible.contains(&revised));
     assert!(!visible.contains(&concept));
+    let expected = capture_refs(&first)?
+        .chain(capture_refs(&second)?)
+        .chain(capture_refs(&wrong)?)
+        .chain(std::iter::once(&revised))
+        .map(|r| (&r.object, &r.revision))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        visible
+            .iter()
+            .map(|r| (&r.object, &r.revision))
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected
+    );
+    assert_eq!(
+        visible.len(),
+        expected.len(),
+        "overlapping bundles must not duplicate revisions"
+    );
+    assert!(serde_json::to_vec(&packet["memory"])?.len() <= 20_000);
+    let recaptured = projection(&db, &revised_capture, &access)?;
+    assert_eq!(
+        serde_json::from_value::<Vec<RevisionRef>>(recaptured["consulted"].clone())?,
+        visible
+    );
+    for original in &revised_capture
+        .receipt
+        .as_ref()
+        .context("missing recapture")?
+        .originals
+    {
+        let Some(Record::Evidence(source)) = db.read(original, &access)? else {
+            anyhow::bail!("recapture original unavailable")
+        };
+        assert!(!source.text.contains("native_capture_reader_v1"));
+    }
     assert!(stored
         .consulted
         .iter()
@@ -523,3 +624,16 @@ async fn authored_native_recall_revision_and_withdrawal_preserve_lineage() -> Re
     );
     Ok(())
 }
+
+fn full_original_quote(db: &Memory, excerpt: &mut ConceptExcerpt, access: &Access) -> Result<()> {
+    let Some(Record::Evidence(original)) = db.read(&excerpt.evidence, access)? else {
+        anyhow::bail!("missing original full citation");
+    };
+    excerpt.start = 0;
+    excerpt.end = original.text.len();
+    excerpt.quote = original.text;
+    Ok(())
+}
+
+#[path = "native_concept_appraisal/appraisal.rs"]
+mod concept_appraisal;

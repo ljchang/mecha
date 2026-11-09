@@ -329,6 +329,10 @@ fn captured() -> Captured {
     captured_mode(false)
 }
 fn captured_mode(rich: bool) -> Captured {
+    captured_version(if rich { 8 } else { 6 })
+}
+fn captured_version(version: i64) -> Captured {
+    let rich = version == 8;
     let root = temp();
     let workspace = root.join("workspace");
     fs::create_dir(&workspace).unwrap();
@@ -380,10 +384,10 @@ fn captured_mode(rich: bool) -> Captured {
         domain: "bridge-test".into(),
         scopes: BTreeSet::new(),
     };
-    let create = if rich {
-        Memory::create_supported_situated
-    } else {
-        Memory::create_host_capture
+    let create = match version {
+        8 => Memory::create_supported_situated,
+        7 => Memory::create_situated,
+        _ => Memory::create_host_capture,
     };
     let mut memory = create(&root.join("test.memory-prototype.sqlite"), &access.domain)
         .unwrap()
@@ -1732,5 +1736,230 @@ async fn compact_native_recapture_retains_historical_role_and_withdrawn_lineage(
     assert!(memory_packet_references(&output.content)
         .unwrap()
         .is_empty());
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[tokio::test]
+async fn native_memory_packet_reference_bound_is_64_without_truncation() {
+    let (f, raw) = compact_native_packet().await;
+    let base: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let ordinary = base["memory"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|hit| hit["record"]["kind"] == "evidence")
+        .unwrap()
+        .clone();
+    for (count, accepted) in [(32, true), (33, true), (64, true), (65, false)] {
+        let mut packet = base.clone();
+        packet["memory"]["interpretation_roles"] = serde_json::json!([]);
+        packet["memory"]["records"] = serde_json::Value::Array((0..count).map(|index| {
+            let mut hit = ordinary.clone();
+            hit["reference"] = serde_json::json!({"object":format!("object-{index}"),"revision":format!("revision-{index}")});
+            hit
+        }).collect());
+        let result = memory_packet_references(&packet.to_string());
+        assert_eq!(result.is_ok(), accepted, "packet count {count}");
+        if let Ok(references) = result {
+            assert_eq!(references.len(), count);
+        }
+    }
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+fn recapture_reader_packet(f: &mut Captured, raw: &str, tag: &str) -> Result<CaptureReceipt> {
+    recapture_reader_packet_mode(f, raw, tag, true)
+}
+fn recapture_reader_packet_mode(
+    f: &mut Captured,
+    raw: &str,
+    tag: &str,
+    rich: bool,
+) -> Result<CaptureReceipt> {
+    let source = f.root.join(format!("{tag}.jsonl"));
+    let artifact = f.root.join(format!("workspace/{tag}.json"));
+    let mut records = transcript()
+        .lines()
+        .map(|line| serde_json::from_str::<Record>(line).unwrap())
+        .collect::<Vec<_>>();
+    if let Record::Meta(meta) = &mut records[0] {
+        meta.id = format!("synthetic-{tag}");
+        meta.workspace = f.root.join("workspace");
+    }
+    for record in &mut records {
+        if let Record::Message(message) = record {
+            for block in &mut message.content {
+                match block {
+                    Block::ToolUse { name, input, .. } => {
+                        *name = "goal_context".into();
+                        *input = serde_json::json!({"memory":{"query":"fixture"}});
+                    }
+                    Block::ToolResult { content, .. } => *content = raw.into(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let serialize = |rows: &[Record]| {
+        rows.iter()
+            .map(|r| serde_json::to_string(r).unwrap() + "\n")
+            .collect::<String>()
+    };
+    fs::write(&source, serialize(&records[..3]))?;
+    let confirmation = f.authority.freeze(FreezeRequest {
+        transcript: source.clone(),
+        artifact: artifact.clone(),
+        criterion: criterion(),
+        expected_rows: vec![],
+    })?;
+    fs::write(&source, serialize(&records))?;
+    fs::write(&artifact, "[]")?;
+    let capture = if rich {
+        LocalAuthority::capture_with_evidence
+    } else {
+        LocalAuthority::capture
+    };
+    capture(
+        &f.authority,
+        &mut f.memory,
+        CaptureRequest {
+            confirmation,
+            domain: f.access.domain.clone(),
+            account: "synthetic".into(),
+            scopes: BTreeSet::new(),
+            consulted: vec![],
+            records: SessionRecords::default(),
+        },
+        &f.access,
+    )
+}
+
+#[tokio::test]
+async fn native_reader_recapture_authenticates_roles_and_complete_manifest() {
+    let (mut f, raw) = compact_native_packet().await;
+    let packet: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let records = packet["memory"]["records"].as_array().unwrap();
+    let index = records
+        .iter()
+        .position(|h| h["record"]["kind"] == "native_capture_reader_v1")
+        .expect("authenticated native reader");
+    let expected = memory_packet_references(&raw).unwrap();
+    let mut changes = Vec::new();
+    for (pointer, replacement) in [
+        (
+            format!("/memory/records/{index}/record/kind"),
+            serde_json::json!("native_capture_reader_v2"),
+        ),
+        (
+            format!("/memory/records/{index}/record/data/originals/0/kind"),
+            serde_json::json!("ArtifactObservation"),
+        ),
+        (
+            format!("/memory/records/{index}/record/data/originals/0/reference/revision"),
+            serde_json::json!("forged-revision"),
+        ),
+        (
+            format!("/memory/records/{index}/private_data"),
+            serde_json::json!(false),
+        ),
+        (
+            format!("/memory/records/{index}/untrusted_input"),
+            serde_json::json!(false),
+        ),
+        (
+            format!("/memory/records/{index}/record/data/criterion/criterion_text"),
+            serde_json::json!("Forged criterion"),
+        ),
+    ] {
+        let mut bad = packet.clone();
+        *bad.pointer_mut(&pointer).unwrap() = replacement;
+        changes.push(bad);
+    }
+    // Remove both a wire descriptor and its packet member: checking only the
+    // wire manifest would accept the forged closure. Canonical reread must fail.
+    let mut omitted = packet.clone();
+    let removed = omitted["memory"]["records"][index]["record"]["data"]["originals"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0)["reference"]
+        .clone();
+    omitted["memory"]["records"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|hit| hit["reference"] != removed);
+    changes.push(omitted);
+    for (trial, bad) in changes.iter().enumerate() {
+        assert!(
+            recapture_reader_packet(&mut f, &bad.to_string(), &format!("forged-{trial}")).is_err(),
+            "forgery {trial}"
+        );
+    }
+    let receipt = recapture_reader_packet(&mut f, &raw, "reader-good").unwrap();
+    // Default reads intentionally withhold interpreted descendants. Inspect the
+    // synthetic canonical store directly to audit what admission persisted.
+    assert!(f
+        .memory
+        .read(&receipt.projection, &f.access)
+        .unwrap()
+        .is_none());
+    let audit = rusqlite::Connection::open_with_flags(
+        f.root.join("test.memory-prototype.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let original = |reference: &RevisionRef| {
+        let text: String = audit
+            .query_row(
+                "SELECT json_extract(payload,'$.data.text') FROM revision WHERE id=?1",
+                [&reference.revision],
+                |row| row.get(0),
+            )
+            .unwrap();
+        text
+    };
+    let value: serde_json::Value = serde_json::from_str(&original(&receipt.projection)).unwrap();
+    let consulted: Vec<RevisionRef> = serde_json::from_value(value["consulted"].clone()).unwrap();
+    assert_eq!(consulted, expected);
+    for reference in &receipt.originals {
+        assert!(!original(reference).contains("native_capture_reader_v1"));
+    }
+    drop(audit);
+    fs::remove_dir_all(f.root).unwrap();
+}
+
+#[tokio::test]
+async fn native_v7_recapture_authenticates_new_reader_metadata() {
+    use crate::tool::{goal_memory::GoalMemory, Tool, ToolCtx};
+    let mut f = captured_version(7);
+    let tool = GoalMemory::open_with_source_guard(
+        &f.root.join("test.memory-prototype.sqlite"),
+        f.access.clone(),
+        "synthetic".into(),
+        crate::memory::context::Situation {
+            event: "fixture".into(),
+            goal: criterion().goal,
+            needs: None,
+        },
+        std::sync::Arc::new(f.authority.clone()),
+    )
+    .unwrap();
+    let output = tool
+        .call(
+            serde_json::json!({"memory":{"query":"fixture"}}),
+            &ToolCtx::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error);
+    let mut packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+    let native = packet["memory"]["records"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|hit| hit["record"]["kind"] == "native_capture_reader_v1")
+        .unwrap();
+    native["record"]["data"]["originals"][0]["kind"] = serde_json::json!("AssistantText");
+    assert!(recapture_reader_packet_mode(&mut f, &packet.to_string(), "v7-forged", false).is_err());
+    assert!(recapture_reader_packet_mode(&mut f, &output.content, "v7-valid", false).is_ok());
     fs::remove_dir_all(f.root).unwrap();
 }

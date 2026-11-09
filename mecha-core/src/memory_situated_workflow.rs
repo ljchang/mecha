@@ -237,6 +237,57 @@ where
     result
 }
 
+/// Explicit host-owned read-only appraisal of one already captured synthetic session.
+/// This adds no execution, provider discovery, persistence or default activation.
+#[derive(Clone, Debug)]
+pub struct NativeSessionAppraisalRequest {
+    pub receipt: CaptureReceipt,
+    pub previous: Vec<crate::memory::RevisionRef>,
+    pub context: InterpretationContext,
+    pub access: Access,
+    pub model: String,
+    pub budget: crate::memory_factual_support::GenerationBudget,
+}
+
+/// The caller owns provider residency/no-autoload policy. No transaction spans
+/// inference; complete source authority is freshly checked on every outcome.
+pub async fn appraise_native_session(
+    database: &Path,
+    authority: &LocalAuthority,
+    request: &NativeSessionAppraisalRequest,
+    provider: &dyn Provider,
+    cancel: &CancellationToken,
+) -> Result<
+    crate::memory_factual_support::PassOutcome<
+        crate::memory::interpretation::NativeConceptAppraisal,
+    >,
+> {
+    ensure!(
+        database.is_absolute(),
+        "native appraisal requires an explicit absolute database"
+    );
+    let memory = Memory::open_read_only(database)?.with_source_guard(Arc::new(authority.clone()));
+    let prepared = memory.prepare_native_concept_evidence(
+        &request.receipt,
+        &request.previous,
+        &request.context,
+        &memory.snapshot()?,
+        &request.access,
+    )?;
+    memory.recheck_native_concept_evidence(&prepared, &request.access)?;
+    let outcome = crate::memory_factual_support::pass(
+        provider,
+        &request.model,
+        prepared.generation_request(&request.model, request.budget),
+        request.budget,
+        cancel,
+        |text, _| memory.finish_native_concept_appraisal(&prepared, text, &request.access),
+    )
+    .await;
+    memory.recheck_native_concept_evidence(&prepared, &request.access)?;
+    Ok(outcome)
+}
+
 // Explicit authored provider: a mechanics fixture, never a model-quality score.
 struct Script(Mutex<VecDeque<Message>>);
 impl Script {

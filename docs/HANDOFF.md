@@ -29,6 +29,17 @@ architectural patterns and preserving future integration options. A merger or
 replacement is deferred until v2 is solid. See the current-scope addendum in
 `MECHA-MEMORY-DESIGN.md`; older migration proposals are not an approved cutover.
 
+**Clarification and sequence, 2026-11-08:** the boundary follows record meaning,
+not which MCP currently stores it. Inventory Mecha-owned episodes, appraisals,
+concepts, reflections and persistent tasks behind graph MCP for migration. Keep
+the owner's mail/calendar/notes independently queryable and reuse existing local
+per-conversation planning/todo machinery. First finish compact native packets and
+explicit concept-aware appraisal, then encryption/recovery, then measured hybrid
+retrieval using the existing Mecha on-demand embedding machinery where compatible.
+See `MECHA-MEMORY-DESIGN.md` §31.17 and its implementation plan. These increments
+remain synthetic-only; the current implementation and remaining qualification are
+recorded below.
+
 **Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
 `codex/mecha-memory-v2-prototype`. This is the clean prototype snapshot on GitHub
 main `d943f4eb3`; do not push the older private prototype branch, whose history
@@ -154,7 +165,7 @@ their budgets. Generation-inclusive treatment used 3.26x output tokens. This is 
 tiny development result, not a general benefit or efficiency claim. HISTORY retains
 all denominators, model-quality gaps and the independent audit.
 
-**Current memory priority: qualify the connected native prototype; semantic reliability remains open.**
+**Current memory priority: protected storage and recovery; semantic reliability remains open.**
 
 The explicit `memory init-native` / `native-session` path now reuses the existing
 situated executor with a bounded host request, v8 action/artifact capture and
@@ -167,19 +178,20 @@ activate normal chat/web memory or automatically collect private sensors.
 admit canonical native originals through an explicit guarded path. Session identity,
 roles and full metadata/source closure survive retention. Canonical concepts may
 be consulted and recaptured, but Concept/Interpretation-influenced episodes cannot
-become independent learning inputs. Appraisal of a Concept-bearing closure still
-refuses explicitly; integrating provisional concept meaning into appraisal needs an
-explicit role-aware contract, not relaxation of observation checks.
+become independent learning inputs. Legacy native appraisal still refuses
+Concept-bearing closure. The separate `situated-native-concept-appraisal-v1`
+contract and `appraise_native_session` expose hypotheses separately from observed
+facts, require complete applicability assessments and recheck the entire source
+closure. Their checked references do not establish semantic correctness.
 
-The authored integrated test exercises two native supporting episodes, reopened
-GoalMemory-guided writing, a successful write whose actual output fails the same
-criterion, provisional revision, reopened complete recall and withdrawal of source,
-concept and reused descendants. It establishes lifecycle behavior, not model
-learning. A larger authored bundle measured 21,042 bytes and was correctly omitted
-by the unchanged 20 KB reader cap; exact short citations fit 19,562 bytes with all
-three capture closures. Efficient bounded presentation of larger bundles remains a
-real MVP limitation. Focused tests/reviews pass. Qualification artifacts live under
-`results/memory-integrated-session-20261108`; PR #846 carries exact-head CI status.
+The compact native reader preserves full original text and authenticated metadata
+under the unchanged 20,000-byte cap. The reconstructed fuller-citation fixture
+fits at 18,438 bytes instead of 20,352 canonical bytes with the same 19 revisions.
+Rich v8 consulted lineage supports 64 records; v6/v7 remain at 32. Canonical stored
+records and exports remain unchanged. Oversized mandatory content is still
+withheld. Authored integration now covers separate concept-aware appraisal,
+changed criteria, opposition, reopening and withdrawal. HISTORY records the
+implementation and qualification; this establishes mechanics, not model learning.
 
 Native semantic appraisal remains unqualified. The recorded raw/typed and
 checks-first cohorts did not establish reliable uncertainty or evidence reasoning.
@@ -189,10 +201,11 @@ versus 4/6 with concepts; revision added opposition without changing the rule.
 HISTORY retains complete denominators, costs, first failures and qualification.
 The owner-selected model is Qwen3.6-35b-a3b-uncensored; recheck residency before calls.
 
-Remaining priorities are bounded native concept presentation and role-aware
-appraisal integration; independently scored transfer and genuine in-scope model
-revision; broader capture/termination coverage; then private-data and operational
-qualification. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
+Remaining priorities are explicit encrypted storage across every native
+workflow/guard reopen, verified fresh-path backup/restore preserving current
+forgetting, and later measured hybrid retrieval. Independently scored transfer,
+genuine in-scope model revision, broader capture/termination coverage, source-file
+protection and private-data qualification remain open. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
 focused tests using these existing mechanisms. Owner-graph merger, nightly
 migration, a new wiki/store and automatic production learning remain deferred.
 
@@ -2148,6 +2161,17 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**2026-11-09 packet/appraisal increment:** isolated Spark qualification passed
+workspace build, 6,352 default / 6,960 memory-enabled tests (zero failures;
+25/30 ignored), native CLI checks and SQLite integrity. The standalone compile
+exposed a core-only test assertion, corrected with a scoped feature gate. The
+resumed final-source checks passed the core boundary test, 334 standalone tests,
+formatting and strict workspace/all-target/all-feature Clippy. The full suite
+counts apply to identical runtime code before that test-only correction; both
+source snapshots and the original failure are retained. No model inference or
+production installation was part of this increment. Current PR/CI state is on
+#846; earlier dated machine observations below were not refreshed by this run.
 
 **2026-11-08 memory increment:** isolated Spark builds and synthetic model
 comparisons only; no service restart or production installation. The resident

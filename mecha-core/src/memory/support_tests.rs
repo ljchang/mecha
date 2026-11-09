@@ -1209,7 +1209,7 @@ fn compact_atomic_reader_fits_full_nine_record_closure_and_preserves_storage() {
     {
         assert!(hit.private_data && hit.untrusted_input);
         if !matches!(hit.record, Record::Interpretation(_)) {
-            assert_eq!(serde_json::to_value(hit).unwrap(), *rendered);
+            assert_canonical_or_native_reader(hit, rendered);
         }
     }
     let after: (String, String) = db.conn.query_row(
@@ -1422,10 +1422,13 @@ fn compact_serializer_preserves_legacy_supported_interpretation_bytes() {
     let packet = read(&db, &context());
     assert_eq!(packet.interpretation_roles.len(), 1);
     let encoded = serde_json::to_value(&packet).unwrap();
-    assert_eq!(
-        encoded["records"],
-        serde_json::to_value(&packet.records).unwrap()
-    );
+    for (hit, rendered) in packet
+        .records
+        .iter()
+        .zip(encoded["records"].as_array().unwrap())
+    {
+        assert_canonical_or_native_reader(hit, rendered);
+    }
 }
 
 #[test]
@@ -1470,4 +1473,36 @@ fn stored_interpretation_is_independent_of_contextual_record_count_limit() {
     assert!(packet.budget_omitted && packet.interpretation_roles.is_empty());
     db.stored_interpretation(&retained, &access(), &context())
         .unwrap();
+}
+
+// Native projections have an explicit presentation; all original evidence and
+// legacy interpretation bytes retain their canonical representation.
+fn assert_canonical_or_native_reader(hit: &Hit, rendered: &serde_json::Value) {
+    let canonical = serde_json::to_value(hit).unwrap();
+    if rendered["record"]["kind"] != "native_capture_reader_v1" {
+        assert_eq!(*rendered, canonical);
+        return;
+    }
+    let Record::Evidence(source) = &hit.record else {
+        panic!("native reader requires canonical projection")
+    };
+    assert_eq!(source.source.connector, "host-capture-projection-v2");
+    let projection: serde_json::Value = serde_json::from_str(&source.text).unwrap();
+    for field in [
+        "identity",
+        "criterion",
+        "originals",
+        "receipts",
+        "artifact",
+        "consulted",
+        "occurred_at",
+    ] {
+        assert_eq!(
+            rendered["record"]["data"][field], projection[field],
+            "native field {field}"
+        );
+    }
+    let mut envelope = rendered.clone();
+    envelope["record"] = canonical["record"].clone();
+    assert_eq!(envelope, canonical);
 }

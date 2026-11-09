@@ -155,12 +155,12 @@ pub struct HostCapture {
 // admitted attribute and bind the exact independent Evidence revision.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OriginalDescriptor {
+pub(crate) struct OriginalDescriptor {
     #[serde(deserialize_with = "strict_reference")]
-    reference: RevisionRef,
-    kind: PassageKind,
-    line: u64,
-    pointer: String,
+    pub(crate) reference: RevisionRef,
+    pub(crate) kind: PassageKind,
+    pub(crate) line: u64,
+    pub(crate) pointer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     occurred_at: Option<String>,
 }
@@ -293,6 +293,40 @@ pub(super) fn projection_input(conn: &Connection, projection: &Capture) -> Resul
     Ok(input)
 }
 
+/// Only active, exact v7/v8 projection receipts may acquire this presentation.
+/// A source that merely uses the connector name remains ordinary evidence.
+pub(super) fn native_reader(
+    conn: &Connection,
+    reference: &RevisionRef,
+    projection: &Capture,
+) -> Result<Option<super::interpretation_reader::NativeCaptureReaderV1>> {
+    if projection.source.connector != "host-capture-projection-v2"
+        || !matches!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+            7 | 8
+        )
+    {
+        return Ok(None);
+    }
+    let authentic: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM host_capture_receipt WHERE state='active' AND projection_object=?1 AND projection_revision=?2 AND identity_hash=?3)",
+        params![reference.object, reference.revision, projection.source.id], |r| r.get(0))?;
+    if !authentic {
+        return Ok(None);
+    }
+    let input = projection_input(conn, projection)?;
+    let descriptors: ProjectionV2 = serde_json::from_str(&projection.text)?;
+    Ok(Some(super::interpretation_reader::NativeCaptureReaderV1 {
+        identity: input.identity,
+        criterion: input.criterion,
+        originals: descriptors.originals,
+        receipts: input.receipts,
+        artifact: input.artifact,
+        consulted: input.consulted,
+        occurred_at: input.occurred_at,
+    }))
+}
+
 // Historical Record/RevisionRef decoders intentionally allow future fields.
 // Strict trusted-host DTO decoding is local to this admission boundary.
 #[derive(Deserialize)]
@@ -314,7 +348,7 @@ fn strict_reference<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<RevisionRef, D::Error> {
     Ok(StrictReference::deserialize(d)?.into())
 }
-fn strict_references<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn strict_references<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Vec<RevisionRef>, D::Error> {
     Ok(Vec::<StrictReference>::deserialize(d)?
@@ -452,7 +486,7 @@ fn admit(
         },
         "host capture producer does not match store version"
     );
-    validate(&input)?;
+    validate(&input, if version == 8 { 64 } else { 32 })?;
     ensure!(
         rich || input.originals.iter().all(|p| !matches!(
             p.kind,
@@ -675,7 +709,7 @@ fn bind(conn: &Connection, reference: &RevisionRef, binding: &ExternalBinding) -
     )?;
     Ok(())
 }
-fn validate(input: &HostCapture) -> Result<()> {
+fn validate(input: &HostCapture, max_consulted: usize) -> Result<()> {
     let i = &input.identity;
     ensure!(
         [
@@ -702,7 +736,7 @@ fn validate(input: &HostCapture) -> Result<()> {
     ensure!(
         (1..=16).contains(&input.originals.len())
             && (1..=32).contains(&input.receipts.len())
-            && input.consulted.len() <= 32,
+            && input.consulted.len() <= max_consulted,
         "invalid host capture bounds"
     );
     ensure!(

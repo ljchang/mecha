@@ -33,12 +33,19 @@ struct Events {
     originals: Vec<OriginalPassage>,
     receipts: Vec<ToolReceipt>,
     consulted: Vec<RevisionRef>,
+    memory_packets: Vec<String>,
 }
 
 // This is only the currently supported native GoalMemory wire packet. Unknown
 // shapes refuse capture. Parse the entire result before passage truncation; all
 // returned bundle members carry provenance even beyond the first 4096 bytes.
 fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
+    memory_packet_references_checked(content, None)
+}
+fn memory_packet_references_checked(
+    content: &str,
+    authority: Option<(&Memory, &Access)>,
+) -> Result<Vec<RevisionRef>> {
     // jobs::render adds this exact optional envelope after result capping.
     // A cap marker inside JSON or an incomplete envelope is refused, never
     // recovered by guessing at JSON fragments or following a spill path.
@@ -144,7 +151,7 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
             .clone(),
     )?;
     ensure!(
-        packet.incomplete && packet.records.len() <= 32 && packet.bindings.len() <= 2,
+        packet.incomplete && packet.records.len() <= 64 && packet.bindings.len() <= 2,
         "capture refused"
     );
     // The role map is a host-issued interpretation vocabulary, never a model
@@ -208,12 +215,19 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
         "capture refused"
     );
     let mut references = Vec::new();
+    let mut native_readers = Vec::new();
     for hit in packet.records {
         ensure!(hit.private_data && hit.untrusted_input, "capture refused");
         let reference = RevisionRef {
             object: hit.reference.object,
             revision: hit.reference.revision,
         };
+        if let PacketRecord::Reader(
+            crate::memory::interpretation_reader::ReaderRecord::NativeCapture(reader),
+        ) = hit.record
+        {
+            native_readers.push((reference.clone(), reader));
+        }
         if !references.contains(&reference) {
             references.push(reference);
         }
@@ -226,6 +240,12 @@ fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
             }),
             "capture refused"
         );
+    }
+    for (_, reader) in &native_readers {
+        reader.validate_manifest(&references)?;
+    }
+    if let Some((memory, access)) = authority {
+        memory.validate_native_context(&references, &native_readers, access)?;
     }
     Ok(references)
 }
@@ -317,6 +337,7 @@ fn events_mode(
     let mut originals = Vec::new();
     let mut calls: BTreeMap<String, (String, Option<ReceiptStatus>, bool)> = BTreeMap::new();
     let mut consulted = Vec::new();
+    let mut memory_packets = Vec::new();
     let mut order = Vec::new();
     let mut meta = 0;
     let mut completed = false;
@@ -398,7 +419,13 @@ fn events_mode(
                                         consulted.push(reference);
                                     }
                                 }
-                                ensure!(consulted.len() <= 32, "capture refused");
+                                ensure!(
+                                    consulted.len() <= if rich { 64 } else { 32 },
+                                    "capture refused"
+                                );
+                                // New reader metadata requires canonical validation even
+                                // when the legacy v7 producer records this packet.
+                                memory_packets.push(content.clone());
                             }
                             call.1 = Some(if !is_error {
                                 ReceiptStatus::Succeeded
@@ -493,6 +520,7 @@ fn events_mode(
         originals,
         receipts,
         consulted,
+        memory_packets,
     })
 }
 
@@ -895,13 +923,19 @@ impl LocalAuthority {
         } else {
             events(&text, &frozen.criterion, &input.account)?
         };
+        for packet in &projected.memory_packets {
+            memory_packet_references_checked(packet, Some((memory, access)))?;
+        }
         let mut consulted = input.consulted;
         for reference in projected.consulted {
             if !consulted.contains(&reference) {
                 consulted.push(reference);
             }
         }
-        ensure!(consulted.len() <= 32, "capture refused");
+        ensure!(
+            consulted.len() <= if rich { 64 } else { 32 },
+            "capture refused"
+        );
         let artifact_evidence =
             rich.then(|| artifact_observation(&frozen.artifact, &frozen.expected_rows));
         let checked = if let Some(observation) = &artifact_evidence {

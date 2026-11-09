@@ -140,6 +140,27 @@ fn omission(source: &SourceField, reason: NativeOmissionReason) -> Result<Native
         digest: hash(&source.text)?,
     })
 }
+fn native_fact(source: &SourceField, metadata: &EvidenceMetadata) -> Result<NativeFact> {
+    let decoded = decode_native(source, metadata)?;
+    let value =
+        if source.text.len() > VALUE_BYTES || serde_json::to_vec(&decoded)?.len() > VALUE_BYTES {
+            omission(source, NativeOmissionReason::ValueTooLarge)?
+        } else {
+            decoded
+        };
+    let mut fact = NativeFact {
+        id: String::new(),
+        source_id: source.id.clone(),
+        source: source.source.clone(),
+        field: source.field.clone(),
+        source_kind: source.kind.clone(),
+        selector: NativeSelector::WholeField,
+        metadata: metadata.clone(),
+        value,
+    };
+    fact.id = fact_identity(&fact, source)?;
+    Ok(fact)
+}
 impl NativeEvidenceRequest {
     fn new(prepared: PreparedInterpretation) -> Result<Self> {
         let mut view = NativeEvidenceView {
@@ -158,25 +179,7 @@ impl NativeEvidenceRequest {
                 .iter()
                 .find(|m| m.source_id == source.id)
                 .context("missing native metadata")?;
-            let decoded = decode_native(source, metadata)?;
-            let value = if source.text.len() > VALUE_BYTES
-                || serde_json::to_vec(&decoded)?.len() > VALUE_BYTES
-            {
-                omission(source, NativeOmissionReason::ValueTooLarge)?
-            } else {
-                decoded
-            };
-            let mut fact = NativeFact {
-                id: String::new(),
-                source_id: source.id.clone(),
-                source: source.source.clone(),
-                field: source.field.clone(),
-                source_kind: source.kind.clone(),
-                selector: NativeSelector::WholeField,
-                metadata: metadata.clone(),
-                value,
-            };
-            fact.id = fact_identity(&fact, source)?;
+            let fact = native_fact(source, metadata)?;
             view.facts.push(fact);
             if serde_json::to_vec(&view)?.len() > VIEW_BYTES {
                 let fact = view.facts.last_mut().unwrap();
@@ -368,3 +371,7 @@ mod tests;
 #[path = "native_appraisal_checks.rs"]
 mod native_appraisal_checks;
 pub use native_appraisal_checks::*;
+
+#[path = "native_concept_appraisal.rs"]
+mod native_concept_appraisal;
+pub use native_concept_appraisal::*;

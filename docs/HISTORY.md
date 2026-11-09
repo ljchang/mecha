@@ -14,6 +14,51 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Compact native context and concept-aware appraisal (2026-11-09, prototype branch)
+
+`PreparedRecords` now presents authenticated native metadata as typed fields while
+keeping canonical records and original text intact. Admission and serialization
+use the same prepared representation; withholding clears its private cache.
+Recapture authenticates the presentation against canonical rows and requires the
+full dependency closure. Rich v8 consulted lineage accepts 64 references and
+rejects 65; v6/v7 retain their 32-reference limit. A reconstructed fuller-citation
+fixture changed from 20,352 canonical bytes to 18,438 reader bytes with the same
+19 revisions under the unchanged 20,000-byte limit. It is not a byte-identical
+reconstruction of the earlier 21,042-byte case. Larger individual sources and
+mandatory bundles can still be withheld.
+
+`NativeConceptEvidenceRequest` and `situated-native-concept-appraisal-v1` separate
+facts from canonical provisional hypotheses. The parser requires exactly one
+applicability assessment per hypothesis, rejects hypothesis IDs as factual
+premises, and reuses checks-first artifact/verdict validation with the new request
+identity. Every consulted source, including uncited/omitted evidence and exact
+per-member scopes, remains sealed and freshly rechecked. The explicit read-only
+`appraise_native_session` workflow reuses the existing local structured pass;
+it writes no judgment and introduces no discovery or default activation. Its
+16 KiB reply limit supports the authored 64-record/52-hypothesis finish case;
+legacy appraisal keeps its 8 KiB limit.
+
+Local focused qualification passed 614 memory tests and three integrated native
+tests, with one existing ignored memory report writer, strict core Clippy and
+formatting. Task and combined independent reviews found no actionable defects.
+The first Spark pass completed 6,352 default and 6,960 memory-enabled tests
+(0 failed; 25/30 ignored), both builds, formatting and actual CLI initialization.
+Its standalone compile then exposed a shared test calling core-only generation
+APIs. A scoped feature gate fixed only those assertions: the complete 64-record view with 52 hypotheses
+and the 65-record refusal remain in both harnesses. Local standalone
+330 unit plus four integration tests and the core boundary test passed; independent
+fix review found no defects. The original failed run is retained. The resumed Spark pass then completed formatting, the one core boundary test,
+all 334 standalone tests and strict workspace/all-target/all-feature Clippy.
+Before/after source and index manifests matched in each pass; only the reviewed
+test-feature gate separates the two trees. The full workspace counts above apply
+to identical runtime/dependency code before that test-only fix, rather than being
+relabeled as reruns on the final tree. Evidence is retained under
+`results/memory-concept-context-20261108/qualification`. Final prose was added
+after code checks; PR #846 carries current publication and exact-head CI status. Authored responses establish lifecycle and reference integrity, not
+semantic entailment, applicability accuracy, learning or decision benefit. No new
+real-model inference, private-source migration or production activation occurred.
+
+
 ### Integrated native memory sessions (2026-11-08, prototype branch)
 
 The explicit `memory init-native` / `native-session` CLI and

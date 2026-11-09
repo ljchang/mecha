@@ -55,9 +55,17 @@ They must open memory with the corresponding `LocalAuthority` source guard.
 Support must span two distinct native sessions. All metadata and source dependencies
 remain attached, including uncited inputs and restrictions; all outcomes recheck
 current authority. Provisional concepts may be recalled and recaptured, but those
-influenced episodes cannot count as independent support. Native appraisal of a
-Concept-bearing closure currently refuses explicitly. Older guardless concept
-APIs still refuse native sources.
+influenced episodes cannot count as independent support. Legacy native appraisal
+still refuses Concept-bearing closure. The explicit
+`Memory::{prepare_native_concept_evidence,recheck_native_concept_evidence,finish_native_concept_appraisal}`
+path instead separates factual observations from provisional hypotheses.
+`memory_situated_workflow::appraise_native_session` invokes that read-only path
+for an already captured session using a caller-supplied local provider. It adds
+no provider discovery, persistence, CLI verb or default activation. Each offered
+hypothesis requires an applicability assessment; hypothesis IDs cannot serve as
+factual premises. All consulted sources and exact scopes are rechecked after
+inference, including unsuccessful outcomes. Older guardless concept APIs still
+refuse native sources.
 
 `mecha-core/tests/memory_integrated_native.rs` demonstrates the complete authored
 lifecycle, including actual action, reopened concept-guided recall, an in-scope
@@ -65,7 +73,18 @@ contradiction, revision and source withdrawal. Its full revised packet fits the
 existing 20 KB bound at 19,562 bytes; a larger authored version measured 21,042 bytes
 and was omitted in full. These are mechanics tests, not evidence of model learning
 or production scale. Larger-packet presentation and semantic qualification remain
-open.
+open for those earlier measurements. The compact native reader now preserves full
+original text while avoiding repeated metadata encoding: a reconstructed
+fuller-citation case measures 20,352 canonical bytes versus 18,438 reader bytes
+with the same 19 source revisions. This is a new fixture, not a byte-identical
+reproduction of the earlier oversized case. Only native v8 consulted lineage
+expands to 64 records; legacy v6/v7 remain at 32. Oversized mandatory content is
+still withheld. Concept-aware appraisal has a separate 16 KiB response bound;
+legacy appraisal retains 8 KiB. Authored tests cover reopened appraisal and
+the 64-record response boundary. Spark passed both workspace suites, CLI checks,
+the standalone harness and strict Clippy; HISTORY records the test-only
+compatibility correction and exact evidence boundary. Real-model semantic
+qualification remains open.
 
 ## Complete native evidence and provisional concept rumination
 

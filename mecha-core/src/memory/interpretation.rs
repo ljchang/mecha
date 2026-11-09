@@ -331,6 +331,16 @@ fn check_roots(
     access: &Access,
     guard: Option<&dyn ExternalSourceGuard>,
 ) -> Result<Vec<RevisionRef>> {
+    check_roots_bounded(conn, roots, snapshot, access, guard, 32)
+}
+fn check_roots_bounded(
+    conn: &Connection,
+    roots: &[RevisionRef],
+    snapshot: &Snapshot,
+    access: &Access,
+    guard: Option<&dyn ExternalSourceGuard>,
+    limit: usize,
+) -> Result<Vec<RevisionRef>> {
     let mut all = BTreeMap::new();
     let checks = SourceChecks::new(guard);
     for root in roots {
@@ -349,7 +359,10 @@ fn check_roots(
             all.insert((member.object.clone(), member.revision.clone()), member);
         }
     }
-    ensure!(all.len() <= 32, "interpretation lineage exceeds 32 records");
+    ensure!(
+        all.len() <= limit,
+        "interpretation lineage exceeds {limit} records"
+    );
     Ok(all.into_values().collect())
 }
 fn source_fields(conn: &Connection, refs: &[RevisionRef]) -> Result<Vec<SourceField>> {
@@ -549,7 +562,7 @@ impl Memory {
             &SCHEMA.replace("user_version=7", "user_version=8"),
         )
     }
-    fn live_identity(&self) -> Result<()> {
+    pub(super) fn live_identity(&self) -> Result<()> {
         if let Some(path) = self.conn.path() {
             let live = Self::open_read_only(Path::new(path))?;
             ensure!(live.instance == self.instance, "memory store was replaced");
@@ -892,7 +905,8 @@ impl Memory {
                 .find(|r| r.reference == root)
                 .context("missing selected interpretation role")?;
             role.role = InterpretationRole::SelectedCurrent;
-            if candidate.records.len() > 32 || serde_json::to_vec(&candidate)?.len() > budget {
+            candidate.prepare(&tx)?;
+            if candidate.records.len() > 64 || serde_json::to_vec(&candidate)?.len() > budget {
                 packet.budget_omitted = true;
                 continue;
             }
@@ -910,13 +924,13 @@ impl Memory {
                 && fresh(&tx, &hit.reference, i64::MAX)?;
         }
         if !valid {
-            packet.records.clear();
+            packet.clear_records();
             packet.bindings.clear();
             packet.interpretation_roles.clear();
         }
         validate_roles(&packet, read, &selected)?;
-        if packet.records.len() > 32 || serde_json::to_vec(&packet)?.len() > budget {
-            packet.records.clear();
+        if packet.records.len() > 64 || serde_json::to_vec(&packet)?.len() > budget {
+            packet.clear_records();
             packet.bindings.clear();
             packet.interpretation_roles.clear();
             packet.budget_omitted = true;
@@ -941,7 +955,7 @@ impl Memory {
                 Some(&final_checks),
             )? || !fresh(&final_tx, &hit.reference, i64::MAX)?
             {
-                packet.records.clear();
+                packet.clear_records();
                 packet.bindings.clear();
                 packet.interpretation_roles.clear();
                 break;

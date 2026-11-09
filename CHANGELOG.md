@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental native memory packets use compact authenticated metadata while
+  retaining full original text and provenance under the existing reader budget.
+  Explicit concept-aware appraisal separates hypotheses from observed facts,
+  checks applicability coverage and rechecks every source after inference. Rich
+  v8 consulted lineage supports 64 records; legacy limits and defaults remain
+  unchanged. These mechanics do not establish model reasoning quality.
+
 - Experimental native memory sessions connect actual jailed actions, independent
   artifact checks, v8 capture and reopened recall through explicit `init-native`
   and `native-session` commands. Guarded native concept/rumination APIs preserve

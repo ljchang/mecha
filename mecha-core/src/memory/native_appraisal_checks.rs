@@ -38,39 +38,7 @@ impl NativeEvidenceRequest {
         let mut input: Value = serde_json::from_str(&input)?;
         input["protocol"] = json!(NATIVE_CHECKED_PROTOCOL);
         input["request_key"] = json!(self.checked_request_key()?);
-        let ids = self.issued_ids();
-        let premises = if ids.is_empty() {
-            json!({"type":"array","maxItems":0,"items":{"type":"string"}})
-        } else {
-            json!({"type":"array","maxItems":8,"uniqueItems":true,"items":{"type":"string","enum":ids}})
-        };
-        // Insertion order is the actual grammar traversal order, not decoration.
-        let mut properties = serde_json::Map::new();
-        properties.insert(
-            "request_key".into(),
-            json!({"type":"string","enum":[self.checked_request_key()?]}),
-        );
-        properties.insert(
-            "artifact_content".into(),
-            json!({"type":"string","enum":["not_assessed","complete","unavailable"]}),
-        );
-        properties.insert("artifact_facts".into(), premises.clone());
-        properties.insert(
-            "comparison".into(),
-            json!({"type":"string","enum":["supports","contradicts","insufficient"]}),
-        );
-        properties.insert("because".into(), premises);
-        properties.insert(
-            "reason".into(),
-            json!({"type":"string","minLength":1,"maxLength":512}),
-        );
-        properties.insert("questions".into(), json!({"type":"array","maxItems":4,"items":{"type":"string","minLength":1,"maxLength":64}}));
-        properties.insert(
-            "state".into(),
-            json!({"type":"string","enum":["met","not_met","unknown"]}),
-        );
-        let required: Vec<_> = properties.keys().cloned().collect();
-        let schema = json!({"type":"object","additionalProperties":false,"required":required,"properties":properties});
+        let schema = checked_schema(&self.issued_ids(), &self.checked_request_key()?);
         let input = serde_json::to_string(&input)?;
         ensure!(
             input.len() + serde_json::to_vec(&schema)?.len() <= 128 * 1024,
@@ -102,6 +70,43 @@ impl NativeEvidenceRequest {
         Ok(request)
     }
 }
+pub(super) fn checked_schema(ids: &[&str], expected_request_key: &str) -> Value {
+    let premises = if ids.is_empty() {
+        json!({"type":"array","maxItems":0,"items":{"type":"string"}})
+    } else {
+        json!({"type":"array","maxItems":8,"uniqueItems":true,"items":{"type":"string","enum":ids}})
+    };
+    // Insertion order is the actual grammar traversal order, not decoration.
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "request_key".into(),
+        json!({"type":"string","enum":[expected_request_key]}),
+    );
+    properties.insert(
+        "artifact_content".into(),
+        json!({"type":"string","enum":["not_assessed","complete","unavailable"]}),
+    );
+    properties.insert("artifact_facts".into(), premises.clone());
+    properties.insert(
+        "comparison".into(),
+        json!({"type":"string","enum":["supports","contradicts","insufficient"]}),
+    );
+    properties.insert("because".into(), premises);
+    properties.insert(
+        "reason".into(),
+        json!({"type":"string","minLength":1,"maxLength":512}),
+    );
+    properties.insert(
+        "questions".into(),
+        json!({"type":"array","maxItems":4,"items":{"type":"string","minLength":1,"maxLength":64}}),
+    );
+    properties.insert(
+        "state".into(),
+        json!({"type":"string","enum":["met","not_met","unknown"]}),
+    );
+    let required: Vec<_> = properties.keys().cloned().collect();
+    json!({"type":"object","additionalProperties":false,"required":required,"properties":properties})
+}
 fn complete_observation(fact: &NativeFact) -> bool {
     fact.metadata.role == EvidenceRole::ArtifactObservation
         && matches!(&fact.value, NativeValue::ArtifactObservation(a) if a.content_status == ContentStatus::Complete && a.artifact_text.is_some())
@@ -114,8 +119,16 @@ fn parse_checked(
     // Reject repeated keys recursively before typed decoding.
     let unique: super::super::super::plan_extraction::UniqueValue = serde_json::from_str(response)?;
     let a: NativeCheckedAppraisal = serde_json::from_value(unique.0)?;
+    validate_checked(&request.view.facts, &request.checked_request_key()?, &a)?;
+    Ok(a)
+}
+pub(super) fn validate_checked(
+    facts: &[NativeFact],
+    expected_request_key: &str,
+    a: &NativeCheckedAppraisal,
+) -> Result<()> {
     ensure!(
-        a.request_key == request.checked_request_key()?,
+        a.request_key == expected_request_key,
         "checked native response request mismatch"
     );
     ensure!(
@@ -127,7 +140,11 @@ fn parse_checked(
             && a.questions.len() <= 4,
         "invalid checked native appraisal bounds"
     );
-    let issued = request.issued_ids();
+    let issued: Vec<_> = facts
+        .iter()
+        .filter(|f| !matches!(f.value, NativeValue::Omitted { .. }))
+        .map(|f| f.id.as_str())
+        .collect();
     for list in [&a.because, &a.artifact_facts] {
         let mut seen = BTreeSet::new();
         for id in list {
@@ -159,9 +176,7 @@ fn parse_checked(
     }
     for id in &a.artifact_facts {
         ensure!(a.because.contains(id), "artifact fact absent from premises");
-        let fact = request
-            .view
-            .facts
+        let fact = facts
             .iter()
             .find(|f| &f.id == id)
             .context("missing artifact fact")?;
@@ -186,12 +201,12 @@ fn parse_checked(
             "complete artifact requires facts"
         ),
         NativeArtifactContent::Unavailable if a.artifact_facts.is_empty() => ensure!(
-            !request.view.facts.iter().any(complete_observation),
+            !facts.iter().any(complete_observation),
             "complete artifact exists"
         ),
         _ => (),
     }
-    Ok(a)
+    Ok(())
 }
 impl Memory {
     pub fn finish_native_checked_appraisal(
