@@ -36,10 +36,11 @@ const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// forced levers, the start refusals) hold for a measured run exactly as for
 /// an explored one; everything else is `experiment` (D13).
 fn trial_kind(driven: bool) -> &'static str {
+    // Through the enum the child parses the mark back with, not a literal.
     if driven {
-        "driven"
+        mecha_core::session::SessionKind::Driven.as_str()
     } else {
-        "experiment"
+        mecha_core::session::SessionKind::Experiment.as_str()
     }
 }
 

@@ -1275,27 +1275,16 @@ impl Tasks {
     /// Why a driven manifest's `workspace_root` cannot be used under `home`,
     /// or `None` when it can. Overlap is refused either way round, as
     /// `driven::refusals` refuses a workspace: a root under the home puts
-    /// every clone in it, and a root above the home binds all of it. Lexical
-    /// over the canonical forms, so a root that does not exist yet (made at
-    /// the first trial) is judged by its nearest existing ancestor.
+    /// every clone in it, and a root above the home binds all of it. Judged
+    /// as each path would resolve once made, so a root that does not exist
+    /// yet (made at the first trial) is judged by its nearest existing
+    /// ancestor, its `.` and `..` taken as written.
     pub fn driven_root_refusal(&self, home: &Path) -> Option<String> {
         let root = self.workspace_root.as_deref()?;
-        let canon = |p: &Path| -> PathBuf {
-            let mut tail = Vec::new();
-            let mut cur = p.to_path_buf();
-            loop {
-                if let Ok(c) = cur.canonicalize() {
-                    return tail.into_iter().rev().fold(c, |acc, t| acc.join(t));
-                }
-                match (cur.file_name().map(|f| f.to_os_string()), cur.parent()) {
-                    (Some(f), Some(parent)) => {
-                        tail.push(f);
-                        cur = parent.to_path_buf();
-                    }
-                    _ => return p.to_path_buf(),
-                }
-            }
-        };
+        // The resolver `driven::refusals` uses, so the two checks are one
+        // rule: a `..` after a component that does not exist yet is taken
+        // as written, never left unresolved (review of #859, pass 2).
+        let canon = crate::work::as_it_would_resolve;
         let (root, home) = (canon(root), canon(home));
         (root.starts_with(&home) || home.starts_with(&root)).then(|| {
             format!(
@@ -2767,12 +2756,21 @@ impl ExperimentStore {
     /// workspace`, outside the mecha home. The trial's record and logs stay
     /// in the store either way; only the clone moves.
     pub fn trial_workspace(&self, tasks: &Tasks, trial_id: &str) -> PathBuf {
-        match (&tasks.workspace_root, self.root.file_name()) {
-            (Some(root), Some(name)) if tasks.driven => {
-                root.join(name).join(trial_id).join("workspace")
-            }
-            _ => self.workspace_for(trial_id),
+        if !tasks.driven {
+            return self.workspace_for(trial_id);
         }
+        // Never a fall-through to the store, inside the home the manifest
+        // forbade: `validate` makes a driven root `Some`, and `open` names
+        // the store's directory after the experiment.
+        let root = tasks
+            .workspace_root
+            .as_ref()
+            .expect("a driven manifest's workspace_root is checked at load");
+        let name = self
+            .root
+            .file_name()
+            .expect("an experiment store's directory is named after it");
+        root.join(name).join(trial_id).join("workspace")
     }
 
     /// One lifetime's stage ledger: `stages/<lifetime>.jsonl`, appended per
@@ -3862,6 +3860,12 @@ rationale = "no notice, fewer turns"
         assert!(tasks(base.join("driven-work"))
             .driven_root_refusal(&home)
             .is_none());
+        // A `..` after a component that does not exist yet still lands in
+        // the home (review of #859, pass 2: the first resolver left it
+        // unresolved, and this root passed).
+        assert!(tasks(base.join("nope/../home/experiments"))
+            .driven_root_refusal(&home)
+            .is_some());
         // Through a symlink into the home is still the home.
         let link = base.join("sneaky");
         std::os::unix::fs::symlink(&home, &link).unwrap();
