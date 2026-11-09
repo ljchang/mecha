@@ -838,6 +838,44 @@
         "by": "driver",
         "reason": "white-box, as 780 was: two of its three hidden tests read the source text (include_str! of mail.rs and validate.rs) and assert its spelling (a `learning.lock()` before `mined_corrections()` before `append_reflexion(` inside `fn record_correction(`, exactly two `record_correction(` calls in `reflect`, a `store.lock()` within 600 bytes before `store.append_validation(`), so a correct fix spelled differently fails; rejected before a prompt was written or validate run (ruling confirmed by the coordinator, 2026-11-09)"
       }
+    },
+    {
+      "id": "pr-263",
+      "pr": 263,
+      "author": "history",
+      "merge": "7a6a8240abadaf0ed47b903b9c4575f79c2918bd",
+      "pin": "b0068feef26eb78a9cd402826a737624b6a4b73e",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-263.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "rejected",
+        "r": 5,
+        "date": "2026-11-09T08:26Z",
+        "by": "validate",
+        "reason": "the merge does not pass its own tests every time: one of its two hidden tests, hermetic_kind_probe, is #[ignore] (the child half its parent test runs by exact path, session::tests::hermetic_kind_probe), so it reports ignored on all 5 merge runs; the parent, a_unit_test_ignores_the_shells_smoke_test_mark, failed 5/5 on the pin (the probe must actually run) and passed 5/5 on the merge"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "30fbd7bd229c760c714c40258a8056adc11e11bdeaea9c21964e6e7f6da0ca0f",
+        "store_present": true
+      }
     }
   ]
 }
