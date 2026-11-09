@@ -1092,15 +1092,26 @@ mecha memory --experimental --db /tmp/demo.memory-prototype.sqlite forget employ
 ```
 
 `demo` creates a new synthetic fixture; existing files are never overwritten.
-The required suffix is `.memory-prototype.sqlite`, and live `.mecha` and
-`.mecha-graph` directories are refused. Commands return JSON. `query` defaults
+The required suffix is `.memory-prototype.sqlite`; canonical ancestor directories
+named `.mecha` or `.mecha-graph` are refused. Commands return JSON. `query` defaults
 to current knowledge and definite temporal matches; `--include-possible` admits
 unknown bounds, and `--limit N` changes the default cap of 20. `forget` removes
 the source and dependent revisions from historical queries too.
 
-This uses unencrypted SQLite and is **synthetic-data only**. It does not load
-Mecha configuration, call a model, or migrate graph data or nightly jobs. The
-production memory design and private-data qualification remain separate work.
+This command family remains **synthetic-data only**. The basic examples above
+use plaintext SQLite and do not load Mecha configuration or call a model.
+Supported native and read/write commands can explicitly select encrypted storage
+with `--key-file`; `key-generate`, `backup` and `restore` provide key creation,
+encrypted snapshots and bounded historical recovery. External JSONL, authority
+files and task artifacts are outside database encryption.
+
+Explicitly selected model-evaluation, extraction and native-session workflows
+can call resident local models through explicit settings; they bypass ordinary
+provider configuration. See the
+[prototype guide](https://github.com/ljchang/mecha/blob/3024ddf79eb4a41da3248fa35cb1d6e9e9a6c9b5/prototypes/memory/README.md)
+for supported commands, acknowledgements and recovery limits. These commands do
+not migrate graph data or nightly jobs, or activate normal chat/web memory.
+Production integration and private-data qualification remain separate work.
 
 ## `kg`
 
