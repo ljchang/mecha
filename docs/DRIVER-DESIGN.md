@@ -577,6 +577,15 @@ the text above:
   ruling: 466, 471, 476, 726, 759, 798. Replaced or rejected: 780 (its tests
   read a private field), 807 (above), and 793, whose hidden test also needs
   the monty worker, so no merge run passes it under the variable.
+- **A task revised after reading answers is a sibling, never an edit.**
+  `pr-759-r1` (2026-11-09) is pr-759 with one more `## Interface` entry:
+  the prompt named `forbidding_prior` without pinning its signature, the
+  hidden tests call it with the pin's, and the ceiling changed its return
+  type in both pilot rounds. The sibling carries `revises` (the task, when,
+  why), its own prompt check, and a baseline **copied** from the original
+  (`copied_from`): the pin and merge are the same, so PASS_TO_PASS is too.
+  pr-759 stays offered unchanged, and the two are reported side by side, the
+  grader-v2 rule above applied to a prompt.
 - **`teardown`** removes the marker. It is the fourth verb, and the driver
   calls it, because §21.1's contract has no teardown and an expired marker
   still refuses unmarked runs (§7).
