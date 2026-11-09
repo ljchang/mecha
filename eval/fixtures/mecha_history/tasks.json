@@ -372,6 +372,57 @@
       }
     },
     {
+      "id": "pr-759-r1",
+      "pr": 759,
+      "author": "history",
+      "merge": "ad1e3c425e7e2d885dcdf1f29de1ee12b830a121",
+      "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-759-r1.md",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `setting_of` in module `mecha_core::harness`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-08T00:37:58Z",
+        "by": "baseline",
+        "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
+        "merge": "ad1e3c425e7e2d885dcdf1f29de1ee12b830a121",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-759-r1.json",
+        "must_pass_sha256": "88524dd404a9358fc7f767f940baf768c0bd639ec651ecf3d8853b5b789c8a7d",
+        "must_pass_count": {
+          "mecha-cli": 1387,
+          "mecha-core": 3597
+        },
+        "copied_from": "pr-759"
+      },
+      "revises": {
+        "task": "pr-759",
+        "at": "2026-11-09T04:52:05Z",
+        "why": "the prompt names forbidding_prior but did not pin its signature; the hidden tests call it with the pin's, and two ceiling runs changed its return type. Revised after reading answers, so reported beside pr-759, never instead of it (DRIVER-DESIGN.md §3)."
+      },
+      "prompt_check": {
+        "sha256": "15e714942d3f74306d23502007053b21bee5d95231e4e3fd6c33886999b05ec1",
+        "store_present": true
+      }
+    },
+    {
       "id": "pr-793",
       "pr": 793,
       "author": "history",
