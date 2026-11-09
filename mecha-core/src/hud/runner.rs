@@ -283,7 +283,7 @@ mod layers {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory-prototype"))]
 #[test]
 fn cipher_export_is_refused_by_the_authorizer_at_preparation() {
     let mut connection = Connection::open_in_memory().unwrap();
@@ -314,7 +314,7 @@ fn cipher_export_is_refused_by_the_authorizer_at_preparation() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory-prototype"))]
 #[test]
 fn cipher_pragmas_are_refused_without_mutating_global_defaults_or_files() {
     use std::{fs, process::Command};
@@ -401,4 +401,32 @@ fn cipher_pragmas_are_refused_without_mutating_global_defaults_or_files() {
     assert!(!log.exists());
     assert_eq!(fs::read(&db).unwrap(), before);
     assert_eq!(read_defaults(), defaults);
+}
+
+/// Default builds use ordinary SQLite; optional encrypted memory alone opts in
+/// to SQLCipher's extra runtime surface and native cryptographic dependency.
+#[cfg(all(test, not(feature = "memory-prototype")))]
+#[test]
+fn default_sqlite_build_has_no_cipher_backend() {
+    let connection = Connection::open_in_memory().unwrap();
+    let version: String = connection
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .unwrap();
+    assert!(!version.is_empty(), "ordinary SQLite must remain available");
+    connection.execute_batch("CREATE VIRTUAL TABLE default_fts_probe USING fts5(text); INSERT INTO default_fts_probe VALUES('synthetic zircon');").unwrap();
+    let hits: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM default_fts_probe WHERE default_fts_probe MATCH 'zircon'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1, "ordinary builds must retain working FTS5");
+    println!("Default SQLite runtime: {version}; FTS5 matched rows: {hits}");
+
+    let mut statement = connection.prepare("PRAGMA cipher_version").unwrap();
+    assert!(
+        statement.query([]).unwrap().next().unwrap().is_none(),
+        "default build unexpectedly includes the optional SQLCipher backend"
+    );
 }

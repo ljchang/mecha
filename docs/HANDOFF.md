@@ -204,13 +204,18 @@ The owner-selected model is Qwen3.6-35b-a3b-uncensored; recheck residency before
 Explicit encrypted native storage, complete encrypted snapshots and fresh-path
 historical restore are implemented and independently reviewed. Restore applies
 current forgetting and refuses weaker access scopes under a held current-store
-transaction. Combined Spark qualification passed 6,354 default and 7,008
-memory-enabled tests with zero failures (25/30 ignored), 372 standalone tests,
-29 CLI checks, strict Clippy, Rust 1.96.1 and package checks. The optimized Mac
-CLI separately passed 29 checks; HISTORY records scopes and preserved failures.
-See the prototype README for explicit key/backup/restore commands. This is database-only protection: external JSONL, authority files,
-artifacts and audits remain separate surfaces. Restore requires the current
-store and does not merge later facts/withdrawals or install a live replacement.
+transaction. The initial encrypted source `114f33ddf` passed its full workspace
+suites and all eighteen GitHub CI jobs. Review then found unconditional cipher
+build costs; the correction selects ordinary SQLite by default and SQLCipher
+only with `memory-prototype`. Fresh Spark default qualification passed 6,353
+tests (zero failed, 25 ignored), with focused feature/native/CLI, standalone,
+29-check CLI, strict Clippy, Rust 1.96.1 and package checks also passing. HISTORY
+separates these results from the preceding full 7,008-test cipher suite and
+records scopes and preserved failures. See the prototype README for explicit
+key/backup/restore commands. This is database-only protection: external JSONL,
+authority files, artifacts and audits remain separate surfaces. Restore requires
+the current store and does not merge later facts/withdrawals or install a live
+replacement.
 
 Next are measured hybrid retrieval and operational qualification before private
 imports. Full disaster recovery needs separately durable deletion authority and

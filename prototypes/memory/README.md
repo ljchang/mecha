@@ -13,6 +13,11 @@ unpublished harness compiles the **same source and synthetic fixture**, without
 pulling in unrelated Mecha dependencies. It is not another implementation or
 a new production service.
 
+The `memory-prototype` feature selects bundled SQLCipher and vendored OpenSSL
+for the shared SQLite dependency; ordinary builds use bundled SQLite. The
+standalone harness always selects the cipher backend. Neither backend encrypts
+an existing plaintext store implicitly: an explicit key capability is required.
+
 ## Explicit encrypted storage
 
 The feature-gated main CLI accepts an owner-selected `--key-file` for native

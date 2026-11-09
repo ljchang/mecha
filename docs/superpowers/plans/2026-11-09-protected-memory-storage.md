@@ -92,6 +92,37 @@ Tasks 1 and 2 are implemented, independently reviewed and locally qualified. Tas
 **Combined qualification:** Spark run `combined-20261109T071728Z` passed default 6,354/0/25 and memory-enabled 7,008/0/30 (passed/failed/ignored), standalone 372/0/0, 29 actual CLI checks, strict Clippy, Rust 1.96.1 checking and package verification. The unchanged combined source also passed the optimized macOS CLI build and 29-check smoke. HISTORY records evidence boundaries and the broader operational gaps.
 
 
+## Post-publication review: gate the native encryption dependencies
+
+Review of `114f33ddf` identified that the initial workspace-wide cipher selection
+charged default builds for a default-off feature. Preserve one native SQLite
+linkage per build by keeping workspace `bundled` SQLite and enabling
+`rusqlite/bundled-sqlcipher-vendored-openssl` only through core's existing
+`memory-prototype` feature, which CLI already forwards. Make direct `getrandom`
+and `zeroize` optional; they can still occur transitively elsewhere. Keep the
+standalone cipher harness and unconditional HUD export refusal unchanged.
+
+The ordinary bundle is SQLite 3.54.1; the cipher bundle remains SQLCipher 4.19.0
+with SQLite 3.53.4. Verify actual runtime versions and FTS5, absence of cipher in
+default builds, and the resolved feature graph. A default-only runtime regression
+must fail against the initial unconditional engine. Feature-only cipher HUD tests
+remain enabled in memory builds.
+
+The default engine changed, so rerun its complete workspace suite. The encrypted
+runtime and resolved dependency graph are unchanged, permitting targeted fresh
+memory/guard/native/CLI checks alongside the prior full 7,008-test feature result;
+state that evidence boundary explicitly. Also run strict Clippy, MSRV and package
+checks, independent fix review, exact final privacy checks, and latest-head CI and
+review after pushing. Separately exercise plaintext stores in both directions
+between the two actual runtime versions, including FTS5, sequence state and
+committed WAL recovery. Current publication state remains on PR #846 and the Site.
+
+**Qualification complete:** the new default suite passed 6,353/0/25; focused
+feature HUD, memory and native/CLI tests, the 372-test standalone suite, 29 CLI
+checks, Clippy, MSRV and packaging passed. The separate bidirectional plaintext
+WAL/FTS/sequence probe also passed. HISTORY records the evidence boundaries;
+PR #846 tracks final publication and exact-head CI/review.
+
 ## Follow-on boundary
 
 Full disaster recovery preserving acknowledged forgetting requires independently durable current suppression authority, write-ahead acknowledgment, crash reconciliation and a trusted latest-generation policy. Key recovery is separately owner-controlled. Defer these and vector retrieval to their own qualified increments; later vector work reuses Mecha's existing Embedder and on-demand embedding service, with no model calls inside storage transactions.

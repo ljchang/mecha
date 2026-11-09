@@ -17,8 +17,8 @@ dirs.workspace = true
 futures.workspace = true
 image.workspace = true
 libc.workspace = true
-getrandom = "0.3"
-zeroize = "1"
+getrandom = { version = "0.3", optional = true }
+zeroize = { version = "1", optional = true }
 matrixmultiply.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
@@ -55,7 +55,7 @@ flate2 = "1"
 
 [features]
 default = ["monty"]
-memory-prototype = []
+memory-prototype = ["rusqlite/bundled-sqlcipher-vendored-openssl", "dep:getrandom", "dep:zeroize"]
 # The monty backend for code mode, and the worker pool it drives.
 monty = ["dep:monty-pool", "dep:monty-types"]
 

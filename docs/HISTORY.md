@@ -74,6 +74,47 @@ source and index stayed unchanged throughout. Final documentation is a separate
 prose-only delta; PR #846 records publication and exact-head CI/review status.
 No real-model inference, private-source import or production activation occurred.
 
+### Optional cipher dependencies after review (2026-11-09, prototype branch)
+
+The `114f33ddf` GitHub run passed all eighteen CI jobs and documentation checks,
+but automated review correctly found an avoidable default-build dependency cost:
+SQLCipher/vendored OpenSSL and the direct key helpers were unconditional while
+memory was default-off. Workspace rusqlite now selects ordinary bundled SQLite;
+core's existing `memory-prototype` feature activates the cipher backend and the
+optional direct `getrandom`/`zeroize` dependencies. CLI already forwards the core
+feature, so there is still one SQLite linkage per build. The standalone harness
+continues to select SQLCipher, and the HUD authorizer's export denial remains
+unconditional. Memory-enabled runtime source is unchanged; the ordinary
+build now selects a different SQLite backend and requires fresh qualification.
+
+A new default-only runtime regression first failed on the unconditional cipher
+engine, then measured ordinary SQLite 3.54.1 with a working FTS5 MATCH and no
+cipher-version result. The memory-enabled backend remains SQLCipher 4.19.0 /
+SQLite 3.53.4 with the same resolved dependency graph and runtime source. The two
+cipher-positive HUD tests are now feature-gated. Independent scoped review found
+no major/medium defects. Local default HUD 102, memory-enabled HUD 103 and nine
+selected encrypted-storage tests passed, plus strict Clippy in both modes.
+Existing environment-dependent HUD self-skips were recorded separately from
+Rust's ignored count; a loopback EPERM attempt was retained before its successful
+authorized retry. The fresh ordinary-SQLite workspace suite passed 6,353 tests,
+zero failed and 25 ignored. The net decrease of one from the preceding default
+suite is two cipher-only tests omitted and one ordinary-engine regression added.
+The preceding full 7,008-test cipher-workspace result remains attributed to
+`114f33ddf` rather than being relabeled as a rerun. The frozen
+`engine-split-20261109T083529Z` gate passed targeted feature HUD 3/0/0,
+memory-library 655/0/1 and native/CLI 28/0/0 tests (passed/failed/ignored),
+all 372 standalone tests and 29 actual encrypted CLI checks. Both all-target
+builds, actual backend/FTS probes, strict Clippy, Rust 1.96.1 checking and
+460-file source-package inventory passed. Source and index remained unchanged.
+
+A separate bidirectional plaintext compatibility probe used the actual selected
+SQLite 3.54.1 and cipher SQLite 3.53.4 artifacts. Each opposite backend recovered
+committed WAL content absent from a main-file-only control, verified relational
+and FTS5 content, enforced foreign keys and preserved deleted-high sequence state
+(next ID 101 after deleting ID 100). The original backend then reopened the
+checkpointed mutation; integrity and plaintext-header checks passed. This covers
+that synthetic fixture, not arbitrary application schema or newer SQL syntax.
+
 ### Compact native context and concept-aware appraisal (2026-11-09, prototype branch)
 
 `PreparedRecords` now presents authenticated native metadata as typed fields while

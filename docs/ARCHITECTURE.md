@@ -12924,12 +12924,17 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
-- **One SQLite linkage serves both old plaintext stores and encrypted memory.**
-  The workspace and standalone harness use the pinned SQLCipher-enabled engine;
-  existing stores remain plaintext unless an explicit key capability is selected.
-  Qualify old-schema/FTS/WAL behavior when changing that dependency. SQLCipher
-  registers extra functions on plaintext handles too, so the HUD authorizer
-  refuses `sqlcipher_export` at preparation, independently of read-only flags.
+- **One SQLite linkage per build; encryption dependencies follow the memory feature.**
+  Ordinary workspace builds use bundled SQLite. Core's `memory-prototype` feature
+  selects bundled SQLCipher/vendored OpenSSL and its optional direct key helpers;
+  CLI forwards that feature, and Cargo unifies the shared SQLite linkage. The
+  standalone memory harness always selects SQLCipher. Initial encryption work
+  selected the cipher engine unconditionally, imposing its native build costs on
+  a default-off prototype; the default runtime/FTS regression now prevents that.
+  Qualify both backend configurations when changing the dependency. Existing
+  unkeyed stores stay plaintext with either engine. In a memory-enabled build,
+  SQLCipher registers extra functions on plaintext handles too, so the HUD's
+  unconditional authorizer refuses `sqlcipher_export` at preparation.
 - **Decryption authority does not replace source or scope authorization.**
   `StorageAccess` is an opaque host-only capability, separate from `Access`.
   Every independent memory, interpretation and durable guard reopen carries it;
