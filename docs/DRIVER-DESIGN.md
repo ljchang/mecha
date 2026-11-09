@@ -578,12 +578,14 @@ the text above:
   read a private field), 807 (above), and 793, whose hidden test also needs
   the monty worker, so no merge run passes it under the variable.
 - **A task revised after reading answers is a sibling, never an edit.**
-  `pr-759-r1` (2026-11-09) is pr-759 with one more `## Interface` entry:
-  the prompt named `forbidding_prior` without pinning its signature, the
-  hidden tests call it with the pin's, and the ceiling changed its return
-  type in both pilot rounds. The sibling carries `revises` (the task, when,
-  why), its own prompt check, and a baseline **copied** from the original
-  (`copied_from`): the pin and merge are the same, so PASS_TO_PASS is too.
+  `pr-759-r1` (2026-11-09) is pr-759 with two more `## Interface` entries:
+  the prompt named `forbidding_prior` and `history_lines` without pinning
+  their signatures, the hidden tests call both with the pin's, and the
+  ceiling changed `forbidding_prior`'s return type in both pilot rounds. The
+  sibling carries `revises` (the task, when, why), its own prompt check, and
+  an admission and a baseline **copied** from the original (`copied_from`):
+  the pin and merge are the same, so PASS_TO_PASS is too. The committed-bank
+  test checks both claims, so neither is prose a reader must trust.
   pr-759 stays offered unchanged, and the two are reported side by side, the
   grader-v2 rule above applied to a prompt.
 - **`teardown`** removes the marker. It is the fourth verb, and the driver

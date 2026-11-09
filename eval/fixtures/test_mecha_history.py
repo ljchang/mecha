@@ -178,6 +178,32 @@ class CommittedBank(unittest.TestCase):
             mecha_history.BANK = old
         self.assertEqual(unoffered, [])
 
+    def test_a_copy_or_a_revision_says_what_is_true(self):
+        """`copied_from` and `revises` are claims a reader cannot re-derive, so
+        the bank checks them: a revision names a task in the bank on the same
+        pin and merge, and a copied baseline is byte-for-byte the one it names
+        (review of #858)."""
+        with open(os.path.join(HERE, "mecha_history", "tasks.json")) as fh:
+            tasks = {t["id"]: t for t in json.load(fh)["tasks"]}
+        checked = 0
+        for t in tasks.values():
+            rev = t.get("revises")
+            if rev:
+                src = tasks.get(rev["task"])
+                self.assertIsNotNone(src, f"{t['id']} revises {rev['task']}, which is not in the bank")
+                self.assertEqual((t["pin"], t["merge"]), (src["pin"], src["merge"]), t["id"])
+                checked += 1
+            for block in ("baseline", "admission"):
+                origin = (t.get(block) or {}).get("copied_from")
+                if origin:
+                    self.assertIn(origin, tasks, f"{t['id']}'s {block} is copied from a task not in the bank")
+                    self.assertEqual((t["pin"], t["merge"]), (tasks[origin]["pin"], tasks[origin]["merge"]))
+            origin = (t.get("baseline") or {}).get("copied_from")
+            if origin:
+                self.assertEqual(t["baseline"]["must_pass_sha256"], tasks[origin]["baseline"]["must_pass_sha256"],
+                                 f"{t['id']}'s baseline is not the one it says it copied")
+        self.assertTrue(checked, "no revision in the bank: the check above is vacuous")
+
 
 class Regressions(unittest.TestCase):
     def test_a_test_item_is_one_whose_leading_attributes_say_so(self):

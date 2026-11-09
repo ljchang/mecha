@@ -392,7 +392,8 @@
         "by": "validate",
         "pin": "every run fails to build the hidden tests: cannot find function `setting_of` in module `mecha_core::harness`",
         "merge": "every run passes",
-        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07",
+        "copied_from": "pr-759"
       },
       "baseline": {
         "r": 2,
@@ -415,10 +416,10 @@
       "revises": {
         "task": "pr-759",
         "at": "2026-11-09T04:52:05Z",
-        "why": "the prompt names forbidding_prior but did not pin its signature; the hidden tests call it with the pin's, and two ceiling runs changed its return type. Revised after reading answers, so reported beside pr-759, never instead of it (DRIVER-DESIGN.md §3)."
+        "why": "the prompt names forbidding_prior and history_lines without pinning their signatures; the hidden tests call both with the pin's, and two ceiling runs changed forbidding_prior's return type. Revised after reading answers, so reported beside pr-759, never instead of it (DRIVER-DESIGN.md §3)."
       },
       "prompt_check": {
-        "sha256": "15e714942d3f74306d23502007053b21bee5d95231e4e3fd6c33886999b05ec1",
+        "sha256": "bc95012f5a6a245bfa53f953db078ed79af0b39ef3b30d831181c2aa4a01ad89",
         "store_present": true
       }
     },
