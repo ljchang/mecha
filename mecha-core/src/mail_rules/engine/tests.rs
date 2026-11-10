@@ -3745,7 +3745,7 @@ async fn the_subject_slot_is_decoded_or_the_reply_is_refused() {
     assert_eq!(answering.subject, "Re: Réservation confirmée");
     assert!(answering.to.contains('@'), "{answering:?}");
 
-    for unreadable in ["truncated", "undecodable", "nameless"] {
+    for unreadable in ["truncated", "undecodable", "empty", "blank", "nameless"] {
         let mut f = Fixture::new();
         personal(&f);
         {
@@ -3756,6 +3756,15 @@ async fn the_subject_slot_is_decoded_or_the_reply_is_refused() {
                     cs[0].subject_is_raw = true;
                     cs[0].message.subject = "=?X-UNKNOWN?Q?broken?=".into();
                 }
+                // Reads fine, but would render a bare "Re: " (review of #856,
+                // pass 5): no Subject header at all, and one of only spaces.
+                "empty" => {
+                    cs[0].message.subject = String::new();
+                    cs[0]
+                        .headers
+                        .retain(|name, _| !name.eq_ignore_ascii_case("subject"));
+                }
+                "blank" => cs[0].message.subject = "   ".into(),
                 // A bare address in From: `{sender_first_name}` has no value.
                 _ => cs[0].sending.from_name = String::new(),
             }

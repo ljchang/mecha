@@ -1407,9 +1407,13 @@ impl Run<'_> {
                         .or_else(|| super::send::reply_refusal(c).map(str::to_string))
                         .or_else(|| {
                             // A slot with no honest value refuses rather
-                            // than render raw bytes (review of #856).
+                            // than render raw bytes (review of #856), and an
+                            // empty or absent subject reads fine but would
+                            // render a bare "Re: " — the same hole. Checked
+                            // here, not in `reply_subject_text`, which is also
+                            // the matcher's reading, where `None` is unknown.
                             (Self::template(rule, action).is_some_and(|t| t.contains("{subject}"))
-                                && reply_subject_text(c).is_none())
+                                && reply_subject_text(c).is_none_or(|s| s.trim().is_empty()))
                             .then(|| "the subject could not be read whole".to_string())
                         })
                         .or_else(|| {
