@@ -3811,8 +3811,9 @@ it to the applicable arms; private posthoc grades and answer keys remain hidden.
 Reset or clone the starting state per replicate/arm, not between every
 task in a lifetime, or the benchmark would prevent the very learning it measures.
 Record learning opportunities, compute/replay budgets and all update costs, as well
-as initial and final learned state. Freeze a model/knowledge version only in the
-explicit ablation that requires it. The current completion-feedback pilot holds
+as initial and final learned state. Pin the base model and software in every
+comparison; freeze learned knowledge only in the ablation that requires it.
+The current completion-feedback pilot holds
 memory on and adaptive learning frozen to isolate execution feedback; it is one
 component of this broader adaptive evaluation, not the full-system score.
 
