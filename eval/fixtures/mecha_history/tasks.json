@@ -52,6 +52,128 @@
     },
     "note": "one uniform draw over the eligible set (sample.rs), seed and rule recorded before it ran; 780 was replaced by the next in order (466) because its tests read a private field; 807 was rejected at validation (its hidden tests skip without the monty worker) and replaced by the next in order (471)"
   },
+  "holdout_draws": {
+    "boredom-1": {
+      "recorded_at": "2026-11-09T05:05:43Z",
+      "purpose": "measurement holdout for the boredom on/off experiment (owner ruling 2026-11-09: proper path); never read during exploration",
+      "seed": 20261109,
+      "algorithm": "mecha_core::sample::shuffled over the eligible PR numbers in ascending order, then admit in shuffled order until 8 are admitted; a task rejected at admission is replaced by the next in order (scratchpad sample.py, verified equal to sample.rs on 4 vectors)",
+      "rule": "the pilot's rule unchanged: merged since 2026-09-30, 20-400 lines (additions+deletions), <=8 files, touches .rs, adds >=1 #[test], no persona/voice/image/web paths or titles; graded-by-live-service PRs excluded as in the pilot",
+      "merged_before": "2026-11-09T05:00:00Z",
+      "minus_seen": [
+        "421",
+        "466",
+        "471",
+        "476",
+        "525",
+        "726",
+        "759",
+        "780",
+        "793",
+        "798",
+        "807",
+        "813"
+      ],
+      "minus_driver_arc": {
+        "847": "the design",
+        "848": "driven kind",
+        "851": "driven guardrails",
+        "852": "the task source",
+        "857": "the change under test",
+        "858": "a bank task revision"
+      },
+      "k": 8,
+      "revision": {
+        "at": "2026-11-09T05:09:31Z",
+        "change": "window start 2026-09-30 -> 2026-08-15; everything else unchanged",
+        "why": "the recorded rule leaves 5 eligible (464 474 564 723 853) against k=8; counted from PR metadata and added #[test] lines only, before any draw and before any task's change was read"
+      },
+      "eligible": [
+        "64",
+        "70",
+        "71",
+        "72",
+        "82",
+        "83",
+        "91",
+        "92",
+        "93",
+        "94",
+        "97",
+        "98",
+        "101",
+        "103",
+        "121",
+        "130",
+        "150",
+        "155",
+        "239",
+        "245",
+        "257",
+        "263",
+        "267",
+        "279",
+        "286",
+        "333",
+        "356",
+        "360",
+        "387",
+        "393",
+        "400",
+        "402",
+        "464",
+        "474",
+        "564",
+        "723",
+        "853"
+      ],
+      "excluded": {
+        "553": "toolchain pin: graded by CI install (pilot exclusion)",
+        "709": "OAuth sign-in: live provider (pilot exclusion)",
+        "788": "TLS provider at runtime: live socket (pilot exclusion)"
+      },
+      "shuffled_order": [
+        "387",
+        "101",
+        "71",
+        "393",
+        "263",
+        "98",
+        "155",
+        "333",
+        "360",
+        "92",
+        "245",
+        "723",
+        "97",
+        "239",
+        "402",
+        "103",
+        "267",
+        "400",
+        "72",
+        "564",
+        "130",
+        "83",
+        "853",
+        "91",
+        "356",
+        "121",
+        "93",
+        "70",
+        "286",
+        "279",
+        "82",
+        "150",
+        "94",
+        "474",
+        "64",
+        "464",
+        "257"
+      ],
+      "drawn_at": "2026-11-09T05:09:31Z"
+    }
+  },
   "tasks": [
     {
       "id": "pr-421",
@@ -372,6 +494,58 @@
       }
     },
     {
+      "id": "pr-759-r1",
+      "pr": 759,
+      "author": "history",
+      "merge": "ad1e3c425e7e2d885dcdf1f29de1ee12b830a121",
+      "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "from": "rust-toolchain.toml"
+      },
+      "prompt": "prompts/pr-759-r1.md",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-07",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `setting_of` in module `mecha_core::harness`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07",
+        "copied_from": "pr-759"
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-08T00:37:58Z",
+        "by": "baseline",
+        "pin": "36ab2c5fc241c83199de7c5f8175616834ae909a",
+        "merge": "ad1e3c425e7e2d885dcdf1f29de1ee12b830a121",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-759-r1.json",
+        "must_pass_sha256": "88524dd404a9358fc7f767f940baf768c0bd639ec651ecf3d8853b5b789c8a7d",
+        "must_pass_count": {
+          "mecha-cli": 1387,
+          "mecha-core": 3597
+        },
+        "copied_from": "pr-759"
+      },
+      "revises": {
+        "task": "pr-759",
+        "at": "2026-11-09T04:52:05Z",
+        "why": "the prompt names forbidding_prior and history_lines without pinning their signatures; the hidden tests call both with the pin's, and two ceiling runs changed forbidding_prior's return type. Revised after reading answers, so reported beside pr-759, never instead of it (DRIVER-DESIGN.md §3)."
+      },
+      "prompt_check": {
+        "sha256": "bc95012f5a6a245bfa53f953db078ed79af0b39ef3b30d831181c2aa4a01ad89",
+        "store_present": true
+      }
+    },
+    {
       "id": "pr-793",
       "pr": 793,
       "author": "history",
@@ -543,6 +717,513 @@
         "must_pass_sha256": "e8a1e0c34480dc5f6c97f55a34e523c7a885183e7a7a4fdda1161c4be7283b6f",
         "must_pass_count": {
           "mecha-cli": 1111
+        }
+      }
+    },
+    {
+      "id": "pr-387",
+      "pr": 387,
+      "author": "history",
+      "merge": "ada358af60d73e2c16d61fd00b90b6be2796da7b",
+      "pin": "2588d1001049ba154b874cf7513c0d368dee415d",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-387.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-09T06:39Z",
+        "by": "validate",
+        "pin": "every run fails an assertion (rejected by OwnerApproved)",
+        "merge": "every run passes",
+        "note": "needs the two mismatch fixtures repaired, which its pin compiles in; grafted only after the whole_items fix (479d1fd1e): the diff gives the new test's closing brace to the test above it"
+      },
+      "prompt_check": {
+        "sha256": "a3804aeef3a56c318f0bdc61fdc485e5716715b79465c114c3ab592ff9356985",
+        "store_present": true
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T07:12:20Z",
+        "by": "baseline",
+        "pin": "2588d1001049ba154b874cf7513c0d368dee415d",
+        "merge": "ada358af60d73e2c16d61fd00b90b6be2796da7b",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-387.json",
+        "must_pass_sha256": "730b64b9a13a992482c0ce39a498b993ddccea673e97927d53a9e6b36959dfc2",
+        "must_pass_count": {
+          "mecha-cli": 1033,
+          "mecha-core": 2213
+        }
+      }
+    },
+    {
+      "id": "pr-101",
+      "pr": 101,
+      "author": "history",
+      "merge": "782aef284e03ad3aa1c8d4d6f9795665969322f8",
+      "pin": "10d330eeff05ff0184fa4bf5b8c987c87b34c7e9",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-101.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T07:52Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `strip_ansi_and_controls` in this scope; no method named `items_strict` found for struct `outbox::OutboxStore`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "prompt_check": {
+        "sha256": "35371faeaf4f51f863ce11e9ade619650715827136bba8a3183571e1b72a9718",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T07:57:56Z",
+        "by": "baseline",
+        "pin": "10d330eeff05ff0184fa4bf5b8c987c87b34c7e9",
+        "merge": "782aef284e03ad3aa1c8d4d6f9795665969322f8",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-101.json",
+        "must_pass_sha256": "000d6043a045d484930e8fbad81ea1f2f5f4e3379a5e563cb1e38e57cf6b4986",
+        "must_pass_count": {
+          "mecha-cli": 562,
+          "mecha-core": 942
+        }
+      }
+    },
+    {
+      "id": "pr-71",
+      "pr": 71,
+      "author": "history",
+      "merge": "9c1088db21dfbf8af4351a3c4744dbd4ed8e13dc",
+      "pin": "6c5b3b48092bfc8c443b0ef97b97337d7691277e",
+      "crates": [
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-71.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T08:16Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: no method named `affordable_output_bytes` found for struct `pressure::ContextTracker`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "prompt_check": {
+        "sha256": "a6ec6ea1449fcc8addb02d1ca8f2b746f42e496b785162745d51ae27c3efd0e0",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T08:20:18Z",
+        "by": "baseline",
+        "pin": "6c5b3b48092bfc8c443b0ef97b97337d7691277e",
+        "merge": "9c1088db21dfbf8af4351a3c4744dbd4ed8e13dc",
+        "failing": {
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-71.json",
+        "must_pass_sha256": "4d2539e602639241fc18bfb78d2bbbccde559ab68f4a2ba1fb963c411fe8591e",
+        "must_pass_count": {
+          "mecha-core": 787
+        }
+      }
+    },
+    {
+      "id": "pr-393",
+      "pr": 393,
+      "author": "history",
+      "merge": "5513d7dc67532f83cbe733b07628e1cac0eecf6b",
+      "pin": "0805ae259dc56d62e78fc48257fe2b072e5ad2a5",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-393.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "rejected",
+        "date": "2026-11-09T08:40Z",
+        "by": "driver",
+        "reason": "white-box, as 780 was: two of its three hidden tests read the source text (include_str! of mail.rs and validate.rs) and assert its spelling (a `learning.lock()` before `mined_corrections()` before `append_reflexion(` inside `fn record_correction(`, exactly two `record_correction(` calls in `reflect`, a `store.lock()` within 600 bytes before `store.append_validation(`), so a correct fix spelled differently fails; rejected before a prompt was written or validate run (ruling confirmed by the coordinator, 2026-11-09)"
+      }
+    },
+    {
+      "id": "pr-263",
+      "pr": 263,
+      "author": "history",
+      "merge": "7a6a8240abadaf0ed47b903b9c4575f79c2918bd",
+      "pin": "b0068feef26eb78a9cd402826a737624b6a4b73e",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-263.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "rejected",
+        "r": 5,
+        "date": "2026-11-09T08:26Z",
+        "by": "validate",
+        "reason": "the merge does not pass its own tests every time: one of its two hidden tests, hermetic_kind_probe, is #[ignore] (the child half its parent test runs by exact path, session::tests::hermetic_kind_probe), so it reports ignored on all 5 merge runs; the parent, a_unit_test_ignores_the_shells_smoke_test_mark, failed 5/5 on the pin (the probe must actually run) and passed 5/5 on the merge",
+        "note": "the hidden set counted an #[ignore]d child probe (hermetic_kind_probe) as a hidden test; the rejection excludes the task rather than mis-grading one, and is kept (coordinator, 2026-11-09)"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "30fbd7bd229c760c714c40258a8056adc11e11bdeaea9c21964e6e7f6da0ca0f",
+        "store_present": true
+      }
+    },
+    {
+      "id": "pr-98",
+      "pr": 98,
+      "author": "history",
+      "merge": "10d330eeff05ff0184fa4bf5b8c987c87b34c7e9",
+      "pin": "8bfa46e12fc1103681e62f38c3fd7cbfbaa20638",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-98.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T08:30Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find struct, variant or union type `Surprise` in this scope",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "prompt_check": {
+        "sha256": "4a8151ad0a50d766aca9f150aaa696db71cb03f344f3af4cf397d95cd7871be8",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T08:35:06Z",
+        "by": "baseline",
+        "pin": "8bfa46e12fc1103681e62f38c3fd7cbfbaa20638",
+        "merge": "10d330eeff05ff0184fa4bf5b8c987c87b34c7e9",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-98.json",
+        "must_pass_sha256": "7c73ab8f5de54528bbfa52143b3c7fde51ad826041a205b236ead48562cec3b5",
+        "must_pass_count": {
+          "mecha-cli": 562,
+          "mecha-core": 940
+        }
+      }
+    },
+    {
+      "id": "pr-155",
+      "pr": 155,
+      "author": "history",
+      "merge": "9715dba74cb97f503969bc0eccb510e1c3ff2667",
+      "pin": "f5bfbd84ef74afcd841c0e26bd4ced57ecc3368b",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-155.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "rejected",
+        "r": 5,
+        "date": "2026-11-09T09:25Z",
+        "by": "oracle grade",
+        "reason": "the oracle fails: the merge bumps tower-http 0.6 to 0.7 in Cargo.toml and Cargo.lock, and the clone is vendored offline from the pin's lockfile, so the merge's own diff does not build (failed to select a version for the requirement `tower-http = \"^0.7\"` (locked to 0.7.1)); no run could solve it offline. validate had admitted it (pin 5/5 fail an assertion, ServeDir tags what it serves; merge 5/5 pass, vendored from the merge); null grade false"
+      },
+      "prompt_check": {
+        "sha256": "287242dd299968b7022f7746dab2902cacd098922c3bae3d0235e885124e3136",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:14:57Z",
+        "by": "baseline",
+        "pin": "f5bfbd84ef74afcd841c0e26bd4ced57ecc3368b",
+        "merge": "9715dba74cb97f503969bc0eccb510e1c3ff2667",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-155.json",
+        "must_pass_sha256": "f680485986f5114435a85775634fc541430db5e7297aa50837b3202daa2a4fda",
+        "must_pass_count": {
+          "mecha-cli": 695
+        }
+      }
+    },
+    {
+      "id": "pr-333",
+      "pr": 333,
+      "author": "history",
+      "merge": "5665b16ddf9a8f983b92d4326192782706839764",
+      "pin": "6e84b78626db047cf45db8870aea3b436fb0036b",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-333.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T09:22Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `skipped_line` in module `super`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "c887c9bc11960020dc3a75f6cbb81d7dca0dc90535ac8c4d90982258de6b89ae",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:26:23Z",
+        "by": "baseline",
+        "pin": "6e84b78626db047cf45db8870aea3b436fb0036b",
+        "merge": "5665b16ddf9a8f983b92d4326192782706839764",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-333.json",
+        "must_pass_sha256": "38743ac1509afc59cf2bf2e95940cfc46c0d414118bc86d4f7830a08567975a7",
+        "must_pass_count": {
+          "mecha-cli": 971
+        }
+      }
+    },
+    {
+      "id": "pr-360",
+      "pr": 360,
+      "author": "history",
+      "merge": "7aedce0205f8cb038670421b5381763f798cdc97",
+      "pin": "1b5d3b9a4786b5dd4ef490699d71f66a0cbc9e51",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-360.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T09:36Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: cannot find function `mixed_models_note` in this scope",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "9e1608728e03017b7e3ecea287f507b84887ff19f01c65376d70ba6544923dbe",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:39:25Z",
+        "by": "baseline",
+        "pin": "1b5d3b9a4786b5dd4ef490699d71f66a0cbc9e51",
+        "merge": "7aedce0205f8cb038670421b5381763f798cdc97",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-360.json",
+        "must_pass_sha256": "180d7850294ea774379fac40cea06a796c52116f8e567531ea9192b6532d8fdb",
+        "must_pass_count": {
+          "mecha-cli": 975
+        }
+      }
+    },
+    {
+      "id": "pr-92",
+      "pr": 92,
+      "author": "history",
+      "merge": "79918a77f518442afc1d99e5c710391c1c1d0e0e",
+      "pin": "c991dbeb67c4309b11531952900da7e67a6120e3",
+      "crates": [
+        "mecha-cli"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-92.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "admitted",
+        "r": 5,
+        "date": "2026-11-09T09:46Z",
+        "by": "validate",
+        "pin": "every run fails an assertion (the task's own id, not a paraphrase of it; the discuss posture must not be the one that leaves `serves` unset)",
+        "merge": "every run passes"
+      },
+      "prompt_check": {
+        "sha256": "e7d4d5214533f9ee30810f6e41043061839e905894532094746b7fc6427d1064",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T09:49:33Z",
+        "by": "baseline",
+        "pin": "c991dbeb67c4309b11531952900da7e67a6120e3",
+        "merge": "79918a77f518442afc1d99e5c710391c1c1d0e0e",
+        "failing": {
+          "mecha-cli": []
+        },
+        "must_pass": "baselines/pr-92.json",
+        "must_pass_sha256": "307f591b81e1f68024fdfb2bbe3be83e19545b3c752432f1c2a6b420dfc7220a",
+        "must_pass_count": {
+          "mecha-cli": 556
+        }
+      }
+    },
+    {
+      "id": "pr-245",
+      "pr": 245,
+      "author": "history",
+      "merge": "3f8feed1b9249a9ff493e824b6039ff10a0e0ef0",
+      "pin": "314dc047c53a7bfbb959faefd6f205b8a1bd894a",
+      "crates": [
+        "mecha-cli",
+        "mecha-core"
+      ],
+      "toolchain": {
+        "channel": "stable",
+        "version": "1.97.1"
+      },
+      "prompt": "prompts/pr-245.md",
+      "holdout": "boredom-1",
+      "admission": {
+        "state": "interface-named",
+        "r": 5,
+        "date": "2026-11-09T09:58Z",
+        "by": "validate",
+        "pin": "every run fails to build the hidden tests: no method named `ungrounded_dates` found for struct `frontdoor::Record`",
+        "merge": "every run passes",
+        "ruling": "admitted with the missing items' signatures, never their bodies, named in the prompt: the owner's ruling, 2026-11-07"
+      },
+      "repair": [
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/control__revision-2__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        },
+        {
+          "path": "mecha-core/tests/fixtures/mismatch/learning__revision-6__s1__r1.answer.json",
+          "from": "de4fe94e5e4a69427808e634bff0a937d5505935"
+        }
+      ],
+      "prompt_check": {
+        "sha256": "b5864013fc538dda9d72ae0fe47a86a48f7fc7c491e403540e5d90c2fa64d7f3",
+        "store_present": true
+      },
+      "baseline": {
+        "r": 2,
+        "at": "2026-11-09T10:01:04Z",
+        "by": "baseline",
+        "pin": "314dc047c53a7bfbb959faefd6f205b8a1bd894a",
+        "merge": "3f8feed1b9249a9ff493e824b6039ff10a0e0ef0",
+        "failing": {
+          "mecha-cli": [],
+          "mecha-core": []
+        },
+        "must_pass": "baselines/pr-245.json",
+        "must_pass_sha256": "c3692f0d6928b01ed195a766866d354174287dbbcd122a843e3ad7fcb9e299d7",
+        "must_pass_count": {
+          "mecha-cli": 838,
+          "mecha-core": 1620
         }
       }
     }

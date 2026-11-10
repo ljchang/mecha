@@ -452,6 +452,17 @@ impl Corpus {
     /// `None` over no sensed rows, like every rate here — a corpus written
     /// before the detector existed and one where nothing ever got stuck are
     /// opposite findings.
+    ///
+    /// **The counter's definition changed with #857 (2026-11-08)**, and no
+    /// row says which one it was written under: before it, successful edits
+    /// to one file shared a key and a refactor read as a loop (15 of 16
+    /// driven-pilot trials were told they were stuck); after it, a write is
+    /// keyed whole. So this rate falls at that binary's install for a reason
+    /// that is not runs getting less stuck. Compare it only within one side,
+    /// split on `started_at` at the first install of a binary built from
+    /// #857's merge — `docs/HISTORY.md` records that install when the deploy
+    /// lands, and the merge commit's own date is a lower bound before then.
+    /// `appraisal`'s `boredom_notices` error moves the same way.
     pub fn boredom_rate(&self) -> Option<f64> {
         Self::share_positive(self.rows.iter().filter_map(|r| r.stats.boredom_notices))
     }

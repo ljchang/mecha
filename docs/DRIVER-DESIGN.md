@@ -73,6 +73,38 @@ There are two modes, and they never trade places:
   derived from. This is the only mode whose numbers go in a PR description
   or a design doc's results section.
 
+**As built (2026-11-09): measurement runs driven trials.** A manifest's
+`[tasks]` says `driven = true` and a `workspace_root`, and then each trial is
+the pilot's run under `mecha exp`'s bookkeeping:
+
+- the child is marked `driven`, not `experiment`, so D1b's guardrails hold
+  for a measured run exactly as for an explored one, and the condition hash
+  takes a `kind=driven` term so the two never pair;
+- the clone lives at `<workspace_root>/<experiment>/<trial>/workspace`,
+  outside the mecha home (`exp run` refuses a root that overlaps it either
+  way, through a symlink included), and the fixture is not staged, because
+  the source's setup refuses a clone that is not empty;
+- the child gets `CARGO_HOME` inside its clone (R7), and the source gets
+  `MECHA_BIN`, so the marker is written by the build that reads it;
+- the source's `teardown <task> --spent` runs once the trial is over,
+  however it ended (a child that crashed before its grade included, since
+  a failed row is never rerun), and removes `target/` and `vendor/` (6.6 of
+  a clone's 6.8 GB, measured on the smoke trial), keeping the tree and its
+  history for the audit; without `--spent`, the pilot's call, it prunes a
+  graded tree only;
+- the grade may name the paths the run `changed`, a field the contract now
+  carries and the trial row records (`null`, when the source's git failed,
+  stays unknown rather than reading as nothing changed); any field it does
+  not name still fails the grade. The smoke trial's first run failed on exactly that, which is
+  what it was for. Setup excludes `.cache/` from the clone's status,
+  because the jail's `HOME` is the clone and font caches landed there;
+- trials are `single` (a lifetime, and so a principal, is refused) and
+  `--jobs` stays 1, one build at a time (§8).
+
+The trial's record, logs and session stay in the experiment store and its
+arm homes, as for any trial. The holdout is drawn under §3's rule from tasks
+the exploration never read; the pilot's nine are all in the seen set.
+
 ## 2. The session kind
 
 **D1. A thirteenth `SessionKind`, `Driven`, wire form `"driven"`.** It marks
@@ -453,7 +485,12 @@ changed) and by subsystem. `sample.rs` offers uniform draws only
 eligible set, its seed and eligibility rule recorded before it ran. The
 driver does not hand-pick. Whatever the
 driver reads during exploration moves to a **seen** set and never enters a
-measurement holdout.
+measurement holdout. The converse is structural in the source: a record
+carrying `holdout: <name>` is offered only to `mecha_history.py --holdout
+<name>` (which offers nothing else), so an exploration draw over `list`
+cannot reach a holdout task, and a measurement names its holdout in the
+manifest's `source` argv. The first, `boredom-1`, holds 8 tasks (seed
+20261109, rule recorded before the draw, in `holdout_draws`).
 
 The second source is **the open leftovers**: the minors that review passes
 left, as `HANDOFF.md` and the PR threads list them. These have no ground
@@ -577,6 +614,17 @@ the text above:
   ruling: 466, 471, 476, 726, 759, 798. Replaced or rejected: 780 (its tests
   read a private field), 807 (above), and 793, whose hidden test also needs
   the monty worker, so no merge run passes it under the variable.
+- **A task revised after reading answers is a sibling, never an edit.**
+  `pr-759-r1` (2026-11-09) is pr-759 with two more `## Interface` entries:
+  the prompt named `forbidding_prior` and `history_lines` without pinning
+  their signatures, the hidden tests call both with the pin's, and the
+  ceiling changed `forbidding_prior`'s return type in both pilot rounds. The
+  sibling carries `revises` (the task, when, why), its own prompt check, and
+  an admission and a baseline **copied** from the original (`copied_from`):
+  the pin and merge are the same, so PASS_TO_PASS is too. The committed-bank
+  test checks both claims, so neither is prose a reader must trust.
+  pr-759 stays offered unchanged, and the two are reported side by side, the
+  grader-v2 rule above applied to a prompt.
 - **`teardown`** removes the marker. It is the fourth verb, and the driver
   calls it, because §21.1's contract has no teardown and an expired marker
   still refuses unmarked runs (§7).

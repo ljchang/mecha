@@ -10535,8 +10535,25 @@ the record already holds does not.
 **Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
 measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
-call *and* its result via `compact::target_of` — identical arguments with a
-changing result is polling, which must never grade as stuck.
+call *and* its result — identical arguments with a changing result is polling,
+which must never grade as stuck.
+
+**Boredom serves exploration and must never hinder work** (the owner's rule,
+2026-11-08). So only a declared read (`Effect::Read`, `ReadThatRecords`) is
+keyed by `compact::target_of`, where the same bytes reached twice really are
+one thing learned twice; every other call is keyed on its whole canonical
+input (`Boredom::key`'s `reads`). Keyed by path, a write's receipt —
+`fs_edit`'s `edited <path>`, the same for every edit — made six different
+edits to one file one edit repeated six times: in the driven pilot 15 of 16
+trials were told they were stuck mid-refactor, and Claude obeyed the second
+rung and stopped with ten edits left. An undeclared tool is keyed whole,
+because the costly error here is interrupting work, and keying whole can only
+make two calls less alike. The identical edit repeated is still one key. **A
+call that errored is keyed by target whatever it declares**: it changed
+nothing, so its arguments are guesses rather than work — `fs_edit` missing
+with a new `old` each turn is one unchanging error on one file, the guessing
+loop this exists to name, and the shape key sees a single target there
+(review of #857).
 
 **A second key counts the same failure on new targets** (`boredom::error_shape`:
 the error with quoted spans, paths and numbers masked, per tool). The first
