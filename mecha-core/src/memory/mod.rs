@@ -16,6 +16,10 @@ pub mod hybrid;
 pub mod interpretation;
 pub(crate) mod interpretation_reader;
 mod model;
+pub(crate) mod ordinary_observation;
+pub use ordinary_observation::{
+    SemanticAssessment, ORDINARY_OBSERVATION_PROTOCOL, ORDINARY_RECORDER_VERSION,
+};
 pub mod model_evaluation;
 pub mod plan_assessment;
 pub mod plan_extraction;
@@ -34,6 +38,8 @@ mod store;
 mod transcript;
 pub use model::*;
 pub use recall::{RecallHit, RecallQuery};
+#[cfg(target_os = "macos")]
+pub(crate) use storage::check_macos_private_metadata;
 pub use storage::{KeyFilePolicy, StorageAccess};
 pub use store::Memory;
 pub use transcript::transcript_source;
@@ -88,3 +94,6 @@ mod support_tests;
 
 #[cfg(test)]
 pub(crate) mod storage_tests;
+
+#[cfg(test)]
+mod ordinary_observation_tests;

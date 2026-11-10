@@ -1980,6 +1980,7 @@ mod tests {
         use mecha_core::agent::Taint;
         use mecha_core::outbox::OutboxKind;
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

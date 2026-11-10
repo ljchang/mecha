@@ -29,6 +29,7 @@ import {
   pauseAllNotice,
   when,
   RULES_ENDPOINTS,
+  GROUPS,
 } from '../src/lib/mail-rules.js';
 import { readFileSync } from 'node:fs';
 
@@ -143,6 +144,13 @@ t('an empty body is the status', errorOf(500, '').message === 'HTTP 500');
 // MailRules.svelte calls through wrappers check-demo.mjs cannot scan, so it
 // reads RULES_ENDPOINTS instead; a path missing from that list would make the
 // guard's pass vacuous again (review of #850).
+// GROUPS is the engine's supported set, read from the Rust source rather
+// than restated, so a group added there cannot stay greyed out here.
+const definition = readFileSync(new URL('../../mecha-core/src/mail_rules/definition.rs', import.meta.url), 'utf8');
+const supportedBody = definition.match(/pub fn supported\(self\) -> bool \{([\s\S]*?)\n    \}/)?.[1] ?? '';
+const supported = [...supportedBody.matchAll(/Self::(\w+)/g)].map(([, n]) => n.replace(/(?<!^)([A-Z])/g, '_$1').toLowerCase());
+t('the supported set is read at all (the scan is not vacuous)', supported.length >= 5);
+t('GROUPS is exactly the engine’s supported groups', JSON.stringify([...supported].sort()) === JSON.stringify([...GROUPS].sort()));
 const page = readFileSync(new URL('../src/lib/MailRules.svelte', import.meta.url), 'utf8');
 const used = [...page.matchAll(/[`'"](\/api\/mail\/rules[^`'"]*)/g)].map(([, p]) => p.split('?')[0].replace(/\$\{[^}]*\}/g, 'X'));
 t('the page reaches rules paths at all (the scan is not vacuous)', used.length >= 10);
@@ -168,6 +176,10 @@ t('pause all with nothing skipped is plain', pauseAllNotice({ groups: 1, notices
 const described = matchedBecause({ matched_because: JSON.stringify({ from_domain: ['example.edu'], describe: 'Room booking confirmations', quote: 'your booking for Friday' }) });
 t('a description row leads with the quoted words', described === '“your booking for Friday” · from domain: example.edu');
 t('the owner’s own sentence is not repeated as a reason', !/Room booking/.test(described));
+const said = (c) => matchedBecause({ matched_because: JSON.stringify({ quote: 'your booking for Friday', confirmation: c }) });
+t('a second check that chose none says so', said('none') === '“your booking for Friday” · second check: none of these rules');
+t('a second check that decided nothing never reads as a judgement', said('not confirmed') === '“your booking for Friday” · second check: gave no answer');
+t('a second check that chose a rule names it', said('bookings') === '“your booking for Friday” · second check: bookings');
 const ddraft = { ...pre, match: 'describe', describe: 'Confirmations, of a room booking' };
 t('a description is one TOML string, never split on commas', draftToml(ddraft).includes('describe = "Confirmations, of a room booking"'));
 t('a description draft passes', draftProblem('bookings', ddraft) === null);

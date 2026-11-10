@@ -9,7 +9,10 @@
 // - **A rate over nothing is a dash, never 0%.** The JSON carries `null` for
 //   an empty denominator; `pct` keeps it a dash.
 
-export const GROUPS = ['mailbox', 'private_record', 'report', 'board'];
+// The groups whose mode the page can change: `ActionGroup::supported()`,
+// pinned against the Rust source by `web/test/mail-rules.mjs` so a group the
+// engine supports is never greyed out here (review of #856).
+export const GROUPS = ['mailbox', 'private_record', 'report', 'board', 'fixed_words'];
 
 /**
  * Every `/api/mail/rules…` path the page reaches, `X` for a segment it fills
@@ -177,8 +180,11 @@ export function matchedBecause(row) {
   // A description match leads with the sender's words the classifier cited,
   // checked against the message; the owner's own sentence is on the rule.
   if (typeof m.quote === 'string' && m.quote) parts.push(`“${m.quote}”`);
+  // The second check's answer, worded so "chose none" and "no answer" never
+  // read as the same thing (review of #855, pass 6).
+  if (typeof m.confirmation === 'string' && m.confirmation) parts.push(confirmationText(m.confirmation));
   for (const [k, v] of Object.entries(m)) {
-    if (k === 'quote' || k === 'describe') continue;
+    if (k === 'quote' || k === 'describe' || k === 'confirmation') continue;
     if (k === 'header' && v && typeof v === 'object') {
       for (const [h, vals] of Object.entries(v)) if (vals?.length) parts.push(`${h}: ${vals.join(', ')}`);
     } else if (Array.isArray(v) && v.length) {
@@ -190,6 +196,13 @@ export function matchedBecause(row) {
     }
   }
   return parts.join(' · ');
+}
+
+/** The confirmation pass's answer on a row: a rule, "none", or "not confirmed". */
+export function confirmationText(c) {
+  if (c === 'none') return 'second check: none of these rules';
+  if (c === 'not confirmed') return 'second check: gave no answer';
+  return `second check: ${c}`;
 }
 
 // ---- new rules ----

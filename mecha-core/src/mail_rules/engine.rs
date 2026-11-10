@@ -18,6 +18,13 @@ struct Described {
     /// The quote, when the shadow list named it.
     shadow: Option<String>,
     input: VerdictInput,
+    /// The active confirmation chose this rule under this build.
+    confirmed: bool,
+    /// The shadow confirmation's verdict on this rule, when it gave one.
+    shadow_confirmed: Option<bool>,
+    /// What the active confirmation chose, for the row: a name, "none", or
+    /// "not confirmed" when it decided nothing.
+    confirmation_choice: Option<String>,
 }
 
 impl Described {
@@ -58,6 +65,32 @@ pub struct Candidate {
     pub list_id: Option<String>,
     pub headers: BTreeMap<String, Vec<String>>,
     pub classified: Option<Classified>,
+    /// What a reply's guards read (§5.4). Empty by default: a host that
+    /// cannot supply them gets no reply staged on their absence alone, since
+    /// each guard keys on a fact being present.
+    pub sending: SendFacts,
+}
+
+/// The facts a send's guards read that header matching does not.
+#[derive(Debug, Clone, Default)]
+pub struct SendFacts {
+    /// The `From` display name: prose, the sender's, for `{sender_first_name}`.
+    pub from_name: String,
+    /// Whether the owner has sent a message in the thread; None is unknown.
+    pub owner_participated: Option<bool>,
+    /// Every address the owner sends from: each account's own, plus aliases.
+    pub owners: Vec<String>,
+}
+
+/// Where a staged send stands in the outbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StagedFate {
+    Waiting,
+    ReleasedUnchanged,
+    Edited,
+    Rejected,
+    /// The item is gone, or unreadable: nothing is settled from it.
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +216,24 @@ pub trait Mailbox: Send + Sync {
     fn origin_gate(&self, _rule: &LoadedRule) -> GateStatus {
         GateStatus::Unknown
     }
+    /// Stage a template reply in the owner's outbox, answering exactly the
+    /// candidate's authorised message, to its authenticated `From` only.
+    /// Returns the outbox item id. A host with no outbox holds, dispatching
+    /// nothing.
+    ///
+    /// `answering` is what the review shows the reply is to and about.
+    async fn stage_reply(
+        &self,
+        _candidate: &Candidate,
+        _body: &str,
+        _answering: &crate::outbox::Answering,
+    ) -> Result<String, HeldReason> {
+        Err(HeldReason::NotDispatched("no outbox".into()))
+    }
+    /// Where a staged item stands now.
+    fn staged_fate(&self, _item: &str) -> StagedFate {
+        StagedFate::Unknown
+    }
 }
 
 #[async_trait]
@@ -298,12 +349,7 @@ pub fn header_match(m: &Matcher, c: &Candidate) -> HeaderMatch {
         .map(|(_, values)| values.len())
         .sum::<usize>()
         <= 1;
-    let subject = if c.subject_is_raw {
-        headers::decode(&c.message.subject)
-    } else {
-        headers::unfold(&c.message.subject)
-    }
-    .filter(|_| subject_unique && c.subject_complete != Some(false));
+    let subject = reply_subject_text(c);
     let mut keys = vec![
         compare(
             &m.from,
@@ -379,6 +425,59 @@ pub fn header_match(m: &Matcher, c: &Candidate) -> HeaderMatch {
 fn classified(c: &Candidate) -> bool {
     c.arrival_at
         .is_some_and(|at| c.classified.as_ref().is_some_and(|v| v.at >= at))
+}
+
+/// The §5.4 refusals a reply action meets on this message alone — a template
+/// that did not load, the message-fact guards, and a slot with no honest
+/// value — without the per-sender week, which reads the ledger. Shared by the
+/// live pass and `mecha mail rule test`, so a preview never counts a reply the
+/// live pass would refuse (review of #856, pass 8).
+pub(crate) fn message_reply_refusal(
+    rule: &LoadedRule,
+    action: &Action,
+    c: &Candidate,
+) -> Option<String> {
+    let template = || Run::template(rule, action);
+    rule.template_refused
+        .as_ref()
+        .map(|why| format!("template refused: {why}"))
+        .or_else(|| super::send::reply_refusal(c).map(str::to_string))
+        .or_else(|| {
+            // A slot with no honest value refuses rather than render raw
+            // bytes (review of #856), and an empty or absent subject reads
+            // fine but would render a bare "Re: " — the same hole. Checked
+            // here, not in `reply_subject_text`, which is also the matcher's
+            // reading, where `None` is unknown.
+            (template().is_some_and(|t| t.contains("{subject}"))
+                && reply_subject_text(c).is_none_or(|s| s.trim().is_empty()))
+            .then(|| "the subject could not be read whole".to_string())
+        })
+        .or_else(|| {
+            // Nor a name: "Hi , thanks" is a hole too.
+            (template().is_some_and(|t| t.contains("{sender_first_name}"))
+                && super::send::sender_first_name(&c.sending.from_name).is_empty())
+            .then(|| "the sender gave no name to address".to_string())
+        })
+}
+
+/// The subject as `{subject}` fills it: decoded from Gmail's raw RFC 2047
+/// form, unfolded otherwise, and `None` when it cannot be read whole — not
+/// decodable, truncated, or more than one Subject header — the same reading
+/// the matcher compares against.
+pub(super) fn reply_subject_text(c: &Candidate) -> Option<String> {
+    let unique = c
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("subject"))
+        .map(|(_, values)| values.len())
+        .sum::<usize>()
+        <= 1;
+    if c.subject_is_raw {
+        headers::decode(&c.message.subject)
+    } else {
+        headers::unfold(&c.message.subject)
+    }
+    .filter(|_| unique && c.subject_complete != Some(false))
 }
 
 // Deliberately accepts a conservative addr-spec subset, never a display name,
@@ -471,7 +570,16 @@ pub fn brake_evidence(rule: &str, rows: &[LedgerRow]) -> BrakeEvidence {
             .or_default();
         if row.is_action_failure() {
             *streak += 1;
-        } else if matches!(row.outcome, Outcome::Done | Outcome::Sent) {
+        } else if matches!(
+            row.outcome,
+            // A staged reply, and what the owner did with it, are this
+            // group's successes (review of #856).
+            Outcome::Done
+                | Outcome::Sent
+                | Outcome::Staged
+                | Outcome::ReleasedUnchanged
+                | Outcome::Edited
+        ) {
             *streak = 0;
         }
     }
@@ -807,6 +915,124 @@ impl Run<'_> {
             ClaimStatus::Claimed
         }
     }
+    /// §5.4's per-sender limit: this rule already answered this sender —
+    /// a reply staged, sent or still pending — within the last seven days,
+    /// on another message. In shadow a would-have reply counts too, so the
+    /// would-have rate is the rate the rule would actually reply at (review
+    /// of #856); a shadow row never holds back a real reply after a raise.
+    fn answered_this_week(&self, rule: &LoadedRule, c: &Candidate, mode: Mode) -> bool {
+        let Some(sender) = parsed_address(&c.message.sender) else {
+            return false;
+        };
+        let since = self.options.clock.now() - Duration::days(super::send::PER_SENDER_DAYS);
+        self.rows.iter().any(|r| {
+            r.rule == rule.name
+                && r.group == ActionGroup::FixedWords
+                && (matches!(
+                    r.outcome,
+                    Outcome::Pending
+                        | Outcome::Staged
+                        | Outcome::Sent
+                        | Outcome::ReleasedUnchanged
+                        | Outcome::Edited
+                        | Outcome::Held
+                ) || (mode == Mode::Shadow
+                    && r.outcome == Outcome::WouldHave
+                    && r.mode == Mode::Shadow))
+                && !(r.message.account == c.message.account
+                    && r.message.provider_message_id == c.message.provider_message_id)
+                && r.at.is_some_and(|at| at >= since)
+                && parsed_address(&r.message.sender).is_some_and(|s| s == sender)
+        })
+    }
+
+    /// The rule's template text for a reply action.
+    fn template<'r>(rule: &'r LoadedRule, action: &Action) -> Option<&'r str> {
+        action
+            .template
+            .as_ref()
+            .and_then(|name| rule.files.get(name))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+    }
+
+    /// Render the rule's template for this message and stage it.
+    async fn stage_reply(
+        &self,
+        rule: &LoadedRule,
+        action: &Action,
+        c: &Candidate,
+    ) -> Result<String, HeldReason> {
+        let template = Self::template(rule, action)
+            .ok_or_else(|| HeldReason::Other("template unreadable".into()))?;
+        let today = self
+            .options
+            .clock
+            .now()
+            .with_timezone(&self.options.timezone)
+            .format("%Y-%m-%d")
+            .to_string();
+        // The guard refused a template naming `{subject}` when the subject
+        // has no honest value, so an empty one here is a template without it.
+        let subject = reply_subject_text(c).unwrap_or_default();
+        let body = super::send::render(template, &c.sending.from_name, &subject, &today);
+        // What the owner's review shows: the address `from_only` answers and
+        // the reply's subject, since no drafting session holds the thread.
+        let answering = crate::outbox::Answering {
+            to: parsed_address(&c.message.sender).unwrap_or_default(),
+            subject: super::send::reply_subject(&subject),
+        };
+        self.mailbox.stage_reply(c, &body, &answering).await
+    }
+
+    /// Settle every staged send whose outbox item has been released or
+    /// rejected since: one closing row each, linked to the staged row and
+    /// its item, so the ledger shows what the owner did with it (§8).
+    fn settle_staged(&mut self) -> Result<()> {
+        let waiting: Vec<LedgerRow> = self
+            .rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Staged && r.outbox_item.is_some())
+            .filter(|staged| {
+                !self.rows.iter().any(|later| {
+                    later.correction_of.as_deref() == Some(staged.id.as_str())
+                        && matches!(
+                            later.outcome,
+                            Outcome::ReleasedUnchanged
+                                | Outcome::Edited
+                                | Outcome::Rejected
+                                | Outcome::Undone
+                        )
+                })
+            })
+            .cloned()
+            .collect();
+        for staged in waiting {
+            let item = staged.outbox_item.clone().unwrap_or_default();
+            let outcome = match self.mailbox.staged_fate(&item) {
+                StagedFate::ReleasedUnchanged => Outcome::ReleasedUnchanged,
+                StagedFate::Edited => Outcome::Edited,
+                StagedFate::Rejected => Outcome::Rejected,
+                StagedFate::Waiting | StagedFate::Unknown => continue,
+            };
+            let mut row = staged.clone();
+            row.id = uuid::Uuid::new_v4().to_string();
+            row.at = Some(self.options.clock.now());
+            row.outcome = outcome;
+            row.closes = true;
+            row.settlement = None;
+            row.correction_of = Some(staged.id.clone());
+            row.reason = String::new();
+            if !self.options.dry_run {
+                self.store.append_ledger(&row)?;
+                self.sync_ledger()?;
+            } else {
+                self.remember_row(row.clone());
+            }
+            self.report_row(row);
+        }
+        Ok(())
+    }
+
     fn snapshot(
         &self,
         rule: &LoadedRule,
@@ -852,6 +1078,11 @@ impl Run<'_> {
             // The sender's words the classifier cited, grounded against what
             // it read: a human's "matched because", never a privileged run's.
             because["quote"] = serde_json::json!(d.quote(mode));
+            if let Some(choice) = &d.confirmation_choice {
+                // Both answers on the row (§4.2): the main pass's quote above,
+                // and what the pass without learned rules chose.
+                because["confirmation"] = serde_json::json!(choice);
+            }
         }
         row.matched_because = serde_json::to_string(&because)?;
         row.headers_partial =
@@ -890,7 +1121,19 @@ impl Run<'_> {
         if active.is_none() && shadow.is_none() {
             return Ok(None);
         }
+        let confirmation = record.confirmation.as_ref();
         Ok(Some(Described {
+            // Only a rule the main pass named on its active list can be
+            // confirmed active, structurally rather than by the guard that
+            // drops it later (review of #855, pass 5).
+            confirmed: active.is_some()
+                && confirmation.is_some_and(|c| c.confirms_active(&rule.name)),
+            shadow_confirmed: confirmation.and_then(|c| c.shadow_verdict(&rule.name)),
+            // Under this build only, as `confirmed` is, so a row never says
+            // both "the pass chose X" and "unconfirmed" (review of #855).
+            confirmation_choice: confirmation
+                .filter(|_| active.is_some())
+                .and_then(|c| c.active_choice()),
             active,
             shadow,
             input: match record.input {
@@ -995,6 +1238,20 @@ impl Run<'_> {
             .iter()
             .filter(|r| matched.iter().any(|m| m.name == r.name) || described.contains_key(&r.name))
             .collect();
+        // §4.3: the outbound slot goes to the first matched rule by priority
+        // with an active outbound group, description rules included — but a
+        // description rule only through its active-list name, since a shadow
+        // match never authorises an active action.
+        let slot_candidates: Vec<&LoadedRule> = acting
+            .iter()
+            .copied()
+            .filter(|r| described.get(&r.name).is_none_or(|d| d.active.is_some()))
+            .collect();
+        let outbound = if self.options.pass == Pass::AfterClassify {
+            outbound_owner(&slot_candidates, &modes)
+        } else {
+            outbound
+        };
         let mut deferred = Vec::new();
         for rule in &matched {
             for (index, action) in rule.definition.actions.iter().enumerate() {
@@ -1068,7 +1325,7 @@ impl Run<'_> {
                 });
             for (index, action) in rule.definition.actions.iter().enumerate() {
                 let resolved = &current[&action.group()];
-                let mode = resolved.effective;
+                let mut mode = resolved.effective;
                 if mode == Mode::Off
                     || (mode.rank() >= Mode::Propose.rank() && resolved.activated_at.is_none())
                 {
@@ -1081,7 +1338,41 @@ impl Run<'_> {
                     // active action, and no row for this group.
                     continue;
                 }
+                // §4.2: for a task or send, the main pass's match is a
+                // candidate; an automatic one runs only when the confirmation
+                // pass, with no learned rules in it, chose the same rule.
+                // Keyed on the rule, not on the record, so a description rule
+                // that ever arrived here without one fails closed (review of
+                // #855, pass 2). `Some` carries the row's reason.
+                let unconfirmed = (rule.definition.is_description()
+                    && super::describe::confirmation_decides(action.group())
+                    && !described.is_some_and(|d| d.confirmed))
+                .then(|| {
+                    let choice = described.and_then(|d| d.confirmation_choice.as_deref());
+                    match choice {
+                        Some(c) if c != crate::mail_triage::confirm::NOT_CONFIRMED => {
+                            "unconfirmed: the confirmation pass did not choose this rule"
+                        }
+                        _ => "unconfirmed: the confirmation pass gave no answer",
+                    }
+                });
+                if unconfirmed.is_some() && mode == Mode::Auto {
+                    mode = Mode::Propose;
+                }
                 let mut row = self.snapshot_described(rule, index, c, mode, described)?;
+                if mode == Mode::Shadow {
+                    if let Some(d) =
+                        described.filter(|_| super::describe::confirmation_decides(action.group()))
+                    {
+                        row.reason = match d.shadow_confirmed {
+                            Some(true) => String::new(),
+                            Some(false) => {
+                                "would have proposed: the confirmation pass disagreed".into()
+                            }
+                            None => "not confirmed".into(),
+                        };
+                    }
+                }
                 let unknown = header_match(&rule.definition.matcher, c) == HeaderMatch::Unknown;
                 let removal = matches!(
                     action.verb,
@@ -1133,6 +1424,28 @@ impl Run<'_> {
                 if self.options.pass == Pass::AfterClassify && !classified {
                     continue;
                 }
+                // §5.4's refusals bind a reply in every non-off mode, shadow
+                // included, so a would-have rate never counts a reply the
+                // guards would refuse.
+                // A rule that does not hold the outbound slot is recorded as
+                // superseded below, never refused for a guard it would not
+                // have reached (review of #856).
+                if action.group() == ActionGroup::FixedWords
+                    && (mode == Mode::Shadow || outbound.as_deref() == Some(&rule.name))
+                {
+                    if let Some(guard) = message_reply_refusal(rule, action, c).or_else(|| {
+                        self.answered_this_week(rule, c, mode).then(|| {
+                            "this sender was answered by this rule in the last 7 days".to_string()
+                        })
+                    }) {
+                        row.outcome = Outcome::Skipped;
+                        row.closes = false;
+                        row.reason = guard;
+                        self.write(row)?;
+                        rule_handled = false;
+                        continue;
+                    }
+                }
                 if mode == Mode::Shadow {
                     self.write(row)?;
                     rule_handled = false;
@@ -1172,7 +1485,7 @@ impl Run<'_> {
                     reservations.push(row.clone());
                 }
                 pending.push(row);
-                planned.push((index, cap));
+                planned.push((index, cap, unconfirmed));
             }
             if !pending.is_empty() {
                 let claims = if self.options.dry_run {
@@ -1191,7 +1504,7 @@ impl Run<'_> {
                     self.sync_ledger()?;
                 }
                 let mut provisional: BTreeSet<_> = pending.iter().map(|r| r.id.clone()).collect();
-                for ((row, claim), (index, reserved_cap)) in
+                for ((row, claim), (index, reserved_cap, unconfirmed)) in
                     pending.into_iter().zip(claims).zip(planned)
                 {
                     if claim.status != ClaimStatus::Claimed {
@@ -1228,7 +1541,10 @@ impl Run<'_> {
                     // A preceding sibling can await I/O while the owner pauses
                     // and reactivates a group, or can trip its failure brake.
                     let resolved = self.modes(rule)?[&action.group()].clone();
-                    let mode = resolved.effective;
+                    let mut mode = resolved.effective;
+                    if unconfirmed.is_some() && mode == Mode::Auto {
+                        mode = Mode::Propose;
+                    }
                     let inputs_changed = self.check_inputs(rule)?;
                     // Recheck at dispatch: provider reads and earlier actions
                     // can cross the local day boundary after reservation.
@@ -1246,6 +1562,7 @@ impl Run<'_> {
                         None
                     };
                     let mut not_dispatched = false;
+                    let mut staged_item = None;
                     let (outcome, reason, failure) = if inputs_changed {
                         (
                             Outcome::Skipped,
@@ -1282,8 +1599,34 @@ impl Run<'_> {
                             "automatic brake".into(),
                             FailureKind::Unknown,
                         )
+                    } else if mode == Mode::Propose && action.group() == ActionGroup::FixedWords {
+                        if self.options.dry_run {
+                            (
+                                Outcome::Staged,
+                                "dry run: planned".into(),
+                                FailureKind::Unknown,
+                            )
+                        } else {
+                            match self.stage_reply(rule, action, c).await {
+                                Ok(item) => {
+                                    staged_item = Some(item);
+                                    (Outcome::Staged, String::new(), FailureKind::Unknown)
+                                }
+                                Err(HeldReason::NotDispatched(reason)) => {
+                                    not_dispatched = true;
+                                    (Outcome::Skipped, reason, FailureKind::Environment)
+                                }
+                                Err(other) => {
+                                    (Outcome::Failed, other.to_string(), FailureKind::Action)
+                                }
+                            }
+                        }
                     } else if mode == Mode::Propose {
-                        (Outcome::Offered, String::new(), FailureKind::Unknown)
+                        (
+                            Outcome::Offered,
+                            unconfirmed.unwrap_or_default().into(),
+                            FailureKind::Unknown,
+                        )
                     } else if let Some(cap) = cap {
                         self.report.notices.push(cap.into());
                         (Outcome::Held, cap.into(), FailureKind::Unknown)
@@ -1362,6 +1705,7 @@ impl Run<'_> {
                     provisional.remove(&row.id);
                     settled.mode = mode;
                     settled.failure_kind = failure;
+                    settled.outbox_item = staged_item;
                     let evidence_before_write = self.rows.len();
                     if not_dispatched {
                         // A persisted Held closes by outcome even with closes=false.
@@ -1543,6 +1887,10 @@ pub async fn apply(
             .collect(),
         report: ApplyReport::default(),
     };
+    // What the owner did with staged sends since the last pass, before any
+    // new decision: a rejection must be on the ledger before the same rule
+    // considers the same thread again.
+    run.settle_staged()?;
     let recovery_approvals = store.approvals()?;
     for row in run.rows.clone() {
         if row.outcome != Outcome::Pending || !selected(&row.rule) {

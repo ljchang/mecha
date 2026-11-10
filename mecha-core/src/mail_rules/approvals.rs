@@ -303,6 +303,14 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
             reason: "not yet supported in P1".into(),
         });
     }
+    if group == ActionGroup::FixedWords {
+        if let Some(why) = &rule.template_refused {
+            holds.push(ModeHold {
+                ceiling: Mode::Shadow,
+                reason: format!("template refused: {why}"),
+            });
+        }
+    }
     if super::describe::precondition_unreadable(&rule.definition) {
         // Not evaluated at all (see the view's hold): refusing the raise on
         // the approval screen beats approving a rule that cannot run.
@@ -311,33 +319,31 @@ pub(super) fn built_in_holds(rule: &LoadedRule, group: ActionGroup) -> Vec<ModeH
             reason: super::describe::PRECONDITION_HOLD.into(),
         });
     }
-    if rule.definition.is_description() {
-        if group.is_outbound() || group == ActionGroup::Board {
-            // §4.2: a description match is a candidate, never a decision,
-            // for a send or a task until the confirmation pass decides it.
-            holds.push(ModeHold {
-                ceiling: Mode::Shadow,
-                reason: "a description rule's sends and tasks wait for the confirmation pass (P4b)"
-                    .into(),
-            });
-        }
-        if group == ActionGroup::Mailbox
-            && rule
-                .definition
-                .actions
-                .iter()
-                .any(|a| a.verb == ActionVerb::Trash)
-        {
-            // §5.5: a description generalises to mail resembling it, and a
-            // sender can write mail to resemble it; trash would bury it.
-            holds.push(ModeHold {
-                ceiling: Mode::Propose,
-                reason:
-                    "trash on a description match proposes; put trash in a header rule to run it \
-                         automatically"
-                        .into(),
-            });
-        }
+    if rule.definition.is_description()
+        && group == ActionGroup::Mailbox
+        && rule
+            .definition
+            .actions
+            .iter()
+            .any(|a| a.verb == ActionVerb::Trash)
+    {
+        // §5.5: a description generalises to mail resembling it, and a
+        // sender can write mail to resemble it; trash would bury it.
+        holds.push(ModeHold {
+            ceiling: Mode::Propose,
+            reason: "trash on a description match proposes; put trash in a header rule to run it \
+                     automatically"
+                .into(),
+        });
+    }
+    if group == ActionGroup::FixedWords {
+        // P4b-2a: a template reply is staged for the owner; sending one
+        // unattended needs the automatic path's guards (P4b-2b).
+        holds.push(ModeHold {
+            ceiling: Mode::Propose,
+            reason: "template replies are staged in your outbox until automatic sending arrives"
+                .into(),
+        });
     }
     if group == ActionGroup::Report {
         holds.push(ModeHold {

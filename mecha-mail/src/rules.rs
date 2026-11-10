@@ -13,9 +13,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 use mecha_core::{
     mail_rules::{
         engine::{
-            self, ActionResult, Candidate, Classified, Mailbox, Pass, Task, TaskSink, ThreadRead,
+            self, ActionResult, Candidate, Classified, Mailbox, Pass, SendFacts, StagedFate, Task,
+            TaskSink, ThreadRead,
         },
-        Action, ActionVerb, FailureKind, GateStatus, LoadedRule, Outcome, RuleStore, TestMessage,
+        Action, ActionVerb, FailureKind, GateStatus, HeldReason, LoadedRule, Outcome, RuleStore,
+        TestMessage,
     },
     mail_triage::{self, rule_records},
     mcp::McpClient,
@@ -160,6 +162,35 @@ fn finish_read(
     candidate_with_owners(account, thread, &emails, owners, record.as_ref())
 }
 
+/// The `mail_reply` arguments a rule's template reply is staged with.
+///
+/// The RFC Message-ID names the authorised message inside its thread on both
+/// providers (`reply_target`); Outlook's immutable provider id would not match
+/// a reply's ordinary read. Absent, the provider id is given and an Outlook
+/// release refuses rather than guess. The Message-ID is sender-written, so the
+/// recipient is pinned beside it: the release refuses unless the message it
+/// resolves to is from the address the owner's review showed (review of #856,
+/// pass 6).
+fn staged_reply_args(
+    message: &mecha_core::mail_rules::MessageRef,
+    body: &str,
+    answering: &mecha_core::outbox::Answering,
+) -> serde_json::Value {
+    let selector = if message.message_id.is_empty() {
+        &message.provider_message_id
+    } else {
+        &message.message_id
+    };
+    serde_json::json!({
+        "thread_id": message.thread_id,
+        "account": message.account,
+        "message_id": selector,
+        "body_markdown": body,
+        "from_only": true,
+        "expect_from": answering.to,
+    })
+}
+
 fn candidate_with_owners(
     account: &str,
     thread: &str,
@@ -268,7 +299,39 @@ fn candidate(
         list_id: email.list_id.clone(),
         headers: email.headers.clone(),
         classified,
+        sending: SendFacts {
+            from_name: email.from_name.clone(),
+            // Any message the owner sent in this thread, drafts excluded.
+            // Every message's direction is known by here (checked above).
+            owner_participated: owner_joined(emails, owners),
+            owners: owners.to_vec(),
+        },
     })
+}
+
+/// Whether the rule preview must read this message's thread: a rule with a
+/// template reply whose matcher does not rule the message out, since only the
+/// thread says whether the owner joined the conversation (review of #856,
+/// pass 9). Every other message is previewed from itself alone.
+fn preview_reads_thread(rule: &LoadedRule, candidate: &Candidate) -> bool {
+    rule.definition
+        .actions
+        .iter()
+        .any(|a| a.group() == mecha_core::mail_rules::ActionGroup::FixedWords)
+        && engine::header_match(&rule.definition.matcher, candidate) != engine::HeaderMatch::NoMatch
+}
+
+/// Whether the owner sent any message in this thread, drafts excluded; `None`
+/// when a message's direction is unknown, which is never "not joined".
+fn owner_joined(emails: &[Email], owners: &[String]) -> Option<bool> {
+    let mut joined = false;
+    for e in emails {
+        match e.direction(owners)? {
+            MailDirection::Sent => joined = true,
+            MailDirection::Inbound | MailDirection::Draft => (),
+        }
+    }
+    Some(joined)
 }
 
 pub(crate) async fn gmail_action(
@@ -388,6 +451,69 @@ fn provider_proves_header_absence(provider: Provider, read: HeaderRead) -> bool 
 
 #[async_trait]
 impl Mailbox for RuleMailbox {
+    async fn stage_reply(
+        &self,
+        candidate: &Candidate,
+        body: &str,
+        answering: &mecha_core::outbox::Answering,
+    ) -> Result<String, HeldReason> {
+        // The same store and route the owner's review reads: the global
+        // config's `[outbox]`, never a project's layered one.
+        let config = mecha_core::config::Config::load_global()
+            .map_err(|e| HeldReason::NotDispatched(format!("global config unreadable: {e:#}")))?;
+        let tool = config
+            .outbox
+            .tools
+            .iter()
+            .find(|t| t.rsplit("__").next() == Some("mail_reply"))
+            .cloned()
+            .ok_or_else(|| {
+                HeldReason::NotDispatched(
+                    "mail_reply is not outbox-routed in [outbox] tools, so there is no way to \
+                     release a staged reply"
+                        .into(),
+                )
+            })?;
+        let root = match config.outbox.dir {
+            Some(dir) => dir,
+            None => mecha_core::outbox::OutboxStore::default_root()
+                .map_err(|e| HeldReason::NotDispatched(format!("{e:#}")))?,
+        };
+        let store = mecha_core::outbox::OutboxStore::open(root)
+            .map_err(|e| HeldReason::NotDispatched(format!("outbox unavailable: {e:#}")))?;
+        let item = store
+            .stage_by_harness_quoting_mail(
+                &tool,
+                staged_reply_args(&candidate.message, body, answering),
+                answering.clone(),
+            )
+            .map_err(|e| HeldReason::NotDispatched(format!("staging failed: {e:#}")))?;
+        Ok(item.id)
+    }
+
+    fn staged_fate(&self, item: &str) -> StagedFate {
+        let Some(store) = mecha_core::config::Config::load_global()
+            .ok()
+            .and_then(|config| match config.outbox.dir {
+                Some(dir) => Some(dir),
+                None => mecha_core::outbox::OutboxStore::default_root().ok(),
+            })
+            .and_then(|root| mecha_core::outbox::OutboxStore::open(root).ok())
+        else {
+            return StagedFate::Unknown;
+        };
+        match store.item(item) {
+            Ok(item) => match item.status.as_str() {
+                "pending" => StagedFate::Waiting,
+                "rejected" => StagedFate::Rejected,
+                "sent" if item.edited() => StagedFate::Edited,
+                "sent" => StagedFate::ReleasedUnchanged,
+                _ => StagedFate::Unknown,
+            },
+            Err(_) => StagedFate::Unknown,
+        }
+    }
+
     fn proves_header_absence(&self, account: &str) -> bool {
         // The Gmail get_thread path requests full messages without a header
         // mask. Graph's internetMessageHeaders can never prove absence.
@@ -997,6 +1123,9 @@ fn test_account_report(name: &str, report: &engine::ApplyReport) -> serde_json::
         "status": if failed > 0 { "failed" } else if held { "held" } else { "complete" },
         "matched_rows": if failed > 0 || held { None } else { Some(count) },
         "would_have_rows": count,
+        // Reply rows §5.4 refuses on the message itself, as the live pass
+        // would: matched, and never a would-have (review of #856, pass 8).
+        "refused_rows": report.rows.iter().filter(|r| r.outcome == Outcome::Skipped).count(),
         "read_failures": report.read_failures,
         "candidate_failures": report.candidate_failures,
         // Messages the rule could not be checked against: the header was not
@@ -1121,7 +1250,7 @@ async fn test_recent(
                     }
                 })
                 .await;
-            let result = read
+            let prepared = read
                 .map_err(anyhow::Error::from)
                 .and_then(|(email, in_inbox)| {
                     ensure!(
@@ -1132,25 +1261,66 @@ async fn test_recent(
                         .provider_arrival_at
                         .context("provider arrival unknown")?;
                     if arrival < since || arrival > now {
-                        return Ok(TestMessage::Rows(Vec::new()));
+                        return Ok(None);
                     }
                     match email.direction(&owners) {
-                        Some(MailDirection::Sent | MailDirection::Draft) => {
-                            return Ok(TestMessage::Rows(Vec::new()))
-                        }
+                        Some(MailDirection::Sent | MailDirection::Draft) => return Ok(None),
                         Some(MailDirection::Inbound) => (),
                         None => bail!("message direction unknown"),
                     }
                     let candidate = candidate(&name, &hit.thread_id, &[email], &owners, None)
                         .map_err(anyhow::Error::msg)?;
-                    mecha_core::mail_rules::test_message(
-                        rule,
-                        &candidate,
-                        in_inbox,
-                        now,
-                        mailbox.proves_header_absence(&name),
-                    )
+                    Ok(Some((candidate, in_inbox)))
                 });
+            let result = match prepared {
+                Ok(None) => Ok(TestMessage::Rows(Vec::new())),
+                Err(error) => Err(error),
+                Ok(Some((mut candidate, in_inbox))) => {
+                    // One message cannot say whether the owner has written
+                    // into its thread, and the live pass refuses a reply to a
+                    // conversation the owner joined: a reply rule's match
+                    // reads its thread, as the live pass does (review of
+                    // #856, pass 9). Only then — every other message skips it.
+                    let joined = if preview_reads_thread(rule, &candidate) {
+                        let thread = &hit.thread_id;
+                        mailbox
+                            .with_token(account, |token| async move {
+                                match account.provider {
+                                    Provider::Google => {
+                                        GmailProvider::new(token).get_thread(thread).await
+                                    }
+                                    Provider::Outlook => {
+                                        OutlookProvider::new(token)
+                                            .with_immutable_ids()
+                                            .get_thread(thread)
+                                            .await
+                                    }
+                                }
+                            })
+                            .await
+                            .map_err(anyhow::Error::from)
+                            .and_then(|emails| {
+                                owner_joined(&emails, &owners)
+                                    .context("a message's direction in the thread is unknown")
+                            })
+                            .map(Some)
+                    } else {
+                        Ok(None)
+                    };
+                    joined.and_then(|joined| {
+                        if let Some(joined) = joined {
+                            candidate.sending.owner_participated = Some(joined);
+                        }
+                        mecha_core::mail_rules::test_message(
+                            rule,
+                            &candidate,
+                            in_inbox,
+                            now,
+                            mailbox.proves_header_absence(&name),
+                        )
+                    })
+                }
+            };
             match result {
                 Ok(TestMessage::Rows(rows)) => report.rows.extend(rows),
                 // Unknown is not a known negative: counted, so a run that never

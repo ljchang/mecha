@@ -150,20 +150,33 @@ impl Memory {
         if readers.is_empty() {
             return Ok(());
         }
+        self.validate_delivered_context(references, readers, access)
+    }
+
+    /// Reauthorize every delivered reference, including raw canonical packets.
+    /// The legacy native-only wrapper above retains its original empty-reader policy.
+    pub(crate) fn validate_delivered_context(
+        &self,
+        references: &[RevisionRef],
+        readers: &[(RevisionRef, NativeCaptureReaderV1)],
+        access: &Access,
+    ) -> Result<()> {
         self.check_access(access)?;
         self.live_identity()?;
         let tx = self.conn.unchecked_transaction()?;
         let checks = SourceChecks::new(self.source_guard.as_deref());
         for reference in references {
+            let canonical = closure(&tx, reference)?;
+            // A purged revision has an empty closure. Its freshness and
+            // authorization checks have nothing to examine.
             ensure!(
-                fresh(&tx, reference, i64::MAX)?
+                canonical.contains(reference)
+                    && fresh(&tx, reference, i64::MAX)?
                     && authorized_with_guard(&tx, reference, access, Some(&checks))?,
                 "native reader source unavailable"
             );
             ensure!(
-                closure(&tx, reference)?
-                    .iter()
-                    .all(|r| references.contains(r)),
+                canonical.iter().all(|r| references.contains(r)),
                 "incomplete canonical native closure"
             );
         }
@@ -225,4 +238,60 @@ pub(super) fn serialize_records<S: Serializer>(
         }
     }
     sequence.end()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{fixture, Capture};
+    use std::fs;
+
+    #[test]
+    fn delivered_context_requires_the_exact_live_reference() {
+        let dir = std::env::temp_dir().join(format!("memory-delivery-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let access = fixture::access();
+        let mut memory =
+            Memory::create(&dir.join("test.memory-prototype.sqlite"), &access.domain).unwrap();
+        let mut capture = |id| {
+            memory
+                .capture(Capture {
+                    source: fixture::source_key(id),
+                    text: "fixture evidence".into(),
+                    occurred_at: None,
+                    scopes: access.scopes.clone(),
+                    transcript: None,
+                })
+                .unwrap()
+        };
+        let live = capture("live");
+        let missing = capture("withdrawn");
+        memory.forget(&fixture::source_key("withdrawn")).unwrap();
+        let wrong_object = RevisionRef {
+            object: missing.object.clone(),
+            revision: live.revision.clone(),
+        };
+        let empty_ok = memory.validate_delivered_context(&[], &[], &access).is_ok();
+        let live_ok = memory
+            .validate_delivered_context(&[live], &[], &access)
+            .is_ok();
+        let invalid_accepted = [missing, wrong_object]
+            .iter()
+            .map(|reference| {
+                memory
+                    .validate_delivered_context(std::slice::from_ref(reference), &[], &access)
+                    .is_ok()
+            })
+            .collect::<Vec<_>>();
+        drop(memory);
+        fs::remove_dir_all(dir).unwrap();
+
+        assert!(empty_ok);
+        assert!(live_ok);
+        assert_eq!(
+            invalid_accepted,
+            [false, false],
+            "accepted missing or mismatched source"
+        );
+    }
 }

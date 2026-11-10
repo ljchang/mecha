@@ -452,6 +452,15 @@ impl Reflexion {
     /// `Clean` there would not make it safe, it would make the domain
     /// impossible: a correction with no context cannot generalise.
     ///
+    /// **Mail rules read that frame's output, and the premise still holds.**
+    /// A description rule's match (MAIL-RULES-DESIGN.md §4.2) comes out of
+    /// this same pass, and for a rule's task or send it is only a candidate:
+    /// `mail_triage::confirm` decides it in a second quarantined call whose
+    /// frame has no learned rules and no correction examples, and an
+    /// automatic task or send runs only when both passes chose the same rule.
+    /// So a learned triage line can nominate, never decide; what it alone
+    /// steers is a reversible mailbox action shown in the ledger.
+    ///
     /// **The exemption disables itself if its premise stops holding.** Adding
     /// `triage` to `RUN_DOMAINS` would put those rules in front of a
     /// tool-having agent, and the check below goes false the moment that

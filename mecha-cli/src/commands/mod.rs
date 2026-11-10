@@ -24,6 +24,8 @@ pub mod mail;
 pub mod mail_rule;
 #[cfg(feature = "memory-prototype")]
 pub mod memory;
+#[cfg(feature = "memory-prototype")]
+pub mod memory_session;
 pub mod model;
 pub mod model_catalog;
 pub mod msg;

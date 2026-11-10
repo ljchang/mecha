@@ -6,6 +6,9 @@ use mecha_core::message::{Message, StopReason};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use std::io::{IsTerminal, Read};
 
+#[cfg(feature = "memory-prototype")]
+use mecha_core::memory_session::{SessionMemory, SessionMemoryReport};
+
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// The task. Omit it, or pass `-`, to read from stdin.
@@ -31,6 +34,15 @@ pub struct Args {
     /// Overrides the saved anchor when resuming; omission preserves it.
     #[arg(long, value_name = "KIND:ID")]
     pub goal: Option<mecha_core::goal::GoalRef>,
+
+    /// Capture and recall ordinary session observations using a private owner request.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(
+        long, value_name = "REQUEST_JSON",
+        requires = "goal",
+        conflicts_with_all = ["resume", "no_session", "images", "mismatch_case", "memory_context"]
+    )]
+    pub episodic_memory: Option<std::path::PathBuf>,
 
     /// Read-only synthetic memory for goal_context (experimental, unencrypted).
     #[cfg(feature = "memory-prototype")]
@@ -127,7 +139,142 @@ pub(crate) fn seed_goal_anchor(
     Ok(())
 }
 
-pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+#[cfg(feature = "memory-prototype")]
+pub(crate) struct OrdinaryMemory {
+    memory: SessionMemory,
+    prompt: String,
+}
+
+#[cfg(feature = "memory-prototype")]
+fn validate_memory_config(global: &GlobalOpts, config: &mecha_core::config::Config) -> Result<()> {
+    use mecha_core::{mailbox::InboundPolicy, provider::router, tool::profile::ToolProfile};
+
+    let (_, provider) = config.provider(global.provider.as_deref())?;
+    anyhow::ensure!(
+        global.provider.is_some() || global.model.is_some() || !router::follows_here(provider),
+        "ordinary memory needs an explicit --provider or --model with router following enabled"
+    );
+    anyhow::ensure!(
+        global.no_fallback || provider.fallbacks.is_empty(),
+        "ordinary memory requires no provider fallbacks (use --no-fallback)"
+    );
+    anyhow::ensure!(
+        global.no_hooks || config.hooks.is_empty(),
+        "ordinary memory requires no effective hooks"
+    );
+    // Owner-only config loading normally defaults inbound mail to Accept.
+    // A memory run must preserve its one-shot boundary.
+    anyhow::ensure!(
+        global.no_messages
+            || !config.messages.on()
+            || matches!(
+                config.messages.inbound,
+                Some(InboundPolicy::Hold | InboundPolicy::Refuse)
+            ),
+        "ordinary memory requires held or disabled inbound messages"
+    );
+    anyhow::ensure!(
+        !matches!(
+            global.tool_profile,
+            Some(ToolProfile::Research | ToolProfile::Coding)
+        ) && global.tools.iter().all(|name| config.tools.registers(name)),
+        "ordinary memory requires all selected tools to be enabled, including goal_context"
+    );
+    // Setup exposes a child whenever its tool list fits the parent allowlist,
+    // even when the child's name was not selected. Its name can shadow a builtin.
+    anyhow::ensure!(
+        !config
+            .subagents
+            .iter()
+            .any(|child| { child.tools.iter().all(|name| global.tools.contains(name)) }),
+        "ordinary memory requires no effective subagents"
+    );
+    anyhow::ensure!(
+        global.no_outbox
+            || !global
+                .tools
+                .iter()
+                .any(|name| config.outbox.tools.contains(name)),
+        "ordinary memory requires direct tools; the outbox routes a selected tool"
+    );
+    Ok(())
+}
+
+/// The manifest and owner profile are checked before router holds or observations.
+#[cfg(feature = "memory-prototype")]
+pub(crate) fn preflight_memory(
+    global: &mut GlobalOpts,
+    args: &Args,
+) -> Result<Option<OrdinaryMemory>> {
+    use mecha_core::{config::Config, session::SessionKind};
+
+    let Some(path) = &args.episodic_memory else {
+        return Ok(None);
+    };
+    // Subcommand requirements miss globals written before `run`.
+    // Check the merged options before configuration or provider startup.
+    anyhow::ensure!(
+        global.no_mcp && global.no_code_tool && global.no_grants && !global.tools.is_empty(),
+        "ordinary memory requires --no-mcp, --no-code-tool, --no-grants, and explicit --tool selection"
+    );
+    anyhow::ensure!(
+        SessionKind::test_override().is_none(),
+        "ordinary memory requires a fresh run without a session-kind override"
+    );
+    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    match std::fs::symlink_metadata(cwd.join(Config::PROJECT_FILE)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("ordinary memory cannot inspect project config"),
+        Ok(_) => anyhow::bail!("ordinary memory refuses a project mecha.toml"),
+    }
+    let config = Config::load_global()?;
+    validate_memory_config(global, &config)?;
+    let workspace = global
+        .workspace
+        .as_ref()
+        .or(config.tools.workspace.as_ref())
+        .unwrap_or(&cwd);
+    let workspace = workspace
+        .canonicalize()
+        .context("ordinary memory workspace unavailable")?;
+    mecha_core::work::ensure_outside_mecha_home(&workspace)?;
+    let path = std::path::absolute(path)?;
+    SessionMemory::validate_request_path(&path, &workspace)?;
+    let request = SessionMemory::load_request(&path)?;
+    let memory = SessionMemory::open(&request, &workspace)?;
+    memory.validate_surface(&global.tools, &workspace, &[])?;
+    let prompt = read_prompt(args.prompt.as_deref())?;
+    anyhow::ensure!(
+        !prompt.trim().is_empty() && prompt.len() <= 2048,
+        "ordinary memory requires a nonempty prompt of at most 2048 bytes"
+    );
+    global.global_config_only = true;
+    Ok(Some(OrdinaryMemory { memory, prompt }))
+}
+
+#[cfg(feature = "memory-prototype")]
+fn print_memory_status(report: &SessionMemoryReport) {
+    use mecha_core::memory_session::SessionMemoryStatus;
+    let status = match report.status {
+        SessionMemoryStatus::Retained => "retained",
+        SessionMemoryStatus::Unavailable => "unavailable",
+        SessionMemoryStatus::Pending => "pending",
+        SessionMemoryStatus::Forgotten => "forgotten",
+    };
+    eprintln!("mecha: episodic memory {status} (run {})", report.run_id);
+}
+
+pub async fn execute(
+    global: &GlobalOpts,
+    args: Args,
+    #[cfg(feature = "memory-prototype")] ordinary_memory: Option<OrdinaryMemory>,
+) -> Result<()> {
+    #[cfg(feature = "memory-prototype")]
+    let (ordinary_memory, prompt) = match ordinary_memory {
+        Some(OrdinaryMemory { memory, prompt }) => (Some(memory), prompt),
+        None => (None, read_prompt(args.prompt.as_deref())?),
+    };
+    #[cfg(not(feature = "memory-prototype"))]
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
 
@@ -217,6 +364,39 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
     let mut prepared = setup::prepare(&opts, interactive).await?;
     #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = &ordinary_memory {
+        validate_memory_config(&opts, &prepared.config)?;
+        let ctx = prepared.agent.context();
+        anyhow::ensure!(
+            ctx.hooks.is_empty(),
+            "ordinary memory requires no effective hooks"
+        );
+        let registry = prepared.agent.registry();
+        anyhow::ensure!(
+            !registry.iter().any(|tool| tool.runs_a_fresh_conversation()
+                || tool.defers()
+                || tool.hosts_programs()),
+            "ordinary memory requires direct tools in the final registry"
+        );
+        let names: Vec<String> = registry.iter().map(|tool| tool.name().into()).collect();
+        memory.validate_surface(&names, &prepared.workspace, &ctx.tools.grants.all())?;
+        anyhow::ensure!(
+            names.len() == opts.tools.len() && names.iter().all(|name| opts.tools.contains(name)),
+            "ordinary memory requires the final registry to match the selected tools"
+        );
+        if !ctx.tools.goal_lessons.is_empty()
+            || !ctx.tools.goal_examples.is_empty()
+            || ctx.tools.success_examples.is_some()
+            || ctx.tools.goal_appraisals.is_some()
+        {
+            eprintln!(
+                "mecha: episodic recall is unavailable with legacy goal evidence enabled. \
+                 Select --no-learned-rules --no-past-appraisals --no-success-examples \
+                 to run without those sources."
+            );
+        }
+    }
+    #[cfg(feature = "memory-prototype")]
     if let Some(memory) = memory_context {
         anyhow::ensure!(
             prepared.agent.registry().get("goal_context").is_some(),
@@ -280,6 +460,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     seed_goal_anchor(&mut convo, args.goal, session.as_ref())?;
+    #[cfg(feature = "memory-prototype")]
+    let ordinary_run = ordinary_memory
+        .as_ref()
+        .map(|memory| {
+            let run = memory.begin(
+                session
+                    .as_ref()
+                    .context("ordinary memory requires a recorded session")?,
+                &prompt,
+                convo
+                    .goal_anchor
+                    .as_ref()
+                    .context("ordinary memory requires a confirmed goal")?,
+            )?;
+            prepared
+                .agent
+                .registry_mut()
+                .insert(memory.goal_memory(&run)?);
+            Ok::<_, anyhow::Error>((memory, run))
+        })
+        .transpose()?;
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
@@ -322,10 +523,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             route.set_session_id(&s.meta.id);
         }
         // One-shots are their own producer, `run` — addressable, though
-        // rarely addressed. `run` does not set `global_config_only`, so its
-        // resolved inbound default is Hold whether stdin is a terminal or a
-        // pipe: a scripted `run --json` must not fold a stray message into a
-        // task it has nothing to do with. Only the trigger runner accepts.
+        // rarely addressed. Ordinary memory uses owner-only config and
+        // requires held or disabled delivery, preserving the one-shot boundary.
         if let Some(mb) = &prepared.mailbox {
             mb.attach("run", &s.meta.id);
         }
@@ -451,6 +650,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         s.append(&Record::Taint(convo.taint))?;
     }
 
+    #[cfg(feature = "memory-prototype")]
+    if result.is_err() {
+        if let Some((memory, run)) = &ordinary_run {
+            // There is no native Outcome on a provider error. The ordinary
+            // recorder refuses the incomplete source and keeps its run identity.
+            print_memory_status(&memory.finish(run));
+        }
+    }
     let outcome = result?;
     if let Some(s) = &session {
         if let Some(case) = &mismatch_case {
@@ -474,6 +681,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    #[cfg(feature = "memory-prototype")]
+    let memory_report = ordinary_run.map(|(memory, run)| memory.finish(&run));
+
     if args.json {
         let value = result_json(
             &outcome,
@@ -481,9 +691,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &prepared.provider_name,
             session.as_ref().map(|s| s.meta.id.as_str()),
         );
+        #[cfg(feature = "memory-prototype")]
+        let value = if let Some(report) = &memory_report {
+            let mut value = value;
+            value["memory"] = serde_json::to_value(report)?;
+            value
+        } else {
+            value
+        };
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else if args.no_stream {
         println!("{}", outcome.text);
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    if !args.json {
+        if let Some(report) = &memory_report {
+            print_memory_status(report);
+        }
     }
 
     if !quiet && !args.json {

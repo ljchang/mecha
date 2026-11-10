@@ -1297,7 +1297,7 @@ async fn classify(
             // that may not apply take the single `rule` slot (or hide one
             // that does). A listing from an older mail binary has no field,
             // which is unknown, so such rules are not asked.
-            Work::Row(row) => row["attachment_presence"].as_bool(),
+            Work::Row(row) => row[ATTACHMENT_PRESENCE].as_bool(),
             Work::Stored(_) => None,
         };
         let (mut thread, bulk, full_body) = match item {
@@ -1450,7 +1450,9 @@ async fn classify(
             (Ok(v), Some(tool)) if !needs_body(v) && rules_need_body && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
-                        thread.body = body;
+                        // Kept, so a failed second pass leaves the text the
+                        // stored answer read — the confirmation pass reads it.
+                        let snippet = std::mem::replace(&mut thread.body, body);
                         match mecha_core::mail_triage::classify_asking(
                             provider.as_ref(),
                             &model,
@@ -1468,9 +1470,12 @@ async fn classify(
                                     mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
                                 rules_body += 1;
                             }
-                            Err(e) => eprintln!(
-                                "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
-                            ),
+                            Err(e) => {
+                                thread.body = snippet;
+                                eprintln!(
+                                    "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                                )
+                            }
                         }
                     }
                     Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
@@ -1480,7 +1485,7 @@ async fn classify(
             (Ok(v), Some(tool)) if needs_body(v) && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
-                        thread.body = body;
+                        let snippet = std::mem::replace(&mut thread.body, body);
                         // The same corrections and rules as the first pass.
                         // Escalation fires on `respond` or a named request
                         // kind — the threads the user cares most about — so a
@@ -1514,6 +1519,8 @@ async fn classify(
                             // The body pass failing is not the snippet pass
                             // being wrong.
                             Err(e) => {
+                                // And the text it read, for the confirmation.
+                                thread.body = snippet;
                                 eprintln!("      (second pass failed, keeping the first: {e:#})");
                                 verdict
                             }
@@ -1542,13 +1549,17 @@ async fn classify(
                 r.read_whole = full_body;
                 r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
-                if let (Some(ask), Some(reading)) = (&ask, reading) {
+                if let (Some(ask), Some(reading), Some(d)) = (&ask, reading, &described) {
                     if let Some(hit) = &reading.active {
                         println!("      rule: {}", hit.name);
                     }
-                    r.rules = Some(mecha_core::mail_triage::rule_frame::RuleRecord::new(
+                    let confirmation =
+                        confirm_reading(provider.as_ref(), &model, &thread, d, ask, &reading).await;
+                    let mut rules = mecha_core::mail_triage::rule_frame::RuleRecord::new(
                         ask, reading, rule_input,
-                    ));
+                    );
+                    rules.confirmation = confirmation;
+                    r.rules = Some(rules);
                 }
                 r
             }
@@ -1721,6 +1732,8 @@ async fn classify(
         } else {
             String::new()
         },
+        // Across both paths, so a total of its own rather than under either
+        // (review of #855, pass 4).
         if rules_body > 0 {
             format!("; {rules_body} read in full for description rules")
         } else {
@@ -1753,12 +1766,12 @@ async fn classify(
     Ok(())
 }
 
-/// The whole conversation, as text, for the second pass.
-///
-/// Capped at [`BODY_CHARS_MAX`] from the *end*, because `mail_get_thread`
-/// renders oldest-first and the newest message is the one asking for
-/// something — truncating the front of a long thread keeps the part a reply
-/// would answer.
+/// The `mail_recent` row key the sweep reads attachment presence from. A
+/// string key into another binary's output, so a test pins it to the writer:
+/// renamed on one side only, `as_bool()` would quietly read every row as
+/// unknown and every rule with `has_attachment` would stop being asked.
+const ATTACHMENT_PRESENCE: &str = "attachment_presence";
+
 /// The rule answer alone for a thread the pre-filter disposed of (owner
 /// ruling 2026-11-07): the same quarantined call and frame as any thread, so
 /// the evidence means the same thing; its triage fields are discarded. A
@@ -1797,7 +1810,7 @@ async fn ask_rules_only(
         if let Some((tool, ctx)) = get_thread {
             match fetch_body(tool, ctx, thread).await {
                 Ok(body) => {
-                    thread.body = body;
+                    let snippet = std::mem::replace(&mut thread.body, body);
                     match mecha_core::mail_triage::classify_asking(
                         provider,
                         model,
@@ -1813,18 +1826,53 @@ async fn ask_rules_only(
                             reading = second.unwrap_or_default();
                             input = RuleInput::FullBody;
                         }
-                        Err(e) => eprintln!(
-                            "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
-                        ),
+                        Err(e) => {
+                            thread.body = snippet;
+                            eprintln!(
+                                "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                            )
+                        }
                     }
                 }
                 Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
             }
         }
     }
-    Ok(RuleRecord::new(ask, reading, input))
+    let confirmation = confirm_reading(provider, model, thread, described, ask, &reading).await;
+    let mut record = RuleRecord::new(ask, reading, input);
+    record.confirmation = confirmation;
+    Ok(record)
 }
 
+/// The confirmation pass (`ClassifierRules::confirm`), with its failure on
+/// stderr where the sweep's other notes go.
+async fn confirm_reading(
+    provider: &dyn mecha_core::provider::Provider,
+    model: &str,
+    thread: &ThreadInput,
+    described: &mecha_core::mail_rules::describe::ClassifierRules,
+    ask: &mecha_core::mail_triage::rule_frame::RuleAsk<'_>,
+    reading: &mecha_core::mail_triage::rule_frame::RuleReading,
+) -> Option<mecha_core::mail_triage::confirm::Confirmation> {
+    let out = described
+        .confirm(provider, model, thread, ask, reading)
+        .await;
+    if let Some(failed) = out
+        .as_ref()
+        .and_then(|c| c.active.as_ref())
+        .and_then(|a| a.failed.as_ref())
+    {
+        eprintln!("      (confirmation pass failed; its tasks propose: {failed})");
+    }
+    out
+}
+
+/// The whole conversation, as text, for the second pass.
+///
+/// Capped at [`BODY_CHARS_MAX`] from the *end*, because `mail_get_thread`
+/// renders oldest-first and the newest message is the one asking for
+/// something — truncating the front of a long thread keeps the part a reply
+/// would answer.
 async fn fetch_body(
     tool: &dyn mecha_core::tool::Tool,
     ctx: &mecha_core::tool::ToolCtx,
@@ -4165,6 +4213,20 @@ mod classify_exit_tests {
         // Nothing to do is not a failure — the common case for a nightly that
         // already swept an hour ago, and the one false alarm to avoid.
         assert!(!run_accomplished_nothing(0, 0, 0));
+    }
+
+    #[test]
+    fn the_attachment_key_the_sweep_reads_is_the_one_mail_recent_writes() {
+        // Review of #854: nothing else joins the reader to the writer.
+        let writer = include_str!("../../../mecha-mail/src/unified.rs");
+        assert!(
+            writer.contains(&format!(
+                "\"{}\": e.attachment_presence",
+                super::ATTACHMENT_PRESENCE
+            )),
+            "mail_recent no longer writes `{}`",
+            super::ATTACHMENT_PRESENCE
+        );
     }
 
     /// A clean fan-out is plain JSON and must stay exactly as it was.

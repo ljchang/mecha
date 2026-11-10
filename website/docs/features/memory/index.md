@@ -1,13 +1,12 @@
 ---
 title: Memory
 sidebar_position: 1
-description: Three memories with three trust models — the knowledge graph for the world, the learning store for behaviour, the transcript for what was actually said.
+description: Existing memory stores and opt-in encrypted episodic retention for fresh ordinary runs.
 ---
 
 # Memory
 
-mecha deliberately has **three memories**, because three different kinds of
-thing are worth remembering and no single trust model fits them all:
+The default runtime uses **three memory stores**, with distinct trust models:
 
 | Memory | Holds | Trust model | Write path |
 |---|---|---|---|
@@ -22,6 +21,93 @@ policy. The graph is fed by mail, messages, and pages other people wrote, so
 reading it must arm the trifecta interlock. The transcript is your own
 record, so re-reading it can be free. Collapse any two of these and one
 trust model has to lie.
+
+## Experimental episodic memory for ordinary runs
+
+A build with `memory-prototype` can attach encrypted episodic storage to a fresh
+`mecha run` through `--episodic-memory`. It retains attributed observations and
+reuses `goal_context` for source-checked recall across sessions. It does not
+replace mecha-graph, the learning store, or ordinary session JSONL, and does not
+automatically schedule concept learning or rumination.
+
+**Retention is separate from success.** A tool returning successfully or an
+assistant claiming completion does not establish that a task succeeded. The
+optional JSON `memory` report identifies retained, pending or unavailable capture,
+with `semantic_assessment: "not_evaluated"`. The task's ordinary answer and outcome
+remain separate.
+
+This first profile supports fresh, bounded, text-only one-shot sessions with
+explicitly selected `fs_read`, `fs_write`, `fs_list` and `goal_context` tools.
+It requires a confirmed goal, no MCP, code tools or grants, and refuses project
+configuration instead of silently discarding its restrictions. Hooks, provider
+fallbacks and unapproved inbound-message profiles are refused. Existing approval
+rules still apply. Configured subagents and active outbox routes intersecting the
+selected tools are refused. Chat, resume, images, delegated/program traces and
+compaction rewrites are not supported for retention. An unsupported recording
+can leave a completed action intact while its memory report is unavailable.
+Assistant reasoning stays in the original transcript, covered by its source
+digest, but is never imported as memory evidence. Reasoning is never silently
+disabled; `--no-thinking` remains a provider-dependent explicit control.
+
+Keep the manifest, database, key and private authority outside every task
+workspace. The database filename must end in `.memory-prototype.sqlite`.
+Initialization requires new paths and refuses overwrites. For a
+disposable example, start from the source checkout:
+
+```bash
+cargo build -p mecha-cli --features memory-prototype
+MECHA_MEMORY_BIN="$PWD/target/debug/mecha"
+MECHA_MEMORY_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mecha-memory.XXXXXX")"
+MECHA_MEMORY_ROOT="$(cd "$MECHA_MEMORY_ROOT" && pwd -P)"
+mkdir -m 700 "$MECHA_MEMORY_ROOT/db" "$MECHA_MEMORY_ROOT/keys" \
+  "$MECHA_MEMORY_ROOT/work-a" "$MECHA_MEMORY_ROOT/work-b"
+python3 - "$MECHA_MEMORY_ROOT" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+request = root / "memory.json"
+request.write_text(json.dumps({
+    "protocol": "ordinary-session-memory-v1",
+    "db": str(root / "db" / "episodes.memory-prototype.sqlite"),
+    "key_file": str(root / "keys" / "episodes.key"),
+    "authority": str(root / "authority"),
+    "domain": "local-demo",
+    "account": "agent-demo",
+    "scopes": ["agent-experience"]
+}))
+request.chmod(0o600)
+PY
+"$MECHA_MEMORY_BIN" memory-session --request "$MECHA_MEMORY_ROOT/memory.json" init
+cd "$MECHA_MEMORY_ROOT/work-a"
+"$MECHA_MEMORY_BIN" --no-mcp --no-code-tool --no-grants --no-messages \
+  --no-hooks --no-fallback --no-learned-rules --no-past-appraisals \
+  --no-success-examples --no-thinking \
+  --tool fs_read --tool fs_write --tool fs_list --tool goal_context \
+  --workspace "$MECHA_MEMORY_ROOT/work-a" \
+  run --episodic-memory "$MECHA_MEMORY_ROOT/memory.json" \
+  --goal project:memory-demo "Remember that this demo uses a blue indicator."
+```
+
+Use a configured fixed provider, or explicitly pin the provider/model if the
+configuration follows a router. Change into `work-b`, repeat the invocation with
+`--workspace "$MECHA_MEMORY_ROOT/work-b"` and a new goal, and ask it to query
+`goal_context` with
+`memory.query: "blue indicator"`. Retrieval remains evidence, not an instruction
+or a verified belief. Legacy goal-context lessons and appraisals cannot be
+silently certified as v2 provenance; the example explicitly disables those
+older consumers. Ordinary invocations without this opt-in are unchanged.
+
+`memory-session --request FILE retry RUN_ID` retries only admission of a durable
+capture; it never repeats the action or calls a model. `forget RUN_ID` withdraws
+the episode and purges its dependent memory from the selected database. Both
+commands work without the old task directory. Deleting or editing the original
+JSONL withholds its memory, but is not a substitute for explicitly purging stored
+copies. Keep the selected key and authority for recovery. Failed partial
+initialization preserves created files for explicit reconciliation.
+
+SQLCipher encrypts the database. Source JSONL, private recovery payloads, task
+artifacts and retained copies are separate filesystem protection surfaces.
+Current qualification uses authored data; it does not establish general learning
+benefit, private-data readiness or corpus-scale performance.
 
 ## The knowledge graph: mecha-graph
 

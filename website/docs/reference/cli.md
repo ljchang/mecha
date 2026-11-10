@@ -83,6 +83,7 @@ mecha run [OPTIONS] [PROMPT]
 | `--no-stream` | Wait for the whole answer instead of streaming it. |
 | `--resume <ID>` | Continue a saved session by id or unique prefix. |
 | `--goal <KIND:ID>` | Confirm what this run serves: `task:<id>`, `project:<id>`, `charter:<id>` or `setpoint:<id>`. Overrides the saved anchor when resuming; omitting it preserves the anchor. |
+| `--episodic-memory <FILE>` | Experimental encrypted memory for a fresh ordinary run, available in `memory-prototype` builds. Requires an explicit host manifest, confirmed goal and supported restricted profile; see [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs). |
 | `--appraisal-evidence <FILE>` | Owner-authored commitment/check evidence for the matching `--goal`; see [anticipatory appraisal](/docs/features/appraisal/anticipation). |
 | `--mismatch-case <FILE>` | Owner-authored JSON fixture for isolated artifact validation of later mismatches; `mecha validate --trigger mismatch` reads it back. Conflicts with `--resume`, `--no-session`, `--image` and `--appraisal-evidence`. |
 | `--no-session` | Do not write a transcript. |
@@ -126,6 +127,25 @@ mecha run --json --yes --max-cost 0.25 \
 # Piped in, continuing an earlier session.
 git log --oneline -20 | mecha run - --resume 20260805T091500
 ```
+
+## `memory-session`
+
+Host-only management of an explicitly selected ordinary-session memory store.
+Available in builds with `memory-prototype`:
+
+```text
+mecha memory-session --request FILE init
+mecha memory-session --request FILE retry RUN_ID
+mecha memory-session --request FILE forget RUN_ID
+```
+
+`init` creates a new encrypted database, key and private authority; it never
+overwrites existing paths. `retry` admits an already sealed capture after current
+source checks, and `forget` withdraws an episode and purges dependent memory in
+the selected store. These commands print JSON and execute no provider or tool.
+They do not require the original task directory and do not discover other stores.
+See [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
+for the manifest, supported run profile and external-file protection limits.
 
 ## `chat`
 

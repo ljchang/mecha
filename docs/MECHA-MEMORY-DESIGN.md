@@ -2,6 +2,12 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Ordinary-session addendum, 2026-11-09:** §31.22 now has an opt-in one-shot
+CLI implementation using the existing Agent loop, encrypted observation capture,
+guarded recall and host-only recovery. Observations remain NotEvaluated; assistant
+reasoning is audit-only. See HISTORY for qualification and HANDOFF for chat/web,
+learning and operational gaps. This is not a production activation.
+
 **Completion and evaluation addendum, 2026-11-09:** §31.20's bounded completion
 observer and explicit native adapter are implemented and qualified on synthetic
 software checks, recorded in HISTORY. The independently audited fresh comparison
@@ -3883,3 +3889,75 @@ The audit inspected source and locally saved hybrid/concept summaries; other
 historical pilot counts remain their original documented evidence. It ran no new
 models or external harness. The proposed stable suite index, prospective cohort
 and second-harness adapter are open work; the existing pilot runners remain usable.
+
+### 31.22 Opt-in memory for ordinary one-shot runs
+
+The next approved slice attaches episodic memory to fresh ordinary `mecha run`
+invocations. It preserves the existing provider, Agent loop, approver, policy,
+cancellation and budgets. Ordinary CLI integration precedes chat/resume, web,
+automatic concept scheduling and task-consumer migration. This section records the scope; implementation and qualification are recorded
+in HISTORY.
+
+**One database, distinct evidence protocols.** Use the existing v8 schema,
+canonical host-capture projection and receipt transaction. Add an authenticated
+`ordinary-session-observation-v1` protocol with recorder
+`ordinary-session-recorder-v1`; do not relax exact-gold rich validation or
+pretend an ordinary task supplied synthetic expected rows. The complete payload
+and protocol identity are already bound by the receipt. Ordinary observations
+may participate in the existing source-authorized concept/appraisal machinery,
+but no automatic concept induction or trusted promotion is enabled here.
+
+**Observation is not success.** Preserve owner intent, requested direct-tool
+inputs, attributed tool results, final assistant statements, and recorded
+termination with exact source locators. The semantic assessment is explicitly
+`not_evaluated`; the legacy artifact slot remains Unavailable with no digest.
+Completed no-tool runs may retain their attributed request and response without
+fabricating a tool receipt. No ordinary ArtifactObservation is manufactured from a successful write
+receipt or assistant prose. The owner prompt and confirmed goal supply intended
+criterion context; there is no hidden gold or model-authored checker. Missing,
+oversized, malformed or unsupported trace elements must not become falsely
+complete evidence. Assistant Thinking, including opaque signatures, stays in the
+original hash-bound transcript for audit but is omitted from imported passages
+and semantic projections. Original block positions remain intact. Thinking alone
+is not a final answer, and wrong-role or unknown blocks remain unsupported.
+
+**Explicit host scope.** A bounded owner manifest names absolute DB, key,
+authority, domain/account and scopes. New ordinary CLI commands initialize only
+new selected paths, retry capture by run ID, and forget by run ID. Ordinary
+storage requires the existing encrypted StorageAccess; no plaintext fallback or
+live-store discovery. The manifest, authority, DB and key remain outside every task workspace
+and grant. The first surface permits only explicitly selected fs_read, fs_write,
+fs_list and goal_context tools with no MCP, code/delegation, hooks, provider
+fallbacks or grants. Reject project configuration rather than silently ignoring
+its narrowing rules, and validate the effective surface before prompt dispatch.
+Other ordinary invocations remain unchanged.
+
+**Strict source boundary.** A core lifecycle binds an actual fresh Run session,
+confirmed pre-run goal/prompt and original recording. It records host-only
+memory delivery receipts, then reconciles them with the exact persisted tool
+call/results. A retrieved packet that was clipped or lost is not proven delivery.
+All consulted references—including uncited sources and hypotheses—must remain
+authorized, and apply to every separately readable retained passage. A valid
+empty recall is distinct from failure. Unknown or partial delivery withholds
+capture. Do not reuse the synthetic SessionKind::Test adapter or lenient session
+parsing to certify ordinary records.
+
+**Durable finalization, not repeated execution.** Finish after native messages,
+taint and outcome are recorded. Seal immutable capture inputs durably before the
+shared SQLite admission. A later retry reauthorizes and admits that same capture;
+it never runs a model/tool again. Admission failure must not erase an already
+performed action, and the CLI reports retention separately from task output.
+Incomplete/provider-failed runs have explicit unavailable status, not fabricated
+outcomes. Source removal or edits withhold evidence immediately; explicit forget
+uses the existing whole-episode and descendant purge/suppression machinery.
+External JSONL, artifacts and retained backups remain separate storage surfaces.
+
+**First acceptance test.** Two separate ordinary CLI processes in isolated test
+homes: perform an action, retain its observation, restart, recall it under a
+changed goal and perform a new action. Inspect actual provider wire, artifacts,
+JSONL, source closure and stored semantic status. Exercise withdrawal between
+recall and admission, forgetting descendants, capture-only retry, permissions,
+cancellation and opt-out/synthetic compatibility. This establishes runtime
+integration; it does not by itself establish memory benefit or autonomous
+learning. Implementation plan:
+`superpowers/plans/2026-11-09-ordinary-run-memory.md`.

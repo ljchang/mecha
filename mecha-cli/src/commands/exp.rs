@@ -31,6 +31,88 @@ use std::path::{Path, PathBuf};
 /// that needs a smaller check.
 const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// The session kind a trial's child is marked with. A driven manifest's
+/// children are `driven`, so D1b's guardrails (the tool allowlist, the
+/// forced levers, the start refusals) hold for a measured run exactly as for
+/// an explored one; everything else is `experiment` (D13).
+fn trial_kind(driven: bool) -> &'static str {
+    // Through the enum the child parses the mark back with, not a literal.
+    if driven {
+        mecha_core::session::SessionKind::Driven.as_str()
+    } else {
+        mecha_core::session::SessionKind::Experiment.as_str()
+    }
+}
+
+/// What a driven child needs beyond the cleared environment: `CARGO_HOME`
+/// inside its clone. `[sandbox] env` names the variable and the value comes
+/// from this process's environment (R7, `DRIVER-DESIGN.md` §8), and cargo
+/// writes under it even offline, so it must be the clone's own.
+fn driven_child_env(driven: bool, workspace: &Path) -> Vec<(String, String)> {
+    if !driven {
+        return Vec::new();
+    }
+    vec![(
+        "CARGO_HOME".to_string(),
+        workspace.join(".cargo-home").to_string_lossy().into_owned(),
+    )]
+}
+
+/// A driven trial's teardown, once `run_one` has returned however it went:
+/// a child that crashed, printed no JSON or failed to parse returns before
+/// any grade, and its row is `Failed` and never rerun (`exp run` picks up
+/// only `Pending` and `Running`), so nothing later would remove its marker
+/// or reclaim its clone (review of #859, pass 1). `--spent` tells the source
+/// this tree will never be graded, so its build products go even ungraded.
+/// A clone that setup never made is nothing to tear down; a teardown that
+/// fails is reported, never the row's — the row says what the run did.
+async fn teardown_driven(
+    store: &ExperimentStore,
+    manifest: &Manifest,
+    mecha: &Path,
+    home: &Path,
+    case: &mecha_core::eval::EvalCase,
+    trial: &Trial,
+) {
+    let workspace = store.trial_workspace(&manifest.tasks, &trial.id);
+    if !workspace.exists() {
+        return;
+    }
+    let env = source_env_for(true, mecha, home, &workspace, &case.id);
+    if let Err(e) = source_call(
+        &manifest.tasks,
+        &["teardown", &case.id, "--spent"],
+        &env,
+        &workspace,
+        None,
+    )
+    .await
+    {
+        eprintln!("  {}: teardown of `{}` failed: {e:#}", trial.id, case.id);
+    }
+}
+
+/// The source's environment for one task. A driven source also gets
+/// `MECHA_BIN`, this binary, because its setup writes the driven marker with
+/// `mecha driven mark` and the marker must be written by the build that
+/// will read it, not by whichever `mecha` comes first on `PATH`.
+fn source_env_for(
+    driven: bool,
+    mecha: &Path,
+    home: &Path,
+    workspace: &Path,
+    task: &str,
+) -> Vec<(String, String)> {
+    let mut env = mecha_core::experiment::source_env(home, workspace, Some(task));
+    if driven {
+        env.push((
+            "MECHA_BIN".to_string(),
+            mecha.to_string_lossy().into_owned(),
+        ));
+    }
+    env
+}
+
 /// Does this arm move `key` through an override? An arm that does is the
 /// treatment for that knob, and a case's own value for it must not be
 /// passed as a flag over the arm's config.
@@ -446,6 +528,18 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool, jobs: u32) -> Resu
         jobs == 1 || manifest.kind == TrialKind::Single,
         "--jobs above 1 runs `single` trials only; a lifetime's stages must not contend with its tasks for the model's seats, and running lifetimes side by side is not built"
     );
+    // Each driven trial builds a crate's tests in its clone, inside a jail
+    // with a memory ceiling: one build at a time (`DRIVER-DESIGN.md` §8).
+    anyhow::ensure!(
+        jobs == 1 || !manifest.tasks.driven,
+        "--jobs above 1 is refused for `[tasks] driven`: each trial builds in its own clone, one build at a time"
+    );
+    if let Some(why) = manifest
+        .tasks
+        .driven_root_refusal(&mecha_core::work::mecha_home()?)
+    {
+        anyhow::bail!(why);
+    }
     let cases = cases_for(&manifest).await?;
     let loaded = mecha_core::config::Config::load_global()?;
     refuse_an_unnamed_model(&loaded, &manifest.arms)?;
@@ -773,6 +867,9 @@ async fn drive_single(
     let world = &worlds[&trial.arm];
     let home = store.arm_home(&trial.arm, &world.dir)?;
     let outcome = run_one(store, manifest, mecha, world, arm, case, &home, &mut trial).await;
+    if manifest.tasks.driven {
+        teardown_driven(store, manifest, mecha, &home, case, &trial).await;
+    }
     if let Err(e) = outcome {
         trial.status = TrialStatus::Failed;
         trial.error = Some(format!("{e:#}"));
@@ -1985,18 +2082,26 @@ async fn run_one(
     // either, since a flag beats the rendered config.
     let pinned = |key: &str| arm_moves(arm, key) || moved.iter().any(|k| k == key);
 
-    let workspace = store.workspace_for(&trial.id);
+    let driven = manifest.tasks.driven;
+    let workspace = store.trial_workspace(&manifest.tasks, &trial.id);
     if workspace.exists() {
         std::fs::remove_dir_all(&workspace)?;
     }
-    mecha_core::eval::stage_workspace(&manifest.tasks.fixture, &workspace)
-        .with_context(|| format!("staging {}", manifest.tasks.fixture.display()))?;
+    if driven {
+        // The clone is the source's to make, and it refuses a tree that is
+        // not empty: the fixture is not staged over it.
+        std::fs::create_dir_all(&workspace)
+            .with_context(|| format!("creating {}", workspace.display()))?;
+    } else {
+        mecha_core::eval::stage_workspace(&manifest.tasks.fixture, &workspace)
+            .with_context(|| format!("staging {}", manifest.tasks.fixture.display()))?;
+    }
     // A task source puts the world in this task's starting state — after
     // the home and its fixture stores are rendered, before the child runs.
     // Its failure is the row's: a task run against a world that was not
     // set up would grade something else under this task's name.
     if manifest.tasks.has_source() {
-        let env = mecha_core::experiment::source_env(&home, &workspace, Some(&case.id));
+        let env = source_env_for(driven, mecha, &home, &workspace, &case.id);
         source_call(
             &manifest.tasks,
             &["setup", &case.id],
@@ -2086,10 +2191,13 @@ async fn run_one(
         cmd.env(k, v);
     }
     cmd.env("MECHA_HOME", &home)
-        .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
+        .env(mecha_core::session::SESSION_KIND_ENV, trial_kind(driven))
         .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped());
+    for (k, v) in driven_child_env(driven, &workspace) {
+        cmd.env(k, v);
+    }
     // The principal's scripted refusals for this task, when it left any:
     // the child's approver answers them ahead of its own, as "Denied by
     // the user" — the owner's word inside the trial home (D12). Armed
@@ -2126,6 +2234,11 @@ async fn run_one(
         .parent()
         .map(|p| p.join("stderr.log"))
         .unwrap_or_else(|| trial_dir.join("stderr.log"));
+    // A driven trial's clone lives outside the store, so its store directory
+    // may not exist yet; the log is the store's either way.
+    if let Some(dir) = log.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let _ = std::fs::write(&log, &output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let start = stdout.find('{').with_context(|| {
@@ -2196,7 +2309,7 @@ async fn run_one(
     // assertion the listing carried; a source that cannot grade fails the
     // row, never passes it.
     if manifest.tasks.has_source() {
-        let env = mecha_core::experiment::source_env(&home, &workspace, Some(&case.id));
+        let env = source_env_for(driven, mecha, &home, &workspace, &case.id);
         let text = source_call(
             &manifest.tasks,
             &["grade", &case.id],
@@ -2210,9 +2323,10 @@ async fn run_one(
         )
         .await
         .with_context(|| format!("the task source could not grade `{}`", case.id))?;
-        let verdict: mecha_core::experiment::SourceGrade =
+        let mut verdict: mecha_core::experiment::SourceGrade =
             serde_json::from_str(source_json(&text, "grade")?)
                 .context("the task source's `grade` is not the contract's shape")?;
+        trial.changed = std::mem::take(&mut verdict.changed);
         for check in verdict.into_checks()? {
             graded.add_check(check);
         }
@@ -3070,6 +3184,98 @@ mod tests {
         );
     }
 
+    /// A driven trial's marker and clone are torn down once `run_one` has
+    /// returned, however it went, with `--spent`; a clone setup never made
+    /// gets no call. The caller runs this before it reads the outcome, so a
+    /// child that died before its grade is covered (review of #859, pass 1).
+    #[tokio::test]
+    async fn a_driven_trial_is_torn_down_spent_whatever_its_run_did() {
+        let base =
+            std::env::temp_dir().join(format!("mecha-exp-teardown-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let log = base.join("calls");
+        let src = base.join("src.sh");
+        std::fs::write(
+            &src,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        let text = format!(
+            "name = \"td\"\nseeds = [1]\nrepetitions = 1\nsplit_seed = 1\n\n[tasks]\nsource = [\"sh\", \"{}\"]\nfixture = \"eval/workspace\"\ndriven = true\nworkspace_root = \"{}\"\n\n[arms.a]\n",
+            src.display(),
+            base.join("root").display()
+        );
+        let manifest = Manifest::parse(&text).unwrap();
+        let store = ExperimentStore::open(base.join("store"), "td").unwrap();
+        let case: mecha_core::eval::EvalCase =
+            serde_json::from_value(serde_json::json!({"id": "t1", "prompt": "x"})).unwrap();
+        let trial = manifest.trials(&["t1".into()], "p", "m").remove(0);
+        let home = base.join("home");
+        // No clone: setup never ran, so there is nothing to tear down.
+        teardown_driven(
+            &store,
+            &manifest,
+            Path::new("/bin/true"),
+            &home,
+            &case,
+            &trial,
+        )
+        .await;
+        assert!(!log.exists(), "a teardown ran for a clone setup never made");
+        // A clone: torn down as spent, whatever the run did.
+        std::fs::create_dir_all(store.trial_workspace(&manifest.tasks, &trial.id)).unwrap();
+        teardown_driven(
+            &store,
+            &manifest,
+            Path::new("/bin/true"),
+            &home,
+            &case,
+            &trial,
+        )
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().trim(),
+            "teardown t1 --spent"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A driven trial's child is `driven`, holds `CARGO_HOME` inside its own
+    /// clone, and its source marks with this binary; an ordinary trial gets
+    /// none of the three. Each half fails if the switch is ignored.
+    #[test]
+    fn a_driven_trial_is_marked_driven_builds_in_its_clone_and_marks_with_this_binary() {
+        let (ws, home, exe) = (
+            Path::new("/w/t/workspace"),
+            Path::new("/h"),
+            Path::new("/bin/mecha-x"),
+        );
+        assert_eq!(trial_kind(true), "driven");
+        assert_eq!(trial_kind(false), "experiment");
+        assert_eq!(
+            driven_child_env(true, ws),
+            vec![(
+                "CARGO_HOME".to_string(),
+                "/w/t/workspace/.cargo-home".to_string()
+            )]
+        );
+        assert!(driven_child_env(false, ws).is_empty());
+        let bin = |env: &[(String, String)]| {
+            env.iter()
+                .find(|(k, _)| k == "MECHA_BIN")
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            bin(&source_env_for(true, exe, home, ws, "pr-1")).as_deref(),
+            Some("/bin/mecha-x")
+        );
+        assert_eq!(bin(&source_env_for(false, exe, home, ws, "pr-1")), None);
+        // The contract's own pointers are still there, unchanged.
+        assert!(source_env_for(true, exe, home, ws, "pr-1")
+            .iter()
+            .any(|(k, v)| k == mecha_core::experiment::SOURCE_HOME_ENV && v == "/h"));
+    }
+
     /// A task source's three verbs, driven against the contract's reference
     /// stub: `list` becomes cases with their tags and ceilings, `setup` sees
     /// the pointers and leaves its mark under the fixtures root, `grade`
@@ -3106,6 +3312,8 @@ mod tests {
             confirmed_goals: Default::default(),
             mismatch_cases: Default::default(),
             tags: Vec::new(),
+            driven: false,
+            workspace_root: None,
         };
         let cases = source_list(&tasks).await.unwrap();
         assert_eq!(cases.len(), 2);
@@ -3204,6 +3412,7 @@ mod tests {
         let disagreeing = mecha_core::experiment::SourceGrade {
             passed: true,
             detail: String::new(),
+            changed: None,
             checks: vec![mecha_core::eval::Check {
                 name: "x".into(),
                 passed: false,

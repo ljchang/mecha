@@ -22,6 +22,22 @@ maps which document holds what.
 
 ## Where the work is
 
+**Ordinary-run integration (qualified 2026-11-10, opt-in prototype):** fresh one-shot
+`run --episodic-memory` now connects the existing Agent loop to source-linked
+observation capture and guarded lexical recall through `memory_session`. Host-only
+`memory-session init|retry|forget` use an explicitly selected encrypted store.
+Task success is NotEvaluated; assistant reasoning remains audit-only in original
+JSONL. The first profile permits only selected direct file tools and goal_context,
+refusing incompatible execution profiles before provider startup. See HISTORY
+for qualification, including the independently audited two-session resident-model
+mechanics trial, and `website/docs/features/memory/index.md` for the command.
+
+**Remaining ordinary integration:** chat/web/resume, broader tool coverage, live
+goal/resource-state appraisal and explicit learning triggers. Keep the independent
+owner graph and production runtime unchanged. Next, turn the existing cases into
+the versioned chronological evaluation described below; opt-in retention by itself
+does not establish useful learning or private-data readiness.
+
 **Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
 mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's
 experience and learning memory. Keep their lifecycles independent while reusing

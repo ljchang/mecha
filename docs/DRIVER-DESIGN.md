@@ -1,7 +1,10 @@
 # Driven runs: a stronger agent drives mecha on mecha's own work — design
 
 **Status: 2026-11-07, designed and ruled (§9, R1–R6 and R8–R11, all ruled; R7 is the owner's config and a precondition of a driven run). D1 is
-merged (#848). D1b is built (`mecha_core::driven`, §7 "As built"); nothing else is built.**
+merged (#848). D1b is merged (#851, §7 "As built"). R7 is measured (§8), and the
+owner's two `[sandbox]` lines are in (2026-11-07). D3's history source is built
+(`eval/fixtures/mecha_history.py`, §3 "As built"), with the interface-named tasks
+admitted on the owner's ruling. D2 follows before the first validation run (R5).**
 
 What is being designed: a loop in which an outside agent (Claude Code, at
 the owner's desk) gives mecha real work, mostly changes to mecha itself,
@@ -69,6 +72,38 @@ There are two modes, and they never trade places:
   the model or the harness change under test, on tasks the change was not
   derived from. This is the only mode whose numbers go in a PR description
   or a design doc's results section.
+
+**As built (2026-11-09): measurement runs driven trials.** A manifest's
+`[tasks]` says `driven = true` and a `workspace_root`, and then each trial is
+the pilot's run under `mecha exp`'s bookkeeping:
+
+- the child is marked `driven`, not `experiment`, so D1b's guardrails hold
+  for a measured run exactly as for an explored one, and the condition hash
+  takes a `kind=driven` term so the two never pair;
+- the clone lives at `<workspace_root>/<experiment>/<trial>/workspace`,
+  outside the mecha home (`exp run` refuses a root that overlaps it either
+  way, through a symlink included), and the fixture is not staged, because
+  the source's setup refuses a clone that is not empty;
+- the child gets `CARGO_HOME` inside its clone (R7), and the source gets
+  `MECHA_BIN`, so the marker is written by the build that reads it;
+- the source's `teardown <task> --spent` runs once the trial is over,
+  however it ended (a child that crashed before its grade included, since
+  a failed row is never rerun), and removes `target/` and `vendor/` (6.6 of
+  a clone's 6.8 GB, measured on the smoke trial), keeping the tree and its
+  history for the audit; without `--spent`, the pilot's call, it prunes a
+  graded tree only;
+- the grade may name the paths the run `changed`, a field the contract now
+  carries and the trial row records (`null`, when the source's git failed,
+  stays unknown rather than reading as nothing changed); any field it does
+  not name still fails the grade. The smoke trial's first run failed on exactly that, which is
+  what it was for. Setup excludes `.cache/` from the clone's status,
+  because the jail's `HOME` is the clone and font caches landed there;
+- trials are `single` (a lifetime, and so a principal, is refused) and
+  `--jobs` stays 1, one build at a time (§8).
+
+The trial's record, logs and session stay in the experiment store and its
+arm homes, as for any trial. The holdout is drawn under §3's rule from tasks
+the exploration never read; the pilot's nine are all in the seen set.
 
 ## 2. The session kind
 
@@ -450,7 +485,12 @@ changed) and by subsystem. `sample.rs` offers uniform draws only
 eligible set, its seed and eligibility rule recorded before it ran. The
 driver does not hand-pick. Whatever the
 driver reads during exploration moves to a **seen** set and never enters a
-measurement holdout.
+measurement holdout. The converse is structural in the source: a record
+carrying `holdout: <name>` is offered only to `mecha_history.py --holdout
+<name>` (which offers nothing else), so an exploration draw over `list`
+cannot reach a holdout task, and a measurement names its holdout in the
+manifest's `source` argv. The first, `boredom-1`, holds 8 tasks (seed
+20261109, rule recorded before the draw, in `holdout_draws`).
 
 The second source is **the open leftovers**: the minors that review passes
 left, as `HANDOFF.md` and the PR threads list them. These have no ground
@@ -483,6 +523,111 @@ All sources are served through `EXPERIMENT-DESIGN.md` §21.1's contract as
 `eval/fixtures/mecha_history.py`: `setup` makes a **full clone** at the pin
 (not a `git worktree`, §7), and `grade` applies the hidden tests and runs
 them.
+
+**As built (2026-11-07).** The bank is `eval/fixtures/mecha_history/`: the
+pilot's draw as it was recorded (seed, rule, eligible set, replacements) in
+`tasks.json`, one record per task, and the prompts. These choices go beyond
+the text above:
+
+- **The clone is fetched, not cloned.** A `git clone` copies the source's
+  branches, and `main` holds the merge, so the run could `git show` the
+  answer. Setup fetches the pin's commit into an empty repository instead.
+  That brings the pin's whole history and nothing after it, with no remote
+  and no ref naming the source. The source's own test fails on a plain
+  `git clone`.
+- **Grafted tests sit in a module of their own** (`mod
+  hidden_grade_<nonce> { use super::*; … }` inside the file's `mod tests`).
+  A test the run wrote under the hidden test's name is then not a compile
+  error charged to the model, and the per-test verdict is read from
+  libtest's own lines. The nonce is drawn at grade time, after the run. For
+  a test grafted into the crate, only a result under that module decides,
+  so a `mod hidden_grade` the run wrote itself stands in for nothing.
+- **D3a is a verb** (`validate <task> [r]`), run on clones it makes and
+  removes. **D3b is a verb** (`check-prompts`): `check-private.py --text`,
+  a mode added for this, which reads every line, `#` headings included, with
+  `CHECK_PRIVATE_REQUIRE=1`. It records each prompt's sha256 beside "a store
+  was present", and `list` offers no task whose prompt has changed since.
+- **A third admission state, `interface-named`.** Seven of the twelve PRs
+  considered (the ten drawn, then 466 and 471 in the recorded replacement
+  order) add tests that call an item the pin does not have, so they fail on
+  the pin by not building, which D3a does not admit. Their prompts name the
+  missing items' signatures (never bodies), SWE-bench Verified's practice.
+  **Ruled (owner, 2026-11-07): admitted.** `list` offers one only when its
+  prompt has an `## Interface` section, since without the name the task
+  cannot be solved.
+- **The graft finds every test module.** A file may hold several top-level
+  test modules (`mod tests`, `mod held_tests`, ...) and top-level
+  `#[cfg(test)]` items beside them, and a module ends at rustfmt's `}` in
+  column 0, never where braces balance: a string literal's unmatched brace
+  once made `mod tests` in `serve/chat.rs` appear to run past five later
+  modules.
+- **A hidden test that skips is named, and refused.** Hidden tests run under
+  `MECHA_TEST_REQUIRE_BACKENDS=1`, so a test that returns early without its
+  backend fails, and `validate` reports the skip. 807's tests skip without
+  the pinned monty worker, which a fresh clone does not have, so its grade
+  passed on the pin and would have passed a run that did nothing. The
+  prototype had admitted it from a worktree where the worker existed, the
+  §8 self-hosting confound measured on the first draw. The touched crates'
+  regression suites run without the variable, because skipping there is
+  their design.
+- **The grade runs in a jail of its own,** built the way the run's is: bwrap,
+  no network, a cleared environment, the toolchain read-only and the tree
+  the only writable path. A run's tree is the model's code, and the grade
+  executes it. `validate` and `baseline` run their tests in the same jail,
+  so a test whose backend the host has and the jail lacks is caught at
+  admission, not charged to a run. Setup's prebuild compiles only the
+  repository's own history, and runs unconfined. The jail carries no
+  memory ceiling: the grade runs behind the host's memory gate, with four
+  build jobs.
+- **Nothing that decides a grade lives where the run can write.** The
+  record that a tree was graded, and setup's record of its cargo config and
+  the vendored crates' digest, sit in the mecha home (`driven/graded/`,
+  `driven/setup/`). Before each cargo call, the grade puts back `.cargo/`
+  and an empty `.cargo-home/`, because a `[build] rustc` or a `runner` there
+  chooses what prints the libtest lines it reads, and `.git/info/exclude`
+  hides those files from `git status`. It also puts back the repaired
+  fixtures and compares `vendor/` each time. The one `git` it asks of
+  the run's tree runs inside the jail, because the run owns `.git/config`,
+  where an fsmonitor or a filter driver would run a program of its choosing
+  under any `git` on the host. A tree with no place for the hidden tests (a file
+  the run deleted) is graded `passed: false`, not left unanswered. The residual is the run's own
+  code: the grade executes it, so a test binary that forges libtest's
+  output from inside the process is beyond this grade, and the driver
+  reads diffs that touch `Cargo.toml` or a build script.
+- **Regressions are SWE-bench's PASS_TO_PASS, measured.** `baseline <task>
+  [r]` runs the touched crates' unit tests in the grade's jail, r times on
+  the pin and r times on the merge. It records two things:
+  - **the tests that pass every time on both.** The run must leave every one
+    of these `ok`. A test it ignores, deletes or cfg's out counts against it
+    just as a failure does, so the check never reduces to "nothing FAILED".
+    The set lives in `baselines/<task>.json`, its sha256 recorded in
+    `tasks.json`.
+  - **the pin's own failures**, which are never charged to a run. At 525's
+    pin an imagegen test fails deterministically, so before this its oracle
+    grade (the merge's own diff, applied to the clone) failed.
+
+  A grafted hidden test is counted once, under the hidden check. A task is
+  not offered if it has no baseline, or one measured on another pin or
+  merge, or one whose file has changed.
+- **Where the bank stands (2026-11-07).** Admitted by `validate` (r = 5):
+  421, 525, 813. Interface-named by `validate`, and admitted under the
+  ruling: 466, 471, 476, 726, 759, 798. Replaced or rejected: 780 (its tests
+  read a private field), 807 (above), and 793, whose hidden test also needs
+  the monty worker, so no merge run passes it under the variable.
+- **A task revised after reading answers is a sibling, never an edit.**
+  `pr-759-r1` (2026-11-09) is pr-759 with two more `## Interface` entries:
+  the prompt named `forbidding_prior` and `history_lines` without pinning
+  their signatures, the hidden tests call both with the pin's, and the
+  ceiling changed `forbidding_prior`'s return type in both pilot rounds. The
+  sibling carries `revises` (the task, when, why), its own prompt check, and
+  an admission and a baseline **copied** from the original (`copied_from`):
+  the pin and merge are the same, so PASS_TO_PASS is too. The committed-bank
+  test checks both claims, so neither is prose a reader must trust.
+  pr-759 stays offered unchanged, and the two are reported side by side, the
+  grader-v2 rule above applied to a prompt.
+- **`teardown`** removes the marker. It is the fourth verb, and the driver
+  calls it, because §21.1's contract has no teardown and an expired marker
+  still refuses unmarked runs (§7).
 
 Terminal-Bench and the other public suites come **after** this loop has
 tuned the harness, as transfer checks (`SELF-IMPROVEMENT-RESEARCH.md` §14.7). Their place in this design is
@@ -1028,6 +1173,38 @@ D4's approval-floor count reads the first alone.
   read-only, `cargo` is invoked by absolute path because `PATH` collides with
   bwrap's own pinned value, and no `writable` entry is needed (R7). The measurement also pins which `--setenv` wins for a name
   bwrap already sets.
+
+  **Measured (2026-11-07)**, in a jail built the way `Sandbox::bwrap_args`
+  and `bwrap_launcher` build it, under the owner's limits (8192 MB, 6 CPUs,
+  no network). The argv was checked against a real preflight's, as the user
+  journal records it. Results:
+  - **On PATH: no**, for either `cargo` or `rustc`. A later `--setenv PATH`
+    *wins*, so naming `PATH` in `[sandbox] env` would hand the jail the whole
+    host `PATH`.
+  - **The variables arrive** when they are set in `mecha`'s own environment.
+    `RUSTUP_HOME` is not needed: the toolchain's own `cargo` is run directly,
+    not through the rustup proxy, so nothing reads it. R7 narrows to one
+    name.
+  - **The toolchain tree is readable** as a read-only bind. `~/.mecha` and the
+    rest of `~/.rustup` stay invisible.
+  - **cargo writes under `CARGO_HOME`** even for a vendored offline build
+    (`.package-cache`, `.global-cache`, `registry`), so `CARGO_HOME` inside
+    the clone is required, not merely cheaper. The host `~/.cargo` also holds
+    `credentials.toml`, so it is never bound.
+
+  Three facts the four did not name, each met by setup and none by the
+  owner's config:
+  - **cargo does not find `rustc`** with `PATH` pinned. The clone's
+    `.cargo/config.toml` names `rustc` and `rustdoc` by absolute path.
+  - **Four jobs exceed 8192 MB.** Linking every mecha-core test target at
+    `jobs = 4` was OOM-killed twice: one `rustc` reached 4.2 GB, and the
+    kernel's log names the scope's memcg. At `jobs = 2` the same build fits
+    (50 s after one edit). A single-crate incremental test run takes 21–23 s
+    and peaks at 4.0 GB, inside the 120-second shell timeout. Setup writes
+    `jobs = 2` and builds the touched crates' tests before the run.
+  - **`cargo vendor` needs the network.** It fetches every platform's
+    crates, so it runs on the host at setup, never in the jail (589 MB a
+    clone).
 - **The self-hosting test confound.** The grade runs mecha's own suite
   inside a network-less bwrap jail, and a chunk of `mecha-core/tests/`
   skips by design when its backend is absent (`sandbox_backends.rs`,
@@ -1094,8 +1271,11 @@ D4's approval-floor count reads the first alone.
 - **R7, the owner's config, and a precondition of a driven run** (D1b refuses a start whose sandbox can reach the network). A driven run reaches the Rust
   toolchain through the owner's `[sandbox] readable` (the rustup toolchain
   tree only, never the mecha home or a parent of it, and never a `writable`
-  entry) and `[sandbox] env` (`CARGO_HOME`, `RUSTUP_HOME`) in the owner's
-  **global** file. `CARGO_HOME` points inside the task clone, which is
+  entry) and `[sandbox] env` (`CARGO_HOME` alone; §8's measurement found
+  `RUSTUP_HOME` unread) in the owner's **global** file. As measured, the two
+  lines are `readable = ["~/.rustup/toolchains"]` (every installed toolchain,
+  because a pin from before `rust-toolchain.toml` builds on `stable`, and a
+  pin move must not break the bind) and `env = ["CARGO_HOME"]`. `CARGO_HOME` points inside the task clone, which is
   already writable, so no host path needs write access (§8). `PATH` is *not* named
   there: `bwrap_args` applies `[sandbox] env` after its own pinned `PATH`, so
   naming it would substitute the operator's whole host `PATH`, or do
@@ -1110,11 +1290,10 @@ D4's approval-floor count reads the first alone.
   `if let Ok(value) = std::env::var(name)`, with no warning when the name is
   absent, and rustup exports neither variable in a normal shell. So the
   entry is half the remedy: the driver must also export `CARGO_HOME` (a path
-  inside the clone) and `RUSTUP_HOME` in the environment it launches
-  `mecha run` from. Setting a value for a name the owner's config already
-  passes through is not a jail exception, because `CARGO_HOME` names a path
-  inside the jail and `RUSTUP_HOME` one the owner's `readable` already
-  binds. Otherwise
+  inside the clone, `<clone>/.cargo-home`, which setup creates) in the
+  environment it launches `mecha run` from. Setting a value for a name the
+  owner's config already passes through is not a jail exception, because
+  `CARGO_HOME` names a path inside the jail. Otherwise
   the entry looks right and changes nothing, and with `HOME=<workspace>`
   cargo's home-relative fallback resolves into the empty clone. The §8
   measurement's pass criterion is that the value arrives in the child,

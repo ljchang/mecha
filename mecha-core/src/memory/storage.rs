@@ -210,7 +210,7 @@ fn check_key_file(file: &File) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn check_macos_private_metadata(file: &File) -> io::Result<()> {
+pub(crate) fn check_macos_private_metadata(file: &File) -> io::Result<()> {
     use std::{ffi::c_void, mem::MaybeUninit, os::fd::AsRawFd};
 
     // Darwin evaluates extended ACLs before BSD mode bits. Its libc exposes

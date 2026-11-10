@@ -388,6 +388,7 @@ impl RuleStore {
             .context("missing actions")?;
         let mut actions = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut template_refused = None;
         for (action, table) in definition.actions.iter().zip(tables) {
             let digest = definition::hash(&serde_json::to_vec(table)?);
             ensure!(
@@ -417,6 +418,20 @@ impl RuleStore {
                                 && !line["Subject:".len()..].trim().is_empty()),
                         "typed send template requires a Subject: line"
                     );
+                }
+                if action.group() == ActionGroup::FixedWords
+                    && action.template.as_ref() == Some(file)
+                {
+                    // Refused at install and edit, where the owner is told
+                    // which file; a rule already on disk loads with its
+                    // reply held instead, so one brace in one template never
+                    // stops every rule's pass (review of #856).
+                    if let Err(e) = std::str::from_utf8(&bytes)
+                        .map_err(anyhow::Error::from)
+                        .and_then(super::send::validate_template)
+                    {
+                        template_refused = Some(format!("{file}: {e:#}"));
+                    }
                 }
                 files.insert(file.clone(), bytes);
             }
@@ -458,7 +473,20 @@ impl RuleStore {
             } else {
                 String::new()
             },
-            confirmation_version: String::new(),
+            // §6.2: a description rule with a task or send rests on the
+            // compiled confirmation frame; a build that changes it lapses.
+            // Asked through the same predicate as the match digest, so the
+            // two cannot drift (review of #855, pass 6).
+            confirmation_version: if definition.is_description()
+                && definition
+                    .groups()
+                    .into_iter()
+                    .any(super::describe::confirmation_decides)
+            {
+                crate::mail_triage::confirm::CONFIRMATION_VERSION.clone()
+            } else {
+                String::new()
+            },
             extraction_version: String::new(),
         };
         Ok(LoadedRule {
@@ -468,6 +496,7 @@ impl RuleStore {
             directory: directory.into(),
             files,
             approval_digest,
+            template_refused,
         })
     }
 
@@ -542,6 +571,9 @@ impl RuleStore {
                 write_new(&temp.join(name), text.as_bytes())?;
             }
             let rule = self.load_directory(name, &temp)?;
+            if let Some(why) = &rule.template_refused {
+                bail!("{why}");
+            }
             self.admit_locked(Admission::Install(&rule), &self.approvals()?)?;
             File::open(&temp)?.sync_all()?;
             for group in rule.definition.groups() {
@@ -596,6 +628,9 @@ impl RuleStore {
                 write_new(&path, bytes)?;
             }
             let candidate = self.load_directory(name, &temp)?;
+            if let Some(why) = &candidate.template_refused {
+                bail!("{why}");
+            }
             let mut approvals = self.approvals()?;
             self.admit_locked(Admission::Replace(&candidate), &approvals)?;
             let ledger = self.ledger()?;
@@ -1262,6 +1297,7 @@ impl RuleStore {
                 wrong_match: false,
                 affected_groups: affected.to_vec(),
                 actor: None,
+                outbox_item: None,
             };
             self.append("ledger.jsonl", &row)?;
         }

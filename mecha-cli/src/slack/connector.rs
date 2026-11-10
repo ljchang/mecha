@@ -2843,6 +2843,7 @@ mod tests {
 
     fn draft(id: &str, tainted: bool, summary: &str) -> mecha_core::outbox::OutboxItem {
         mecha_core::outbox::OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

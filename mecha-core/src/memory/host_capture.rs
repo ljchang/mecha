@@ -1,5 +1,12 @@
 //! Typed, sensor-free host observations. Authority is injected, never inferred.
-use super::{sql::*, store::capture_in, *};
+use super::{
+    ordinary_observation::{
+        claims_ordinary_protocol, validate_ordinary, OrdinaryObservationCapture,
+    },
+    sql::*,
+    store::capture_in,
+    *,
+};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -211,9 +218,17 @@ fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64)
 /// Reconstruct only from the canonical receipt and exact immutable originals.
 /// The receipt's original HostCapture hash authenticates descriptor metadata too.
 pub(super) fn projection_input(conn: &Connection, projection: &Capture) -> Result<HostCapture> {
-    let (object, revision, originals, payload_hash): (String,String,String,String) = conn.query_row(
-        "SELECT projection_object,projection_revision,originals,payload_hash FROM host_capture_receipt WHERE identity_hash=?1 AND state='active'",
-        [&projection.source.id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    projection_input_for_receipt(conn, projection, None)
+}
+
+fn projection_input_for_receipt(
+    conn: &Connection,
+    projection: &Capture,
+    receipt: Option<&CaptureReceipt>,
+) -> Result<HostCapture> {
+    let (object, revision, originals, payload_hash, receipt_id): (String,String,String,String,String) = conn.query_row(
+        "SELECT projection_object,projection_revision,originals,payload_hash,receipt_id FROM host_capture_receipt WHERE identity_hash=?1 AND state='active'",
+        [&projection.source.id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).optional()?.context("host projection has no active receipt")?;
     let reference = RevisionRef { object, revision };
     let Some(Record::Evidence(saved)) = lookup(conn, &reference)? else {
@@ -224,6 +239,12 @@ pub(super) fn projection_input(conn: &Connection, projection: &Capture) -> Resul
         "noncanonical host projection"
     );
     let originals: Vec<RevisionRef> = serde_json::from_str(&originals)?;
+    ensure!(
+        receipt.is_none_or(|r| {
+            r.id == receipt_id && r.projection == reference && r.originals == originals
+        }),
+        "capture receipt is not canonical"
+    );
     let closure = closure(conn, &reference)?;
     ensure!(
         originals.iter().all(|r| closure.contains(r)),
@@ -290,6 +311,18 @@ pub(super) fn projection_input(conn: &Connection, projection: &Capture) -> Resul
             && input.identity.account == projection.source.account,
         "host projection payload mismatch"
     );
+    if claims_ordinary_protocol(&input.identity) {
+        ensure!(
+            projection.source.connector == "host-capture-projection-v2"
+                && conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 8,
+            "ordinary observations require version 8"
+        );
+        validate_ordinary(&input)?;
+        ensure!(
+            input.consulted.iter().all(|r| closure.contains(r)),
+            "missing ordinary consulted dependency"
+        );
+    }
     Ok(input)
 }
 
@@ -450,27 +483,84 @@ impl Memory {
         self.source_guard = Some(guard);
         self
     }
+    /// Inspect an exact receipt using current store identity and source authority.
+    pub fn capture_semantic_assessment(
+        &self,
+        receipt: &CaptureReceipt,
+        access: &Access,
+    ) -> Result<SemanticAssessment> {
+        self.check_access(access)?;
+        let live = self.reopen_read_only()?;
+        let tx = live.conn.unchecked_transaction()?;
+        let Some(Record::Evidence(projection)) = lookup(&tx, &receipt.projection)? else {
+            anyhow::bail!("host projection missing")
+        };
+        let input = projection_input_for_receipt(&tx, &projection, Some(receipt))?;
+        let bound: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM external_binding WHERE revision=?1 AND authority=?2 AND locator=?3 AND binding_revision=?4)",
+            params![
+                receipt.projection.revision,
+                input.binding.authority,
+                input.binding.locator,
+                input.binding.revision,
+            ],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            bound
+                && fresh(&tx, &receipt.projection, i64::MAX)?
+                && authorized_with_guard(
+                    &tx,
+                    &receipt.projection,
+                    access,
+                    live.source_guard.as_deref()
+                )?,
+            "host source unavailable"
+        );
+        tx.commit()?;
+        Ok(if claims_ordinary_protocol(&input.identity) {
+            SemanticAssessment::NotEvaluated
+        } else {
+            SemanticAssessment::ArtifactCheck(input.artifact)
+        })
+    }
+
+    pub(crate) fn admit_ordinary_observation(
+        &mut self,
+        input: OrdinaryObservationCapture,
+        access: &Access,
+    ) -> Result<CaptureReceipt> {
+        admit(self, input.into_host(), access, Admission::Ordinary)
+    }
+
     pub(crate) fn admit_host_capture(
         &mut self,
         input: HostCapture,
         access: &Access,
     ) -> Result<CaptureReceipt> {
-        admit(self, input, access, false)
+        admit(self, input, access, Admission::Legacy)
     }
     pub(crate) fn admit_host_capture_with_evidence(
         &mut self,
         input: HostCapture,
         access: &Access,
     ) -> Result<CaptureReceipt> {
-        admit(self, input, access, true)
+        admit(self, input, access, Admission::Rich)
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Legacy,
+    Rich,
+    Ordinary,
 }
 
 fn admit(
     db: &mut Memory,
     input: HostCapture,
     access: &Access,
-    rich: bool,
+    policy: Admission,
 ) -> Result<CaptureReceipt> {
     db.check_access(access)?;
     ensure!(
@@ -479,23 +569,29 @@ fn admit(
     );
     let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        if rich {
-            version == 8
-        } else {
-            matches!(version, 6 | 7)
+        match policy {
+            Admission::Legacy => matches!(version, 6 | 7),
+            Admission::Rich | Admission::Ordinary => version == 8,
         },
         "host capture producer does not match store version"
     );
-    validate(&input, if version == 8 { 64 } else { 32 })?;
-    ensure!(
-        rich || input.originals.iter().all(|p| !matches!(
-            p.kind,
-            PassageKind::ActionInvocation | PassageKind::ArtifactObservation
-        )),
-        "rich evidence requires version 8"
-    );
-    if rich {
-        validate_rich(&input)?;
+    if policy != Admission::Ordinary {
+        ensure!(
+            !claims_ordinary_protocol(&input.identity),
+            "ordinary observation requires ordinary admission"
+        );
+        validate(&input, if version == 8 { 64 } else { 32 }, 1)?;
+        if policy == Admission::Rich {
+            validate_rich(&input)?;
+        } else {
+            ensure!(
+                input.originals.iter().all(|p| !matches!(
+                    p.kind,
+                    PassageKind::ActionInvocation | PassageKind::ArtifactObservation
+                )),
+                "rich evidence requires version 8"
+            );
+        }
     }
     let identity = hash(&input.identity)?;
     let payload = hash(&input)?;
@@ -709,7 +805,11 @@ fn bind(conn: &Connection, reference: &RevisionRef, binding: &ExternalBinding) -
     )?;
     Ok(())
 }
-fn validate(input: &HostCapture, max_consulted: usize) -> Result<()> {
+pub(super) fn validate(
+    input: &HostCapture,
+    max_consulted: usize,
+    min_receipts: usize,
+) -> Result<()> {
     let i = &input.identity;
     ensure!(
         [
@@ -735,7 +835,7 @@ fn validate(input: &HostCapture, max_consulted: usize) -> Result<()> {
     );
     ensure!(
         (1..=16).contains(&input.originals.len())
-            && (1..=32).contains(&input.receipts.len())
+            && (min_receipts..=32).contains(&input.receipts.len())
             && input.consulted.len() <= max_consulted,
         "invalid host capture bounds"
     );
@@ -803,6 +903,28 @@ fn validate(input: &HostCapture, max_consulted: usize) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn validate_action(passage: &OriginalPassage) -> Result<ActionInvocation> {
+    let value: super::plan_extraction::UniqueValue = serde_json::from_str(&passage.text)?;
+    let action: ActionInvocation = serde_json::from_value(value.0)?;
+    ensure!(
+        passage.source.connector == "host-action-invocation-v1"
+            && passage.pointer.ends_with("/input")
+            && digest(&action.input_digest),
+        "invalid action evidence"
+    );
+    let bytes = serde_json::to_vec(&action.input)?;
+    match action.input_status {
+        InputStatus::Complete => ensure!(
+            bytes.len() <= 1024 && hash(&action.input)? == action.input_digest,
+            "invalid complete action input"
+        ),
+        InputStatus::Oversized => {
+            ensure!(action.input.is_null(), "invalid omitted action input")
+        }
+    }
+    Ok(action)
+}
+
 fn validate_rich(input: &HostCapture) -> Result<()> {
     ensure!(
         input.identity.check_version == EVIDENCE_CHECK_VERSION,
@@ -813,27 +935,14 @@ fn validate_rich(input: &HostCapture) -> Result<()> {
     for passage in &input.originals {
         match passage.kind {
             PassageKind::ActionInvocation => {
-                let value: super::plan_extraction::UniqueValue =
-                    serde_json::from_str(&passage.text)?;
-                let action: ActionInvocation = serde_json::from_value(value.0)?;
+                let action = validate_action(passage)?;
                 ensure!(
-                    passage.source.connector == "host-action-invocation-v1"
-                        && passage.pointer.ends_with("/input")
-                        && digest(&action.input_digest)
-                        && actions.insert(action.call_id.clone())
-                        && input.receipts.iter().any(|r| r.call_id == action.call_id && r.tool_name == action.tool_name),
+                    actions.insert(action.call_id.clone())
+                        && input.receipts.iter().any(|r| {
+                            r.call_id == action.call_id && r.tool_name == action.tool_name
+                        }),
                     "invalid action evidence"
                 );
-                let bytes = serde_json::to_vec(&action.input)?;
-                match action.input_status {
-                    InputStatus::Complete => ensure!(
-                        bytes.len() <= 1024 && hash(&action.input)? == action.input_digest,
-                        "invalid complete action input"
-                    ),
-                    InputStatus::Oversized => {
-                        ensure!(action.input.is_null(), "invalid omitted action input")
-                    }
-                }
             }
             PassageKind::ArtifactObservation => {
                 artifacts += 1;

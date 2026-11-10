@@ -423,6 +423,9 @@ export function rowSummary(detail) {
   const args = detail.args ?? {};
   if (tool === 'mail_send') return { who: args.to ?? '', subject: args.subject ?? detail.headline ?? '' };
   if (tool !== 'mail_reply') return null;
+  // A rule's reply is staged by the harness, with no session to join: the
+  // item itself says whom it answers and about what (review of #856).
+  if (detail.answering) return { who: detail.answering.to ?? '', subject: detail.answering.subject ?? detail.headline ?? '' };
   const read = (detail.sources ?? []).find((s) => toolSuffix(s.tool) === 'mail_get_thread');
   const thread = read ? threadMessages(read.text, read.clipped) : null;
   const answered = answeredMessage(thread, args);

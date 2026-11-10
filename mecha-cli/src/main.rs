@@ -470,6 +470,10 @@ pub enum Command {
     /// Experimental memory store: synthetic fixtures only, explicit database.
     #[cfg(feature = "memory-prototype")]
     Memory(commands::memory::Args),
+
+    /// Initialize or recover an explicitly selected ordinary-run memory store.
+    #[cfg(feature = "memory-prototype")]
+    MemorySession(commands::memory_session::Args),
     /// Two readers with different sources ask each other about one entity.
     Gossip(commands::gossip::GossipArgs),
     /// Judge whether queued generalisations hold beyond their one source.
@@ -607,7 +611,7 @@ impl Command {
             #[cfg(feature = "memory-prototype")]
             // Memory commands with explicit local endpoint/model arguments manage
             // resident-only inference themselves, outside generic provider setup.
-            Command::Memory(_) => false,
+            Command::Memory(_) | Command::MemorySession(_) => false,
             Command::Run(_)
             | Command::Batch(_)
             | Command::Eval(_)
@@ -744,7 +748,7 @@ impl Command {
             #[cfg(feature = "memory-prototype")]
             // Memory commands with explicit local endpoint/model arguments manage
             // resident-only inference themselves, outside generic provider setup.
-            Command::Memory(_) => false,
+            Command::Memory(_) | Command::MemorySession(_) => false,
             Command::Run(_)
             | Command::Chat(_)
             | Command::Tui(_)
@@ -956,6 +960,11 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let mut cli = Cli::parse();
+    #[cfg(feature = "memory-prototype")]
+    let ordinary_memory = match &cli.command {
+        Command::Run(args) => commands::run::preflight_memory(&mut cli.global, args)?,
+        _ => None,
+    };
     // A driven run reads no project layer (D1b): a pinned historical tree's
     // `mecha.toml` is neither the owner's nor the run's to choose, and it
     // could attach a server or a hook, or undo the sandbox. Forced here, for
@@ -981,7 +990,15 @@ async fn dispatch() -> Result<()> {
         commands::features::print_notices();
     }
     match cli.command {
-        Command::Run(args) => commands::run::execute(&cli.global, args).await,
+        Command::Run(args) => {
+            commands::run::execute(
+                &cli.global,
+                args,
+                #[cfg(feature = "memory-prototype")]
+                ordinary_memory,
+            )
+            .await
+        }
         Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
         Command::Tui(args) => tui::execute(&cli.global, args.resume, args.no_session).await,
         Command::VoiceServe(args) => commands::voice_serve::execute(&cli.global, args).await,
@@ -1013,6 +1030,8 @@ async fn dispatch() -> Result<()> {
         Command::Kg(args) => commands::kg::run(&cli.global, args).await,
         #[cfg(feature = "memory-prototype")]
         Command::Memory(args) => commands::memory::execute(args).await,
+        #[cfg(feature = "memory-prototype")]
+        Command::MemorySession(args) => commands::memory_session::execute(args),
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,

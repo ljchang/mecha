@@ -4155,11 +4155,12 @@ impl Agent {
                     // One walk, three consumers, for the reason the byte
                     // measurement above is taken once: pairing every result
                     // with its call renders each input, and every reader needs
-                    // the same values. They key differently on purpose —
-                    // the guard on the exact call, boredom on the *target*, so
-                    // two tools that read one file and get the same bytes count
-                    // as the same thing learned twice. Only the guard's refusal
-                    // streak reads the error flag.
+                    // the same values. They key differently on purpose — the
+                    // guard on the exact call; boredom as `Boredom::key` says,
+                    // a declared read or a failed call by its target and any
+                    // other call whole, where that rule is stated once. The
+                    // guard's refusal streak and boredom's key both read the
+                    // error flag.
                     let outcomes: Vec<(&str, &Value, &str, bool)> = results
                         .iter()
                         .filter_map(|block| {
@@ -4247,9 +4248,22 @@ impl Agent {
                     let bored = boredom.observe_turn(outcomes.iter().map(
                         |&(name, input, content, is_error)| {
                             let call = (name, input.to_string());
+                            // A write is keyed whole, a read by its target:
+                            // six different edits to one file are six pieces
+                            // of work, never one edit repeated (`Boredom::key`).
+                            // A *failed* call is keyed by target whatever it
+                            // declares: it changed nothing, so its arguments
+                            // are guesses rather than work — `fs_edit` missing
+                            // with a new `old` each turn is the guessing loop
+                            // this exists to name, and the shape key sees one
+                            // target there (review of #857, pass 2).
+                            let reads = is_error
+                                || crate::boredom::Boredom::reads(
+                                    self.registry.get(name).and_then(|t| t.effect()),
+                                );
                             crate::boredom::Outcome {
                                 tool: name,
-                                key: crate::boredom::Boredom::key(name, input, content),
+                                key: crate::boredom::Boredom::key(name, input, content, reads),
                                 failure: (is_error && !declined_by_person.contains(&call)).then(
                                     || {
                                         crate::boredom::Boredom::failure(
@@ -14936,6 +14950,206 @@ justification = "echo is off on this box"
                 .all(|m| !m.text().contains("same thing")),
             "six identical calls with six different answers is watching, not repeating"
         );
+    }
+
+    /// A file edited in six different places answers `edited <path>` six
+    /// times, and that is a refactor, not a loop. The driven pilot's defect
+    /// (2026-11-08): keyed by path, the six read as one edit made six times,
+    /// the run was told to stop and say what blocked it, and Claude did — with
+    /// ten edits still to make. Fails on the old key, which ignored a write's
+    /// arguments.
+    #[tokio::test]
+    async fn different_edits_to_one_file_are_work_and_never_called_stuck() {
+        let edit = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("e{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": format!("a{i}"), "new": format!("b{i}")}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..6).map(edit).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(ReceiptEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("refactor it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| !m.text().contains(crate::boredom::NOTICE_STEM)),
+            "six different edits are six pieces of work"
+        );
+    }
+
+    /// The other half, so the fix above cannot pass by never firing: the same
+    /// edit, word for word, three turns running is still a repeat.
+    #[tokio::test]
+    async fn the_same_edit_three_times_is_still_named() {
+        let same = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("e{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": "a", "new": "b"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(same).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(ReceiptEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("edit it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// The half of the rule that kept the old behaviour: two *declared reads*
+    /// reaching one file and getting the same bytes are one thing learned
+    /// twice, keyed by target through the registry's `effect()`. The only
+    /// test that proves the loop reads `effect()` at all — with the lookup
+    /// replaced by `is_error` alone the suite stayed green (review of #857,
+    /// pass 9).
+    #[tokio::test]
+    async fn two_read_tools_reaching_one_files_same_bytes_are_one_finding() {
+        let read = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("r{i}"),
+                    name: if i.is_multiple_of(2) { "peek" } else { "look" }.into(),
+                    input: json!({"path": "src/lib.rs"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(read).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(SameBytes("peek")), Arc::new(SameBytes("look"))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("read it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// A declared read that answers the same bytes whichever tool asked.
+    struct SameBytes(&'static str);
+    #[async_trait]
+    impl Tool for SameBytes {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "Read a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Read)
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("fn main() {}"))
+        }
+    }
+
+    /// And a *failed* write is a guess, not work: `fs_edit` missing with a new
+    /// `old` each turn answers the same error every time, and that streak on
+    /// one file is what boredom exists to name. Keyed whole like a success,
+    /// three guesses were three keys and the shape key saw one target, so
+    /// nothing fired (review of #857, pass 2).
+    #[tokio::test]
+    async fn different_guesses_failing_on_one_file_are_still_named() {
+        let guess = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("g{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": format!("guess {i}"), "new": "b"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(guess).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(MissingEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("edit it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// `fs_edit` when `old` is not in the file: a workspace write that errors
+    /// the same way whatever was guessed.
+    struct MissingEdit;
+    #[async_trait]
+    impl Tool for MissingEdit {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "Replace text in a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Workspace)
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("`old` does not appear in the file"))
+        }
+    }
+
+    /// `fs_edit`'s shape: a workspace write whose result is a receipt that
+    /// never mentions what changed.
+    struct ReceiptEdit;
+    #[async_trait]
+    impl Tool for ReceiptEdit {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "Replace text in a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Workspace)
+        }
+        async fn call(&self, i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(format!(
+                "edited {}",
+                i["path"].as_str().unwrap_or("")
+            )))
+        }
     }
 
     #[tokio::test]

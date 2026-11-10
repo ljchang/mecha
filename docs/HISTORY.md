@@ -14,6 +14,94 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+
+### Opt-in ordinary-session memory (2026-11-09, prototype implementation)
+
+`memory_session::SessionMemory` attaches fresh ordinary Run recordings to the
+existing encrypted v8 store through an explicit owner manifest. The CLI
+`run --episodic-memory` uses the existing Agent, permissions, taint, budgets and
+cancellation. Host `memory-session init`, `retry` and `forget` do not initialize a
+provider. Recovery can outlive the task directory; retry only admits an immutable
+seal and cannot repeat actions. No production activation, personal-graph import,
+chat/resume integration or automatic concept scheduling is implied.
+
+The separate `ordinary-session-observation-v1` producer authenticates attribution
+without inventing an artifact check: `capture_semantic_assessment` returns
+NotEvaluated. Original owner requests, direct-tool inputs/results and assistant
+statements retain their source locators. Assistant Thinking and opaque signatures
+stay only in the full hash-bound transcript, never evidence projections; later
+source edits withhold recall. Completed answers may have no tool receipts when
+there were no invocations. Unknown/partial records still refuse capture.
+
+Durable recall-attempt records must reconcile with actual delivered results.
+Every retained passage inherits all consulted references, not just model citations.
+Review and actual subprocess fixtures found two important boundary defects:
+forgetting a revision made an empty closure appear authorized, and an owner-defined
+subagent could shadow a permitted built-in tool name. Exact canonical membership
+now gates delivery validation; preflight rejects effective subagents and selected
+outbox routes, and checks the actual registry's delegation/program/deferred traits.
+The first failing evidence is preserved. No standing policy is silently stripped.
+
+The authored two-process CLI fixture checked actual HTTP request bodies, JSONL,
+artifacts and encrypted SQLite rows. A new goal/workspace recalled the first
+session's tool observation; every retained descendant carried its source closure.
+Withdrawal between delivery and finalization prevented a new seal/retention while
+preserving the completed action. A real SQLite lock produced Pending; a fresh host
+retry under broken provider config admitted the exact seal without another model
+call or action. Recovery survived removal of the historical workspace. Fatal
+provider errors retained the native error and partial trace, with no fake Outcome.
+Independent task reviews passed. Local qualification passed 14 actual CLI cases,
+21 lifecycle cases after the numeric fix, five bridge cases (one ignored child entry) and four native
+integration cases, strict core/CLI all-feature Clippy and formatting. The baseline
+macOS linker warning remains distinct from Rust/Clippy diagnostics.
+
+The first combined Linux run preserved a real recording failure: eight CLI cases
+passed and five returned recording_unavailable despite completed actions. A
+separate frozen-binary diagnostic isolated one native Outcome field: load average
+serialized as `0.65`, while `serde_json::to_value` widened the typed f32 to
+`0.6499999761581421`. Strict validation must compare through the session writer's
+text serialization, rather than equate typed-to-Value conversion with wire JSON.
+The original failure and diagnostic remain retained; no model was run on that
+binary.
+
+The first resident-model setups stopped before inference: the harness initially
+used a database filename without the required suffix; after correction, Clap
+rejected required global options placed before `run`. These setup failures are
+preserved separately from model-performance evidence; neither executed an action
+or called the model. Global-option enforcement now runs against merged CLI
+options before configuration/provider startup; both placements reach the same
+manifest validation and omitted requirements still fail closed.
+
+The fresh resident-model workflow then passed with the qualified CLI: two new
+processes, three inference requests each, different goals/workspaces and no answer
+in the follow-up prompt. Both observations were retained as NotEvaluated; the
+follow-up received the original attributed file-read result and wrote the matching
+artifact. All seven delivered references matched tracked and sealed dependencies.
+Host retries returned the original receipts with zero inference; forgetting the
+first episode purged 13 objects/revisions and withheld retry of the dependent
+second capture. Original transcripts and task artifacts remained unchanged.
+The resident model was unchanged. This is one mechanics trial, not a memory-benefit
+comparison or evidence of general learning.
+
+Independent raw-evidence review verified all six complete responses and source
+receipts. Recorded usage was 5,743 uncached plus 9,142 cached input tokens and
+878 output tokens; the two CLI runs took 13.259 seconds combined. Monetary cost
+was unpriced. Three reasoning blocks per run remained audit-only; the follow-up
+retained both private and untrusted taint.
+
+Final Spark qualification (2026-11-10) passed 7,188 memory-enabled workspace
+tests with zero failures and 30 ignores, a fresh all-target build, formatting,
+strict all-feature Clippy and Rust 1.96 compatibility. Exact postimage/feature-gate
+comparison retained passing evidence for unchanged default code (6,426 tests,
+25 ignores), 397 standalone tests and strict Clippy, 124 Python CLI and 257
+authored Python tests. Each workspace count includes six built-in OCR/layout
+early skips; these are not verified integrations. Separate strict supported
+backend checks passed 60 cases (one ignored), and local-document checks passed
+four with six declared unsupported cases filtered. Source integrity and the
+complete evidence chain verified. The current runtime remains opt-in; no
+production installation or owner-data trial occurred.
+
+
 ### Bounded native completion feedback (2026-11-09, prototype implementation)
 
 `CompletionObserver` and `CompletionReport::observe` add one optional operational

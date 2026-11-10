@@ -21,6 +21,20 @@ fn candidate_uses_newest_inbound_and_refuses_missing_direction_or_dates() {
     .unwrap();
     assert_eq!(c.message.provider_message_id, "inbound");
     assert!(c.classified.is_none());
+    // A reply's guards: the owner has sent in this thread, and the facts it
+    // needs are the read's own (§5.4).
+    assert_eq!(c.sending.owner_participated, Some(true));
+    assert_eq!(c.sending.from_name, "Untrusted display name");
+    assert_eq!(c.sending.owners, vec!["owner@example.edu".to_string()]);
+    let alone = candidate(
+        "campus",
+        "thread-alpha",
+        &emails[..1],
+        &["owner@example.edu".into()],
+        None,
+    )
+    .unwrap();
+    assert_eq!(alone.sending.owner_participated, Some(false));
     assert!(candidate("campus", "thread-alpha", &emails, &[], None).is_err());
     let mut unknown = inbound;
     unknown.is_draft = None;
@@ -2189,4 +2203,86 @@ fn retrospective_graph_positive_raw_headers_are_rows_and_unknown_is_absent() {
         assert_eq!(json["unknown_header_messages"], usize::from(!positive));
     }
     assert!(store.ledger().unwrap().is_empty());
+}
+
+/// Review of #856, pass 6: a staged reply carries the recipient its review
+/// showed, so a selector the sender wrote cannot redirect the release.
+#[test]
+fn a_staged_reply_pins_the_recipient_the_review_showed() {
+    let message = mecha_core::mail_rules::MessageRef {
+        account: "campus".into(),
+        provider_message_id: "p-2".into(),
+        thread_id: "thread-alpha".into(),
+        message_id: "<shared@example.com>".into(),
+        sender: "Mallory <mallory@example.org>".into(),
+        subject: "Re: Booking".into(),
+    };
+    let answering = mecha_core::outbox::Answering {
+        to: "mallory@example.org".into(),
+        subject: "Re: Booking".into(),
+    };
+    let args = staged_reply_args(&message, "Thanks.", &answering);
+    assert_eq!(args["from_only"], true);
+    assert_eq!(args["expect_from"], "mallory@example.org");
+    assert_eq!(args["message_id"], "<shared@example.com>");
+    // With no Message-ID the provider id selects, and the pin still rides.
+    let message = mecha_core::mail_rules::MessageRef {
+        message_id: String::new(),
+        ..message
+    };
+    let args = staged_reply_args(&message, "Thanks.", &answering);
+    assert_eq!(args["message_id"], "p-2");
+    assert_eq!(args["expect_from"], "mallory@example.org");
+}
+
+/// Review of #856, pass 9: one message cannot say whether the owner joined
+/// its conversation, so the preview reads the thread of a reply rule's match
+/// — and only that — and the thread decides the guard.
+#[test]
+fn the_preview_reads_a_reply_rules_thread_to_see_whether_you_joined() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let files = std::collections::BTreeMap::from([(
+        "reply.md".to_string(),
+        "Thanks, office hours are Fridays.".to_string(),
+    )]);
+    let reply = store
+        .install(
+            "office-hours",
+            "description = 'Office hours'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'reply'\ntemplate = 'reply.md'\n",
+            &files,
+        )
+        .unwrap();
+    let archive = store
+        .install(
+            "notice",
+            "description = 'Review notice'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'archive'",
+            &Default::default(),
+        )
+        .unwrap();
+    let owners = ["owner@example.edu".to_string()];
+    let inbound = email("inbound", "sender@example.com", "2026-11-03T12:00:00Z");
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        std::slice::from_ref(&inbound),
+        &owners,
+        None,
+    )
+    .unwrap();
+    assert!(preview_reads_thread(&reply, &c));
+    assert!(!preview_reads_thread(&archive, &c), "no reply, no read");
+    let elsewhere = email("other", "sender@example.org", "2026-11-03T12:00:00Z");
+    let c = candidate("campus", "thread-alpha", &[elsewhere], &owners, None).unwrap();
+    assert!(!preview_reads_thread(&reply, &c), "no match, no read");
+
+    let sent = email("outbound", "owner@example.edu", "2026-11-03T13:00:00Z");
+    assert_eq!(
+        owner_joined(std::slice::from_ref(&inbound), &owners),
+        Some(false)
+    );
+    assert_eq!(owner_joined(&[inbound.clone(), sent], &owners), Some(true));
+    let mut unknown = inbound.clone();
+    unknown.direction_evidence = None;
+    assert_eq!(owner_joined(&[inbound, unknown], &owners), None);
 }

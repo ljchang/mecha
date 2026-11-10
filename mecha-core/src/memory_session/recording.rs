@@ -1,0 +1,363 @@
+use super::authority::{digest, Attempt, Frozen};
+use super::*;
+use crate::{
+    memory::{SourceKey, ORDINARY_OBSERVATION_PROTOCOL, ORDINARY_RECORDER_VERSION},
+    message::{Block, Role},
+    session::{Record, SessionKind},
+};
+use std::collections::BTreeMap;
+pub(super) fn surface(names: &[String]) -> Result<()> {
+    ensure!(
+        names.iter().any(|n| n == "goal_context")
+            && names.iter().all(|n| matches!(
+                n.as_str(),
+                "fs_read" | "fs_write" | "fs_list" | "goal_context"
+            ))
+            && names.iter().collect::<BTreeSet<_>>().len() == names.len(),
+        "ordinary memory requires an explicit supported tool surface"
+    );
+    Ok(())
+}
+fn records(bytes: &[u8]) -> Result<Vec<Record>> {
+    ensure!(
+        bytes.len() <= authority::SOURCE_MAX && bytes.ends_with(b"\n"),
+        "ordinary transcript incomplete"
+    );
+    let text = std::str::from_utf8(bytes)?;
+    text.lines()
+        .map(|line| {
+            ensure!(!line.is_empty(), "ordinary transcript malformed");
+            let v: crate::memory::plan_extraction::UniqueValue = serde_json::from_str(line)?;
+            let record: Record = serde_json::from_value(v.0.clone())?;
+            // Compare with the encoding Session::append writes. Serializing
+            // directly to Value widens f32 fields such as the load average.
+            let encoded: serde_json::Value =
+                serde_json::from_str(&serde_json::to_string(&record)?)?;
+            ensure!(
+                encoded == v.0,
+                "ordinary transcript unknown or lossy fields"
+            );
+            Ok(record)
+        })
+        .collect()
+}
+pub(super) fn initial(
+    bytes: &[u8],
+    session: &Session,
+    prompt: &str,
+    goal: &GoalRef,
+    workspace: &Path,
+) -> Result<()> {
+    let rs = records(bytes)?;
+    let mut meta = 0;
+    let mut config = 0;
+    let mut anchor = 0;
+    let mut owner = 0;
+    for (i, r) in rs.iter().enumerate() {
+        match r {
+            Record::Meta(m) => {
+                ensure!(
+                    i == 0
+                        && m.kind == Some(SessionKind::Run)
+                        && serde_json::to_value(m)? == serde_json::to_value(&session.meta)?
+                        && m.workspace.canonicalize()? == workspace,
+                    "ordinary run header unavailable"
+                );
+                meta += 1;
+            }
+            Record::Config(c) => {
+                ensure!(
+                    owner == 0 && c.workspace.canonicalize()? == workspace,
+                    "ordinary configuration unavailable"
+                );
+                surface(&c.tools)?;
+                config += 1;
+            }
+            Record::GoalAnchor { goal: g } => {
+                ensure!(g.as_ref() == Some(goal), "ordinary goal changed");
+                anchor += 1;
+            }
+            Record::Message(m) => {
+                ensure!(
+                    config == 1 && anchor > 0 && m == &crate::message::Message::user(prompt),
+                    "ordinary begin is not fresh"
+                );
+                owner += 1;
+            }
+            _ => anyhow::bail!("ordinary begin is not fresh"),
+        }
+    }
+    ensure!(
+        meta == 1 && config <= 1 && anchor >= 1 && owner <= 1,
+        "ordinary begin is not fresh"
+    );
+    Ok(())
+}
+pub(super) fn capture(
+    f: &Frozen,
+    bytes: &[u8],
+    attempts: &[Attempt],
+    memory: &Memory,
+    access: &Access,
+    id: &str,
+) -> Result<HostCapture> {
+    let mut originals = vec![];
+    let mut receipts = vec![];
+    let mut calls = BTreeMap::<String, (String, serde_json::Value, bool)>::new();
+    let mut matched = BTreeSet::new();
+    let mut consulted = vec![];
+    let mut meta = 0;
+    let mut config = 0;
+    let mut anchors = 0;
+    let mut owner = 0;
+    let mut messages = 0;
+    let mut taint = false;
+    let mut ended = false;
+    let mut final_assistant = false;
+    for (line, r) in records(bytes)?.into_iter().enumerate() {
+        ensure!(!ended, "ordinary transcript appended after outcome");
+        match r {
+            Record::Meta(m) => {
+                ensure!(
+                    line == 0
+                        && m.kind == Some(SessionKind::Run)
+                        && m.id == f.session_id
+                        && m.workspace.canonicalize()? == f.workspace,
+                    "ordinary run header unavailable"
+                );
+                meta += 1;
+            }
+            Record::Config(c) => {
+                ensure!(
+                    messages == 0 && c.workspace.canonicalize()? == f.workspace,
+                    "ordinary configuration unavailable"
+                );
+                surface(&c.tools)?;
+                config += 1;
+            }
+            Record::GoalAnchor { goal } => {
+                ensure!(
+                    goal.is_some_and(|g| g.to_string() == f.goal),
+                    "ordinary goal changed"
+                );
+                anchors += 1;
+            }
+            Record::Grants { grants } => ensure!(grants.is_empty(), "ordinary grants unsupported"),
+            Record::Notes { notes } => {
+                ensure!(
+                    notes.len() <= 32 && notes.iter().all(|n| n.len() <= 8192),
+                    "ordinary notes oversized"
+                );
+            }
+            Record::Summary { .. } => {}
+            Record::Taint(recorded) => {
+                ensure!(
+                    attempts.is_empty() || recorded.private,
+                    "ordinary private recall taint missing"
+                );
+                ensure!(
+                    !attempts.iter().any(|a| a.external) || recorded.untrusted,
+                    "ordinary external recall taint missing"
+                );
+                ensure!(!taint && messages > 0, "ordinary taint unavailable");
+                taint = true;
+            }
+            Record::Outcome(s) => {
+                ensure!(
+                    taint
+                        && s.stop_cause == Some(crate::agent::StopCause::Completed)
+                        && s.compactions == 0,
+                    "ordinary run incomplete"
+                );
+                ended = true;
+            }
+            Record::Message(m) => {
+                ensure!(
+                    !taint
+                        && config == 1
+                        && anchors > 0
+                        && messages < 128
+                        && !m.harness
+                        && m.planning.is_none(),
+                    "ordinary message unsupported"
+                );
+                messages += 1;
+                final_assistant = m.role == Role::Assistant
+                    && m.content.iter().any(|b| matches!(b, Block::Text { .. }));
+                for (index, b) in m.content.into_iter().enumerate() {
+                    let (kind, field, text) = match b {
+                        // The full native transcript stays bound by the seal.
+                        // Reasoning and its opaque signature are audit data.
+                        Block::Thinking { .. } if m.role == Role::Assistant => continue,
+                        Block::Text { text } => {
+                            if m.role == Role::User {
+                                ensure!(
+                                    owner == 0 && messages == 1 && index == 0 && text == f.prompt,
+                                    "ordinary owner prompt changed"
+                                );
+                                owner += 1;
+                                (PassageKind::UserRequest, "text", text)
+                            } else {
+                                (PassageKind::AssistantText, "text", text)
+                            }
+                        }
+                        Block::ToolUse {
+                            id: call_id,
+                            name,
+                            input,
+                        } => {
+                            ensure!(
+                                m.role == Role::Assistant
+                                    && !calls.contains_key(&call_id)
+                                    && calls.len() < 32
+                                    && matches!(
+                                        name.as_str(),
+                                        "fs_read" | "fs_write" | "fs_list" | "goal_context"
+                                    ),
+                                "ordinary invocation unsupported"
+                            );
+                            let input_bytes = serde_json::to_vec(&input)?;
+                            ensure!(input_bytes.len() <= 1024, "ordinary input oversized");
+                            let action = ActionInvocation {
+                                call_id: call_id.clone(),
+                                tool_name: name.clone(),
+                                input_status: InputStatus::Complete,
+                                input: input.clone(),
+                                input_digest: digest(&input_bytes),
+                            };
+                            calls.insert(call_id, (name, input, false));
+                            (
+                                PassageKind::ActionInvocation,
+                                "input",
+                                serde_json::to_string(&action)?,
+                            )
+                        }
+                        Block::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => {
+                            ensure!(m.role == Role::User, "ordinary result unsupported");
+                            let (name, input, complete) = calls
+                                .get_mut(&tool_use_id)
+                                .ok_or_else(|| anyhow::anyhow!("ordinary orphan result"))?;
+                            ensure!(!*complete, "ordinary duplicate result");
+                            *complete = true;
+                            receipts.push(ToolReceipt {
+                                call_id: tool_use_id,
+                                tool_name: name.clone(),
+                                status: if is_error {
+                                    ReceiptStatus::Failed
+                                } else {
+                                    ReceiptStatus::Succeeded
+                                },
+                            });
+                            if name == "goal_context" {
+                                let candidates: Vec<_> = attempts
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, a)| {
+                                        a.input == *input
+                                            && a.is_error == is_error
+                                            && recall::exact_output(&a.output, &content, a.external)
+                                    })
+                                    .collect();
+                                ensure!(
+                                    candidates.len() == 1 && matched.insert(candidates[0].0),
+                                    "ordinary recall delivery ambiguous"
+                                );
+                                let a = candidates[0].1;
+                                let refs = if !a.is_error && input.get("memory").is_some() {
+                                    crate::memory_experience_bridge::memory_packet_references_checked(&content,Some((memory,access)))?
+                                } else {
+                                    ensure!(!a.external, "ordinary failed recall delivery unknown");
+                                    vec![]
+                                };
+                                ensure!(
+                                    refs == a.references,
+                                    "ordinary recall dependencies changed"
+                                );
+                                memory.validate_delivered_context(&refs, &[], access)?;
+                                for r in refs {
+                                    if !consulted.contains(&r) {
+                                        consulted.push(r);
+                                    }
+                                }
+                                continue;
+                            }
+                            (PassageKind::ToolResult, "content", content)
+                        }
+                        _ => anyhow::bail!("ordinary block unsupported"),
+                    };
+                    ensure!(
+                        !text.is_empty() && text.len() <= 4096,
+                        "ordinary passage unavailable"
+                    );
+                    let pointer = format!("/content/{index}/{field}");
+                    originals.push(OriginalPassage {
+                        source: SourceKey {
+                            connector: if kind == PassageKind::ActionInvocation {
+                                "host-action-invocation-v1"
+                            } else {
+                                "host-session-field-v1"
+                            }
+                            .into(),
+                            account: f.request.account.clone(),
+                            id: format!("{}:{}:{pointer}", f.session_id, line + 1),
+                        },
+                        kind,
+                        line: (line + 1) as u64,
+                        pointer,
+                        text,
+                        occurred_at: None,
+                    });
+                }
+            }
+            _ => anyhow::bail!("ordinary recording unsupported"),
+        }
+    }
+    ensure!(
+        meta == 1
+            && config == 1
+            && owner == 1
+            && ended
+            && final_assistant
+            && calls.values().all(|c| c.2)
+            && matched.len() == attempts.len(),
+        "ordinary recording incomplete"
+    );
+    let payload = HostCapture {
+        identity: CaptureIdentity {
+            domain: f.request.domain.clone(),
+            account: f.request.account.clone(),
+            session_id: f.session_id.clone(),
+            prefix_digest: digest(bytes),
+            check_id: id.into(),
+            check_version: ORDINARY_OBSERVATION_PROTOCOL.into(),
+            evaluator_version: ORDINARY_RECORDER_VERSION.into(),
+        },
+        binding: ExternalBinding {
+            authority: f.authority.clone(),
+            locator: id.into(),
+            revision: "0".repeat(64),
+        },
+        criterion: ConfirmedCriterion {
+            goal: f.goal.clone(),
+            goal_text: f.prompt.clone(),
+            criterion_text: f.prompt.clone(),
+            criterion_revision: digest(f.prompt.as_bytes()),
+            confirmation_digest: id.into(),
+        },
+        originals,
+        receipts,
+        artifact: ArtifactCheck {
+            artifact_digest: None,
+            verdict: CheckVerdict::Unavailable,
+        },
+        consulted,
+        scopes: f.request.scopes.clone(),
+        occurred_at: None,
+    };
+    OrdinaryObservationCapture::try_from_host(payload.clone())?;
+    Ok(payload)
+}

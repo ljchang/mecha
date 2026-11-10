@@ -152,6 +152,8 @@ pub mod memory_outcome_reappraisal;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_runtime;
 #[cfg(feature = "memory-prototype")]
+pub mod memory_session;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_situated_appraisal;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_situated_needs;

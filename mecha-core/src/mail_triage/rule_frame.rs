@@ -196,6 +196,9 @@ pub struct RuleRecord {
     pub shadow: Vec<RuleHit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<RuleRefused>,
+    /// The confirmation pass, when a candidate's task or send needed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<super::confirm::Confirmation>,
 }
 
 fn unknown_input() -> RuleInput {
@@ -223,11 +226,12 @@ impl RuleRecord {
             active: reading.active,
             shadow: reading.shadow,
             refused: reading.refused,
+            confirmation: None,
         }
     }
 }
 
-fn one_line(text: &str) -> String {
+pub(super) fn one_line(text: &str) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     match flat.char_indices().nth(DESCRIBE_MAX_CHARS) {
         Some((cut, _)) => flat[..cut].to_string(),
@@ -352,7 +356,7 @@ pub(super) fn extend_schema(schema: &mut serde_json::Value, ask: &RuleAsk<'_>) {
     }
 }
 
-fn ground(quote: Option<&str>, thread: &ThreadInput) -> Result<String, RuleRefusal> {
+pub(super) fn ground(quote: Option<&str>, thread: &ThreadInput) -> Result<String, RuleRefusal> {
     let quote = quote.map(str::trim).unwrap_or_default();
     if quote.is_empty() {
         return Err(RuleRefusal::NoQuote);
@@ -391,12 +395,12 @@ pub(super) fn read_answer(
     if ask.frame.is_empty() {
         return reading;
     }
-    let mut refused = Vec::new();
+    let mut dropped = Vec::new();
     if let Some(name) = answer["rule"].as_str().map(str::trim) {
         if !name.is_empty() && name != "none" {
             let quote = answer["rule_quote"].as_str();
             if !ask.active.iter().any(|n| n == name) {
-                refused.push(reading_refused(
+                dropped.push(refused(
                     RuleList::Active,
                     name,
                     quote,
@@ -410,9 +414,7 @@ pub(super) fn read_answer(
                             quote,
                         })
                     }
-                    Err(reason) => {
-                        refused.push(reading_refused(RuleList::Active, name, quote, reason))
-                    }
+                    Err(reason) => dropped.push(refused(RuleList::Active, name, quote, reason)),
                 }
             }
         }
@@ -426,7 +428,7 @@ pub(super) fn read_answer(
         }
         let quote = item["quote"].as_str();
         if !ask.shadow.iter().any(|n| n == name) {
-            refused.push(reading_refused(
+            dropped.push(refused(
                 RuleList::Shadow,
                 name,
                 quote,
@@ -439,14 +441,14 @@ pub(super) fn read_answer(
                 name: name.to_string(),
                 quote,
             }),
-            Err(reason) => refused.push(reading_refused(RuleList::Shadow, name, quote, reason)),
+            Err(reason) => dropped.push(refused(RuleList::Shadow, name, quote, reason)),
         }
     }
-    reading.refused = refused;
+    reading.refused = dropped;
     reading
 }
 
-fn reading_refused(
+pub(super) fn refused(
     list: RuleList,
     name: &str,
     quote: Option<&str>,

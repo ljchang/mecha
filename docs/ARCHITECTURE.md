@@ -4684,6 +4684,16 @@ reader cannot prove absence and did not surface the header (the 2026-11-06
 ruling's Unknown); it is never folded into `matched_rows`, so "matched
 nothing" and "could not see the header" read differently.
 Partial would-have rows remain visible alongside a failed account.
+A reply action meets §5.4's message-only refusals here as in the live pass
+(`engine::message_reply_refusal`, one function for both): a refused reply is
+a `skipped` row reading `test: skipped: <guard>`, counted in `refused_rows`
+and never in `would_have_rows`, so the preview the owner reads before raising
+template replies out of shadow is the rate the live pass would reply at. The
+per-sender week alone is not applied, because it reads the ledger and the
+test writes none. "A conversation you have joined" needs the thread, which
+one message cannot show, so a reply rule's match reads its thread
+(`preview_reads_thread`) and the owner's own messages in it decide the
+guard as they do live; every other message is previewed from itself.
 
 **Edits and corrections cannot restore permission.** `RuleStore::edit`
 parses first, validates a private candidate snapshot with existing bundled
@@ -4902,8 +4912,43 @@ quote in `matched_because`. A bulk thread the pre-filter took is asked about
 for the rules alone when a rule is eligible (owner ruling 2026-11-07), keeping
 its `ignore`. Admission (`RuleStore::admit_locked`) refuses an install, edit
 or raise that would add entries past the cap; lowerings are never checked.
-Until P4b, a description rule's Board and outbound groups are capped at
-`shadow` and its Mailbox group at `propose` when it contains `trash`.
+A description rule's Mailbox group is capped at `propose` when it contains
+`trash`. Outbound groups are no longer held by rule kind: Fixed words is
+capped at `propose` for every rule, and the other outbound groups stay at
+`shadow` because they are not yet `supported()`.
+
+**A rule's template reply is staged, never sent, in P4b-2a.** The Fixed words
+group is supported up to `propose`. `mail_rules::send` fills the closed
+slots and applies §5.4's refusals in every non-off mode, shadow included;
+the per-sender week reads the ledger. At dispatch the engine renders the
+template and calls `Mailbox::stage_reply`, which the mail binary implements
+as `OutboxStore::stage_by_harness_quoting_mail` of the routed `mail_reply`
+tool with `from_only: true` — armed, because the slots carry the sender's
+words and a harness-authored draft is otherwise stamped clean; the `staged` row keeps `outbox_item`, and every pass
+begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
+`rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
+a model may also set: the message's `From` alone, never reply-all. On
+Graph it is not `/reply` with `toRecipients`, which Microsoft documents as
+*adding* a recipient beside the `replyTo` the endpoint follows: it is a
+`createReply` draft, its To replaced and Cc/Bcc cleared by `PATCH`, the
+recipients read back and the draft sent only when they are exactly that one
+address (deleted otherwise) — the artifact asked, not the request we wrote.
+The staged call pins `expect_from` to the address its review shows, and
+`mail_reply` refuses when the message its `message_id` resolves to is from
+anyone else: the selector is the sender-written Message-ID, so the approval
+is checked against the recipient, never the selector. A staged reply carries `OutboxItem::answering` (the address and subject),
+because no drafting session exists for the review's source join to read.
+
+**A description rule's task is decided by a pass with no learned rules in
+it (P4b-1).** `mail_triage::confirm` asks the candidates' descriptions alone,
+with an instruction compiled into the binary; the sweep stores its answer on
+`rules.confirmation` with `CONFIRMATION_VERSION`. The engine demotes an
+automatic task to an offer, at planning and again at dispatch, unless that
+answer chose the same rule under this build, and reserves no cap for the
+demoted one. The version is in the match digest of only the groups it decides
+and the approval digest of only the rules it decides for. This is the
+argument `Reflexion::learnable` now cites for the triage exemption: a learned
+line can nominate a task or send, never decide one.
 
 **An inbox removal cannot hide work owed to classify.** Enabled description
 rules, even shadow ones, and any matching non-off header digest/task/outbound
@@ -10539,8 +10584,25 @@ unchanged pending behavioral qualification.
 **Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
 measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
-call *and* its result via `compact::target_of` — identical arguments with a
-changing result is polling, which must never grade as stuck.
+call *and* its result — identical arguments with a changing result is polling,
+which must never grade as stuck.
+
+**Boredom serves exploration and must never hinder work** (the owner's rule,
+2026-11-08). So only a declared read (`Effect::Read`, `ReadThatRecords`) is
+keyed by `compact::target_of`, where the same bytes reached twice really are
+one thing learned twice; every other call is keyed on its whole canonical
+input (`Boredom::key`'s `reads`). Keyed by path, a write's receipt —
+`fs_edit`'s `edited <path>`, the same for every edit — made six different
+edits to one file one edit repeated six times: in the driven pilot 15 of 16
+trials were told they were stuck mid-refactor, and Claude obeyed the second
+rung and stopped with ten edits left. An undeclared tool is keyed whole,
+because the costly error here is interrupting work, and keying whole can only
+make two calls less alike. The identical edit repeated is still one key. **A
+call that errored is keyed by target whatever it declares**: it changed
+nothing, so its arguments are guesses rather than work — `fs_edit` missing
+with a new `old` each turn is one unchanging error on one file, the guessing
+loop this exists to name, and the shape key sees a single target there
+(review of #857).
 
 **A second key counts the same failure on new targets** (`boredom::error_shape`:
 the error with quoted spans, paths and numbers masked, per tool). The first
@@ -12934,14 +12996,51 @@ live controls include both a correct and an incorrect incoming weekday.
 
 ## Experimental memory prototype
 
-`memory` is default-off and qualified for synthetic data only. The core owns
+`memory` is default-off; qualification uses authored data rather than the owner's
+private corpus. The core owns
 capture/retrieval/evaluation; CLI adapters discover no live stores. Commands with explicit local endpoint/model arguments manage their own
 resident-only inference; they bypass generic/default-provider setup and never
 load global configuration for that inference. The explicit `run --memory-context` adapter uses
 ordinary run setup and replaces only its already-available `goal_context`.
+The separate `run --episodic-memory` path connects fresh ordinary sessions to
+`memory_session` through an explicit encrypted host manifest; default runs do
+not acquire capture or new output fields.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **Ordinary observations have no implicit semantic verdict.** The v8
+  `ordinary-session-observation-v1` protocol enters the same authenticated
+  host-capture transaction as checked synthetic episodes, through a separate
+  validator. It has no artifact observation or successful artifact check.
+  `capture_semantic_assessment` derives NotEvaluated from the authenticated
+  protocol, not from every historical Unavailable verdict. A completed no-tool
+  run needs no invented receipt. Invocations and receipts must still match
+  exactly, and reserved protocol labels cannot enter through a legacy producer.
+  Assistant Thinking and opaque signatures stay only in the original hash-bound
+  transcript, never imported passages or semantic projections. Skipping those
+  blocks must preserve the source indices of later text/tool fields; reasoning
+  alone cannot satisfy the final answer requirement.
+  Strict typed-record validation must use the same JSON text serialization as
+  the native writer: `to_value` widens f32 sensor readings to f64 and once refused
+  valid Linux Outcomes. Unknown, duplicate and noncanonical fields still refuse.
+- **A recall result is not delivered merely because a tool computed it.**
+  `memory_session` durably records attempts and reconciles exact inputs/results
+  against the native JSONL. Missing, clipped, duplicate-ambiguous or interrupted
+  tracking withholds capture. Raw evidence and native reader packets both pass
+  complete current dependency authorization; the native-only parser's early
+  return once left raw-source withdrawal detectable only at SQLite admission.
+  Legacy goal-context lessons/appraisals are refused before delivery when they
+  cannot be represented by the new store's source closure. Recalled packets are
+  dependencies, never another copy of original evidence.
+- **Recovery has storage authority, not execution authority.** An ordinary
+  finalized capture is durably sealed before admission. Retry reauthorizes that
+  seal and cannot run a provider or tool. `open_for_recovery` works without the
+  historical task directory and cannot begin a run or create a recall tool.
+  Removing the original JSONL still withholds evidence; explicit forget purges
+  the selected store's whole episode and descendants. The manifest, key, DB and
+  authority stay outside the execution workspace, and private authority files
+  reuse the key policy's macOS ACL checks. SQLCipher protects the database, not
+  external JSONL, private recovery payloads, artifacts or retained copies.
 - **Operational feedback cannot consult semantic gold.** Native completion
   receives a separately validated public row/key shape, never `expected_rows`
   or an artifact verdict. It uses the existing bounded no-follow reader for

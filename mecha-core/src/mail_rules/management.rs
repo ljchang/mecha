@@ -361,7 +361,13 @@ pub fn test_match_with_header_capability(
         .actions
         .iter()
         .enumerate()
-        .map(|(index, _)| {
+        .map(|(index, action)| {
+            // A reply the live pass would refuse on this message is not a
+            // would-have here either; only the per-sender week, which reads
+            // the ledger, is beyond one message (review of #856, pass 8).
+            let refused = (!unknown && action.group() == ActionGroup::FixedWords)
+                .then(|| engine::message_reply_refusal(rule, action, candidate))
+                .flatten();
             let mut row = LedgerRow::header(
                 rule,
                 index,
@@ -370,6 +376,8 @@ pub fn test_match_with_header_capability(
                 GateStatus::Passing,
                 if unknown {
                     Outcome::Held
+                } else if refused.is_some() {
+                    Outcome::Skipped
                 } else {
                     Outcome::WouldHave
                 },
@@ -383,9 +391,11 @@ pub fn test_match_with_header_capability(
             row.reason = format!(
                 "{}; {}",
                 if unknown {
-                    "test: matching facts unknown"
+                    "test: matching facts unknown".to_string()
+                } else if let Some(guard) = &refused {
+                    format!("test: skipped: {guard}")
                 } else {
-                    "test: header match only; no action planned"
+                    "test: header match only; no action planned".to_string()
                 },
                 match in_inbox {
                     Some(false) => "message is no longer in the inbox",

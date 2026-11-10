@@ -35,7 +35,7 @@ impl ActionGroup {
     pub fn supported(self) -> bool {
         matches!(
             self,
-            Self::Mailbox | Self::PrivateRecord | Self::Report | Self::Board
+            Self::Mailbox | Self::PrivateRecord | Self::Report | Self::Board | Self::FixedWords
         )
     }
 }
@@ -236,6 +236,17 @@ impl RuleDefinition {
                 "duplicate action in effect"
             );
         }
+        // Two replies would stage two drafts to one sender for one message,
+        // which no rule means (review of #856); a reply beside a forward or
+        // a send is §4.3's one rule answering through its slot.
+        ensure!(
+            rule.actions
+                .iter()
+                .filter(|a| a.group() == ActionGroup::FixedWords)
+                .count()
+                <= 1,
+            "a rule replies at most once per message; keep one reply"
+        );
         Ok(rule)
     }
 
@@ -293,6 +304,9 @@ pub struct LoadedRule {
     pub directory: PathBuf,
     pub files: BTreeMap<String, Vec<u8>>,
     pub approval_digest: ApprovalDigest,
+    /// Why the reply's template was refused, for a rule found on disk with
+    /// one; install and edit refuse it outright. Its reply is held.
+    pub template_refused: Option<String>,
 }
 
 /// Empty means absent, not a version supplied by the reading build.
@@ -317,8 +331,9 @@ pub struct MatchDigest {
 }
 
 impl LoadedRule {
-    /// P1 writes the absent confirmation version explicitly. Gate status is
-    /// supplied mechanically by the provenance reader, never inferred as clean.
+    /// The confirmation version is written, empty when absent: only a
+    /// description rule's confirmed groups carry it. Gate status is supplied
+    /// mechanically by the provenance reader, never inferred as clean.
     pub fn match_digest(&self, group: ActionGroup, gate: super::GateStatus) -> Result<MatchDigest> {
         Ok(MatchDigest {
             matcher: hash(&serde_json::to_vec(&self.definition.matcher)?),
@@ -328,7 +343,16 @@ impl LoadedRule {
             } else {
                 String::new()
             },
-            confirmation_version: String::new(),
+            // The compiled confirmation frame decides this group (§4.2): a
+            // change to it starts new measurement for exactly these groups.
+            confirmation_version: if self.definition.is_description()
+                && super::describe::confirmation_decides(group)
+                && gate == super::GateStatus::Passing
+            {
+                crate::mail_triage::confirm::CONFIRMATION_VERSION.clone()
+            } else {
+                String::new()
+            },
         })
     }
 }

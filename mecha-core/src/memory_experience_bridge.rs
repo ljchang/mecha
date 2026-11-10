@@ -42,7 +42,7 @@ struct Events {
 fn memory_packet_references(content: &str) -> Result<Vec<RevisionRef>> {
     memory_packet_references_checked(content, None)
 }
-fn memory_packet_references_checked(
+pub(crate) fn memory_packet_references_checked(
     content: &str,
     authority: Option<(&Memory, &Access)>,
 ) -> Result<Vec<RevisionRef>> {
@@ -624,7 +624,7 @@ fn safe<T>(result: Result<T>) -> Result<T> {
 // Every component is opened relative to the previous descriptor. O_NOFOLLOW
 // closes both leaf and ancestor symlink replacement races. These are host paths,
 // never tool paths (which belong to ToolCtx::resolve).
-fn open_nofollow(path: &Path, directory: bool) -> std::io::Result<File> {
+pub(crate) fn open_nofollow(path: &Path, directory: bool) -> std::io::Result<File> {
     use std::{
         ffi::CString,
         os::fd::{AsRawFd, FromRawFd},
@@ -668,7 +668,7 @@ fn open_nofollow(path: &Path, directory: bool) -> std::io::Result<File> {
     }
     Ok(current)
 }
-fn bounded_read(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn bounded_read(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     let file = open_nofollow(path, false)?;
     if file.metadata()?.len() > max as u64 {
         return Err(std::io::ErrorKind::InvalidData.into());
@@ -699,7 +699,7 @@ fn pin_path(path: &Path) -> Result<PathBuf> {
 }
 // Publish complete private bytes with an exclusive hard link. A crash can leave
 // an opaque temporary file, but cannot strand a partial authoritative record.
-fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::{
         ffi::CString,
         os::{
