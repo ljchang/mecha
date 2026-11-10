@@ -4900,7 +4900,10 @@ begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
 a model may also set: the message's `From` alone, never reply-all — on
 Graph an explicit recipient in place of the `replyTo` the endpoint would
 follow, so a substitution there rather than a subset, and never wider.
-A staged reply carries `OutboxItem::answering` (the address and subject),
+The staged call pins `expect_from` to the address its review shows, and
+`mail_reply` refuses when the message its `message_id` resolves to is from
+anyone else: the selector is the sender-written Message-ID, so the approval
+is checked against the recipient, never the selector. A staged reply carries `OutboxItem::answering` (the address and subject),
 because no drafting session exists for the review's source join to read.
 
 **A description rule's task is decided by a pass with no learned rules in

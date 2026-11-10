@@ -162,6 +162,35 @@ fn finish_read(
     candidate_with_owners(account, thread, &emails, owners, record.as_ref())
 }
 
+/// The `mail_reply` arguments a rule's template reply is staged with.
+///
+/// The RFC Message-ID names the authorised message inside its thread on both
+/// providers (`reply_target`); Outlook's immutable provider id would not match
+/// a reply's ordinary read. Absent, the provider id is given and an Outlook
+/// release refuses rather than guess. The Message-ID is sender-written, so the
+/// recipient is pinned beside it: the release refuses unless the message it
+/// resolves to is from the address the owner's review showed (review of #856,
+/// pass 6).
+fn staged_reply_args(
+    message: &mecha_core::mail_rules::MessageRef,
+    body: &str,
+    answering: &mecha_core::outbox::Answering,
+) -> serde_json::Value {
+    let selector = if message.message_id.is_empty() {
+        &message.provider_message_id
+    } else {
+        &message.message_id
+    };
+    serde_json::json!({
+        "thread_id": message.thread_id,
+        "account": message.account,
+        "message_id": selector,
+        "body_markdown": body,
+        "from_only": true,
+        "expect_from": answering.to,
+    })
+}
+
 fn candidate_with_owners(
     account: &str,
     thread: &str,
@@ -431,25 +460,10 @@ impl Mailbox for RuleMailbox {
         };
         let store = mecha_core::outbox::OutboxStore::open(root)
             .map_err(|e| HeldReason::NotDispatched(format!("outbox unavailable: {e:#}")))?;
-        // The RFC Message-ID names the authorised message inside its thread
-        // on both providers (`reply_target`); Outlook's immutable provider
-        // id would not match a reply's ordinary read. Absent, the provider
-        // id is given and an Outlook release refuses rather than guess.
-        let message = if candidate.message.message_id.is_empty() {
-            candidate.message.provider_message_id.clone()
-        } else {
-            candidate.message.message_id.clone()
-        };
         let item = store
             .stage_by_harness_quoting_mail(
                 &tool,
-                serde_json::json!({
-                    "thread_id": candidate.message.thread_id,
-                    "account": candidate.message.account,
-                    "message_id": message,
-                    "body_markdown": body,
-                    "from_only": true,
-                }),
+                staged_reply_args(&candidate.message, body, answering),
                 answering.clone(),
             )
             .map_err(|e| HeldReason::NotDispatched(format!("staging failed: {e:#}")))?;

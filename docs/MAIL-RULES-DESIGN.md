@@ -2458,6 +2458,13 @@ screen's outbox line. In this phase:
   `reply_all` or on the owner's own message. A rule with no routed
   `mail_reply` stages nothing and says so. The store and route are the
   global config's, the ones the review surfaces read.
+- The staged call also carries `expect_from`, the address its review shows,
+  and `mail_reply` refuses when the message its `message_id` resolves to is
+  from anyone else. The selector is the sender-written RFC Message-ID, and
+  a sender who copies another participant's out of the thread's
+  `References` would otherwise redirect the approved reply to that
+  participant (review of #856, pass 6). The pin checks the recipient, not
+  the selector, so it holds however the selector resolves.
 - The staged item carries `answering` (the address `from_only` sends to and
   the reply's subject) and is summarised by it, since no drafting session
   exists for the review's source join; the queue, the detail and `mecha

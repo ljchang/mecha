@@ -2204,3 +2204,33 @@ fn retrospective_graph_positive_raw_headers_are_rows_and_unknown_is_absent() {
     }
     assert!(store.ledger().unwrap().is_empty());
 }
+
+/// Review of #856, pass 6: a staged reply carries the recipient its review
+/// showed, so a selector the sender wrote cannot redirect the release.
+#[test]
+fn a_staged_reply_pins_the_recipient_the_review_showed() {
+    let message = mecha_core::mail_rules::MessageRef {
+        account: "campus".into(),
+        provider_message_id: "p-2".into(),
+        thread_id: "thread-alpha".into(),
+        message_id: "<shared@example.com>".into(),
+        sender: "Mallory <mallory@example.org>".into(),
+        subject: "Re: Booking".into(),
+    };
+    let answering = mecha_core::outbox::Answering {
+        to: "mallory@example.org".into(),
+        subject: "Re: Booking".into(),
+    };
+    let args = staged_reply_args(&message, "Thanks.", &answering);
+    assert_eq!(args["from_only"], true);
+    assert_eq!(args["expect_from"], "mallory@example.org");
+    assert_eq!(args["message_id"], "<shared@example.com>");
+    // With no Message-ID the provider id selects, and the pin still rides.
+    let message = mecha_core::mail_rules::MessageRef {
+        message_id: String::new(),
+        ..message
+    };
+    let args = staged_reply_args(&message, "Thanks.", &answering);
+    assert_eq!(args["message_id"], "p-2");
+    assert_eq!(args["expect_from"], "mallory@example.org");
+}
