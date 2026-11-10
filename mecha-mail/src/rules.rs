@@ -303,14 +303,35 @@ fn candidate(
             from_name: email.from_name.clone(),
             // Any message the owner sent in this thread, drafts excluded.
             // Every message's direction is known by here (checked above).
-            owner_participated: Some(
-                emails
-                    .iter()
-                    .any(|e| e.direction(owners) == Some(MailDirection::Sent)),
-            ),
+            owner_participated: owner_joined(emails, owners),
             owners: owners.to_vec(),
         },
     })
+}
+
+/// Whether the rule preview must read this message's thread: a rule with a
+/// template reply whose matcher does not rule the message out, since only the
+/// thread says whether the owner joined the conversation (review of #856,
+/// pass 9). Every other message is previewed from itself alone.
+fn preview_reads_thread(rule: &LoadedRule, candidate: &Candidate) -> bool {
+    rule.definition
+        .actions
+        .iter()
+        .any(|a| a.group() == mecha_core::mail_rules::ActionGroup::FixedWords)
+        && engine::header_match(&rule.definition.matcher, candidate) != engine::HeaderMatch::NoMatch
+}
+
+/// Whether the owner sent any message in this thread, drafts excluded; `None`
+/// when a message's direction is unknown, which is never "not joined".
+fn owner_joined(emails: &[Email], owners: &[String]) -> Option<bool> {
+    let mut joined = false;
+    for e in emails {
+        match e.direction(owners)? {
+            MailDirection::Sent => joined = true,
+            MailDirection::Inbound | MailDirection::Draft => (),
+        }
+    }
+    Some(joined)
 }
 
 pub(crate) async fn gmail_action(
@@ -1229,7 +1250,7 @@ async fn test_recent(
                     }
                 })
                 .await;
-            let result = read
+            let prepared = read
                 .map_err(anyhow::Error::from)
                 .and_then(|(email, in_inbox)| {
                     ensure!(
@@ -1240,25 +1261,66 @@ async fn test_recent(
                         .provider_arrival_at
                         .context("provider arrival unknown")?;
                     if arrival < since || arrival > now {
-                        return Ok(TestMessage::Rows(Vec::new()));
+                        return Ok(None);
                     }
                     match email.direction(&owners) {
-                        Some(MailDirection::Sent | MailDirection::Draft) => {
-                            return Ok(TestMessage::Rows(Vec::new()))
-                        }
+                        Some(MailDirection::Sent | MailDirection::Draft) => return Ok(None),
                         Some(MailDirection::Inbound) => (),
                         None => bail!("message direction unknown"),
                     }
                     let candidate = candidate(&name, &hit.thread_id, &[email], &owners, None)
                         .map_err(anyhow::Error::msg)?;
-                    mecha_core::mail_rules::test_message(
-                        rule,
-                        &candidate,
-                        in_inbox,
-                        now,
-                        mailbox.proves_header_absence(&name),
-                    )
+                    Ok(Some((candidate, in_inbox)))
                 });
+            let result = match prepared {
+                Ok(None) => Ok(TestMessage::Rows(Vec::new())),
+                Err(error) => Err(error),
+                Ok(Some((mut candidate, in_inbox))) => {
+                    // One message cannot say whether the owner has written
+                    // into its thread, and the live pass refuses a reply to a
+                    // conversation the owner joined: a reply rule's match
+                    // reads its thread, as the live pass does (review of
+                    // #856, pass 9). Only then — every other message skips it.
+                    let joined = if preview_reads_thread(rule, &candidate) {
+                        let thread = &hit.thread_id;
+                        mailbox
+                            .with_token(account, |token| async move {
+                                match account.provider {
+                                    Provider::Google => {
+                                        GmailProvider::new(token).get_thread(thread).await
+                                    }
+                                    Provider::Outlook => {
+                                        OutlookProvider::new(token)
+                                            .with_immutable_ids()
+                                            .get_thread(thread)
+                                            .await
+                                    }
+                                }
+                            })
+                            .await
+                            .map_err(anyhow::Error::from)
+                            .and_then(|emails| {
+                                owner_joined(&emails, &owners)
+                                    .context("a message's direction in the thread is unknown")
+                            })
+                            .map(Some)
+                    } else {
+                        Ok(None)
+                    };
+                    joined.and_then(|joined| {
+                        if let Some(joined) = joined {
+                            candidate.sending.owner_participated = Some(joined);
+                        }
+                        mecha_core::mail_rules::test_message(
+                            rule,
+                            &candidate,
+                            in_inbox,
+                            now,
+                            mailbox.proves_header_absence(&name),
+                        )
+                    })
+                }
+            };
             match result {
                 Ok(TestMessage::Rows(rows)) => report.rows.extend(rows),
                 // Unknown is not a known negative: counted, so a run that never

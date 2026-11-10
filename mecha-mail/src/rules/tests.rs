@@ -2234,3 +2234,55 @@ fn a_staged_reply_pins_the_recipient_the_review_showed() {
     assert_eq!(args["message_id"], "p-2");
     assert_eq!(args["expect_from"], "mallory@example.org");
 }
+
+/// Review of #856, pass 9: one message cannot say whether the owner joined
+/// its conversation, so the preview reads the thread of a reply rule's match
+/// — and only that — and the thread decides the guard.
+#[test]
+fn the_preview_reads_a_reply_rules_thread_to_see_whether_you_joined() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = RuleStore::open(dir.path().join("rules")).unwrap();
+    let files = std::collections::BTreeMap::from([(
+        "reply.md".to_string(),
+        "Thanks, office hours are Fridays.".to_string(),
+    )]);
+    let reply = store
+        .install(
+            "office-hours",
+            "description = 'Office hours'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'reply'\ntemplate = 'reply.md'\n",
+            &files,
+        )
+        .unwrap();
+    let archive = store
+        .install(
+            "notice",
+            "description = 'Review notice'\n[match]\nfrom_domain = ['example.com']\n[[action]]\ndo = 'archive'",
+            &Default::default(),
+        )
+        .unwrap();
+    let owners = ["owner@example.edu".to_string()];
+    let inbound = email("inbound", "sender@example.com", "2026-11-03T12:00:00Z");
+    let c = candidate(
+        "campus",
+        "thread-alpha",
+        std::slice::from_ref(&inbound),
+        &owners,
+        None,
+    )
+    .unwrap();
+    assert!(preview_reads_thread(&reply, &c));
+    assert!(!preview_reads_thread(&archive, &c), "no reply, no read");
+    let elsewhere = email("other", "sender@example.org", "2026-11-03T12:00:00Z");
+    let c = candidate("campus", "thread-alpha", &[elsewhere], &owners, None).unwrap();
+    assert!(!preview_reads_thread(&reply, &c), "no match, no read");
+
+    let sent = email("outbound", "owner@example.edu", "2026-11-03T13:00:00Z");
+    assert_eq!(
+        owner_joined(std::slice::from_ref(&inbound), &owners),
+        Some(false)
+    );
+    assert_eq!(owner_joined(&[inbound.clone(), sent], &owners), Some(true));
+    let mut unknown = inbound.clone();
+    unknown.direction_evidence = None;
+    assert_eq!(owner_joined(&[inbound, unknown], &owners), None);
+}

@@ -4672,7 +4672,10 @@ a `skipped` row reading `test: skipped: <guard>`, counted in `refused_rows`
 and never in `would_have_rows`, so the preview the owner reads before raising
 template replies out of shadow is the rate the live pass would reply at. The
 per-sender week alone is not applied, because it reads the ledger and the
-test writes none.
+test writes none. "A conversation you have joined" needs the thread, which
+one message cannot show, so a reply rule's match reads its thread
+(`preview_reads_thread`) and the owner's own messages in it decide the
+guard as they do live; every other message is previewed from itself.
 
 **Edits and corrections cannot restore permission.** `RuleStore::edit`
 parses first, validates a private candidate snapshot with existing bundled
@@ -4892,7 +4895,9 @@ for the rules alone when a rule is eligible (owner ruling 2026-11-07), keeping
 its `ignore`. Admission (`RuleStore::admit_locked`) refuses an install, edit
 or raise that would add entries past the cap; lowerings are never checked.
 A description rule's Mailbox group is capped at `propose` when it contains
-`trash`, and its outbound groups at `shadow` until P4b-2.
+`trash`. Outbound groups are no longer held by rule kind: Fixed words is
+capped at `propose` for every rule, and the other outbound groups stay at
+`shadow` because they are not yet `supported()`.
 
 **A rule's template reply is staged, never sent, in P4b-2a.** The Fixed words
 group is supported up to `propose`. `mail_rules::send` fills the closed
