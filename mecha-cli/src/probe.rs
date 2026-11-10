@@ -88,11 +88,11 @@ struct ComparisonKeys {
 
 enum ProbeMethod {
     Followup {
-        trajectory: Trajectory,
+        trajectory: Box<Trajectory>,
         branch: Branch,
     },
     Trace {
-        trajectory: Trajectory,
+        trajectory: Box<Trajectory>,
         point: ProbePoint,
         branch: Branch,
     },
@@ -465,7 +465,13 @@ fn prepare_intervention(
             return Ok(Err("could not locate the corrective turn".into()));
         };
         let trajectory = extract(truncate_after_run(messages, index));
-        (ProbeMethod::Followup { trajectory, branch }, index)
+        (
+            ProbeMethod::Followup {
+                trajectory: Box::new(trajectory),
+                branch,
+            },
+            index,
+        )
     } else {
         use mecha_core::counterfactual::{locate_denial_at, locate_steer_at};
         let point = if trigger == Trigger::Steer.as_str() {
@@ -522,7 +528,7 @@ fn trace_method(
     let index = point.message_index;
     Ok((
         ProbeMethod::Trace {
-            trajectory,
+            trajectory: Box::new(trajectory),
             point,
             branch,
         },
@@ -632,6 +638,12 @@ fn finish_prep(
     method: ProbeMethod,
     message_index: usize,
 ) -> Result<ProbePrep, String> {
+    if transcript.has_dynamic_goal_context() {
+        return Err(
+            "this counterfactual probe does not reconstruct versioned goal context; use recorded-decision replay"
+                .into(),
+        );
+    }
     // The config in effect *at the intervention*, not `first()`: a resumed
     // session's later attach ran under its own system prompt and tool list,
     // and replaying its turns under the first attach's diverges for reasons
@@ -750,6 +762,10 @@ fn artifact_prep(
         use mecha_core::learning::{classify_origin, Origin};
         let expected = expected.clone();
         let transcript = Session::read(path)?;
+        anyhow::ensure!(
+            !transcript.has_dynamic_goal_context(),
+            "mismatch probes do not yet reconstruct versioned goal context"
+        );
         anyhow::ensure!(expected.mismatch(), "the step names no mismatch");
         let found: Vec<_> = transcript
             .convo
@@ -1393,6 +1409,61 @@ pub(crate) mod mismatch_tests {
             let (root, r) = fixture(clean, artifact, false);
             assert!(prepare_probe(root.path(), &r).unwrap().is_err());
         }
+    }
+
+    #[test]
+    fn dynamic_goal_context_is_not_dropped_by_legacy_probe_preparation() {
+        use mecha_core::goal_context::{
+            CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+        };
+        let (root, reflection) = fixture(Some(true), true, false);
+        // The ordinary fixture is eligible before a versioned boundary exists.
+        assert!(prepare_probe(root.path(), &reflection).unwrap().is_ok());
+        let path = Session::find(root.path(), &reflection.session_id).unwrap();
+        let read = Session::read(&path).unwrap();
+        let mut state = GoalContextState::default();
+        state
+            .transition(
+                CharterSnapshot::disabled(),
+                Some(OwnerInput::new(OwnerSource::CliChat, "write answer.json".into()).unwrap()),
+            )
+            .unwrap();
+        let binding = DecisionBinding::new(
+            1,
+            state.current().unwrap().revision(),
+            &read.convo.messages,
+            None,
+            true,
+            0,
+        )
+        .unwrap();
+        Session {
+            meta: read.meta,
+            path: path.clone(),
+        }
+        .append(&Record::GoalContextDecision {
+            binding,
+            versions: state.versions().to_vec(),
+        })
+        .unwrap();
+        let refused = prepare_probe(root.path(), &reflection).unwrap();
+        let Err(reason) = refused else {
+            panic!("legacy mismatch probe discarded goal context")
+        };
+        assert!(reason.contains("versioned goal context"), "{reason}");
+
+        let read = Session::read(&path).unwrap();
+        let method = ProbeMethod::Followup {
+            trajectory: Box::new(extract(&read.convo.messages)),
+            branch: Branch {
+                seed: read.convo.messages.clone(),
+                call_base: 0,
+            },
+        };
+        let Err(reason) = finish_prep(&read, method, 0) else {
+            panic!("legacy intervention probe discarded goal context")
+        };
+        assert!(reason.contains("versioned goal context"), "{reason}");
     }
     /// The gate compared whole `Message`s, so a recording made by the
     /// current loop — whose task turn carries the folded calendar reference

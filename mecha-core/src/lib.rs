@@ -93,6 +93,7 @@ pub mod forget;
 pub mod form_draft;
 pub mod frontdoor;
 pub mod goal;
+pub mod goal_context;
 pub mod gossip;
 pub mod grant;
 pub mod graph_mcp;

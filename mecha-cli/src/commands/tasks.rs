@@ -1950,7 +1950,7 @@ fn appraise_session_with(
     // draft, `SentUnchanged` (the one positive signal) included, for a
     // decision that never gets rerun.
     let session_id = transcript.meta.id.as_str();
-    let Some(stats) = transcript.episode else {
+    let Some(stats) = transcript.episode.as_ref() else {
         return Ok(None);
     };
     let messages = &transcript.convo.messages;
@@ -1972,6 +1972,11 @@ fn appraise_session_with(
     // The stores are read here, after the transcript has an outcome —
     // never for a run that recorded none.
     let stores = stores.get();
+    let (charter, charter_unreadable) = mecha_core::appraisal::charter_for_transcript(
+        &transcript,
+        stores.charter.as_ref(),
+        stores.charter_unreadable,
+    );
     let mine: Vec<&mecha_core::outbox::OutboxItem> = stores
         .drafts
         .iter()
@@ -1988,8 +1993,8 @@ fn appraise_session_with(
         frontdoor_unreadable: stores.frontdoor_unreadable,
         reflexions: &stores.reflexions,
         learning_unreadable: stores.learning_unreadable,
-        charter: stores.charter.as_ref(),
-        charter_unreadable: stores.charter_unreadable,
+        charter: charter.as_deref(),
+        charter_unreadable,
         stops: &stops,
         // Not read here, on purpose: this is the closure moment's reading,
         // and the verdict being made is `note_task_closure`'s to add (the
@@ -2003,7 +2008,7 @@ fn appraise_session_with(
     };
     let mut appraisal = mecha_core::appraisal::of_session(
         session_id,
-        &stats,
+        stats,
         &goals,
         &interventions,
         records,

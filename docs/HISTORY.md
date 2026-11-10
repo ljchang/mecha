@@ -14,6 +14,57 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Versioned owner context (2026-11-10, opt-in prototype)
+
+`goal_context` separates host-attributed owner messages, charter snapshots and
+model interpretation. Interactive CLI chat, TUI and authenticated assistant web
+chat opt in through `--dynamic-goals`. Ordinary `GoalRef` confirmation and fixed
+one-shot encrypted memory retain their contracts. The charter stays in its
+owner-authored file; historical copies never authorize current policy changes.
+
+`GoalContextDecision` records versions and the exact effective request before a
+provider attempt, including final-answer and retry paths. Clear, compaction and
+resume preserve the historical chain. Replay uses those recorded boundaries;
+unsupported branches and counterfactual harness probes refuse rather than erase
+an intervention. Historical appraisal selects the recorded charter only with
+unambiguous coverage, marking mixed or uncovered history partial.
+
+Review found three failure classes: nullable fields could disappear from a
+binding without invalidating it; frozen request restoration could overwrite a
+harness intervention; and lenient JSON recovery could hide escaped or duplicate
+dynamic discriminators. The fixes bind all request fields, gate unsupported
+probes and check recognized dynamic tags before lenient recovery. Each has a
+focused regression; scoped rereview closed all medium/major findings. This is
+source review, separately qualified below.
+
+The broad suite also caught the new global option missing from the experiment
+principal's closed option classification. It now refuses `--dynamic-goals`,
+which that driver cannot preserve. Three source-scanner failures came from
+macOS AppleDouble metadata in the transfer archive; removing only verified
+metadata artifacts and packaging explicit files restored the intended test tree.
+The failing attempt remains in the qualification record.
+
+On Spark, the corrected candidate passed both all-target workspace builds and
+both full workspace suites: 6,454 default tests and 7,229 memory-enabled tests,
+with 25 and 30 ignored entries respectively. Optional-backend early returns are
+not evidence those backends ran. Focused dynamic-context, replay, persistence,
+appraisal and harness-probe regressions passed. The actual CLI authored-transport
+smoke observed four live requests using two context versions, four replay requests
+after another charter edit with identical historical message payloads, and four
+default-off requests without dynamic context. Unsupported activation and resume
+paths refused before inference. This demonstrates recording and integration,
+not semantic goal understanding or improved learning.
+Formatting, strict all-target/all-feature Clippy and the Docusaurus build passed.
+Clippy required boxing private probe trajectories after their record grew; that
+allocation-only correction preserves serialized values and replay behavior.
+The documentation build used Spark Node 24 after replacing a stale dependency
+cache; CI retains its own pinned Node environment.
+The final allocation change was rechecked with the full default workspace and
+memory-enabled CLI suites. A separate Linux sandbox/MCP/lifecycle subset passed
+38 tests with required backends and no skips; this does not qualify macOS
+Seatbelt or every optional integration.
+
+
 ### Chronological ordinary-memory evaluation (2026-11-10, development cohort)
 
 `ordinary_lifetime.py` freezes the ordinary CLI executable, inputs, scorer,
@@ -11056,6 +11107,13 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+Dynamic replay initially restored the original request over a harness probe's
+changed context. It could therefore charge a compaction intervention while
+measuring the unchanged baseline. A counterfactual runner must verify that its
+intervention reaches the provider; exact historical reconstruction and altered
+harness evaluation are different contracts. Unsupported dynamic probes now refuse.
+
 
 The concept pilot's revision-mutation fixture initially used a nonexistent SQL
 column. Its provider failed before changing the database, so a generic rejection

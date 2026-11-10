@@ -3,6 +3,7 @@
 use crate::{render, setup, GlobalOpts};
 use anyhow::Result;
 use mecha_core::agent::Conversation;
+use mecha_core::goal_context::{OwnerInput, OwnerSource};
 use mecha_core::message::{Message, Usage};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 use rustyline::error::ReadlineError;
@@ -28,7 +29,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // A person is at the approver only when stdin is a terminal: a piped
     // `mecha chat` would read `y` from the pipe (review of #294), as `run`
     // already knew.
-    let mut prepared = setup::prepare(&opts, std::io::stdin().is_terminal()).await?;
+    let interactive = std::io::stdin().is_terminal();
+    anyhow::ensure!(
+        !opts.dynamic_goals || interactive,
+        "--dynamic-goals requires a local chat terminal"
+    );
+    let mut prepared = setup::prepare(&opts, interactive).await?;
     let session_dir = Session::default_dir()?;
 
     // One conversation for the whole session: the taint travels with it, so a
@@ -57,6 +63,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
         }
         let (meta, prior) = Session::load(&path)?;
+        anyhow::ensure!(
+            !prior.has_dynamic_goal_context() || opts.dynamic_goals,
+            "resume this chat with --dynamic-goals"
+        );
         println!("resumed {} ({} messages)", meta.id, prior.messages.len());
         // D15: restore the plan from the transcript the model is about to
         // re-read it from, so the two agree from the first turn.
@@ -136,11 +146,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // deserves the same protection as the transcript that records it.
     // Best-effort throughout — a first run has no file, and losing history
     // must never lose the chat.
-    let history_path = {
+    let history_path = if !opts.dynamic_goals || session.is_some() {
         let _ = mecha_core::create_private_dir(&session_dir);
-        session_dir.join("chat_history")
+        Some(session_dir.join("chat_history"))
+    } else {
+        None
     };
-    let _ = editor.load_history(&history_path);
+    if let Some(path) = &history_path {
+        let _ = editor.load_history(path);
+    }
     let mut total = Usage::default();
 
     loop {
@@ -159,10 +173,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let _ = editor.add_history_entry(input);
         // Saved per line rather than at exit, so a killed process keeps what
         // was typed before it died.
-        if history_path.exists() {
-            let _ = editor.append_history(&history_path);
-        } else {
-            let _ = editor.save_history(&history_path);
+        if let Some(path) = &history_path {
+            if path.exists() {
+                let _ = editor.append_history(path);
+            } else {
+                let _ = editor.save_history(path);
+            }
         }
 
         if let Some(command) = input.strip_prefix('/') {
@@ -180,6 +196,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // between runs would replay the previous run's still-uncleared
         // `rewritten` states) and fails closed like the push branch's own
         // append, so either way `recorded` is what the file already holds.
+        let owner_input = if opts.dynamic_goals {
+            match OwnerInput::new(OwnerSource::CliChat, input.to_string()) {
+                Ok(input) => Some(input),
+                Err(err) => {
+                    eprintln!("error: {err:#}");
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let recorded = if convo
             .messages
             .last()
@@ -210,13 +237,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             },
         );
 
-        let result = crate::interrupt::run_interruptible(
-            &prepared.agent,
-            prepared.agent.context(),
-            &mut convo,
-            Some(tx.clone()),
-        )
-        .await;
+        let mut cx = prepared.agent.context().as_ref().clone();
+        if let Some(owner_input) = owner_input {
+            cx = cx.with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new));
+        }
+        let result =
+            crate::interrupt::run_interruptible(&prepared.agent, &cx, &mut convo, Some(tx.clone()))
+                .await;
         drop(tx);
         let _ = renderer.await;
         println!();
@@ -339,7 +366,10 @@ fn handle_command(
         "clear" => {
             // A new conversation, taint included: nothing the old one read is
             // in context any more, so nothing it read should still apply.
-            *convo = Conversation::new();
+            if let Err(err) = convo.clear_with_recording(session) {
+                eprintln!("error clearing conversation: {err:#}");
+                return Flow::Continue;
+            }
             // And whatever the tools held for it, as the TUI's `/clear` does:
             // a picture or a near-copy strike from the old conversation is
             // not this one's (review of #543).

@@ -905,6 +905,8 @@ pub struct ToolCtx {
     /// value here is ever rendered into a request.
     pub goal_commitments: Option<Vec<crate::guilt::StoreGuilt>>,
     pub goal_guidance: bool,
+    /// Version seen by the provider that requested the current tool batch.
+    pub goal_context_version: Arc<std::sync::Mutex<Option<crate::goal_context::ContextVersion>>>,
     pub goal_lessons: Vec<crate::planning::Lesson>,
     pub goal_examples: Vec<crate::planning::Example>,
     /// Past clean appraisals of this run's situation and goal, for
@@ -1214,6 +1216,7 @@ impl Default for ToolCtx {
             goal_readings: None,
             goal_commitments: None,
             goal_guidance: false,
+            goal_context_version: Arc::default(),
             goal_lessons: Vec::new(),
             goal_examples: Vec::new(),
             goal_appraisals: None,

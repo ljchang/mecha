@@ -129,6 +129,46 @@ can be scoped to it; see [where a rule loads](/docs/features/learning#where-a-ru
 A front-door triage run is anchored to its request but matches its rules
 with no goal, because one set of rules serves every request in the batch.
 
+## Versioned conversation context (opt-in)
+
+Start `mecha chat --dynamic-goals`, `mecha tui --dynamic-goals`, or the assistant
+web server with `mecha serve --dynamic-goals`. In an enabled conversation, your
+ordinary messages supply evolving goal context: you can refine an objective,
+introduce a subtask, or change direction without creating a task ID or confirming
+each message. Terminal chat requires interactive input; a piped prompt is not
+treated as authenticated owner conversation evidence.
+
+The context preserves your messages in delivery order and the owner-authored
+charter version. It does not claim that every message is a new goal, or turn a
+model's interpretation into a confirmed `GoalRef`. `goal_context` returns the
+current context revision alongside its existing confirmed-goal information.
+Quoted content remains quoted. This feature exposes no charter-write operation;
+model interpretations and tool results never establish standing priorities.
+
+Each main model-request attempt records its effective context and exact prompt
+boundary before dispatch. A charter edit applies at the next decision boundary;
+a malformed charter stops that request rather than silently dropping priorities.
+Historical replay uses the recorded content, not today's file. This establishes
+which request was prepared, not proof that a failed network request reached a
+model or that the model interpreted your intention correctly.
+
+Resume a versioned conversation with the same option enabled. `/clear` clears
+active conversation evidence while preserving earlier recorded versions. A
+no-session or incognito conversation keeps versions only in memory. Existing
+ordinary chats remain unchanged when the option is absent.
+
+This bounded prototype refuses instead of silently discarding context above
+64 KiB of accumulated owner text, 256 revisions, 8 MiB per request snapshot or
+64 MiB of recorded context history. Start a new conversation when a bound is
+reached. Exact recorded-decision replay is supported; mid-run steering and
+counterfactual probes that cannot reconstruct their context refuse explicitly.
+Later replay requests also require the recorded boundary to match, so a changed
+model response can make a continuation incomparable.
+
+This does **not** enable encrypted multi-turn memory capture. One-shot
+`run --episodic-memory` retains its separate fixed-goal contract, and
+`run --dynamic-goals` is refused.
+
 ## Explicit goal confirmation for one-shot runs
 
 Use `mecha run --goal task:ID "your task"` to confirm the run's goal. The

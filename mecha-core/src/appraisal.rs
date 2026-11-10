@@ -2285,6 +2285,60 @@ fn owner_text(m: &crate::message::Message) -> bool {
     })
 }
 
+/// The session-level appraisal can use a single historical charter only
+/// when it covers the whole evidence interval. Applying the latest revision
+/// to older events would silently change their attribution.
+fn recorded_appraisal_charter(
+    transcript: &crate::session::Transcript,
+) -> anyhow::Result<Option<crate::charter::Charter>> {
+    use anyhow::Context as _;
+
+    let state = &transcript.convo.goal_context;
+    let decisions = state.decisions();
+    anyhow::ensure!(
+        transcript.goal_context_covers_initial_run()
+            && !state.has_cleared()
+            && decisions.iter().filter(|d| d.run_start()).count() == transcript.outcomes.len(),
+        "appraisal does not have dynamic goal coverage for every run"
+    );
+    let mut charters = decisions.iter().map(|d| {
+        state
+            .version(d.version())
+            .map(crate::goal_context::ContextVersion::charter)
+            .context("appraisal decision has no goal context version")
+    });
+    let charter = charters
+        .next()
+        .context("appraisal has no dynamic goal decision")??;
+    for recorded in charters {
+        anyhow::ensure!(
+            recorded?.source_digest() == charter.source_digest(),
+            "appraisal spans more than one charter source"
+        );
+    }
+    charter.parsed()
+}
+
+/// Resolve the charter for a transcript's appraisal. Legacy transcripts use
+/// the caller's live charter. A versioned transcript uses only its recorded
+/// source and marks attribution partial when coverage is ambiguous.
+pub fn charter_for_transcript<'a>(
+    transcript: &crate::session::Transcript,
+    live: Option<&'a crate::charter::Charter>,
+    live_unreadable: bool,
+) -> (Option<std::borrow::Cow<'a, crate::charter::Charter>>, bool) {
+    use std::borrow::Cow;
+
+    if transcript.has_dynamic_goal_context() {
+        match recorded_appraisal_charter(transcript) {
+            Ok(charter) => (charter.map(Cow::Owned), false),
+            Err(_) => (None, true),
+        }
+    } else {
+        (live.map(Cow::Borrowed), live_unreadable)
+    }
+}
+
 /// The same, for a caller that already read the transcript — `mecha
 /// distill`, which needs the messages again afterwards to render the
 /// distillation, used to pay four complete read-and-parse passes per session
@@ -2307,8 +2361,12 @@ pub fn for_transcript(
         &transcript.outcome_positions,
         messages,
     );
+    let (charter, charter_unreadable) =
+        charter_for_transcript(transcript, records.charter, records.charter_unreadable);
     let records = SessionRecords {
         stops: &stops,
+        charter: charter.as_deref(),
+        charter_unreadable,
         ..records
     };
     // Without a goal, `of_session` never has one to attribute anything to —
@@ -4949,6 +5007,141 @@ text = "Tell me the truth early."
             a.attributed,
             vec![GoalRef::Charter("answer-my-questions".into())]
         );
+    }
+
+    fn dynamic_charter_source(id: &str) -> String {
+        format!(
+            "[[line]]\nid = '{id}'\ntext = 'Keep draft review moving.'\n             [line.sensor]\nkind = 'outbox_waiting'\nsetpoint = '2'\n"
+        )
+    }
+
+    fn dynamic_appraisal_fixture(
+        sources: &[&str],
+        legacy_prefix: bool,
+    ) -> crate::session::Transcript {
+        use crate::goal_context::{
+            CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+        };
+        use crate::message::{Block, Message};
+        use crate::session::{Record, Session, SessionKind, SessionMeta};
+        let mut records = vec![Record::Meta(SessionMeta {
+            id: "s1".into(),
+            created_at: chrono::Utc::now(),
+            provider: "scripted".into(),
+            model: "scripted-1".into(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            title: None,
+            kind: Some(SessionKind::Test),
+        })];
+        if legacy_prefix {
+            records.push(Record::Message(Message::user("Earlier attempt.")));
+            records.push(Record::Rewrite {
+                messages: Vec::new(),
+            });
+        }
+        let mut context = GoalContextState::default();
+        let mut messages = Vec::new();
+        for source in sources {
+            let user = Message::user("Review the next draft.");
+            records.push(Record::Message(user.clone()));
+            messages.push(user);
+            let charter = CharterSnapshot::from_source(Some((*source).to_string()), false).unwrap();
+            let input =
+                OwnerInput::new(OwnerSource::CliChat, "Review the next draft.".into()).unwrap();
+            let version = context.transition(charter, Some(input)).unwrap().unwrap();
+            let binding = DecisionBinding::new(
+                context.next_decision(),
+                version.revision(),
+                &messages,
+                version.charter().prompt_block().map(str::to_string),
+                true,
+                0,
+            )
+            .unwrap()
+            .with_conversation_messages(&messages)
+            .unwrap();
+            context.bind(binding.clone()).unwrap();
+            records.push(Record::GoalContextDecision {
+                binding,
+                versions: vec![version],
+            });
+            let assistant = Message::assistant(vec![Block::text("Ready for review.")]);
+            records.push(Record::Message(assistant.clone()));
+            messages.push(assistant);
+            records.push(Record::Outcome(stats()));
+        }
+        let text = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Session::parse(std::path::Path::new("dynamic-appraisal.jsonl"), &text).unwrap()
+    }
+
+    #[test]
+    fn dynamic_appraisal_uses_the_recorded_charter_after_live_edits() {
+        let historical = dynamic_charter_source("recorded-review");
+        let transcript = dynamic_appraisal_fixture(&[&historical, &historical], false);
+        let live =
+            crate::charter::Charter::parse(&dynamic_charter_source("current-review")).unwrap();
+        let rejected = draft("o1", "rejected", false);
+        let appraisal = for_transcript(
+            &transcript,
+            "s1",
+            "2026-09-04T00:00:00Z".into(),
+            SessionRecords {
+                drafts: &[&rejected],
+                charter: Some(&live),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+        .appraisal;
+        assert!(!appraisal.partial);
+        assert!(appraisal.goals.is_empty());
+        assert_eq!(
+            appraisal.attributed,
+            vec![GoalRef::Charter("recorded-review".into())]
+        );
+        assert_eq!(
+            appraisal.errors[0].goal,
+            Some(GoalRef::Charter("recorded-review".into()))
+        );
+    }
+
+    #[test]
+    fn dynamic_appraisal_marks_mixed_or_unbound_charter_coverage_partial() {
+        let first = dynamic_charter_source("first-review");
+        let second = dynamic_charter_source("second-review");
+        let live =
+            crate::charter::Charter::parse(&dynamic_charter_source("current-review")).unwrap();
+        let rejected = draft("o1", "rejected", false);
+        for transcript in [
+            dynamic_appraisal_fixture(&[&first, &second], false),
+            dynamic_appraisal_fixture(&[&first], true),
+        ] {
+            let appraisal = for_transcript(
+                &transcript,
+                "s1",
+                "2026-09-04T00:00:00Z".into(),
+                SessionRecords {
+                    drafts: &[&rejected],
+                    charter: Some(&live),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .appraisal;
+            assert!(appraisal.partial);
+            assert!(appraisal.attributed.is_empty());
+            assert!(appraisal
+                .errors
+                .iter()
+                .any(|error| matches!(error.cite, Cite::Draft(_))));
+            assert!(appraisal.errors.iter().all(|error| error.goal.is_none()));
+        }
     }
 
     /// No charter, or a charter with no sensors, attributes nothing — and

@@ -387,6 +387,8 @@ impl Tool for Subagent {
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,
+            owner_steering: None,
+            goal_ingress: None,
             // **Inherited, like hooks and the outbox route**, and for exactly
             // that reason: a tool the parent run may not dispatch must not
             // become reachable by delegating. A subagent's own `tools`

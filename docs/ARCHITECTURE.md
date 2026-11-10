@@ -7932,6 +7932,22 @@ was ever deployed.
 
 `session.rs` writes append-only JSONL transcripts; `replay.rs` re-drives them.
 
+**Dynamic context is recorded before the provider attempt, not inferred from
+message positions afterward.** `GoalContextDecision` atomically carries the
+new versions and `DecisionBinding`: exact prewire and effective messages, system
+text, run boundary, tool surface and tool mode. Its digest detects missing or
+substituted fields; it is an integrity check, not an authenticity signature.
+Rewrites and clear retain historical versions. A recognized malformed dynamic
+record refuses before lenient legacy parsing, including escaped or duplicate
+discriminators: recovering one as a plain message would silently erase context.
+An appended binding proves an attempted dispatch, not provider receipt.
+
+`replay::extract_transcript` validates this history. Dynamic replay requires an
+exact recorded boundary and continuation; unsupported steering/branch changes
+refuse. Counterfactual harness probes refuse these transcripts until they can
+apply their intervention without overwriting it with the frozen request. A replay
+that restores the baseline over a compaction candidate measures no intervention.
+
 - **Anything that shapes the request or constrains the run is a confound if
   it is not recorded** (`RunConfig`). Compaction on versus off measured 1/5
   against 5/5 on the same task, so a replay blind to that setting would report
@@ -9715,6 +9731,26 @@ enforced, and is the part to keep:
   found 2026-08-29, when the page-level docs claimed all surfaces shared the
   implementation and a grep for callers said otherwise.
 
+**Versioned chat context is evidence, not charter authorship.** Opt-in
+`--dynamic-goals` uses host-created `OwnerInput` from CLI chat, TUI keyboard input
+and authenticated assistant web chat. A user-role message alone does not establish
+owner provenance. `GoalContextState` belongs to `Conversation`; each run allocates
+its own tool-context binding even when Agent is shared. Untyped steering, remote
+mirrors and subagent inputs cannot mint owner authority. `bind_goal_decision`
+records before consuming steering or publishing the new state, including the
+forced-final-answer path. Charter refresh replaces only its registered system
+slot; raw sensor configuration stays harness-only.
+
+The charter file remains the current authority. Stored `CharterSnapshot` values
+retain historical bytes and rendering for replay, never an alternate policy-write
+path. `appraisal::charter_for_transcript` selects a historical charter only when
+coverage is unambiguous; mixed charter versions, clears or uncovered runs report
+partial attribution. It must not reinterpret past outcomes with today's charter.
+Dynamic context binding separately arms private-data taint for its owner evidence
+and preserves that mark on transcript hydration, including an interrupted run.
+The legacy fixed `GoalRef` and encrypted one-shot memory protocol keep their
+existing contracts; a multi-turn capture protocol must explicitly bind versions.
+
 **Order is rank, and `deny_unknown_fields` is what enforces it.** There is no
 priority field, because value conflict is the measured cause of goal drift and a
 weighted sum can always be outvoted by enough small goods. A stray `priority` or
@@ -9723,7 +9759,7 @@ owner write one, believe it did something, and never find out. Do not sort
 `Charter::lines`; `SkillStore` sorts because its block is a menu, and a
 charter's order *is* the content.
 
-**Loading a charter arms no taint**, and `charter.rs` has no dependency on
+**Static charter rendering arms no taint**, and `charter.rs` has no dependency on
 `agent::Taint` at all — the absence is the enforcement. It renders straight into
 the system prompt (no progressive disclosure, no tool), so it is in the cached
 prefix: `CHARTER_CHAR_BUDGET` is 2,500 (2,000 until the goal-sentence ask of

@@ -965,9 +965,48 @@ pub async fn drive(
         ..Default::default()
     };
 
-    for turn in &trajectory.turns {
-        convo.push(Message::user(turn.clone()));
+    let dynamic = !trajectory.goal_decisions.is_empty();
+    let starts: Vec<usize> = trajectory
+        .goal_decisions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (binding, _))| binding.run_start().then_some(i))
+        .collect();
+    let run_count = if dynamic {
+        starts.len()
+    } else {
+        trajectory.turns.len()
+    };
+    for index in 0..run_count {
+        if dynamic {
+            let start = starts[index];
+            let end = starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(trajectory.goal_decisions.len());
+            let group = &trajectory.goal_decisions[start..end];
+            convo.messages = group[0]
+                .0
+                .conversation_messages()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("dynamic replay lacks the recorded pre-request conversation")
+                })?
+                .to_vec();
+            convo.goal_context_replay = Some(group.iter().cloned().collect());
+            convo.taint.private = true;
+        } else {
+            convo.push(Message::user(trajectory.turns[index].clone()));
+        }
         let outcome = agent.run_in(cx, &mut convo, None).await?;
+        if dynamic {
+            anyhow::ensure!(
+                convo
+                    .goal_context_replay
+                    .as_ref()
+                    .is_some_and(|q| q.is_empty()),
+                "dynamic goal replay ended before all recorded decision boundaries"
+            );
+        }
         stats.absorb(&outcome);
         replayed.extend(outcome.tool_calls);
         final_text = outcome.text;
@@ -1045,6 +1084,36 @@ pub async fn drive_branch(
     }
     let seeded = seed.len();
     let mut convo = Conversation::resumed(seed, taint);
+    if !trajectory.goal_decisions.is_empty() {
+        convo.taint.private = true;
+        let matches: Vec<usize> = trajectory
+            .goal_decisions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (binding, _))| {
+                binding
+                    .conversation_messages()
+                    .is_some_and(|messages| messages == convo.messages)
+                    .then_some(i)
+            })
+            .collect();
+        anyhow::ensure!(matches.len() == 1,
+            "dynamic goal branch lacks one exact recorded decision boundary; altered steering or ambiguous seeds are unsupported");
+        let start = matches[0];
+        let end = trajectory
+            .goal_decisions
+            .iter()
+            .enumerate()
+            .skip(start + 1)
+            .find_map(|(i, (binding, _))| binding.run_start().then_some(i))
+            .unwrap_or(trajectory.goal_decisions.len());
+        convo.goal_context_replay = Some(
+            trajectory.goal_decisions[start..end]
+                .iter()
+                .cloned()
+                .collect(),
+        );
+    }
     let mut stats = crate::session::RunStats {
         usage_complete: true,
         ..Default::default()
@@ -2570,6 +2639,98 @@ decision = "prompt"
         }
     }
 
+    struct CapturedDynamic(Arc<Mutex<Vec<CompletionRequest>>>);
+    #[async_trait]
+    impl Provider for CapturedDynamic {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            request: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            self.0.lock().unwrap().push(request.clone());
+            Ok(assistant(
+                vec![Block::text("finished")],
+                StopReason::EndTurn,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_replay_sends_each_historical_system_and_owner_version() {
+        use crate::goal_context::{
+            CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+        };
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let agent = Agent::new(
+            Box::new(CapturedDynamic(captured.clone())),
+            crate::tool::Registry::new(),
+            approver.clone(),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            Some("today's unrelated system and charter".into()),
+        )
+        .unwrap();
+        let cx = RunContext::new(ToolCtx::default(), approver).with_budget(Budget::turns(2));
+        let mut state = GoalContextState::default();
+        let mut trajectory = Trajectory::default();
+        for (index, owner) in ["prepare report", "focus on figure"]
+            .into_iter()
+            .enumerate()
+        {
+            let charter = CharterSnapshot::from_source(
+                Some(format!(
+                    "[[line]]\nid='priority'\ntext='historical charter {index}'\n"
+                )),
+                false,
+            )
+            .unwrap();
+            let version = state
+                .transition(
+                    charter,
+                    Some(OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()),
+                )
+                .unwrap()
+                .unwrap();
+            let conversation = vec![Message::user(owner)];
+            let mut wire = conversation.clone();
+            wire[0]
+                .content
+                .push(Block::text(version.owner_prompt_block()));
+            let system = version.charter().prompt_block().map(str::to_string);
+            let binding =
+                DecisionBinding::new(index as u64 + 1, version.revision(), &wire, system, true, 1)
+                    .unwrap()
+                    .with_conversation_messages(&conversation)
+                    .unwrap();
+            trajectory.goal_decisions.push((binding, version));
+        }
+        let result = drive(&agent, &cx, &trajectory).await.unwrap();
+        assert_eq!(result.turns, 2);
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (request, (binding, version)) in requests.iter().zip(&trajectory.goal_decisions) {
+            assert_eq!(request.system.as_deref(), binding.system());
+            assert_eq!(request.messages, binding.messages());
+            assert_eq!(request.trailing_notes, 1);
+            assert!(request.messages[0]
+                .text()
+                .contains(&format!("revision=\"{}\"", version.revision())));
+            assert!(!request.system.as_deref().unwrap().contains("today's"));
+        }
+    }
+
     async fn drive_scripted(
         turns: Vec<CompletionResponse>,
         calls: Vec<RecordedCall>,
@@ -2662,6 +2823,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: false,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
         let report = drive_scripted(
             vec![
@@ -2788,6 +2950,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: true,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
         // The forced prefix: the first call already made and answered.
         let seed = vec![
@@ -2881,6 +3044,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: false,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
 
         let report = drive_scripted(
@@ -3074,6 +3238,7 @@ decision = "prompt"
             final_text: "done".into(),
             steered: false,
             harness_calls: 0,
+            goal_decisions: Vec::new(),
         };
         // The model calls `other` where the recording says `echo`; the refusal
         // comes back as a tool result, and the cancelled run ends the turn.

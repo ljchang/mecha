@@ -33,10 +33,11 @@ use tokio::sync::{broadcast, Mutex};
 
 #[cfg(test)]
 use mecha_core::agent::Agent;
-use mecha_core::agent::{AgentEvent, Conversation};
+use mecha_core::agent::{AgentEvent, Conversation, QueuedSteer};
 #[cfg(test)]
 use mecha_core::config::Config;
 use mecha_core::config::PermissionMode;
+use mecha_core::goal_context::{OwnerInput, OwnerSource};
 use mecha_core::message::{Block, Message, Role, Usage};
 use mecha_core::outbox::{OutboxRoute, OutboxStore};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
@@ -262,7 +263,7 @@ fn waiting_json(ws: &WebSession) -> Vec<serde_json::Value> {
         if let (Ok(queue), Ok(ids)) = (live.queue.lock(), live.queued_ids.lock()) {
             let offset = ids.len().saturating_sub(queue.len());
             for (text, id) in queue.iter().zip(ids.iter().skip(offset)) {
-                out.push(serde_json::json!({ "text": text, "request_id": id }));
+                out.push(serde_json::json!({ "text": text.text(), "request_id": id }));
             }
         }
     }
@@ -298,7 +299,8 @@ struct Live {
     /// The handle, not a bare token: the page's stop button cancels *as
     /// the owner*, and the outcome records `Stopped`.
     cancel: mecha_core::agent::CancelHandle,
-    queue: Arc<StdMutex<VecDeque<String>>>,
+    queue: Arc<StdMutex<VecDeque<QueuedSteer>>>,
+    dynamic_goals: bool,
     queued_ids: Arc<StdMutex<VecDeque<String>>>,
     /// The conversation as this run found it — what a transcript read
     /// renders while the run holds the real one. A page that loads mid-run
@@ -1581,6 +1583,7 @@ pub(super) async fn open_task_conversation(
             &key,
             &seed,
             TurnOpts {
+                owner_input: false,
                 request_id: None,
                 spoken: false,
                 approve_all: false,
@@ -2218,8 +2221,15 @@ fn steer(ws: &mut WebSession, text: String, request_id: String) -> Sent {
             "steering receipts unavailable\n".into(),
         ));
     };
+    let steer = if live.dynamic_goals {
+        let input = OwnerInput::new(OwnerSource::AuthenticatedWeb, text.clone())
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+        QueuedSteer::Owner(input)
+    } else {
+        QueuedSteer::Unverified(text.clone())
+    };
     ids.push_back(request_id.clone());
-    queue.push_back(text.clone());
+    queue.push_back(steer);
     let _ = ws.events.send(WireEvent::Queued {
         text,
         request_id: Some(request_id),
@@ -2500,6 +2510,8 @@ async fn send_text(
         key,
         &text,
         TurnOpts {
+            // Picture edit controls can synthesize their text in the page.
+            owner_input: draw.is_none(),
             spoken: false,
             approve_all: false,
             unlogged: false,
@@ -2565,6 +2577,7 @@ pub(super) fn started_by_a_run() -> bool {
 
 /// Which door a turn came through, and what that changes about it.
 struct TurnOpts {
+    owner_input: bool,
     request_id: Option<String>,
     /// Spoken rather than typed (D3): the voice block opens a spoken
     /// stretch, and the browser labels its words as spoken.
@@ -2664,6 +2677,7 @@ mod narrowing_tests {
 
     fn spoken_yes() -> TurnOpts {
         TurnOpts {
+            owner_input: false,
             request_id: None,
             spoken: true,
             approve_all: true,
@@ -2694,6 +2708,7 @@ mod narrowing_tests {
         // "Only ever narrows" — the page's mode is a decision a person made
         // about typing, and hearing ourselves says nothing about it.
         let typed = TurnOpts {
+            owner_input: false,
             request_id: None,
             spoken: false,
             approve_all: true,
@@ -2708,6 +2723,7 @@ mod narrowing_tests {
     #[test]
     fn without_the_flag_there_is_nothing_to_narrow() {
         let off = TurnOpts {
+            owner_input: false,
             request_id: None,
             spoken: true,
             approve_all: false,
@@ -2885,6 +2901,17 @@ fn begin_turn(
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
     spoken_turn_may_enter(&opts, ws.session.room().is_some()).map_err(TurnError::Failed)?;
+    let dynamic_goals = bound.agent.dynamic_goals_enabled();
+    if !dynamic_goals
+        && ws
+            .conversation
+            .as_ref()
+            .is_some_and(Conversation::has_dynamic_goal_context)
+    {
+        return Err(TurnError::Failed(
+            "restart serve with --dynamic-goals to continue this chat".into(),
+        ));
+    }
     let draw = opts.draw.clone();
     // Incognito's gates, re-derived against the binding this turn runs on
     // (`incognito_gates`): `open_incognito` checked the one it opened on, and
@@ -2933,6 +2960,12 @@ fn begin_turn(
     // from it.
     let text = text.to_string();
 
+    let owner_inputs = if dynamic_goals && opts.owner_input {
+        vec![OwnerInput::new(OwnerSource::AuthenticatedWeb, text.clone())
+            .map_err(|err| TurnError::Failed(err.to_string()))?]
+    } else {
+        Vec::new()
+    };
     let Some(mut conversation) = ws.conversation.take() else {
         return Err(TurnError::Held);
     };
@@ -3070,7 +3103,7 @@ fn begin_turn(
             c.cancel(mecha_core::agent::CancelReason::Stopped);
         });
     }
-    let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
+    let queue: Arc<StdMutex<VecDeque<QueuedSteer>>> = Arc::default();
     let queued_ids: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     let before: Arc<[Message]> = before.into();
     let mut history_taint = conversation.taint;
@@ -3083,6 +3116,7 @@ fn begin_turn(
     ws.live = Some(Live {
         cancel: cancel.clone(),
         queue: Arc::clone(&queue),
+        dynamic_goals,
         queued_ids: Arc::clone(&queued_ids),
         history: Arc::clone(&before),
         taint: history_taint,
@@ -3216,7 +3250,10 @@ fn begin_turn(
     // be this run's own, and the shared agent context's must not be reused
     // across runs.
     cx = cx.with_cancel_handle(cancel.clone());
-    cx.queued_input = Some(Arc::clone(&queue));
+    cx = cx.with_owner_steering(Arc::clone(&queue));
+    if dynamic_goals {
+        cx = cx.with_goal_ingress(owner_inputs, ws.session.kept().cloned());
+    }
     // A picture outlives the turn that asked for it (§5.4): a kept chat's
     // run hands it to the chat's slot in the queue and answers at once, and
     // is told what arrived since its last reply. An incognito chat has no
@@ -3662,7 +3699,12 @@ fn begin_turn(
                 .unwrap_or_default();
             let texts: Vec<String> = unread
                 .lock()
-                .map(|mut queue| queue.drain(..).collect())
+                .map(|mut queue| {
+                    queue
+                        .drain(..)
+                        .map(|steer| steer.text().to_string())
+                        .collect()
+                })
                 .unwrap_or_default();
             // The texts still queued are the last receipts; any before them
             // the run read, and the forwarder has receipted.
@@ -3972,6 +4014,7 @@ impl crate::voice::SessionHost for VoiceHost {
                         key,
                         utterance,
                         TurnOpts {
+                            owner_input: false,
                             request_id: None,
                             spoken: true,
                             approve_all,
@@ -6642,6 +6685,7 @@ mod held_tests {
             "k",
             "hello",
             TurnOpts {
+                owner_input: false,
                 request_id: None,
                 spoken: true,
                 approve_all: false,
@@ -6716,6 +6760,7 @@ mod held_tests {
             "k",
             "what is on today",
             TurnOpts {
+                owner_input: false,
                 request_id: None,
                 spoken: true,
                 approve_all: false,
@@ -6871,6 +6916,7 @@ mod held_tests {
             "k",
             text,
             TurnOpts {
+                owner_input: false,
                 request_id: None,
                 spoken: false,
                 approve_all: false,
@@ -7098,6 +7144,7 @@ mod held_tests {
                 &key,
                 "hello",
                 TurnOpts {
+                    owner_input: false,
                     request_id: None,
                     spoken,
                     approve_all: false,
@@ -7225,6 +7272,7 @@ mod workflow_recording_tests {
                 case,
                 "next input",
                 TurnOpts {
+                    owner_input: false,
                     request_id: Some("rejected-request".into()),
                     spoken: true,
                     approve_all: false,

@@ -169,6 +169,10 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_charter: bool,
 
+    /// Version owner chat instructions and charter revisions in chat, TUI, and assistant web chat.
+    #[arg(long, global = true)]
+    pub dynamic_goals: bool,
+
     /// Don't offer the `compact` tool — the run still compacts at its
     /// threshold, the model just cannot ask for it early.
     ///

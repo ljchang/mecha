@@ -2,6 +2,12 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Dynamic-context addendum, 2026-11-10:** §31.24 has an opt-in implementation
+for versioned owner chat, charter snapshots and historical request replay.
+Current charter authority remains in the owner's file. Encrypted multi-turn
+memory admission and owner-only vault/control isolation remain separate work.
+See HISTORY for qualification and HANDOFF for the current integration boundary.
+
 **Ordinary-session addendum, 2026-11-09:** §31.22 now has an opt-in one-shot
 CLI implementation using the existing Agent loop, encrypted observation capture,
 guarded recall and host-only recovery. Observations remain NotEvaluated; assistant
@@ -4023,3 +4029,74 @@ The same versioned manifest and scorecard format should support future cohorts
 without changing the old denominator or retuning its private answers.
 
 Implementation plan: `superpowers/plans/2026-11-10-memory-lifetime.md`.
+
+### 31.24 Dynamic goal context and historical replay
+
+The owner can establish and redirect objectives in ordinary chat. A formal task
+identifier or a separate confirmation exchange is not required to retain that
+instruction as context. Standing priorities remain in the owner-authored charter;
+no model composes, suggests or edits charter lines. Projects and tasks can still
+be referenced through the existing `GoalRef` mechanism.
+
+Keep three things distinct: what the owner actually said, the charter that was
+shown at that time, and the model's interpretation of what those sources imply.
+A new message may refine an objective, add a subgoal, pause work, or change
+direction. Recording the message does not prove which of those interpretations
+is correct. Preserve its exact text and order rather than automatically replacing
+the previous goal or converting every sentence into a standing commitment.
+Existing confirmed-goal anchors and drift sensors keep their narrower meaning.
+
+The conversation owns an immutable chain of context versions. Each decision
+records the version that became effective, its exact request boundary and the
+system text actually supplied. Charter snapshots retain content as well as an
+identity; a hash alone cannot reconstruct a past prompt. Harness-only sensor
+configuration stays out of model-visible charter rendering. Current policy
+loading failures must not silently remove standing priorities.
+
+Only trusted owner input paths create owner-source records. An ordinary user-role
+message is insufficient: tool results, quoted documents, unattended prompts,
+remote mirrors and harness notices can also occur in user-role messages.
+Steering becomes effective when consumed, never merely when queued. Concurrent
+conversations using one Agent must have independent context and tool bindings.
+
+Replay restores the recorded versions rather than reading today's charter.
+Compaction, clear, resume and failed runs must not assign a later version to an
+earlier decision. A missing, corrupt or unsupported new-format decision trace is
+an explicit refusal for the affected replay, not permission to substitute current
+state or silently treat the record as legacy. Branches that withhold a steering
+message must also withhold the context change derived from it.
+
+This requirement is separate from admitting multi-turn chat to encrypted memory.
+The existing ordinary-session v1 protocol authenticates one fixed goal; extending
+it by silently accepting changing goals would invalidate its source guarantees.
+A future chat capture protocol must bind each episode and appraisal to these
+recorded versions and preserve conversation-wide consulted-source lineage.
+
+Implementation plan: `superpowers/plans/2026-11-10-dynamic-goal-context.md`.
+
+**Owner decision, 2026-11-10:** keep the current charter file authoritative for
+now. Historical snapshots may later share the memory store without granting the
+model write authority over the live charter. Research a separate owner-controlled
+secrets and policy service before changing that boundary: credential storage,
+credential use, sandbox enforcement and policy editing are distinct capabilities.
+No vault or privileged management agent is implemented by this increment.
+
+A bounded primary-source review found Anthropic's [Managed Agents architecture](https://www.anthropic.com/research/managed-agents)
+(8 April 2026) relevant: it separates the harness, sandbox and durable session,
+and places connector credentials behind an external proxy. This is an architectural
+precedent, not a dependency recommendation or a measured Mecha result. A minimal
+Mecha design could keep owner policy edits and credential use behind a deterministic
+service with a separate OS identity, while workers receive read-only policy versions
+and narrowly scoped tool operations. Preserve existing path resolution, fail-closed
+sandbox preflight, taint, grants, policy narrowing and outbox checks.
+
+The necessary test boundary is privilege, not a Rust module or encrypted file.
+`Sandbox::command` with `Backend::None` launches a shell with the process's ambient
+authority; this source path cannot provide an OS-level charter-write prohibition.
+`serve::owner_guard` relies on identity headers from its trusted proxy, so a new
+management service must prevent untrusted direct access to its listener. These
+are source observations, not live exploit findings. First evaluate owner-only
+policy writes and one credential-broker connector, testing direct/aliased writes,
+forged local identity, cross-account requests, revocation and broker failure.
+Measure added latency before expanding the boundary. No privileged management
+model is needed to enforce these checks.

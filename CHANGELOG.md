@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental `--dynamic-goals` records changing owner instructions and charter
+  snapshots in CLI chat, TUI and authenticated assistant web chat. Each provider
+  attempt is bound to its context version, effective messages and tool surface;
+  historical replay refuses missing or incompatible context. The charter remains
+  owner-authored. Ambiguous historical appraisal is reported as partial rather
+  than evaluated against today's charter. Default-off; encrypted multi-turn
+  memory capture remains separate work.
+
 - Experimental `memory-session sources` and `learn` connect authenticated
   ordinary-session observations to bounded native concept induction and revision.
   Host-selected sources retain current access checks across one local model call;

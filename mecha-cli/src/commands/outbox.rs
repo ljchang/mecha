@@ -2143,6 +2143,7 @@ mod tests {
                 sandbox: Arc::new(mecha_core::sandbox::Sandbox::new(Default::default())),
                 workspace: std::env::temp_dir(),
                 config: mecha_core::config::Config::default(),
+                goal_charter: None,
                 approver: Arc::new(mecha_core::tool::ModeApprover {
                     mode: mecha_core::config::PermissionMode::Allow,
                 }),

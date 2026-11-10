@@ -167,9 +167,16 @@ Two honesty rules the surfaces keep:
   the exit code, and the TUI modal becomes a failure report rather than showing
   a partial charter — a document that ranks priorities cannot drop a line and
   keep its meaning.
-- **An edit reaches the *next* prompt, not this one.** The charter is rendered
-  at agent build, so the modal says so after every edit; `/model` rebuilds and
-  picks it up.
+- **Ordinary sessions load the charter at agent build.** Rebuild the agent to
+  pick up an edit. With the opt-in `--dynamic-goals` conversation mode, it is
+  instead refreshed at each main model-decision boundary and the exact version
+  is recorded. Historical replay never replaces that snapshot with today's file.
+  A malformed charter refuses a dynamic request rather than dropping priorities.
+
+The editable file remains authoritative. Historical snapshots belong to the
+conversation's evidence; retrieving one does not install it as current policy.
+Moving the authoritative charter into a database or adding a separate secrets
+vault is outside this prototype. No model-accessible charter write path is added.
 
 There is a **2,500-character budget**, checked by `mecha doctor` and shown in
 every surface. It is not enforced — over budget is a finding, not a refusal —

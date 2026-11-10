@@ -32,8 +32,20 @@ refusing incompatible execution profiles before provider startup. See HISTORY
 for qualification, including the independently audited two-session resident-model
 mechanics trial, and `website/docs/features/memory/index.md` for the command.
 
-**Remaining ordinary integration:** chat/web/resume, broader tool coverage, live
-goal/resource-state appraisal and automatic learning selection/scheduling. Explicit
+**Dynamic chat goals (2026-11-10, opt-in prototype):**
+`--dynamic-goals` opts CLI chat, TUI and authenticated assistant web chat into
+versioned owner evidence and per-decision charter refresh. `GoalContextState`
+retains immutable versions; `DecisionBinding` records the effective request and
+tool surface before dispatch. Replay consumes those records, and historical
+appraisal refuses ambiguous charter attribution. The current charter file stays
+owner-authored and authoritative. Independent incremental review has no remaining
+medium/major findings. Spark all-target builds, 6,454 default and 7,229
+memory-enabled workspace tests passed (25/30 ignored), as did the actual CLI
+scripted-transport smoke. HISTORY holds the evidence and retained limitations.
+This does not admit chat transcripts to encrypted ordinary-memory v1.
+
+**Remaining ordinary integration:** encrypted chat/web/resume capture, broader tool coverage, live
+resource-state appraisal and automatic learning selection/scheduling. Explicit
 host learning triggers now exist: `SessionMemory::learn` and `memory-session
 sources|learn` reuse native concept induction/rumination with current source
 authority, one local call and separate provisional outcomes. Full Spark
@@ -43,9 +55,10 @@ three-arm chronological development comparison. General experiment switches,
 held-out task families, useful-learning evidence and other harness adapters remain
 open. Next integrate restricted opt-in multi-turn chat and authenticated resume,
 then web: preserve conversation identity, cumulative lineage and immutable source
-prefixes as transcripts grow. The first profile still requires an explicit
-owner-supplied goal, changeable between runs; goal-less observation requires a
-separate contract. Qualify useful larger tool writes: the chronological pilot
+prefixes as transcripts grow. The encrypted first profile still requires an explicit
+owner-supplied fixed goal, changeable between runs. Its successor must bind the
+new versioned chat context; goal-less observation requires a separate contract.
+Qualify useful larger tool writes: the chronological pilot
 withheld six decision captures in the first attempt and all eight in the corrected
 attempt above the existing 1,024-byte argument bound.
 Also improve exact citation-pointer use; real references and quotations alone

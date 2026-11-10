@@ -17,7 +17,7 @@ use crate::{setup, GlobalOpts};
 use anyhow::{bail, Context, Result};
 use mecha_core::agent::{Agent, RunContext};
 use mecha_core::config::PermissionMode;
-use mecha_core::replay::{extract, Divergence};
+use mecha_core::replay::{extract_transcript, Divergence};
 use mecha_core::replay_run::{
     drive, replay_registry_live, replay_registry_reporting, LiveGate, OnDivergence,
 };
@@ -91,8 +91,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // --- load the recording ---
     let path = resolve_session(&session)?;
-    let (meta, convo) = Session::load(&path)?;
-    let configs = Session::run_configs(&path)?;
+    let transcript = Session::read(&path)?;
+    let trajectory = extract_transcript(&transcript)?;
+    let delivered = transcript
+        .episode
+        .as_ref()
+        .and_then(|e| e.delivered.clone());
+    let meta = transcript.meta;
+    let convo = transcript.convo;
+    let configs = transcript.configs;
     anyhow::ensure!(!configs.iter().any(|c| c.appraisal_evidence.is_some()),
         "replay does not yet reconstruct owner-bound anticipatory evidence; the recorded predictions remain readable");
     let Some(recorded) = configs.first().cloned() else {
@@ -111,13 +118,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
     // Which learned rules the run carried is part of the arm being replayed,
     // and once loading is scoped the store cannot answer for a past run.
-    let delivered = Session::read(&path)
-        .ok()
-        .and_then(|t| t.episode)
-        .and_then(|e| e.delivered);
     eprintln!("note: {}", recorded.rules_arm_note(delivered.as_deref()));
 
-    let trajectory = extract(&convo.messages);
     trajectory.ensure_replayable()?;
     if trajectory.turns.is_empty() {
         bail!("the transcript contains no user turns; nothing to replay");

@@ -75,6 +75,7 @@ pub struct PreparedTools {
     pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     pub workspace: PathBuf,
     pub config: Config,
+    pub(crate) goal_charter: Option<(PathBuf, Option<std::ops::Range<usize>>)>,
     pub approver: Arc<dyn Approver>,
     /// A concrete handle onto the registered todo tool, so a UI can poll
     /// `items()` live. `None` when the tool is disabled or an MCP server
@@ -473,6 +474,7 @@ fn build(
 ) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
+    let goal_charter = tools.goal_charter;
     let mut driven = tools.driven;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
@@ -977,6 +979,12 @@ fn build(
     // `eval` and the probes build their own per-case contexts and so stay
     // unsampled — see `Agent::with_homeostat`.
     .with_homeostat();
+    if opts.dynamic_goals {
+        agent = agent.with_dynamic_goals();
+        if let Some((path, range)) = goal_charter {
+            agent = agent.with_goal_charter(path, range)?;
+        }
+    }
 
     if let Some(hooks) = hooks {
         agent.set_hooks(hooks);
@@ -1746,6 +1754,7 @@ async fn prepare_tools_carrying(
     // being loaded on demand. Global-only and read-only by construction: see
     // `mecha_core::charter`'s module doc for why there is no config field to
     // point this at a project file instead.
+    let mut goal_charter = None;
     if !opts.no_charter {
         let charter_path = mecha_core::charter::Charter::default_path()?;
         // Best-effort, like skills and learned rules: a genuinely malformed
@@ -1787,15 +1796,29 @@ async fn prepare_tools_carrying(
             }
             tools.registers("todo")
         };
-        if let Some(block) = mecha_core::charter::prompt_block_for(&charter, todo_in_surface) {
-            let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
-            cfg.agent.system_prompt = Some(if base.is_empty() {
-                block
+        let slot =
+            if let Some(block) = mecha_core::charter::prompt_block_for(&charter, todo_in_surface) {
+                let mut base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+                let start = base.len();
+                if !base.is_empty() {
+                    base.push_str("\n\n");
+                }
+                base.push_str(&block);
+                let slot = start..base.len();
+                cfg.agent.system_prompt = Some(base);
+                cfg.agent.system_prompt_file = None;
+                Some(slot)
+            } else if opts.dynamic_goals {
+                // Keep the same slot when the owner creates a charter after setup.
+                let base = cfg.agent.resolve_system_prompt()?;
+                let start = base.as_ref().map_or(0, String::len);
+                cfg.agent.system_prompt = base;
+                cfg.agent.system_prompt_file = None;
+                Some(start..start)
             } else {
-                format!("{base}\n\n{block}")
-            });
-            cfg.agent.system_prompt_file = None;
-        }
+                None
+            };
+        goal_charter = Some((charter_path, slot));
     }
 
     if !opts.tools.is_empty() {
@@ -2464,6 +2487,7 @@ async fn prepare_tools_carrying(
         sandbox,
         workspace,
         config: cfg,
+        goal_charter,
         approver,
         todo,
         skill,
@@ -4252,6 +4276,7 @@ mod tests {
                 sandbox: Arc::new(mecha_core::sandbox::Sandbox::new(Default::default())),
                 workspace: home.dir.clone(),
                 config,
+                goal_charter: None,
                 approver: Arc::new(ModeApprover {
                     mode: PermissionMode::Allow,
                 }),

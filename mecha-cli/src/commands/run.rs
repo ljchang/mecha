@@ -269,6 +269,10 @@ pub async fn execute(
     args: Args,
     #[cfg(feature = "memory-prototype")] ordinary_memory: Option<OrdinaryMemory>,
 ) -> Result<()> {
+    anyhow::ensure!(
+        !global.dynamic_goals,
+        "--dynamic-goals is supported by interactive chat, tui and assistant serve; one-shot run retains its fixed-goal contract"
+    );
     #[cfg(feature = "memory-prototype")]
     let (ordinary_memory, prompt) = match ordinary_memory {
         Some(OrdinaryMemory { memory, prompt }) => (Some(memory), prompt),
@@ -436,6 +440,10 @@ pub async fn execute(
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
         let (meta, prior) = Session::load(&path)?;
+        anyhow::ensure!(
+            !prior.has_dynamic_goal_context(),
+            "resume versioned goal context with `mecha chat --dynamic-goals` or `mecha tui --dynamic-goals`; one-shot run cannot preserve its owner-input contract"
+        );
         // D15, as in the other three resume paths.
         if let Some(todo) = &prepared.todo {
             let plan = mecha_core::tool::todo::PlanKey::of(&prepared.agent.context().tools);

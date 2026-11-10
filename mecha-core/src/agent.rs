@@ -16,7 +16,7 @@ use crate::config::{AgentConfig, TrifectaPolicy};
 use crate::message::*;
 use crate::provider::{Provider, StreamEvent};
 use crate::tool::{Approver, Decision, DenialCause, Egress, Registry, ToolCtx, ToolOutput};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -200,6 +200,28 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
     }
 }
 
+/// Keep harness completion notices distinguishable when a steer joins their
+/// user message. Existing harness blocks must all be recognized before
+/// unmarking the message.
+fn fold_steer(messages: &mut Vec<Message>, text: String) {
+    if let Some(last) = messages.last_mut() {
+        if last.role == Role::User
+            && last.harness
+            && last
+                .content
+                .iter()
+                .any(|block| matches!(block, Block::Text { text } if completion::is_notice(text)))
+            && last
+                .content
+                .iter()
+                .all(|block| matches!(block, Block::Text { text } if is_harness_voice(text)))
+        {
+            last.harness = false;
+        }
+    }
+    append_user_text(messages, text);
+}
+
 /// A user message that is the person's own text and nothing else — no tool
 /// results.
 ///
@@ -212,6 +234,28 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
 /// wrong copy.
 pub fn is_plain_user_text(m: &Message) -> bool {
     m.is_plain_user_text()
+}
+
+/// A submitted steer with its authority established by the host.
+#[derive(Clone)]
+pub enum QueuedSteer {
+    Owner(crate::goal_context::OwnerInput),
+    Unverified(String),
+}
+
+impl QueuedSteer {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Owner(input) => input.text(),
+            Self::Unverified(text) => text,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GoalIngress {
+    inputs: Vec<crate::goal_context::OwnerInput>,
+    session: Option<Arc<crate::session::Session>>,
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
@@ -303,6 +347,8 @@ pub struct RunContext {
     /// tools it asked for. Interrupting sooner would mean discarding a turn the
     /// user already paid for.
     pub queued_input: Option<Arc<Mutex<VecDeque<String>>>>,
+    pub(crate) owner_steering: Option<Arc<Mutex<VecDeque<QueuedSteer>>>>,
+    pub(crate) goal_ingress: Option<GoalIngress>,
     /// Tools this *run* may not dispatch, whatever the registry holds.
     ///
     /// **A narrowing that belongs to one run rather than to the agent.** The
@@ -910,6 +956,8 @@ impl RunContext {
             phase: Phase::default(),
             compact_at_tokens: None,
             queued_input: None,
+            owner_steering: None,
+            goal_ingress: None,
             withheld: Arc::from(Vec::new()),
             hooks: Arc::new(crate::hooks::HookSet::default()),
             policy: Arc::new(crate::policy::ExecPolicy::empty()),
@@ -1047,6 +1095,23 @@ impl RunContext {
         self
     }
 
+    /// Supply owner evidence at the host boundary. A missing session explicitly
+    /// selects an in-memory chat. Neither a message role nor an untyped queue
+    /// entry establishes this authority.
+    pub fn with_goal_ingress(
+        mut self,
+        inputs: Vec<crate::goal_context::OwnerInput>,
+        session: Option<Arc<crate::session::Session>>,
+    ) -> Self {
+        self.goal_ingress = Some(GoalIngress { inputs, session });
+        self
+    }
+
+    pub fn with_owner_steering(mut self, queue: Arc<Mutex<VecDeque<QueuedSteer>>>) -> Self {
+        self.owner_steering = Some(queue);
+        self
+    }
+
     /// Withhold tools from this run's dispatch. See [`RunContext::withheld`].
     pub fn withholding(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.withheld = names.into_iter().collect::<Vec<_>>().into();
@@ -1074,6 +1139,19 @@ impl RunContext {
     /// Everything the user typed since the last turn, in order.
     fn take_queued_input(&self) -> Vec<String> {
         let Some(queue) = &self.queued_input else {
+            // Front ends can retain their tagged queue with dynamic goals off.
+            // In that case its strings follow the original steering path.
+            if self.goal_ingress.is_none() {
+                if let Some(queue) = &self.owner_steering {
+                    return queue
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .drain(..)
+                        .map(|steer| steer.text().to_string())
+                        .filter(|text| !text.trim().is_empty())
+                        .collect();
+                }
+            }
             return Vec::new();
         };
         // A poisoned lock means a panic while holding it. Dropping the queued
@@ -1251,9 +1329,16 @@ impl Taint {
 /// each caller has to remember. Keep the history and you keep the taint; start
 /// a new conversation — a batch item, a subagent, an eval case — and you get a
 /// clean one, because you built a new `Conversation` to do it.
+pub(crate) type GoalReplaySchedule = VecDeque<(
+    crate::goal_context::DecisionBinding,
+    crate::goal_context::ContextVersion,
+)>;
+
 #[derive(Debug, Clone, Default)]
 pub struct Conversation {
     pub messages: Vec<Message>,
+    pub(crate) goal_context: crate::goal_context::GoalContextState,
+    pub(crate) goal_context_replay: Option<GoalReplaySchedule>,
     /// What has entered this conversation so far. Grows, never shrinks: there
     /// is no way to un-read a page.
     pub taint: Taint,
@@ -1348,6 +1433,8 @@ impl Conversation {
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            goal_context: Default::default(),
+            goal_context_replay: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
@@ -1368,12 +1455,36 @@ impl Conversation {
             // and predicts from its second turn on.
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            goal_context: Default::default(),
+            goal_context_replay: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
             program_calls: Vec::new(),
             program_calls_from: 0,
         }
+    }
+
+    pub fn has_dynamic_goal_context(&self) -> bool {
+        !self.goal_context.versions().is_empty()
+    }
+
+    /// Drop active history while preserving the identity of recorded decisions.
+    pub fn clear_with_recording(
+        &mut self,
+        session: Option<&crate::session::Session>,
+    ) -> Result<()> {
+        if self.has_dynamic_goal_context() {
+            if let Some(session) = session {
+                session.append(&crate::session::Record::GoalContextClear)?;
+            }
+            self.goal_context.clear();
+        }
+        *self = Self {
+            goal_context: std::mem::take(&mut self.goal_context),
+            ..Self::default()
+        };
+        Ok(())
     }
 
     pub fn push(&mut self, message: Message) {
@@ -1530,6 +1641,8 @@ impl From<Vec<Message>> for Conversation {
             rewritten: Vec::new(),
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
+            goal_context: Default::default(),
+            goal_context_replay: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
@@ -2381,6 +2494,29 @@ pub struct Agent {
     /// ([`Agent::narrow_code_by`]): a rebuild widens `code`'s union to what
     /// was registered since, and the profile must judge that union too.
     code_profile: Option<(crate::tool::profile::ToolProfile, Vec<String>)>,
+    goal_charter: Option<GoalCharter>,
+    dynamic_goals: bool,
+}
+
+struct GoalCharter {
+    path: std::path::PathBuf,
+    before: String,
+    after: String,
+}
+
+impl GoalCharter {
+    fn render(&self, charter: Option<&str>) -> Option<String> {
+        let system = [
+            self.before.as_str(),
+            charter.unwrap_or_default(),
+            self.after.as_str(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+        (!system.is_empty()).then_some(system)
+    }
 }
 
 /// [`Agent::registry_mut`]'s guard: the registry, and on drop `code` built
@@ -2435,7 +2571,47 @@ impl Agent {
             prior_nudges: PriorNudges::Keep,
             code: None,
             code_profile: None,
+            goal_charter: None,
+            dynamic_goals: false,
         })
+    }
+
+    /// Enable owner goal context at the interactive host's startup.
+    pub fn with_dynamic_goals(mut self) -> Self {
+        self.dynamic_goals = true;
+        self
+    }
+
+    pub fn dynamic_goals_enabled(&self) -> bool {
+        self.dynamic_goals
+    }
+
+    /// Bind the owner-controlled charter path and its exact static prompt
+    /// slot. Legacy callers continue to receive the original setup prompt.
+    pub fn with_goal_charter(
+        mut self,
+        path: std::path::PathBuf,
+        legacy_range: Option<std::ops::Range<usize>>,
+    ) -> Result<Self> {
+        let system = self.system.as_deref().unwrap_or_default();
+        let (before, after) = if let Some(range) = legacy_range {
+            anyhow::ensure!(range.start <= range.end, "invalid charter slot order");
+            let before = system
+                .get(..range.start)
+                .context("invalid charter slot start")?;
+            let after = system
+                .get(range.end..)
+                .context("invalid charter slot end")?;
+            (before, after.strip_prefix("\n\n").unwrap_or(after))
+        } else {
+            (system, "")
+        };
+        self.goal_charter = Some(GoalCharter {
+            path,
+            before: before.to_string(),
+            after: after.to_string(),
+        });
+        Ok(self)
     }
 
     /// Run against a clock other than the machine's — an experiment's fixture
@@ -2932,6 +3108,12 @@ impl Agent {
         convo: &mut Conversation,
         events: Option<UnboundedSender<AgentEvent>>,
     ) -> Result<RunOutcome> {
+        anyhow::ensure!(
+            !convo.has_dynamic_goal_context()
+                || cx.goal_ingress.is_some()
+                || convo.goal_context_replay.is_some(),
+            "dynamic goal context requires --dynamic-goals at a supported chat boundary"
+        );
         // **The `compact` channel is minted per run, here, and not by whoever
         // built the context.** Setup decides whether this run compacts at all
         // — that is a config question, and `None` means the tool is not in the
@@ -2997,6 +3179,7 @@ impl Agent {
             tools.step_checks = (self.cfg.step_checks && self.registry.get("shell").is_some())
                 .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
+            tools.goal_context_version = Arc::default();
             // Past appraisals are keyed on the tool set the run record will
             // name — this registry, after whatever a front-end withheld
             // since the block was rendered (`PastAppraisals::for_registry`).
@@ -3257,6 +3440,12 @@ impl Agent {
         // keeps what it learned. `RunOutcome.taint` reports the same thing for
         // callers that want it without reaching into the conversation.
         let messages = &mut convo.messages;
+        let mut owner_inputs = cx
+            .goal_ingress
+            .as_ref()
+            .map(|ingress| ingress.inputs.clone())
+            .unwrap_or_default();
+        let mut first_decision = true;
 
         loop {
             // Checked before the budget ceilings and handled differently from
@@ -3313,25 +3502,7 @@ impl Agent {
                 .flatten()
             {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
-                // A completion notice can be the last user message. Once an
-                // owner steer joins it, classify its blocks separately: the
-                // fixed notice stays registered, but the steer is owner text.
-                // Empty replies can have added more harness blocks already;
-                // every existing block must be known before unmarking it.
-                if let Some(last) = messages.last_mut() {
-                    if last.role == Role::User
-                        && last.harness
-                        && last.content.iter().any(
-                            |block| matches!(block, Block::Text { text } if completion::is_notice(text)),
-                        )
-                        && last.content.iter().all(
-                            |block| matches!(block, Block::Text { text } if is_harness_voice(text)),
-                        )
-                    {
-                        last.harness = false;
-                    }
-                }
-                append_user_text(messages, queued);
+                fold_steer(messages, queued);
             }
 
             // Is this iteration going to stop before it does any more work?
@@ -3607,8 +3778,24 @@ impl Agent {
             if let Some(cause) = ceiling {
                 tracing::info!(cause = cause.describe(), turns, "stopping early");
                 let mut text = run_said.clone().unwrap_or_default();
-                if self.cfg.force_final_answer {
-                    match self.final_answer(cx, messages, &events).await {
+                if self.cfg.force_final_answer && !cx.cancelled() {
+                    let mut request = self.final_answer_request(cx, messages);
+                    if self
+                        .bind_goal_decision(
+                            cx,
+                            &mut convo.goal_context,
+                            &mut convo.goal_context_replay,
+                            &mut request,
+                            messages,
+                            &mut owner_inputs,
+                            first_decision,
+                        )?
+                        .is_some()
+                    {
+                        taint.private = true;
+                        convo.taint = taint;
+                    }
+                    match self.final_answer(cx, messages, &events, &request).await {
                         Ok(Some(answer)) => text = answer,
                         Ok(None) => {}
                         Err(e) => {
@@ -3702,6 +3889,9 @@ impl Agent {
                 );
                 budget_notice_sent = true;
             }
+            if cx.cancelled() {
+                continue;
+            }
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });
 
@@ -3716,6 +3906,35 @@ impl Agent {
                 convo.taint = taint;
             }
 
+            let steers: Vec<QueuedSteer> = if cx.goal_ingress.is_some() && closing.is_none() {
+                cx.owner_steering
+                    .as_ref()
+                    .map(|queue| {
+                        queue
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .iter()
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            // Leave the queue and conversation untouched until the same
+            // record that binds the version also accepts this request.
+            let steered_messages = (!steers.is_empty()).then(|| {
+                let mut folded = messages.clone();
+                for steer in &steers {
+                    if let QueuedSteer::Owner(input) = steer {
+                        owner_inputs.push(input.clone());
+                    }
+                    fold_steer(&mut folded, steer.text().to_string());
+                }
+                folded
+            });
+            let request_history = steered_messages.as_deref().unwrap_or(messages);
+
             // The size of exactly what is about to go on the wire. Taken here
             // rather than after the response, because the overflow arm below
             // rewrites `messages` between the two and the pair must describe
@@ -3727,12 +3946,12 @@ impl Agent {
             // reading this request carried, so a run that crosses midnight
             // records the date the model last saw.
             convo.harness_notes = notes.head.clone();
-            let mut sent_bytes = self.wire_bytes(messages, &notes);
+            let mut sent_bytes = self.wire_bytes(request_history, &notes);
             let mut request = CompletionRequest {
                 response_schema: None,
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: self.wire(messages, &notes).into_owned(),
+                messages: self.wire(request_history, &notes).into_owned(),
                 tools: self.registry.specs_for(cx.phase),
                 max_tokens: self.cfg.max_tokens,
                 effort: self.cfg.effort,
@@ -3760,6 +3979,33 @@ impl Agent {
                     crate::message::ToolChoice::Auto
                 },
             };
+
+            if let Some(evidence_bytes) = self.bind_goal_decision(
+                cx,
+                &mut convo.goal_context,
+                &mut convo.goal_context_replay,
+                &mut request,
+                request_history,
+                &mut owner_inputs,
+                first_decision,
+            )? {
+                sent_bytes += evidence_bytes;
+                taint.private = true;
+                convo.taint = taint;
+            }
+            first_decision = false;
+            if let Some(folded) = steered_messages {
+                *messages = folded;
+                if let Some(queue) = &cx.owner_steering {
+                    queue
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .drain(..steers.len());
+                }
+                for steer in steers {
+                    emit(&events, AgentEvent::QueuedInput(steer.text().to_string()));
+                }
+            }
 
             // A prompt that overflows the model's window is refused outright,
             // and the reactive threshold cannot always prevent it: a turn's
@@ -3860,6 +4106,18 @@ impl Agent {
                     // sent.
                     pressure.invalidate();
                     sent_bytes = self.wire_bytes(messages, &notes);
+                    request.trailing_notes = notes.tail.len();
+                    if let Some(evidence_bytes) = self.bind_goal_decision(
+                        cx,
+                        &mut convo.goal_context,
+                        &mut convo.goal_context_replay,
+                        &mut request,
+                        messages,
+                        &mut owner_inputs,
+                        false,
+                    )? {
+                        sent_bytes += evidence_bytes;
+                    }
                     self.complete(cx, &request, &stream).await?
                 }
                 other => other?,
@@ -4599,6 +4857,129 @@ impl Agent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn bind_goal_decision(
+        &self,
+        cx: &RunContext,
+        state: &mut crate::goal_context::GoalContextState,
+        replay: &mut Option<GoalReplaySchedule>,
+        request: &mut CompletionRequest,
+        conversation_messages: &[Message],
+        inputs: &mut Vec<crate::goal_context::OwnerInput>,
+        run_start: bool,
+    ) -> Result<Option<usize>> {
+        use crate::goal_context::{CharterSnapshot, DecisionBinding};
+        if let Some(schedule) = replay {
+            let (binding, version) = schedule
+                .front()
+                .context("dynamic goal replay exhausted its recorded decisions")?;
+            anyhow::ensure!(
+                run_start || !binding.run_start(),
+                "dynamic goal replay changed a recorded run boundary"
+            );
+            let evidence_bytes = if run_start {
+                request.messages = binding.messages().to_vec();
+                request.trailing_notes = binding.trailing_notes();
+                0
+            } else {
+                Self::attach_owner_evidence(request, version)
+            };
+            binding.verify_messages(&request.messages)?;
+            binding.verify_tool_surface(&request.tools, request.tool_choice)?;
+            anyhow::ensure!(
+                request.trailing_notes == binding.trailing_notes(),
+                "dynamic goal replay changed recorded trailing notes"
+            );
+            request.system = binding.system().map(str::to_string);
+            *cx.tools
+                .goal_context_version
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Some(version.clone());
+            schedule.pop_front();
+            return Ok(Some(evidence_bytes));
+        }
+        if inputs.is_empty() && state.current().is_none() {
+            return Ok(None);
+        }
+        let ingress = cx
+            .goal_ingress
+            .as_ref()
+            .context("owner goal input requires an explicit host boundary")?;
+        let charter = match &self.goal_charter {
+            Some(config) => {
+                let path = &config.path;
+                let source = match std::fs::read_to_string(path) {
+                    Ok(source) => Some(source),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(err) => {
+                        return Err(err).with_context(|| format!("read charter {}", path.display()))
+                    }
+                };
+                let todo =
+                    request.tools.iter().any(|tool| tool.name == "todo") && !cx.is_withheld("todo");
+                CharterSnapshot::from_source(source, todo)
+                    .with_context(|| format!("refresh charter {}", path.display()))?
+            }
+            None => CharterSnapshot::disabled(),
+        };
+        // Stage every transition and the binding together. An append failure
+        // leaves the live version, tool snapshot and decision ordinal unchanged.
+        let mut candidate = state.clone();
+        let mut versions = Vec::new();
+        if inputs.is_empty() {
+            versions.extend(candidate.transition(charter, None)?);
+        } else {
+            for input in inputs.iter().cloned() {
+                versions.extend(candidate.transition(charter.clone(), Some(input))?);
+            }
+        }
+        let version = candidate
+            .current()
+            .context("missing dynamic goal revision")?
+            .clone();
+        if let Some(config) = &self.goal_charter {
+            request.system = config.render(version.charter().prompt_block());
+        }
+        let evidence_bytes = Self::attach_owner_evidence(request, &version);
+        let binding = DecisionBinding::new(
+            candidate.next_decision(),
+            version.revision(),
+            &request.messages,
+            request.system.clone(),
+            run_start,
+            request.trailing_notes,
+        )?
+        .with_conversation_messages(conversation_messages)?
+        .with_tool_surface(&request.tools, request.tool_choice)?;
+        candidate.bind(binding.clone())?;
+        if let Some(session) = &ingress.session {
+            session.append(&crate::session::Record::GoalContextDecision { binding, versions })?;
+        }
+        *state = candidate;
+        inputs.clear();
+        *cx.tools
+            .goal_context_version
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(version);
+        Ok(Some(evidence_bytes))
+    }
+
+    fn attach_owner_evidence(
+        request: &mut CompletionRequest,
+        version: &crate::goal_context::ContextVersion,
+    ) -> usize {
+        let evidence = version.owner_prompt_block();
+        let bytes = crate::message::notes_bytes(std::slice::from_ref(&evidence));
+        if let Some(last) = request.messages.last_mut().filter(|m| m.role == Role::User) {
+            let before_notes = last.content.len().saturating_sub(request.trailing_notes);
+            last.content.insert(before_notes, Block::text(evidence));
+        } else {
+            request.messages.push(Message::user(evidence));
+        }
+        request.trailing_notes += 1;
+        bytes
+    }
+
     /// Summarise the middle of the transcript so the conversation keeps fitting.
     ///
     /// Returns the tokens the summary itself cost, or `None` when there was
@@ -4925,12 +5306,11 @@ impl Agent {
     /// *user* message: anything mining transcripts for what the user said —
     /// `learning::extract_interventions` — must be able to tell the harness's
     /// own voice apart from a person's.
-    async fn final_answer(
+    fn final_answer_request(
         &self,
         cx: &RunContext,
         messages: &mut Vec<Message>,
-        events: &Option<UnboundedSender<AgentEvent>>,
-    ) -> Result<Option<String>> {
+    ) -> CompletionRequest {
         // Folded, not pushed: after a tool turn the tail is the tool-results
         // message, and a bare `Message::user` beside it is two user messages
         // in a row — the shape this file names as invalid. `append_user_text`
@@ -4940,7 +5320,7 @@ impl Agent {
         append_user_text(messages, FINAL_ANSWER_NUDGE.to_string());
 
         let notes = self.request_notes(cx);
-        let request = CompletionRequest {
+        CompletionRequest {
             response_schema: None,
             model: self.model.clone(),
             system: self.system.clone(),
@@ -4956,9 +5336,17 @@ impl Agent {
             local_only: false,
             trailing_notes: notes.tail.len(),
             tool_choice: crate::message::ToolChoice::Auto,
-        };
+        }
+    }
 
-        let response = match self.complete(cx, &request, events).await? {
+    async fn final_answer(
+        &self,
+        cx: &RunContext,
+        messages: &mut Vec<Message>,
+        events: &Option<UnboundedSender<AgentEvent>>,
+        request: &CompletionRequest,
+    ) -> Result<Option<String>> {
+        let response = match self.complete(cx, request, events).await? {
             Completion::Finished(response) => *response,
             // Interrupted even during the forced last answer. Nothing more to
             // do: the caller already knows the run is being cut short.
@@ -7623,6 +8011,347 @@ mod tests {
         )
         .unwrap();
         (agent, provider)
+    }
+
+    #[tokio::test]
+    async fn owner_goal_context_is_conversation_local_and_excludes_untyped_input() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct OverlappingProvider {
+            inner: Arc<ScriptedProvider>,
+            paired: tokio::sync::Barrier,
+            entered: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for OverlappingProvider {
+            fn local(&self) -> bool {
+                true
+            }
+
+            fn id(&self) -> &str {
+                self.inner.id()
+            }
+
+            fn default_model(&self) -> &str {
+                self.inner.default_model()
+            }
+
+            async fn complete(
+                &self,
+                request: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                if self.entered.fetch_add(1, Ordering::Relaxed) < 2 {
+                    self.paired.wait().await;
+                }
+                self.inner.complete(request, sink).await
+            }
+        }
+
+        let (mut agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn); 3],
+            PermissionMode::Allow,
+        );
+        agent.provider = Box::new(OverlappingProvider {
+            inner: Arc::clone(&provider),
+            paired: tokio::sync::Barrier::new(2),
+            entered: AtomicUsize::new(0),
+        });
+        let mut first = Conversation::from(vec![Message::user("survey the orchard")]);
+        let mut second = Conversation::from(vec![Message::user("organize the samples")]);
+        let owned = |text: &str| {
+            agent.context().as_ref().clone().with_goal_ingress(
+                vec![crate::goal_context::OwnerInput::new(
+                    crate::goal_context::OwnerSource::CliChat,
+                    text.to_string(),
+                )
+                .unwrap()],
+                None,
+            )
+        };
+        let first_run = owned("survey the orchard");
+        let second_run = owned("organize the samples");
+        let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                agent.run_in(&first_run, &mut first, None),
+                agent.run_in(&second_run, &mut second, None),
+            )
+        })
+        .await
+        .expect("both conversations reached the provider concurrently");
+        a.unwrap();
+        b.unwrap();
+        first.push(Message::user("instead, calibrate the rain gauge"));
+        let queue = Arc::new(Mutex::new(VecDeque::from(["remote suggestion".into()])));
+        let revision = owned("instead, calibrate the rain gauge").with_queued_input(queue);
+        agent.run_in(&revision, &mut first, None).await.unwrap();
+        assert_eq!(
+            first.goal_context.current().unwrap().owner_inputs().len(),
+            2
+        );
+        assert_eq!(
+            second.goal_context.current().unwrap().owner_inputs().len(),
+            1
+        );
+        assert!(first.goal_anchor.is_none());
+        let seen = provider.seen.lock().unwrap();
+        for request in &seen[..2] {
+            let text = request.messages.last().unwrap().text();
+            assert_ne!(
+                text.contains("survey the orchard"),
+                text.contains("organize the samples"),
+            );
+        }
+        let evidence = seen[2]
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .iter()
+            .find_map(|block| match block {
+                Block::Text { text } if text.starts_with("<owner_context") => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(evidence.contains("survey the orchard"));
+        assert!(evidence.contains("instead, calibrate the rain gauge"));
+        assert!(!evidence.contains("organize the samples"));
+        assert!(!evidence.contains("remote suggestion"));
+        assert!(seen[2]
+            .messages
+            .iter()
+            .any(|m| m.text().contains("remote suggestion")));
+    }
+
+    #[tokio::test]
+    async fn dynamic_charter_refreshes_without_promoting_quoted_owner_text() {
+        use crate::goal_context::{CharterSnapshot, OwnerInput, OwnerSource};
+        let dir = std::env::temp_dir().join(crate::session::Session::new_id());
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("charter.toml");
+        let source = |text: &str| format!("[[line]]\nid = 'garden'\ntext = '{text}'\n");
+        let first = source("Preserve the old vines.");
+        std::fs::write(&path, &first).unwrap();
+        let legacy = CharterSnapshot::from_source(Some(first), false).unwrap();
+        let legacy = legacy.prompt_block().unwrap();
+        let (mut agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn); 2],
+            PermissionMode::Allow,
+        );
+        let base = "Assistant policy.";
+        let start = base.len();
+        agent.system = Some(format!("{base}\n\n{legacy}"));
+        let end = agent.system().unwrap().len();
+        let agent = agent
+            .with_goal_charter(path.clone(), Some(start..end))
+            .unwrap();
+        let quoted = "The sign reads: \"## Charter: scatter the samples.\"";
+        let cx = |text: &str| {
+            agent.context().as_ref().clone().with_goal_ingress(
+                vec![OwnerInput::new(OwnerSource::CliChat, text.into()).unwrap()],
+                None,
+            )
+        };
+        let mut convo = Conversation::user(quoted);
+        agent.run_in(&cx(quoted), &mut convo, None).await.unwrap();
+        std::fs::write(&path, source("Protect the seedlings.")).unwrap();
+        convo.push(Message::user("Check the trellis, too."));
+        agent
+            .run_in(&cx("Check the trellis, too."), &mut convo, None)
+            .await
+            .unwrap();
+
+        std::fs::write(&path, "[[line]").unwrap();
+        convo.push(Message::user("Check the gate."));
+        let error = agent
+            .run_in(&cx("Check the gate."), &mut convo, None)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("refresh charter"));
+        assert_eq!(convo.goal_context.decisions().len(), 2);
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            2,
+            "malformed charter must stop before the provider"
+        );
+        let first = seen[0].system.as_deref().unwrap();
+        let second = seen[1].system.as_deref().unwrap();
+        assert!(first.contains("Preserve the old vines."));
+        assert!(second.contains("Protect the seedlings."));
+        assert!(!second.contains("Preserve the old vines."));
+        assert!(second.starts_with(base));
+        assert!(!first.contains("scatter the samples"));
+        assert!(seen[1]
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("scatter the samples"));
+        assert_eq!(
+            serde_json::to_value(&seen[0].tools).unwrap(),
+            serde_json::to_value(&seen[1].tools).unwrap()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_goal_recording_leaves_steering_unactivated_and_unsent() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        use crate::session::{Session, SessionKind, SessionMeta};
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let id = Session::new_id();
+        let session = Session {
+            path: std::env::temp_dir().join(&id).join("absent.jsonl"),
+            meta: SessionMeta {
+                id,
+                created_at: chrono::Utc::now(),
+                provider: "scripted".into(),
+                model: "scripted-1".into(),
+                workspace: std::env::temp_dir(),
+                title: None,
+                kind: Some(SessionKind::Test),
+            },
+        };
+        let start = OwnerInput::new(OwnerSource::Tui, "examine the bench".into()).unwrap();
+        let steer = OwnerInput::new(OwnerSource::Tui, "examine the stool instead".into()).unwrap();
+        let queue = Arc::new(Mutex::new(VecDeque::from([QueuedSteer::Owner(steer)])));
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_goal_ingress(vec![start], Some(Arc::new(session)))
+            .with_owner_steering(Arc::clone(&queue));
+        let mut convo = Conversation::user("examine the bench");
+        let error = agent.run_in(&cx, &mut convo, None).await.unwrap_err();
+        assert!(format!("{error:#}").contains("was deleted"));
+        assert!(!convo.has_dynamic_goal_context());
+        assert_eq!(convo.messages, [Message::user("examine the bench")]);
+        assert!(provider.seen.lock().unwrap().is_empty());
+        assert_eq!(queue.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn goal_tool_reads_the_request_version_and_closing_leaves_steer_queued() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        let owner = |text: &str| OwnerInput::new(OwnerSource::Tui, text.into()).unwrap();
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "g1".into(),
+                        name: "goal_context".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+                assistant(vec![Block::text("closed")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::goal_context::GoalContext)],
+            PermissionMode::Allow,
+        );
+        let queue = Arc::new(Mutex::new(VecDeque::from([
+            QueuedSteer::Owner(owner("start with the labels")),
+            QueuedSteer::Unverified("a mirrored message".into()),
+        ])));
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_goal_ingress(vec![owner("catalog the trays")], None)
+            .with_owner_steering(Arc::clone(&queue));
+        let mut convo = Conversation::user("catalog the trays");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert!(queue.lock().unwrap().is_empty());
+        queue
+            .lock()
+            .unwrap()
+            .push_back(QueuedSteer::Owner(owner("leave this queued")));
+        let mut closing = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_goal_ingress(Vec::new(), None)
+            .with_owner_steering(Arc::clone(&queue));
+        closing.close_with = Some(Closing {
+            line: "Work handed off.",
+            reply: "Closed.",
+        });
+        convo.push(Message::user("Acknowledge handoff."));
+        agent.run_in(&closing, &mut convo, None).await.unwrap();
+        let current = convo.goal_context.current().unwrap();
+        assert_eq!(current.owner_inputs().len(), 2);
+        assert_eq!(queue.lock().unwrap().len(), 1);
+        let seen = provider.seen.lock().unwrap();
+        let result = seen[1]
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|block| match block {
+                Block::ToolResult { content, .. } => Some(content),
+                _ => None,
+            })
+            .unwrap();
+        let result: Value = serde_json::from_str(result).unwrap();
+        assert_eq!(result["goal_context_revision"], current.revision());
+        assert_eq!(result["confirmed_goal"], Value::Null);
+        assert!(result["owner_goal_evidence"]
+            .as_str()
+            .unwrap()
+            .contains("start with the labels"));
+        assert!(!result["owner_goal_evidence"]
+            .as_str()
+            .unwrap()
+            .contains("a mirrored message"));
+        assert!(!seen[2]
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("leave this queued"));
+    }
+
+    #[tokio::test]
+    async fn a_forced_final_answer_records_its_goal_context() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        let (mut agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = true;
+        let text = "Sort the trays by label.";
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, text.to_string()).unwrap()],
+            None,
+        );
+        cx.budget.max_turns = Some(0);
+        let mut convo = Conversation::user(text);
+        let result = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(result.text, "done");
+        assert!(result.taint.private);
+        let [decision] = convo.goal_context.decisions() else {
+            panic!("expected exactly one recorded final-answer request");
+        };
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].tools.is_empty());
+        assert!(decision.run_start());
+        decision.verify_messages(&seen[0].messages).unwrap();
+        decision
+            .verify_tool_surface(&seen[0].tools, seen[0].tool_choice)
+            .unwrap();
+        assert_eq!(decision.trailing_notes(), seen[0].trailing_notes);
+        assert!(seen[0]
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("<owner_context"));
     }
 
     /// A call the provider could not parse, as `openai.rs` hands it over.
