@@ -9739,7 +9739,11 @@ its own tool-context binding even when Agent is shared. Untyped steering, remote
 mirrors and subagent inputs cannot mint owner authority. `bind_goal_decision`
 records before consuming steering or publishing the new state, including the
 forced-final-answer path. Charter refresh replaces only its registered system
-slot; raw sensor configuration stays harness-only.
+slot; raw sensor configuration stays harness-only. Render its todo guidance from
+the registered surface and per-run withholding, not a single request's tools:
+a tool-less final answer is not an owner charter edit. Record the actual request's
+tool surface separately. Clear preserves audit history and its total budgets;
+limit recovery requires a fresh session, not another clear.
 
 The charter file remains the current authority. Stored `CharterSnapshot` values
 retain historical bytes and rendering for replay, never an alternate policy-write

@@ -65,6 +65,19 @@ memory-enabled CLI suites. A separate Linux sandbox/MCP/lifecycle subset passed
 Seatbelt or every optional integration.
 
 
+The repository review found a missed distinction between a run's registered
+surface and its final request's deliberately empty tool list. Using the latter
+to render the charter minted a false revision and made replay refuse ordinary
+budget exhaustion as steering. A test with a real todo tool and charter failed on
+the old code with that exact refusal. The correction keeps the charter rendering
+stable while still binding each request's actual tool surface. Limit errors now
+name fresh-session recovery because clear deliberately retains historical budgets;
+the startup warning also distinguishes legacy best-effort loading from dynamic
+mode's strict request boundary.
+The follow-up passed 6,456 default and 7,231 memory-enabled workspace tests,
+with 25/30 ignored entries, plus formatting, the default all-target build and
+strict all-feature Clippy. Independent scoped review closed all three findings.
+
 ### Chronological ordinary-memory evaluation (2026-11-10, development cohort)
 
 `ordinary_lifetime.py` freezes the ordinary CLI executable, inputs, scorer,

@@ -159,8 +159,9 @@ ordinary chats remain unchanged when the option is absent.
 
 This bounded prototype refuses instead of silently discarding context above
 64 KiB of accumulated owner text, 256 revisions, 8 MiB per request snapshot or
-64 MiB of recorded context history. Start a new conversation when a bound is
-reached. Exact recorded-decision replay is supported; mid-run steering and
+64 MiB of recorded context history. `/clear` preserves the historical revision
+and storage budgets. At either limit, exit and start a fresh session without
+resuming the old one. Exact recorded-decision replay is supported; mid-run steering and
 counterfactual probes that cannot reconstruct their context refuse explicitly.
 Later replay requests also require the recorded boundary to match, so a changed
 model response can make a continuation incomparable.

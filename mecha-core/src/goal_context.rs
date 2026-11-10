@@ -445,7 +445,7 @@ impl GoalContextState {
         }
         ensure!(
             self.versions.len() < MAX_VERSIONS,
-            "goal context exceeds 256 revisions; start a new conversation"
+            "goal context exceeds 256 revisions; exit and start a fresh session without resuming"
         );
         let previous = self.versions.last();
         ensure!(
@@ -475,7 +475,7 @@ impl GoalContextState {
         let bytes = serde_json::to_vec(&version)?.len();
         ensure!(
             self.history_bytes + bytes <= MAX_HISTORY_BYTES,
-            "goal context history exceeds 64 MiB"
+            "goal context history exceeds 64 MiB; exit and start a fresh session without resuming"
         );
         self.history_bytes += bytes;
         self.active = Some(self.versions.len());
@@ -496,7 +496,7 @@ impl GoalContextState {
         let bytes = serde_json::to_vec(&binding)?.len();
         ensure!(
             self.history_bytes + bytes <= MAX_HISTORY_BYTES,
-            "goal context history exceeds 64 MiB"
+            "goal context history exceeds 64 MiB; exit and start a fresh session without resuming"
         );
         self.history_bytes += bytes;
         self.decisions.push(binding);
@@ -517,6 +517,43 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn clear_retains_session_limits_and_errors_direct_the_owner_to_a_fresh_session() {
+        let mut revisions = GoalContextState::default();
+        for _ in 0..MAX_VERSIONS {
+            revisions
+                .transition(CharterSnapshot::disabled(), Some(input("review the draft")))
+                .unwrap();
+            revisions.clear();
+        }
+        assert!(revisions.current().is_none());
+        assert_eq!(revisions.versions().len(), MAX_VERSIONS);
+        let error = revisions
+            .transition(CharterSnapshot::disabled(), Some(input("check the labels")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("256 revisions"));
+        assert!(error.contains("exit and start a fresh session without resuming"));
+
+        let mut history = GoalContextState::default();
+        history
+            .transition(CharterSnapshot::disabled(), Some(input("check the labels")))
+            .unwrap();
+        // Set the counter to its boundary without allocating 64 MiB of records.
+        history.history_bytes = MAX_HISTORY_BYTES;
+        let error = history.bind(binding_fixture()).unwrap_err().to_string();
+        assert!(error.contains("64 MiB"));
+        assert!(error.contains("exit and start a fresh session without resuming"));
+        history.clear();
+        assert!(history.current().is_none());
+        let error = history
+            .transition(CharterSnapshot::disabled(), Some(input("check the lids")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("64 MiB"));
+        assert!(error.contains("exit and start a fresh session without resuming"));
+    }
+
     fn binding_fixture() -> DecisionBinding {
         let messages = vec![Message::user("authored task")];
         DecisionBinding::new(

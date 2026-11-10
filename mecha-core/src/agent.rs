@@ -4915,8 +4915,9 @@ impl Agent {
                         return Err(err).with_context(|| format!("read charter {}", path.display()))
                     }
                 };
-                let todo =
-                    request.tools.iter().any(|tool| tool.name == "todo") && !cx.is_withheld("todo");
+                // Match the run's registered surface. A forced final answer
+                // suppresses tools for one request without changing the charter.
+                let todo = self.registry.get("todo").is_some() && !cx.is_withheld("todo");
                 CharterSnapshot::from_source(source, todo)
                     .with_context(|| format!("refresh charter {}", path.display()))?
             }
@@ -8352,6 +8353,87 @@ mod tests {
             .unwrap()
             .text()
             .contains("<owner_context"));
+    }
+
+    #[tokio::test]
+    async fn forced_final_answer_preserves_charter_revision_with_todo_available() {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        use crate::session::{Record, Session, SessionKind, SessionMeta};
+
+        let id = Session::new_id();
+        let dir = std::env::temp_dir().join(&id);
+        let session = Arc::new(
+            Session::create(
+                &dir,
+                SessionMeta {
+                    id,
+                    created_at: chrono::Utc::now(),
+                    provider: "scripted".into(),
+                    model: "scripted-1".into(),
+                    workspace: dir.clone(),
+                    title: None,
+                    kind: Some(SessionKind::Test),
+                },
+            )
+            .unwrap(),
+        );
+        let charter = dir.join("charter.toml");
+        std::fs::write(
+            &charter,
+            "[[line]]\nid = 'trays'\ntext = 'Keep the trays organized.'\n",
+        )
+        .unwrap();
+        let (mut agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "echo-1".into(),
+                        name: "echo".into(),
+                        input: json!({"value":"organized"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(crate::tool::todo::TodoTool::new()),
+                Arc::new(EchoTool),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = true;
+        let agent = agent.with_goal_charter(charter, None).unwrap();
+        let text = "Sort the trays by label.";
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, text.to_string()).unwrap()],
+            Some(Arc::clone(&session)),
+        );
+        cx.budget.max_turns = Some(1);
+        let mut convo = Conversation::user(text);
+        let before = convo.messages.clone();
+        session.append(&Record::Message(before[0].clone())).unwrap();
+        let result = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        session.record_run(&before, &convo).unwrap();
+        assert_eq!(result.text, "done");
+
+        let transcript = Session::read(&session.path).unwrap();
+        let trajectory = crate::replay::extract_transcript(&transcript)
+            .expect("a budget ceiling does not change the charter or introduce steering");
+        assert_eq!(trajectory.goal_decisions.len(), 2);
+        assert_eq!(
+            trajectory.goal_decisions[0].0.version(),
+            trajectory.goal_decisions[1].0.version()
+        );
+        let seen = provider.seen.lock().unwrap();
+        assert!(seen[0].tools.iter().any(|tool| tool.name == "todo"));
+        assert!(seen[1].tools.is_empty());
+        assert_eq!(seen[0].system, seen[1].system);
+        for ((binding, _), request) in trajectory.goal_decisions.iter().zip(seen.iter()) {
+            binding
+                .verify_tool_surface(&request.tools, request.tool_choice)
+                .unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A call the provider could not parse, as `openai.rs` hands it over.

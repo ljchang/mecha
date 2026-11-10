@@ -1757,9 +1757,11 @@ async fn prepare_tools_carrying(
     let mut goal_charter = None;
     if !opts.no_charter {
         let charter_path = mecha_core::charter::Charter::default_path()?;
-        // Best-effort, like skills and learned rules: a genuinely malformed
-        // charter (bad TOML, a duplicate or empty id) must not brick every
-        // run started until it is fixed — `mecha doctor` and `mecha charter`
+        // The legacy prompt loads best-effort, like skills and learned rules:
+        // a malformed charter (bad TOML, a duplicate or empty id) must not brick
+        // every legacy run until it is fixed. Dynamic goal requests instead
+        // reload the charter and refuse malformed input before dispatch.
+        // `mecha doctor` and `mecha charter`
         // are where that failure is surfaced as the emergency it is, since
         // stderr here is covered for a whole TUI session by the alternate
         // screen. Crossing the character budget is *not* one of these
@@ -1767,8 +1769,13 @@ async fn prepare_tools_carrying(
         // learned-rules `over_budget_domains` precedent of warning rather
         // than dropping what is over cap.
         let charter = mecha_core::charter::Charter::load(&charter_path).unwrap_or_else(|e| {
+            let consequence = if opts.dynamic_goals {
+                "dynamic goal requests require a readable, valid charter if one is present"
+            } else {
+                "starting with none"
+            };
             eprintln!(
-                "mecha: charter at {} did not load — {e:#} — starting with none",
+                "mecha: charter at {} did not load — {e:#} — {consequence}",
                 charter_path.display()
             );
             mecha_core::charter::Charter::default()

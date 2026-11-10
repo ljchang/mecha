@@ -39,7 +39,7 @@ retains immutable versions; `DecisionBinding` records the effective request and
 tool surface before dispatch. Replay consumes those records, and historical
 appraisal refuses ambiguous charter attribution. The current charter file stays
 owner-authored and authoritative. Independent incremental review has no remaining
-medium/major findings. Spark all-target builds, 6,454 default and 7,229
+medium/major findings. Spark build checks, 6,456 default and 7,231
 memory-enabled workspace tests passed (25/30 ignored), as did the actual CLI
 scripted-transport smoke. HISTORY holds the evidence and retained limitations.
 This does not admit chat transcripts to encrypted ordinary-memory v1.
