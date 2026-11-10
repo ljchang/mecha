@@ -1,5 +1,6 @@
 //! Opt-in, synthetic-data memory prototype. No live connectors or default tool registration.
 //! Explicit storage selection supports synthetic fixtures and keyed SQLCipher stores.
+pub mod chat_observation;
 pub mod concept;
 pub mod context;
 pub mod decision;

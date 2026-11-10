@@ -480,7 +480,8 @@ mod tests {
                 check_version: EVIDENCE_CHECK_VERSION.into(), evaluator_version: "v1".into(),
             },
             binding: ExternalBinding { authority: "host-v1".into(), locator: "c".repeat(64), revision: "d".repeat(64) },
-            criterion: criterion.clone(),
+            criterion: Some(criterion.clone()),
+            chat_context: None,
             originals: vec![OriginalPassage {
                 source: SourceKey { connector: "authored".into(), account: "test".into(), id: "inventory".into() },
                 kind: PassageKind::ToolResult, line: 1, pointer: "/result".into(),

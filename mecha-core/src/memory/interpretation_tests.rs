@@ -41,7 +41,8 @@ fn input(id: &str) -> HostCapture {
             locator: "c".repeat(64),
             revision: "d".repeat(64),
         },
-        criterion: criterion(),
+        criterion: Some(criterion()),
+        chat_context: None,
         originals: vec![OriginalPassage {
             source: SourceKey {
                 connector: "bridge".into(),

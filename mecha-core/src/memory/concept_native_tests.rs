@@ -70,13 +70,14 @@ fn input(session: &str, id: &str, text: &str, consulted: Vec<RevisionRef>) -> Ho
             locator: "c".repeat(64),
             revision: "d".repeat(64),
         },
-        criterion: ConfirmedCriterion {
+        criterion: Some(ConfirmedCriterion {
             goal: "charter:1".into(),
             goal_text: "Choose a route".into(),
             criterion_text: "Reach the destination".into(),
             criterion_revision: "e".repeat(64),
             confirmation_digest: "f".repeat(64),
-        },
+        }),
+        chat_context: None,
         originals: vec![OriginalPassage {
             source: SourceKey {
                 connector: "bridge".into(),
@@ -556,7 +557,9 @@ fn native_capture_refuses_legacy_concepts_and_appraisal_refuses_concept_closure(
     let concept = retain(&mut f, &refs);
     let receipt = f.capture("recaptured", "recaptured", "observed", vec![concept]);
     let context = interpretation::InterpretationContext::new(
-        input("x", "x", "x", vec![]).criterion,
+        input("x", "x", "x", vec![])
+            .criterion
+            .expect("legacy fixture criterion"),
         "host-context".into(),
     )
     .unwrap();

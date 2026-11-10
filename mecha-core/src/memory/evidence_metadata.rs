@@ -14,6 +14,8 @@ pub enum EvidenceRole {
     /// No authenticated capture projection for this source is in the request closure.
     Unclassified,
     HistoricalCriterion,
+    /// Owner evidence and rendered charter, without a confirmed task criterion.
+    HistoricalChatContext,
     ExecutionReceipt,
     ArtifactCheck,
     UserStatement,
@@ -95,6 +97,7 @@ pub(super) fn evidence_metadata(
                 if **capture == source.source {
                     let r = match source.field.as_str() {
                         "/criterion" => EvidenceRole::HistoricalCriterion,
+                        "/chat_context" => EvidenceRole::HistoricalChatContext,
                         "/receipts" => EvidenceRole::ExecutionReceipt,
                         "/artifact" => EvidenceRole::ArtifactCheck,
                         _ => anyhow::bail!("unknown capture source field"),

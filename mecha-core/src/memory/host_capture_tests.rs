@@ -67,13 +67,14 @@ fn input() -> HostCapture {
             locator: "c".repeat(64),
             revision: "d".repeat(64),
         },
-        criterion: ConfirmedCriterion {
+        criterion: Some(ConfirmedCriterion {
             goal: "charter:1".into(),
             goal_text: "convert CSV".into(),
             criterion_text: "write JSON".into(),
             criterion_revision: "e".repeat(64),
             confirmation_digest: "f".repeat(64),
-        },
+        }),
+        chat_context: None,
         originals: vec![OriginalPassage {
             source: SourceKey {
                 connector: "bridge".into(),
@@ -198,7 +199,7 @@ fn rich_v8_roundtrip_preparation_roles_and_legacy_admission_refusal() {
             .unwrap()
     );
     let context = interpretation::InterpretationContext::new(
-        capture.criterion.clone(),
+        capture.criterion.clone().unwrap(),
         "opaque-context".into(),
     )
     .unwrap();
@@ -1000,7 +1001,7 @@ fn projection_context_contains_complete_original_and_consulted_closure() {
     second.identity.session_id = "second".into();
     second.originals[0].source.id = "second:1:text".into();
     second.consulted.push(first.projection.clone());
-    second.criterion.criterion_text = "secondcriterionneedle".into();
+    second.criterion.as_mut().unwrap().criterion_text = "secondcriterionneedle".into();
     let second = db.admit_host_capture(second, &access()).unwrap();
     let mut p = policy(&db, "secondcriterionneedle");
     p.recall.limit = 1;
@@ -1528,7 +1529,8 @@ fn native_final_withholding_drops_prepared_metadata_from_debug_too() {
         .unwrap()
         .with_source_guard(Arc::new(Guard(state)));
     let mut capture = input();
-    capture.criterion.criterion_text = "write SYNTHETIC-WITHHELD-CRITERION".into();
+    capture.criterion.as_mut().unwrap().criterion_text =
+        "write SYNTHETIC-WITHHELD-CRITERION".into();
     db.admit_host_capture(capture, &access()).unwrap();
     let guard = Arc::new(ChangingGuard(std::sync::atomic::AtomicUsize::new(0), 1));
     let db = db.with_source_guard(guard.clone());

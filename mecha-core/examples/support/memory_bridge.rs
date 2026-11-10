@@ -501,7 +501,14 @@ async fn connected_demo_lineage(root: &Path, retain: bool, omit_consulted: bool)
         anyhow::bail!("host-checked second projection missing");
     };
     let second: mecha_core::memory::host_capture::HostCapture = serde_json::from_str(&second.text)?;
-    assert_eq!(second.criterion.goal, SECOND_GOAL);
+    assert_eq!(
+        second
+            .criterion
+            .as_ref()
+            .expect("legacy fixture criterion")
+            .goal,
+        SECOND_GOAL
+    );
     assert_eq!(
         second.artifact.verdict,
         mecha_core::memory::host_capture::CheckVerdict::Passed
@@ -758,7 +765,14 @@ pub async fn subprocess_goalmemory_changed_criterion(root: &Path) -> Result<()> 
     };
     let projection: mecha_core::memory::host_capture::HostCapture =
         serde_json::from_str(&projection.text)?;
-    assert_eq!(projection.criterion.goal, SECOND_GOAL);
+    assert_eq!(
+        projection
+            .criterion
+            .as_ref()
+            .expect("legacy fixture criterion")
+            .goal,
+        SECOND_GOAL
+    );
     assert!(
         observed_refs
             .iter()

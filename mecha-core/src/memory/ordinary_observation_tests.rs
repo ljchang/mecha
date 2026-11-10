@@ -91,13 +91,14 @@ fn capture(session: &str, locator: &str, prompt: &str) -> HostCapture {
             locator: locator.repeat(64),
             revision: "d".repeat(64),
         },
-        criterion: ConfirmedCriterion {
+        criterion: Some(ConfirmedCriterion {
             goal: "charter:1".into(),
             goal_text: "Sort fixture records".into(),
             criterion_text: prompt.into(),
             criterion_revision: "e".repeat(64),
             confirmation_digest: "f".repeat(64),
-        },
+        }),
+        chat_context: None,
         originals: vec![passage(
             session,
             PassageKind::UserRequest,
@@ -123,6 +124,9 @@ fn ordinary_labels_cannot_enter_through_legacy_admission() {
         (ORDINARY_PROTOCOL, "previous-evaluator"),
         ("previous-check", ORDINARY_RECORDER),
         (ORDINARY_PROTOCOL, ORDINARY_RECORDER),
+        ("ordinary-chat-observation-v1", "previous-evaluator"),
+        ("previous-check", "ordinary-chat-recorder-v1"),
+        ("ordinary-chat-observation-v1", "ordinary-chat-recorder-v1"),
     ] {
         let mut value = capture("spoof", "a", "Group fixture records");
         value.identity.check_version = check.into();
@@ -506,7 +510,7 @@ fn source_withdrawal_and_forgetting_reach_every_ordinary_passage() {
     live.prepare_native_concept(&concept_sources, &snapshot, &f.access)
         .unwrap();
     let context = interpretation::InterpretationContext::new(
-        derived.criterion.clone(),
+        derived.criterion.clone().unwrap(),
         "fixture-context".into(),
     )
     .unwrap();
@@ -606,4 +610,213 @@ fn canonical_ordinary_projection_authenticates_payload_then_checks_protocol() {
         error.to_string(),
         "ordinary observation cannot supply an artifact check"
     );
+}
+
+fn chat_capture() -> HostCapture {
+    use super::chat_observation::*;
+    use crate::goal_context::{
+        CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+    };
+    let mut state = GoalContextState::default();
+    let version = state
+        .transition(
+            CharterSnapshot::disabled(),
+            Some(OwnerInput::new(OwnerSource::CliChat, "Sort synthetic cards".into()).unwrap()),
+        )
+        .unwrap()
+        .unwrap();
+    let binding = DecisionBinding::new(0, version.revision(), &[], None, true, 0).unwrap();
+    let mut value = capture("chat-fixture", "a", "Sort synthetic cards");
+    value.identity.check_version = CHAT_OBSERVATION_PROTOCOL.into();
+    value.identity.evaluator_version = CHAT_RECORDER_VERSION.into();
+    value.criterion = None;
+    value.chat_context = Some(ChatObservationContext {
+        conversation_id: "chat-fixture".into(),
+        turn_ordinal: 1,
+        previous_turn: None,
+        prefix_start: 0,
+        prefix_length: 4096,
+        prefix_digest: value.identity.prefix_digest.clone(),
+        owner_messages: vec![ChatOwnerMessageLocator {
+            line: 1,
+            pointer: "/content/0/text".into(),
+            context_revision: 1,
+            owner_input_index: 0,
+        }],
+        versions: vec![ChatContextVersion::from_version(&version).unwrap()],
+        decisions: vec![ChatDecisionLocator::from_binding(2, &binding).unwrap()],
+    });
+    value
+}
+
+#[test]
+fn chat_context_requires_exact_protocol_and_exclusive_context() {
+    let valid = chat_capture();
+    OrdinaryObservationCapture::try_from_host(valid.clone()).unwrap();
+    for modify in [
+        |v: &mut HostCapture| v.chat_context = None,
+        |v: &mut HostCapture| v.criterion = capture("old", "a", "fixture").criterion,
+        |v: &mut HostCapture| v.identity.check_version = ORDINARY_PROTOCOL.into(),
+        |v: &mut HostCapture| v.identity.evaluator_version = ORDINARY_RECORDER.into(),
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().conversation_id = "other".into(),
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().prefix_digest = "b".repeat(64),
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().turn_ordinal = 0,
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().prefix_length = 0,
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().decisions.clear(),
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().decisions[0].context_revision = 99,
+        |v: &mut HostCapture| {
+            v.chat_context.as_mut().unwrap().owner_messages[0].owner_input_index = 99
+        },
+    ] {
+        let mut invalid = valid.clone();
+        modify(&mut invalid);
+        assert!(OrdinaryObservationCapture::try_from_host(invalid).is_err());
+    }
+    let mut legacy = capture("old", "a", "fixture");
+    legacy.chat_context = valid.chat_context;
+    assert!(OrdinaryObservationCapture::try_from_host(legacy).is_err());
+}
+
+#[test]
+fn chat_context_is_not_evaluated_and_survives_canonical_reader() {
+    let mut f = Fixture::new(Memory::create_supported_situated);
+    let value = chat_capture();
+    let expected = serde_json::to_value(&value.chat_context).unwrap();
+    let receipt = admit(&mut f, value.clone());
+    assert!(matches!(
+        f.db.capture_semantic_assessment(&receipt, &f.access)
+            .unwrap(),
+        SemanticAssessment::NotEvaluated
+    ));
+    let Some(Record::Evidence(projection)) = f.db.read(&receipt.projection, &f.access).unwrap()
+    else {
+        panic!("projection missing")
+    };
+    let canonical = projection_input(&f.db.conn, &projection).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&canonical).unwrap(),
+        serde_json::to_vec(&value).unwrap()
+    );
+    let reader = native_reader(&f.db.conn, &receipt.projection, &projection)
+        .unwrap()
+        .unwrap();
+    let bytes = serde_json::to_vec(&reader).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(wire["chat_context"], expected);
+    assert!(wire.get("criterion").is_none());
+    let decoded: super::interpretation_reader::NativeCaptureReaderV1 =
+        serde_json::from_slice(&bytes).unwrap();
+    decoded.validate_manifest(&receipt.originals).unwrap();
+    let criterion = capture("target", "a", "Count synthetic cards")
+        .criterion
+        .unwrap();
+    let context =
+        interpretation::InterpretationContext::new(criterion, "explicit-target".into()).unwrap();
+    let snapshot = f.db.snapshot().unwrap();
+    let prepared =
+        f.db.prepare_interpretation(&receipt, &[], &context, &snapshot, &f.access)
+            .unwrap();
+    assert!(prepared
+        .sources()
+        .iter()
+        .any(|s| s.field == "/chat_context"));
+    assert!(!prepared.sources().iter().any(|s| s.field == "/criterion"));
+    assert!(prepared
+        .evidence_metadata()
+        .iter()
+        .any(|m| m.role == interpretation::EvidenceRole::HistoricalChatContext));
+}
+
+#[test]
+fn chat_context_raw_snapshot_fields_refuse_decoding() {
+    let value = chat_capture();
+    for field in ["source", "charter", "sensor", "messages"] {
+        let mut wire = serde_json::to_value(&value).unwrap();
+        wire["chat_context"]["versions"][0][field] = json!("SYNTHETIC-PRIVATE-SENSOR");
+        assert!(serde_json::from_value::<HostCapture>(wire).is_err());
+    }
+}
+
+#[test]
+fn legacy_host_payload_bytes_and_digest_remain_unchanged() {
+    let value = capture("legacy-golden", "a", "Sort fixture rows");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    const GOLDEN: &str = r#"{"identity":{"domain":"test","account":"test","session_id":"legacy-golden","prefix_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","check_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","check_version":"ordinary-session-observation-v1","evaluator_version":"ordinary-session-recorder-v1"},"binding":{"authority":"test-host","locator":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","revision":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"criterion":{"goal":"charter:1","goal_text":"Sort fixture records","criterion_text":"Sort fixture rows","criterion_revision":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","confirmation_digest":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},"originals":[{"source":{"connector":"test-host","account":"test","id":"legacy-golden:/content/0/text"},"kind":"UserRequest","line":1,"pointer":"/content/0/text","text":"Sort fixture rows","occurred_at":null}],"receipts":[],"artifact":{"artifact_digest":null,"verdict":"Unavailable"},"consulted":[],"scopes":[],"occurred_at":null}"#;
+    assert_eq!(bytes, GOLDEN.as_bytes());
+    assert_eq!(
+        digest_bytes(&bytes),
+        "0f7c89bac7ef862baba5f87e7231b332fb4dd854691c25d628ab1d7a40ae8baa"
+    );
+    let decoded: HostCapture = serde_json::from_slice(&bytes).unwrap();
+    assert!(decoded.criterion.is_some());
+    assert!(decoded.chat_context.is_none());
+}
+
+#[test]
+fn chat_version_summary_keeps_owner_order_but_excludes_raw_sensor_configuration() {
+    use super::chat_observation::ChatContextVersion;
+    use crate::goal_context::{CharterSnapshot, GoalContextState, OwnerInput, OwnerSource};
+    let source = "[[line]]\nid='fixture'\ntext='Preserve synthetic order'\n[line.sensor]\nkind='outbox_waiting'\nsetpoint=137\n";
+    let charter = CharterSnapshot::from_source(Some(source.into()), true).unwrap();
+    let mut state = GoalContextState::default();
+    for text in [
+        "First synthetic instruction",
+        "Second synthetic instruction",
+    ] {
+        state
+            .transition(
+                charter.clone(),
+                Some(OwnerInput::new(OwnerSource::CliChat, text.into()).unwrap()),
+            )
+            .unwrap();
+    }
+    let summary = ChatContextVersion::from_version(state.current().unwrap()).unwrap();
+    let text = serde_json::to_string(&summary).unwrap();
+    assert!(text.contains("Preserve synthetic order"));
+    assert!(
+        text.find("First synthetic instruction").unwrap()
+            < text.find("Second synthetic instruction").unwrap()
+    );
+    for secret in ["outbox_waiting", "setpoint", "[[line]]"] {
+        assert!(!text.contains(secret));
+    }
+}
+
+#[test]
+fn chat_context_bounds_and_locator_integrity_fail_closed() {
+    let valid = chat_capture();
+    for modify in [
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().versions.clear(),
+        |v: &mut HostCapture| {
+            let c = v.chat_context.as_mut().unwrap();
+            c.versions.push(c.versions[0].clone());
+        },
+        |v: &mut HostCapture| {
+            let c = v.chat_context.as_mut().unwrap();
+            c.decisions.push(c.decisions[0].clone());
+        },
+        |v: &mut HostCapture| {
+            let c = v.chat_context.as_mut().unwrap();
+            c.owner_messages.push(c.owner_messages[0].clone());
+        },
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().previous_turn = Some("b".repeat(64)),
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().turn_ordinal = 2,
+        |v: &mut HostCapture| {
+            v.chat_context.as_mut().unwrap().decisions[0].binding_digest = "bad".into()
+        },
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().decisions[0].line = 0,
+        |v: &mut HostCapture| {
+            v.chat_context.as_mut().unwrap().owner_messages[0].pointer =
+                "/not-an-owner-message".into()
+        },
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().owner_messages[0].line = 999999,
+        |v: &mut HostCapture| v.originals[0].text = "Different owner text".into(),
+    ] {
+        let mut invalid = valid.clone();
+        modify(&mut invalid);
+        assert!(OrdinaryObservationCapture::try_from_host(invalid).is_err());
+    }
+    let mut legacy = capture("old", "a", "fixture");
+    legacy.criterion = None;
+    assert!(OrdinaryObservationCapture::try_from_host(legacy).is_err());
 }

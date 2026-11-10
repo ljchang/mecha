@@ -24,6 +24,7 @@ pub enum NativeValue {
     ActionInvocation(ActionInvocation),
     ArtifactObservation(ArtifactObservation),
     HistoricalCriterion(ConfirmedCriterion),
+    HistoricalChatContext(super::super::chat_observation::ChatObservationContext),
     ExecutionReceipts(Vec<ToolReceipt>),
     ArtifactCheck(ArtifactCheck),
     Omitted {
@@ -96,6 +97,13 @@ fn decode_native(source: &SourceField, metadata: &EvidenceMetadata) -> Result<Na
             );
             true
         }
+        EvidenceRole::HistoricalChatContext => {
+            ensure!(
+                source.field == "/chat_context",
+                "invalid chat context field"
+            );
+            true
+        }
         EvidenceRole::HistoricalCriterion => {
             ensure!(source.field == "/criterion", "invalid criterion field");
             true
@@ -120,6 +128,9 @@ fn decode_native(source: &SourceField, metadata: &EvidenceMetadata) -> Result<Na
         }
         EvidenceRole::ArtifactObservation => {
             NativeValue::ArtifactObservation(serde_json::from_value(unique.0)?)
+        }
+        EvidenceRole::HistoricalChatContext => {
+            NativeValue::HistoricalChatContext(serde_json::from_value(unique.0)?)
         }
         EvidenceRole::HistoricalCriterion => {
             NativeValue::HistoricalCriterion(serde_json::from_value(unique.0)?)

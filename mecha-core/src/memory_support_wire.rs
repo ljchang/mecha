@@ -383,7 +383,8 @@ mod tests {
                 locator: "c".repeat(64),
                 revision: "d".repeat(64),
             },
-            criterion: criterion.clone(),
+            criterion: Some(criterion.clone()),
+            chat_context: None,
             originals: texts
                 .iter()
                 .enumerate()

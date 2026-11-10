@@ -76,7 +76,10 @@ pub(crate) enum ReaderRecord {
 #[serde(deny_unknown_fields)]
 pub(crate) struct NativeCaptureReaderV1 {
     pub identity: CaptureIdentity,
-    pub criterion: ConfirmedCriterion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<ConfirmedCriterion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_context: Option<super::chat_observation::ChatObservationContext>,
     pub originals: Vec<OriginalDescriptor>,
     pub receipts: Vec<ToolReceipt>,
     pub artifact: ArtifactCheck,
@@ -86,6 +89,11 @@ pub(crate) struct NativeCaptureReaderV1 {
 }
 impl NativeCaptureReaderV1 {
     pub(crate) fn validate_manifest(&self, references: &[RevisionRef]) -> Result<()> {
+        super::ordinary_observation::validate_context(
+            &self.identity,
+            self.criterion.as_ref(),
+            self.chat_context.as_ref(),
+        )?;
         let mut originals = std::collections::BTreeSet::new();
         ensure!(
             self.originals

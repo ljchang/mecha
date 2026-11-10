@@ -341,13 +341,14 @@ pub(super) fn capture(
             locator: id.into(),
             revision: "0".repeat(64),
         },
-        criterion: ConfirmedCriterion {
+        criterion: Some(ConfirmedCriterion {
             goal: f.goal.clone(),
             goal_text: f.prompt.clone(),
             criterion_text: f.prompt.clone(),
             criterion_revision: digest(f.prompt.as_bytes()),
             confirmation_digest: id.into(),
-        },
+        }),
+        chat_context: None,
         originals,
         receipts,
         artifact: ArtifactCheck {

@@ -148,7 +148,10 @@ pub struct ConfirmedCriterion {
 pub struct HostCapture {
     pub identity: CaptureIdentity,
     pub binding: ExternalBinding,
-    pub criterion: ConfirmedCriterion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<ConfirmedCriterion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_context: Option<super::chat_observation::ChatObservationContext>,
     pub originals: Vec<OriginalPassage>,
     pub receipts: Vec<ToolReceipt>,
     pub artifact: ArtifactCheck,
@@ -176,7 +179,10 @@ pub(crate) struct OriginalDescriptor {
 struct ProjectionV2 {
     identity: CaptureIdentity,
     binding: ExternalBinding,
-    criterion: ConfirmedCriterion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    criterion: Option<ConfirmedCriterion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat_context: Option<super::chat_observation::ChatObservationContext>,
     originals: Vec<OriginalDescriptor>,
     receipts: Vec<ToolReceipt>,
     artifact: ArtifactCheck,
@@ -196,6 +202,7 @@ fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64)
         identity: input.identity.clone(),
         binding: input.binding.clone(),
         criterion: input.criterion.clone(),
+        chat_context: input.chat_context.clone(),
         originals: input
             .originals
             .iter()
@@ -295,6 +302,7 @@ fn projection_input_for_receipt(
                 identity: p.identity,
                 binding: p.binding,
                 criterion: p.criterion,
+                chat_context: p.chat_context,
                 originals: passages,
                 receipts: p.receipts,
                 artifact: p.artifact,
@@ -311,6 +319,11 @@ fn projection_input_for_receipt(
             && input.identity.account == projection.source.account,
         "host projection payload mismatch"
     );
+    super::ordinary_observation::validate_context(
+        &input.identity,
+        input.criterion.as_ref(),
+        input.chat_context.as_ref(),
+    )?;
     if claims_ordinary_protocol(&input.identity) {
         ensure!(
             projection.source.connector == "host-capture-projection-v2"
@@ -352,6 +365,7 @@ pub(super) fn native_reader(
     Ok(Some(super::interpretation_reader::NativeCaptureReaderV1 {
         identity: input.identity,
         criterion: input.criterion,
+        chat_context: input.chat_context,
         originals: descriptors.originals,
         receipts: input.receipts,
         artifact: input.artifact,
@@ -855,25 +869,22 @@ pub(super) fn validate(
     min_receipts: usize,
 ) -> Result<()> {
     let i = &input.identity;
+    super::ordinary_observation::validate_context(
+        i,
+        input.criterion.as_ref(),
+        input.chat_context.as_ref(),
+    )?;
     ensure!(
         [
             &i.domain,
             &i.account,
             &i.session_id,
             &i.check_version,
-            &i.evaluator_version,
-            &input.criterion.goal
+            &i.evaluator_version
         ]
         .iter()
         .all(|s| identifier(s, 256))
-            && [
-                &i.prefix_digest,
-                &i.check_id,
-                &input.criterion.criterion_revision,
-                &input.criterion.confirmation_digest
-            ]
-            .iter()
-            .all(|s| digest(s))
+            && [&i.prefix_digest, &i.check_id].iter().all(|s| digest(s))
             && valid_binding(&input.binding),
         "invalid host capture identifiers"
     );
@@ -883,12 +894,20 @@ pub(super) fn validate(
             && input.consulted.len() <= max_consulted,
         "invalid host capture bounds"
     );
-    ensure!(
-        [&input.criterion.goal_text, &input.criterion.criterion_text]
-            .iter()
-            .all(|s| !s.trim().is_empty() && s.len() <= 2048),
-        "invalid host criterion"
-    );
+    if let Some(criterion) = &input.criterion {
+        ensure!(
+            identifier(&criterion.goal, 256)
+                && digest(&criterion.criterion_revision)
+                && digest(&criterion.confirmation_digest)
+                && [&criterion.goal_text, &criterion.criterion_text]
+                    .iter()
+                    .all(|s| !s.trim().is_empty() && s.len() <= 2048),
+            "invalid host criterion"
+        );
+    }
+    if let Some(context) = &input.chat_context {
+        context.validate_originals(&input.originals)?;
+    }
     let mut sources = BTreeSet::new();
     for p in &input.originals {
         ensure!(

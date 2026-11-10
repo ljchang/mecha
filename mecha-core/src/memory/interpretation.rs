@@ -413,11 +413,20 @@ fn source_fields_impl(
                     "host-capture-projection-v1" | "host-capture-projection-v2"
                 ) {
                     let h = projection_input(conn, &e)?;
-                    fields.push((
-                        "/criterion".into(),
-                        serde_json::to_string(&h.criterion)?,
-                        SourceKind::Observation,
-                    ));
+                    if let Some(criterion) = &h.criterion {
+                        fields.push((
+                            "/criterion".into(),
+                            serde_json::to_string(criterion)?,
+                            SourceKind::Observation,
+                        ));
+                    }
+                    if let Some(context) = &h.chat_context {
+                        fields.push((
+                            "/chat_context".into(),
+                            serde_json::to_string(context)?,
+                            SourceKind::Observation,
+                        ));
+                    }
                     fields.push((
                         "/receipts".into(),
                         serde_json::to_string(&h.receipts)?,

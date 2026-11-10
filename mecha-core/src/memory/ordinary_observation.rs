@@ -1,4 +1,8 @@
 //! Host-recorded ordinary episodes carry observations without a task verdict.
+use super::chat_observation::{
+    ChatObservationContext, CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION,
+};
+use super::host_capture::ConfirmedCriterion;
 use super::host_capture::{
     validate, validate_action, ArtifactCheck, CaptureIdentity, CheckVerdict, HostCapture,
     PassageKind, ReceiptStatus,
@@ -35,12 +39,16 @@ impl OrdinaryObservationCapture {
 pub(super) fn claims_ordinary_protocol(identity: &CaptureIdentity) -> bool {
     identity.check_version == ORDINARY_OBSERVATION_PROTOCOL
         || identity.evaluator_version == ORDINARY_RECORDER_VERSION
+        || identity.check_version == CHAT_OBSERVATION_PROTOCOL
+        || identity.evaluator_version == CHAT_RECORDER_VERSION
 }
 
 pub(super) fn validate_ordinary(input: &HostCapture) -> Result<()> {
     ensure!(
-        input.identity.check_version == ORDINARY_OBSERVATION_PROTOCOL
-            && input.identity.evaluator_version == ORDINARY_RECORDER_VERSION,
+        (input.identity.check_version == ORDINARY_OBSERVATION_PROTOCOL
+            && input.identity.evaluator_version == ORDINARY_RECORDER_VERSION)
+            || (input.identity.check_version == CHAT_OBSERVATION_PROTOCOL
+                && input.identity.evaluator_version == CHAT_RECORDER_VERSION),
         "invalid ordinary observation protocol"
     );
     ensure!(
@@ -78,5 +86,35 @@ pub(super) fn validate_ordinary(input: &HostCapture) -> Result<()> {
         }
     }
     ensure!(receipts.is_empty(), "ordinary receipt lacks an invocation");
+    Ok(())
+}
+
+/// One context form only; reserved labels cannot be mixed or partially spoofed.
+pub(super) fn validate_context(
+    identity: &CaptureIdentity,
+    criterion: Option<&ConfirmedCriterion>,
+    chat: Option<&ChatObservationContext>,
+) -> Result<()> {
+    if identity.check_version == CHAT_OBSERVATION_PROTOCOL
+        && identity.evaluator_version == CHAT_RECORDER_VERSION
+    {
+        ensure!(
+            criterion.is_none(),
+            "chat observation cannot supply a confirmed criterion"
+        );
+        let context = chat.ok_or_else(|| anyhow::anyhow!("chat observation requires context"))?;
+        context.validate(identity)?;
+    } else {
+        ensure!(
+            criterion.is_some() && chat.is_none(),
+            "legacy capture requires only a confirmed criterion"
+        );
+        ensure!(
+            !claims_ordinary_protocol(identity)
+                || (identity.check_version == ORDINARY_OBSERVATION_PROTOCOL
+                    && identity.evaluator_version == ORDINARY_RECORDER_VERSION),
+            "invalid ordinary observation protocol"
+        );
+    }
     Ok(())
 }
