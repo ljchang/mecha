@@ -19,13 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   web/TUI memory attachment or automatic learning. Task success stays unevaluated.
 
 - Experimental `--dynamic-goals` records changing owner instructions and charter
-  snapshots in CLI chat and TUI. Authenticated web handlers contain the context
-  machinery, but server-option plumbing remains incomplete. Each provider
+  snapshots in CLI chat, TUI and authenticated assistant web chat through
+  `serve --dynamic-goals`. Web provider rebuilds preserve the opt-in. Each provider
   attempt is bound to its context version, effective messages and tool surface;
   historical replay refuses missing or incompatible context. The charter remains
   owner-authored. Ambiguous historical appraisal is reported as partial rather
   than evaluated against today's charter. Default-off; encrypted memory uses
   its own explicit opt-in and capture contract.
+
+- Ordinary one-shot and CLI-chat memory capture retain bounded action metadata
+  for tool arguments above 1,024 serialized bytes instead of withholding the
+  whole capture. The full-input digest, native pointer and receipt remain;
+  omitted arguments are explicitly marked oversized and are not factual support.
+  Existing tool-result and transcript limits remain unchanged.
 
 - Experimental `memory-session sources` and `learn` connect authenticated
   ordinary-session observations to bounded native concept induction and revision.

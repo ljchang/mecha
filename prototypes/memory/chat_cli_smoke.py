@@ -23,8 +23,10 @@ import time
 TIMEOUT = 35
 MAX_REQUESTS = 24
 OBSERVATION = "The fixture handoff code is coral, and the transport window opens at 16:00."
+WRITE_CONTENT = "Authored artifact for the capture-size check.\n" + ("é🦀\"\n" * 180)
+WRITE_INPUT = {"path": "oversized-result.txt", "content": WRITE_CONTENT}
 INPUTS = [
-    "Read observation.txt and retain its authored fixture observation for the handoff task.",
+    "Read observation.txt and retain its authored fixture observation for the handoff task. Write the authored size-check artifact.",
     "Change direction: prioritize the fixture transport window rather than the handoff code. Check the earlier observation.",
     "Resume the revised objective and check the earlier fixture observation before answering.",
 ]
@@ -55,6 +57,8 @@ LIVE_RESPONSES = [
     tool("goal_context", {"memory": {"query": "coral"}}, "fixture_recall_2"), final(REPLIES[1]),
     tool("goal_context", {"memory": {"query": "coral"}}, "fixture_recall_3"), final(REPLIES[2]),
 ]
+
+LIVE_RESPONSES[0]["tool_calls"].extend(tool("fs_write", WRITE_INPUT, "fixture_write_1")["tool_calls"])
 
 
 class AuthoredTransport:
@@ -282,7 +286,7 @@ def main():
 
     revise(0)
     transport = AuthoredTransport(root)
-    command = [str(binary), "chat", "--no-mcp", "--no-code-tool", "--no-grants", "--no-learned-rules", "--no-past-appraisals", "--no-success-examples", "--no-messages", "--no-hooks", "--no-fallback", "--no-outbox", "--tool", "fs_read", "--tool", "goal_context"]
+    command = [str(binary), "chat", "--no-mcp", "--no-code-tool", "--no-grants", "--no-learned-rules", "--no-past-appraisals", "--no-success-examples", "--no-messages", "--no-hooks", "--no-fallback", "--no-outbox", "--tool", "fs_read", "--tool", "fs_write", "--tool", "goal_context"]
     write_private(mecha / "config.toml", f'''default_provider = "fixture"
 [providers.fixture]
 kind = "openai-compatible"
@@ -291,7 +295,7 @@ model = "fixture"
 max_retries = 0
 [tools]
 permission_mode = "allow"
-enabled = ["fs_read", "goal_context"]
+enabled = ["fs_read", "fs_write", "goal_context"]
 ''')
 
     def run(label, tail, input_text=""):
@@ -354,6 +358,26 @@ enabled = ["fs_read", "goal_context"]
         first_seal = json.loads((authority / (first_report["run_id"] + ".chat-seal")).read_text())
         first_originals = first_seal["payload"]["originals"]
         first_references = first_report["receipt"]["originals"]
+        assert (work / WRITE_INPUT["path"]).read_bytes() == WRITE_CONTENT.encode("utf-8"), "large authored write did not execute exactly"
+        action_original, = [o for o in first_originals if o["kind"] == "ActionInvocation"
+                            and json.loads(o["text"])["call_id"] == "fixture_write_1"]
+        action = json.loads(action_original["text"])
+        native_input = records(transcript)[action_original["line"] - 1]
+        for part in action_original["pointer"].split("/")[1:]:
+            part = part.replace("~1", "/").replace("~0", "~")
+            native_input = native_input[int(part)] if isinstance(native_input, list) else native_input[part]
+        assert native_input == WRITE_INPUT, "action locator lost the original complete input"
+        # Workspace serde_json preserves object order; hash the native input's
+        # actual serialization, not a newly sorted representation of its value.
+        native_bytes = json.dumps(native_input, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        assert len(native_bytes) > 1024
+        assert action["input_status"] == "Oversized" and action["input"] is None
+        assert action["input_digest"] == hashlib.sha256(native_bytes).hexdigest()
+        assert action["tool_name"] == "fs_write"
+        assert action_original["source"]["id"] == (
+            first_report["conversation_id"] + ":" + str(action_original["line"]) + ":" + action_original["pointer"]
+        )
+        assert {"call_id": "fixture_write_1", "tool_name": "fs_write", "status": "Succeeded"} in first_seal["payload"]["receipts"]
         assert len(first_originals) == len(first_references)
         observation, observation_reference = next(
             (original, reference) for original, reference in zip(first_originals, first_references)
@@ -410,7 +434,7 @@ enabled = ["fs_read", "goal_context"]
         control = [e["request"] for e in transport.requests if e["case"] == "default-off"]
         assert len(control) == 2
         assert "goal_context_revision" not in last_tool(control[-1])
-        summary = {"status": "passed", "live_requests": 6, "replayed_requests": 6, "default_requests": 2, "startup_refusals": 4, "receipt_summary": receipt_summary, "semantic_benefit_measured": False}
+        summary = {"status": "passed", "live_requests": 6, "replayed_requests": 6, "default_requests": 2, "startup_refusals": 4, "receipt_summary": receipt_summary, "oversized_action_bytes": len(native_bytes), "semantic_benefit_measured": False}
         write_private(root / "summary.json", json.dumps(summary, indent=2))
         print(json.dumps(summary))
     finally:

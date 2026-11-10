@@ -131,9 +131,10 @@ with no goal, because one set of rules serves every request in the batch.
 
 ## Versioned conversation context (opt-in)
 
-Start `mecha chat --dynamic-goals` or `mecha tui --dynamic-goals`. The assistant
-web handlers have context support, but the server does not yet forward this
-option into its agent; web opt-in remains unavailable. In an enabled conversation, your
+Start `mecha chat --dynamic-goals`, `mecha tui --dynamic-goals`, or
+`mecha serve --dynamic-goals` for authenticated assistant web chat. The web server
+retains this option when its provider is rebuilt; other global CLI options do not
+override the web agent's existing configuration and workspace policy. In an enabled conversation, your
 ordinary messages supply evolving goal context: you can refine an objective,
 introduce a subtask, or change direction without creating a task ID or confirming
 each message. Terminal chat requires interactive input; a piped prompt is not
@@ -157,6 +158,12 @@ Resume a versioned conversation with the same option enabled. `/clear` clears
 active conversation evidence while preserving earlier recorded versions. A
 no-session CLI conversation keeps versions only in memory. Existing
 ordinary chats remain unchanged when the option is absent.
+
+An otherwise unparseable record after a dynamic decision stops loading, even if
+it is a torn final message or an unknown future record. Missing state could lose
+security provenance or misrepresent historical context. Readable fragments are
+not enough to authorize continuation; interrupted-history recovery remains a
+separate feature. Legacy unversioned sessions keep their existing recovery behavior.
 
 This bounded prototype refuses instead of silently discarding context above
 64 KiB of accumulated owner text, 256 revisions, 8 MiB per request snapshot or

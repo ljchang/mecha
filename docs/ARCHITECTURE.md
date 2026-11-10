@@ -9755,6 +9755,20 @@ and preserves that mark on transcript hydration, including an interrupted run.
 The legacy fixed `GoalRef` and encrypted one-shot memory protocol keep their
 existing contracts; a multi-turn capture protocol must explicitly bind versions.
 
+**Do not skip ambiguous post-decision history to make dynamic resume work.**
+`Session::parse` refuses otherwise unparseable records after a dynamic decision,
+including unknown tags and torn ordinary records. The first decision's coverage
+flag does not become partial merely because a later line set
+`prior_run_ambiguous`; binding digests do not certify that all native taint,
+grant or rewrite records survived. Skipping that history could hydrate an
+executable conversation with missing security state while claiming complete
+appraisal coverage. This is a deliberate crash/forward-compatibility limitation.
+The search-only `messages_ever` reader may salvage text, but does not authorize
+execution. A future tolerant reader needs explicit incomplete-history state and
+resume/replay gates, not just a relaxed parse error. Memory-marked transcripts
+remain strict before legacy fallback; unmarked dynamic transcripts retain their
+existing successful `lenient_record` compatibility path.
+
 **Order is rank, and `deny_unknown_fields` is what enforces it.** There is no
 priority field, because value conflict is the measured cause of goal drift and a
 weighted sum can always be outvoted by enough small goods. A stray `priority` or
@@ -13063,6 +13077,15 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   Strict typed-record validation must use the same JSON text serialization as
   the native writer: `to_value` widens f32 sensor readings to f64 and once refused
   valid Linux Outcomes. Unknown, duplicate and noncanonical fields still refuse.
+- **Oversized invocation metadata is not argument evidence.** The ordinary and
+  chat adapters share `recording::action_invocation`: hash the full native JSON
+  input, retain Complete content through 1,024 serialized bytes, otherwise retain
+  Oversized/null with the same digest, call identity and native source pointer.
+  Keep the full input in the internal call map so recall-attempt reconciliation
+  still compares exact arguments. Replacing that map value with null would make
+  tracking less strict while appearing to save memory. The existing host DTO
+  supports this representation; passage/result/capture budgets remain unchanged.
+  A receipt records tool completion, not task success or support for omitted text.
 - **A recall result is not delivered merely because a tool computed it.**
   `memory_session` durably records attempts and reconciles exact inputs/results
   against the native JSONL. Missing, clipped, duplicate-ambiguous or interrupted

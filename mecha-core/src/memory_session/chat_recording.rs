@@ -228,15 +228,9 @@ pub(super) fn capture(
                                     ),
                                 "ordinary invocation unsupported"
                             );
-                            let input_bytes = serde_json::to_vec(&input)?;
-                            ensure!(input_bytes.len() <= 1024, "ordinary input oversized");
-                            let action = ActionInvocation {
-                                call_id: call_id.clone(),
-                                tool_name: name.clone(),
-                                input_status: InputStatus::Complete,
-                                input: input.clone(),
-                                input_digest: digest(&input_bytes),
-                            };
+                            let action = recording::action_invocation(&call_id, &name, &input)?;
+                            // Recall reconciliation needs the complete native input, even
+                            // when the reader-facing invocation omits its contents.
                             calls.insert(call_id, (name, input, false));
                             (
                                 PassageKind::ActionInvocation,

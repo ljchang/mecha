@@ -886,3 +886,246 @@ fn dangling_alternate_protocol_claims_refuse_chat_and_ordinary_routes() {
         "accepted dangling alternate claims: {accepted:?}"
     );
 }
+
+// The limit applies to serialized JSON bytes, including quotes and UTF-8.
+fn invocation_boundary_inputs() -> Vec<serde_json::Value> {
+    let mut inputs = vec![];
+    for seed in ["", "é🦀", "\"\\\n\t"] {
+        for size in [1024, 1025] {
+            let mut text = seed.to_owned();
+            let overhead =
+                serde_json::to_vec(&serde_json::json!({"path":"result.txt","content":text}))
+                    .unwrap()
+                    .len();
+            text.push_str(&"x".repeat(size - overhead));
+            let input = serde_json::json!({"path":"result.txt","content":text});
+            assert_eq!(serde_json::to_vec(&input).unwrap().len(), size);
+            inputs.push(input);
+        }
+    }
+    inputs
+}
+fn assert_invocation_capture(
+    payload: &serde_json::Value,
+    source: &str,
+    session_id: &str,
+    input: &serde_json::Value,
+) {
+    use sha2::{Digest, Sha256};
+    let encoded = serde_json::to_vec(input).unwrap();
+    let digest: String = Sha256::digest(&encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let passage = payload["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "ActionInvocation")
+        .unwrap();
+    let line = source
+        .lines()
+        .position(|line| line.contains("\"name\":\"fs_write\""))
+        .unwrap()
+        + 1;
+    assert_eq!(passage["line"], line);
+    assert_eq!(passage["pointer"], "/content/1/input");
+    assert_eq!(
+        passage["source"]["id"],
+        format!("{session_id}:{line}:/content/1/input")
+    );
+    let action: serde_json::Value =
+        serde_json::from_str(passage["text"].as_str().unwrap()).unwrap();
+    assert_eq!(action["call_id"], "write1");
+    assert_eq!(action["tool_name"], "fs_write");
+    assert_eq!(action["input_digest"], digest);
+    if encoded.len() <= 1024 {
+        let historical = mecha_core::memory::host_capture::ActionInvocation {
+            call_id: "write1".into(),
+            tool_name: "fs_write".into(),
+            input_status: mecha_core::memory::host_capture::InputStatus::Complete,
+            input: input.clone(),
+            input_digest: digest,
+        };
+        assert_eq!(passage["text"], serde_json::to_string(&historical).unwrap());
+    } else {
+        assert_eq!(action["input_status"], "Oversized");
+        assert!(action["input"].is_null());
+    }
+    assert_eq!(
+        payload["receipts"],
+        serde_json::json!([{
+            "call_id":"write1", "tool_name":"fs_write", "status":"Succeeded"
+        }])
+    );
+    let native: serde_json::Value =
+        serde_json::from_str(source.lines().nth(line - 1).unwrap()).unwrap();
+    assert_eq!(native["content"][1]["input"], *input);
+}
+fn authored_write(input: serde_json::Value, result_text: &str) -> (Message, Message) {
+    let call = Message::assistant(vec![
+        Block::Thinking {
+            text: "Private authored reasoning".into(),
+            signature: None,
+        },
+        Block::ToolUse {
+            id: "write1".into(),
+            name: "fs_write".into(),
+            input,
+        },
+    ]);
+    let mut result = Message::user("");
+    result.content = vec![Block::ToolResult {
+        tool_use_id: "write1".into(),
+        content: result_text.into(),
+        is_error: false,
+    }];
+    (call, result)
+}
+
+fn record_write_turn(
+    chat: &mut ChatMemory,
+    s: &Session,
+    input: serde_json::Value,
+    result_text: &str,
+) -> mecha_core::memory_session::chat::ChatMemoryTurn {
+    let owner = OwnerInput::new(OwnerSource::CliChat, "Write fixture".into()).unwrap();
+    let turn = chat.begin_turn(s, &owner).unwrap();
+    let mut history = Session::read(&s.path).unwrap().convo.messages;
+    history.push(Message::user(owner.text()));
+    s.append(&Record::Message(history.last().unwrap().clone()))
+        .unwrap();
+    let mut state = recorded_context(s);
+    let version = state
+        .transition(CharterSnapshot::disabled(), Some(owner))
+        .unwrap()
+        .unwrap();
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &history,
+        Some(version.prompt_block()),
+        true,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&history)
+    .unwrap();
+    state.bind(binding.clone()).unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![version.clone()],
+    })
+    .unwrap();
+    let (call, result) = authored_write(input, result_text);
+    for msg in [call, result] {
+        s.append(&Record::Message(msg.clone())).unwrap();
+        history.push(msg);
+    }
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &history,
+        Some(version.prompt_block()),
+        false,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&history)
+    .unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![],
+    })
+    .unwrap();
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Authored final response",
+    )])))
+    .unwrap();
+    s.append(&Record::Outcome(RunStats {
+        stop_cause: Some(StopCause::Completed),
+        turns: 2,
+        context_overflows: Some(0),
+        ..Default::default()
+    }))
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: false,
+    }))
+    .unwrap();
+    turn
+}
+#[test]
+fn oversized_invocation_retains_bounded_metadata_and_exact_sealed_source() {
+    for input in invocation_boundary_inputs() {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+        s.append(&Record::Config(RunConfig {
+            workspace: f.workspace.clone(),
+            tools: vec!["fs_write".into(), "goal_context".into()],
+            ..Default::default()
+        }))
+        .unwrap();
+        let turn = record_write_turn(&mut chat, &s, input.clone(), "wrote fixture");
+        let report = chat.finish_turn(&turn);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["semantic_assessment"],
+            "not_evaluated"
+        );
+        let seal: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                f.request
+                    .authority
+                    .join(format!("{}.chat-seal", report.run_id)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let source = fs::read_to_string(&s.path).unwrap();
+        assert_invocation_capture(&seal["payload"], &source, &s.meta.id, &input);
+        drop(chat);
+        let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+        assert_eq!(recovery.retry_chat(&report.run_id).receipt, report.receipt);
+        fs::write(&s.path, source.replacen("result.txt", "mutant.txt", 1)).unwrap();
+        assert_eq!(
+            recovery.retry_chat(&report.run_id).status,
+            SessionMemoryStatus::Unavailable
+        );
+        fs::write(&s.path, source).unwrap();
+        assert_eq!(recovery.retry_chat(&report.run_id).receipt, report.receipt);
+        fs::remove_file(&s.path).unwrap();
+        assert_eq!(
+            recovery.retry_chat(&report.run_id).status,
+            SessionMemoryStatus::Unavailable
+        );
+    }
+}
+
+#[test]
+fn oversized_invocation_does_not_relax_result_passage_bound() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    s.append(&Record::Config(RunConfig {
+        workspace: f.workspace.clone(),
+        tools: vec!["fs_write".into(), "goal_context".into()],
+        ..Default::default()
+    }))
+    .unwrap();
+    let turn = record_write_turn(
+        &mut chat,
+        &s,
+        invocation_boundary_inputs()[1].clone(),
+        &"x".repeat(4097),
+    );
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Unavailable);
+    assert!(!f
+        .request
+        .authority
+        .join(format!("{}.chat-seal", report.run_id))
+        .exists());
+}

@@ -2338,8 +2338,11 @@ impl Session {
 
     /// Read a transcript back, taint included.
     ///
-    /// Unparseable lines are skipped rather than failing the load — a truncated
-    /// final line is the normal result of a killed process.
+    /// Legacy transcripts tolerate unparseable lines, including a truncated
+    /// final line after a killed process. Malformed dynamic authority records,
+    /// otherwise unparseable history after a dynamic decision, and malformed
+    /// memory-marked transcripts refuse loading: skipped state could lose taint
+    /// or make incomplete history appear safe to resume or replay.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
         let t = Session::read(path)?;
         anyhow::ensure!(
@@ -2772,8 +2775,9 @@ impl Session {
     /// point is what the replacement dropped, so its messages are unioned in
     /// rather than substituted: anything new (the summary, an edited result)
     /// joins the corpus, anything already seen is skipped. Malformed lines are
-    /// skipped exactly as [`crate::session::Session::load`] skips them — a
-    /// truncated final line is the normal residue of a killed process.
+    /// skipped for this search-only view, including a truncated final line after
+    /// a killed process. Unlike [`crate::session::Session::load`], this function
+    /// does not establish that the transcript is safe to resume or replay.
     pub fn messages_ever(transcript: &str) -> Vec<Message> {
         let mut seen = HashSet::new();
         let mut all = Vec::new();
@@ -6886,6 +6890,37 @@ mod dynamic_context_regression {
             .to_string()
             .contains("ambiguous"));
     }
+    #[test]
+    fn post_decision_unparseable_history_refuses_even_when_legacy_can_skip_it() {
+        let mut state = GoalContextState::default();
+        let mut dynamic = header();
+        let messages = vec![Message::user("task")];
+        append(&mut dynamic, Record::Message(messages[0].clone()));
+        append(
+            &mut dynamic,
+            boundary(&mut state, "task", "priority", &messages, true),
+        );
+        assert!(Session::parse(Path::new("dynamic.jsonl"), &dynamic).is_ok());
+        for row in [
+            r#"{"record":"message","role":"assistant","content":["#,
+            r#"{"record":"future_state","payload":{}}"#,
+            r#"{"record":"taint","private":true,"untrusted":"#,
+            r#"{"record":"rewrite","messages":["#,
+            r#"{"record":"extend","index":0,"blocks":["#,
+            r#"{"record":"grants","grants":["#,
+            r#"{"record":"goal_context_deci"#,
+        ] {
+            assert!(
+                Session::parse(Path::new("legacy.jsonl"), &format!("{}\n{row}", header())).is_ok(),
+                "legacy compatibility changed for {row}"
+            );
+            assert!(
+                Session::parse(Path::new("dynamic.jsonl"), &format!("{dynamic}\n{row}")).is_err(),
+                "accepted incomplete dynamic history: {row}"
+            );
+        }
+    }
+
     #[test]
     fn escaped_and_duplicate_dynamic_tags_refuse_even_with_truncated_payloads() {
         for row in [

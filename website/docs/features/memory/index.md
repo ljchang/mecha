@@ -145,8 +145,14 @@ compaction, context-overflow recovery and unfinished or noncompleted capture.
 A failed or oversized capture can follow an executed action; its report is
 unavailable and further memory-enabled turns stop. Only complete seals can be
 retried; an ambiguous unsealed turn requires a fresh chat. Native transcripts
-are limited to 4 MiB, and the inherited passage, tool-argument and context limits
-can be reached sooner. Web/TUI memory attachment and automatic learning remain
+are limited to 4 MiB, and the inherited passage and context limits
+can be reached sooner. In both one-shot and chat capture, tool arguments above
+1,024 serialized JSON bytes retain their full-input digest, native source pointer
+and action receipt with an explicit oversized status; the memory record omits
+the argument content. This does not make omitted text factual support or prove
+the action achieved its goal. Full arguments remain in the native transcript.
+Tool results and other original passages still have a 4,096-byte limit.
+Web/TUI memory attachment and automatic learning remain
 separate work. SQLCipher does not encrypt the native transcript, terminal history
 or private recovery files.
 

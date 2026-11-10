@@ -169,7 +169,7 @@ struct WebState {
     gate: Arc<gate::Gate>,
 }
 
-pub async fn execute(args: Args) -> Result<()> {
+pub async fn execute(args: Args, dynamic_goals: bool) -> Result<()> {
     // Global config only, like a trigger run: this surface is the owner's
     // door, and a project file must have no say in it (config.rs strips
     // `[web]` from project layers as a second fence).
@@ -224,7 +224,7 @@ pub async fn execute(args: Args) -> Result<()> {
     let wiring = VoiceWiring::of(&args, &config)?;
     let assets = args.assets.or(config.web.assets.clone());
 
-    let chat = match chat::ChatState::build().await {
+    let chat = match chat::ChatState::build(dynamic_goals).await {
         Ok(c) => {
             let c = Arc::new(c);
             c.spawn_incognito_reaper();

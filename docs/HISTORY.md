@@ -14,6 +14,66 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Daily-use memory prerequisites (2026-11-10, opt-in prototype)
+
+`serve::execute` now passes the explicit dynamic-goals boolean to
+`ChatState::build` and `web_agent_opts` before constructing the follower. Provider
+rebinding preserves that option. Other global CLI flags do not replace the web
+agent's existing configuration, workspace and security defaults. This corrects
+an unreachable option; it does not attach encrypted memory to web sessions.
+
+The ordinary one-shot and chat adapters now share `recording::action_invocation`
+and use the existing Oversized/null/full-digest representation above 1,024
+serialized input bytes. Complete input serialization is unchanged. Full native
+arguments remain in the internal call map for exact recall reconciliation; the
+stored action keeps its source pointer and receipt without promoting omitted
+content to inspectable evidence. Existing output, passage and capture bounds
+still refuse unsupported capture; semantic status stays NotEvaluated.
+
+The old actual CLI executed a 1,486-byte authored write and then withheld capture
+because its arguments were oversized. The adapter tests reproduced the same
+failure. New lifecycle, boundary and source checks cover both adapters, Unicode
+and escaping, exact native pointers/digests, mutation, retry and unchanged large
+result refusals. The rebuilt actual CLI retained three turns and 12 distinct
+originals, checked the exact written artifact and oversized action source/digest,
+replayed six historical requests and refused four invalid startups before
+inference. Its authored transport used six live, six replay and two default-off
+requests. Task success remained NotEvaluated. These are mechanics checks, not a
+new model-efficacy experiment.
+
+The actual `serve` smoke also passed completed authored replies in default-off
+and opt-in modes, owner/intent refusals, typed decision records, charter refresh,
+provider rebinding and refusal to continue a dynamic session after restarting
+without its flag. Both reusable smokes run on the pinned Linux CI leg. The web
+trial uses loopback authored responses, not a model or an encrypted web store.
+
+The frozen final runtime passed both all-target builds and full workspace suites:
+6,463 default / 7,268 memory-enabled tests, zero failures and 25 / 30 ignored.
+Strict all-target/all-feature Clippy passed with warnings denied, and all 38
+required Linux backend checks passed without skips. The standalone memory
+harness passed 404 tests, and the full source inventory remained unchanged
+through qualification. The earlier checkpoint CI
+doctor fixture failure did not reproduce on its single failed-job rerun; that
+checkpoint finished green, with no diagnosed doctor defect or behavior change.
+
+The first integrated web fixture timed out because it configured an endpoint
+ending in `/v1`, while the OpenAI adapter appends `/v1/chat/completions`. The
+fixture-only correction uses the base endpoint; neither production routing nor
+the timeout was changed. Smoke checks additionally require completed outcomes
+and the authored assistant replies, rather than merely counting records.
+The larger-write CLI trial also exposed a test-only digest mismatch: Python
+sorted JSON keys, while the workspace's `serde_json` preserves insertion order.
+The retained digest matched the full native input's unsorted serialization;
+the assertion was corrected without changing the Rust artifact or old evidence.
+
+Repository review raised dynamic transcript crash/forward compatibility. Its
+proposed parser relaxation would skip post-decision state without invalidating
+initial coverage and could lose taint. Independent review retained the existing
+strict boundary; documentation and a legacy-versus-dynamic regression now make
+that cost explicit. Safe incomplete-history inspection/continuation remains
+separate work, not an undocumented recovery claim.
+
+
 ### Encrypted CLI conversation memory (2026-11-10, opt-in prototype)
 
 `chat --episodic-memory FILE --dynamic-goals` connects the existing encrypted

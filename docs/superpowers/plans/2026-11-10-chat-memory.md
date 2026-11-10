@@ -63,5 +63,5 @@ Add a context-only chat constructor/path to `tool::goal_memory::GoalMemory`: cur
 
 - [x] Exercise first task, changed owner goal, charter edit, restart with same store, relevant recall, historical replay and missing-flag/wrong-store refusal before requests. Include a historical distractor and verify which source packet was delivered.
 - [x] Run bounded resident-model memory-on/off comparison only after transport contract passes; record choices, citations, evidence delivery and costs separately. Do not claim benefit from a tiny or unequal-evidence comparison. No model changes or production configuration edits.
-- [ ] Run workspace all-target build, full default and memory tests, strict Clippy, formatting and relevant strict sandbox tests on Spark; validate Docusaurus and Site links/layout.
+- [x] Run workspace all-target build, full default and memory tests, strict Clippy, formatting and relevant strict sandbox tests on Spark; validate Docusaurus and Site links/layout.
 - [ ] Root performs source-grounded handoff, updates the compact existing Site overview and detailed archive, performs strict privacy scans, commits/pushes PR 846 and publishes owner-private Site. Read exact-head CI and repository review; fix major/medium findings, retain minor notes. Do not merge or activate production memory.

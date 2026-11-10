@@ -18,6 +18,30 @@ pub(super) fn surface(names: &[String]) -> Result<()> {
     );
     Ok(())
 }
+/// Bound the reader payload without changing native input identity or recall matching.
+pub(super) fn action_invocation(
+    call_id: &str,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Result<ActionInvocation> {
+    let bytes = serde_json::to_vec(input)?;
+    let complete = bytes.len() <= 1024;
+    Ok(ActionInvocation {
+        call_id: call_id.into(),
+        tool_name: tool_name.into(),
+        input_status: if complete {
+            InputStatus::Complete
+        } else {
+            InputStatus::Oversized
+        },
+        input: if complete {
+            input.clone()
+        } else {
+            serde_json::Value::Null
+        },
+        input_digest: digest(&bytes),
+    })
+}
 pub(super) fn records(bytes: &[u8]) -> Result<Vec<Record>> {
     ensure!(
         bytes.len() <= authority::SOURCE_MAX && bytes.ends_with(b"\n"),
@@ -216,15 +240,9 @@ pub(super) fn capture(
                                     ),
                                 "ordinary invocation unsupported"
                             );
-                            let input_bytes = serde_json::to_vec(&input)?;
-                            ensure!(input_bytes.len() <= 1024, "ordinary input oversized");
-                            let action = ActionInvocation {
-                                call_id: call_id.clone(),
-                                tool_name: name.clone(),
-                                input_status: InputStatus::Complete,
-                                input: input.clone(),
-                                input_digest: digest(&input_bytes),
-                            };
+                            let action = action_invocation(&call_id, &name, &input)?;
+                            // Recall reconciliation needs the complete native input, even
+                            // when the reader-facing invocation omits its contents.
                             calls.insert(call_id, (name, input, false));
                             (
                                 PassageKind::ActionInvocation,

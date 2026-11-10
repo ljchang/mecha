@@ -34,8 +34,9 @@ mechanics trial, and `website/docs/features/memory/index.md` for the command.
 
 **Dynamic context and encrypted CLI chat (2026-11-10, opt-in prototype):**
 `--dynamic-goals` preserves owner-input and charter versions in CLI chat and TUI.
-Web handlers contain the context machinery, but `serve::execute` currently drops
-the global flag before `ChatState::build`; reachable web opt-in is still missing. The owner-authored charter file remains current authority.
+`serve --dynamic-goals` now forwards the explicit flag through `ChatState::build`
+into the follower options, preserving it through provider rebuilds. This does not
+attach encrypted memory to web chat. The owner-authored charter file remains current authority.
 The separate `chat --episodic-memory FILE --dynamic-goals` path now attaches the
 explicit encrypted store to local recorded CLI conversations. `ChatMemory`
 reserves each turn before execution, retains only its new originals, and seals an
@@ -47,9 +48,10 @@ goals, and task success stays NotEvaluated.
 Focused tests and the real CLI authored-transport trial passed: three retained
 turns across changed goals/charters and restart, exact six-request historical
 replay, default-off control and four pre-provider refusals. Independent source
-review has no remaining major/medium finding. Full workspace suites passed
-6,460 default / 7,260 memory-enabled tests (25 / 30 ignored); the final mechanical
-lint fixes passed strict Clippy, focused chat tests and the actual CLI again.
+review has no remaining major/medium finding. The current prerequisite source passed full workspace suites with
+6,463 default / 7,268 memory-enabled tests (25 / 30 ignored), both all-target
+builds, strict Clippy and actual CLI/web smoke workflows. Required Linux backend
+checks passed 38/38 with skips disabled.
 HISTORY records the bounded model diagnostic, including its strict
 format failure and control-tool deviation. Neither this CLI opt-in nor successful
 storage establishes production/private-data readiness.
@@ -60,19 +62,47 @@ learning selection/scheduling. In this first chat profile, incomplete or
 noncompleted turns, compaction, overflow and unavailable capture stop further
 memory-enabled execution. A complete seal can retry storage admission; an
 ambiguous unsealed turn requires a fresh chat. Transcripts are bounded to 4 MiB,
-with smaller per-passage, tool-input and context limits. External files, key loss
+with smaller per-passage and context limits. Oversized tool inputs now retain
+explicit omitted-content metadata, exact native pointers and full-input digests;
+tool results above 4,096 bytes still withhold capture. External files, key loss
 and deletion-authority recovery still need operational qualification.
 
 Explicit `memory-session sources|learn` reuses native concept induction/rumination
 for authenticated one-shot captures; `learning_run_sources` and `learning_sources`
 still read that protocol's seals. Chat-turn selection for learning is not yet
-connected. Concept delivery in ordinary recall, exact citation-pointer use and
-larger tool-write capture remain gaps: the earlier chronological pilot retained a
+connected. Concept delivery in ordinary recall and exact citation-pointer use remain gaps: the earlier chronological pilot retained a
 concept but delivered it in none of four adaptive decisions, and withheld all
-eight decision captures above the 1,024-byte argument bound. Its authored
+eight decision captures above the old 1,024-byte argument bound. The adapter
+now retains oversized-input metadata; that historical pilot has not been rerun. Its authored
 three-arm runner is a development comparison; held-out task families, general
 experiment controls, another harness adapter and useful-transfer evidence remain
 open. Keep the independent owner graph and production runtime unchanged.
+
+**Daily-use implementation order:** complete publication of the qualified web-option
+and oversized-input fixes, then deliver these usable increments:
+
+1. Bounded read-only graph tools in the existing encrypted CLI chat. Reuse MCP
+   transport and graph queries; add selected-server/schema/effect admission and
+   exact native result provenance together. Capture what the graph returned at
+   that time, not a canonical graph revision or owner instruction. Unrelated
+   servers, graph mutations and unsafe egress remain refused.
+2. Explicit encrypted web chat with a dedicated per-conversation Agent/reader and
+   attachment. Extend Web/AuthenticatedWeb identity as part of this usable slice,
+   attach before Config, authenticate restart before execution, and expose durable
+   retention/recovery status through actual Send/Stop/reconnect controls.
+3. Existing todo/planning continuity. `Message.planning` is currently refused by
+   both recorders, so allowlisting todo alone is insufficient. Attribute feedback,
+   preserve state through restart and distinguish completion from verified success.
+4. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
+   dependencies, goal versions and taint; force compaction/restart/interruption
+   tests before permitting continued memory-enabled execution.
+
+Recovery, source withdrawal and permission checks are exit gates on every slice.
+The next graph increment uses authored MCP first. Owner personal data remains
+independent; no owner-graph migration or production cutover follows from these tests.
+The concrete contracts and parallel work split are in
+`superpowers/plans/2026-11-10-readonly-graph-memory-chat.md`; that graph profile is
+planned, not implemented by the current prerequisites.
 
 **Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
 mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's

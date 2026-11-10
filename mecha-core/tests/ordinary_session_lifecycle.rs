@@ -1200,3 +1200,214 @@ async fn native_outcome_float_roundtrip_keeps_strict_nested_fields() {
         assert_completed_write_preserved(&f);
     }
 }
+
+// The limit applies to serialized JSON bytes, including quotes and UTF-8.
+fn invocation_boundary_inputs() -> Vec<serde_json::Value> {
+    let mut inputs = vec![];
+    for seed in ["", "é🦀", "\"\\\n\t"] {
+        for size in [1024, 1025] {
+            let mut text = seed.to_owned();
+            let overhead =
+                serde_json::to_vec(&serde_json::json!({"path":"result.txt","content":text}))
+                    .unwrap()
+                    .len();
+            text.push_str(&"x".repeat(size - overhead));
+            let input = serde_json::json!({"path":"result.txt","content":text});
+            assert_eq!(serde_json::to_vec(&input).unwrap().len(), size);
+            inputs.push(input);
+        }
+    }
+    inputs
+}
+fn assert_invocation_capture(
+    payload: &serde_json::Value,
+    source: &str,
+    session_id: &str,
+    input: &serde_json::Value,
+) {
+    use sha2::{Digest, Sha256};
+    let encoded = serde_json::to_vec(input).unwrap();
+    let digest: String = Sha256::digest(&encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let passage = payload["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "ActionInvocation")
+        .unwrap();
+    let line = source
+        .lines()
+        .position(|line| line.contains("\"name\":\"fs_write\""))
+        .unwrap()
+        + 1;
+    assert_eq!(passage["line"], line);
+    assert_eq!(passage["pointer"], "/content/1/input");
+    assert_eq!(
+        passage["source"]["id"],
+        format!("{session_id}:{line}:/content/1/input")
+    );
+    let action: serde_json::Value =
+        serde_json::from_str(passage["text"].as_str().unwrap()).unwrap();
+    assert_eq!(action["call_id"], "write1");
+    assert_eq!(action["tool_name"], "fs_write");
+    assert_eq!(action["input_digest"], digest);
+    if encoded.len() <= 1024 {
+        let historical = mecha_core::memory::host_capture::ActionInvocation {
+            call_id: "write1".into(),
+            tool_name: "fs_write".into(),
+            input_status: mecha_core::memory::host_capture::InputStatus::Complete,
+            input: input.clone(),
+            input_digest: digest,
+        };
+        assert_eq!(passage["text"], serde_json::to_string(&historical).unwrap());
+    } else {
+        assert_eq!(action["input_status"], "Oversized");
+        assert!(action["input"].is_null());
+    }
+    assert_eq!(
+        payload["receipts"],
+        serde_json::json!([{
+            "call_id":"write1", "tool_name":"fs_write", "status":"Succeeded"
+        }])
+    );
+    let native: serde_json::Value =
+        serde_json::from_str(source.lines().nth(line - 1).unwrap()).unwrap();
+    assert_eq!(native["content"][1]["input"], *input);
+}
+fn authored_write(input: serde_json::Value, result_text: &str) -> (Message, Message) {
+    let call = Message::assistant(vec![
+        Block::Thinking {
+            text: "Private authored reasoning".into(),
+            signature: None,
+        },
+        Block::ToolUse {
+            id: "write1".into(),
+            name: "fs_write".into(),
+            input,
+        },
+    ]);
+    let mut result = Message::user("");
+    result.content = vec![Block::ToolResult {
+        tool_use_id: "write1".into(),
+        content: result_text.into(),
+        is_error: false,
+    }];
+    (call, result)
+}
+
+#[test]
+fn oversized_invocation_retains_bounded_metadata_and_exact_sealed_source() {
+    for input in invocation_boundary_inputs() {
+        let f = Fixture::new();
+        SessionMemory::initialize(&f.request).unwrap();
+        let mem = SessionMemory::open(&f.request, &f.workspace).unwrap();
+        let s = f.session();
+        let run = mem
+            .begin(&s, "Write fixture", &"charter:1".parse().unwrap())
+            .unwrap();
+        s.append(&Record::Message(Message::user("Write fixture")))
+            .unwrap();
+        let (call, result) = authored_write(input.clone(), "wrote fixture");
+        s.append(&Record::Message(call)).unwrap();
+        s.append(&Record::Message(result)).unwrap();
+        f.tail(&s);
+        let report = mem.finish(&run);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["semantic_assessment"],
+            "not_evaluated"
+        );
+        let seal: serde_json::Value = serde_json::from_slice(
+            &fs::read(f.request.authority.join(format!("{}.seal", run.run_id()))).unwrap(),
+        )
+        .unwrap();
+        let source = fs::read_to_string(&s.path).unwrap();
+        assert_invocation_capture(&seal["payload"], &source, &s.meta.id, &input);
+        let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+        assert_eq!(recovery.retry(run.run_id()).receipt, report.receipt);
+        fs::write(&s.path, source.replacen("result.txt", "mutant.txt", 1)).unwrap();
+        assert_eq!(
+            recovery.retry(run.run_id()).status,
+            SessionMemoryStatus::Unavailable
+        );
+        fs::write(&s.path, source).unwrap();
+        assert_eq!(recovery.retry(run.run_id()).receipt, report.receipt);
+        fs::remove_file(&s.path).unwrap();
+        assert_eq!(
+            recovery.retry(run.run_id()).status,
+            SessionMemoryStatus::Unavailable
+        );
+    }
+}
+
+#[tokio::test]
+async fn oversized_recall_metadata_does_not_relax_exact_attempt_matching_or_tracking_bound() {
+    for mode in ["exact", "changed", "untracked"] {
+        let f = Fixture::new();
+        SessionMemory::initialize(&f.request).unwrap();
+        let mem = SessionMemory::open(&f.request, &f.workspace).unwrap();
+        let s = f.session();
+        let run = mem
+            .begin(&s, "Write fixture", &"charter:1".parse().unwrap())
+            .unwrap();
+        s.append(&Record::Message(Message::user("Write fixture")))
+            .unwrap();
+        // An invalid serves is a bounded harness refusal, not external evidence.
+        let input =
+            serde_json::json!({"serves":"x".repeat(if mode == "untracked" { 8192 } else { 1100 })});
+        let tool = mem.goal_memory(&run).unwrap();
+        let output = tool.call(input.clone(), &context(&f)).await;
+        let output = if mode == "untracked" {
+            assert!(output
+                .unwrap_err()
+                .to_string()
+                .contains("recall input oversized"));
+            mecha_core::tool::ToolOutput::err("refused")
+        } else {
+            let output = output.unwrap();
+            assert!(output.is_error && !output.external);
+            output
+        };
+        let recorded = if mode == "changed" {
+            serde_json::json!({"serves":"y".repeat(1100)})
+        } else {
+            input
+        };
+        record_recall(&s, recorded, &output, output.content.clone());
+        f.tail(&s);
+        assert_eq!(
+            mem.finish(&run).status,
+            if mode == "exact" {
+                SessionMemoryStatus::Retained
+            } else {
+                SessionMemoryStatus::Unavailable
+            },
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn oversized_invocation_does_not_relax_result_passage_bound() {
+    let f = Fixture::new();
+    SessionMemory::initialize(&f.request).unwrap();
+    let mem = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    let s = f.session();
+    let run = mem
+        .begin(&s, "Write fixture", &"charter:1".parse().unwrap())
+        .unwrap();
+    s.append(&Record::Message(Message::user("Write fixture")))
+        .unwrap();
+    let (call, result) = authored_write(invocation_boundary_inputs()[1].clone(), &"x".repeat(4097));
+    s.append(&Record::Message(call)).unwrap();
+    s.append(&Record::Message(result)).unwrap();
+    f.tail(&s);
+    assert_eq!(mem.finish(&run).status, SessionMemoryStatus::Unavailable);
+    assert!(!f
+        .request
+        .authority
+        .join(format!("{}.seal", run.run_id()))
+        .exists());
+}

@@ -330,8 +330,11 @@ struct Live {
 /// The options the web door's one shared agent is built from — its own
 /// function so the registration gate is tested against the options this
 /// surface really passes (`setup::offers_request_access`), not a copy.
-pub(crate) fn web_agent_opts() -> Result<GlobalOpts> {
+pub(crate) fn web_agent_opts(dynamic_goals: bool) -> Result<GlobalOpts> {
     Ok(GlobalOpts {
+        // Only this explicit opt-in crosses from the CLI. The web door's
+        // workspace, permissions and provider-follow policy stay its own.
+        dynamic_goals,
         // Global config only, like a trigger run and the Slack
         // connector: a project's mecha.toml must not shape a run someone
         // drives from their phone.
@@ -357,8 +360,8 @@ impl ChatState {
     /// Build the in-process agent. Fails loudly; the caller degrades the
     /// surface to dashboard-only and says so, rather than serving a chat
     /// door that silently cannot answer.
-    pub async fn build() -> Result<Self> {
-        let opts = web_agent_opts()?;
+    pub async fn build(dynamic_goals: bool) -> Result<Self> {
+        let opts = web_agent_opts(dynamic_goals)?;
         let routes: QuestionRoutes = Arc::default();
         // Not interactive: no terminal approver — and then `ask_user` IS
         // registered, against the Slack connector's precedent, because this
@@ -4932,13 +4935,57 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn serve_dynamic_goals_reaches_web_setup_without_other_global_options() {
+        use clap::Parser;
+        let _home = crate::testenv::HomeGuard::new("serve-dynamic-options");
+        for argv in [
+            vec!["mecha", "serve"],
+            vec!["mecha", "serve", "--dynamic-goals"],
+            vec![
+                "mecha",
+                "--dynamic-goals",
+                "serve",
+                "--yes",
+                "--provider",
+                "unused",
+                "--model",
+                "unused",
+                "--workspace",
+                "/unused",
+                "--no-charter",
+                "--no-mcp",
+                "--system",
+                "unused",
+            ],
+        ] {
+            let cli = crate::Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(cli.command, crate::Command::Serve(_)));
+            let opts = super::web_agent_opts(cli.global.dynamic_goals).unwrap();
+            assert_eq!(
+                opts.dynamic_goals, cli.global.dynamic_goals,
+                "the parsed serve opt-in must reach the options used by setup"
+            );
+            assert!(opts.global_config_only);
+            assert!(opts.no_skills);
+            assert_eq!(opts.workspace, Some(super::producer_root().unwrap()));
+            assert_eq!(opts.surface, Some(mecha_core::session::SessionKind::Web));
+            assert!(!opts.yes);
+            assert!(!opts.no_charter);
+            assert!(!opts.no_mcp);
+            assert!(opts.provider.is_none());
+            assert!(opts.model.is_none());
+            assert!(opts.system.is_none());
+        }
+    }
+
     /// The web door offers `request_access` with the options it really
     /// builds. It sets `global_config_only`, and the first gate refused that
     /// flag, so the web chat had no tool to ask with (2026-10-18).
     #[test]
     fn the_web_door_offers_a_jail_request() {
         let _home = crate::testenv::HomeGuard::new("web-offers-request-access");
-        let opts = super::web_agent_opts().unwrap();
+        let opts = super::web_agent_opts(false).unwrap();
         assert!(opts.global_config_only, "the premise: the web door sets it");
         let cfg = mecha_core::config::Config::default();
         assert!(crate::setup::offers_request_access(&opts, &cfg, false));
@@ -7360,4 +7407,253 @@ fn a_test_door_writes_under_its_own_temporary_home() {
         other.sessions_dir(),
         "each door its own"
     );
+}
+
+#[cfg(test)]
+mod dynamic_web_tests {
+    use super::*;
+
+    fn write_config(home: &std::path::Path, endpoint: &str, provider: &str) {
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                r#"
+default_provider = "{provider}"
+[providers.first]
+kind = "openai"
+model = "fixture-first"
+base_url = "{endpoint}"
+[providers.second]
+kind = "openai"
+model = "fixture-second"
+base_url = "{endpoint}"
+[tools]
+enabled = ["fs_list", "goal_context", "todo"]
+permission_mode = "read-only"
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    async fn idle(chat: &ChatState, key: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if chat
+                    .sessions
+                    .lock()
+                    .await
+                    .get(key)
+                    .is_some_and(|ws| ws.live.is_none() && !ws.has_line())
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("authored web turn did not finish");
+    }
+
+    /// The actual builder and follower, with only the provider's HTTP response
+    /// replaced. No test-only enabled Agent can bypass setup's charter slot.
+    #[tokio::test]
+    async fn served_dynamic_context_survives_rebind_and_keeps_ingress_typed() {
+        use axum::{routing::post, Router};
+        use serde_json::json;
+        let home = crate::testenv::HomeGuard::new("web-dynamic-rebind");
+        let first_request = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let seen = Arc::new(StdMutex::new(Vec::<serde_json::Value>::new()));
+        let app = Router::new().route("/v1/chat/completions", post({
+            let seen = seen.clone();
+            let first_request = first_request.clone();
+            let release = release.clone();
+            move |Json(body): Json<serde_json::Value>| {
+                let seen = seen.clone();
+                let first_request = first_request.clone();
+                let release = release.clone();
+                async move {
+                    let first = {
+                        let mut seen = seen.lock().unwrap();
+                        let first = seen.is_empty();
+                        seen.push(body.clone());
+                        first
+                    };
+                    if first {
+                        first_request.notify_one();
+                        release.notified().await;
+                    }
+                    if body["stream"] == true {
+                        let (delta, stop) = if first {
+                            (json!({"tool_calls":[{"index":0,"id":"fixture-list","type":"function","function":{"name":"fs_list","arguments":"{\"path\":\".\"}"}}]}), "tool_calls")
+                        } else {
+                            (json!({"content":"Authored fixture reply."}), "stop")
+                        };
+                        let chunk = json!({"id":"fixture","model":body["model"],"choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+                        let end = json!({"id":"fixture","model":body["model"],"choices":[{"index":0,"delta":{},"finish_reason":stop}]});
+                        ([("content-type", "text/event-stream")], format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n")).into_response()
+                    } else {
+                        Json(json!({"model":body["model"],"choices":[{"message":{"role":"assistant","content":"Fixture title"},"finish_reason":"stop"}]})).into_response()
+                    }
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        write_config(&home.dir, &endpoint, "first");
+        let charter = home.dir.join("charter.toml");
+        std::fs::write(
+            &charter,
+            "[[line]]\nid='fixture'\ntext='First authored priority'\n",
+        )
+        .unwrap();
+        let chat = Arc::new(ChatState::build(true).await.unwrap());
+        assert!(chat.follower.current().agent.dynamic_goals_enabled());
+        let initial = chat.follower.current();
+        send_text(
+            &chat,
+            "dynamic-fixture",
+            "First authored request".into(),
+            "first".into(),
+            vec![],
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), first_request.notified())
+            .await
+            .unwrap();
+        let steered = send_text(
+            &chat,
+            "dynamic-fixture",
+            "Authored steering".into(),
+            "steer".into(),
+            vec![],
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(steered["steered"], true);
+        release.notify_one();
+        idle(&chat, "dynamic-fixture").await;
+        std::fs::write(
+            &charter,
+            "[[line]]\nid='fixture'\ntext='Second authored priority'\n",
+        )
+        .unwrap();
+        write_config(&home.dir, &endpoint, "second");
+        send_text(
+            &chat,
+            "dynamic-fixture",
+            "Second authored request".into(),
+            "second".into(),
+            vec![],
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        idle(&chat, "dynamic-fixture").await;
+        let rebound = chat.follower.current();
+        assert!(rebound.generation > initial.generation);
+        assert!(rebound.agent.dynamic_goals_enabled());
+        assert_eq!(rebound.model, "fixture-second");
+        assert!(Arc::ptr_eq(
+            initial.todo.as_ref().unwrap(),
+            rebound.todo.as_ref().unwrap()
+        ));
+        {
+            let mut sessions = chat.sessions.lock().await;
+            begin_turn(
+                &chat,
+                &rebound,
+                &mut None,
+                &mut sessions,
+                "dynamic-fixture",
+                "Synthesized fixture input",
+                TurnOpts {
+                    owner_input: false,
+                    request_id: None,
+                    spoken: false,
+                    approve_all: false,
+                    unlogged: false,
+                    tts_streams: false,
+                    images: vec![],
+                    draw: None,
+                },
+            )
+            .unwrap_or_else(|_| panic!("non-owner turn must start"));
+        }
+        idle(&chat, "dynamic-fixture").await;
+        let path = test_transcript(&chat, "dynamic-fixture").await;
+        let (_, conversation) = Session::load(&path).unwrap();
+        let rows: Vec<Record> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let versions: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Record::GoalContextDecision { versions, .. } => Some(versions),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let current = versions.last().unwrap();
+        let inputs: Vec<_> = current
+            .owner_inputs()
+            .iter()
+            .map(|i| (i.source(), i.text()))
+            .collect();
+        assert_eq!(
+            inputs,
+            vec![
+                (OwnerSource::AuthenticatedWeb, "First authored request"),
+                (OwnerSource::AuthenticatedWeb, "Authored steering"),
+                (OwnerSource::AuthenticatedWeb, "Second authored request"),
+            ]
+        );
+        assert!(current
+            .charter()
+            .prompt_block()
+            .unwrap()
+            .contains("Second authored priority"));
+        assert!(versions.iter().any(|v| v
+            .charter()
+            .prompt_block()
+            .unwrap()
+            .contains("First authored priority")));
+        assert!(conversation.taint.private);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row, Record::GoalContextDecision { .. }))
+                .count(),
+            4
+        );
+        {
+            let requests = seen.lock().unwrap();
+            assert!(requests.iter().any(|r| r["model"] == "fixture-second"
+                && r["messages"]
+                    .to_string()
+                    .contains("Second authored priority")));
+        }
+        let rebind = rows
+            .iter()
+            .position(|row| matches!(row, Record::Config(cfg) if cfg.model == "fixture-second"))
+            .unwrap();
+        let decision = rows.iter().position(|row| matches!(row, Record::GoalContextDecision { binding, .. } if binding.ordinal() == 3)).unwrap();
+        assert!(
+            rebind < decision,
+            "rebind Config must precede its first decision"
+        );
+        chat.stop().await;
+        chat.drain().await;
+        chat.close_mcp().await;
+        server.abort();
+    }
 }
