@@ -427,6 +427,39 @@ fn classified(c: &Candidate) -> bool {
         .is_some_and(|at| c.classified.as_ref().is_some_and(|v| v.at >= at))
 }
 
+/// The §5.4 refusals a reply action meets on this message alone — a template
+/// that did not load, the message-fact guards, and a slot with no honest
+/// value — without the per-sender week, which reads the ledger. Shared by the
+/// live pass and `mecha mail rule test`, so a preview never counts a reply the
+/// live pass would refuse (review of #856, pass 8).
+pub(crate) fn message_reply_refusal(
+    rule: &LoadedRule,
+    action: &Action,
+    c: &Candidate,
+) -> Option<String> {
+    let template = || Run::template(rule, action);
+    rule.template_refused
+        .as_ref()
+        .map(|why| format!("template refused: {why}"))
+        .or_else(|| super::send::reply_refusal(c).map(str::to_string))
+        .or_else(|| {
+            // A slot with no honest value refuses rather than render raw
+            // bytes (review of #856), and an empty or absent subject reads
+            // fine but would render a bare "Re: " — the same hole. Checked
+            // here, not in `reply_subject_text`, which is also the matcher's
+            // reading, where `None` is unknown.
+            (template().is_some_and(|t| t.contains("{subject}"))
+                && reply_subject_text(c).is_none_or(|s| s.trim().is_empty()))
+            .then(|| "the subject could not be read whole".to_string())
+        })
+        .or_else(|| {
+            // Nor a name: "Hi , thanks" is a hole too.
+            (template().is_some_and(|t| t.contains("{sender_first_name}"))
+                && super::send::sender_first_name(&c.sending.from_name).is_empty())
+            .then(|| "the sender gave no name to address".to_string())
+        })
+}
+
 /// The subject as `{subject}` fills it: decoded from Gmail's raw RFC 2047
 /// form, unfolded otherwise, and `None` when it cannot be read whole — not
 /// decodable, truncated, or more than one Subject header — the same reading
@@ -1400,36 +1433,11 @@ impl Run<'_> {
                 if action.group() == ActionGroup::FixedWords
                     && (mode == Mode::Shadow || outbound.as_deref() == Some(&rule.name))
                 {
-                    if let Some(guard) = rule
-                        .template_refused
-                        .as_ref()
-                        .map(|why| format!("template refused: {why}"))
-                        .or_else(|| super::send::reply_refusal(c).map(str::to_string))
-                        .or_else(|| {
-                            // A slot with no honest value refuses rather
-                            // than render raw bytes (review of #856), and an
-                            // empty or absent subject reads fine but would
-                            // render a bare "Re: " — the same hole. Checked
-                            // here, not in `reply_subject_text`, which is also
-                            // the matcher's reading, where `None` is unknown.
-                            (Self::template(rule, action).is_some_and(|t| t.contains("{subject}"))
-                                && reply_subject_text(c).is_none_or(|s| s.trim().is_empty()))
-                            .then(|| "the subject could not be read whole".to_string())
+                    if let Some(guard) = message_reply_refusal(rule, action, c).or_else(|| {
+                        self.answered_this_week(rule, c, mode).then(|| {
+                            "this sender was answered by this rule in the last 7 days".to_string()
                         })
-                        .or_else(|| {
-                            // Nor a name: "Hi , thanks" is a hole too.
-                            (Self::template(rule, action)
-                                .is_some_and(|t| t.contains("{sender_first_name}"))
-                                && super::send::sender_first_name(&c.sending.from_name).is_empty())
-                            .then(|| "the sender gave no name to address".to_string())
-                        })
-                        .or_else(|| {
-                            self.answered_this_week(rule, c, mode).then(|| {
-                                "this sender was answered by this rule in the last 7 days"
-                                    .to_string()
-                            })
-                        })
-                    {
+                    }) {
                         row.outcome = Outcome::Skipped;
                         row.closes = false;
                         row.reason = guard;

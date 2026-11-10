@@ -4666,6 +4666,13 @@ reader cannot prove absence and did not surface the header (the 2026-11-06
 ruling's Unknown); it is never folded into `matched_rows`, so "matched
 nothing" and "could not see the header" read differently.
 Partial would-have rows remain visible alongside a failed account.
+A reply action meets §5.4's message-only refusals here as in the live pass
+(`engine::message_reply_refusal`, one function for both): a refused reply is
+a `skipped` row reading `test: skipped: <guard>`, counted in `refused_rows`
+and never in `would_have_rows`, so the preview the owner reads before raising
+template replies out of shadow is the rate the live pass would reply at. The
+per-sender week alone is not applied, because it reads the ledger and the
+test writes none.
 
 **Edits and corrections cannot restore permission.** `RuleStore::edit`
 parses first, validates a private candidate snapshot with existing bundled

@@ -3664,11 +3664,35 @@ async fn the_guards_refuse_a_reply_in_every_mode_and_say_which() {
         let shadow = f.run(None).await;
         assert_eq!(shadow.rows[0].outcome, Outcome::Skipped, "{setup}");
         assert_eq!(shadow.rows[0].reason, why, "{setup}");
+        // Nor does the retrospective preview the owner reads before raising
+        // the mode (review of #856, pass 8).
+        let candidate = f.mail.candidates.lock().unwrap()[0].clone();
+        let tested = test_match(&r, &candidate, Some(true), f.options.clock.now()).unwrap();
+        assert_eq!(tested[0].outcome, Outcome::Skipped, "{setup}");
+        assert!(
+            tested[0]
+                .reason
+                .starts_with(&format!("test: skipped: {why};")),
+            "{setup}: {}",
+            tested[0].reason
+        );
         f.mode(&r, ActionGroup::FixedWords, Mode::Propose);
         let proposed = f.run(None).await;
         assert_eq!(proposed.rows[0].reason, why, "{setup}");
         assert!(f.mail.staged.lock().unwrap().is_empty(), "{setup}");
     }
+}
+
+/// The negative above is not vacuous: a message no guard refuses previews a
+/// reply as would-have.
+#[test]
+fn a_reply_no_guard_refuses_previews_as_would_have() {
+    let f = Fixture::new();
+    personal(&f);
+    let r = reply_rule(&f, "office-hours", "from_domain = ['example.com']");
+    let candidate = f.mail.candidates.lock().unwrap()[0].clone();
+    let tested = test_match(&r, &candidate, Some(true), f.options.clock.now()).unwrap();
+    assert_eq!(tested[0].outcome, Outcome::WouldHave, "{:#?}", tested);
 }
 
 #[tokio::test]

@@ -1102,6 +1102,9 @@ fn test_account_report(name: &str, report: &engine::ApplyReport) -> serde_json::
         "status": if failed > 0 { "failed" } else if held { "held" } else { "complete" },
         "matched_rows": if failed > 0 || held { None } else { Some(count) },
         "would_have_rows": count,
+        // Reply rows §5.4 refuses on the message itself, as the live pass
+        // would: matched, and never a would-have (review of #856, pass 8).
+        "refused_rows": report.rows.iter().filter(|r| r.outcome == Outcome::Skipped).count(),
         "read_failures": report.read_failures,
         "candidate_failures": report.candidate_failures,
         // Messages the rule could not be checked against: the header was not
