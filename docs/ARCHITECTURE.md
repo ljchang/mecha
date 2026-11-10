@@ -4897,9 +4897,12 @@ tool with `from_only: true` — armed, because the slots carry the sender's
 words and a harness-authored draft is otherwise stamped clean; the `staged` row keeps `outbox_item`, and every pass
 begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
 `rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
-a model may also set: the message's `From` alone, never reply-all — on
-Graph an explicit recipient in place of the `replyTo` the endpoint would
-follow, so a substitution there rather than a subset, and never wider.
+a model may also set: the message's `From` alone, never reply-all. On
+Graph it is not `/reply` with `toRecipients`, which Microsoft documents as
+*adding* a recipient beside the `replyTo` the endpoint follows: it is a
+`createReply` draft, its To replaced and Cc/Bcc cleared by `PATCH`, the
+recipients read back and the draft sent only when they are exactly that one
+address (deleted otherwise) — the artifact asked, not the request we wrote.
 The staged call pins `expect_from` to the address its review shows, and
 `mail_reply` refuses when the message its `message_id` resolves to is from
 anyone else: the selector is the sender-written Message-ID, so the approval

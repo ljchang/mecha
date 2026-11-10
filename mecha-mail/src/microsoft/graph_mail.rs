@@ -109,14 +109,158 @@ pub struct OutlookProvider {
     scripted_mailbox: Option<std::sync::Arc<std::sync::Mutex<tests::Mailbox>>>,
 }
 
-/// A reply's request body: the HTML, and, when `only` is given, exactly that
-/// recipient, which replaces whatever Graph would derive from the message.
-fn reply_body(body: &str, only: Option<&str>) -> Value {
-    let mut message = json!({"body": {"contentType": "HTML", "content": body}});
-    if let Some(to) = only {
-        message["toRecipients"] = json!([{"emailAddress": {"address": to}}]);
+/// A reply's request body: the HTML, addressed as Graph derives it.
+fn reply_body(body: &str) -> Value {
+    json!({"message": {"body": {"contentType": "HTML", "content": body}}})
+}
+
+/// The Graph calls a reply to exactly one recipient is made of, behind a seam
+/// so the sequence and its refusals are tested without a tenant.
+///
+/// Not `POST /reply` with `toRecipients`: Graph documents that parameter as
+/// *adding* a recipient, and the reply as going to the message's `replyTo`
+/// when it has one, so the sender-chosen `Reply-To` would still be answered
+/// (review of #856, pass 7). A draft's recipients are replaced by `PATCH`
+/// and read back before it is sent, so what leaves is what was checked.
+trait DraftReply {
+    async fn create_reply(&self, message_id: &str) -> Result<String, MailError>;
+    async fn patch_draft(&self, draft: &str, patch: &Value) -> Result<(), MailError>;
+    async fn draft_recipients(&self, draft: &str) -> Result<Value, MailError>;
+    async fn send_draft(&self, draft: &str) -> Result<(), MailError>;
+    async fn delete_draft(&self, draft: &str) -> Result<(), MailError>;
+}
+
+/// The patch that makes a reply draft answer `only` and nobody else.
+fn only_patch(body: &str, only: &str) -> Value {
+    json!({
+        "toRecipients": [{"emailAddress": {"address": only}}],
+        "ccRecipients": [],
+        "bccRecipients": [],
+        "body": {"contentType": "HTML", "content": body},
+    })
+}
+
+/// Why a reply draft, read back, is not addressed to exactly `only`: one To,
+/// that address, and no Cc or Bcc. A list Graph did not return is unknown,
+/// and unknown refuses.
+fn recipients_refusal(read: &Value, only: &str) -> Option<String> {
+    let addresses = |field: &str| -> Option<Vec<String>> {
+        read[field]
+            .as_array()?
+            .iter()
+            .map(|r| {
+                r["emailAddress"]["address"]
+                    .as_str()
+                    .map(|a| a.trim().to_string())
+            })
+            .collect()
+    };
+    match (
+        addresses("toRecipients"),
+        addresses("ccRecipients"),
+        addresses("bccRecipients"),
+    ) {
+        (Some(to), Some(cc), Some(bcc))
+            if cc.is_empty()
+                && bcc.is_empty()
+                && to.len() == 1
+                && to[0].eq_ignore_ascii_case(only.trim()) =>
+        {
+            None
+        }
+        (Some(to), Some(cc), Some(bcc)) => Some(format!(
+            "the reply draft is not addressed to `{only}` alone (to: {to:?}, cc: {cc:?}, bcc: {bcc:?}), so it was not sent"
+        )),
+        _ => Some("the reply draft's recipients could not be read back, so it was not sent".into()),
     }
-    json!({"message": message})
+}
+
+/// Reply to `message_id` addressed to `only` alone: create the draft, replace
+/// its recipients, read them back, send. Any failure after the draft exists
+/// deletes it (best effort: a draft left behind is clutter, never a send).
+async fn reply_to_only(
+    ops: &impl DraftReply,
+    message_id: &str,
+    body: &str,
+    only: &str,
+) -> Result<(), MailError> {
+    let draft = ops.create_reply(message_id).await?;
+    let outcome = async {
+        ops.patch_draft(&draft, &only_patch(body, only)).await?;
+        let read = ops.draft_recipients(&draft).await?;
+        if let Some(why) = recipients_refusal(&read, only) {
+            return Err(MailError::InvalidInput(why));
+        }
+        ops.send_draft(&draft).await
+    }
+    .await;
+    if outcome.is_err() {
+        let _ = ops.delete_draft(&draft).await;
+    }
+    outcome
+}
+
+impl DraftReply for OutlookProvider {
+    async fn create_reply(&self, message_id: &str) -> Result<String, MailError> {
+        let resp = send_with_retry(
+            self.request(
+                reqwest::Method::POST,
+                &format!("{GRAPH}/me/messages/{}/createReply", urlencode(message_id)),
+            )
+            .json(&json!({})),
+        )
+        .await?;
+        if !resp.status().is_success() {
+            return Err(self.ok_or_err(resp).await.unwrap_err());
+        }
+        let draft = resp.json::<Value>().await.map_err(MailError::from)?;
+        draft["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| MailError::ParseError("createReply returned no draft id".into()))
+    }
+
+    async fn patch_draft(&self, draft: &str, patch: &Value) -> Result<(), MailError> {
+        let resp = send_with_retry(
+            self.request(
+                reqwest::Method::PATCH,
+                &format!("{GRAPH}/me/messages/{}", urlencode(draft)),
+            )
+            .json(patch),
+        )
+        .await?;
+        self.ok_or_err(resp).await
+    }
+
+    async fn draft_recipients(&self, draft: &str) -> Result<Value, MailError> {
+        self.get_json(&format!(
+            "{GRAPH}/me/messages/{}?$select=toRecipients,ccRecipients,bccRecipients",
+            urlencode(draft)
+        ))
+        .await
+    }
+
+    async fn send_draft(&self, draft: &str) -> Result<(), MailError> {
+        let resp = send_with_retry(
+            self.request(
+                reqwest::Method::POST,
+                &format!("{GRAPH}/me/messages/{}/send", urlencode(draft)),
+            )
+            .header(reqwest::header::CONTENT_LENGTH, "0"),
+        )
+        .await?;
+        self.ok_or_err(resp).await
+    }
+
+    async fn delete_draft(&self, draft: &str) -> Result<(), MailError> {
+        let resp = send_with_retry(self.request(
+            reqwest::Method::DELETE,
+            &format!("{GRAPH}/me/messages/{}", urlencode(draft)),
+        ))
+        .await?;
+        self.ok_or_err(resp).await
+    }
 }
 
 impl OutlookProvider {
@@ -420,7 +564,8 @@ impl OutlookProvider {
     /// `References`, and `conversationId` itself — which is the whole reason
     /// this is a separate operation from [`Self::send_email`].
     /// `only`: address exactly this recipient, never the message's
-    /// `replyTo` — Graph's reply would otherwise follow it.
+    /// `replyTo` — through a draft whose recipients are replaced and read
+    /// back before it is sent ([`reply_to_only`]).
     pub async fn reply(
         &self,
         message_id: &str,
@@ -428,13 +573,21 @@ impl OutlookProvider {
         reply_all: bool,
         only: Option<&str>,
     ) -> Result<(), MailError> {
+        if let Some(only) = only {
+            if reply_all {
+                return Err(MailError::InvalidInput(
+                    "a reply to one recipient cannot be reply-all".into(),
+                ));
+            }
+            return reply_to_only(self, message_id, body, only).await;
+        }
         let verb = if reply_all { "replyAll" } else { "reply" };
         let resp = send_with_retry(
             self.request(
                 reqwest::Method::POST,
                 &format!("{GRAPH}/me/messages/{}/{verb}", urlencode(message_id)),
             )
-            .json(&reply_body(body, only)),
+            .json(&reply_body(body)),
         )
         .await?;
         self.ok_or_err(resp).await
@@ -2234,15 +2387,133 @@ mod tests {
     }
 
     #[test]
-    fn a_from_only_reply_names_its_one_recipient_and_a_plain_one_names_none() {
-        let only = reply_body("<p>x</p>", Some("dana@example.com"));
-        assert_eq!(
-            only["message"]["toRecipients"],
-            json!([{"emailAddress": {"address": "dana@example.com"}}])
-        );
-        assert!(reply_body("<p>x</p>", None)["message"]
+    fn a_plain_reply_names_no_recipient() {
+        assert!(reply_body("<p>x</p>")["message"]
             .get("toRecipients")
             .is_none());
+    }
+
+    /// A tenant at the draft seam: `patch` is honoured unless Graph is made to
+    /// keep what it derived (`derived`), as `/reply` documents it would.
+    #[derive(Default)]
+    struct Drafts {
+        calls: std::sync::Mutex<Vec<String>>,
+        recipients: std::sync::Mutex<Value>,
+        derived: Option<Value>,
+        fail_send: bool,
+    }
+
+    impl DraftReply for Drafts {
+        async fn create_reply(&self, message_id: &str) -> Result<String, MailError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("create {message_id}"));
+            Ok("draft-1".into())
+        }
+        async fn patch_draft(&self, draft: &str, patch: &Value) -> Result<(), MailError> {
+            self.calls.lock().unwrap().push(format!("patch {draft}"));
+            *self.recipients.lock().unwrap() =
+                self.derived.clone().unwrap_or_else(|| patch.clone());
+            Ok(())
+        }
+        async fn draft_recipients(&self, draft: &str) -> Result<Value, MailError> {
+            self.calls.lock().unwrap().push(format!("read {draft}"));
+            Ok(self.recipients.lock().unwrap().clone())
+        }
+        async fn send_draft(&self, draft: &str) -> Result<(), MailError> {
+            self.calls.lock().unwrap().push(format!("send {draft}"));
+            if self.fail_send {
+                Err(MailError::InvalidInput("fixture send failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+        async fn delete_draft(&self, draft: &str) -> Result<(), MailError> {
+            self.calls.lock().unwrap().push(format!("delete {draft}"));
+            Ok(())
+        }
+    }
+
+    fn calls(d: &Drafts) -> Vec<String> {
+        d.calls.lock().unwrap().clone()
+    }
+
+    /// Review of #856, pass 7: a reply to one recipient is a draft whose
+    /// recipients are replaced and read back, and one Graph addressed to
+    /// anyone else — its `replyTo` kept beside the pin — is never sent.
+    #[tokio::test]
+    async fn a_reply_to_one_recipient_sends_only_what_it_read_back() {
+        let d = Drafts::default();
+        reply_to_only(&d, "m-1", "<p>x</p>", "dana@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            calls(&d),
+            [
+                "create m-1",
+                "patch draft-1",
+                "read draft-1",
+                "send draft-1"
+            ]
+        );
+        let sent = d.recipients.lock().unwrap().clone();
+        assert_eq!(
+            sent["toRecipients"],
+            json!([{"emailAddress": {"address": "dana@example.com"}}])
+        );
+        assert_eq!(sent["ccRecipients"], json!([]));
+        assert_eq!(sent["bccRecipients"], json!([]));
+
+        let additive = json!({
+            "toRecipients": [
+                {"emailAddress": {"address": "elsewhere@example.net"}},
+                {"emailAddress": {"address": "dana@example.com"}},
+            ],
+            "ccRecipients": [],
+            "bccRecipients": [],
+        });
+        let d = Drafts {
+            derived: Some(additive),
+            ..Drafts::default()
+        };
+        let err = reply_to_only(&d, "m-1", "<p>x</p>", "dana@example.com")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not addressed"), "{err}");
+        assert_eq!(
+            calls(&d),
+            [
+                "create m-1",
+                "patch draft-1",
+                "read draft-1",
+                "delete draft-1"
+            ]
+        );
+
+        let d = Drafts {
+            fail_send: true,
+            ..Drafts::default()
+        };
+        assert!(reply_to_only(&d, "m-1", "<p>x</p>", "dana@example.com")
+            .await
+            .is_err());
+        assert_eq!(calls(&d).last().unwrap(), "delete draft-1");
+    }
+
+    #[test]
+    fn a_read_back_is_one_address_case_aside_and_unknown_refuses() {
+        let read = |to: Value, cc: Value| json!({"toRecipients": to, "ccRecipients": cc, "bccRecipients": []});
+        let dana = json!([{"emailAddress": {"address": "Dana@Example.com"}}]);
+        assert_eq!(
+            recipients_refusal(&read(dana.clone(), json!([])), "dana@example.com"),
+            None
+        );
+        assert!(
+            recipients_refusal(&read(dana.clone(), dana.clone()), "dana@example.com").is_some()
+        );
+        assert!(recipients_refusal(&read(json!([]), json!([])), "dana@example.com").is_some());
+        assert!(recipients_refusal(&json!({"toRecipients": dana}), "dana@example.com").is_some());
     }
 
     #[test]

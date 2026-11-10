@@ -2453,8 +2453,11 @@ screen's outbox line. In this phase:
   raw RFC 2047 subject is decoded first, as the matcher reads it.
 - The staged item is a `mail_reply` call through the tool `[outbox] tools`
   routes, with `from_only: true` — a new narrowing on `mail_reply` that
-  addresses only the message's `From` (on Graph, an explicit recipient in
-  place of the `replyTo` the reply endpoint would follow) and refuses with
+  addresses only the message's `From` (on Graph, a `createReply` draft
+  whose recipients are replaced by `PATCH` and read back before `send`,
+  because `/reply`'s `toRecipients` is documented as adding a recipient
+  beside the `replyTo` it follows; a read-back naming anyone else deletes
+  the draft unsent — review of #856, pass 7) and refuses with
   `reply_all` or on the owner's own message. A rule with no routed
   `mail_reply` stages nothing and says so. The store and route are the
   global config's, the ones the review surfaces read.
