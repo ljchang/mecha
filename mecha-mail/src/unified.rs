@@ -354,7 +354,9 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                     "body_markdown": {"type": "string"},
                     "account": item_account("The account the thread lives in. Omit it and the account holding this thread_id is looked up."),
                     "message_id": {"type": "string", "description": "Reply to this specific message instead of the newest one."},
-                    "reply_all": {"type": "boolean", "default": false}
+                    "reply_all": {"type": "boolean", "default": false},
+                    "from_only": {"type": "boolean", "default": false, "description": "Address only the message's From address: never its Reply-To, never anyone else."},
+                    "expect_from": {"type": "string", "description": "Refuse the reply unless the message being answered is from this address."}
                 },
                 "required": ["thread_id", "body_markdown"]
             },
@@ -1308,6 +1310,40 @@ pub(crate) fn gmail_reply_fields(
     (to.join(", "), cc, subject)
 }
 
+/// Why a `from_only` reply cannot be made: it answers exactly the message's
+/// From, so it needs one that is not the owner's own, and never reply-all.
+pub(crate) fn from_only_refusal(
+    target: &Email,
+    self_address: Option<&str>,
+    reply_all: bool,
+) -> Option<String> {
+    if reply_all {
+        return Some("from_only and reply_all cannot both be set".into());
+    }
+    let from = target.from_address.trim();
+    if from.is_empty() || self_address.is_some_and(|a| a.eq_ignore_ascii_case(from)) {
+        return Some("from_only: the message has no sender to answer but you".into());
+    }
+    None
+}
+
+/// Why a reply pinned to `expect_from` cannot be made: the message the
+/// selector resolved to is from someone else. A mail rule's staged reply is
+/// approved against the address its review showed, and `message_id` is the
+/// sender-written RFC Message-ID — a sender who copies another participant's
+/// out of the thread's `References` would otherwise redirect the released
+/// reply to that participant (review of #856, pass 6). An empty pin refuses:
+/// it names nobody the owner approved.
+pub(crate) fn expect_from_refusal(target: &Email, expected: &str) -> Option<String> {
+    let (from, expected) = (target.from_address.trim(), expected.trim());
+    if expected.is_empty() || !from.eq_ignore_ascii_case(expected) {
+        return Some(format!(
+            "expect_from: the message answered is from `{from}`, not `{expected}`"
+        ));
+    }
+    None
+}
+
 // ------------------------------------------------------------------ dispatch
 
 impl MailTools {
@@ -1770,16 +1806,42 @@ impl MailTools {
                         None => format!("thread {thread_id} has no messages"),
                     });
                 };
+                // A narrowing, never a widening: the reply answers one
+                // person, the message's From (MAIL-RULES-DESIGN.md §5.4).
+                // A mail rule's staged reply sets it.
+                let from_only = args
+                    .get("from_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if from_only {
+                    if let Some(why) =
+                        from_only_refusal(target, account.address.as_deref(), reply_all)
+                    {
+                        return refuse(why);
+                    }
+                }
+                // The recipient the owner approved, checked against the one
+                // the selector found (a narrowing, like `from_only`).
+                if let Some(expected) = args.get("expect_from") {
+                    let Some(expected) = expected.as_str() else {
+                        return refuse("expect_from must be a string address".to_string());
+                    };
+                    if let Some(why) = expect_from_refusal(target, expected) {
+                        return refuse(why);
+                    }
+                }
 
                 let html = markdown_to_html(&body_md);
                 let result = match account.provider {
                     Provider::Outlook => {
                         let target_id = target.provider_id.clone();
+                        let only = from_only.then(|| target.from_address.trim().to_string());
                         with_token(&account.manager, |t| {
-                            let (target_id, html) = (target_id.clone(), html.clone());
+                            let (target_id, html, only) =
+                                (target_id.clone(), html.clone(), only.clone());
                             async move {
                                 OutlookProvider::new(t)
-                                    .reply(&target_id, &html, reply_all)
+                                    .reply(&target_id, &html, reply_all, only.as_deref())
                                     .await
                             }
                         })
@@ -3250,6 +3312,50 @@ mod tests {
         assert_eq!(rows[0]["subject"], "new");
         assert_eq!(rows[0]["account"], "campus");
         assert_eq!(rows[1]["account"], "personal");
+    }
+
+    /// Review of #856, pass 6: a sender who copies another participant's
+    /// Message-ID makes the selector resolve to that participant's message,
+    /// and the pin to the approved address is what refuses the release.
+    #[test]
+    fn a_copied_message_id_cannot_redirect_a_pinned_reply() {
+        let mut third = email("third@example.com", &[], &[], "Booking");
+        third.provider_id = "p-1".into();
+        third.message_id = Some("<shared@example.com>".into());
+        let mut mallory = email("mallory@example.org", &[], &[], "Re: Booking");
+        mallory.provider_id = "p-2".into();
+        mallory.message_id = Some("<shared@example.com>".into());
+        let thread = [third, mallory];
+        let target = reply_target(&thread, Some("<shared@example.com>")).unwrap();
+        assert_eq!(
+            target.from_address, "third@example.com",
+            "oldest match wins"
+        );
+        // The owner approved a reply to the newest sender; the release refuses.
+        assert!(expect_from_refusal(target, "mallory@example.org").is_some());
+    }
+
+    #[test]
+    fn a_from_only_reply_answers_one_sender_who_is_not_you() {
+        let mut e = email("dana@example.com", &[], &[], "Booking");
+        e.reply_to = Some("elsewhere@example.net".into());
+        assert_eq!(
+            from_only_refusal(&e, Some("owner@example.edu"), false),
+            None
+        );
+        assert!(from_only_refusal(&e, Some("owner@example.edu"), true).is_some());
+        assert!(from_only_refusal(&e, Some("DANA@example.com"), false).is_some());
+        e.from_address = " ".into();
+        assert!(from_only_refusal(&e, None, false).is_some());
+        // The pin: the approved address, case aside, and nobody else.
+        let e = email("dana@example.com", &[], &[], "Booking");
+        assert_eq!(expect_from_refusal(&e, " Dana@Example.com "), None);
+        assert!(expect_from_refusal(&e, "mallory@example.org").is_some());
+        assert!(expect_from_refusal(&e, "").is_some());
+        // Gmail's addressing never reads Reply-To: the From is the one recipient.
+        let e = email("dana@example.com", &[], &[], "Booking");
+        let (to, cc, _) = gmail_reply_fields(&e, Some("owner@example.edu"), false);
+        assert_eq!((to.as_str(), cc), ("dana@example.com", None));
     }
 
     #[test]

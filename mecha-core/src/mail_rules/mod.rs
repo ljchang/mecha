@@ -12,6 +12,7 @@ mod ledger;
 mod management;
 mod presentation;
 mod runtime;
+pub mod send;
 mod store;
 mod undo;
 mod waiting;

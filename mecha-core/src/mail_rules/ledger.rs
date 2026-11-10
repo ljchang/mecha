@@ -87,7 +87,12 @@ pub struct MessageRef {
     pub account: String,
     pub provider_message_id: String,
     pub thread_id: String,
-    /// RFC Message-ID is display only, never a key.
+    /// RFC Message-ID: never a ledger key. A staged template reply does use
+    /// it as `mail_reply`'s `message_id`, to name the answered message within
+    /// its thread on both providers — sender-written, so the staged reply
+    /// also pins the approved recipient (`expect_from`) and the release
+    /// refuses any other; still to be re-examined before replies are sent
+    /// unattended (MAIL-RULES-DESIGN §11 P4b-2a).
     pub message_id: String,
     pub sender: String,
     pub subject: String,
@@ -144,6 +149,10 @@ pub struct LedgerRow {
     /// Missing on historical rows; unknown attribution is never the owner.
     #[serde(default, deserialize_with = "wire")]
     pub actor: Option<crate::closure::Actor>,
+    /// The outbox item a `staged` send waits in, and that its settlement
+    /// (`released unchanged`, `edited`, `rejected`) was read from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox_item: Option<String>,
 }
 
 impl LedgerRow {
@@ -254,6 +263,7 @@ impl LedgerRow {
             wrong_match: false,
             affected_groups: Vec::new(),
             actor: None,
+            outbox_item: None,
         })
     }
 

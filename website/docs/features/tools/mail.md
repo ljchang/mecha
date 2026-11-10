@@ -848,6 +848,34 @@ description rule stay in shadow for now. The classifier's lists hold at most 12
 description entries (a rule with both shadow and active groups takes two),
 and adding one more is refused with the rules to lower.
 
+**Template replies.** A rule can answer with your own words:
+
+```toml
+description = "Office hours"
+[match]
+describe = "Students asking when office hours are"
+[[action]]
+do = "reply"
+template = "reply.md"   # beside rule.toml
+```
+
+`reply.md` is what you would type, with at most three slots filled in for
+you: `{sender_first_name}`, `{subject}` and `{today}`; any other `{...}`
+makes the rule refuse to load. `{subject}` is the reply's subject line, so
+it carries its `Re:` — `thanks for {subject}` reads `thanks for Re: …`. A
+rule has at most one reply. Install a rule with its template from a
+directory: `mecha mail rule add ~/office-hours/`. In `propose`, each match
+puts the reply in your **outbox** to release, edit or reject — it answers
+only the sender's From address, never a Reply-To — and the ledger records
+what you did with it. Sending unattended is not available yet. A reply is
+never drafted to an automated sender (`noreply`, auto-replies), a mailing
+list, one of your own addresses, a conversation you have already written
+in, or someone the rule answered in the last seven days; the ledger row says
+which of these stopped it. A reply using `{subject}` is not drafted when the
+subject could not be read whole, nor one using `{sender_first_name}` when the
+sender gave no name. The outbox marks these drafts as containing
+a stranger's words, since the name and subject come from the message.
+
 **Pause** lowers a rule's groups to shadow at once; **Pause all** does it for
 every rule. Resuming is a raise, with its approval screen.
 

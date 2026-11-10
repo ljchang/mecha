@@ -114,7 +114,22 @@ pub(super) fn activity(
 ) -> (usize, Option<DateTime<Utc>>, usize) {
     let fires: Vec<_> = rows
         .iter()
-        .filter(|r| r.rule == name && matches!(r.outcome, Outcome::Done | Outcome::Sent))
+        .filter(|r| {
+            r.rule == name
+                && matches!(
+                    r.outcome,
+                    // A staged reply is a template rule firing (review of #856),
+                    // the same set `brake_evidence` resets its streak on.
+                    Outcome::Done
+                        | Outcome::Sent
+                        | Outcome::Staged
+                        | Outcome::ReleasedUnchanged
+                        | Outcome::Edited
+                )
+                // A settlement is what the owner did with a fire, never a
+                // second one — `statistics` draws the same line.
+                && r.correction_of.is_none()
+        })
         .filter_map(|r| r.at)
         .collect();
     (

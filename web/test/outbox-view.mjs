@@ -162,6 +162,8 @@ t('attendees accept objects', attendeesOf({ attendees: [{ email: 'a@x.edu' }] })
   const r = rowSummary(reply);
   t('a reply row names who it answers and the thread', r?.who === 'Ines O' && r?.subject === 'Re: Review request');
   t('a reply with no thread read still summarises', rowSummary({ ...reply, sources: [] })?.subject === '');
+  const ruled = rowSummary({ tool: 'mail__mail_reply', headline: '', args: { thread_id: 'T', from_only: true }, sources: [], answering: { to: 'dana@example.edu', subject: 'Re: Booking' } });
+  t('a rule-staged reply names whom it answers, with no session to join', ruled?.who === 'dana@example.edu' && ruled?.subject === 'Re: Booking');
   t('a new mail row is its to and subject', rowSummary({ tool: 'mail__mail_send', args: { to: 'a@x', subject: 'Hi' } })?.who === 'a@x');
   t('anything else has no mail summary', rowSummary({ tool: 'docs__docs_create', args: {} }) === null);
   const d = docEdit('docs__docs_replace', { file_id: '1FakeDocId_ForTestsOnly_00000000000000000000', find: 'Name_Specialist', replace: 'placeholder', match_case: true });

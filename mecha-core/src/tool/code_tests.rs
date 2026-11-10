@@ -3828,6 +3828,7 @@ async fn drafted(
 fn the_reply(session: &crate::session::Session) -> crate::outbox::OutboxItem {
     let args = json!({"thread_id": THREAD, "body": "Attached."});
     crate::outbox::OutboxItem {
+        answering: None,
         predictions: Vec::new(),
         outcomes: Vec::new(),
         delivery_attempts: Vec::new(),

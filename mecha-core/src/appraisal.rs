@@ -3616,6 +3616,7 @@ mod tests {
     fn draft(id: &str, status: &str, edited: bool) -> crate::outbox::OutboxItem {
         let before = serde_json::json!({"body_markdown": "Dear Dirk,"});
         crate::outbox::OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

@@ -151,6 +151,7 @@ impl Envelope<'_> {
             list_id: None,
             headers: BTreeMap::new(),
             classified: None,
+            sending: Default::default(),
         }
     }
 }

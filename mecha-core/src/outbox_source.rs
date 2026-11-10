@@ -517,6 +517,7 @@ mod tests {
     /// so does the drift between the two that made the id necessary.
     fn draft_of(tool: &str, args: Value) -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

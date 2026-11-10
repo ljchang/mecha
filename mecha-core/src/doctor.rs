@@ -3804,6 +3804,7 @@ mod tests {
 
     fn pending_item(home: &Path, id: &str, created_at: &str, error: Option<&str>) {
         let item = OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

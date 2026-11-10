@@ -35,7 +35,7 @@ impl ActionGroup {
     pub fn supported(self) -> bool {
         matches!(
             self,
-            Self::Mailbox | Self::PrivateRecord | Self::Report | Self::Board
+            Self::Mailbox | Self::PrivateRecord | Self::Report | Self::Board | Self::FixedWords
         )
     }
 }
@@ -236,6 +236,17 @@ impl RuleDefinition {
                 "duplicate action in effect"
             );
         }
+        // Two replies would stage two drafts to one sender for one message,
+        // which no rule means (review of #856); a reply beside a forward or
+        // a send is §4.3's one rule answering through its slot.
+        ensure!(
+            rule.actions
+                .iter()
+                .filter(|a| a.group() == ActionGroup::FixedWords)
+                .count()
+                <= 1,
+            "a rule replies at most once per message; keep one reply"
+        );
         Ok(rule)
     }
 
@@ -293,6 +304,9 @@ pub struct LoadedRule {
     pub directory: PathBuf,
     pub files: BTreeMap<String, Vec<u8>>,
     pub approval_digest: ApprovalDigest,
+    /// Why the reply's template was refused, for a rule found on disk with
+    /// one; install and edit refuse it outright. Its reply is held.
+    pub template_refused: Option<String>,
 }
 
 /// Empty means absent, not a version supplied by the reading build.

@@ -4666,6 +4666,16 @@ reader cannot prove absence and did not surface the header (the 2026-11-06
 ruling's Unknown); it is never folded into `matched_rows`, so "matched
 nothing" and "could not see the header" read differently.
 Partial would-have rows remain visible alongside a failed account.
+A reply action meets §5.4's message-only refusals here as in the live pass
+(`engine::message_reply_refusal`, one function for both): a refused reply is
+a `skipped` row reading `test: skipped: <guard>`, counted in `refused_rows`
+and never in `would_have_rows`, so the preview the owner reads before raising
+template replies out of shadow is the rate the live pass would reply at. The
+per-sender week alone is not applied, because it reads the ledger and the
+test writes none. "A conversation you have joined" needs the thread, which
+one message cannot show, so a reply rule's match reads its thread
+(`preview_reads_thread`) and the owner's own messages in it decide the
+guard as they do live; every other message is previewed from itself.
 
 **Edits and corrections cannot restore permission.** `RuleStore::edit`
 parses first, validates a private candidate snapshot with existing bundled
@@ -4885,7 +4895,31 @@ for the rules alone when a rule is eligible (owner ruling 2026-11-07), keeping
 its `ignore`. Admission (`RuleStore::admit_locked`) refuses an install, edit
 or raise that would add entries past the cap; lowerings are never checked.
 A description rule's Mailbox group is capped at `propose` when it contains
-`trash`, and its outbound groups at `shadow` until P4b-2.
+`trash`. Outbound groups are no longer held by rule kind: Fixed words is
+capped at `propose` for every rule, and the other outbound groups stay at
+`shadow` because they are not yet `supported()`.
+
+**A rule's template reply is staged, never sent, in P4b-2a.** The Fixed words
+group is supported up to `propose`. `mail_rules::send` fills the closed
+slots and applies §5.4's refusals in every non-off mode, shadow included;
+the per-sender week reads the ledger. At dispatch the engine renders the
+template and calls `Mailbox::stage_reply`, which the mail binary implements
+as `OutboxStore::stage_by_harness_quoting_mail` of the routed `mail_reply`
+tool with `from_only: true` — armed, because the slots carry the sender's
+words and a harness-authored draft is otherwise stamped clean; the `staged` row keeps `outbox_item`, and every pass
+begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
+`rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
+a model may also set: the message's `From` alone, never reply-all. On
+Graph it is not `/reply` with `toRecipients`, which Microsoft documents as
+*adding* a recipient beside the `replyTo` the endpoint follows: it is a
+`createReply` draft, its To replaced and Cc/Bcc cleared by `PATCH`, the
+recipients read back and the draft sent only when they are exactly that one
+address (deleted otherwise) — the artifact asked, not the request we wrote.
+The staged call pins `expect_from` to the address its review shows, and
+`mail_reply` refuses when the message its `message_id` resolves to is from
+anyone else: the selector is the sender-written Message-ID, so the approval
+is checked against the recipient, never the selector. A staged reply carries `OutboxItem::answering` (the address and subject),
+because no drafting session exists for the review's source join to read.
 
 **A description rule's task is decided by a pass with no learned rules in
 it (P4b-1).** `mail_triage::confirm` asks the candidates' descriptions alone,
