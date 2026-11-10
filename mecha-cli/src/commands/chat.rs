@@ -24,16 +24,36 @@ pub struct Args {
     #[cfg(feature = "memory-prototype")]
     #[arg(long, value_name = "REQUEST_JSON", conflicts_with = "no_session")]
     pub episodic_memory: Option<std::path::PathBuf>,
+
+    /// Admit selected read-only tools from this owner-configured graph server.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        requires_all = ["episodic_memory", "dynamic_goals"],
+        conflicts_with = "no_mcp"
+    )]
+    pub memory_graph_server: Option<String>,
 }
 
 #[cfg(feature = "memory-prototype")]
-pub(crate) enum MemoryPreparation {
+pub(crate) struct MemoryPreparation {
+    state: MemoryState,
+    graph: Option<PreparedMemoryGraph>,
+}
+#[cfg(feature = "memory-prototype")]
+enum MemoryState {
     Fresh(mecha_core::memory_session::SessionMemory),
     Resumed(Box<mecha_core::memory_session::chat::ChatMemory>),
 }
+#[cfg(feature = "memory-prototype")]
+struct PreparedMemoryGraph {
+    tools: Box<setup::PreparedTools>,
+    surface: mecha_core::memory_session::surface::ChatGraphSurface,
+}
 /// Runs in main before router observation or provider setup.
 #[cfg(feature = "memory-prototype")]
-pub(crate) fn preflight_memory(
+pub(crate) async fn preflight_memory(
     global: &mut GlobalOpts,
     args: &Args,
 ) -> Result<Option<MemoryPreparation>> {
@@ -48,20 +68,131 @@ pub(crate) fn preflight_memory(
         global.goal.is_none(),
         "chat memory uses owner context, not --goal"
     );
-    let memory = super::memory_profile::open_profile(global, path)?;
-    if let Some(id) = &args.resume {
+    let profile = super::memory_profile::open_chat_profile(
+        global,
+        path,
+        args.memory_graph_server.as_deref(),
+    )?;
+    let state = if let Some(id) = &args.resume {
         let path = Session::find(&Session::default_dir()?, id)?;
         let t = Session::read(&path)?;
         let session = Session { meta: t.meta, path };
-        Ok(Some(MemoryPreparation::Resumed(Box::new(
-            memory.attach_chat(
-                &session,
-                mecha_core::memory_session::chat::ChatAttachMode::Resume,
-            )?,
-        ))))
+        let mode = mecha_core::memory_session::chat::ChatAttachMode::Resume;
+        let chat = if profile.graph.is_some() {
+            profile
+                .memory
+                .attach_chat_with_graph(&session, mode, None)?
+        } else {
+            profile.memory.attach_chat(&session, mode)?
+        };
+        MemoryState::Resumed(Box::new(chat))
     } else {
-        Ok(Some(MemoryPreparation::Fresh(memory)))
+        MemoryState::Fresh(profile.memory)
+    };
+    let graph = if let Some(selection) = profile.graph {
+        let opts = GlobalOpts {
+            surface: Some(mecha_core::session::SessionKind::Chat),
+            ..global.clone()
+        };
+        let staged = setup::prepare_tools_for_memory_graph(
+            &opts,
+            true,
+            &selection.server,
+            &selection.remote_names,
+        )
+        .await?;
+        super::memory_profile::validate_memory_config_with_graph(
+            &opts,
+            &staged.tools.config,
+            &selection.local_names,
+        )?;
+        let local_names: Vec<_> = opts
+            .tools
+            .iter()
+            .filter(|name| !selection.local_names.contains(name))
+            .cloned()
+            .collect();
+        match &state {
+            MemoryState::Fresh(memory) => {
+                memory.validate_surface(&local_names, &staged.tools.workspace, &[])?;
+            }
+            MemoryState::Resumed(memory) => {
+                // Authenticate saved authority before spawning even the selected child.
+                let expected = memory
+                    .graph_surface()?
+                    .ok_or_else(|| anyhow::anyhow!("chat has no bound graph surface"))?;
+                let mut names = opts.tools.clone();
+                names.sort();
+                anyhow::ensure!(
+                    expected.server_name == selection.server.name
+                        && expected.launch_digest == staged.launch.launch_digest()
+                        && expected.tool_names() == names,
+                    "chat graph launch or selected tools changed"
+                );
+                memory.validate_surface(&names, &staged.tools.workspace, &[])?;
+            }
+        }
+        let (tools, inventory) = staged.connect().await?;
+        let surface = graph_surface(&selection.server.name, &local_names, &inventory)?;
+        surface.validate(&tools.workspace)?;
+        if let MemoryState::Resumed(memory) = &state {
+            memory.validate_graph_surface(&surface)?;
+        }
+        Some(PreparedMemoryGraph {
+            tools: Box::new(tools),
+            surface,
+        })
+    } else {
+        None
+    };
+    Ok(Some(MemoryPreparation { state, graph }))
+}
+
+#[cfg(feature = "memory-prototype")]
+fn graph_surface(
+    server: &str,
+    local_names: &[String],
+    inventory: &mecha_core::mcp::SelectedGraphTools,
+) -> Result<mecha_core::memory_session::surface::ChatGraphSurface> {
+    use mecha_core::memory_session::surface::{
+        ChatGraphSurface, GraphToolBinding, CHAT_GRAPH_SURFACE_VERSION,
+    };
+    let mut local_tools = local_names.to_vec();
+    local_tools.sort();
+    let mut graph_tools = Vec::new();
+    for listed in inventory.tools() {
+        let descriptor = listed.descriptor();
+        anyhow::ensure!(
+            descriptor.server_name == server,
+            "graph inventory origin changed"
+        );
+        graph_tools.push(GraphToolBinding {
+            local_name: descriptor.local_name.clone(),
+            remote_name: descriptor.remote_name.clone(),
+            schema_digest: descriptor.schema_digest.clone(),
+            description_digest: descriptor.description_digest.clone(),
+            read_only: descriptor.read_only,
+            private_data: descriptor.capabilities.private_data,
+            untrusted_input: descriptor.capabilities.untrusted_input,
+            egress: descriptor.capabilities.egress.as_str().into(),
+            destructive: descriptor.capabilities.destructive,
+            effect: descriptor
+                .effect
+                .ok_or_else(|| anyhow::anyhow!("graph effect missing"))?
+                .as_str()
+                .into(),
+            deferred: descriptor.deferred,
+            fixed_workspace: descriptor.fixed_workspace.clone(),
+        });
     }
+    graph_tools.sort_by(|a, b| a.local_name.cmp(&b.local_name));
+    Ok(ChatGraphSurface {
+        version: CHAT_GRAPH_SURFACE_VERSION.into(),
+        server_name: server.into(),
+        launch_digest: inventory.launch_digest().into(),
+        local_tools,
+        graph_tools,
+    })
 }
 #[cfg(feature = "memory-prototype")]
 fn report_memory(report: &mecha_core::memory_session::chat::ChatMemoryReport) {
@@ -87,6 +218,20 @@ pub async fn execute(
         !opts.dynamic_goals || interactive,
         "--dynamic-goals requires a local chat terminal"
     );
+    #[cfg(feature = "memory-prototype")]
+    let (memory_state, prepared_graph) = match memory_preparation {
+        Some(memory) => (Some(memory.state), memory.graph),
+        None => (None, None),
+    };
+    #[cfg(feature = "memory-prototype")]
+    let (mut prepared, graph_surface) = match prepared_graph {
+        Some(graph) => (
+            setup::finish_prepared_tools(*graph.tools, &opts).await?,
+            Some(graph.surface),
+        ),
+        None => (setup::prepare(&opts, interactive).await?, None),
+    };
+    #[cfg(not(feature = "memory-prototype"))]
     let mut prepared = setup::prepare(&opts, interactive).await?;
     let session_dir = Session::default_dir()?;
 
@@ -95,9 +240,9 @@ pub async fn execute(
     let mut convo = Conversation::new();
     let mut session = None;
     #[cfg(feature = "memory-prototype")]
-    let (mut chat_memory, mut fresh_memory) = match memory_preparation {
-        Some(MemoryPreparation::Fresh(memory)) => (None, Some(memory)),
-        Some(MemoryPreparation::Resumed(chat)) => (Some(*chat), None),
+    let (mut chat_memory, mut fresh_memory) = match memory_state {
+        Some(MemoryState::Fresh(memory)) => (None, Some(memory)),
+        Some(MemoryState::Resumed(chat)) => (Some(*chat), None),
         None => (None, None),
     };
     #[cfg(feature = "memory-prototype")]
@@ -167,14 +312,31 @@ pub async fn execute(
 
     #[cfg(feature = "memory-prototype")]
     if let Some(memory) = fresh_memory.take() {
-        chat_memory = Some(memory.attach_chat(
-            session.as_ref().expect("recording required"),
-            mecha_core::memory_session::chat::ChatAttachMode::Create,
-        )?);
+        let session = session.as_ref().expect("recording required");
+        let mode = mecha_core::memory_session::chat::ChatAttachMode::Create;
+        chat_memory = Some(if let Some(surface) = &graph_surface {
+            memory.attach_chat_with_graph(session, mode, Some(surface.clone()))?
+        } else {
+            memory.attach_chat(session, mode)?
+        });
     }
     #[cfg(feature = "memory-prototype")]
     if let Some(memory) = &chat_memory {
-        super::memory_profile::validate_memory_config(&opts, &prepared.config)?;
+        let graph_names: Vec<_> = graph_surface.as_ref().map_or_else(Vec::new, |surface| {
+            surface
+                .graph_tools
+                .iter()
+                .map(|tool| tool.local_name.clone())
+                .collect()
+        });
+        super::memory_profile::validate_memory_config_with_graph(
+            &opts,
+            &prepared.config,
+            &graph_names,
+        )?;
+        if let Some(surface) = &graph_surface {
+            memory.validate_graph_surface(surface)?;
+        }
         let cx = prepared.agent.context();
         anyhow::ensure!(
             cx.hooks.is_empty(),
@@ -594,4 +756,57 @@ fn handle_command(
         other => println!("  unknown command /{other} — try /help"),
     }
     Flow::Continue
+}
+
+#[cfg(all(test, feature = "memory-prototype"))]
+mod graph_memory_cli_tests {
+    use clap::Parser;
+
+    #[test]
+    fn graph_memory_selection_is_explicit_chat_only_and_requires_both_opt_ins() {
+        let valid = [
+            "mecha",
+            "chat",
+            "--dynamic-goals",
+            "--episodic-memory",
+            "authored-request.json",
+            "--memory-graph-server",
+            "graph-fixture",
+        ];
+        assert!(crate::Cli::try_parse_from(valid).is_ok());
+        for invalid in [
+            vec!["mecha", "chat", "--memory-graph-server", "graph-fixture"],
+            vec![
+                "mecha",
+                "chat",
+                "--episodic-memory",
+                "authored-request.json",
+                "--memory-graph-server",
+                "graph-fixture",
+            ],
+            vec![
+                "mecha",
+                "chat",
+                "--dynamic-goals",
+                "--memory-graph-server",
+                "graph-fixture",
+            ],
+            valid.into_iter().chain(["--no-mcp"]).collect(),
+            valid.into_iter().chain(["--no-session"]).collect(),
+            vec![
+                "mecha",
+                "run",
+                "--episodic-memory",
+                "authored-request.json",
+                "--memory-graph-server",
+                "graph-fixture",
+                "authored task",
+            ],
+        ] {
+            assert!(
+                crate::Cli::try_parse_from(&invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
 }

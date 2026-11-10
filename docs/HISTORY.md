@@ -14,6 +14,79 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Selected graph observations in encrypted CLI chat (2026-11-10, prototype)
+
+`chat::preflight_memory` now authenticates the existing attachment/lease and
+selected launch before starting one graph MCP, then compares actual inventory
+before router/provider preparation. `PreparedSelectedGraph` freezes the effective
+command/environment; `ListedMcpTool` carries construction-time origin, schema,
+description and effective policy rather than inferring them from a name.
+`SelectedGraphPreparation` reuses ordinary local setup while preventing unrelated
+MCP attachment. Only explicitly selected graph readers with supported effects
+enter the immutable surface. This is launch-configuration binding, not executable
+attestation; selected Docker launches refuse unresolved inside-image commands,
+and the existing Seatbelt policy is unchanged.
+
+A graph-specific bwrap regression caught a gap after the generic backend suite
+passed: explicit MCP environment entries disappeared at the inner `--clearenv`.
+The actual child returned null instead of the authored configured value. The
+selected-only constructor now freezes an allowlisted environment and absolute
+launcher for both preflight and server execution, without environment values in
+argv. Independent review caught the first correction still using ordinary
+preflight, plus loader-control variables moving ahead of confinement; that
+candidate was held before qualification. The corrected path rejects loader
+controls and unqualified scoped limits before spawn, and leaves ordinary bwrap
+and Landlock enforcement unchanged. CI now runs the selected-MCP target with
+backend skips disabled, rather than relying only on generic backend coverage.
+
+`ChatGraphSurface` is part of `ordinary-chat-memory-v2` private authority. Existing
+V1 wire bytes remain unchanged, and turns/seals bind the original attachment
+bytes. The observation protocol and SQL schema are unchanged. V2 capture checks
+exact native provenance for every result and cumulative taint, keeping host
+refusals separate from external failures. Historical snapshots preserve source
+pointers and receipts without claiming canonical owner-graph revisions, deletion
+synchronization or factual truth. Runtime-free retry and forget reuse existing
+sealed authority. Unauthenticated reports now use an explicit unavailable tag;
+that tag is never admitted as an attachment or marker.
+
+The actual authored graph CLI workflow completed ten provider requests, retained
+four turns including three exact graph result snapshots and an external failed
+query, and visibly withheld its oversized-result turn. Thirteen invalid starts
+refused before inference or transcript mutation; an unrelated configured server
+never started. Changed-goal and resumed recall returned exact text, references
+and source locators. The same binary passed the existing local-chat workflow,
+now including a fifth startup refusal for live memory replay, and authenticated
+web-goal workflow. No new model comparison or private graph call was run.
+
+The first graph smoke remains a retrieval-quality failure: a generic query
+ranked the three query invocations above their longer results. Source authority
+was intact and all snapshots were retained. The mechanics fixture added a
+result-specific term while retaining its exact-source assertions; it did not
+change Rust retrieval, raise limits or establish general ranking benefit.
+This case belongs in subsequent retrieval evaluation, not a concealed favorable
+rerun of a semantic benchmark.
+
+Repository review also identified two narrow boundary defects. `replay` now
+refuses Live divergence from a memory-marked transcript both before router setup
+and on its execution read; historical Stop/Error replay stays available.
+`Agent::run_scoped` now checks cancellation after awaited compaction before
+appending a budget advisory for an unsent request. Both failures were reproduced
+with compiling tests before correction. Cross-reviews of the MCP, CLI and memory
+authority changes found no further major or medium issue in those scoped paths.
+
+
+Final graph runtime qualification passed both all-target builds, formatting and
+strict all-target/all-feature Clippy: 6,485 default / 7,307 memory-enabled workspace
+tests, zero failures and 25 / 30 ignored. The expanded required-backend set passed
+49/49 without skips, including the actual selected-bwrap path; standalone memory
+passed 404/404. The three rebuilt authored workflows passed on binary
+`d41bd2e67f57d150b2582318c1294d2bd90c338d954ad8db7f9d295b592b3b9c`.
+The full frozen source manifest was unchanged across the gates. Selected
+Landlock remains source-supported, not selected-live-qualified. Raw qualification
+and the preserved generic-query failure are local-only under
+`results/memory-graph-cli-20261110`; no logs or conversations are tracked.
+
+
 ### Daily-use memory prerequisites (2026-11-10, opt-in prototype)
 
 `serve::execute` now passes the explicit dynamic-goals boolean to

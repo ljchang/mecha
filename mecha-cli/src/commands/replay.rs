@@ -73,6 +73,26 @@ pub struct Args {
     pub json: bool,
 }
 
+/// Refuse executable continuation of a memory-marked recording before router
+/// observation or provider/tool setup. Historical Stop/Error tape replay stays
+/// available without turning its recorded evidence into current authority.
+pub(crate) fn preflight_memory(args: &Args) -> Result<()> {
+    if args.persona.is_some() || !args.judge.is_empty() || args.on_divergence != "live" {
+        return Ok(());
+    }
+    let path = resolve_session(args.session.as_deref().unwrap_or_default())?;
+    validate_memory_replay(&Session::read(&path)?, OnDivergence::Live)
+}
+
+fn validate_memory_replay(
+    transcript: &mecha_core::session::Transcript,
+    mode: OnDivergence,
+) -> Result<()> {
+    anyhow::ensure!(transcript.chat_memory.is_none() || !mode.executes(),
+        "memory-attached chat cannot replay with live divergence; use historical --on-divergence stop or error, or resume through its authenticated chat attachment");
+    Ok(())
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     if !args.judge.is_empty() {
         return super::replay_judge::execute(global, &args.judge, args.sheet.as_deref(), args.json)
@@ -92,6 +112,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // --- load the recording ---
     let path = resolve_session(&session)?;
     let transcript = Session::read(&path)?;
+    // Check this exact read as well: the file may have changed after main's
+    // startup preflight, and extraction must not discard its authority marker.
+    validate_memory_replay(&transcript, mode)?;
     let trajectory = extract_transcript(&transcript)?;
     let delivered = transcript
         .episode
@@ -471,6 +494,97 @@ mod tests {
     use mecha_core::outbox::{OutboxRoute, OutboxStore};
     use mecha_core::tool::{Tool, ToolCtx, ToolOutput};
     use serde_json::{json, Value};
+
+    fn memory_replay_args(path: &std::path::Path, mode: &str) -> Args {
+        Args {
+            session: Some(path.to_string_lossy().into_owned()),
+            persona: None,
+            sample: Default::default(),
+            judge: vec![],
+            sheet: None,
+            on_divergence: mode.into(),
+            json: false,
+        }
+    }
+
+    fn memory_replay_fixture(protocol: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("memory-replay-{}.jsonl", uuid::Uuid::new_v4()));
+        let header = json!({"record":"meta","id":"authored-replay","created_at":"2026-01-01T00:00:00Z","provider":"fixture","model":"fixture","workspace":"/tmp"});
+        let marker = json!({"record":"chat_memory","marker":{"protocol":protocol,"conversation_id":"authored-replay","authority":"authored-authority","attachment":"a".repeat(64)}});
+        std::fs::write(&path, format!("{header}\n{marker}\n")).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn live_memory_replay_refuses_before_configuration_or_runtime_setup() {
+        for protocol in ["ordinary-chat-memory-v1", "ordinary-chat-memory-v2"] {
+            let path = memory_replay_fixture(protocol);
+            let before = std::fs::read(&path).unwrap();
+            let result = execute(&GlobalOpts::default(), memory_replay_args(&path, "live")).await;
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("memory-attached"), "{protocol}: {error}");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn memory_replay_preflight_preserves_tape_modes_and_refuses_live_markers() {
+        for protocol in ["ordinary-chat-memory-v1", "ordinary-chat-memory-v2"] {
+            let path = memory_replay_fixture(protocol);
+            let before = std::fs::read(&path).unwrap();
+            for mode in ["stop", "error"] {
+                preflight_memory(&memory_replay_args(&path, mode)).unwrap();
+                let transcript = Session::read(&path).unwrap();
+                validate_memory_replay(
+                    &transcript,
+                    if mode == "stop" {
+                        OnDivergence::Stop
+                    } else {
+                        OnDivergence::Error
+                    },
+                )
+                .unwrap();
+            }
+            assert!(preflight_memory(&memory_replay_args(&path, "live"))
+                .unwrap_err()
+                .to_string()
+                .contains("memory-attached"));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn memory_replay_preflight_leaves_other_replay_routes_untouched() {
+        let path = memory_replay_fixture("ordinary-chat-memory-v1");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.lines().next().unwrap().to_owned() + "\n").unwrap();
+        preflight_memory(&memory_replay_args(&path, "live")).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        // No transcript resolution for either independently routed command.
+        let mut args = memory_replay_args(&path, "live");
+        args.persona = Some("authored-missing-persona".into());
+        preflight_memory(&args).unwrap();
+        args.persona = None;
+        args.judge.push(path);
+        preflight_memory(&args).unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_replay_rechecks_the_transcript_after_startup_preflight() {
+        let path = memory_replay_fixture("ordinary-chat-memory-v2");
+        let marked = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, marked.lines().next().unwrap().to_owned() + "\n").unwrap();
+        let args = memory_replay_args(&path, "live");
+        preflight_memory(&args).unwrap();
+        std::fs::write(&path, &marked).unwrap();
+        let error = execute(&GlobalOpts::default(), args).await.unwrap_err();
+        assert!(error.to_string().contains("memory-attached"), "{error:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), marked);
+        std::fs::remove_file(path).unwrap();
+    }
 
     struct ReadNamed(&'static str);
     #[async_trait::async_trait]

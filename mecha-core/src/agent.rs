@@ -3873,6 +3873,11 @@ impl Agent {
                 );
                 return Ok(outcome);
             }
+            // Compaction awaited above and may have been interrupted. Do not
+            // mutate the transcript with advice for a request that cannot run.
+            if cx.cancelled() {
+                continue;
+            }
             // Every existing stop has won before this advisory is considered.
             // Count the request about to be made, using the authoritative run
             // override rather than the context-window forecast.
@@ -3888,9 +3893,6 @@ impl Agent {
                     .into(),
                 );
                 budget_notice_sent = true;
-            }
-            if cx.cancelled() {
-                continue;
             }
             turns += 1;
             emit(&events, AgentEvent::TurnStart { turn: turns });

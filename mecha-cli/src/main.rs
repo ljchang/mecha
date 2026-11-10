@@ -976,7 +976,7 @@ async fn dispatch() -> Result<()> {
     };
     #[cfg(feature = "memory-prototype")]
     let chat_memory = match &cli.command {
-        Command::Chat(args) => commands::chat::preflight_memory(&mut cli.global, args)?,
+        Command::Chat(args) => commands::chat::preflight_memory(&mut cli.global, args).await?,
         _ => None,
     };
     // Refuse unsupported memory resumes before router/provider observations.
@@ -1001,6 +1001,9 @@ async fn dispatch() -> Result<()> {
         let path =
             mecha_core::session::Session::find(&mecha_core::session::Session::default_dir()?, id)?;
         mecha_core::session::Session::load(&path)?;
+    }
+    if let Command::Replay(args) = &cli.command {
+        commands::replay::preflight_memory(args)?;
     }
     // A driven run reads no project layer (D1b): a pinned historical tree's
     // `mecha.toml` is neither the owner's nor the run's to choose, and it

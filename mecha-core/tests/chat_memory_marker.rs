@@ -44,3 +44,20 @@ fn duplicate_marker_cannot_rebind_a_conversation() {
     let text = format!("{header}\n{marker}\n{marker}\n");
     assert!(Session::parse(std::path::Path::new("authored"), &text).is_err());
 }
+
+#[test]
+fn graph_memory_marker_is_recognized_but_ordinary_loader_refuses() {
+    let marker = serde_json::json!({"record":"chat_memory","marker":{"protocol":"ordinary-chat-memory-v2","conversation_id":"authored","authority":"authority","attachment":"a".repeat(64)}});
+    let header = serde_json::json!({"record":"meta","id":"authored","created_at":"2026-01-01T00:00:00Z","provider":"test","model":"test","workspace":"/tmp"});
+    let text = format!("{header}\n{marker}\n");
+    let path = std::env::temp_dir().join(format!("graph-marker-{}.jsonl", uuid::Uuid::new_v4()));
+    std::fs::write(&path, &text).unwrap();
+    let transcript = Session::parse(&path, &text)
+        .expect("recognized V2 needs its authenticated attachment, not a parser failure");
+    assert_eq!(
+        transcript.chat_memory.unwrap().protocol,
+        "ordinary-chat-memory-v2"
+    );
+    assert!(Session::load(&path).is_err());
+    std::fs::remove_file(path).unwrap();
+}

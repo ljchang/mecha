@@ -1129,3 +1129,869 @@ fn oversized_invocation_does_not_relax_result_passage_bound() {
         .join(format!("{}.chat-seal", report.run_id))
         .exists());
 }
+
+fn authored_graph_surface(f: &Fixture) -> mecha_core::memory_session::surface::ChatGraphSurface {
+    use mecha_core::memory_session::surface::{ChatGraphSurface, GraphToolBinding};
+    ChatGraphSurface {
+        version: "ordinary-chat-graph-surface-v1".into(),
+        server_name: "authored".into(),
+        launch_digest: "a".repeat(64),
+        local_tools: vec!["fs_read".into(), "goal_context".into()],
+        graph_tools: vec![GraphToolBinding {
+            local_name: "authored__kg_search".into(),
+            remote_name: "kg_search".into(),
+            schema_digest: "b".repeat(64),
+            description_digest: "c".repeat(64),
+            read_only: true,
+            private_data: true,
+            untrusted_input: true,
+            egress: "none".into(),
+            destructive: false,
+            effect: "read_that_records".into(),
+            deferred: false,
+            fixed_workspace: f.workspace.clone(),
+        }],
+    }
+}
+
+#[test]
+fn graph_attachment_retains_and_recovers_without_live_runtime() {
+    let f = Fixture::new();
+    let s = f.session();
+    let graph = authored_graph_surface(&f);
+    let mut chat = f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(graph))
+        .unwrap();
+    s.append(&Record::Config(RunConfig {
+        workspace: f.workspace.clone(),
+        tools: vec![
+            "authored__kg_search".into(),
+            "fs_read".into(),
+            "goal_context".into(),
+        ],
+        ..Default::default()
+    }))
+    .unwrap();
+    let report = f.turn(
+        &mut chat,
+        &s,
+        "Keep authored graph snapshots",
+        "Keep records",
+    );
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    assert_eq!(report.protocol, "ordinary-chat-memory-v2");
+    drop(chat);
+    assert!(f.memory().attach_chat(&s, ChatAttachMode::Resume).is_err());
+    let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+    let retried = recovery.retry_chat(&report.run_id);
+    assert_eq!(retried.protocol, "ordinary-chat-memory-v2");
+    assert_eq!(retried.receipt, report.receipt);
+    assert!(f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+        .is_ok());
+}
+
+fn graph_config(f: &Fixture, s: &Session) {
+    s.append(&Record::Config(RunConfig {
+        workspace: f.workspace.clone(),
+        tools: vec![
+            "authored__kg_search".into(),
+            "fs_read".into(),
+            "goal_context".into(),
+        ],
+        ..Default::default()
+    }))
+    .unwrap();
+}
+
+fn graph_result_turn(
+    chat: &mut ChatMemory,
+    s: &Session,
+    name: &str,
+    content: &str,
+    provenance: (Option<bool>, bool),
+    is_error: bool,
+    untrusted: bool,
+) -> mecha_core::memory_session::chat::ChatMemoryTurn {
+    let (external, extra) = provenance;
+    let owner =
+        OwnerInput::new(OwnerSource::CliChat, "Find the authored graph label".into()).unwrap();
+    let turn = chat.begin_turn(s, &owner).unwrap();
+    s.append(&Record::Message(Message::user(owner.text())))
+        .unwrap();
+    let mut state = recorded_context(s);
+    let version = state
+        .transition(CharterSnapshot::disabled(), Some(owner))
+        .unwrap()
+        .unwrap();
+    let t = Session::read(&s.path).unwrap();
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &t.convo.messages,
+        Some(version.prompt_block()),
+        true,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&t.convo.messages)
+    .unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![version.clone()],
+    })
+    .unwrap();
+    s.append(&Record::Message(Message::assistant(vec![Block::ToolUse {
+        id: "graph-call".into(),
+        name: name.into(),
+        input: serde_json::json!({"query":"authored label"}),
+    }])))
+    .unwrap();
+    let mut result = Message::user("");
+    result.content = vec![Block::ToolResult {
+        tool_use_id: "graph-call".into(),
+        content: content.into(),
+        is_error,
+    }];
+    if let Some(external) = external {
+        result.tool_provenance.insert("graph-call".into(), external);
+    }
+    if extra {
+        result
+            .tool_provenance
+            .insert("unrelated-call".into(), false);
+    }
+    s.append(&Record::Message(result)).unwrap();
+    let t = Session::read(&s.path).unwrap();
+    let state = recorded_context(s);
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &t.convo.messages,
+        Some(version.prompt_block()),
+        false,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&t.convo.messages)
+    .unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![],
+    })
+    .unwrap();
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "The observed graph label was coral.",
+    )])))
+    .unwrap();
+    s.append(&Record::Outcome(RunStats {
+        stop_cause: Some(StopCause::Completed),
+        turns: 2,
+        context_overflows: Some(0),
+        ..Default::default()
+    }))
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted,
+    }))
+    .unwrap();
+    turn
+}
+
+#[test]
+fn graph_results_retain_exact_native_snapshot_pointer_input_digest_and_failed_receipt() {
+    for (external, is_error, content) in [
+        (true, false, "{\"authored_label\":\"coral\"}"),
+        (true, true, "MCP call failed: authored transport failure"),
+        (false, true, "Blocked by an authored harness guard"),
+    ] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        graph_config(&f, &s);
+        let turn = graph_result_turn(
+            &mut chat,
+            &s,
+            "authored__kg_search",
+            content,
+            (Some(external), false),
+            is_error,
+            external,
+        );
+        let report = chat.finish_turn(&turn);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        assert_eq!(
+            serde_json::to_value(report.semantic_assessment).unwrap(),
+            "not_evaluated"
+        );
+        let seal: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                f.request
+                    .authority
+                    .join(format!("{}.chat-seal", report.run_id)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let originals = seal["payload"]["originals"].as_array().unwrap();
+        let result = originals
+            .iter()
+            .find(|p| p["kind"] == "ToolResult")
+            .unwrap();
+        assert_eq!(result["text"], content);
+        assert_eq!(result["pointer"], "/content/0/content");
+        let line = result["line"].as_u64().unwrap() as usize;
+        let native: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(&s.path)
+                .unwrap()
+                .lines()
+                .nth(line - 1)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(native["content"][0]["content"], content);
+        assert_eq!(
+            result["source"]["id"],
+            format!("{}:{line}:/content/0/content", s.meta.id)
+        );
+        let action = originals
+            .iter()
+            .find(|p| p["kind"] == "ActionInvocation")
+            .unwrap();
+        let action: serde_json::Value =
+            serde_json::from_str(action["text"].as_str().unwrap()).unwrap();
+        assert_eq!(action["call_id"], "graph-call");
+        assert_eq!(action["tool_name"], "authored__kg_search");
+        assert_eq!(
+            action["input"],
+            serde_json::json!({"query":"authored label"})
+        );
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            action["input_digest"],
+            Sha256::digest(br#"{"query":"authored label"}"#)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        assert_eq!(
+            seal["payload"]["receipts"][0]["status"],
+            if is_error { "Failed" } else { "Succeeded" }
+        );
+    }
+}
+
+#[test]
+fn graph_capture_refuses_missing_extra_or_false_success_provenance_and_unadmitted_calls() {
+    for (name, external, is_error, untrusted, extra) in [
+        ("authored__kg_search", None, false, true, false),
+        ("authored__kg_search", Some(true), false, true, true),
+        ("authored__kg_search", Some(true), false, false, false),
+        ("authored__kg_search", Some(false), false, true, false),
+        ("other__kg_search", Some(true), false, true, false),
+        ("fs_write", Some(false), false, true, false),
+    ] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        graph_config(&f, &s);
+        let turn = graph_result_turn(
+            &mut chat,
+            &s,
+            name,
+            "authored result",
+            (external, extra),
+            is_error,
+            untrusted,
+        );
+        assert_eq!(
+            chat.finish_turn(&turn).status,
+            SessionMemoryStatus::Unavailable,
+            "{name} {external:?} {extra}"
+        );
+        assert!(!f
+            .request
+            .authority
+            .join(format!("{}.chat-seal", turn.run_id()))
+            .exists());
+    }
+}
+
+#[test]
+fn graph_empty_and_oversized_results_withhold_whole_turn_and_prevent_continuation() {
+    for content in [String::new(), "x".repeat(4097)] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        graph_config(&f, &s);
+        let turn = graph_result_turn(
+            &mut chat,
+            &s,
+            "authored__kg_search",
+            &content,
+            (Some(true), false),
+            false,
+            true,
+        );
+        assert_eq!(
+            chat.finish_turn(&turn).status,
+            SessionMemoryStatus::Unavailable
+        );
+        assert!(chat
+            .begin_turn(
+                &s,
+                &OwnerInput::new(OwnerSource::CliChat, "Next".into()).unwrap()
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn graph_attachment_rejects_unsafe_ambiguous_and_unknown_descriptors_before_writing() {
+    for mutation in 0..15 {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut surface = authored_graph_surface(&f);
+        match mutation {
+            0 => surface.version = "future".into(),
+            1 => surface.graph_tools.clear(),
+            2 => surface.graph_tools.push(surface.graph_tools[0].clone()),
+            3 => surface.local_tools.push("goal_context".into()),
+            4 => surface.graph_tools[0].effect = "read".into(),
+            5 => surface.graph_tools[0].read_only = false,
+            6 => surface.graph_tools[0].private_data = false,
+            7 => surface.graph_tools[0].untrusted_input = false,
+            8 => surface.graph_tools[0].egress = "chosen".into(),
+            9 => surface.graph_tools[0].destructive = true,
+            10 => surface.graph_tools[0].deferred = true,
+            11 => surface.graph_tools[0].fixed_workspace = f.root.clone(),
+            12 => surface.graph_tools[0].remote_name = "kg_write".into(),
+            13 => surface.graph_tools[0].schema_digest = "unknown".into(),
+            14 => surface.launch_digest = "A".repeat(64),
+            _ => unreachable!(),
+        }
+        let before = fs::read(&s.path).unwrap();
+        assert!(
+            f.memory()
+                .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(surface))
+                .is_err(),
+            "mutation {mutation}"
+        );
+        assert_eq!(fs::read(&s.path).unwrap(), before);
+        assert!(!fs::read_dir(&f.request.authority).unwrap().any(|p| p
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|e| e == "chat")));
+    }
+}
+
+#[test]
+fn graph_source_and_surface_mutation_invalidate_sealed_retry_without_runtime() {
+    for surface_change in [false, true] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        graph_config(&f, &s);
+        let turn = graph_result_turn(
+            &mut chat,
+            &s,
+            "authored__kg_search",
+            "Authored coral snapshot",
+            (Some(true), false),
+            false,
+            true,
+        );
+        let report = chat.finish_turn(&turn);
+        assert_eq!(report.status, SessionMemoryStatus::Retained);
+        drop(chat);
+        if surface_change {
+            let path = fs::read_dir(&f.request.authority)
+                .unwrap()
+                .map(|p| p.unwrap().path())
+                .find(|p| p.extension().is_some_and(|e| e == "chat"))
+                .unwrap();
+            let mut a: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            a["graph_surface"]["launch_digest"] = serde_json::json!("d".repeat(64));
+            fs::write(path, serde_json::to_vec(&a).unwrap()).unwrap();
+        } else {
+            let text = fs::read_to_string(&s.path).unwrap();
+            fs::write(
+                &s.path,
+                text.replace("Authored coral snapshot", "Authored black snapshot"),
+            )
+            .unwrap();
+        }
+        let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+        assert_eq!(
+            recovery.retry_chat(&report.run_id).status,
+            SessionMemoryStatus::Unavailable
+        );
+        assert!(f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+            .is_err());
+        if !surface_change {
+            assert!(recovery.forget_chat(&report.run_id).is_ok());
+        }
+    }
+}
+
+#[test]
+fn graph_retry_repairs_missing_admission_receipt_and_forget_withdraws_descendants() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+        .unwrap();
+    graph_config(&f, &s);
+    let first = f.turn(
+        &mut chat,
+        &s,
+        "Remember the authored graph scope",
+        "Keep records",
+    );
+    let second = f.turn(
+        &mut chat,
+        &s,
+        "Continue the authored graph scope",
+        "Keep records",
+    );
+    assert_eq!(first.status, SessionMemoryStatus::Retained);
+    assert_eq!(second.status, SessionMemoryStatus::Retained);
+    assert!(f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+        .is_err());
+    drop(chat);
+    fs::remove_file(
+        f.request
+            .authority
+            .join(format!("{}.chat-retained", second.run_id)),
+    )
+    .unwrap();
+    assert!(f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+        .is_err());
+    fs::remove_dir(&f.workspace).unwrap();
+    let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+    let retry = recovery.retry_chat(&second.run_id);
+    assert_eq!(retry.status, SessionMemoryStatus::Retained);
+    assert_eq!(retry.protocol, "ordinary-chat-memory-v2");
+    assert_eq!(retry.receipt, second.receipt);
+    recovery.forget_chat(&first.run_id).unwrap();
+    assert_eq!(
+        recovery.retry_chat(&second.run_id).status,
+        SessionMemoryStatus::Unavailable
+    );
+}
+
+#[test]
+fn graph_surface_authentication_detects_descriptor_drift_and_exact_config_membership() {
+    let f = Fixture::new();
+    let s = f.session();
+    let graph = authored_graph_surface(&f);
+    let chat = f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(graph.clone()))
+        .unwrap();
+    assert_eq!(chat.graph_surface().unwrap(), Some(graph.clone()));
+    chat.validate_graph_surface(&graph).unwrap();
+    assert!(chat
+        .validate_surface(
+            &["goal_context".into(), "authored__kg_search".into()],
+            &f.workspace,
+            &[]
+        )
+        .is_err());
+    chat.validate_surface(
+        &[
+            "goal_context".into(),
+            "authored__kg_search".into(),
+            "fs_read".into(),
+        ],
+        &f.workspace,
+        &[],
+    )
+    .unwrap();
+    for which in 0..4 {
+        let mut changed = graph.clone();
+        match which {
+            0 => changed.launch_digest = "d".repeat(64),
+            1 => changed.graph_tools[0].schema_digest = "d".repeat(64),
+            2 => changed.graph_tools[0].description_digest = "d".repeat(64),
+            3 => changed.server_name = "another-server".into(),
+            _ => unreachable!(),
+        }
+        assert!(chat.validate_graph_surface(&changed).is_err());
+    }
+    assert!(!graph.contains_tool("wrong__kg_search"));
+    assert!(graph.contains_tool("authored__kg_search"));
+    assert_eq!(
+        graph.tool_names(),
+        vec!["authored__kg_search", "fs_read", "goal_context"]
+    );
+    assert_ne!(graph.digest().unwrap(), {
+        let mut g = graph.clone();
+        g.launch_digest = "d".repeat(64);
+        g.digest().unwrap()
+    });
+}
+
+#[test]
+fn local_attachment_keeps_v1_bytes_and_refuses_graph_resume_door() {
+    let f = Fixture::new();
+    let s = f.session();
+    let chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    assert!(chat.graph_surface().unwrap().is_none());
+    drop(chat);
+    let path = fs::read_dir(&f.request.authority)
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "chat"))
+        .unwrap();
+    let bytes = fs::read(&path).unwrap();
+    let a: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(a["protocol"], "ordinary-chat-memory-v1");
+    assert!(a.get("graph_surface").is_none());
+    assert_eq!(a.as_object().unwrap().len(), 11);
+    assert!(f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+        .is_err());
+    assert!(f.memory().attach_chat(&s, ChatAttachMode::Resume).is_ok());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn graph_attachment_unknown_missing_and_duplicate_wire_authority_refuse() {
+    for mutation in 0..5 {
+        let f = Fixture::new();
+        let s = f.session();
+        let chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        drop(chat);
+        let path = fs::read_dir(&f.request.authority)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "chat"))
+            .unwrap();
+        let mut a: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        match mutation {
+            0 => {
+                a.as_object_mut().unwrap().remove("graph_surface");
+            }
+            1 => a["protocol"] = serde_json::json!("ordinary-chat-memory-v3"),
+            2 => a["graph_surface"]["unknown_authority"] = serde_json::json!(true),
+            3 => {
+                a["graph_surface"]["graph_tools"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("private_data");
+            }
+            4 => {}
+            _ => unreachable!(),
+        }
+        let bytes = if mutation == 4 {
+            let mut text = serde_json::to_string(&a).unwrap();
+            text.insert_str(1, "\"protocol\":\"ordinary-chat-memory-v2\",");
+            text.into_bytes()
+        } else {
+            serde_json::to_vec(&a).unwrap()
+        };
+        fs::write(path, bytes).unwrap();
+        assert!(
+            f.memory()
+                .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+                .is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[test]
+fn graph_pending_sealed_capture_retries_with_no_server_or_workspace() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+        .unwrap();
+    graph_config(&f, &s);
+    let turn = graph_result_turn(
+        &mut chat,
+        &s,
+        "authored__kg_search",
+        "Authored coral snapshot",
+        (Some(true), false),
+        false,
+        true,
+    );
+    // A receipt write cannot complete. Recovery must use the existing sealed
+    // native result, not invoke the graph or regenerate any transcript text.
+    let receipt_path = f
+        .request
+        .authority
+        .join(format!("{}.chat-retained", turn.run_id()));
+    mecha_core::create_private_dir(&receipt_path).unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Pending, "{report:?}");
+    assert_eq!(report.protocol, "ordinary-chat-memory-v2");
+    assert!(f
+        .request
+        .authority
+        .join(format!("{}.chat-seal", turn.run_id()))
+        .is_file());
+    let before = fs::read(&s.path).unwrap();
+    drop(chat);
+    fs::remove_dir(receipt_path).unwrap();
+    fs::remove_dir(&f.workspace).unwrap();
+    let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+    let retry = recovery.retry_chat(turn.run_id());
+    assert_eq!(retry.status, SessionMemoryStatus::Retained, "{retry:?}");
+    assert_eq!(retry.protocol, "ordinary-chat-memory-v2");
+    assert_eq!(recovery.retry_chat(turn.run_id()).receipt, retry.receipt);
+    assert_eq!(fs::read(&s.path).unwrap(), before);
+}
+
+#[test]
+fn graph_cumulative_taint_and_provenance_on_nonresults_cannot_be_laundered() {
+    for smuggled in [false, true] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        graph_config(&f, &s);
+        if !smuggled {
+            let turn = graph_result_turn(
+                &mut chat,
+                &s,
+                "authored__kg_search",
+                "Authored result",
+                (Some(true), false),
+                false,
+                true,
+            );
+            assert_eq!(
+                chat.finish_turn(&turn).status,
+                SessionMemoryStatus::Retained
+            );
+        }
+        // The fixture records a clean checkpoint. After graph delivery that
+        // regresses native cumulative taint, even though the parser unions it.
+        let turn = f.record_turn(
+            &mut chat,
+            &s,
+            "Continue",
+            "Keep records",
+            RunStats {
+                stop_cause: Some(StopCause::Completed),
+                turns: 1,
+                context_overflows: Some(0),
+                ..Default::default()
+            },
+        );
+        if smuggled {
+            let mut rows: Vec<String> = fs::read_to_string(&s.path)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            let index = rows
+                .iter()
+                .rposition(|r| {
+                    serde_json::from_str::<serde_json::Value>(r).unwrap()["record"] == "message"
+                })
+                .unwrap();
+            let mut message: serde_json::Value = serde_json::from_str(&rows[index]).unwrap();
+            message["tool_provenance"] = serde_json::json!({"not-a-result":false});
+            rows[index] = serde_json::to_string(&message).unwrap();
+            fs::write(&s.path, rows.join("\n") + "\n").unwrap();
+        }
+        assert_eq!(
+            chat.finish_turn(&turn).status,
+            SessionMemoryStatus::Unavailable
+        );
+    }
+}
+
+#[test]
+fn unauthenticated_report_protocol_never_becomes_attachment_authority() {
+    use mecha_core::memory_session::chat::CHAT_MEMORY_UNAVAILABLE_PROTOCOL;
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    f.config(&s);
+    let report = f.turn(&mut chat, &s, "Authored legacy report", "Keep records");
+    drop(chat);
+    let path = fs::read_dir(&f.request.authority)
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "chat"))
+        .unwrap();
+    let mut a: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    a["protocol"] = serde_json::json!(CHAT_MEMORY_UNAVAILABLE_PROTOCOL);
+    fs::write(path, serde_json::to_vec(&a).unwrap()).unwrap();
+    let retry = SessionMemory::open_for_recovery(&f.request)
+        .unwrap()
+        .retry_chat(&report.run_id);
+    assert_eq!(retry.protocol, CHAT_MEMORY_UNAVAILABLE_PROTOCOL);
+    assert_eq!(retry.status, SessionMemoryStatus::Unavailable);
+    assert!(f.memory().attach_chat(&s, ChatAttachMode::Resume).is_err());
+    assert!(f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+        .is_err());
+    let text = fs::read_to_string(&s.path)
+        .unwrap()
+        .replace("ordinary-chat-memory-v1", CHAT_MEMORY_UNAVAILABLE_PROTOCOL);
+    assert!(Session::parse(&s.path, &text).is_err());
+}
+
+#[tokio::test]
+async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
+    for provenance in [true, false] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f
+            .memory()
+            .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
+            .unwrap();
+        graph_config(&f, &s);
+        let first = f.turn(&mut chat, &s, "The authored label is coral", "Keep records");
+        assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+        let owner =
+            OwnerInput::new(OwnerSource::CliChat, "Find the prior coral label".into()).unwrap();
+        let turn = chat.begin_turn(&s, &owner).unwrap();
+        let tool = chat.goal_memory(&turn).unwrap();
+        let mut transcript = Session::read(&s.path).unwrap();
+        transcript.convo.messages.push(Message::user(owner.text()));
+        s.append(&Record::Message(Message::user(owner.text())))
+            .unwrap();
+        let mut state = recorded_context(&s);
+        let version = state
+            .transition(CharterSnapshot::disabled(), Some(owner))
+            .unwrap()
+            .unwrap();
+        let binding = DecisionBinding::new(
+            state.next_decision(),
+            version.revision(),
+            &transcript.convo.messages,
+            Some(version.prompt_block()),
+            true,
+            0,
+        )
+        .unwrap()
+        .with_conversation_messages(&transcript.convo.messages)
+        .unwrap();
+        s.append(&Record::GoalContextDecision {
+            binding,
+            versions: vec![version.clone()],
+        })
+        .unwrap();
+        let context = mecha_core::tool::ToolCtx {
+            workspace: f.workspace.clone(),
+            ..Default::default()
+        };
+        *context.goal_context_version.lock().unwrap() = Some(version);
+        let input = serde_json::json!({"memory":{"query":"coral"}});
+        let output = tool.call(input.clone(), &context).await.unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert!(output.external, "{}", output.content);
+        let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+        assert!(packet["confirmed_goal"].is_null());
+        assert_eq!(packet["goal_context_revision"], 2);
+        s.append(&Record::Message(Message::assistant(vec![Block::ToolUse {
+            id: "recall".into(),
+            name: "goal_context".into(),
+            input,
+        }])))
+        .unwrap();
+        let mut result = Message::user("");
+        result.content = vec![Block::ToolResult {
+            tool_use_id: "recall".into(),
+            content: output.content,
+            is_error: false,
+        }];
+        result.tool_provenance.insert("recall".into(), provenance);
+        s.append(&Record::Message(result)).unwrap();
+        // A second native request uses exactly the accumulated conversation.
+        let t = Session::read(&s.path).unwrap();
+        let state = recorded_context(&s);
+        let version = state.current().unwrap();
+        let binding = DecisionBinding::new(
+            state.next_decision(),
+            version.revision(),
+            &t.convo.messages,
+            Some(version.prompt_block()),
+            false,
+            0,
+        )
+        .unwrap()
+        .with_conversation_messages(&t.convo.messages)
+        .unwrap();
+        s.append(&Record::GoalContextDecision {
+            binding,
+            versions: vec![],
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            "The earlier authored label was coral.",
+        )])))
+        .unwrap();
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Completed),
+            turns: 2,
+            context_overflows: Some(0),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append(&Record::Taint(Taint {
+            private: true,
+            untrusted: true,
+        }))
+        .unwrap();
+        let second = chat.finish_turn(&turn);
+        if !provenance {
+            assert_eq!(second.status, SessionMemoryStatus::Unavailable);
+            continue;
+        }
+        assert_eq!(second.status, SessionMemoryStatus::Retained, "{second:?}");
+        let seal: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                f.request
+                    .authority
+                    .join(format!("{}.chat-seal", second.run_id)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(seal["payload"]["originals"].as_array().unwrap().len(), 3);
+        assert!(seal["payload"]["consulted"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::to_value(first.receipt.unwrap().projection).unwrap()));
+    }
+}

@@ -173,6 +173,11 @@ jobs:
         timeout-minutes: 3
         run: python3 prototypes/memory/chat_cli_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-chat-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
+      - name: Test selected graph in encrypted chat
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/chat_graph_cli_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-chat-graph-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
       - name: Test authenticated web dynamic goals
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         timeout-minutes: 3
@@ -431,7 +436,7 @@ jobs:
       - name: Integration tests, with skips promoted to failures
         env:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
-        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test run_lifecycle --test serve_lifecycle --test driven_run
+        run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test mcp_selected_graph --test run_lifecycle --test serve_lifecycle --test driven_run
 
       # Code mode's interpreter: the pinned monty worker inside bwrap. The
       # test fetches the worker's wheel itself (`worker::ensure`, sha256-

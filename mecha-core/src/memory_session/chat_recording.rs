@@ -29,6 +29,7 @@ pub(super) fn capture(
         .map(|v| v.owner_inputs().to_vec())
         .unwrap_or_default();
     expected_owners.push(f.owner.clone());
+    let mut external_results = a.graph_surface.is_some() && prior.convo.taint.untrusted;
     let mut expected_history = prior.convo.messages;
     expected_history.push(crate::message::Message::user(f.owner.text()));
 
@@ -40,7 +41,7 @@ pub(super) fn capture(
         config.workspace.canonicalize()? == a.workspace,
         "chat workspace changed"
     );
-    recording::surface(&config.tools)?;
+    a.validate_tools(&config.tools)?;
     ensure!(
         !transcript.convo.goal_context.has_cleared(),
         "chat clear unsupported"
@@ -164,7 +165,8 @@ pub(super) fn capture(
             Record::Taint(recorded) => {
                 ensure!(recorded.private, "ordinary private recall taint missing");
                 ensure!(
-                    !attempts.iter().any(|a| a.external) || recorded.untrusted,
+                    (!attempts.iter().any(|a| a.external) && !external_results)
+                        || recorded.untrusted,
                     "ordinary external recall taint missing"
                 );
                 ensure!(
@@ -189,6 +191,26 @@ pub(super) fn capture(
                     !ended && messages < 128 && !m.harness && m.planning.is_none(),
                     "ordinary message unsupported"
                 );
+                if a.graph_surface.is_some() {
+                    let results: Vec<_> = m
+                        .content
+                        .iter()
+                        .filter_map(|b| {
+                            if let Block::ToolResult { tool_use_id, .. } = b {
+                                Some(tool_use_id)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let ids: BTreeSet<_> = results.iter().copied().collect();
+                    ensure!(
+                        ids.len() == results.len()
+                            && ids == m.tool_provenance.keys().collect::<BTreeSet<_>>(),
+                        "chat result provenance missing, duplicate or unrelated"
+                    );
+                    external_results |= m.tool_provenance.values().any(|external| *external);
+                }
                 messages += 1;
                 final_assistant = m.role == Role::Assistant
                     && m.content.iter().any(|b| matches!(b, Block::Text { .. }));
@@ -222,9 +244,12 @@ pub(super) fn capture(
                                 m.role == Role::Assistant
                                     && !calls.contains_key(&call_id)
                                     && calls.len() < 32
-                                    && matches!(
-                                        name.as_str(),
-                                        "fs_read" | "fs_write" | "fs_list" | "goal_context"
+                                    && a.graph_surface.as_ref().map_or_else(
+                                        || matches!(
+                                            name.as_str(),
+                                            "fs_read" | "fs_write" | "fs_list" | "goal_context"
+                                        ),
+                                        |graph| graph.contains_tool(&name)
                                     ),
                                 "ordinary invocation unsupported"
                             );
@@ -249,6 +274,19 @@ pub(super) fn capture(
                                 .ok_or_else(|| anyhow::anyhow!("ordinary orphan result"))?;
                             ensure!(!*complete, "ordinary duplicate result");
                             *complete = true;
+                            let external = if a.graph_surface.is_some() {
+                                m.tool_provenance.get(&tool_use_id).copied()
+                            } else {
+                                None
+                            };
+                            if let Some(graph) = &a.graph_surface {
+                                ensure!(
+                                    !graph.graph_tools.iter().any(|t| t.local_name == *name)
+                                        || external == Some(true)
+                                        || is_error,
+                                    "chat graph success lacks external provenance"
+                                );
+                            }
                             receipts.push(ToolReceipt {
                                 call_id: tool_use_id,
                                 tool_name: name.clone(),
@@ -264,6 +302,8 @@ pub(super) fn capture(
                                     .enumerate()
                                     .filter(|(_, a)| {
                                         a.input == *input
+                                            && external
+                                                .is_none_or(|external| a.external == external)
                                             && a.is_error == is_error
                                             && super::super::recall::exact_output(
                                                 &a.output, &content, a.external,

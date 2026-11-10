@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental encrypted CLI chat can opt into one owner-configured read-only
+  graph MCP with `--memory-graph-server NAME`. Selected tools and their runtime
+  definitions are bound to the conversation; resume refuses changes before
+  inference. Delivered graph snapshots retain native source/provenance and
+  failure receipts without migrating the owner graph or treating results as facts.
+  Existing result limits and complete-turn retention still apply.
+
 - Experimental `chat --episodic-memory FILE --dynamic-goals` connects local,
   recorded CLI conversations to the explicit encrypted memory store. Each turn
   retains attributed observations under its own immutable transcript prefix and
@@ -672,6 +679,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- Memory-attached recordings refuse replay with live divergence before runtime
+  setup; historical Stop/Error replay remains available. Cancellation during
+  compaction no longer appends a budget notice for an unsent request.
 
 - **Disabled step checks stay silent.** Deliberately disabling the check lever no
   longer adds a missing-check notice to the model context. Enabled checks without

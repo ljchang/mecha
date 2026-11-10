@@ -41,17 +41,18 @@ The separate `chat --episodic-memory FILE --dynamic-goals` path now attaches the
 explicit encrypted store to local recorded CLI conversations. `ChatMemory`
 reserves each turn before execution, retains only its new originals, and seals an
 immutable native transcript prefix with prior dependencies. Authenticated resume
-requires the same store/workspace and retained contiguous chain. Ordinary loaders
-refuse marked transcripts. Context-only observations do not manufacture confirmed
+requires the same store/workspace and retained contiguous chain. Ordinary execution loaders
+refuse marked transcripts; historical Stop/Error replay uses recorded answers,
+and Live replay refuses before router/provider setup. Context-only observations do not manufacture confirmed
 goals, and task success stays NotEvaluated.
 
 Focused tests and the real CLI authored-transport trial passed: three retained
 turns across changed goals/charters and restart, exact six-request historical
-replay, default-off control and four pre-provider refusals. Independent source
-review has no remaining major/medium finding. The current prerequisite source passed full workspace suites with
-6,463 default / 7,268 memory-enabled tests (25 / 30 ignored), both all-target
-builds, strict Clippy and actual CLI/web smoke workflows. Required Linux backend
-checks passed 38/38 with skips disabled.
+replay, default-off control and five pre-provider refusals. Independent source
+review has no remaining major/medium finding. The current graph checkpoint passed full workspace suites with
+6,485 default / 7,307 memory-enabled tests (25 / 30 ignored), both all-target
+builds, strict Clippy and actual CLI/web smoke workflows. The expanded required
+Linux backend set passed 49/49 with skips disabled; standalone memory passed 404/404.
 HISTORY records the bounded model diagnostic, including its strict
 format failure and control-tool deviation. Neither this CLI opt-in nor successful
 storage establishes production/private-data readiness.
@@ -78,31 +79,52 @@ three-arm runner is a development comparison; held-out task families, general
 experiment controls, another harness adapter and useful-transfer evidence remain
 open. Keep the independent owner graph and production runtime unchanged.
 
-**Daily-use implementation order:** complete publication of the qualified web-option
-and oversized-input fixes, then deliver these usable increments:
+**Selected graph CLI integration (2026-11-10, default-off):**
+`chat --memory-graph-server NAME` now binds one enabled owner-global graph reader
+surface to a V2 private attachment. `prepare_selected_graph` freezes the effective
+launch before spawn; chat preflight authenticates the saved lease/source chain and
+compares launch identity, then actual descriptors, before provider preparation.
+Only selected `kg_search`, `kg_entity` and `kg_task_list` reads enter the registry.
+Exact native output provenance and cumulative taint remain required. V1 bytes,
+the observation protocol and SQL schema are unchanged. Retry/forget never run MCP.
+The authored actual CLI workflow passed four retained turns, exact graph snapshot
+recall across changed goals/restart, external failed receipts, large-result
+withholding and thirteen refused starts. It never started an unrelated server.
+Final runtime qualification passed on isolated Spark. Direct bwrap startup and
+execution share a frozen filtered environment; loader controls and unqualified
+scoped limits refuse. The prototype remains default-off and is not installed in
+production. Selected Landlock is source-supported but has no selected-live trial.
 
-1. Bounded read-only graph tools in the existing encrypted CLI chat. Reuse MCP
-   transport and graph queries; add selected-server/schema/effect admission and
-   exact native result provenance together. Capture what the graph returned at
-   that time, not a canonical graph revision or owner instruction. Unrelated
-   servers, graph mutations and unsafe egress remain refused.
-2. Explicit encrypted web chat with a dedicated per-conversation Agent/reader and
+**Retrieval-quality gap:** the first graph smoke's generic `Cedar` query ranked
+three shorter query invocations above the longer returned results at limit three.
+No source was lost. A result-specific term yielded exact snapshots with unchanged
+source assertions. Preserve this failure as a retrieval evaluation case; the
+mechanics pass is not evidence that action/result ranking is solved. Do not infer
+a global result-first ranking policy from this one authored case.
+
+**Remaining daily-use increments:**
+
+1. Explicit encrypted web chat with a dedicated per-conversation Agent/reader and
    attachment. Extend Web/AuthenticatedWeb identity as part of this usable slice,
    attach before Config, authenticate restart before execution, and expose durable
-   retention/recovery status through actual Send/Stop/reconnect controls.
-3. Existing todo/planning continuity. `Message.planning` is currently refused by
+   retention/recovery status through actual Send/Stop/reconnect controls. The
+   shared Follower's Agent cannot own a conversation-specific tracked memory tool.
+2. Existing todo/planning continuity. `Message.planning` is currently refused by
    both recorders, so allowlisting todo alone is insufficient. Attribute feedback,
    preserve state through restart and distinguish completion from verified success.
-4. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
+3. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
    dependencies, goal versions and taint; force compaction/restart/interruption
    tests before permitting continued memory-enabled execution.
+4. Broader tool/result capture, reliable retrieval and the separately listed
+   learning bridges, followed by realistic private-data/recovery qualification.
 
 Recovery, source withdrawal and permission checks are exit gates on every slice.
-The next graph increment uses authored MCP first. Owner personal data remains
-independent; no owner-graph migration or production cutover follows from these tests.
-The concrete contracts and parallel work split are in
-`superpowers/plans/2026-11-10-readonly-graph-memory-chat.md`; that graph profile is
-planned, not implemented by the current prerequisites.
+Owner personal data remains independent; no graph migration or production cutover
+follows from authored tests. The implemented graph contract is in
+`superpowers/plans/2026-11-10-readonly-graph-memory-chat.md`; the source-audited next
+web contract is `superpowers/plans/2026-11-10-authenticated-web-memory-chat.md`.
+Its frozen V3 web attachment and V2 web observation pair preserve CLI V1/V2
+authority; implementing and testing that strict matrix is the first task.
 
 **Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
 mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's
@@ -2313,6 +2335,12 @@ binary is absent |
 `cargo clippy --all-targets` is clean and should stay that way.
 
 ## Environment as left
+
+**2026-11-10 graph checkpoint:** isolated Spark source/build and authored-data
+qualification only; current totals are at the top of this handoff. No production
+binary, service or owner graph was changed and no resident model was called.
+Main eval inventory was recounted at 36 cases / 15 tags. Older dated model and
+service observations below were not reverified for this increment.
 
 **2026-11-09 packet/appraisal increment:** isolated Spark qualification passed
 workspace build, 6,352 default / 6,960 memory-enabled tests (zero failures;

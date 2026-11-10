@@ -5,6 +5,7 @@ pub mod chat;
 pub mod learning;
 mod recall;
 mod recording;
+pub mod surface;
 use crate::{
     goal::GoalRef,
     memory::{

@@ -1,5 +1,5 @@
 //! Host-owned multi-turn attachment. Recovery admits sealed observations only.
-use super::*;
+use super::{surface::ChatGraphSurface, *};
 use crate::{
     goal_context::{OwnerInput, OwnerSource},
     memory::{chat_observation::*, RevisionRef},
@@ -16,6 +16,9 @@ mod capture;
 #[path = "chat_recall.rs"]
 mod tracking;
 pub const CHAT_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v1";
+pub const CHAT_GRAPH_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v2";
+/// Error-report tag only. Never accepted as attachment or native marker authority.
+pub const CHAT_MEMORY_UNAVAILABLE_PROTOCOL: &str = "ordinary-chat-memory-unavailable";
 const MAX_TURNS: u64 = 256;
 #[derive(Clone, Copy)]
 pub enum ChatAttachMode {
@@ -35,6 +38,7 @@ pub struct ChatMemoryReport {
 }
 impl ChatMemoryReport {
     fn new(
+        memory: &SessionMemory,
         id: &str,
         f: Option<&Turn>,
         status: SessionMemoryStatus,
@@ -42,7 +46,9 @@ impl ChatMemoryReport {
         receipt: Option<CaptureReceipt>,
     ) -> Self {
         Self {
-            protocol: CHAT_MEMORY_PROTOCOL,
+            protocol: frozen_metadata(&memory.authority, id)
+                .map(|(_, a)| a.report_protocol())
+                .unwrap_or(CHAT_MEMORY_UNAVAILABLE_PROTOCOL),
             conversation_id: f.map(|f| f.session_id.clone()).unwrap_or_default(),
             turn_ordinal: f.map_or(0, |f| f.ordinal),
             run_id: id.into(),
@@ -56,6 +62,10 @@ impl ChatMemoryReport {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attachment {
+    // This is the original V1 wire shape. V2 is dispatched explicitly below;
+    // its required graph field is validated before normalizing this value.
+    #[serde(skip)]
+    graph_surface: Option<ChatGraphSurface>,
     protocol: String,
     request: SessionMemoryRequest,
     authority: String,
@@ -67,6 +77,33 @@ struct Attachment {
     initial_length: u64,
     initial_digest: String,
     nonce: String,
+}
+impl Attachment {
+    fn report_protocol(&self) -> &'static str {
+        match self.protocol.as_str() {
+            CHAT_MEMORY_PROTOCOL => CHAT_MEMORY_PROTOCOL,
+            CHAT_GRAPH_MEMORY_PROTOCOL => CHAT_GRAPH_MEMORY_PROTOCOL,
+            _ => unreachable!("attachment protocol authenticated before normalization"),
+        }
+    }
+    fn validate_tools(&self, names: &[String]) -> Result<()> {
+        match &self.graph_surface {
+            Some(graph) => graph.validate_tools(names),
+            None => recording::surface(names),
+        }
+    }
+    fn encoded(&self) -> Result<Vec<u8>> {
+        match &self.graph_surface {
+            None => Ok(serde_json::to_vec(self)?), // Preserve original V1 bytes.
+            Some(graph) => {
+                let mut wire = serde_json::to_value(self)?;
+                wire.as_object_mut()
+                    .expect("attachment object")
+                    .insert("graph_surface".into(), serde_json::to_value(graph)?);
+                Ok(serde_json::to_vec(&wire)?)
+            }
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -175,12 +212,35 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
     let path = attachment_path(a, session);
     authority::private(&path, false)?;
     let bytes = authority::read(&path, 65536)?;
-    let value: Attachment = read_private(&path, 65536)?;
+    // Parse and hash the same read, including duplicate-key rejection. Do not
+    // reserialize historical V1 bytes to derive their authority identity.
+    let mut wire: crate::memory::plan_extraction::UniqueValue = serde_json::from_slice(&bytes)?;
+    let graph = match wire.0.get("protocol").and_then(|v| v.as_str()) {
+        Some(CHAT_MEMORY_PROTOCOL) => {
+            ensure!(
+                wire.0.get("graph_surface").is_none(),
+                "V1 attachment cannot contain graph authority"
+            );
+            None
+        }
+        Some(CHAT_GRAPH_MEMORY_PROTOCOL) => {
+            let graph = wire
+                .0
+                .as_object_mut()
+                .expect("protocol-bearing object")
+                .remove("graph_surface")
+                .ok_or_else(|| anyhow::anyhow!("chat graph surface missing"))?;
+            Some(serde_json::from_value::<ChatGraphSurface>(graph)?)
+        }
+        _ => anyhow::bail!("unknown chat attachment protocol"),
+    };
+    let mut value: Attachment = serde_json::from_value(wire.0)?;
+    if let Some(graph) = &graph {
+        graph.validate(&value.workspace)?;
+    }
+    value.graph_surface = graph;
     ensure!(
-        value.protocol == CHAT_MEMORY_PROTOCOL
-            && value.session_id == session
-            && value.authority == a.identity
-            && value.request == a.request,
+        value.session_id == session && value.authority == a.identity && value.request == a.request,
         "chat attachment authority changed"
     );
     Ok((value, authority::digest(&bytes)))
@@ -291,7 +351,40 @@ pub(super) fn check_binding(a: &Authority, b: &ExternalBinding) -> Result<()> {
     Ok(())
 }
 impl SessionMemory {
+    /// Graph-only attachment door. Resume authenticates existing authority
+    /// without accepting a replacement live surface; compare it explicitly
+    /// with `validate_graph_surface` before provider setup.
+    pub fn attach_chat_with_graph(
+        self,
+        session: &Session,
+        mode: ChatAttachMode,
+        graph: Option<ChatGraphSurface>,
+    ) -> Result<ChatMemory> {
+        match mode {
+            ChatAttachMode::Create => {
+                let surface = graph
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("graph creation requires admitted surface"))?;
+                surface.validate(self.execution_workspace()?)?;
+            }
+            ChatAttachMode::Resume => ensure!(
+                graph.is_none(),
+                "graph resume must authenticate stored surface first"
+            ),
+        }
+        self.attach_chat_protocol(session, mode, graph, CHAT_GRAPH_MEMORY_PROTOCOL)
+    }
+
     pub fn attach_chat(self, session: &Session, mode: ChatAttachMode) -> Result<ChatMemory> {
+        self.attach_chat_protocol(session, mode, None, CHAT_MEMORY_PROTOCOL)
+    }
+    fn attach_chat_protocol(
+        self,
+        session: &Session,
+        mode: ChatAttachMode,
+        graph: Option<ChatGraphSurface>,
+        protocol: &str,
+    ) -> Result<ChatMemory> {
         let workspace = self.execution_workspace()?.to_path_buf();
         self.authority.validate()?;
         authority::exclude_path(&session.path, &workspace)?;
@@ -322,7 +415,8 @@ impl SessionMemory {
             let meta = open_nofollow(&session.path, false)?.metadata()?;
             ensure!(meta.nlink() == 1, "chat source aliased");
             let a = Attachment {
-                protocol: CHAT_MEMORY_PROTOCOL.into(),
+                graph_surface: graph,
+                protocol: protocol.into(),
                 request: self.request.clone(),
                 authority: self.authority.identity.clone(),
                 session_id: session.meta.id.clone(),
@@ -334,11 +428,11 @@ impl SessionMemory {
                 initial_digest: authority::digest(&bytes),
                 nonce: uuid::Uuid::new_v4().to_string(),
             };
-            let data = serde_json::to_vec(&a)?;
+            let data = a.encoded()?;
             authority::write(&attachment_path(&self.authority, &session.meta.id), &data)?;
             session.append(&Record::ChatMemory {
                 marker: ChatMemoryMarker {
-                    protocol: CHAT_MEMORY_PROTOCOL.into(),
+                    protocol: protocol.into(),
                     conversation_id: session.meta.id.clone(),
                     authority: self.authority.identity.clone(),
                     attachment: authority::digest(&data),
@@ -346,6 +440,10 @@ impl SessionMemory {
             })?;
         }
         let (attachment, digest) = attachment(&self.authority, &session.meta.id)?;
+        ensure!(
+            attachment.protocol == protocol,
+            "chat memory protocol does not match selected profile"
+        );
         ensure!(
             attachment.workspace == workspace && attachment.source == session.path,
             "chat workspace/source changed"
@@ -381,6 +479,7 @@ impl SessionMemory {
         match prepared {
             Ok((f, _lease)) => retry(self, id, Some(&f)),
             Err(_) => ChatMemoryReport::new(
+                self,
                 id,
                 None,
                 SessionMemoryStatus::Unavailable,
@@ -428,6 +527,7 @@ fn retry(memory: &SessionMemory, id: &str, known: Option<&Turn>) -> ChatMemoryRe
         Ok(p) => p,
         Err(_) => {
             return ChatMemoryReport::new(
+                memory,
                 id,
                 known,
                 SessionMemoryStatus::Unavailable,
@@ -440,6 +540,7 @@ fn retry(memory: &SessionMemory, id: &str, known: Option<&Turn>) -> ChatMemoryRe
         Ok(m) => m,
         Err(_) => {
             return ChatMemoryReport::new(
+                memory,
                 id,
                 Some(&f),
                 SessionMemoryStatus::Pending,
@@ -453,6 +554,7 @@ fn retry(memory: &SessionMemory, id: &str, known: Option<&Turn>) -> ChatMemoryRe
         .is_err()
     {
         return ChatMemoryReport::new(
+            memory,
             id,
             Some(&f),
             SessionMemoryStatus::Unavailable,
@@ -475,8 +577,16 @@ fn retry(memory: &SessionMemory, id: &str, known: Option<&Turn>) -> ChatMemoryRe
         Ok(receipt)
     })();
     match admitted {
-        Ok(r) => ChatMemoryReport::new(id, Some(&f), SessionMemoryStatus::Retained, None, Some(r)),
+        Ok(r) => ChatMemoryReport::new(
+            memory,
+            id,
+            Some(&f),
+            SessionMemoryStatus::Retained,
+            None,
+            Some(r),
+        ),
         Err(_) => ChatMemoryReport::new(
+            memory,
             id,
             Some(&f),
             SessionMemoryStatus::Pending,
@@ -496,7 +606,35 @@ impl ChatMemory {
         grants: &[crate::grant::Grant],
     ) -> Result<()> {
         self.lease.validate()?;
-        self.memory.validate_surface(names, workspace, grants)
+        let graph = self.graph_surface()?;
+        if let Some(graph) = graph {
+            ensure!(grants.is_empty(), "ordinary memory does not support grants");
+            ensure!(
+                workspace.canonicalize()? == self.memory.execution_workspace()?,
+                "ordinary memory workspace changed"
+            );
+            graph.validate(self.memory.execution_workspace()?)?;
+            graph.validate_tools(names)?;
+            authority::exclude_workspace(&self.memory.request, workspace)?;
+            Ok(())
+        } else {
+            self.memory.validate_surface(names, workspace, grants)
+        }
+    }
+    /// Authenticates immutable private attachment bytes, without runtime I/O.
+    pub fn graph_surface(&self) -> Result<Option<ChatGraphSurface>> {
+        self.lease.validate()?;
+        let (a, digest) = attachment(&self.memory.authority, &self.attachment.session_id)?;
+        ensure!(digest == self.digest, "chat attachment replaced");
+        Ok(a.graph_surface)
+    }
+    pub fn validate_graph_surface(&self, actual: &ChatGraphSurface) -> Result<()> {
+        actual.validate(&self.attachment.workspace)?;
+        ensure!(
+            self.graph_surface()?.as_ref() == Some(actual),
+            "chat graph surface changed"
+        );
+        Ok(())
     }
     /// Stable schema before Config. Dispatch refuses until begin_turn binds a
     /// tracked reader; this placeholder retains metadata only, never storage.
@@ -533,7 +671,7 @@ impl ChatMemory {
         ensure!(
             transcript.chat_memory
                 == Some(ChatMemoryMarker {
-                    protocol: CHAT_MEMORY_PROTOCOL.into(),
+                    protocol: a.protocol.clone(),
                     conversation_id: a.session_id.clone(),
                     authority: self.memory.authority.identity.clone(),
                     attachment: d
@@ -581,7 +719,7 @@ impl ChatMemory {
                             c.workspace.canonicalize()? == a.workspace,
                             "chat configuration workspace changed"
                         );
-                        recording::surface(&c.tools)?;
+                        a.validate_tools(&c.tools)?;
                     }
                     _ => anyhow::bail!("chat has an unsealed tail; start a fresh chat"),
                 }
@@ -736,6 +874,7 @@ impl ChatMemory {
                     .ok()
                     .map(|(f, _)| f);
                 ChatMemoryReport::new(
+                    &self.memory,
                     &turn.id,
                     known.as_ref(),
                     SessionMemoryStatus::Unavailable,

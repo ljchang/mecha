@@ -8,7 +8,35 @@
 
 **Tech Stack:** Existing Rust workspace, feature `memory-prototype`, serde/sha2, stdio MCP, authored Python MCP and loopback provider fixtures. No new dependency or database engine.
 
-**Spec:** The complete concrete contract below; repository basis `docs/MECHA-MEMORY-DESIGN.md` §31.25 and ARCHITECTURE Experimental memory / MCP / trifecta sections. Implementation starts only after the daily-use prerequisites qualify. The current product does not yet support this graph profile.
+**Spec:** The complete concrete contract below; repository basis `docs/MECHA-MEMORY-DESIGN.md` §31.25 and ARCHITECTURE Experimental memory / MCP / trifecta sections. The prerequisites qualified before this increment. The current checkpoint status is below; the original design and work list remain the implementation record.
+
+## Checkpoint status — 2026-11-10
+
+The selected CLI graph profile is implemented and qualified on authored data.
+The exact entry points are `prepare_selected_graph`, staged
+`SelectedGraphPreparation::connect`, `ChatGraphSurface` and V2 attachment/capture,
+with root CLI preflight consuming the same prepared tools once. Local V1 bytes,
+observation semantics and SQL schema remain unchanged. Retry/forget use sealed
+source authority without live MCP. Direct bwrap preflight and execution now
+share one frozen allowlisted environment and resolved launcher, with no secret
+values in argv; loader controls and scoped resource limits refuse.
+
+The actual CLI workflow passed four retained turns, three graph snapshots,
+authenticated restart, exact recall, external failure receipts, one visibly
+withheld oversized result and thirteen refused starts. Final workspace totals
+are 6,485 default / 7,307 memory-enabled (zero failures; 25 / 30 ignored), plus
+49 required-backend checks without skips and 404 standalone memory tests.
+Formatting, strict Clippy, both all-target builds and all three authored
+CLI/graph/web-goal workflows passed. Source review covers these changed paths;
+it is not comprehensive review of every historical gated prototype module.
+
+The generic-query ranking failure is preserved in HISTORY. Direct bwrap and
+unconfined selected launches were exercised; selected Landlock is source-supported
+but has no live selected-server trial. Existing dispatcher interlock tests and
+graph-specific provenance/cumulative-taint/resume tests are separate checks; this
+closed profile never registers a chosen-egress tool. There was no private graph
+trial, graph migration, new model comparison, production activation or merge.
+The next usable increment is the authenticated-web plan beside this file.
 
 ## Global constraints
 
@@ -124,4 +152,4 @@ The workers are independent because A exposes runtime inventory without importin
 
 This plan deliberately does not guarantee executable attestation, same-path binary replacement detection, graph-side deletion propagation, unlimited output/history, compaction, or arbitrary tools. Selected configured server is an owner trust decision; result content remains untrusted. Frozen launch/schema/effects prevent accidental authority drift across attachment/resume within that boundary.
 
-The new V2 authority, runtime inventory and CLI integration are one product increment; the two workers' testable pieces are not separate advertised releases. All five review-focus cases map to A/B/root tests above. Existing recovery never depends on a currently running graph server. The interfaces and acceptance gates have been reviewed against the current seams; implementation and runtime qualification remain pending.
+The new V2 authority, runtime inventory and CLI integration are one product increment; the two workers' testable pieces are not separate advertised releases. All five review-focus cases map to A/B/root tests above. Existing recovery never depends on a currently running graph server. The interfaces and acceptance gates were reviewed against these seams; the checkpoint status above records the implemented behavior, qualification and remaining boundaries.

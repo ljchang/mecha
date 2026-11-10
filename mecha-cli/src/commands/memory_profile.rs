@@ -3,9 +3,29 @@ use crate::GlobalOpts;
 use anyhow::{Context, Result};
 use mecha_core::{config::Config, memory_session::SessionMemory, session::SessionKind};
 use std::path::Path;
+
+pub(crate) struct GraphSelection {
+    pub server: mecha_core::config::McpServerConfig,
+    pub remote_names: std::collections::BTreeSet<String>,
+    pub local_names: Vec<String>,
+}
+
+pub(crate) struct ChatProfilePreparation {
+    pub memory: SessionMemory,
+    pub graph: Option<GraphSelection>,
+}
+
 pub(crate) fn validate_memory_config(
     global: &GlobalOpts,
     config: &mecha_core::config::Config,
+) -> Result<()> {
+    validate_memory_config_with_graph(global, config, &[])
+}
+
+pub(crate) fn validate_memory_config_with_graph(
+    global: &GlobalOpts,
+    config: &Config,
+    graph_names: &[String],
 ) -> Result<()> {
     use mecha_core::{mailbox::InboundPolicy, provider::router, tool::profile::ToolProfile};
 
@@ -37,7 +57,10 @@ pub(crate) fn validate_memory_config(
         !matches!(
             global.tool_profile,
             Some(ToolProfile::Research | ToolProfile::Coding)
-        ) && global.tools.iter().all(|name| config.tools.registers(name)),
+        ) && global
+            .tools
+            .iter()
+            .all(|name| graph_names.contains(name) || config.tools.registers(name)),
         "ordinary memory requires all selected tools to be enabled, including goal_context"
     );
     // Setup exposes a child whenever its tool list fits the parent allowlist,
@@ -61,10 +84,22 @@ pub(crate) fn validate_memory_config(
 }
 
 pub(crate) fn open_profile(global: &mut GlobalOpts, path: &Path) -> Result<SessionMemory> {
+    Ok(open_chat_profile(global, path, None)?.memory)
+}
+
+pub(crate) fn open_chat_profile(
+    global: &mut GlobalOpts,
+    path: &Path,
+    graph_server: Option<&str>,
+) -> Result<ChatProfilePreparation> {
     // Check the merged options before configuration or provider startup.
     anyhow::ensure!(
-        global.no_mcp && global.no_code_tool && global.no_grants && !global.tools.is_empty(),
-        "ordinary memory requires --no-mcp, --no-code-tool, --no-grants, and explicit --tool selection"
+        global.no_code_tool && global.no_grants && !global.tools.is_empty(),
+        "ordinary memory requires --no-code-tool, --no-grants, and explicit --tool selection"
+    );
+    anyhow::ensure!(
+        global.no_mcp == graph_server.is_none(),
+        "ordinary memory requires --no-mcp unless a chat explicitly selects --memory-graph-server"
     );
     anyhow::ensure!(
         SessionKind::test_override().is_none(),
@@ -77,7 +112,11 @@ pub(crate) fn open_profile(global: &mut GlobalOpts, path: &Path) -> Result<Sessi
         Ok(_) => anyhow::bail!("ordinary memory refuses a project mecha.toml"),
     }
     let config = Config::load_global()?;
-    validate_memory_config(global, &config)?;
+    let graph = graph_server
+        .map(|name| select_graph(global, &config, name))
+        .transpose()?;
+    let graph_names = graph.as_ref().map_or(&[][..], |g| g.local_names.as_slice());
+    validate_memory_config_with_graph(global, &config, graph_names)?;
     let workspace = global
         .workspace
         .as_ref()
@@ -91,7 +130,158 @@ pub(crate) fn open_profile(global: &mut GlobalOpts, path: &Path) -> Result<Sessi
     SessionMemory::validate_request_path(&path, &workspace)?;
     let request = SessionMemory::load_request(&path)?;
     let memory = SessionMemory::open(&request, &workspace)?;
-    memory.validate_surface(&global.tools, &workspace, &[])?;
+    let local_tools: Vec<_> = global
+        .tools
+        .iter()
+        .filter(|name| !graph_names.contains(name))
+        .cloned()
+        .collect();
+    memory.validate_surface(&local_tools, &workspace, &[])?;
     global.global_config_only = true;
-    Ok(memory)
+    Ok(ChatProfilePreparation { memory, graph })
+}
+
+fn select_graph(global: &GlobalOpts, config: &Config, name: &str) -> Result<GraphSelection> {
+    use mecha_core::feature::{self, Feature};
+    anyhow::ensure!(
+        !global
+            .no_mcp_servers
+            .iter()
+            .any(|disabled| disabled == name),
+        "selected memory graph server is disabled"
+    );
+    let matching: Vec<_> = config
+        .mcp
+        .iter()
+        .filter(|server| server.name == name)
+        .collect();
+    anyhow::ensure!(
+        matching.len() == 1,
+        "memory graph needs one exact configured server"
+    );
+    let server = matching[0];
+    anyhow::ensure!(
+        server.from_operator
+            && !server.disabled
+            && feature::server_feature(server) == Some(Feature::Graph)
+            && feature::switched_on(config, Feature::Graph),
+        "memory graph requires an enabled owner-configured graph server"
+    );
+    let unique: std::collections::BTreeSet<_> = global.tools.iter().collect();
+    anyhow::ensure!(
+        unique.len() == global.tools.len(),
+        "memory tools must be unique"
+    );
+    let mut remote_names = std::collections::BTreeSet::new();
+    let mut local_names = Vec::new();
+    for remote in ["kg_search", "kg_entity", "kg_task_list"] {
+        let local = if server.prefix_tools == Some(false) {
+            remote.to_owned()
+        } else {
+            format!("{}__{remote}", server.name)
+        };
+        if global.tools.contains(&local) {
+            anyhow::ensure!(
+                !config.tools.disabled.contains(&local)
+                    && !server
+                        .disabled_tools
+                        .iter()
+                        .any(|disabled| disabled == remote),
+                "selected memory graph tool is disabled"
+            );
+            remote_names.insert(remote.to_owned());
+            local_names.push(local);
+        }
+    }
+    anyhow::ensure!(
+        !remote_names.is_empty(),
+        "select a supported read-only graph tool"
+    );
+    local_names.sort();
+    Ok(GraphSelection {
+        server: server.clone(),
+        remote_names,
+        local_names,
+    })
+}
+
+#[cfg(test)]
+mod graph_selection_tests {
+    use super::*;
+    use clap::Parser;
+    use mecha_core::config::McpServerConfig;
+
+    fn fixture(prefix: bool) -> (GlobalOpts, Config) {
+        let graph_tool = if prefix {
+            "chosen__kg_search"
+        } else {
+            "kg_search"
+        };
+        let opts = crate::Cli::try_parse_from([
+            "mecha",
+            "chat",
+            "--tool",
+            "goal_context",
+            "--tool",
+            graph_tool,
+        ])
+        .unwrap()
+        .global;
+        let mut config = Config::default();
+        config.features.0.insert("graph".into(), true);
+        config.mcp.push(McpServerConfig {
+            name: "chosen".into(),
+            command: "/authored/mecha-graph-mcp".into(),
+            from_operator: true,
+            prefix_tools: Some(prefix),
+            ..Default::default()
+        });
+        (opts, config)
+    }
+
+    #[test]
+    fn graph_selection_uses_exact_owner_mapping_and_closed_read_surface() {
+        for prefix in [false, true] {
+            let (opts, config) = fixture(prefix);
+            let selected = select_graph(&opts, &config, "chosen").unwrap();
+            assert_eq!(selected.remote_names, ["kg_search".to_owned()].into());
+            assert_eq!(selected.local_names, vec![opts.tools[1].clone()]);
+            assert!(select_graph(&opts, &config, "other").is_err());
+            let mut wrong = opts.clone();
+            wrong.tools[1] = "other__kg_search".into();
+            assert!(select_graph(&wrong, &config, "chosen").is_err());
+            wrong.tools[1] = if prefix {
+                "chosen__kg_upsert"
+            } else {
+                "kg_upsert"
+            }
+            .into();
+            assert!(select_graph(&wrong, &config, "chosen").is_err());
+        }
+    }
+
+    #[test]
+    fn graph_selection_refuses_disabled_ambiguous_and_project_authority() {
+        for variant in 0..8 {
+            let (mut opts, mut config) = fixture(true);
+            match variant {
+                0 => config.mcp[0].from_operator = false,
+                1 => config.mcp[0].disabled = true,
+                2 => {
+                    config.features.0.insert("graph".into(), false);
+                }
+                3 => {
+                    config.mcp.push(config.mcp[0].clone());
+                }
+                4 => opts.no_mcp_servers.push("chosen".into()),
+                5 => config.mcp[0].disabled_tools.push("kg_search".into()),
+                6 => config.tools.disabled.push("chosen__kg_search".into()),
+                _ => opts.tools.push("chosen__kg_search".into()),
+            }
+            assert!(
+                select_graph(&opts, &config, "chosen").is_err(),
+                "accepted {variant}"
+            );
+        }
+    }
 }

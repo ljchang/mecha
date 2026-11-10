@@ -223,8 +223,10 @@ pub struct ChatMemoryMarker {
 impl ChatMemoryMarker {
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
-            self.protocol == "ordinary-chat-memory-v1"
-                && !self.conversation_id.is_empty()
+            matches!(
+                self.protocol.as_str(),
+                "ordinary-chat-memory-v1" | "ordinary-chat-memory-v2"
+            ) && !self.conversation_id.is_empty()
                 && self.conversation_id.len() <= 256
                 && !self.authority.is_empty()
                 && self.authority.len() <= 256
@@ -2343,6 +2345,9 @@ impl Session {
     /// otherwise unparseable history after a dynamic decision, and malformed
     /// memory-marked transcripts refuse loading: skipped state could lose taint
     /// or make incomplete history appear safe to resume or replay.
+    /// A valid chat-memory marker additionally refuses ordinary continuation.
+    /// Historical non-executing replay uses `read` and recorded answers; it does
+    /// not authenticate current memory authority or permit live divergence.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
         let t = Session::read(path)?;
         anyhow::ensure!(

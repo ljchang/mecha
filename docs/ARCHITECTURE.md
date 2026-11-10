@@ -13118,6 +13118,30 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   conversation's turn. The pre-config schema placeholder refuses dispatch.
   Pure driven-run startup constraints precede transcript discovery, and memory
   resume validation still precedes provider/router setup.
+- **A graph snapshot binds the admitted reader, not today's owner graph.**
+  `prepare_selected_graph` freezes effective launch configuration before spawn;
+  CLI chat compares it with authenticated V2 attachment authority, then compares
+  actual runtime descriptors before provider preparation. Only the selected
+  read-only graph tools enter this registry. `ChatGraphSurface` belongs in the
+  private attachment, never a model-authored transcript field. Capture checks
+  exact native result provenance and cumulative taint; a host refusal stays
+  nonexternal, while server errors remain external failed observations. V1 bytes
+  and the observation protocol remain unchanged. These are historical delivered
+  snapshots, not canonical graph revisions or graph-side deletion tracking.
+  Recovery uses sealed source authority and cannot reconnect to the graph.
+  Historical Stop/Error replay uses taped answers; Live divergence refuses a
+  memory marker because replay does not authenticate its executable attachment.
+- **Selected graph preflight and execution share one frozen launch policy.**
+  Ordinary bwrap clears its inner environment, so setting only the outer MCP
+  environment lost explicit server configuration. The selected-only constructor
+  clears the parent inheritance, freezes the permitted environment and uses the
+  same resolved launcher and confinement arguments for preflight and execution.
+  Neither stage puts environment values in argv. Synthetic PATH/HOME and explicit
+  sandbox overrides remain ordered, with server posture forced last. Loader
+  controls refuse before spawn because they could act before confinement;
+  unqualified scoped resource limits also refuse. Ordinary bwrap and Landlock's
+  pre-exec enforcement stay unchanged. A passing generic backend test does not
+  establish this selected launch contract; its own required-backend test does.
 - **Owner context is not a confirmed success criterion.** Chat observation
   sidecars hold sanitized versions and original owner/decision locators, mutually
   exclusive with a confirmed criterion. Repeating identical text is still a new

@@ -317,3 +317,75 @@ async fn budget_notice_late_write_keeps_phase_permission_and_path_guards() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn budget_notice_is_not_appended_when_cancelled_during_compaction() {
+    struct CancelSummary {
+        inner: Arc<ScriptedProvider>,
+        cancel: CancellationToken,
+        summaries: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl Provider for CancelSummary {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "cancel-summary"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            if req.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM) {
+                self.summaries
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.cancel.cancel();
+                // Never win the response race: exercise interrupted compaction,
+                // deterministically, before the first budget notice is due.
+                std::future::pending().await
+            } else {
+                self.inner.complete(req, sink).await
+            }
+        }
+    }
+    let mut script: Vec<_> = (0..6).map(budget_notice_echo).collect();
+    script[5].usage.input_tokens = 1000;
+    let (mut agent, provider) = agent_with(script, PermissionMode::Allow);
+    let token = CancellationToken::new();
+    let summaries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    agent.provider = Box::new(CancelSummary {
+        inner: Arc::clone(&provider),
+        cancel: token.clone(),
+        summaries: Arc::clone(&summaries),
+    });
+    agent.cfg.max_turns = 8;
+    agent.cfg.force_final_answer = false;
+    agent.cfg.compact_at_tokens = Some(100);
+    agent.cfg.compact_keep_recent = 2;
+    agent.cfg.compact_validate = false;
+    agent.cfg.predictive_compaction = false;
+    let cx = (*agent.cx)
+        .clone()
+        .with_budget_notice(true)
+        .with_cancel(token);
+    let mut convo = Conversation::user("Read the authored fixture in sequence.");
+    let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+    assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+    assert_eq!(outcome.turns, 6);
+    assert_eq!(
+        outcome.compactions, 0,
+        "interrupted summary must not install"
+    );
+    assert_eq!(summaries.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(provider.seen.lock().unwrap().len(), 6);
+    assert_eq!(
+        budget_notice_count(&convo.messages),
+        0,
+        "cancellation must win before advisory transcript mutation"
+    );
+}

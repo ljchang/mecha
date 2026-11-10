@@ -412,6 +412,7 @@ enabled = ["fs_read", "fs_write", "goal_context"]
             assert versions[binding["version"]]["owner_inputs"][-1]["source"] == "cli_chat"
         receipt_summary = inspect_chat_receipts(authority, transcript, [root / "live-initial.stderr", root / "live-resumed.stderr"])
         original = transcript.read_bytes()
+        reject("replay-live-memory", [str(binary), "replay", str(transcript), "--on-divergence", "live"], transcript)
         revise(3)
         transport.script("historical-replay", LIVE_RESPONSES)
         assert run("replay", ["replay", str(transcript), "--json", "--on-divergence", "error"]) == 0
@@ -434,7 +435,7 @@ enabled = ["fs_read", "fs_write", "goal_context"]
         control = [e["request"] for e in transport.requests if e["case"] == "default-off"]
         assert len(control) == 2
         assert "goal_context_revision" not in last_tool(control[-1])
-        summary = {"status": "passed", "live_requests": 6, "replayed_requests": 6, "default_requests": 2, "startup_refusals": 4, "receipt_summary": receipt_summary, "oversized_action_bytes": len(native_bytes), "semantic_benefit_measured": False}
+        summary = {"status": "passed", "live_requests": 6, "replayed_requests": 6, "default_requests": 2, "startup_refusals": 5, "receipt_summary": receipt_summary, "oversized_action_bytes": len(native_bytes), "semantic_benefit_measured": False}
         write_private(root / "summary.json", json.dumps(summary, indent=2))
         print(json.dumps(summary))
     finally:

@@ -156,6 +156,50 @@ Web/TUI memory attachment and automatic learning remain
 separate work. SQLCipher does not encrypt the native transcript, terminal history
 or private recovery files.
 
+### Read-only owner-graph access in CLI memory chat
+
+Add `--memory-graph-server NAME` to explicitly select one enabled owner-global
+mecha-graph MCP entry. Omit `--no-mcp` in this mode. Retain the other restricted
+flags and select `goal_context` plus the exact local names of the graph readers
+needed for this conversation. The supported remote tools are `kg_search`,
+`kg_entity` and `kg_task_list`; graph writes remain unavailable.
+
+For an existing owner-configured server named `graph` with tool prefixes enabled:
+
+```bash
+"$MECHA_MEMORY_BIN" chat --dynamic-goals \
+  --episodic-memory "$MECHA_MEMORY_ROOT/memory.json" \
+  --memory-graph-server graph \
+  --no-code-tool --no-grants --no-messages --no-hooks --no-fallback \
+  --no-outbox --no-learned-rules --no-past-appraisals --no-success-examples \
+  --tool goal_context --tool fs_read --tool graph__kg_search
+```
+
+Use the same workspace and options for `--resume SESSION_ID`. The attachment
+binds the selected launch configuration and actual tool definitions; changes
+refuse before inference rather than silently widening the conversation. This
+profile does not start unrelated configured MCP servers. It preserves the
+existing sandbox policy; selected Docker launches are not supported because
+executable resolution inside the image cannot be bound by this adapter.
+Direct bwrap launches use the same frozen, filtered environment for startup
+checks and execution. This selected profile refuses bwrap scoped resource limits
+and dynamic-loader environment controls; it never silently ignores them.
+
+Retained evidence is the exact bounded text delivered by the query at that time,
+with its source pointer, action receipt and external-content provenance. It is
+not a synchronized copy of the owner graph, a verified fact, or a promise to
+propagate graph-side deletion. Read-only domain queries may still write graph
+retrieval telemetry. Unsupported/nontext responses become external failures;
+results above the existing capture limit withhold retention and stop the chat.
+Host retry/forget do not need a running graph server. SQLCipher's protection
+boundary remains the database, not the separate JSONL or recovery files.
+
+Historical `replay --on-divergence stop|error` compares against recorded answers;
+it does not reconnect the attachment or check today's source authority. `live`
+divergence refuses memory-marked recordings. Use authenticated chat resume for
+continued execution. Authored tests qualify this integration; a private-data
+trial and evidence of decision benefit remain separate work.
+
 ### Explicit concept learning
 
 The same experimental build provides host-only `memory-session sources` and

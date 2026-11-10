@@ -4175,3 +4175,60 @@ dependencies, concurrent attach and interrupted recording. An authored transport
 tests actual CLI wiring. A bounded memory-on/off model comparison records delivered
 evidence and citations, including a misleading historical memory; storage success
 alone is not a decision-benefit result.
+
+### 31.26 Bounded owner-graph observations in encrypted CLI chat
+
+**Implementation contract, 2026-11-10.** Extend the existing chat attachment,
+not the owner graph's storage. `chat --memory-graph-server NAME` requires explicit
+memory and dynamic-goal opt-ins, and selects one enabled owner-global Graph MCP
+entry. Keep an exact tool allowlist: existing local file tools and `goal_context`,
+plus the selected server's `kg_search`, `kg_entity` and/or `kg_task_list`. No graph
+mutation, arbitrary server, hidden startup query or migration enters this profile.
+
+Freeze effective launch configuration before spawning the selected child. On
+resume, authenticate the existing attachment, source chain and exclusive lease,
+then compare launch identity and selected names. Compare actual live tool schema,
+description, capability, effect and fixed-workspace descriptors before router or
+provider preparation. Reuse the normal MCP construction, sandbox and environment
+rules. The launch digest binds configuration and resolved executable paths; it
+is not executable-byte attestation or a graph-content revision. The selected
+profile refuses Docker's unresolved inside-image executable and preserves the
+existing Seatbelt MCP refusal. This does not loosen ordinary backend policy.
+Selected direct bwrap uses one frozen, explicitly filtered environment for both
+preflight and server launch, with no environment values in argv. Dynamic-loader
+controls and unqualified scoped resource limits refuse before spawn. The digest
+uses the final process environment and resolved launcher, including synthetic
+PATH/HOME and sandbox overrides; ordinary launch paths remain unchanged.
+
+A graph-enabled conversation uses `ordinary-chat-memory-v2`, whose immutable
+private attachment requires a sorted `ChatGraphSurface`. Local-only V1 remains
+unchanged. Hash the original authenticated attachment bytes; turn and seal
+identities already bind them transitively. Keep the ordinary-chat observation
+protocol and SQL schema unchanged. Reports use the authenticated attachment
+version; unavailable authority has an explicit report-only unavailable tag,
+never an invented V1 identity or an accepted attachment marker.
+
+Capture exact delivered native ToolResult text, action metadata and receipts.
+Every V2 result requires its exact native provenance entry; unrelated entries,
+unknown success provenance and lost cumulative taint refuse capture. A local
+harness refusal remains nonexternal and failed; server and transport failures
+remain external and failed. Graph content remains private and untrusted. A
+successful receipt means the query completed, not that the result is true.
+The snapshot says what this query returned then; canonical entity revisions and
+propagation of graph-side deletion require a future source adapter. Existing
+source withdrawal and explicit forgetting still revoke retained evidence.
+
+Text-only selected results, existing passage/history caps, and complete-turn
+retention remain in force. Oversized results visibly withhold capture and stop
+continuation. Host retry and forget use sealed authority without running MCP,
+a model or an action. Historical Stop/Error replay remains a comparison against
+recorded answers; live divergence from a memory-marked recording refuses because
+it lacks authenticated current attachment authority.
+
+Qualification uses authored MCP servers and transport, including selected-only
+startup, changed-launch and changed-inventory refusal, graph snapshot recall
+across changed goals and restart, external failures and oversized results.
+This qualifies mechanics, not semantic benefit, private data or daily-use cutover.
+Web attachment, planning/todo continuity and safe compaction remain separate
+usable increments, specified in the implementation plan rather than inferred
+from tool allowlisting alone.

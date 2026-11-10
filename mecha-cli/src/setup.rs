@@ -228,9 +228,7 @@ pub async fn prepare_carrying(
     todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
 ) -> Result<Prepared> {
     let tools = prepare_tools_carrying(opts, interactive, todo).await?;
-    preflight_provider(&tools.config, opts).await;
-    let code = code_interpreter(&tools, opts).await?;
-    build(tools, code, opts)
+    finish_prepared_tools(tools, opts).await
 }
 
 /// Take `code` off `registry` where `profile` would not keep it, judging
@@ -1529,6 +1527,109 @@ fn load_config(opts: &GlobalOpts) -> Result<Config> {
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
     prepare_tools_carrying(opts, interactive, None).await
+}
+
+/// Staged tools plus a frozen selected launch. No MCP child or provider has
+/// started: a memory attachment can compare its launch digest first.
+#[cfg(feature = "memory-prototype")]
+pub struct SelectedGraphPreparation {
+    pub tools: PreparedTools,
+    pub launch: mcp::PreparedSelectedGraph,
+    expected_tools: std::collections::BTreeSet<String>,
+}
+
+#[cfg(feature = "memory-prototype")]
+impl SelectedGraphPreparation {
+    pub async fn connect(mut self) -> Result<(PreparedTools, mcp::SelectedGraphTools)> {
+        let graph = self.launch.connect().await?;
+        for listed in graph.tools() {
+            let name = &listed.descriptor().local_name;
+            anyhow::ensure!(
+                self.expected_tools.contains(name)
+                    && !self.tools.config.tools.disabled.contains(name)
+                    && self.tools.registry.get(name).is_none(),
+                "selected graph tool `{name}` is withheld or collides with the local surface"
+            );
+        }
+        let actual: std::collections::BTreeSet<_> = self
+            .tools
+            .registry
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .chain(
+                graph
+                    .tools()
+                    .iter()
+                    .map(|tool| tool.descriptor().local_name.clone()),
+            )
+            .collect();
+        anyhow::ensure!(
+            actual == self.expected_tools,
+            "selected graph memory tools do not match the explicit tool allowlist"
+        );
+        for listed in graph.tools() {
+            self.tools.registry.insert(Arc::clone(listed.tool()));
+        }
+        self.tools._mcp.push(Arc::clone(graph.client()));
+        Ok((self.tools, graph))
+    }
+}
+
+/// Prepare the existing builtin surface while suppressing ordinary MCP
+/// attachment, then freeze exactly the owner-selected graph launch. The
+/// original options must be used for finish/build and recorded lever metadata.
+#[cfg(feature = "memory-prototype")]
+pub async fn prepare_tools_for_memory_graph(
+    opts: &GlobalOpts,
+    interactive: bool,
+    selection: &mecha_core::config::McpServerConfig,
+    remote_names: &std::collections::BTreeSet<String>,
+) -> Result<SelectedGraphPreparation> {
+    use mecha_core::feature::{self, Feature};
+    anyhow::ensure!(
+        !opts.no_mcp && !opts.tools.is_empty(),
+        "selected graph requires MCP and an explicit tool allowlist"
+    );
+    let mut local_opts = opts.clone();
+    local_opts.no_mcp = true;
+    let tools = prepare_tools(&local_opts, interactive).await?;
+    let matching: Vec<_> = tools
+        .config
+        .mcp
+        .iter()
+        .filter(|server| server.name == selection.name)
+        .collect();
+    anyhow::ensure!(
+        matching.len() == 1,
+        "selected graph configuration is missing or ambiguous"
+    );
+    let configured = matching[0];
+    anyhow::ensure!(
+        configured.from_operator
+            && selection.from_operator
+            && !configured.disabled
+            && configured.owner_zone == selection.owner_zone
+            && serde_json::to_value(configured)? == serde_json::to_value(selection)?
+            && !opts.no_mcp_servers.contains(&configured.name)
+            && feature::server_feature(configured) == Some(Feature::Graph)
+            && feature::switched_on(&tools.config, Feature::Graph),
+        "selected graph configuration changed or is no longer enabled"
+    );
+    let launch =
+        mcp::prepare_selected_graph(configured, &tools.sandbox, &tools.workspace, remote_names)?;
+    Ok(SelectedGraphPreparation {
+        tools,
+        launch,
+        expected_tools: opts.tools.iter().cloned().collect(),
+    })
+}
+
+/// Finish already-prepared tools after a surface-specific admission check.
+/// Provider preflight and agent construction keep their ordinary single path.
+pub async fn finish_prepared_tools(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
+    preflight_provider(&tools.config, opts).await;
+    let code = code_interpreter(&tools, opts).await?;
+    build(tools, code, opts)
 }
 
 /// [`prepare_tools`], with the todo handle a rebuild carries ([`prepare_carrying`]).
