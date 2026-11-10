@@ -81,6 +81,9 @@ pub enum Cmd {
         /// Optional host-only single-query lexical/dense recall contract.
         #[arg(long)]
         recall_request: Option<PathBuf>,
+        /// Optional public output shape for one bounded completion intervention.
+        #[arg(long)]
+        completion_request: Option<PathBuf>,
         #[arg(long)]
         authority: PathBuf,
         #[arg(long)]
@@ -681,6 +684,7 @@ where
             synthetic_input,
             request,
             recall_request,
+            completion_request,
             authority,
             root,
             endpoint,
@@ -691,8 +695,9 @@ where
             use mecha_core::{
                 memory_experience_bridge::LocalAuthority,
                 memory_situated_workflow::{
-                    run_native_session_with_recall, run_native_session_with_storage,
-                    NativeRecallRequest, NativeSessionRequest,
+                    run_native_session_with_completion, run_native_session_with_recall,
+                    run_native_session_with_storage, NativeCompletionRequest, NativeRecallRequest,
+                    NativeSessionRequest,
                 },
             };
             use std::io::Read;
@@ -724,6 +729,23 @@ where
                     serde_json::from_slice::<NativeRecallRequest>(&bytes)?.into_config()
                 })
                 .transpose()?;
+            let completion = completion_request
+                .map(|path| -> Result<_> {
+                    ensure!(
+                        path.is_absolute(),
+                        "explicit absolute completion request path required"
+                    );
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(path)?
+                        .take(1_048_577)
+                        .read_to_end(&mut bytes)?;
+                    ensure!(
+                        bytes.len() <= 1_048_576,
+                        "oversized native completion request file"
+                    );
+                    serde_json::from_slice::<NativeCompletionRequest>(&bytes)?.into_config()
+                })
+                .transpose()?;
             let authority = LocalAuthority::open(&authority)?;
             let cancel = CancellationToken::new();
             let signal_cancel = cancel.clone();
@@ -743,7 +765,20 @@ where
                     run_cancel,
                 )
             };
-            let result = if let Some(recall) = recall {
+            let result = if let Some(completion) = completion {
+                run_native_session_with_completion(
+                    &args.db,
+                    storage.clone(),
+                    &authority,
+                    &request,
+                    recall,
+                    completion,
+                    &root,
+                    factory,
+                    &cancel,
+                )
+                .await
+            } else if let Some(recall) = recall {
                 run_native_session_with_recall(
                     &args.db,
                     storage.clone(),
@@ -780,11 +815,24 @@ where
                 .recall
                 .as_ref()
                 .is_some_and(|recall| !recall.protocol_satisfied());
-            if report.run_error.is_some() || report.capture_error.is_some() || recall_failed {
+            let completion_failed = report
+                .completion
+                .as_ref()
+                .is_some_and(|completion| !completion.protocol_satisfied());
+            if report.run_error.is_some()
+                || report.capture_error.is_some()
+                || recall_failed
+                || completion_failed
+            {
                 println!("{}", serde_json::to_string_pretty(&value)?);
-                let recall_diagnostic = report.recall.as_ref().map_or_else(String::new, |_| {
+                let mut recall_diagnostic = report.recall.as_ref().map_or_else(String::new, |_| {
                     format!("; recall protocol failed: {recall_failed}")
                 });
+                if report.completion.is_some() {
+                    recall_diagnostic.push_str(&format!(
+                        "; completion protocol failed: {completion_failed}"
+                    ));
+                }
                 anyhow::bail!(
                     "native session incomplete; inspect {} (execution: {}; capture: {}{})",
                     report_path.display(),

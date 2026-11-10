@@ -84,6 +84,24 @@ Any caller owning its input gets the same behaviour from
 `RunContext`, which is how one agent serves the web surface's concurrent
 conversations under different jails and permission modes.
 
+**Completion feedback is part of the original run, not another executor.**
+An explicitly supplied `CompletionObserver` may inspect a normal nonempty
+terminal answer and append at most one closed-vocabulary harness notice.
+`Agent::run_in` retains its conversation, taint, tool allowances and budgets;
+children do not inherit the observer. Inspection is bounded by two seconds and
+the original host deadline, with cancellation/deadline checks before and after
+awaiting it. Only synchronous loop-accepted snapshots reach `record`, so a late
+blocking read cannot publish success after cancellation. A normal last-turn
+answer may be inspected at a token/turn/cost cap, but cannot resume there.
+
+**Mixed harness and owner text needs block-level provenance.** Completion
+notices use exact registered voice and a harness-marked user message. If a real
+steer joins that message, clear the whole-message flag only when all existing
+blocks are recognized harness text, including an empty-turn nudge. Otherwise
+the owner's steer can disappear from captured evidence; clearing arbitrary
+host-message flags would make the opposite error. The registered notices
+remain excluded individually after the message becomes mixed.
+
 ## Provider notes (Claude 5 family)
 
 **Two HTTP clients per provider, chosen per request by whether the body
@@ -12924,6 +12942,14 @@ ordinary run setup and replaces only its already-available `goal_context`.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **Operational feedback cannot consult semantic gold.** Native completion
+  receives a separately validated public row/key shape, never `expected_rows`
+  or an artifact verdict. It uses the existing bounded no-follow reader for
+  `workspace/output.json`; unsafe or unavailable reads cannot suggest repairs.
+  A structurally valid wrong answer is ready. A consumed failed recall cannot
+  acquire another allowance or become ready through artifact repair. The
+  task-local report survives later execution/capture errors, and its appended
+  feedback flag does not prove a provider received a subsequent request.
 - **A completed answer is not proof that its recall protocol completed.**
   Explicit native recall uses a host-owned exact query and an atomic attempted-call
   budget. Malformed or repeated calls cannot buy more evidence. The optional host

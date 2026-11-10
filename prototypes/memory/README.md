@@ -157,6 +157,52 @@ capture failures preserve reports and exit nonzero. A completed task with a fail
 independent artifact check is retained as a failed outcome, distinct from those
 execution failures.
 
+### Bounded completion feedback
+
+Add `--completion-request /absolute/path/completion.json` to `native-session`
+to enable one opportunity to repair an incomplete operation. For a task whose
+public output contract is one row with a string-valued `choice`, supply:
+
+```json
+{"rows":1,"keys":["choice"]}
+```
+
+This host file is bounded to 1 MiB. It permits 1–32 rows and 1–16 unique keys,
+each an ASCII identifier of at most 64 bytes; every output value must be a
+string. The public task prompt should state that contract. The checker reads
+only the fixed `workspace/output.json` artifact and never compares its values
+with hidden `expected_rows`. A wrong answer can therefore be operationally
+ready while still failing the independent artifact evaluation.
+
+If controlled recall is also selected, the checker may request the first
+required read, but cannot grant another attempt after a consumed or rejected
+call. One fixed harness notice can continue the same Agent loop within its
+original six-turn, 16,384-token and 180-second limits. An unsafe read, refusal,
+cancellation or exhausted continuation budget does not receive another chance.
+This option currently cannot be combined with `interpretation_context_id`.
+
+The opt-in report adds `completion.protocol`, `shape_digest` and `report`, whose
+first/latest observations are separate from the semantic artifact check.
+`feedback_delivered` means the notice was appended to the conversation, not
+that a later request reached the model. Unsatisfied operational completion exits
+nonzero; a valid but wrong answer retains the ordinary measured-outcome behavior.
+Omitting this option preserves the existing native protocol and report fields.
+
+`completion_trial.py` and `fixtures/completion-feedback/` define a separate
+public development comparison: four paired decisions from three source families,
+with feedback off/on and identical lexical recall. Two cases require supported
+choices; two require `unknown` for irrelevant or withdrawn evidence. The protocol
+holds episodic memory on and adaptive concept/policy learning frozen. It does
+not measure the full adaptive system or reuse the original vector cohort.
+
+Use its `seed`, `freeze`, `run` and `audit` stages with fresh roots and qualified
+binary/helper paths, as in the vector comparison below. The freeze also requires
+explicit verified source/runtime identity receipts. Raw artifact scores,
+operational readiness, source qualification, feedback receipt and costs stay
+separate. A prepared request is not proof of provider receipt; incomplete and
+unstarted slots remain in the planned denominator. Each terminal slot is sealed
+before scoring, and started experiments cannot replay.
+
 ### Controlled lexical or vector recall
 
 Add `--recall-request /absolute/path/recall.json` to `native-session` to select
@@ -190,7 +236,8 @@ makes the controlled CLI exit nonzero even if the artifact is correct. A wrong
 artifact after a valid completed run remains an ordinary measured outcome.
 The experiment also audits transcript attempts rejected before tool dispatch;
 those attempts are outside the tool-local counters.
-Without `--recall-request`, native-session behavior and report shape are unchanged.
+Without either `--recall-request` or `--completion-request`, native-session behavior
+and report shape are unchanged.
 
 The portable fixture and protocol in `fixtures/native-vector-recall/` define
 eight lexical/dense pairs. `native_vector_trial.py` separately seeds authored

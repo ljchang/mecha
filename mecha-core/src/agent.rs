@@ -5,6 +5,13 @@
 //! who approves side effects — is injected, so the same loop drives the REPL,
 //! a one-shot run, and a batch worker.
 
+#[path = "agent_completion.rs"]
+mod completion;
+pub use completion::{
+    CompletionArtifactIssue, CompletionFeedback, CompletionObservation, CompletionObserver,
+    CompletionReadiness, CompletionReport,
+};
+
 use crate::config::{AgentConfig, TrifectaPolicy};
 use crate::message::*;
 use crate::provider::{Provider, StreamEvent};
@@ -225,6 +232,10 @@ pub struct RunContext {
     pub budget: Budget,
     /// Opt-in advice near this run's hard turn ceiling; never changes its budget.
     pub budget_notice: bool,
+    /// Optional operational completion check; no observer runs by default.
+    pub completion_observer: Option<Arc<dyn CompletionObserver>>,
+    /// The host's original run deadline, never extended by completion checks.
+    pub completion_deadline: Option<tokio::time::Instant>,
     /// Cancels this run. `None` means it cannot be interrupted.
     ///
     /// Opt-in rather than always-on, because making a run cancellable changes
@@ -892,6 +903,8 @@ impl RunContext {
             approver,
             budget: Budget::default(),
             budget_notice: false,
+            completion_observer: None,
+            completion_deadline: None,
             cancel: None,
             cancel_reason: Arc::new(std::sync::Mutex::new(None)),
             phase: Phase::default(),
@@ -908,6 +921,16 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
         }
+    }
+
+    pub fn with_completion_observer(mut self, observer: Arc<dyn CompletionObserver>) -> Self {
+        self.completion_observer = Some(observer);
+        self
+    }
+
+    pub fn with_completion_deadline(mut self, deadline: tokio::time::Instant) -> Self {
+        self.completion_deadline = Some(deadline);
+        self
     }
 
     /// Cap the model's reasoning per request in this run; see the field.
@@ -1852,7 +1875,8 @@ pub(crate) const BUDGET_NOTICE_ONE: &str = "Run budget: one model turn remains, 
 /// and are matched whole.
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
-    text == FINAL_ANSWER_NUDGE
+    completion::is_notice(text)
+        || text == FINAL_ANSWER_NUDGE
         || text == BUDGET_NOTICE_TWO
         || text == BUDGET_NOTICE_ONE
         || text == EMPTY_TURN_NUDGE
@@ -3152,6 +3176,10 @@ impl Agent {
         let mut turns = 0;
         // Run-local, not inferred from history: compaction may remove the block.
         let mut budget_notice_sent = false;
+        let mut completion_report = CompletionReport::default();
+        if let Some(observer) = &cx.completion_observer {
+            observer.record(&completion_report);
+        }
         let mut trace: Vec<ToolCallTrace> = Vec::new();
         let mut malformed = 0u32;
         let mut blocked_sends = 0u32;
@@ -3285,6 +3313,24 @@ impl Agent {
                 .flatten()
             {
                 emit(&events, AgentEvent::QueuedInput(queued.clone()));
+                // A completion notice can be the last user message. Once an
+                // owner steer joins it, classify its blocks separately: the
+                // fixed notice stays registered, but the steer is owner text.
+                // Empty replies can have added more harness blocks already;
+                // every existing block must be known before unmarking it.
+                if let Some(last) = messages.last_mut() {
+                    if last.role == Role::User
+                        && last.harness
+                        && last.content.iter().any(
+                            |block| matches!(block, Block::Text { text } if completion::is_notice(text)),
+                        )
+                        && last.content.iter().all(
+                            |block| matches!(block, Block::Text { text } if is_harness_voice(text)),
+                        )
+                    {
+                        last.harness = false;
+                    }
+                }
                 append_user_text(messages, queued);
             }
 
@@ -4489,6 +4535,22 @@ impl Agent {
                 // conversation as-is resumes it; no extra user message.
                 StopReason::PauseTurn => continue,
                 _ => {
+                    // A final artifact can be ready at a budget ceiling, but
+                    // only an ordinary answer with budget remaining may resume.
+                    // Forced final-answer and closing paths never enter here
+                    // as eligible operational work.
+                    if stop_reason == StopReason::EndTurn
+                        && !produced_nothing
+                        && closing.is_none()
+                        && cx.completion_observer.is_some()
+                    {
+                        let resumed = completion_report
+                            .observe(cx, !stopping_now(loop_detected, turns, &usage), messages)
+                            .await;
+                        if resumed || cx.cancelled() {
+                            continue;
+                        }
+                    }
                     let mut outcome = self.finish(
                         text,
                         &response,
@@ -7308,6 +7370,7 @@ fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
 
 #[cfg(test)]
 mod tests {
+    include!("agent_completion_tests.rs");
     include!("agent_budget_notice_tests.rs");
     use super::*;
     use crate::config::PermissionMode;

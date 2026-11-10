@@ -1122,6 +1122,15 @@ fallback, missing calls and failures. An unsatisfied recall protocol returns
 nonzero even when the saved answer is correct. Omit the flag for ordinary native
 prototype behavior; it does not change normal chat/web retrieval.
 
+`native-session --completion-request /absolute/path/completion.json` enables
+one bounded completion notice inside the original run. The public shape file
+looks like `{"rows":1,"keys":["choice"]}`: exact row count and string-valued
+keys, without answer values. It checks the saved artifact and any selected
+required recall, while hidden answer correctness remains a separate evaluation.
+It cannot repeat a consumed recall or reset the session budgets. Unsatisfied
+completion returns nonzero, and the saved report retains first/latest readiness
+observations. Omit the flag to leave native completion behavior unchanged.
+
 Explicitly selected model-evaluation, extraction and native-session workflows
 can call resident local models through explicit settings; they bypass ordinary
 provider configuration. See the

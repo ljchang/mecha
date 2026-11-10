@@ -603,17 +603,27 @@ fn native_session_requires_a_fresh_root_and_records_discovery_failure() {
 #[cfg(feature = "memory-prototype")]
 #[test]
 fn native_session_execution_failure_is_nonzero_with_preserved_report() {
-    native_session_execution_failure(false);
+    native_session_execution_failure(false, NativeCliScenario::Failure);
 }
 
 #[cfg(feature = "memory-prototype")]
 #[test]
 fn native_controlled_session_execution_failure_preserves_uncalled_recall_report() {
-    native_session_execution_failure(true);
+    native_session_execution_failure(true, NativeCliScenario::Failure);
 }
 
 #[cfg(feature = "memory-prototype")]
-fn native_session_execution_failure(controlled: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeCliScenario {
+    Failure,
+    FailureAfterFeedback,
+    IncompleteArtifact,
+    WrongArtifact,
+}
+
+#[cfg(feature = "memory-prototype")]
+fn native_session_execution_failure(controlled: bool, scenario: NativeCliScenario) {
+    let completion = scenario != NativeCliScenario::Failure;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -676,13 +686,63 @@ fn native_session_execution_failure(controlled: bool) {
                     serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
                 assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
                 assert_eq!(body["max_tokens"], 4096);
+                assert_eq!(body["stream"], true);
                 completions += 1;
-                (
-                    500,
-                    r#"{"error":{"message":"authored unavailable completion"}}"#,
-                )
+                match (scenario, completions) {
+                    (NativeCliScenario::IncompleteArtifact, 1) => (
+                        200,
+                        r#"{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"write","type":"function","function":{"name":"fs_write","arguments":"{\"path\":\"output.json\",\"content\":\"[]\"}"}}]}}],"usage":{"prompt_tokens":12,"completion_tokens":8}}"#,
+                    ),
+                    (NativeCliScenario::WrongArtifact, 1) => (
+                        200,
+                        r#"{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"write","type":"function","function":{"name":"fs_write","arguments":"{\"path\":\"output.json\",\"content\":\"[{\\\"route\\\":\\\"unknown\\\"}]\"}"}}]}}],"usage":{"prompt_tokens":12,"completion_tokens":8}}"#,
+                    ),
+                    (NativeCliScenario::FailureAfterFeedback, 1)
+                    | (
+                        NativeCliScenario::IncompleteArtifact | NativeCliScenario::WrongArtifact,
+                        _,
+                    ) => (
+                        200,
+                        r#"{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done."}}],"usage":{"prompt_tokens":12,"completion_tokens":8}}"#,
+                    ),
+                    _ => {
+                        if completion {
+                            assert!(body["messages"].as_array().unwrap().iter().any(|message| {
+                                message["role"] == "user"
+                                    && message["content"].as_str().is_some_and(|text| {
+                                        text.contains(
+                                            "From the harness: required operations are incomplete.",
+                                        )
+                                    })
+                            }));
+                        }
+                        (
+                            500,
+                            r#"{"error":{"message":"authored unavailable completion"}}"#,
+                        )
+                    }
+                }
             };
-            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            let (content_type, body) = if status == 200 && !request.starts_with("GET ") {
+                let mut response: serde_json::Value = serde_json::from_str(body).unwrap();
+                response["model"] = serde_json::json!("test-model");
+                let choice = &mut response["choices"][0];
+                let mut delta = choice.as_object_mut().unwrap().remove("message").unwrap();
+                if let Some(calls) = delta["tool_calls"].as_array_mut() {
+                    for (index, call) in calls.iter_mut().enumerate() {
+                        call["index"] = serde_json::json!(index);
+                    }
+                }
+                choice["index"] = serde_json::json!(0);
+                choice["delta"] = delta;
+                (
+                    "text/event-stream",
+                    format!("data: {response}\n\ndata: [DONE]\n\n"),
+                )
+            } else {
+                ("application/json", body.to_owned())
+            };
+            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
         completions
     });
@@ -727,23 +787,70 @@ fn native_session_execution_failure(controlled: bool) {
         "--holds-dir",
         holds.to_str().unwrap(),
     ];
+    let completion_request = f.0.join("completion.json");
+    std::fs::write(&completion_request, r#"{"rows":1,"keys":["route"]}"#).unwrap();
     if controlled {
         args.extend(["--recall-request", recall.to_str().unwrap()]);
+    }
+    if completion {
+        args.extend(["--completion-request", completion_request.to_str().unwrap()]);
     }
     let output = f.run(&args);
     done.store(true, Ordering::Relaxed);
     assert_eq!(
         serving.join().unwrap(),
-        1,
-        "failed actions must not retry inference"
+        match scenario {
+            NativeCliScenario::Failure => 1,
+            NativeCliScenario::IncompleteArtifact => 3,
+            _ => 2,
+        },
+        "unexpected request count; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        !output.status.success(),
-        "incomplete execution must exit nonzero"
+    assert_eq!(
+        output.status.success(),
+        scenario == NativeCliScenario::WrongArtifact,
+        "only operational readiness controls this result"
     );
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
-    assert!(report["run_error"].is_string());
+    if matches!(
+        scenario,
+        NativeCliScenario::IncompleteArtifact | NativeCliScenario::WrongArtifact
+    ) {
+        assert!(report["run_error"].is_null() && report["capture_error"].is_null());
+        assert_eq!(
+            report["check"]["verdict"],
+            if scenario == NativeCliScenario::IncompleteArtifact {
+                "Passed"
+            } else {
+                "Failed"
+            }
+        );
+    } else {
+        assert!(report["run_error"].is_string());
+    }
+    if completion {
+        assert_eq!(
+            report["completion"]["protocol"],
+            "native-completion-feedback-v1"
+        );
+        assert_eq!(
+            report["completion"]["report"]["feedback_delivered"],
+            scenario != NativeCliScenario::WrongArtifact
+        );
+        assert_eq!(
+            report["completion"]["report"]["first"]["readiness"],
+            if scenario == NativeCliScenario::WrongArtifact {
+                "ready"
+            } else {
+                "incomplete"
+            }
+        );
+    } else {
+        assert!(report.get("completion").is_none());
+    }
     if controlled {
         assert_eq!(report["recall"]["status"], "not_called");
         assert_eq!(report["recall"]["entered_calls"], 0);
@@ -757,8 +864,10 @@ fn native_session_execution_failure(controlled: bool) {
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
         report
     );
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains(root.join("report.json").to_str().unwrap()));
+    if scenario != NativeCliScenario::WrongArtifact {
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains(root.join("report.json").to_str().unwrap()));
+    }
 }
 
 #[cfg(feature = "memory-prototype")]
@@ -1430,4 +1539,96 @@ async fn hybrid_cli_uses_one_checked_loopback_operation_per_nonempty_pool() {
             text == "A rubber gasket seats inside the enclosure lid and blocks rainwater ingress."
         })
     }));
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_completion_cli_retains_feedback_diagnostics_after_provider_failure() {
+    native_session_execution_failure(false, NativeCliScenario::FailureAfterFeedback);
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_completion_cli_validates_shape_before_creating_root_and_retains_v2_failure() {
+    let f = Fixture::new();
+    let database = f.0.join("test.memory-prototype.sqlite");
+    let authority = f.0.join("authority");
+    f.memory(&[
+        "init-native",
+        "--synthetic-input",
+        "--domain",
+        "native-cli",
+        "--authority",
+        authority.to_str().unwrap(),
+    ]);
+    let request = f.0.join("request.json");
+    std::fs::write(&request, serde_json::to_vec(&serde_json::json!({
+        "prompt":"Save the requested artifact.", "files":{},
+        "criterion":{"goal":"task:check", "goal_text":"Check rows.", "criterion_text":"Keep approved rows.", "criterion_revision":"a".repeat(64), "confirmation_digest":"b".repeat(64)},
+        "expected_rows":[], "domain":"native-cli", "scopes":["synthetic:test"], "account":"synthetic"
+    })).unwrap()).unwrap();
+    let completion = f.0.join("completion.json");
+    let root = f.0.join("completion-task");
+    let holds = f.0.join("holds");
+    let args = [
+        "memory",
+        "--experimental",
+        "--db",
+        database.to_str().unwrap(),
+        "native-session",
+        "--synthetic-input",
+        "--request",
+        request.to_str().unwrap(),
+        "--completion-request",
+        completion.to_str().unwrap(),
+        "--authority",
+        authority.to_str().unwrap(),
+        "--root",
+        root.to_str().unwrap(),
+        "--endpoint",
+        "http://example.invalid",
+        "--model",
+        "unused",
+        "--holds-dir",
+        holds.to_str().unwrap(),
+    ];
+    for value in [
+        r#"{"rows":0,"keys":["route"]}"#,
+        r#"{"rows":1,"keys":["route","route"]}"#,
+        r#"{"rows":1,"keys":["1invalid"]}"#,
+        r#"{"rows":1,"keys":["route"],"expected_rows":[]}"#,
+    ] {
+        std::fs::write(&completion, value).unwrap();
+        let output = f.run(&args);
+        assert!(!output.status.success());
+        assert!(!root.exists());
+    }
+    std::fs::write(&completion, vec![b' '; 1_048_577]).unwrap();
+    let output = f.run(&args);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("oversized native completion"));
+    assert!(!root.exists());
+    std::fs::write(&completion, r#"{"rows":1,"keys":["route"]}"#).unwrap();
+    assert!(!f.run(&args).status.success());
+    let bytes = std::fs::read(root.join("report.json")).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(report["protocol"], "native-memory-session-v2");
+    assert_eq!(
+        report["completion"]["protocol"],
+        "native-completion-feedback-v1"
+    );
+    assert!(!f.run(&args).status.success());
+    assert_eq!(bytes, std::fs::read(root.join("report.json")).unwrap());
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_completion_cli_unsatisfied_shape_is_nonzero_without_execution_or_capture_failure() {
+    native_session_execution_failure(false, NativeCliScenario::IncompleteArtifact);
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn native_completion_cli_semantically_wrong_ready_artifact_keeps_existing_success_exit() {
+    native_session_execution_failure(false, NativeCliScenario::WrongArtifact);
 }

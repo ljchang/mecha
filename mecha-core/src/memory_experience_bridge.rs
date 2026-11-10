@@ -1136,6 +1136,12 @@ impl ExternalSourceGuard for LocalAuthority {
         }
     }
 }
+/// The explicit completion adapter shares the artifact checker's descriptor-safe
+/// regular-file read and bound, without receiving any semantic expected values.
+pub(crate) fn read_completion_artifact(path: &Path) -> std::io::Result<Vec<u8>> {
+    bounded_read(path, ARTIFACT_MAX)
+}
+
 fn artifact_check(path: &Path, expected: &[BTreeMap<String, String>]) -> ArtifactCheck {
     match bounded_read(path, ARTIFACT_MAX) {
         Ok(bytes) => ArtifactCheck {

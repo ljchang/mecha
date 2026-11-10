@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "synthetic_only": true,
+  "domain": "synthetic-completion-development",
+  "account": "synthetic",
+  "scopes": [
+    "synthetic"
+  ],
+  "goal": "task:synthetic-method-selection",
+  "goal_text": "Select an observed method in the stated operation domain under the current criterion, or unknown when authorized observations are insufficient.",
+  "public_shape": {
+    "rows": 1,
+    "keys": [
+      "choice"
+    ]
+  },
+  "seeds": [
+    {
+      "id": "S1",
+      "operation_domain": "liquid sample filtration",
+      "observation": "FILTRATION_TRIAL: In liquid sample filtration, method VF2 finishes in 4 minutes and removes dissolved tracer. Method ZP8 finishes in 11 minutes and retains dissolved tracer. These observations concern filtration only.",
+      "old_criterion": "For liquid sample filtration choose the fastest observed method; dissolved tracer retention is not required.",
+      "old_choice": "VF2",
+      "decisive_span": "Method ZP8 finishes in 11 minutes and retains dissolved tracer."
+    },
+    {
+      "id": "S2",
+      "operation_domain": "ceramic parcel wrapping",
+      "observation": "WRAPPING_TRIAL: In ceramic parcel wrapping, method GQ5 uses 2 sheets and cracks thin handles. Method BC9 uses 5 sheets and leaves thin handles intact. These observations concern wrapping only.",
+      "old_criterion": "For ceramic parcel wrapping choose the observed method using the fewest sheets; thin handle damage is acceptable.",
+      "old_choice": "GQ5",
+      "decisive_span": "Method BC9 uses 5 sheets and leaves thin handles intact."
+    },
+    {
+      "id": "S3",
+      "operation_domain": "sensor stream archiving",
+      "observation": "ARCHIVING_TRIAL: In sensor stream archiving, method JD6 uses 18 MB and drops event timestamps. Method RW3 uses 41 MB and preserves event timestamps. These observations concern archiving only.",
+      "old_criterion": "For sensor stream archiving choose the smallest observed archive; event timestamps are unnecessary.",
+      "old_choice": "JD6",
+      "decisive_span": "Method RW3 uses 41 MB and preserves event timestamps."
+    }
+  ],
+  "cases": [
+    {
+      "id": "C01",
+      "stratum": "supported",
+      "source": "S1",
+      "operation_domain": "liquid sample filtration",
+      "query": "FILTRATION_TRIAL",
+      "current_criterion": "For liquid sample filtration choose an observed method that retains dissolved tracer; speed does not matter.",
+      "expected_rows": [
+        {
+          "choice": "ZP8"
+        }
+      ],
+      "withdraw": false,
+      "seed": 91601,
+      "order": [
+        "off",
+        "on"
+      ],
+      "source_family": "S1"
+    },
+    {
+      "id": "C02",
+      "stratum": "supported",
+      "source": "S2",
+      "operation_domain": "ceramic parcel wrapping",
+      "query": "WRAPPING_TRIAL",
+      "current_criterion": "For ceramic parcel wrapping choose an observed method that leaves thin handles intact; sheet consumption does not matter.",
+      "expected_rows": [
+        {
+          "choice": "BC9"
+        }
+      ],
+      "withdraw": false,
+      "seed": 91602,
+      "order": [
+        "on",
+        "off"
+      ],
+      "source_family": "S2"
+    },
+    {
+      "id": "C03",
+      "stratum": "irrelevant_evidence",
+      "source": "S1",
+      "operation_domain": "metal panel coating",
+      "query": "FILTRATION_TRIAL",
+      "current_criterion": "For metal panel coating choose an observed method that prevents salt corrosion. Observations from other operation domains cannot establish coating performance.",
+      "expected_rows": [
+        {
+          "choice": "unknown"
+        }
+      ],
+      "withdraw": false,
+      "seed": 91603,
+      "order": [
+        "off",
+        "on"
+      ],
+      "source_family": "S1"
+    },
+    {
+      "id": "C04",
+      "stratum": "withdrawn_evidence",
+      "source": "S3",
+      "operation_domain": "sensor stream archiving",
+      "query": "ARCHIVING_TRIAL",
+      "current_criterion": "For sensor stream archiving choose an observed method that preserves event timestamps; archive size does not matter. Only currently authorized observations may support the choice.",
+      "expected_rows": [
+        {
+          "choice": "unknown"
+        }
+      ],
+      "withdraw": true,
+      "seed": 91604,
+      "order": [
+        "on",
+        "off"
+      ],
+      "source_family": "S3"
+    }
+  ]
+}

@@ -2,6 +2,15 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Completion and evaluation addendum, 2026-11-09:** §31.20's bounded completion
+observer and explicit native adapter are implemented and qualified on synthetic
+software checks, recorded in HISTORY. The independently audited fresh comparison
+saved correct outputs in 3/4 control versus 4/4 feedback sessions; the only
+difference was a repaired omitted file, not demonstrated learning benefit.
+§31.21 proposes a recurring system evaluation with separate memory and
+adaptive-learning controls, both enabled for its primary track. Those general
+controls and cross-harness runner are not yet implemented.
+
 **Native vector recall addendum, 2026-11-09:** §31.19 is implemented and fully
 qualified on synthetic software checks. The first independently audited paired
 model comparison did not establish decision benefit: artifact completion and
@@ -3666,3 +3675,210 @@ workspace checks and exact staged/message privacy checks precede source publicat
 No claim of general decision benefit or production cutover follows from mechanics
 alone. Implementation steps are in
 `superpowers/plans/2026-11-09-native-vector-recall.md`.
+
+### 31.20 Bounded native completion feedback
+
+**Design, 9 November 2026; prototype implemented and mechanically qualified.** The first native recall
+comparison delivered decisive evidence in five of six positive cases per arm but
+fourteen of sixteen sessions omitted the requested file. Add an explicit host
+completion check inside the existing agent run. Preserve that cohort and its scores.
+
+The core loop accepts an optional provider- and memory-independent observer. After
+a normal nonempty EndTurn, with no tool calls, closing mode, refusal or cancellation,
+it may inspect operational readiness while wall time remains. At a turn/token/cost
+ceiling this can verify completed work but cannot continue the run. With remaining
+execution budget it may append at most one fixed harness reminder. Continue the same run, conversation, taint, registry and original
+budgets. No new executor, provider call from the checker, tool, recall allowance,
+dependency, schema, global config or ordinary-chat activation. Native limits remain
+six turns, 16,384 total output tokens and 180 seconds. A second eligible terminal
+answer can update the observation but cannot receive another reminder.
+
+The observer returns Ready, Incomplete or Unavailable and optional closed feedback
+flags: required read missing, artifact missing/malformed, and do not repeat a read.
+No arbitrary error prose, artifact contents, answer values or source text enters
+feedback. All-empty or contradictory flags are invalid. The loop renders and
+registers the frozen harness voice; its standalone user-role message is marked as
+harness-generated. Capture must exclude it from owner requests and independent
+support, while preserving raw transcript, original coordinates and the single final
+Outcome. Use the existing message sequencing and source-closure machinery.
+
+The loop owns its report and one-intervention allowance per invocation. The async
+observer returns data without publishing it. A synchronous acceptance callback may
+receive copies of the loop-owned report after accepted observations or appended
+feedback, retaining diagnostics if a later provider call fails. Native creates a
+fresh observer/report cell per task. A reused RunContext must never reuse a spent
+loop allowance; shared observer reporting is the host's responsibility, not a new
+execution budget. Bound each observer call to two seconds and remaining run time;
+cancellation and an expired deadline win before and after the await. Timeout/error
+means unavailable, never Ready and never automatic continuation. A cancelled or
+late observation cannot overwrite its accepted report. Report first and latest
+accepted observations, whether feedback was actually appended, and interrupted or
+timed-out observation separately. Appending does not prove the next model request
+received the feedback; actual provider audits establish that in experiments.
+
+Native accepts an explicit public shape, `rows` and unique `keys`, through an
+optional host JSON completion request. Validate 1..32 rows and 1..16 unique keys,
+each matching `[A-Za-z_][A-Za-z0-9_]*` in 1..64 bytes, before root creation or provider discovery.
+Require exactly that row count and key set, with string values, using the existing
+duplicate-key-refusing parser. Never infer shape from hidden `expected_rows` or
+consult the semantic artifact verdict. Any structurally valid value, including a
+wrong answer or `unknown`, satisfies the format check. Reuse the existing
+no-follow regular-file reader and 1 MiB bound for fixed `workspace/output.json`;
+refused, oversized or unavailable reads stay unavailable and invite no jail bypass.
+Missing or malformed readable output can receive repair feedback. Existing artifact
+checking, digest and source-envelope behavior must remain unchanged.
+
+When controlled recall is present it is required by this completion contract.
+Exactly NotCalled with zero attempts/rejections can receive the one read reminder.
+Satisfied recall is not repeated. Any consumed, rejected, failed, cancelled or
+fallback recall remains unsatisfied; output-only repair may proceed but must
+explicitly prohibit another read, and can never turn the protocol into Ready.
+Without controlled recall there is no extra read requirement. Keep interpretation
+reads incompatible with this initial explicit completion route.
+
+The additive native runner and thin `--completion-request` CLI opt in. Existing
+siblings and JSON remain unchanged when absent. The new route checkpoints
+`native-memory-session-v2`, completion protocol `native-completion-feedback-v1`
+and a public shape digest before provider discovery; failures retain this identity.
+Its optional TaskReport completion field wraps the one accepted loop report, not
+an independent duplicate set of native judgments. Persist known diagnostics even
+when execution/capture fails. Unsatisfied operational completion is a nonzero CLI
+result; a structurally ready but semantically wrong artifact remains a recorded
+negative task outcome. Source withdrawal still invalidates capture after a repair.
+
+Qualification starts with authored providers and actual file tools: omitted writes,
+malformed JSON, correct shape with wrong values, absent/consumed recall, guard
+failures, cancellation, ceilings, no second reminder, unchanged legacy behavior and
+feedback excluded from evidence. Then freeze a small fresh comparison with one
+fixed lexical retrieval treatment and feedback off/on; use explicit operation
+domains, observed-method selection and insufficient-evidence `unknown` controls.
+Keep public inputs identical per pair and gold outside model-accessible paths.
+Separate saved-format completion, semantic correctness, abstention, source closure
+and cost. Preserve every first result; do not reuse or rescore the earlier cohort.
+This tests execution feedback, not vector superiority or general reasoning quality.
+Implementation steps: `superpowers/plans/2026-11-09-native-completion-feedback.md`.
+
+**First result, 9 November 2026.** The separate public development cohort contains
+four paired decisions from three source families. Both arms delivered supporting
+originals and saved correct choices in both positive cases. Both saved `unknown`
+after source withdrawal. The control omitted its artifact for irrelevant evidence;
+the feedback arm received the fixed missing-file/no-repeat-read notice on call 3,
+then saved `unknown` and finished ready. Both C03 sessions had already answered
+`unknown` in chat, so the change repaired delivery rather than the semantic choice.
+All eight recalls and captures qualified.
+Correct saved artifacts were 3/4 off versus 4/4 on. Initial provider contracts
+matched in all four pairs; first results and the earlier vector cohort remain
+unchanged. This is a small completion result on fresh tasks, not a directly
+comparable score improvement over the earlier protocol or an adaptive-learning
+measurement. HISTORY records costs, review corrections and qualification.
+
+### 31.21 A recurring evaluation program
+
+**Audit and proposed rollout, 9 November 2026; not a newly measured benchmark.**
+The prototype already has reusable tasks and deterministic scorers. A small
+versioned selection and result index should connect them, rather than merging all
+pilots into a new framework. Existing exposed fixtures become public development
+regressions. Renaming a fixture, changing names or adding seeds does not make it a
+held-out test. Preserve every original protocol and first result; recurring runs
+get their own version and output namespace.
+
+| Track | Existing source to retain | What its score means |
+|---|---|---|
+| Retrieval | `memory::evaluation::run` and `memory/fixtures/retrieval.json` (32 cases); `memory_hybrid_workflow::run` and `hybrid_retrieval.json` (16 positive, 2 empty controls) | Original-evidence coverage, rank, access/time violations, fallback and complete retrieval cost; no task-reasoning claim |
+| Information use | `prototypes/memory/memory_benefit_trial.py` (6 cases; original48-response protocol), planning/experience pilots | Value of information retained across tasks; memory/no-memory is a useful unequal-information ablation, not equal-evidence reasoning superiority |
+| Native decisions/actions | `bridge_model_trial.py`, `native_vector_trial.py` and explicit native-session runner | Independently saved artifacts, current-goal correctness, missing/irrelevant/withdrawn-evidence decisions, execution and source qualification separately |
+| Concepts/revision | `memory_concept_workflow::run_trial`, `concept_benefit_trial.py`, support/appraisal pilots | Induction and revision lifecycle, counterexamples, transfer and false certainty; the existing source-only ceiling cannot establish a concept benefit |
+| Reliability gate | Existing memory/capture/rumination/durable-action/recovery tests and actual CLI qualification | Storage, authorization, forgetting, closure and crash invariants; authored assertions are not model-quality successes |
+
+**The primary system evaluation enables both memory and adaptive learning.**
+Expose these as separate explicit evaluation settings, recorded in the frozen
+protocol and result index. Memory enables episodic retention/recall across tasks;
+adaptive learning permits creating/revising reusable concepts and policies from
+experience. With learning frozen, current-task reasoning/appraisal and episodic
+capture can still occur, but the initial learned-knowledge snapshot cannot acquire
+new reusable concepts or policies. These settings are proposed evaluation controls,
+not new CLI flags already implemented in the existing bare eval command. Learning
+here means persistent concept/policy updates, not model-weight training.
+
+Use three named comparisons: memory off/learning off; memory on/learning frozen;
+and memory on/learning adaptive. Learning without subsequent recall is a distinct
+acquisition-only experiment if needed, not silently equivalent to a full learner.
+The adaptive track is a chronological lifetime: provide episodes, allow bounded
+learning/rumination, then score later tasks including revisions and transfer. Only
+experience available at that point may be learned; future tasks and evaluator gold
+stay sealed. Outcome feedback can teach only when the protocol explicitly exposes
+it to the applicable arms; private posthoc grades and answer keys remain hidden.
+Reset or clone the starting state per replicate/arm, not between every
+task in a lifetime, or the benchmark would prevent the very learning it measures.
+Record learning opportunities, compute/replay budgets and all update costs, as well
+as initial and final learned state. Freeze a model/knowledge version only in the
+explicit ablation that requires it. The current completion-feedback pilot holds
+memory on and adaptive learning frozen to isolate execution feedback; it is one
+component of this broader adaptive evaluation, not the full-system score.
+
+The first recurring scorecard should group the two middle rows as decision/action
+performance and retain four tracks rather than one aggregate percentage. Run cheap
+deterministic checks per change; retrieval when retrieval changes; native model
+cases for workflow changes; expensive information-use and concept suites at
+milestones. A cheaper subset is a new predeclared protocol, never a replacement
+score for the original larger experiment. The completion-feedback comparison in
+§31.20 is a first named development cohort for the native track, not a new holdout.
+
+Every result index needs protocol/fixture/scorer versions, source and executable
+hashes, initial memory and authority snapshots, model and embedding identity,
+permissions/tools, budgets, order/seeds and environment. Retain all planned slots,
+raw outputs, failures and missing usage. Report task-family wins/losses/ties and
+uncertainty; repeated seeds do not create independent task families. Six or eight
+families support diagnosis, not a broad superiority claim. For release comparisons,
+run a frozen baseline and candidate in the same environment/interleaved order,
+rather than attributing historical changes in model or infrastructure to code.
+Include acquisition, indexing, embedding, concept/revision, retries, verification
+and storage in costs; shared costs count once and unavailable counters remain null.
+
+A separate prospective cohort must introduce genuinely new episode families after
+the tested implementation/scorer are frozen: delayed retention, event-time versus
+knowledge-time correction, withdrawal with tempting historical answers, changed
+current goals, absent prerequisites, failed actions followed by verified repair,
+structural concept transfer and counterexamples that change the useful principle.
+Once a cohort is used for tuning, it joins the development pool. For revision,
+compare raw evidence, unchanged concept and revised concept on identical post-case
+evidence; the old two-arm concept pilot does not isolate revision's contribution.
+
+`mecha eval` defaults to a bare model/tool comparison. Its `force_reproducible`
+allows explicit MCP and learned-rule injection opt-ins (`--mcp`, `--ab-rules`);
+using existing rules is distinct from adaptive learning during an evaluation.
+These controls do not yet provide a native-memory v2 lifetime with evolving
+episodes/concepts. Retain the bare comparison as a competence reference and reuse
+the explicit-control pattern for the system suite.
+`mecha exp` already supplies isolated homes, frozen manifests, task-source
+`list/setup/grade` contracts and trial recording. Reuse those pieces for internal
+experiments where compatible. Its current child invocation launches `mecha run`,
+so it does not already run arbitrary harnesses or every prototype. The existing
+Harbor adapter (`bench/mecha_agent.py`) and Dojo task source demonstrate adapter
+patterns; their current upstream compatibility and native-memory activation have
+not been qualified by this audit.
+
+For cross-harness comparison, use immutable synthetic episodes/world state,
+current goals/time/authority and budgets as input; collect final artifacts, action
+logs, errors/usage and stable benchmark source/span IDs as output. Adapters map
+native IDs to the benchmark IDs. An external host scorer grades actual artifacts
+and world state. Another harness need not produce a Mecha SQLite row or
+CaptureReceipt for portable outcome credit. Keep imported authored episodes and
+agent-earned experiences as distinct tracks.
+
+Compare declared capability strata: raw-evidence reasoning, episodic retrieval,
+durable temporal/provenance memory, concept/revision, and full tool-using tasks.
+Report unsupported features and coverage separately from admitted-task failures;
+missing a required artifact or violating an admitted withdrawal contract is a real
+failure. Keep model/weights/settings, episode order, permitted tool effects,
+authority, context caps and overall call/token/time/recovery budgets controlled.
+System prompts and tool schemas are harness-specific parts of the treatment, not
+required byte-identical inputs. A separately labeled native-configuration track
+may use different embeddings/indexes with their full costs recorded. Do not give
+one harness hidden gold retrieval or count internal tool-name assertions as
+portable semantic correctness.
+
+The audit inspected source and locally saved hybrid/concept summaries; other
+historical pilot counts remain their original documented evidence. It ran no new
+models or external harness. The proposed stable suite index, prospective cohort
+and second-harness adapter are open work; the existing pilot runners remain usable.

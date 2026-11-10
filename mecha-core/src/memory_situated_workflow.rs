@@ -12,6 +12,7 @@ use crate::{
         Access, Memory, StorageAccess,
     },
     memory_experience_bridge::{CaptureRequest, FreezeRequest, LocalAuthority},
+    memory_native_completion::NativeCompletion,
     message::{Block, CompletionRequest, CompletionResponse, Message, StopReason, Usage},
     provider::{Provider, StreamSink},
     session::{Record, Session, SessionKind, SessionMeta},
@@ -34,6 +35,10 @@ use std::{
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
+
+pub use crate::memory_native_completion::{
+    NativeCompletionConfig, NativeCompletionReport, NativeCompletionRequest,
+};
 
 pub const ROUTES: &str = "Ilex finishes in two hours but drops calibration rows. Quill finishes in six hours and preserves calibration rows.";
 const DOMAIN: &str = "synthetic-situated-workflow";
@@ -90,6 +95,8 @@ pub struct TaskReport {
     pub confirmation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recall: Option<NativeRecallReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion: Option<NativeCompletionReport>,
 }
 
 /// Host-only wire contract for controlled retrieval. Fixed encoding semantics
@@ -271,7 +278,7 @@ where
     Fut: Future<Output = Result<Box<dyn Provider>>>,
 {
     run_native_session_inner(
-        database, storage, authority, request, None, root, factory, cancel,
+        database, storage, authority, request, None, None, root, factory, cancel,
     )
     .await
 }
@@ -299,6 +306,39 @@ where
         authority,
         request,
         Some(recall),
+        None,
+        root,
+        factory,
+        cancel,
+    )
+    .await
+}
+
+/// Opt into public-shape completion within the original native execution budget.
+/// A supplied controlled recall is required, with no additional read allowance.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_native_session_with_completion<F, Fut>(
+    database: &Path,
+    storage: StorageAccess,
+    authority: &LocalAuthority,
+    request: &NativeSessionRequest,
+    recall: Option<NativeRecallConfig>,
+    completion: NativeCompletionConfig,
+    root: &Path,
+    factory: F,
+    cancel: &CancellationToken,
+) -> Result<TaskReport>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = Result<Box<dyn Provider>>>,
+{
+    run_native_session_inner(
+        database,
+        storage,
+        authority,
+        request,
+        recall,
+        Some(completion),
         root,
         factory,
         cancel,
@@ -313,6 +353,7 @@ async fn run_native_session_inner<F, Fut>(
     authority: &LocalAuthority,
     request: &NativeSessionRequest,
     recall: Option<NativeRecallConfig>,
+    completion: Option<NativeCompletionConfig>,
     root: &Path,
     factory: F,
     cancel: &CancellationToken,
@@ -322,6 +363,16 @@ where
     Fut: Future<Output = Result<Box<dyn Provider>>>,
 {
     request.validate()?;
+    ensure!(
+        completion.is_none() || request.interpretation_context_id.is_none(),
+        "completion cannot combine interpretation reads"
+    );
+    let completion = completion.map(NativeCompletion::new);
+    let protocol = if completion.is_some() {
+        "native-memory-session-v2"
+    } else {
+        "native-memory-session-v1"
+    };
     ensure!(
         recall.is_none() || request.interpretation_context_id.is_none(),
         "controlled recall cannot combine interpretation reads"
@@ -338,15 +389,19 @@ where
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new().mode(0o700).create(root)?;
     let root = root.canonicalize()?;
-    let mut started = json!({"protocol":"native-memory-session-v1","status":"started","synthetic_only":true,"request":request,"max_turns":6,"max_output_tokens":16384,"deadline_seconds":180});
+    let mut started = json!({"protocol":protocol,"status":"started","synthetic_only":true,"request":request,"max_turns":6,"max_output_tokens":16384,"deadline_seconds":180});
     if let Some(control) = &recall {
         started["recall"] = serde_json::to_value(control.identity())?;
+    }
+    if let Some(completion) = &completion {
+        started["completion"] = serde_json::to_value(completion.snapshot())?;
     }
     session_checkpoint(&root.join("started.json"), &started)?;
     let run_cancel = cancel.child_token();
     let timeout_cancel = run_cancel.clone();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let timer = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(180)).await;
+        tokio::time::sleep_until(deadline).await;
         timeout_cancel.cancel();
     });
     let result = async {
@@ -358,15 +413,19 @@ where
         ensure!(provider.local(), "native session requires a local provider");
         let provider = crate::memory_bridge_trial::recorded_provider(provider, &root.join("provider-audit.jsonl"), 16384, run_cancel.clone())?;
         let current = request.interpretation_context_id.as_ref().map(|id| InterpretationContext::new(request.criterion.clone(), id.clone())).transpose()?;
-        execute_task(database, &storage, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request), recall).await
+        execute_task(database, &storage, authority, &access, &request.criterion, current.as_ref(), &root, provider, false, &run_cancel, Some(request), recall, completion.as_ref(), Some(deadline)).await
     }.await;
     timer.abort();
     match &result {
         Ok(report) => session_checkpoint(&root.join("report.json"), report)?,
-        Err(error) => session_checkpoint(
-            &root.join("report.json"),
-            &json!({"protocol":"native-memory-session-v1","status":"failed","error":format!("{error:#}")}),
-        )?,
+        Err(error) => {
+            let mut failed =
+                json!({"protocol":protocol,"status":"failed","error":format!("{error:#}")});
+            if let Some(completion) = &completion {
+                failed["completion"] = serde_json::to_value(completion.snapshot())?;
+            }
+            session_checkpoint(&root.join("report.json"), &failed)?;
+        }
     }
     result
 }
@@ -629,6 +688,8 @@ async fn execute(
         cancel,
         None,
         None,
+        None,
+        None,
     )
     .await
 }
@@ -647,6 +708,8 @@ async fn execute_task(
     cancel: &CancellationToken,
     native: Option<&NativeSessionRequest>,
     recall: Option<NativeRecallConfig>,
+    completion: Option<&NativeCompletion>,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<TaskReport> {
     ensure!(
         root.is_absolute() && (native.is_some() || !root.exists()),
@@ -741,7 +804,14 @@ async fn execute_task(
     // Caller cancellation reaches the native loop as well as its provider.
     // A task deadline cancels only this child, never later comparison arms.
     let run_cancel = cancel.child_token();
-    let cx = RunContext::new(ctx, approver).with_cancel(run_cancel.clone());
+    let mut cx = RunContext::new(ctx, approver).with_cancel(run_cancel.clone());
+    if let Some(completion) = completion {
+        cx = cx
+            .with_completion_observer(completion.observer(artifact.clone(), recall_handle.clone()));
+        if let Some(deadline) = deadline {
+            cx = cx.with_completion_deadline(deadline);
+        }
+    }
     let before = conversation.messages.clone();
     let (result, deadline_expired) = {
         let future = agent.run_in(&cx, &mut conversation, None);
@@ -753,7 +823,7 @@ async fn execute_task(
                 (tokio::time::timeout(Duration::from_secs(2), &mut future).await.ok(), false)
             }
             value = &mut future => (Some(value), false),
-            () = tokio::time::sleep(Duration::from_secs(180)) => {
+            () = tokio::time::sleep_until(deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(180))) => {
                 run_cancel.cancel();
                 (tokio::time::timeout(Duration::from_secs(2), &mut future).await.ok(), true)
             }
@@ -783,7 +853,7 @@ async fn execute_task(
         .map(|memory| memory.with_source_guard(Arc::new(authority.clone())));
     // Controlled runs retain known delivery/check outcomes even when the fresh
     // writable open fails. Preserve the legacy generic-error wire otherwise.
-    let memory = if recall_handle.is_some() {
+    let memory = if recall_handle.is_some() || completion.is_some() {
         memory
     } else {
         Ok(memory?)
@@ -817,6 +887,7 @@ async fn execute_task(
         capture_error,
         confirmation,
         recall: recall_handle.map(|handle| handle.report()),
+        completion: completion.map(NativeCompletion::snapshot),
     })
 }
 
@@ -1102,6 +1173,7 @@ mod tests {
     use super::*;
 
     include!("memory_situated_workflow_recall_tests.rs");
+    include!("memory_situated_workflow_completion_tests.rs");
 
     struct CancelledProvider {
         cancel: CancellationToken,

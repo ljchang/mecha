@@ -242,35 +242,43 @@ postflight failed on the valid activated socket state `running`; separate
 read-only checks corroborated unchanged service/model identity without replaying
 the model. Detailed counts, costs and failure boundaries are in HISTORY.
 
-The bounded opt-in native-session comparison is implemented through
-`run_native_session_with_recall`, `GoalMemory::with_native_recall` and the thin
-`--recall-request` CLI option. It carries reopened evidence into independently
-checked artifacts and v8 consulted-source capture. One exact host-selected query,
-one entered-call opportunity and a fixed retrieval deadline constrain both arms.
-Reports keep artifact correctness, recall protocol and capture outcomes separate.
-Independent source review, actual authored-CLI qualification and full Spark
-qualification passed: 6,363 default / 7,066 memory-enabled / 386 standalone /
-124 Python CLI / 210 authored Python tests, zero failures, with 25/30 existing
-workspace ignores. Strict lint and actual Rust 1.96.1 checking also passed.
-The first frozen sixteen-session comparison is independently audited: positive
-artifacts 1/6 lexical versus 0/6 dense; both no-evidence controls failed per arm.
-Fourteen sessions produced no artifact; both P04 dispatches exited nonzero without
-recall or capture. Each arm delivered
-decisive originals in 5/6 positive cases; both P04 runs skipped recall. Fourteen
-entered recalls completed without fallback, with valid recapture and withdrawn
-sources excluded. This does not establish decision benefit. Next, integrate bounded
-artifact-completion feedback through the existing checker and qualify no-evidence
-reasoning with fresh, explicitly scoped task alternatives; do not tune or replay
-the frozen cohort. HISTORY retains costs, diagnostic ambiguity and first failures.
-See `MECHA-MEMORY-DESIGN.md` §31.19 and the implementation plan. Ordinary runtime
-retrieval remains lexical; the bounded semantic path currently re-embeds
-the eligible pool per invocation and is not a corpus-scale index. Operational
-qualification still precedes private imports. Full disaster recovery needs
-separately durable deletion authority and
-key recovery. Independently scored transfer, genuine in-scope model revision,
-broader capture/termination coverage, source-file protection and private-data
-qualification remain open. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md` §12 favors
-focused tests using these existing mechanisms. Owner-graph merger, nightly
+Controlled native recall and optional bounded completion feedback are implemented
+through the existing Agent loop. `run_native_session_with_completion` and the thin
+`--completion-request` adapter check public output shape and required read status,
+without hidden semantic gold or additional recall/budget allowances. Synthetic
+qualification passed 6,382 default / 7,099 memory-enabled / 386 standalone / 124
+Python CLI / 257 authored Python tests, with zero failures and 25/30 existing
+workspace ignores. Both builds, strict lint, Rust 1.96.1 and the actual CLI gate
+passed; HISTORY records review corrections and retained first failures.
+
+The independently audited fresh four-pair completion comparison saved correct
+artifacts in 3/4 control versus 4/4 feedback sessions. Both arms got both supported
+choices and the withdrawn-evidence unknown correct. Only the irrelevant-evidence
+control omitted its file; one fixed reminder repaired the treatment's omission.
+Both had already answered `unknown` in chat, so the semantic choice did not change.
+All eight recalls/captures qualified. This is a small execution result on three
+source families, not adaptive-learning or general reasoning benefit. It is not
+comparable to the earlier eight-pair vector cohort, whose negative first result
+remains unchanged in HISTORY.
+
+**Next:** turn the existing cases into a versioned recurring evaluation suite
+(§31.21), then test retention, changed-goal decisions, contradiction/revision and
+new-family transfer over chronological lifetimes. The primary system evaluation
+should enable memory and persistent concept/policy learning, with separate
+controls for no memory and memory with learning frozen. The general runner,
+switches, result index and cross-harness adapter remain unimplemented. This
+completion cohort held memory on and adaptive learning frozen; it cannot establish
+adaptive benefit. Preserve first results and label subsequent public-regression
+runs separately.
+
+Ordinary runtime retrieval remains lexical. Corpus-scale/persistent indexing,
+reliable semantic support and concept revision, wider capture/termination coverage,
+Mecha-owned task/MCP consumer integration, source-file protection and private-data
+qualification remain open. Full disaster recovery needs separately durable deletion
+authority and key recovery. Failed-memory-lookup capture still needs an explicit
+no-retrieval receipt; completion diagnostics do not authorize persistence of an
+unattributed failed read. The Anthropic review in `AGENT-MEMORY-SYSTEMS-RESEARCH.md`
+§12 favors focused tests using existing mechanisms. Owner-graph merger, nightly
 migration, a new wiki/store and automatic production learning remain deferred.
 
 The earlier v4 failure below remains a historical result, not the score of this

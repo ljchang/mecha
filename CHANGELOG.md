@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental native memory sessions accept `--completion-request` for one
+  bounded opportunity to finish a missing required recall or JSON artifact.
+  Feedback checks only the public output shape, never hidden answer values, and
+  stays inside the original session budgets. Reports distinguish operational
+  readiness from answer correctness; ordinary native sessions remain unchanged.
+
 - Experimental native memory sessions accept an explicit `--recall-request` for
   one bounded lexical or dense retrieval. The existing evidence packet and source
   checks carry through to recapture; host reports distinguish completion, fallback,

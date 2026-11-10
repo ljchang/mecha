@@ -354,6 +354,8 @@ impl Tool for Subagent {
             budget: Default::default(),
             // Advice is opt-in for the run that requested it, never inherited.
             budget_notice: false,
+            completion_observer: None,
+            completion_deadline: None,
             // Cancelling the parent cancels the child with it: the child is
             // one of the parent's tool calls, and a Ctrl-C that left a
             // subagent running would be a lie. From the *caller's* context —

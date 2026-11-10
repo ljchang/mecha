@@ -14,6 +14,76 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Bounded native completion feedback (2026-11-09, prototype implementation)
+
+`CompletionObserver` and `CompletionReport::observe` add one optional operational
+notice inside the existing Agent loop. `run_native_session_with_completion` and
+the thin `--completion-request` adapter select it explicitly for synthetic native
+sessions. The original budget, taint, tool allowances and source-capture path
+remain in force. Public row/key shape is independent of hidden expected values:
+a wrong string answer can be operationally ready. A failed consumed recall cannot
+buy another attempt. Accepted diagnostics survive later execution/capture errors;
+an appended notice alone is not evidence of provider receipt.
+
+Independent review found a provenance regression when an empty reply appended
+a harness nudge before a queued owner steer. Whole-message notice equality missed
+that mixed case. The fix checks every prior block's registered harness voice before
+clearing the message marker; capture still excludes the notices individually.
+The regression failed before the fix and passed afterwards. Retained scoped
+checks passed 19 completion tests, 10 native completion tests, 25 covering workflow
+tests and four new process-level CLI tests; combined strict core/CLI Clippy passed.
+The exact-source Spark gate also passed both all-target builds, formatting, strict
+workspace/standalone Clippy and actual Rust 1.96.1 checking. It passed 6,382 default,
+7,099 memory-enabled, 386 standalone, 124 Python CLI and 257 authored Python tests,
+with zero failures and 25/30 existing workspace ignores. Required backends remained
+enforced. The actual authored CLI gate separately passed three captured seed
+experiences and eight follow-ups. On repaired all four omitted outputs, including
+two supported choices and two unknown controls; off retained four omissions.
+These scripted responses establish integration, not model quality.
+
+The separately frozen Qwen3.6 uncensored comparison used four paired decisions
+from three source families, with lexical recall fixed and only completion feedback
+varied. Independent raw-artifact/source audit agreed with the tracked scorer:
+
+| Measure | Feedback off | Feedback on |
+|---|---:|---:|
+| Correct saved artifacts | 3/4 | 4/4 |
+| Supported positive choices with original evidence | 2/2 | 2/2 |
+| Correct saved unknown controls | 1/2 | 2/2 |
+| Completed recall and valid capture | 4/4 | 4/4 |
+| Missing artifacts | 1/4 | 0/4 |
+
+Only C03-on needed a reminder: after the model ended without a file, the fixed
+missing-artifact/no-repeat-read notice reached the provider on call 3; the next
+tool write saved `unknown`, and the final observation was Ready. Both C03 sessions
+had already produced the identical premature chat answer `{"choice":"unknown"}`;
+the reminder repaired file delivery/format, not the semantic choice. C03-off retained
+its missing artifact. Both arms excluded withdrawn evidence and retained complete
+consulted-source dependencies. All four initial request contracts matched. These
+fresh cases have explicit operation domains and permitted alternatives; their
+scores cannot establish a gain against the earlier, different vector cohort.
+This is a small completion benefit, not general reasoning, adaptive-learning or
+vector superiority. Ordinary chat/web and production memory remain unchanged.
+
+All 24 follow-up calls have complete recorded usage. Off used 16,093 input / 580
+output tokens in 11 calls and 14.678 seconds of summed dispatch time; on used
+20,014 / 838 in 13 calls and 16.804 seconds. Three scripted seed experiences were
+shared acquisition, not learned-model successes; initialization, acquisition and
+withdrawal costs were recorded separately. Source, executable and host runtime
+identity checks passed before and after the single cohort invocation. No scored
+session was retried or overwritten.
+
+Experiment review corrected start-only requests being mistaken for provider
+receipt, top-level-only withdrawal checks, malformed Unicode/depth escaping
+slot-local scoring, unstarted artifact credit, foreign transcript paths, and an
+authored gate that could pass without the requisite evidence. Their failing
+regressions and first gate failure remain recorded. Sequential authored HTTP
+packets differed at the live `memory.valid_at` field; the final gate compares all
+other parsed fields exactly and records both timestamps and their delta. It never
+normalizes record/event/interval times or weakens scored initial-request parity.
+Real second requests differed in tool-call IDs and live validity metadata; only
+the initial provider contract is required to match in the scored comparison.
+
 ### Controlled native vector recall (2026-11-09, prototype branch)
 
 `GoalMemory::with_native_recall` and `run_native_session_with_recall` connect

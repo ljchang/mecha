@@ -144,6 +144,8 @@ pub mod memory_factual_support;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_hybrid_workflow;
 #[cfg(feature = "memory-prototype")]
+mod memory_native_completion;
+#[cfg(feature = "memory-prototype")]
 pub mod memory_native_workflow;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_outcome_reappraisal;
