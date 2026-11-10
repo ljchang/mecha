@@ -484,6 +484,50 @@ impl Memory {
         self
     }
     /// Inspect an exact receipt using current store identity and source authority.
+    /// Resolve an already retained ordinary seal; this never admits or retries it.
+    pub(crate) fn retained_ordinary_capture(
+        &self,
+        input: &HostCapture,
+        access: &Access,
+    ) -> Result<CaptureReceipt> {
+        self.check_access(access)?;
+        validate_ordinary(input)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let (id, object, revision, originals): (String, String, String, String) = tx.query_row(
+            "SELECT receipt_id,projection_object,projection_revision,originals FROM host_capture_receipt WHERE identity_hash=?1 AND payload_hash=?2 AND state='active'",
+            params![hash(&input.identity)?, hash(input)?],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+        ).optional()?.context("ordinary capture has not been retained")?;
+        let receipt = CaptureReceipt {
+            id,
+            projection: RevisionRef { object, revision },
+            originals: serde_json::from_str(&originals)?,
+        };
+        let Some(Record::Evidence(projection)) = lookup(&tx, &receipt.projection)? else {
+            anyhow::bail!("ordinary projection unavailable")
+        };
+        let canonical = projection_input_for_receipt(&tx, &projection, Some(&receipt))?;
+        ensure!(
+            hash(&canonical)? == hash(input)?,
+            "ordinary seal differs from retained capture"
+        );
+        let checks = SourceChecks::new(self.source_guard.as_deref());
+        for reference in receipt
+            .originals
+            .iter()
+            .chain(std::iter::once(&receipt.projection))
+        {
+            current(&tx, reference)?;
+            ensure!(
+                fresh(&tx, reference, i64::MAX)?
+                    && authorized_with_guard(&tx, reference, access, Some(&checks))?,
+                "ordinary learning source unavailable"
+            );
+        }
+        tx.commit()?;
+        Ok(receipt)
+    }
+
     pub fn capture_semantic_assessment(
         &self,
         receipt: &CaptureReceipt,

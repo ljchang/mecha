@@ -1,6 +1,7 @@
 //! Explicit encrypted episodic retention for a single fresh ordinary run.
 //! This host API never executes an action or a provider; retry only admits a seal.
 mod authority;
+pub mod learning;
 mod recall;
 mod recording;
 use crate::{

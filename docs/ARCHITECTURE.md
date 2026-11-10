@@ -13041,6 +13041,16 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   authority stay outside the execution workspace, and private authority files
   reuse the key policy's macOS ACL checks. SQLCipher protects the database, not
   external JSONL, private recovery payloads, artifacts or retained copies.
+- **Learning keeps the prepared authority across inference.** The host-only
+  `memory_session::learning` bridge selects original passages from authenticated,
+  already-retained ordinary captures. Inventory never retries admission. Native
+  concept and rumination receipts preserve their original source scopes and
+  dependencies; refreshing preparation after a model call would silently bless
+  authority that changed during the call. An opaque dispatch guard rechecks the
+  same receipt after provider discovery, and completion rechecks even a failed
+  callback before parsing or retention. Recovery handles cannot inspect sources
+  or learn. Exact quotations establish provenance, not semantic entailment;
+  concepts and their echoes cannot supply independent support for themselves.
 - **Operational feedback cannot consult semantic gold.** Native completion
   receives a separately validated public row/key shape, never `expected_rows`
   or an artifact verdict. It uses the existing bounded no-follow reader for

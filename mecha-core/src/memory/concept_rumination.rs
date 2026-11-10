@@ -47,6 +47,23 @@ enum Response {
 }
 
 impl Memory {
+    /// Includes previous concept-only scopes and every old/new source on failure too.
+    pub(crate) fn check_native_rumination_request(
+        &self,
+        request: &ConceptRuminationRequest,
+        access: &Access,
+    ) -> Result<()> {
+        self.check_access(access)?;
+        ensure!(
+            request.sources.native && request.sources.instance == self.instance,
+            "foreign or legacy rumination receipt"
+        );
+        let tx = self.conn.unchecked_transaction()?;
+        recheck(&tx, request, access, self.source_guard.as_deref())?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Prepare one provisional revision against every prior consulted source
     /// and explicit exact counterexamples. Inputs must still be current now,
     /// as well as available at the host-selected snapshot. Nothing is written.

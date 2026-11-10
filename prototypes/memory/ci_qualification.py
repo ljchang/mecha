@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run all memory Python tests with a fresh authored fixture and zero skips.
 
-Only durable_action_trial's loopback transport supplies replies; no real model
+Only authored loopback transports supply replies; no real model
 or owner store is used. The fixture and reports live in a disposable directory.
 """
 import argparse
@@ -59,6 +59,8 @@ def main():
     binary = args.binary.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='mecha-memory-ci-') as temporary:
         db, action = prepare_fixture(binary, Path(temporary)/'fixture')
+        from ordinary_lifetime_smoke import qualify
+        qualify(binary, Path(temporary)/'ordinary-lifetime')
         os.environ.update(zip(QUALIFICATION, (str(binary), str(db), action)))
         if not run_suite():
             raise SystemExit('memory Python CI requires passing tests and zero skips')

@@ -14,6 +14,129 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Chronological ordinary-memory evaluation (2026-11-10, development cohort)
+
+`ordinary_lifetime.py` freezes the ordinary CLI executable, inputs, scorer,
+settings and full schedule for three empty-start arms: no memory; accumulating
+episodes with concept writes frozen; and accumulating episodes with one induction
+and one revision. Its seven authored episodes per arm yield twenty-three slots
+and twelve decision artifacts per seed. The recording transport verifies actual
+recall delivery; scoring keeps raw correctness, protocol qualification, citation
+membership, source coverage and costs separate. One family is development
+evidence, not a held-out test; repeated seeds do not enlarge the family count.
+
+Review corrected mutable current inputs and system-prompt indirection, delayed
+requests crossing slot boundaries, uncertain upstream completion, unknown token
+usage bypassing the budget, undelivered recall receiving credit, unbound artifact
+scoring and unlabelled raw paired wins. All failed attempts remain preserved.
+The first actual-CLI smoke also exposed a setup distinction: memory-enabled
+observations must register `goal_context`, while independent evidence acquisition
+must never call it. Keeping that distinction retained the core startup guard.
+
+The final source passed independent incremental review with no medium or major
+finding. Spark qualification passed both all-target builds, 6,426 default and
+7,201 memory-enabled workspace tests, 397 standalone tests, strict all-feature
+and standalone Clippy, formatting and Rust 1.96 compatibility. Workspace suites
+retain 25 and 30 ignored entries respectively, with six optional-backend early
+returns in each reported pass count. Full Python qualification passed 164
+top-level and 257 nested authored tests with zero skips. Two earlier isolated
+Python setups omitted Git metadata or required repository fixtures; those setup
+failures were preserved before qualification from the complete source tree.
+
+The copied full-build CLI has SHA-256
+`fa52e1d00ea337f5aebc3ef3c920da4e238f16d44da70b2a237cc730b18ab2e1`.
+Its nine-slot authored smoke retained two observations, refused two source-input
+replacement attempts and delivered native recall to one later decision. A
+malformed learning reply remained a failure. These are mechanics checks;
+resident-model decision benefit is a separate measurement.
+
+The first resident development attempt completed all twenty-three scheduled
+slots. Raw correct decisions were 2/4 without memory and 4/4 in both memory arms;
+protocol-qualified correctness was 2/4 in every arm. All eight memory decisions
+received nonempty recall. Four supplied the native optional `serves` argument,
+which violated this benchmark's stricter exact-query contract without being a
+native recall failure. All nineteen submitted citations named delivered records;
+seventeen quotations were exact, but every original-field pointer was wrong, so
+none earned citation credit. Six decision captures exceeded the existing
+1,024-byte tool-input limit and remained unavailable. Capture availability is
+separate from successful recall and correct choices.
+
+Induction never made an inference POST: the recording proxy changed bare router
+properties into model-specific properties, correctly triggering the native
+resident-router refusal. Revision consequently had no concept to revise. This
+was an adapter failure, not a measured failure of model concept formation. The
+independent audit also found genuine delivered raw originals omitted from the
+citation map. Both defects received focused regressions and corrections; mapping
+additional originals does not give receipt copies independent observation credit
+or retroactively validate the wrong pointers in the first attempt. The strengthened
+actual-CLI smoke now requires one acknowledged learning POST and distinct router
+and model-property envelopes.
+
+The first attempt's 102 calls used 276,666 input and 33,103 output tokens with
+complete wire usage; summed slot time was 371,958 ms. Learning itself used zero
+model calls, verified from dispatch records, so those figures do not estimate
+successful learning cost. This single authored family cannot establish adaptive
+benefit; its manifest, denominator and original errors remain preserved.
+
+A separately frozen corrected attempt also completed twenty-three slots. The
+resident model retained one provisional concept and returned a valid abstention
+from rumination, with one acknowledged model call each; it did not revise the
+concept. Reference-matching saved choices were 1/4 without memory and 4/4 in each
+memory arm. Protocol-qualified correctness was 1/4, 2/4 and 2/4 respectively;
+all eight memory decisions actually received nonempty evidence. The retained
+concept appeared in none of their acknowledged packets. `context::assemble`
+searches concepts too, but the family-identifier query matched none of the
+name/principle/applicability terms indexed by `sql::append`; the source episode
+identifier is not inherited into that index. This is not a test of decision
+benefit from using concepts. The no-memory arm lacks prior observed
+route behavior; reference matching does not separately grade whether its
+abstention was appropriate given that information deficit.
+
+Only one of eighteen submitted citations was valid: an authenticated receipt-copy
+read, not the independently selected observation source. Independent-source
+coverage remained zero. All six memory observation captures were retained, but
+all eight memory decision captures exceeded the 1,024-byte write-input bound and
+were unavailable. These limitations remain separate from raw decision quality.
+Across 102 calls, complete wire usage was 228,859 input and 25,674 output tokens;
+summed slot time was 301,479 ms. Learning's two calls accounted for 2,640 input
+and 720 output tokens and 11,493 ms. Same resident alias and context geometry were
+confirmed before and after; this is not independent weight attestation.
+
+### Explicit learning from ordinary memory (2026-11-10, opt-in prototype)
+
+`memory_session::learning` connects authenticated ordinary captures to the
+existing native concept and rumination APIs. Host-only `memory-session sources`
+returns bounded original descriptors and exact tool-call bindings; `learn` accepts
+explicit source selectors or a current concept and opposing quotations. It keeps
+the same encrypted store, access scopes, source guard and provisional status.
+No schema, model weights, production activation or nightly schedule changed.
+Recovery handles cannot inspect sources or learn. One callback carries an opaque
+prepared receipt across inference, rechecks after provider discovery and after
+both successful and failed calls, then separately reports retention, revision,
+unchanged, abstained or failed. Source quotation membership is not entailment.
+
+Independent review found and corrected four boundary errors before publication:
+resident discovery did not substitute for checking the returned model identity;
+source inventory needed full-closure authorization rather than a complete-packet
+membership test; tool bindings needed authentication of the exact parsed byte
+buffer; and absent token counters could not become known zeroes. Learning reports
+conservatively mark zero counters unknown because the shared provider type loses
+wire presence; wire-based evaluation retains that distinction. Raw rejected
+replies and available usage remain auditable. Model and inventory failures were
+reproduced against the unfixed implementation, and the first attempts remain
+preserved. Two test-fixture corrections retained their exact assertions: select
+the final statement by authenticated kind/text rather than a guessed passage
+index, and use a unique query when testing provenance rather than search ranking.
+
+The reviewed Spark snapshot passed ten learning integration cases, sixteen actual
+CLI cases, the exact-buffer unit case, twenty existing ordinary lifecycle cases,
+four native integration cases, five bridge cases (one separate ignored entry),
+twenty-seven native concept unit cases, formatting and strict scoped Clippy.
+These are authored-provider and deterministic checks, not a measured learning
+benefit. The copied qualified binary is SHA-256
+`1de7e40101ae58a5c8bfe3312752bd180811ed886a578e2ebd9f926db3bdfb8a`;
+broader qualification and the chronological comparison are recorded separately.
+
 
 ### Opt-in ordinary-session memory (2026-11-09, prototype implementation)
 

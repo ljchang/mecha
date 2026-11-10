@@ -109,6 +109,59 @@ artifacts and retained copies are separate filesystem protection surfaces.
 Current qualification uses authored data; it does not establish general learning
 benefit, private-data readiness or corpus-scale performance.
 
+### Explicit concept learning
+
+The same experimental build provides host-only `memory-session sources` and
+`memory-session learn`. These operate on an explicitly selected ordinary memory
+store; they do not schedule background learning or change the agent's tool list.
+
+Use `sources --workspace WORKSPACE --run-id RUN_ID` to inspect authenticated
+original passages from a retained run. Select two to eight originals spanning
+independent episodes, then supply an owner-created learning input:
+
+```json
+{
+  "protocol": "ordinary-session-learning-v1",
+  "operation": {
+    "kind": "induce",
+    "sources": [
+      {"run_id": "FIRST_RUN_ID", "original_index": 2},
+      {"run_id": "SECOND_RUN_ID", "original_index": 2}
+    ]
+  }
+}
+```
+
+Replace the run IDs and zero-based indices with values from the inventories.
+Keep the input and memory manifest outside the selected task workspace. Invoke:
+
+```bash
+"$MECHA_MEMORY_BIN" memory-session --request "$MECHA_MEMORY_ROOT/memory.json" \
+  learn --workspace "$MECHA_MEMORY_ROOT/work" \
+  --input "$MECHA_MEMORY_ROOT/learning.json" \
+  --endpoint http://127.0.0.1:8080 --model RESIDENT_MODEL \
+  --holds-dir "$MECHA_MEMORY_ROOT/holds" --seed 42
+```
+
+This permits one local model call and refuses model loading or switching. A
+retained concept remains a provisional hypothesis with exact source quotations.
+It is not an approved instruction or an independently verified fact.
+
+For revision, use `operation.kind: "ruminate"`, an `expected` object/revision
+reference from the retained concept, and `counterexamples`, each containing a
+`source` selector and an exact, unambiguous `quote`. Core resolves the original
+field and byte offsets. Sources are checked before and after inference;
+withdrawal withholds retention even when the model reply is valid. A recovered
+storage handle cannot acquire learning authority.
+
+The JSON report distinguishes `retained`, `revised_provisional`, `unchanged`,
+`abstained`, and `failed`, and preserves available reply/usage information.
+Failure prints its report before a nonzero exit. Nothing automatically retries
+the model call. Ordinary capture's `not_evaluated` status remains unchanged.
+The learning report conservatively marks zero token counters unknown because
+the shared provider representation cannot distinguish an omitted counter from
+an explicit zero; wire-audited evaluations can retain that distinction.
+
 ## The knowledge graph: mecha-graph
 
 The world-memory is its own project —

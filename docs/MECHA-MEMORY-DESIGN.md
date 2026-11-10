@@ -3961,3 +3961,65 @@ cancellation and opt-out/synthetic compatibility. This establishes runtime
 integration; it does not by itself establish memory benefit or autonomous
 learning. Implementation plan:
 `superpowers/plans/2026-11-09-ordinary-run-memory.md`.
+
+### 31.23 Chronological ordinary-session learning evaluation
+
+**Implementation addendum, 2026-11-10:** the host bridge and versioned
+`ordinary_lifetime.py` adapter are implemented. Qualification and model results
+belong in HISTORY; implementation alone does not establish useful learning.
+Normal chat/web integration remains separate from this ordinary one-shot lane.
+
+The next slice connects the existing native concept APIs to ordinary-session
+authority and measures a small lifetime, rather than adding another learning
+algorithm. Three isolated, initially empty arms receive the same chronological
+public observations and tasks: **off** has no episodic recall or learning;
+**frozen** retains and recalls episodes but never writes concepts; **adaptive**
+also performs one scheduled induction and one scheduled revision. Frozen here
+means frozen concept learning, not a frozen episodic database or a pretrained
+concept baseline. Task workspaces are fresh, while each arm's home, source JSONL
+and memory survive across tasks. Goals may change between tasks.
+
+The first development cohort contains two independent observation sessions,
+transfer decisions, an independent counterexample observation, and later
+decisions requiring narrower applicability or abstention. Observation sessions
+must not call recall; a violation is recorded and cannot become learning input.
+Concept-influenced episodes remain useful history but cannot independently
+corroborate or revise their own ancestor. All arms see the public counterexample;
+only the adaptive arm runs the bounded native rumination operation. Failed,
+unchanged and abstained revisions remain distinct outcomes.
+
+Add host-only learning operations to `SessionMemory`, using its existing source
+guard, encrypted storage and access scopes. Preparation and retention use native
+concept APIs, never the legacy convenience wrappers. Recovery-only handles
+cannot learn. Select originals from authenticated capture receipts, and preserve
+their original field pointers and exact quotation offsets. No raw database or
+authority capability is exposed. Recheck sources around inference, including
+failed calls; one explicit operation permits at most one local model request,
+with no retry, model switch, tool access or automatic nightly scheduling.
+
+A versioned external runner launches the actual ordinary CLI in isolated homes
+and uses a separate host scorer for final artifacts. The existing `mecha exp`
+lifetime has useful isolation and ledger conventions, but its experiment-kind
+children and legacy learning stages are not the ordinary-run capture contract.
+This slice therefore leaves that protocol unchanged and supplies a small
+ordinary-session adapter. Core owns authority and learning; Python owns
+benchmark orchestration and independent scoring. A second harness adapter and
+integration into the general experiment manifest remain separate work.
+
+Freeze all planned slots, public fixture, scoring version, executable/source
+identity, seeds, tools and budgets before inference. Materialize only the current
+task in its workspace; neither future episodes nor private answers enter model
+inputs. Record raw outputs, errors, elapsed time, known and missing usage,
+capture/source bindings and learning outcomes. A missing or failed slot stays in
+the denominator. Do not replay an interrupted action or learning slot silently.
+Costs include observation acquisition, decisions, induction and revision.
+
+Score decision artifacts and valid source references separately from concept
+retention, revision and actual recall delivery. Quote validity is not semantic
+entailment. Report per-arm and per-phase results, paired wins/losses/ties and
+coverage; repeated seeds do not create independent task families. The initial
+cohort is development evidence, not held-out proof of general improvement.
+The same versioned manifest and scorecard format should support future cohorts
+without changing the old denominator or retuning its private answers.
+
+Implementation plan: `superpowers/plans/2026-11-10-memory-lifetime.md`.

@@ -108,6 +108,10 @@ impl Wire {
                     .body(Body::from("scripted invalid request"))
                     .unwrap();
             }
+            None if method == Method::GET && uri.path() == "/props" => json!({"role":"router"}),
+            None if method == Method::GET && uri.path() == "/models" => {
+                json!({"data":[{"id":"fixture","status":{"value":"loaded"}}]})
+            }
             None => {
                 return Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -267,7 +271,18 @@ enabled = ["fs_read", "fs_write", "fs_list", "goal_context"]
         cmd.args(["memory-session", "--request"])
             .arg(self.manifest())
             .args(args);
-        self.output(cmd, &args.join("-")).await
+        let label = if matches!(args.first().copied(), Some("sources" | "learn")) {
+            static HOST_CALL: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            format!(
+                "{}-{}",
+                args[0],
+                HOST_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        } else {
+            args.join("-")
+        };
+        self.output(cmd, &label).await
     }
 
     async fn init(&self) {
@@ -1341,4 +1356,199 @@ async fn ordinary_capture_accepts_required_globals_on_either_side_of_run() {
     }
     assert!(f.wire.requests().is_empty());
     assert!(!f.root.join("mecha/sessions").exists());
+}
+
+#[tokio::test]
+async fn ordinary_learning_cli_preserves_single_call_wire_and_failed_raw_reply() {
+    learning_wire_cases(true).await;
+}
+
+#[tokio::test]
+async fn ordinary_learning_cli_keeps_partial_usage_unknown_per_counter() {
+    learning_wire_cases(false).await;
+}
+
+async fn learning_wire_cases(identity_cases: bool) {
+    for (served_model, incomplete, usage, expected_input, expected_output) in [
+        (
+            Some("other-model"),
+            false,
+            json!({"prompt_tokens":14,"completion_tokens":7}),
+            Some(14),
+            Some(7),
+        ),
+        (
+            None,
+            false,
+            json!({"prompt_tokens":14,"completion_tokens":7}),
+            Some(14),
+            Some(7),
+        ),
+        (
+            Some("other-model"),
+            true,
+            json!({"prompt_tokens":14,"completion_tokens":7}),
+            Some(14),
+            Some(7),
+        ),
+        (
+            Some("fixture"),
+            false,
+            json!({"prompt_tokens":14}),
+            Some(14),
+            None,
+        ),
+        (
+            Some("fixture"),
+            false,
+            json!({"completion_tokens":7}),
+            None,
+            Some(7),
+        ),
+        (
+            Some("fixture"),
+            false,
+            json!({"prompt_tokens":0,"completion_tokens":0}),
+            None,
+            None,
+        ),
+        (Some("fixture"), false, Value::Null, None, None),
+        (Some("fixture"), true, Value::Null, None, None),
+    ] {
+        if (served_model != Some("fixture")) != identity_cases {
+            continue;
+        }
+        let failed = incomplete || served_model != Some("fixture");
+        let f = Fixture::new("ordinary-learning").await;
+        f.init().await;
+        let mut selectors = Vec::new();
+        for (workspace, text) in [
+            ("work-a", "Fixture queue alpha needs approval."),
+            ("work-b", "Fixture queue beta needs approval."),
+        ] {
+            f.wire.script([Step::Reply(answer(text))]);
+            let observed = success(
+                &f.output(
+                    f.run(workspace, "charter:1", "Observe the fixture queue."),
+                    workspace,
+                )
+                .await,
+            );
+            assert_report(&observed, "retained");
+            selectors.push(json!({"run_id":run_id(&observed),"original_index":1}));
+        }
+        let input = f.root.join("sources.json");
+        fs::write(&input, serde_json::to_vec(&selectors).unwrap()).unwrap();
+        fs::set_permissions(&input, fs::Permissions::from_mode(0o600)).unwrap();
+        let workspace = f.root.join("work-a");
+        let descriptors = success(
+            &f.host(&[
+                "sources",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--input",
+                input.to_str().unwrap(),
+            ])
+            .await,
+        );
+        let inventory = success(
+            &f.host(&[
+                "sources",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--run-id",
+                selectors[0]["run_id"].as_str().unwrap(),
+            ])
+            .await,
+        );
+        assert_eq!(inventory["sources"][1]["source"], selectors[0]);
+        assert_eq!(inventory["sources"][1]["kind"], "AssistantText");
+        let draft = json!({"name":"Fixture queue approval","principle":"The observed queues need approval.","applicability":"Observed queues only.","support":descriptors["sources"].as_array().unwrap().iter().map(|s|json!({"source_id":s["reference"]["revision"],"field":s["field"],"quote":s["text"]})).collect::<Vec<_>>(),"counterexamples":[]});
+        fs::write(&input,serde_json::to_vec(&json!({"protocol":"ordinary-session-learning-v1","operation":{"kind":"induce","sources":selectors}})).unwrap()).unwrap();
+        let mut response = completion(
+            json!({"role":"assistant","content":draft.to_string()}),
+            if incomplete { "length" } else { "stop" },
+        );
+        if let Some(model) = served_model {
+            response["model"] = json!(model);
+        } else {
+            response.as_object_mut().unwrap().remove("model");
+        }
+        if usage.is_null() {
+            response.as_object_mut().unwrap().remove("usage");
+        } else {
+            response["usage"] = usage;
+        }
+        f.wire.script([Step::Reply(response)]);
+        let before = f.wire.requests().len();
+        // Learning must not consult generic/default provider configuration.
+        fs::write(
+            f.root.join("mecha/config.toml"),
+            "deliberately invalid TOML [",
+        )
+        .unwrap();
+        let output = f
+            .host(&[
+                "learn",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--input",
+                input.to_str().unwrap(),
+                "--endpoint",
+                &f.endpoint,
+                "--model",
+                "fixture",
+                "--holds-dir",
+                f.root.join("holds").to_str().unwrap(),
+                "--seed",
+                "17",
+            ])
+            .await;
+        assert_eq!(
+            output.status.success(),
+            !failed,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["protocol"], "ordinary-session-learning-v1");
+        assert_eq!(report["status"], if failed { "failed" } else { "retained" });
+        assert_eq!(report["reply"]["text"], draft.to_string());
+        assert_eq!(report["reply"]["model"], served_model.unwrap_or(""));
+        assert_eq!(report["reply"]["input_tokens"], json!(expected_input));
+        assert_eq!(report["reply"]["output_tokens"], json!(expected_output));
+        if served_model != Some("fixture") {
+            assert!(report["reply"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("model identity mismatch"));
+        }
+        if incomplete {
+            assert!(report["reply"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("incomplete model response"));
+        }
+        let concepts: i64 = f
+            .sqlite()
+            .query_row(
+                "SELECT count(*) FROM object WHERE kind='concept'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(concepts, if failed { 0 } else { 1 });
+        assert_eq!(report["retained"].is_null(), failed);
+        let requests = f.wire.requests();
+        let wire = &requests[before..];
+        assert_eq!(wire.len(), 3, "{wire:?}");
+        assert_eq!(wire[2]["uri"], "/v1/chat/completions?autoload=false");
+        assert!(wire[2]["body"]["tools"].is_null());
+        assert_eq!(wire[2]["body"]["seed"], 17);
+        assert_eq!(wire[2]["body"]["model"], "fixture");
+        assert!(report["generation"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Fixture queue alpha"));
+    }
 }

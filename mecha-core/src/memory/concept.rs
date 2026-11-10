@@ -86,6 +86,23 @@ struct Selection {
 }
 
 impl Memory {
+    /// Recheck the original native receipt without refreshing its frozen scopes.
+    pub(crate) fn check_native_concept_request(
+        &self,
+        request: &ConceptRequest,
+        access: &Access,
+    ) -> Result<()> {
+        self.check_access(access)?;
+        ensure!(
+            request.native && request.instance == self.instance,
+            "foreign or legacy concept receipt"
+        );
+        let tx = self.conn.unchecked_transaction()?;
+        recheck_sources(&tx, request, access, self.source_guard.as_deref())?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Select 2..=8 explicit source revisions under host access and snapshot.
     /// No derived concepts/relations are admitted as independent observations.
     pub fn prepare_concept(

@@ -3,8 +3,8 @@
 An opt-in, **synthetic-data-only** first slice of the
 [memory design](../../docs/MECHA-MEMORY-DESIGN.md). It runs alongside the current
 system in a new SQLite file. It does not open/discover the live graph or register
-timers. The explicit model comparisons, `distill-concept`, and opt-in `run` adapter use models;
-ordinary memory commands do not. Nightly activity migration is explicitly deferred.
+timers. The explicit model comparisons, `distill-concept`, `memory-session learn`, and opt-in `run` adapter use models;
+Storage inspection, capture retry and forgetting do not. Nightly activity migration is explicitly deferred.
 
 The implementation is in `mecha-core/src/memory`, behind the default-off
 `memory-prototype` Cargo feature. The main `mecha` CLI exposes it when compiled
@@ -17,6 +17,69 @@ The `memory-prototype` feature selects bundled SQLCipher and vendored OpenSSL
 for the shared SQLite dependency; ordinary builds use bundled SQLite. The
 standalone harness always selects the cipher backend. Neither backend encrypts
 an existing plaintext store implicitly: an explicit key capability is required.
+
+## Learning from ordinary sessions
+
+`memory-session --request FILE sources --workspace WORKSPACE --run-id RUN_ID`
+exposes a bounded inventory of authenticated original passages from a retained
+ordinary session. `memory-session learn` takes explicit source selectors for
+induction, or a previous concept reference plus exact opposing quotations for
+one rumination cycle. See the [command and input examples](../../website/docs/features/memory/index.md#explicit-concept-learning).
+
+These host-only operations reuse the native concept implementation and ordinary
+source authority. They do not expose learning as an agent tool, add a schema or
+schedule a nightly job. A model response must identify the requested resident
+model; current source permissions are rechecked on successful and failed calls.
+`retained` and `revised_provisional` write a candidate concept; `unchanged` and
+`abstained` do not. Raw replies and available usage survive a failed retention.
+Quote membership verifies provenance, not entailment. Recovery-only handles
+cannot inspect sources or learn, and recalled concepts cannot become their own
+independent corroboration.
+
+## Chronological ordinary-session evaluation
+
+`ordinary_lifetime.py` compares three initially empty, isolated arms: **off**;
+**frozen**, which accumulates episodes but never writes concepts; and
+**adaptive**, which adds one induction and one counterexample-driven revision.
+The authored development family has seven chronological episodes per arm and
+two adaptive learning slots: 23 slots and 12 scored decisions per seed.
+Repeated seeds are not independent task families.
+
+Build the feature-enabled CLI, then save a resident receipt with `models` from
+`GET /models?autoload=false` and `props` from the requested model's
+`GET /props?model=MODEL&autoload=false`. The selected alias must already be the
+sole loaded model; the runner does not load or switch models.
+
+```bash
+python3 prototypes/memory/ordinary_lifetime.py freeze \
+  --output /absolute/new-trial-directory \
+  --binary /absolute/feature-enabled/mecha \
+  --endpoint http://127.0.0.1:8080 --model MODEL --seed 42 \
+  --resident-receipt /absolute/resident.json
+python3 prototypes/memory/ordinary_lifetime.py run \
+  --output /absolute/new-trial-directory
+python3 prototypes/memory/ordinary_lifetime.py score \
+  --output /absolute/new-trial-directory
+```
+
+Freeze pins the binary, runner, fixtures, private scoring answers, settings and
+planned denominator before dispatch. Only current public tasks reach a workspace.
+Memory-enabled observations register `goal_context` but must never call it;
+decisions must deliver the prescribed recall before writing their artifact.
+The scorer separates answer correctness, protocol qualification, exact citation
+membership and original-source coverage. `pairs.raw_diagnostic` ignores protocol
+validity; `pairs.qualified` reports qualified correctness and joint coverage.
+Neither exact quotations nor stored concepts establish semantic entailment.
+
+Each ordinary slot permits at most eight requests and 8,192 cumulative output
+tokens; learning permits one request. Unknown output usage reserves the full
+request allowance but remains unknown in reported cost. Failed and pending slots
+remain in the denominator. An indeterminate transmitted request stops dispatch;
+restart cannot silently repeat it. Scoring is inference-free and repeatable.
+This is a POSIX development adapter, not a general cross-harness benchmark or
+automatic learning service. `ordinary_lifetime_smoke.py --binary BINARY --output
+NEW_DIRECTORY` exercises actual CLI contracts using authored loopback responses;
+`ci_qualification.py` includes that check before its zero-skip suite.
 
 ## Explicit encrypted storage
 

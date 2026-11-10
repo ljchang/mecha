@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental `memory-session sources` and `learn` connect authenticated
+  ordinary-session observations to bounded native concept induction and revision.
+  Host-selected sources retain current access checks across one local model call;
+  failed calls preserve their audit report, and recovery handles cannot learn.
+  A versioned ordinary-session development runner compares no memory, episodic
+  recall and bounded concept learning over the same chronological observations,
+  preserving failed slots and separating decision correctness from recall
+  qualification. This does not activate automatic learning in ordinary chat.
+  Concepts remain provisional rather than becoming trusted facts or instructions.
+
 - **Mail rules can draft template replies.** A rule's `reply` action with a
   `template` file is rendered (the sender's first name, the subject and the
   date are the only slots) and staged in your outbox to release, edit or

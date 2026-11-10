@@ -1031,7 +1031,7 @@ async fn dispatch() -> Result<()> {
         #[cfg(feature = "memory-prototype")]
         Command::Memory(args) => commands::memory::execute(args).await,
         #[cfg(feature = "memory-prototype")]
-        Command::MemorySession(args) => commands::memory_session::execute(args),
+        Command::MemorySession(args) => commands::memory_session::execute(args).await,
         Command::Gossip(args) => commands::gossip::run(&cli.global, &args).await,
         Command::Corroborate(args) => commands::corroborate::run(&cli.global, &args).await,
         Command::Vet(args) => commands::vet::run(&cli.global, &args).await,

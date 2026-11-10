@@ -1705,19 +1705,21 @@ async fn execute_outcome_recall(
 enum MemoryCallGuard {
     Decision(mecha_core::memory::durable_decision::ModelGuard),
     Outcome(mecha_core::memory_outcome_reappraisal::OutcomeGuard),
+    Learning(mecha_core::memory_session::learning::LearningGuard),
 }
 impl MemoryCallGuard {
     fn check(self) -> Result<()> {
         match self {
             Self::Decision(g) => g.check(),
             Self::Outcome(g) => g.check(),
+            Self::Learning(g) => g.check(),
         }
     }
 }
 
 /// Shared local-only transport. No global configuration, source discovery, tools,
 /// retries or model switching; existing evaluation protocols retain their inputs.
-struct LocalMemoryModel {
+pub(super) struct LocalMemoryModel {
     provider: mecha_core::provider::openai::OpenAiCompatible,
     holds: mecha_core::hold::Holds,
     pass: mecha_core::quarantine::QuarantinedPass,
@@ -1725,7 +1727,7 @@ struct LocalMemoryModel {
     model: String,
 }
 impl LocalMemoryModel {
-    fn new(
+    pub(super) fn new(
         endpoint: &str,
         model: &str,
         holds_dir: PathBuf,
@@ -1790,6 +1792,37 @@ impl LocalMemoryModel {
     ) -> Result<(mecha_core::memory::model_evaluation::ModelReply, usize)> {
         self.complete_with_guard(prompt, schema, thinking_budget, None)
             .await
+    }
+    pub(super) async fn complete_learning(
+        &self,
+        generation: mecha_core::memory::concept::ConceptGeneration,
+        guard: mecha_core::memory_session::learning::LearningGuard,
+    ) -> Result<mecha_core::memory::model_evaluation::ModelReply> {
+        let mut reply = self
+            .complete_with_guard(
+                generation.prompt,
+                Some(generation.response_schema),
+                None,
+                Some(MemoryCallGuard::Learning(guard)),
+            )
+            .await?
+            .0;
+        // The decoded provider Usage cannot distinguish an absent counter from
+        // an explicit zero. Preserve each known positive count independently;
+        // the benchmark's wire audit retains exact field presence and zeroes.
+        reply.input_tokens = reply.input_tokens.filter(|count| *count > 0);
+        reply.output_tokens = reply.output_tokens.filter(|count| *count > 0);
+        if reply.model != self.model {
+            let mismatch = format!(
+                "model identity mismatch: expected {:?}, received {:?}",
+                self.model, reply.model
+            );
+            reply.error = Some(match reply.error {
+                Some(error) => format!("{error}; {mismatch}"),
+                None => mismatch,
+            });
+        }
+        Ok(reply)
     }
     async fn complete_guarded(
         &self,

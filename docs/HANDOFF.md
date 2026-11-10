@@ -33,10 +33,27 @@ for qualification, including the independently audited two-session resident-mode
 mechanics trial, and `website/docs/features/memory/index.md` for the command.
 
 **Remaining ordinary integration:** chat/web/resume, broader tool coverage, live
-goal/resource-state appraisal and explicit learning triggers. Keep the independent
-owner graph and production runtime unchanged. Next, turn the existing cases into
-the versioned chronological evaluation described below; opt-in retention by itself
-does not establish useful learning or private-data readiness.
+goal/resource-state appraisal and automatic learning selection/scheduling. Explicit
+host learning triggers now exist: `SessionMemory::learn` and `memory-session
+sources|learn` reuse native concept induction/rumination with current source
+authority, one local call and separate provisional outcomes. Full Spark
+qualification passed; HISTORY records its evidence and review corrections.
+The versioned `ordinary_lifetime.py` adapter now implements the first authored
+three-arm chronological development comparison. General experiment switches,
+held-out task families, useful-learning evidence and other harness adapters remain
+open. Next integrate restricted opt-in multi-turn chat and authenticated resume,
+then web: preserve conversation identity, cumulative lineage and immutable source
+prefixes as transcripts grow. The first profile still requires an explicit
+owner-supplied goal, changeable between runs; goal-less observation requires a
+separate contract. Qualify useful larger tool writes: the chronological pilot
+withheld six decision captures in the first attempt and all eight in the corrected
+attempt above the existing 1,024-byte argument bound.
+Also improve exact citation-pointer use; real references and quotations alone
+do not satisfy the current citation contract. A corrected real-model run retained
+a provisional concept, but none of its four adaptive decision packets included
+it. Qualify concept delivery in ordinary recall before claiming adaptive decision
+benefit; rumination abstained rather than revising the concept. Keep the independent owner graph
+and production runtime unchanged. Opt-in retention alone does not establish private-data readiness.
 
 **Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
 mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's
@@ -57,8 +74,8 @@ remain synthetic-only; the current implementation and remaining qualification ar
 recorded below.
 
 **Shared draft:** [PR #846](https://github.com/ljchang/mecha/pull/846),
-`codex/mecha-memory-v2-prototype`. This is the clean prototype snapshot on GitHub
-main `d943f4eb3`; do not push the older private prototype branch, whose history
+`codex/mecha-memory-v2-prototype`. This uses the public repository history;
+do not push the older private prototype branch, whose history
 predated main's rewrite. No merge or production cutover is authorized by this handoff.
 
 **2026-11-07 — memory benefit diagnostic complete (prototype branch).**
@@ -277,12 +294,11 @@ source families, not adaptive-learning or general reasoning benefit. It is not
 comparable to the earlier eight-pair vector cohort, whose negative first result
 remains unchanged in HISTORY.
 
-**Next:** turn the existing cases into a versioned recurring evaluation suite
-(§31.21), then test retention, changed-goal decisions, contradiction/revision and
-new-family transfer over chronological lifetimes. The primary system evaluation
-should enable memory and persistent concept/policy learning, with separate
-controls for no memory and memory with learning frozen. The general runner,
-switches, result index and cross-harness adapter remain unimplemented. This
+**Next:** extend the implemented ordinary-session chronological development lane
+(§31.23) with prospective retention, changed-goal, contradiction/revision and
+new-family transfer cases. Its no-memory, episodic-only and bounded adaptive arms
+are implemented; integration with general experiment switches, a result index and
+another harness remains unimplemented. This
 completion cohort held memory on and adaptive learning frozen; it cannot establish
 adaptive benefit. Preserve first results and label subsequent public-regression
 runs separately.

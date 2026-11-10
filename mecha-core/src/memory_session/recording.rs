@@ -18,7 +18,7 @@ pub(super) fn surface(names: &[String]) -> Result<()> {
     );
     Ok(())
 }
-fn records(bytes: &[u8]) -> Result<Vec<Record>> {
+pub(super) fn records(bytes: &[u8]) -> Result<Vec<Record>> {
     ensure!(
         bytes.len() <= authority::SOURCE_MAX && bytes.ends_with(b"\n"),
         "ordinary transcript incomplete"
