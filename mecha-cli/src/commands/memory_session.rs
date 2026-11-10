@@ -57,10 +57,20 @@ pub async fn execute(args: Args) -> Result<()> {
             serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized"})
         }
         Cmd::Retry { run_id } => {
-            serde_json::to_value(SessionMemory::open_for_recovery(&request)?.retry(&run_id))?
+            let memory = SessionMemory::open_for_recovery(&request)?;
+            if memory.is_chat_capture(&run_id)? {
+                serde_json::to_value(memory.retry_chat(&run_id))?
+            } else {
+                serde_json::to_value(memory.retry(&run_id))?
+            }
         }
         Cmd::Forget { run_id } => {
-            serde_json::to_value(SessionMemory::open_for_recovery(&request)?.forget(&run_id)?)?
+            let memory = SessionMemory::open_for_recovery(&request)?;
+            if memory.is_chat_capture(&run_id)? {
+                serde_json::json!({"protocol":mecha_core::memory_session::chat::CHAT_MEMORY_PROTOCOL,"run_id":run_id,"status":"forgotten","report":memory.forget_chat(&run_id)?})
+            } else {
+                serde_json::to_value(memory.forget(&run_id)?)?
+            }
         }
         Cmd::Sources {
             workspace,

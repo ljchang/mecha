@@ -17,6 +17,14 @@ pub(super) fn digest(b: &[u8]) -> String {
 pub(super) fn read(p: &Path, max: usize) -> Result<Vec<u8>> {
     Ok(bounded_read(p, max)?)
 }
+/// A dangling link is still a competing protocol claim, never absence.
+pub(super) fn claim_exists(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
 pub(super) fn write(p: &Path, b: &[u8]) -> Result<()> {
     write_once(p, b)
 }
@@ -36,7 +44,7 @@ fn exact_path(p: &Path, missing: bool) -> Result<()> {
     }
     Ok(())
 }
-fn private(p: &Path, directory: bool) -> Result<()> {
+pub(super) fn private(p: &Path, directory: bool) -> Result<()> {
     let file = open_nofollow(p, directory)?;
     #[cfg(target_os = "macos")]
     crate::memory::check_macos_private_metadata(&file)?;
@@ -354,6 +362,13 @@ impl ExternalSourceGuard for Authority {
     fn check(&self, b: &ExternalBinding) -> SourceStatus {
         let checked = (|| -> Result<()> {
             ensure!(b.authority == self.identity, "ordinary authority mismatch");
+            if claim_exists(&self.file(&b.locator, "chat-begin")?)? {
+                ensure!(
+                    !claim_exists(&self.file(&b.locator, "begin")?)?,
+                    "ambiguous memory protocol"
+                );
+                return super::chat::check_binding(self, b);
+            }
             let (seal, revision) = self.seal(&b.locator)?;
             ensure!(revision == b.revision, "ordinary seal mismatch");
             self.check_seal(&b.locator, &seal)

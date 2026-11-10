@@ -1,7 +1,7 @@
 ---
 title: Memory
 sidebar_position: 1
-description: Existing memory stores and opt-in encrypted episodic retention for fresh ordinary runs.
+description: Existing memory stores and opt-in encrypted episodic retention for ordinary runs and CLI conversations.
 ---
 
 # Memory
@@ -42,7 +42,7 @@ It requires a confirmed goal, no MCP, code tools or grants, and refuses project
 configuration instead of silently discarding its restrictions. Hooks, provider
 fallbacks and unapproved inbound-message profiles are refused. Existing approval
 rules still apply. Configured subagents and active outbox routes intersecting the
-selected tools are refused. Chat, resume, images, delegated/program traces and
+selected tools are refused. One-shot resume, images, delegated/program traces and
 compaction rewrites are not supported for retention. An unsupported recording
 can leave a completed action intact while its memory report is unavailable.
 Assistant reasoning stays in the original transcript, covered by its source
@@ -109,11 +109,54 @@ artifacts and retained copies are separate filesystem protection surfaces.
 Current qualification uses authored data; it does not establish general learning
 benefit, private-data readiness or corpus-scale performance.
 
+### Conversations with changing goals
+
+The separate experimental chat profile uses the same initialized manifest and
+encrypted store. From an isolated workspace, keep the restricted flags and tool
+selection above, and replace the `run` command with:
+
+```bash
+chat --dynamic-goals --episodic-memory "$MECHA_MEMORY_ROOT/memory.json"
+```
+
+This requires an interactive terminal and session recording. Owner messages can
+change direction between turns; the owner-authored charter is refreshed for each
+decision. Each retained turn records which context versions and original source
+passages it used. A request is context evidence, not an automatically confirmed
+success criterion. Retention remains `not_evaluated`.
+
+To resume, use the same workspace, manifest, restricted flags and tool selection,
+adding `--resume SESSION_ID` to that chat command. A different authority, competing
+writer, incomplete turn or unsupported unflagged resume refuses before inference.
+The CLI prints a separate `episodic chat memory` JSON report after each turn;
+save its `run_id` for the existing host-only `retry` and `forget` commands.
+Admission retry never repeats actions. Forgetting remains possible when the
+original transcript is missing, although that transcript can no longer supply
+recall evidence.
+
+Later conversation turns do not invalidate earlier observations: each turn seals
+its own immutable transcript prefix. Changing an earlier prefix invalidates the
+evidence that depends on it. Recalled material remains a dependency rather than
+being imported again as independent corroboration. Historical replay uses the
+recorded owner and charter context, not today's charter.
+
+This first chat profile is bounded. It refuses `/clear`, grant changes,
+compaction, context-overflow recovery and unfinished or noncompleted capture.
+A failed or oversized capture can follow an executed action; its report is
+unavailable and further memory-enabled turns stop. Only complete seals can be
+retried; an ambiguous unsealed turn requires a fresh chat. Native transcripts
+are limited to 4 MiB, and the inherited passage, tool-argument and context limits
+can be reached sooner. Web/TUI memory attachment and automatic learning remain
+separate work. SQLCipher does not encrypt the native transcript, terminal history
+or private recovery files.
+
 ### Explicit concept learning
 
 The same experimental build provides host-only `memory-session sources` and
 `memory-session learn`. These operate on an explicitly selected ordinary memory
 store; they do not schedule background learning or change the agent's tool list.
+Their current source-selection contract accepts one-shot captures; selecting the
+new per-turn chat captures for concept learning is a separate integration step.
 
 Use `sources --workspace WORKSPACE --run-id RUN_ID` to inspect authenticated
 original passages from a retained run. Select two to eight originals spanning

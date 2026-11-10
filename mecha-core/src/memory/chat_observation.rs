@@ -3,14 +3,45 @@
 //! Full versions and effective requests stay in the native transcript/private
 //! seal. These summaries never contain CharterSnapshot::source or sensor data.
 use super::host_capture::{CaptureIdentity, OriginalPassage, PassageKind};
-use crate::goal_context::{ContextVersion, DecisionBinding, OwnerInput, OwnerSource};
+#[cfg(feature = "memory-prototype")]
+use crate::goal_context::{ContextVersion, DecisionBinding, OwnerSource};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "memory-prototype")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub const CHAT_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v1";
 pub const CHAT_RECORDER_VERSION: &str = "ordinary-chat-recorder-v1";
+
+/// The currently supported authenticated chat ingress, independent of runtime types.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatOwnerSource {
+    CliChat,
+}
+
+/// Reader-safe owner evidence. Field order and source spelling match the native
+/// OwnerInput wire format, while the standalone memory harness owns no runtime.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatOwnerInput {
+    source: ChatOwnerSource,
+    text: String,
+}
+impl ChatOwnerInput {
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    fn validate(&self) -> Result<()> {
+        ensure!(!self.text.trim().is_empty(), "owner evidence is empty");
+        ensure!(
+            self.text.len() <= 64 * 1024,
+            "owner evidence exceeds 64 KiB"
+        );
+        Ok(())
+    }
+}
 
 /// Sanitized historical evidence, never a confirmed evaluative criterion.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,10 +51,11 @@ pub struct ChatContextVersion {
     predecessor: Option<u64>,
     context_digest: String,
     rendered_charter: Option<String>,
-    owner_inputs: Vec<OwnerInput>,
+    owner_inputs: Vec<ChatOwnerInput>,
 }
 impl ChatContextVersion {
     /// Call only with the version validated from the native decision record.
+    #[cfg(feature = "memory-prototype")]
     pub fn from_version(version: &ContextVersion) -> Result<Self> {
         version.validate()?;
         Ok(Self {
@@ -31,13 +63,26 @@ impl ChatContextVersion {
             predecessor: version.predecessor(),
             context_digest: serialized_digest(version)?,
             rendered_charter: version.charter().prompt_block().map(str::to_owned),
-            owner_inputs: version.owner_inputs().to_vec(),
+            owner_inputs: version
+                .owner_inputs()
+                .iter()
+                .map(|input| {
+                    ensure!(
+                        input.source() == OwnerSource::CliChat,
+                        "unsupported chat owner source"
+                    );
+                    Ok(ChatOwnerInput {
+                        source: ChatOwnerSource::CliChat,
+                        text: input.text().into(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
         })
     }
     pub fn revision(&self) -> u64 {
         self.revision
     }
-    pub fn owner_inputs(&self) -> &[OwnerInput] {
+    pub fn owner_inputs(&self) -> &[ChatOwnerInput] {
         &self.owner_inputs
     }
 }
@@ -61,6 +106,7 @@ pub struct ChatDecisionLocator {
     pub context_revision: u64,
     pub binding_digest: String,
 }
+#[cfg(feature = "memory-prototype")]
 impl ChatDecisionLocator {
     pub fn from_binding(line: u64, binding: &DecisionBinding) -> Result<Self> {
         binding.validate()?;
@@ -92,6 +138,7 @@ pub struct ChatObservationContext {
     pub versions: Vec<ChatContextVersion>,
     pub decisions: Vec<ChatDecisionLocator>,
 }
+#[cfg(feature = "memory-prototype")]
 fn serialized_digest(value: &impl Serialize) -> Result<String> {
     Ok(Sha256::digest(serde_json::to_vec(value)?)
         .iter()
@@ -148,11 +195,7 @@ impl ChatObservationContext {
                 "invalid chat context version"
             );
             for input in &version.owner_inputs {
-                ensure!(
-                    input.source() == OwnerSource::CliChat,
-                    "unsupported chat owner source"
-                );
-                OwnerInput::new(input.source(), input.text().into())?;
+                input.validate()?;
             }
             revisions.insert(version.revision);
             last_revision = version.revision;

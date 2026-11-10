@@ -60,3 +60,6 @@ pub mod voice_serve;
 pub mod work;
 
 pub mod workflow;
+
+#[cfg(feature = "memory-prototype")]
+pub(crate) mod memory_profile;

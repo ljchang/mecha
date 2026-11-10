@@ -964,11 +964,44 @@ async fn main() {
 
 async fn dispatch() -> Result<()> {
     let mut cli = Cli::parse();
+    // A driven one-shot cannot resume at all; reject that boundary before
+    // memory resume preflight tries to find or read the selected transcript.
+    if let Command::Run(args) = &cli.command {
+        commands::run::preflight_start(&cli.global, args)?;
+    }
     #[cfg(feature = "memory-prototype")]
     let ordinary_memory = match &cli.command {
         Command::Run(args) => commands::run::preflight_memory(&mut cli.global, args)?,
         _ => None,
     };
+    #[cfg(feature = "memory-prototype")]
+    let chat_memory = match &cli.command {
+        Command::Chat(args) => commands::chat::preflight_memory(&mut cli.global, args)?,
+        _ => None,
+    };
+    // Refuse unsupported memory resumes before router/provider observations.
+    let resume = match &cli.command {
+        Command::Run(args) => args.resume.as_ref(),
+        Command::Tui(args) => args.resume.as_ref(),
+        Command::Chat(args) => {
+            #[cfg(feature = "memory-prototype")]
+            if args.episodic_memory.is_some() {
+                None
+            } else {
+                args.resume.as_ref()
+            }
+            #[cfg(not(feature = "memory-prototype"))]
+            {
+                args.resume.as_ref()
+            }
+        }
+        _ => None,
+    };
+    if let Some(id) = resume {
+        let path =
+            mecha_core::session::Session::find(&mecha_core::session::Session::default_dir()?, id)?;
+        mecha_core::session::Session::load(&path)?;
+    }
     // A driven run reads no project layer (D1b): a pinned historical tree's
     // `mecha.toml` is neither the owner's nor the run's to choose, and it
     // could attach a server or a hook, or undo the sandbox. Forced here, for
@@ -1003,7 +1036,15 @@ async fn dispatch() -> Result<()> {
             )
             .await
         }
-        Command::Chat(args) => commands::chat::execute(&cli.global, args).await,
+        Command::Chat(args) => {
+            commands::chat::execute(
+                &cli.global,
+                args,
+                #[cfg(feature = "memory-prototype")]
+                chat_memory,
+            )
+            .await
+        }
         Command::Tui(args) => tui::execute(&cli.global, args.resume, args.no_session).await,
         Command::VoiceServe(args) => commands::voice_serve::execute(&cli.global, args).await,
         Command::Batch(args) => commands::batch::execute(&cli.global, args).await,

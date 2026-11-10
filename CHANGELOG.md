@@ -9,13 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental `chat --episodic-memory FILE --dynamic-goals` connects local,
+  recorded CLI conversations to the explicit encrypted memory store. Each turn
+  retains attributed observations under its own immutable transcript prefix and
+  historical owner/charter context. Authenticated resume preserves the source
+  chain; unflagged or conflicting writers refuse. Host retry never repeats
+  actions, and forgetting remains available after source deletion. This bounded
+  profile stops after incomplete capture and does not support compaction,
+  web/TUI memory attachment or automatic learning. Task success stays unevaluated.
+
 - Experimental `--dynamic-goals` records changing owner instructions and charter
-  snapshots in CLI chat, TUI and authenticated assistant web chat. Each provider
+  snapshots in CLI chat and TUI. Authenticated web handlers contain the context
+  machinery, but server-option plumbing remains incomplete. Each provider
   attempt is bound to its context version, effective messages and tool surface;
   historical replay refuses missing or incompatible context. The charter remains
   owner-authored. Ambiguous historical appraisal is reported as partial rather
-  than evaluated against today's charter. Default-off; encrypted multi-turn
-  memory capture remains separate work.
+  than evaluated against today's charter. Default-off; encrypted memory uses
+  its own explicit opt-in and capture contract.
 
 - Experimental `memory-session sources` and `learn` connect authenticated
   ordinary-session observations to bounded native concept induction and revision.
@@ -41,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer, with semantic success explicitly not evaluated. Host-only
   `memory-session init`, `retry` and `forget` manage the selected store without
   executing a model or repeating actions. The first profile supports bounded
-  direct file tools and `goal_context`; chat, resume and broader tool integration
-  remain separate work.
+  direct file tools and `goal_context`; broader tool integration remains separate
+  work. Multi-turn CLI chat uses the distinct opt-in protocol described above.
 
 - Experimental native memory sessions accept `--completion-request` for one
   bounded opportunity to finish a missing required recall or JSON artifact.

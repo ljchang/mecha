@@ -19,9 +19,62 @@ pub struct Args {
     /// Don't write a transcript.
     #[arg(long)]
     pub no_session: bool,
+
+    /// Explicit encrypted episodic memory manifest (local recorded dynamic chat).
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, value_name = "REQUEST_JSON", conflicts_with = "no_session")]
+    pub episodic_memory: Option<std::path::PathBuf>,
 }
 
-pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
+#[cfg(feature = "memory-prototype")]
+pub(crate) enum MemoryPreparation {
+    Fresh(mecha_core::memory_session::SessionMemory),
+    Resumed(Box<mecha_core::memory_session::chat::ChatMemory>),
+}
+/// Runs in main before router observation or provider setup.
+#[cfg(feature = "memory-prototype")]
+pub(crate) fn preflight_memory(
+    global: &mut GlobalOpts,
+    args: &Args,
+) -> Result<Option<MemoryPreparation>> {
+    let Some(path) = &args.episodic_memory else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        global.dynamic_goals && std::io::stdin().is_terminal() && !args.no_session,
+        "chat memory requires --dynamic-goals, a local terminal, and recording"
+    );
+    anyhow::ensure!(
+        global.goal.is_none(),
+        "chat memory uses owner context, not --goal"
+    );
+    let memory = super::memory_profile::open_profile(global, path)?;
+    if let Some(id) = &args.resume {
+        let path = Session::find(&Session::default_dir()?, id)?;
+        let t = Session::read(&path)?;
+        let session = Session { meta: t.meta, path };
+        Ok(Some(MemoryPreparation::Resumed(Box::new(
+            memory.attach_chat(
+                &session,
+                mecha_core::memory_session::chat::ChatAttachMode::Resume,
+            )?,
+        ))))
+    } else {
+        Ok(Some(MemoryPreparation::Fresh(memory)))
+    }
+}
+#[cfg(feature = "memory-prototype")]
+fn report_memory(report: &mecha_core::memory_session::chat::ChatMemoryReport) {
+    eprintln!(
+        "mecha: episodic chat memory {}",
+        serde_json::to_string(report).expect("memory report serializes")
+    );
+}
+pub async fn execute(
+    global: &GlobalOpts,
+    args: Args,
+    #[cfg(feature = "memory-prototype")] memory_preparation: Option<MemoryPreparation>,
+) -> Result<()> {
     let opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Chat),
         ..global.clone()
@@ -41,6 +94,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // hostile page read on turn one still arms the interlock on turn five.
     let mut convo = Conversation::new();
     let mut session = None;
+    #[cfg(feature = "memory-prototype")]
+    let (mut chat_memory, mut fresh_memory) = match memory_preparation {
+        Some(MemoryPreparation::Fresh(memory)) => (None, Some(memory)),
+        Some(MemoryPreparation::Resumed(chat)) => (Some(*chat), None),
+        None => (None, None),
+    };
+    #[cfg(feature = "memory-prototype")]
+    let memory_enabled = chat_memory.is_some() || fresh_memory.is_some();
+    #[cfg(not(feature = "memory-prototype"))]
+    let memory_enabled = false;
 
     if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
@@ -62,6 +125,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                  where it is"
             );
         }
+        #[cfg(feature = "memory-prototype")]
+        let (meta, prior) = if chat_memory.is_some() {
+            let t = Session::read(&path)?;
+            (t.meta, t.convo)
+        } else {
+            Session::load(&path)?
+        };
+        #[cfg(not(feature = "memory-prototype"))]
         let (meta, prior) = Session::load(&path)?;
         anyhow::ensure!(
             !prior.has_dynamic_goal_context() || opts.dynamic_goals,
@@ -94,11 +165,52 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         )?);
     }
 
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = fresh_memory.take() {
+        chat_memory = Some(memory.attach_chat(
+            session.as_ref().expect("recording required"),
+            mecha_core::memory_session::chat::ChatAttachMode::Create,
+        )?);
+    }
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = &chat_memory {
+        super::memory_profile::validate_memory_config(&opts, &prepared.config)?;
+        let cx = prepared.agent.context();
+        anyhow::ensure!(
+            cx.hooks.is_empty(),
+            "chat memory requires no effective hooks"
+        );
+        anyhow::ensure!(
+            !prepared
+                .agent
+                .registry()
+                .iter()
+                .any(|tool| tool.runs_a_fresh_conversation()
+                    || tool.defers()
+                    || tool.hosts_programs()),
+            "chat memory requires direct tools"
+        );
+        let names: Vec<String> = prepared
+            .agent
+            .registry()
+            .iter()
+            .map(|tool| tool.name().into())
+            .collect();
+        memory.validate_surface(&names, &prepared.workspace, &cx.tools.grants.all())?;
+        anyhow::ensure!(
+            names.len() == opts.tools.len() && names.iter().all(|n| opts.tools.contains(n)),
+            "chat memory final registry differs from selected tools"
+        );
+        prepared.agent.registry_mut().insert(memory.context_tool()?);
+    }
+
     // On create and on resume both: a session picked up under different flags
     // is exactly what this record exists to catch.
     if let Some(s) = &session {
         // Before the config record, which captures the tool list for replay.
-        setup::register_recall(&mut prepared.agent, s);
+        if !memory_enabled {
+            setup::register_recall(&mut prepared.agent, s);
+        }
         s.append(&Record::Config(RunConfig::of(
             &prepared.agent,
             &prepared.config,
@@ -182,7 +294,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
 
         if let Some(command) = input.strip_prefix('/') {
-            match handle_command(command, &prepared, &mut convo, &total, session.as_ref()) {
+            match handle_command(
+                command,
+                &prepared,
+                &mut convo,
+                &total,
+                session.as_ref(),
+                memory_enabled,
+            ) {
                 Flow::Continue => continue,
                 Flow::Quit => break,
             }
@@ -204,6 +323,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     continue;
                 }
             }
+        } else {
+            None
+        };
+        #[cfg(feature = "memory-prototype")]
+        let memory_turn = if let Some(memory) = chat_memory.as_mut() {
+            let turn = memory.begin_turn(
+                session.as_ref().expect("recorded chat"),
+                owner_input.as_ref().expect("dynamic owner input"),
+            )?;
+            let tool = memory.goal_memory(&turn)?;
+            let old = prepared
+                .agent
+                .registry()
+                .get("goal_context")
+                .expect("profile tool");
+            anyhow::ensure!(
+                old.input_schema() == tool.input_schema()
+                    && old.description() == tool.description(),
+                "chat memory schema changed between turns"
+            );
+            prepared.agent.registry_mut().insert(tool);
+            Some(turn)
         } else {
             None
         };
@@ -251,6 +392,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         match result {
             Ok(outcome) => {
                 total.add(&outcome.usage);
+                #[cfg(feature = "memory-prototype")]
+                if let (Some(memory), Some(turn), Some(s)) =
+                    (chat_memory.as_mut(), memory_turn.as_ref(), session.as_ref())
+                {
+                    let recording = (|| -> Result<()> {
+                        s.record_run(&recorded, &convo)?;
+                        s.record_outcome(&outcome)?;
+                        s.append(&Record::Taint(convo.taint))?;
+                        Ok(())
+                    })();
+                    let report = memory.finish_turn(turn);
+                    report_memory(&report);
+                    if let Err(error) = recording {
+                        eprintln!("chat recording failed: {error:#}");
+                        break;
+                    }
+                    if report.status != mecha_core::memory_session::SessionMemoryStatus::Retained {
+                        break;
+                    }
+                    continue;
+                }
                 if let Some(s) = &session {
                     s.record_run(&recorded, &convo)?;
                     // How the run went, beside what it said. An interactive
@@ -263,6 +425,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
             Err(e) => {
                 eprintln!("error: {e:#}");
+                #[cfg(feature = "memory-prototype")]
+                if let (Some(memory), Some(turn), Some(s)) =
+                    (chat_memory.as_mut(), memory_turn.as_ref(), session.as_ref())
+                {
+                    if let Err(error) = s.record_run(&recorded, &convo) {
+                        eprintln!("chat recording failed: {error:#}");
+                    }
+                    let _ = s.append(&Record::Taint(convo.taint));
+                    report_memory(&memory.finish_turn(turn));
+                    break;
+                }
                 // Drop the turn so a failed request doesn't leave a dangling
                 // user message that the next request would resend — see
                 // `Conversation::roll_back_failed_turn` for why restore-then-
@@ -331,8 +504,16 @@ fn handle_command(
     convo: &mut Conversation,
     total: &Usage,
     session: Option<&Session>,
+    memory_enabled: bool,
 ) -> Flow {
     let (name, rest) = command.split_once(' ').unwrap_or((command, ""));
+    if memory_enabled
+        && (name == "clear"
+            || matches!(name, "grant" | "grants" | "revoke") && !rest.trim().is_empty())
+    {
+        eprintln!("chat memory refuses /{name}; start a fresh session for a new context or grants");
+        return Flow::Continue;
+    }
     match name {
         "exit" | "quit" | "q" => return Flow::Quit,
 

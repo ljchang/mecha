@@ -614,18 +614,6 @@ fn canonical_ordinary_projection_authenticates_payload_then_checks_protocol() {
 
 fn chat_capture() -> HostCapture {
     use super::chat_observation::*;
-    use crate::goal_context::{
-        CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
-    };
-    let mut state = GoalContextState::default();
-    let version = state
-        .transition(
-            CharterSnapshot::disabled(),
-            Some(OwnerInput::new(OwnerSource::CliChat, "Sort synthetic cards".into()).unwrap()),
-        )
-        .unwrap()
-        .unwrap();
-    let binding = DecisionBinding::new(0, version.revision(), &[], None, true, 0).unwrap();
     let mut value = capture("chat-fixture", "a", "Sort synthetic cards");
     value.identity.check_version = CHAT_OBSERVATION_PROTOCOL.into();
     value.identity.evaluator_version = CHAT_RECORDER_VERSION.into();
@@ -643,8 +631,20 @@ fn chat_capture() -> HostCapture {
             context_revision: 1,
             owner_input_index: 0,
         }],
-        versions: vec![ChatContextVersion::from_version(&version).unwrap()],
-        decisions: vec![ChatDecisionLocator::from_binding(2, &binding).unwrap()],
+        versions: vec![serde_json::from_value(json!({
+            "revision": 1,
+            "predecessor": null,
+            "context_digest": "c".repeat(64),
+            "rendered_charter": null,
+            "owner_inputs": [{"source": "cli_chat", "text": "Sort synthetic cards"}],
+        }))
+        .unwrap()],
+        decisions: vec![ChatDecisionLocator {
+            line: 2,
+            ordinal: 0,
+            context_revision: 1,
+            binding_digest: "d".repeat(64),
+        }],
     });
     value
 }
@@ -752,6 +752,7 @@ fn legacy_host_payload_bytes_and_digest_remain_unchanged() {
     assert!(decoded.chat_context.is_none());
 }
 
+#[cfg(feature = "memory-prototype")]
 #[test]
 fn chat_version_summary_keeps_owner_order_but_excludes_raw_sensor_configuration() {
     use super::chat_observation::ChatContextVersion;
@@ -819,4 +820,66 @@ fn chat_context_bounds_and_locator_integrity_fail_closed() {
     let mut legacy = capture("old", "a", "fixture");
     legacy.criterion = None;
     assert!(OrdinaryObservationCapture::try_from_host(legacy).is_err());
+}
+
+#[test]
+fn chat_owner_dto_rejects_unsupported_sources_and_empty_evidence() {
+    let mut invalid = serde_json::to_value(chat_capture()).unwrap();
+    invalid["chat_context"]["versions"][0]["owner_inputs"][0]["source"] = json!("tui");
+    assert!(serde_json::from_value::<HostCapture>(invalid).is_err());
+    let mut invalid = serde_json::to_value(chat_capture()).unwrap();
+    invalid["chat_context"]["versions"][0]["owner_inputs"][0]["text"] = json!(" ");
+    let invalid: HostCapture = serde_json::from_value(invalid).unwrap();
+    assert!(OrdinaryObservationCapture::try_from_host(invalid).is_err());
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn chat_native_conversion_preserves_owner_and_context_wire_bytes() {
+    use super::chat_observation::{ChatContextVersion, ChatDecisionLocator};
+    use crate::goal_context::{
+        CharterSnapshot, DecisionBinding, GoalContextState, OwnerInput, OwnerSource,
+    };
+    #[derive(serde::Serialize)]
+    struct PreviousSummary<'a> {
+        revision: u64,
+        predecessor: Option<u64>,
+        context_digest: String,
+        rendered_charter: Option<&'a str>,
+        owner_inputs: &'a [OwnerInput],
+    }
+    let mut state = GoalContextState::default();
+    let version = state
+        .transition(
+            CharterSnapshot::disabled(),
+            Some(OwnerInput::new(OwnerSource::CliChat, "Sort synthetic cards".into()).unwrap()),
+        )
+        .unwrap()
+        .unwrap();
+    let summary = ChatContextVersion::from_version(&version).unwrap();
+    let previous = PreviousSummary {
+        revision: version.revision(),
+        predecessor: version.predecessor(),
+        context_digest: digest_bytes(&serde_json::to_vec(&version).unwrap()),
+        rendered_charter: version.charter().prompt_block(),
+        owner_inputs: version.owner_inputs(),
+    };
+    assert_eq!(
+        serde_json::to_vec(&summary).unwrap(),
+        serde_json::to_vec(&previous).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(summary.owner_inputs()).unwrap(),
+        serde_json::to_vec(version.owner_inputs()).unwrap()
+    );
+    let binding = DecisionBinding::new(0, version.revision(), &[], None, true, 0).unwrap();
+    let locator = ChatDecisionLocator::from_binding(2, &binding).unwrap();
+    assert_eq!(
+        locator.binding_digest,
+        digest_bytes(&serde_json::to_vec(&binding).unwrap())
+    );
+    assert_eq!(
+        (locator.line, locator.ordinal, locator.context_revision),
+        (2, 0, version.revision())
+    );
 }

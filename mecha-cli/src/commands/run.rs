@@ -145,104 +145,16 @@ pub(crate) struct OrdinaryMemory {
     prompt: String,
 }
 
-#[cfg(feature = "memory-prototype")]
-fn validate_memory_config(global: &GlobalOpts, config: &mecha_core::config::Config) -> Result<()> {
-    use mecha_core::{mailbox::InboundPolicy, provider::router, tool::profile::ToolProfile};
-
-    let (_, provider) = config.provider(global.provider.as_deref())?;
-    anyhow::ensure!(
-        global.provider.is_some() || global.model.is_some() || !router::follows_here(provider),
-        "ordinary memory needs an explicit --provider or --model with router following enabled"
-    );
-    anyhow::ensure!(
-        global.no_fallback || provider.fallbacks.is_empty(),
-        "ordinary memory requires no provider fallbacks (use --no-fallback)"
-    );
-    anyhow::ensure!(
-        global.no_hooks || config.hooks.is_empty(),
-        "ordinary memory requires no effective hooks"
-    );
-    // Owner-only config loading normally defaults inbound mail to Accept.
-    // A memory run must preserve its one-shot boundary.
-    anyhow::ensure!(
-        global.no_messages
-            || !config.messages.on()
-            || matches!(
-                config.messages.inbound,
-                Some(InboundPolicy::Hold | InboundPolicy::Refuse)
-            ),
-        "ordinary memory requires held or disabled inbound messages"
-    );
-    anyhow::ensure!(
-        !matches!(
-            global.tool_profile,
-            Some(ToolProfile::Research | ToolProfile::Coding)
-        ) && global.tools.iter().all(|name| config.tools.registers(name)),
-        "ordinary memory requires all selected tools to be enabled, including goal_context"
-    );
-    // Setup exposes a child whenever its tool list fits the parent allowlist,
-    // even when the child's name was not selected. Its name can shadow a builtin.
-    anyhow::ensure!(
-        !config
-            .subagents
-            .iter()
-            .any(|child| { child.tools.iter().all(|name| global.tools.contains(name)) }),
-        "ordinary memory requires no effective subagents"
-    );
-    anyhow::ensure!(
-        global.no_outbox
-            || !global
-                .tools
-                .iter()
-                .any(|name| config.outbox.tools.contains(name)),
-        "ordinary memory requires direct tools; the outbox routes a selected tool"
-    );
-    Ok(())
-}
-
 /// The manifest and owner profile are checked before router holds or observations.
 #[cfg(feature = "memory-prototype")]
 pub(crate) fn preflight_memory(
     global: &mut GlobalOpts,
     args: &Args,
 ) -> Result<Option<OrdinaryMemory>> {
-    use mecha_core::{config::Config, session::SessionKind};
-
     let Some(path) = &args.episodic_memory else {
         return Ok(None);
     };
-    // Subcommand requirements miss globals written before `run`.
-    // Check the merged options before configuration or provider startup.
-    anyhow::ensure!(
-        global.no_mcp && global.no_code_tool && global.no_grants && !global.tools.is_empty(),
-        "ordinary memory requires --no-mcp, --no-code-tool, --no-grants, and explicit --tool selection"
-    );
-    anyhow::ensure!(
-        SessionKind::test_override().is_none(),
-        "ordinary memory requires a fresh run without a session-kind override"
-    );
-    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    match std::fs::symlink_metadata(cwd.join(Config::PROJECT_FILE)) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("ordinary memory cannot inspect project config"),
-        Ok(_) => anyhow::bail!("ordinary memory refuses a project mecha.toml"),
-    }
-    let config = Config::load_global()?;
-    validate_memory_config(global, &config)?;
-    let workspace = global
-        .workspace
-        .as_ref()
-        .or(config.tools.workspace.as_ref())
-        .unwrap_or(&cwd);
-    let workspace = workspace
-        .canonicalize()
-        .context("ordinary memory workspace unavailable")?;
-    mecha_core::work::ensure_outside_mecha_home(&workspace)?;
-    let path = std::path::absolute(path)?;
-    SessionMemory::validate_request_path(&path, &workspace)?;
-    let request = SessionMemory::load_request(&path)?;
-    let memory = SessionMemory::open(&request, &workspace)?;
-    memory.validate_surface(&global.tools, &workspace, &[])?;
+    let memory = super::memory_profile::open_profile(global, path)?;
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(
         !prompt.trim().is_empty() && prompt.len() <= 2048,
@@ -264,15 +176,38 @@ fn print_memory_status(report: &SessionMemoryReport) {
     eprintln!("mecha: episodic memory {status} (run {})", report.run_id);
 }
 
+/// Pure flag checks precede transcript discovery, configuration and provider
+/// startup. Keep the execute call too, for callers that bypass main dispatch.
+pub(crate) fn preflight_start(global: &GlobalOpts, args: &Args) -> Result<bool> {
+    anyhow::ensure!(
+        !global.dynamic_goals,
+        "--dynamic-goals is supported by interactive chat, tui and assistant serve; one-shot run retains its fixed-goal contract"
+    );
+    // A driven run is a fresh one-shot, and recorded (`docs/DRIVER-DESIGN.md`
+    // §6, D1b). `--resume` would register `recall` straight into the
+    // registry with no narrowing consulted, and a second attempt at a task
+    // is a fresh run; `--no-session` would leave nowhere to record what the
+    // mark forced, and an unrecorded driven run is one D4 cannot attribute.
+    let driven = mecha_core::driven::marked();
+    if driven {
+        anyhow::ensure!(
+            args.resume.is_none(),
+            "a driven run is a fresh one-shot and never resumes; run the task again instead"
+        );
+        anyhow::ensure!(
+            !args.no_session,
+            "a driven run is recorded: what it forced lives on its session"
+        );
+    }
+    Ok(driven)
+}
+
 pub async fn execute(
     global: &GlobalOpts,
     args: Args,
     #[cfg(feature = "memory-prototype")] ordinary_memory: Option<OrdinaryMemory>,
 ) -> Result<()> {
-    anyhow::ensure!(
-        !global.dynamic_goals,
-        "--dynamic-goals is supported by interactive chat, tui and assistant serve; one-shot run retains its fixed-goal contract"
-    );
+    let driven = preflight_start(global, &args)?;
     #[cfg(feature = "memory-prototype")]
     let (ordinary_memory, prompt) = match ordinary_memory {
         Some(OrdinaryMemory { memory, prompt }) => (Some(memory), prompt),
@@ -338,22 +273,6 @@ pub async fn execute(
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
-    // A driven run is a fresh one-shot, and recorded (`docs/DRIVER-DESIGN.md`
-    // §6, D1b). `--resume` would register `recall` straight into the
-    // registry with no narrowing consulted, and a second attempt at a task
-    // is a fresh run; `--no-session` would leave nowhere to record what the
-    // mark forced, and an unrecorded driven run is one D4 cannot attribute.
-    let driven = mecha_core::driven::marked();
-    if driven {
-        anyhow::ensure!(
-            args.resume.is_none(),
-            "a driven run is a fresh one-shot and never resumes; run the task again instead"
-        );
-        anyhow::ensure!(
-            !args.no_session,
-            "a driven run is recorded: what it forced lives on its session"
-        );
-    }
     let mut opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Run),
         // The owner's `--goal`, the one this run is matched toward. A
@@ -369,7 +288,7 @@ pub async fn execute(
     let mut prepared = setup::prepare(&opts, interactive).await?;
     #[cfg(feature = "memory-prototype")]
     if let Some(memory) = &ordinary_memory {
-        validate_memory_config(&opts, &prepared.config)?;
+        super::memory_profile::validate_memory_config(&opts, &prepared.config)?;
         let ctx = prepared.agent.context();
         anyhow::ensure!(
             ctx.hooks.is_empty(),

@@ -2,10 +2,17 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Conversation-memory addendum, 2026-11-10:** §31.25 has an opt-in local CLI
+implementation with per-turn prefix seals, changing context and authenticated
+resume. It retains NotEvaluated observations, not verified success. See HISTORY
+for qualification and HANDOFF for web/TUI, long-chat and chat-learning gaps.
+The owner-authored charter file remains authoritative; vault/control isolation
+and external-file protection remain separate work.
+
 **Dynamic-context addendum, 2026-11-10:** §31.24 has an opt-in implementation
 for versioned owner chat, charter snapshots and historical request replay.
-Current charter authority remains in the owner's file. Encrypted multi-turn
-memory admission and owner-only vault/control isolation remain separate work.
+Current charter authority remains in the owner's file. The separate CLI memory
+contract is described in §31.25; owner-only vault/control isolation remains open.
 See HISTORY for qualification and HANDOFF for the current integration boundary.
 
 **Ordinary-session addendum, 2026-11-09:** §31.22 now has an opt-in one-shot
@@ -4100,3 +4107,71 @@ policy writes and one credential-broker connector, testing direct/aliased writes
 forged local identity, cross-account requests, revocation and broker failure.
 Measure added latency before expanding the boundary. No privileged management
 model is needed to enforce these checks.
+
+### 31.25 Encrypted multi-turn CLI memory
+
+**Design, 2026-11-10.** Connect opt-in CLI chat to the existing encrypted memory
+store without changing the fixed-goal one-shot protocol. The first surface is
+`chat --episodic-memory REQUEST_JSON --dynamic-goals`; web, TUI, background
+learning, tool-surface expansion and a credential vault are separate increments.
+The manifest remains host-selected, outside the execution workspace. Reuse its
+key, scopes, source guard and admission machinery, not a second database engine.
+
+Each completed turn is a distinct observation, with semantic assessment
+`NotEvaluated`. A new ordinary-chat observation protocol records a typed context
+sidecar and no confirmed criterion. Owner utterances and charter snapshots are
+context evidence, not automatically confirmed task goals or success conditions.
+The sidecar identifies the conversation, turn, transcript prefix and original
+message locations, and the context versions and decision bindings actually used.
+Reader-visible context includes attributed owner text and rendered charter text;
+raw charter sensor configuration remains in the historical transcript, never in
+retrieval packets. Existing capture serialization and receipt identities must
+remain unchanged for legacy records.
+
+Authenticate each turn against an immutable byte prefix of the original JSONL.
+Later appends are allowed; edits, truncation, missing sources, aliases and altered
+sealed metadata are not. Original passage line/field pointers address the real
+transcript. Import only newly observed passages; prior messages, summaries and
+recalled packets cannot become fresh independent evidence. Carry the complete
+consulted-source closure across turns, compaction and resume. Current withdrawal,
+forgetting and scope restrictions override historical availability.
+
+A host-owned conversation ledger binds the store authority, session identity,
+workspace, turn order and prefix chain. Hold an exclusive conversation lease
+through execution. Resume requires the same selected authority and an intact
+chain, and refuses missing flags or a competing writer before inference. Recovery
+may admit an already completed, sealed turn but must never replay a provider or
+tool. An unfinished or ambiguous turn refuses further memory-enabled execution
+until it has a supported host resolution; starting a fresh chat remains available.
+Record a feature-independent session marker so builds without the memory feature
+cannot silently resume such a transcript as an ordinary conversation.
+The ordinary loader detects a recognized marker; explicit memory attachment also
+requires that marker to match its private ledger. This is not an authentication
+claim for an arbitrary copied transcript whose owner removed all markers. Source
+mutation still invalidates its retained memory. Do not discover arbitrary stores
+on every ordinary resume in order to infer a missing attachment.
+
+Require the previous sealed turn to be retained before another memory-enabled
+turn starts. Admission retry is host-only and idempotent. Separate source validity
+from continuation validity: checking an old seal reads only its recorded prefix,
+so an unfinished later append does not revoke earlier valid memories; attaching
+or continuing checks the complete latest tail and refuses ambiguity.
+
+Chat recall uses the current authenticated ToolCtx goal context, with no fabricated
+GoalRef. Preserve `confirmed_goal: null` when no confirmed anchor exists. The
+fixed-goal constructors and existing appraisal target contracts remain unchanged.
+
+Keep the existing restricted direct-tool profile, fail-closed configuration
+preflight and conversation taint. Memory chat requires a local terminal and a
+recorded session. Reject unsupported slash-command mutations such as grants;
+clear must either preserve authenticated epoch/lineage or explicitly refuse before
+mutation. Default-off chat behavior remains unchanged. Recording, recall delivery,
+retention and semantic quality are separate outcomes; a failed admission must be
+visible and cannot erase execution history or permit duplicate execution.
+
+Qualification covers changing the goal, changing the owner-authored charter,
+restart/resume, exact historical request replay, source-prefix mutation, withdrawn
+dependencies, concurrent attach and interrupted recording. An authored transport
+tests actual CLI wiring. A bounded memory-on/off model comparison records delivered
+evidence and citations, including a misleading historical memory; storage success
+alone is not a decision-benefit result.

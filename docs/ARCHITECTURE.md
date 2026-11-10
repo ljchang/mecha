@@ -13081,6 +13081,39 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   authority stay outside the execution workspace, and private authority files
   reuse the key policy's macOS ACL checks. SQLCipher protects the database, not
   external JSONL, private recovery payloads, artifacts or retained copies.
+- **Chat evidence seals a prefix, while continuation authenticates the tail.**
+  `memory_session::chat` gives each retained turn its own source length/digest,
+  ordinal and predecessor. Reading an old observation must not hash an entire
+  growing transcript: a later interrupted append does not change its evidence.
+  Resuming instead verifies the complete bounded tail and requires every prior
+  turn retained. An incomplete unsealed turn cannot be retried as execution.
+  Native `ChatMemoryMarker` remains decodable without the feature and makes the
+  ordinary execution loader refuse; explicit attach verifies its private ledger.
+  This does not detect arbitrary owner-edited copies stripped of every marker.
+  A turn handle is bound to its attachment, and a tracked reader retains the
+  same lease until dropped; store identity alone cannot authorize another
+  conversation's turn. The pre-config schema placeholder refuses dispatch.
+  Pure driven-run startup constraints precede transcript discovery, and memory
+  resume validation still precedes provider/router setup.
+- **Owner context is not a confirmed success criterion.** Chat observation
+  sidecars hold sanitized versions and original owner/decision locators, mutually
+  exclusive with a confirmed criterion. Repeating identical text is still a new
+  owner occurrence. Decision bindings must cover exact native message boundaries,
+  including the current owner input and intervening tool results; matching an
+  arbitrary earlier prefix is insufficient. Native binding records are written
+  during execution, before `record_run` appends the response messages, so semantic
+  history boundaries cannot be inferred from physical JSONL order alone.
+  Stored owner DTOs remain independent of the runtime: this memory module is
+  also compiled by the standalone harness, whose crate root has no goal-context
+  subsystem. Native converters are feature-gated, with wire-equivalence checks;
+  adding unconditional runtime imports once broke that separate qualification.
+- **Stored dependency roots and delivered packets have different completeness
+  contracts.** A predecessor projection already owns the earlier source closure.
+  Chat may retain that canonical root without flattening every ancestor into its
+  bounded direct-reference list. `validate_dependency_roots` reauthorizes the
+  complete stored closure; `validate_delivered_context` still requires the full
+  manifest actually delivered on the wire. Neither recalled packets nor old
+  conversation messages become new independent originals in a later turn.
 - **Learning keeps the prepared authority across inference.** The host-only
   `memory_session::learning` bridge selects original passages from authenticated,
   already-retained ordinary captures. Inventory never retries admission. Native

@@ -905,6 +905,7 @@ fn exhaustive(record: &Record) {
         | Record::GoalAnchor { .. }
         | Record::GoalContextDecision { .. }
         | Record::GoalContextClear
+        | Record::ChatMemory { .. }
         | Record::Grants { .. } => {}
         // Not ignored: `Session::outcomes_attributed`, which the scan reads,
         // adds it to its run's tool errors.

@@ -30,7 +30,7 @@ fn malformed_dynamic_record(line: &str) -> bool {
                     let tag = map.next_value::<serde_json::Value>()?;
                     *self.0 |= matches!(
                         tag.as_str(),
-                        Some("goal_context_decision" | "goal_context_clear")
+                        Some("goal_context_decision" | "goal_context_clear" | "chat_memory")
                     );
                 } else {
                     map.next_value::<IgnoredAny>()?;
@@ -211,6 +211,34 @@ where
     }))
 }
 
+/// Feature-independent marker: only an authenticated memory attachment may resume.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatMemoryMarker {
+    pub protocol: String,
+    pub conversation_id: String,
+    pub authority: String,
+    pub attachment: String,
+}
+impl ChatMemoryMarker {
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.protocol == "ordinary-chat-memory-v1"
+                && !self.conversation_id.is_empty()
+                && self.conversation_id.len() <= 256
+                && !self.authority.is_empty()
+                && self.authority.len() <= 256
+                && self.attachment.len() == 64
+                && self
+                    .attachment
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid chat memory attachment marker"
+        );
+        Ok(())
+    }
+}
+
 // The two run-describing rows, `Outcome(RunStats)` and `Config(RunConfig)`,
 // are each a few hundred bytes larger than a message, and they trade places
 // as the largest whenever either grows a field: boxing one makes the other
@@ -223,6 +251,9 @@ where
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
     Meta(SessionMeta),
+    ChatMemory {
+        marker: ChatMemoryMarker,
+    },
     /// Atomic pre-request record: evidence revisions and the exact decision
     /// they shaped either land together or the provider must not be called.
     GoalContextDecision {
@@ -1781,6 +1812,7 @@ pub struct Session {
 
 /// A transcript read once: see [`Session::read`].
 pub struct Transcript {
+    pub chat_memory: Option<ChatMemoryMarker>,
     goal_context_initial_run: bool,
     pub meta: SessionMeta,
     pub convo: Conversation,
@@ -2310,6 +2342,10 @@ impl Session {
     /// final line is the normal result of a killed process.
     pub fn load(path: &Path) -> Result<(SessionMeta, Conversation)> {
         let t = Session::read(path)?;
+        anyhow::ensure!(
+            t.chat_memory.is_none(),
+            "memory-attached chat requires chat --dynamic-goals --episodic-memory REQUEST_JSON"
+        );
         Ok((t.meta, t.convo))
     }
 
@@ -2368,11 +2404,12 @@ impl Session {
         let mut pending_notes = Vec::new();
         let mut goal_context = crate::goal_context::GoalContextState::default();
         let mut goal_context_initial_run = false;
+        let mut chat_memory = None;
         let mut prior_owner_messages = 0usize;
         let mut prior_run_ambiguous = false;
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             let record = match serde_json::from_str::<Record>(line) {
-                Err(error) if malformed_dynamic_record(line) => {
+                Err(error) if malformed_dynamic_record(line) || chat_memory.is_some() => {
                     return Err(error).context("malformed dynamic goal context record");
                 }
                 Err(error) => lenient_record(line).ok_or(error),
@@ -2380,6 +2417,19 @@ impl Session {
             };
             match record {
                 Ok(Record::Meta(m)) => meta = Some(m),
+                Ok(Record::ChatMemory { marker }) => {
+                    marker.validate()?;
+                    anyhow::ensure!(
+                        chat_memory.is_none()
+                            && messages.is_empty()
+                            && configs.is_empty()
+                            && meta
+                                .as_ref()
+                                .is_some_and(|m| m.id == marker.conversation_id),
+                        "duplicate or misplaced chat memory attachment"
+                    );
+                    chat_memory = Some(marker);
+                }
                 Ok(Record::GoalContextDecision { binding, versions }) => {
                     if goal_context.decisions().is_empty() {
                         goal_context_initial_run = !prior_run_ambiguous
@@ -2640,7 +2690,7 @@ impl Session {
                 Err(e) => {
                     // These records carry authority: losing one must never
                     // silently downgrade a new trace to legacy semantics.
-                    if !goal_context.decisions().is_empty() {
+                    if chat_memory.is_some() || !goal_context.decisions().is_empty() {
                         return Err(e).context("malformed dynamic goal context record");
                     }
                     prior_run_ambiguous = true;
@@ -2664,6 +2714,7 @@ impl Session {
             meta.title = Some(t);
         }
         Ok(Transcript {
+            chat_memory,
             goal_context_initial_run,
             meta,
             notes,

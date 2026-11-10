@@ -161,6 +161,32 @@ impl Memory {
         self.validate_delivered_context(references, readers, access)
     }
 
+    /// Host-owned dependency roots retain their complete canonical closure in
+    /// SQLite. Unlike a delivered packet, a root list need not duplicate every
+    /// member on the wire; every member still receives current authorization.
+    pub(crate) fn validate_dependency_roots(
+        &self,
+        roots: &[RevisionRef],
+        access: &Access,
+    ) -> Result<()> {
+        self.check_access(access)?;
+        self.live_identity()?;
+        let tx = self.conn.unchecked_transaction()?;
+        let checks = SourceChecks::new(self.source_guard.as_deref());
+        for root in roots {
+            let members = closure(&tx, root)?;
+            ensure!(members.contains(root), "memory dependency root unavailable");
+            // Both helpers already traverse the complete canonical closure.
+            ensure!(
+                fresh(&tx, root, i64::MAX)?
+                    && authorized_with_guard(&tx, root, access, Some(&checks))?,
+                "memory dependency unavailable"
+            );
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Reauthorize every delivered reference, including raw canonical packets.
     /// The legacy native-only wrapper above retains its original empty-reader policy.
     pub(crate) fn validate_delivered_context(
@@ -301,5 +327,80 @@ mod tests {
             [false, false],
             "accepted missing or mismatched source"
         );
+    }
+}
+
+#[cfg(test)]
+mod dependency_root_tests {
+    use super::*;
+    use crate::memory::{fixture, Capture};
+    #[test]
+    fn host_roots_reauthorize_transitive_scope_and_restrictions_without_weakening_packet_closure() {
+        let dir = std::env::temp_dir().join(format!("memory-roots-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let access = fixture::access();
+        let mut memory =
+            Memory::create(&dir.join("roots.memory-prototype.sqlite"), &access.domain).unwrap();
+        let mut capture = |name| {
+            memory
+                .capture(Capture {
+                    source: fixture::source_key(name),
+                    text: "authored evidence".into(),
+                    occurred_at: None,
+                    scopes: access.scopes.clone(),
+                    transcript: None,
+                })
+                .unwrap()
+        };
+        let ancestor = capture("ancestor");
+        let root = capture("root");
+        memory
+            .conn
+            .execute(
+                "INSERT INTO dependency VALUES (?1,?2)",
+                rusqlite::params![root.revision, ancestor.revision],
+            )
+            .unwrap();
+        assert!(memory
+            .validate_dependency_roots(std::slice::from_ref(&root), &access)
+            .is_ok());
+        assert!(memory
+            .validate_delivered_context(std::slice::from_ref(&root), &[], &access)
+            .is_err());
+        memory
+            .conn
+            .execute(
+                "INSERT INTO scope VALUES (?1,'restricted')",
+                [&ancestor.revision],
+            )
+            .unwrap();
+        assert!(memory
+            .validate_dependency_roots(std::slice::from_ref(&root), &access)
+            .is_err());
+        memory
+            .conn
+            .execute(
+                "DELETE FROM scope WHERE revision=?1 AND name='restricted'",
+                [&ancestor.revision],
+            )
+            .unwrap();
+        memory
+            .conn
+            .execute("INSERT INTO restriction VALUES (?1)", [&ancestor.object])
+            .unwrap();
+        assert!(memory
+            .validate_dependency_roots(std::slice::from_ref(&root), &access)
+            .is_err());
+        memory
+            .conn
+            .execute(
+                "DELETE FROM restriction WHERE object_id=?1",
+                [&ancestor.object],
+            )
+            .unwrap();
+        memory.forget(&fixture::source_key("ancestor")).unwrap();
+        assert!(memory.validate_dependency_roots(&[root], &access).is_err());
+        drop(memory);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

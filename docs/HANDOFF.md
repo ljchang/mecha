@@ -32,41 +32,47 @@ refusing incompatible execution profiles before provider startup. See HISTORY
 for qualification, including the independently audited two-session resident-model
 mechanics trial, and `website/docs/features/memory/index.md` for the command.
 
-**Dynamic chat goals (2026-11-10, opt-in prototype):**
-`--dynamic-goals` opts CLI chat, TUI and authenticated assistant web chat into
-versioned owner evidence and per-decision charter refresh. `GoalContextState`
-retains immutable versions; `DecisionBinding` records the effective request and
-tool surface before dispatch. Replay consumes those records, and historical
-appraisal refuses ambiguous charter attribution. The current charter file stays
-owner-authored and authoritative. Independent incremental review has no remaining
-medium/major findings. Spark build checks, 6,456 default and 7,231
-memory-enabled workspace tests passed (25/30 ignored), as did the actual CLI
-scripted-transport smoke. HISTORY holds the evidence and retained limitations.
-This does not admit chat transcripts to encrypted ordinary-memory v1.
+**Dynamic context and encrypted CLI chat (2026-11-10, opt-in prototype):**
+`--dynamic-goals` preserves owner-input and charter versions in CLI chat and TUI.
+Web handlers contain the context machinery, but `serve::execute` currently drops
+the global flag before `ChatState::build`; reachable web opt-in is still missing. The owner-authored charter file remains current authority.
+The separate `chat --episodic-memory FILE --dynamic-goals` path now attaches the
+explicit encrypted store to local recorded CLI conversations. `ChatMemory`
+reserves each turn before execution, retains only its new originals, and seals an
+immutable native transcript prefix with prior dependencies. Authenticated resume
+requires the same store/workspace and retained contiguous chain. Ordinary loaders
+refuse marked transcripts. Context-only observations do not manufacture confirmed
+goals, and task success stays NotEvaluated.
 
-**Remaining ordinary integration:** encrypted chat/web/resume capture, broader tool coverage, live
-resource-state appraisal and automatic learning selection/scheduling. Explicit
-host learning triggers now exist: `SessionMemory::learn` and `memory-session
-sources|learn` reuse native concept induction/rumination with current source
-authority, one local call and separate provisional outcomes. Full Spark
-qualification passed; HISTORY records its evidence and review corrections.
-The versioned `ordinary_lifetime.py` adapter now implements the first authored
-three-arm chronological development comparison. General experiment switches,
-held-out task families, useful-learning evidence and other harness adapters remain
-open. Next integrate restricted opt-in multi-turn chat and authenticated resume,
-then web: preserve conversation identity, cumulative lineage and immutable source
-prefixes as transcripts grow. The encrypted first profile still requires an explicit
-owner-supplied fixed goal, changeable between runs. Its successor must bind the
-new versioned chat context; goal-less observation requires a separate contract.
-Qualify useful larger tool writes: the chronological pilot
-withheld six decision captures in the first attempt and all eight in the corrected
-attempt above the existing 1,024-byte argument bound.
-Also improve exact citation-pointer use; real references and quotations alone
-do not satisfy the current citation contract. A corrected real-model run retained
-a provisional concept, but none of its four adaptive decision packets included
-it. Qualify concept delivery in ordinary recall before claiming adaptive decision
-benefit; rumination abstained rather than revising the concept. Keep the independent owner graph
-and production runtime unchanged. Opt-in retention alone does not establish private-data readiness.
+Focused tests and the real CLI authored-transport trial passed: three retained
+turns across changed goals/charters and restart, exact six-request historical
+replay, default-off control and four pre-provider refusals. Independent source
+review has no remaining major/medium finding. Full workspace suites passed
+6,460 default / 7,260 memory-enabled tests (25 / 30 ignored); the final mechanical
+lint fixes passed strict Clippy, focused chat tests and the actual CLI again.
+HISTORY records the bounded model diagnostic, including its strict
+format failure and control-tool deviation. Neither this CLI opt-in nor successful
+storage establishes production/private-data readiness.
+
+**Remaining ordinary integration:** web/TUI memory attachment, safe long-chat
+compaction, broader tool coverage, live resource-state appraisal and automatic
+learning selection/scheduling. In this first chat profile, incomplete or
+noncompleted turns, compaction, overflow and unavailable capture stop further
+memory-enabled execution. A complete seal can retry storage admission; an
+ambiguous unsealed turn requires a fresh chat. Transcripts are bounded to 4 MiB,
+with smaller per-passage, tool-input and context limits. External files, key loss
+and deletion-authority recovery still need operational qualification.
+
+Explicit `memory-session sources|learn` reuses native concept induction/rumination
+for authenticated one-shot captures; `learning_run_sources` and `learning_sources`
+still read that protocol's seals. Chat-turn selection for learning is not yet
+connected. Concept delivery in ordinary recall, exact citation-pointer use and
+larger tool-write capture remain gaps: the earlier chronological pilot retained a
+concept but delivered it in none of four adaptive decisions, and withheld all
+eight decision captures above the 1,024-byte argument bound. Its authored
+three-arm runner is a development comparison; held-out task families, general
+experiment controls, another harness adapter and useful-transfer evidence remain
+open. Keep the independent owner graph and production runtime unchanged.
 
 **Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
 mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's

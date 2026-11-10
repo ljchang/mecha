@@ -168,6 +168,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         run: cargo build -p mecha-cli --locked --features memory-prototype
 
+      - name: Test encrypted multi-turn chat CLI
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/chat_cli_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-chat-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
       - name: Build authored support contract binary
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         run: cargo build -p mecha-core --locked --features memory-prototype --example memory_support_trial --example memory_atomic_trial

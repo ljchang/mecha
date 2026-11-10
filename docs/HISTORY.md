@@ -14,11 +14,119 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Encrypted CLI conversation memory (2026-11-10, opt-in prototype)
+
+`chat --episodic-memory FILE --dynamic-goals` connects the existing encrypted
+store to local recorded conversations. `ChatMemory` owns a conversation lease,
+reserves each turn before execution, and retains an immutable source prefix.
+Each turn imports only its new originals; predecessor projections and delivered
+recall remain dependencies whose complete current authority is rechecked.
+`ChatObservationContext` preserves sanitized historical versions and exact native
+source/decision locators without manufacturing a confirmed success criterion.
+The unchanged one-shot protocol keeps its serialized identities. Chat semantic
+assessment remains NotEvaluated.
+
+The feature-independent `ChatMemoryMarker` makes ordinary execution loaders
+refuse unsupported resume. Explicit attachment verifies the private ledger and
+retained contiguous chain before inference. An old source check reads only its
+sealed prefix, while continuation checks the whole bounded tail. Storage retry
+cannot dispatch a provider or tool; forgetting still works after source deletion.
+The first profile refuses incomplete/noncompleted capture, compaction, overflow,
+clear, grants and broader tools. Web/TUI attachment, long-chat recovery and the
+existing learning selector's support for chat seals remain unimplemented.
+
+Independent review reproduced and corrected repeated owner text reusing its prior
+context occurrence, incomplete native request histories, a turn handle bound only
+to its store rather than its conversation lease, and a callable untracked schema
+placeholder. Exact semantic message boundaries matter because the Agent writes
+request bindings during execution, before `record_run` appends response messages.
+A dangling alternate protocol claim now refuses selection via metadata presence,
+even though its target does not exist. Source checks still refuse symlinks.
+Separate packet and host-root validators preserve full delivered-manifest checks
+without requiring a predecessor to flatten every ancestor into its direct list.
+Both review rounds closed all major/medium findings; failed candidates remain in
+the local qualification record. The full default suite then caught an existing
+driven-run refusal being displaced by eager session lookup. Shared
+`run::preflight_start` restores that boundary before discovery while retaining
+memory checks before router/provider setup. Final integration review also
+strengthened the CLI smoke from a query-token match to the exact first original
+text, reference, line and pointer.
+The standalone harness then exposed an unconditional runtime import in the
+shared chat DTO. A separate stored-owner type preserves the exact CLI wire form
+and validation bounds; native conversion is feature-gated and its bytes/digests
+have equivalence checks. Pure schema tests still run standalone. The stricter
+smoke also caught a test overconstraint: direct original evidence can be delivered
+without a projection record. It now checks the exact original reference/text and
+sealed source identity, including its native line and field. The diagnostic's
+pointer mapping was corrected for that valid direct-evidence form before any
+real-model inference; the initial failed assertion and audit correction remain
+in the local record.
+
+Focused final-source qualification passed 404 standalone tests, 18 core
+observation tests, four marker tests and 16 lifecycle tests; both feature modes
+were checked for the marker and restored driven-start boundaries. The unchanged
+host-root regression passed separately. The
+actual CLI trial used an authored transport and isolated homes/stores: three
+retained turns across changed goals/charters and restart, ten distinct original
+sources, six live requests and six exact historical replay requests after a
+further charter edit, two default-off requests, and four startup refusals before
+inference. `prototypes/memory/chat_cli_smoke.py` preserves this mechanics test and
+the pinned Linux CI leg runs it against the feature-enabled binary. This is
+transport and storage evidence, not model decision benefit.
+
+Frozen runtime source passed both all-target workspace builds and full suites:
+6,460 default / 7,260 memory-enabled tests, zero failures, with 25 / 30 ignored
+entries respectively. The Linux sandbox/MCP/lifecycle subset passed 38 tests with
+required backends and no skips. This does not qualify macOS Seatbelt or all
+optional integrations. The standalone suite's 404 checks and focused core checks
+are separate, overlapping coverage rather than extra unique workspace cases.
+
+Strict all-feature lint requested private aliases for the continuation tuple and
+boxing the larger private resume-preparation variant. These change only type
+annotations and allocation, with unchanged wire values and lease ownership.
+The full-suite and model results above/below belong to the frozen pre-lint source;
+the final corrections passed strict all-target/all-feature Clippy with warnings
+denied, formatting, 16 chat lifecycle and four marker tests, a rebuilt CLI and
+the same strengthened actual-CLI smoke. No additional model calls were made.
+
+The bounded resident diagnostic used four frozen slots (two authored tasks,
+episodic memory on/off), nine inference requests and the already resident
+`qwen3.6-35b-a3b-uncensored`. Both memory decisions received older and newer
+original evidence and retained their turns as NotEvaluated observations. Both
+controls appropriately abstained without prior evidence. The verified-build case
+selected the supported option with two exact original-source citations. The
+schedule case also selected the supported option and cited its newer source,
+but emitted fenced JSON: its frozen strict-output score remains a failure.
+Thus only one of two memory decisions met the strict output contract; descriptive
+inspection of the other answer does not change that score.
+Independent wire audit counted 20,257 input and 4,698 output tokens over the nine
+acknowledged inference requests, with 55.887 seconds of summed decision-slot time
+(61.266 seconds for the runner, including setup). No extra inference sweep ran.
+
+Two limitations prevent treating this as an efficacy benchmark. Historical
+evidence and tool schemas intentionally differ between arms. The actual control
+registry also included automatic local transcript recall, contrary to the plan's
+no-other-retrieval constraint; one control used it and received only the current
+task. Independent audit found no seeded-evidence or hidden-answer leakage, but
+records this protocol deviation. Four decisions do not establish general benefit,
+concept transfer or robust interpretation under changing goals.
+
+An earlier setup attempt was rejected locally because the provider generation
+ceiling remained 64,000 tokens while the proxy allowed 8,192. The CLI aggregate
+output budget does not set that provider ceiling. Transport records independently
+confirmed zero upstream inference. Explicit existing agent limits corrected the
+configuration; cases, gold, prompts, scorer and cohort stayed frozen. Both setup
+attempts are preserved, and no favorable rerun or extra inference sweep followed.
+
 ### Versioned owner context (2026-11-10, opt-in prototype)
 
 `goal_context` separates host-attributed owner messages, charter snapshots and
-model interpretation. Interactive CLI chat, TUI and authenticated assistant web
-chat opt in through `--dynamic-goals`. Ordinary `GoalRef` confirmation and fixed
+model interpretation. Interactive CLI chat and TUI opt in through
+`--dynamic-goals`. Authenticated web handlers were implemented, but the later
+2026-11-10 daily-use audit found the advertised server option unreachable:
+`serve::execute` receives no global options, and `web_agent_opts` starts from
+defaults. Handler coverage was not entry-point verification; the web wiring
+remains open. Ordinary `GoalRef` confirmation and fixed
 one-shot encrypted memory retain their contracts. The charter stays in its
 owner-authored file; historical copies never authorize current policy changes.
 
