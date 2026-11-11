@@ -2,6 +2,7 @@
 //! This host API never executes an action or a provider; retry only admits a seal.
 mod authority;
 pub mod chat;
+mod inline_notes;
 pub mod learning;
 mod recall;
 mod recording;

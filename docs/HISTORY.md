@@ -14,6 +14,42 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Inline loop notices and selected-result provenance (2026-11-10)
+
+PR review found ordinary capture mistaking the harness's own empty-response
+nudge and boredom notice for changed owner input. Empty responses are not
+appended as assistant messages: they extend the current user tail and retry.
+Consequently an earlier decision's exact request history can differ from the
+final native prefix. `memory_session::chat_recording` now validates successive
+exact histories and final native coverage, allowing only the supported retry
+addition or a complete assistant/result pair. Existing native Extend is checked;
+arbitrary rewrites, altered owner/prior content and unknown notes still refuse.
+
+The shared `inline_notes` helper uses exact constants and canonical boredom
+renderers for observed configured tools and bounded counts. Both chat and
+one-shot `recording` retain the original owner block and pointer, even when the
+owner quotes a notice literally; supported notes remain hash-bound audit text
+and cannot become original owner evidence or learned preferences. The new chat
+regressions drive an actual Agent and scripted provider through CLI and Web
+attachments with an already-retained earlier turn. Both positive cases failed
+before the fix. One-shot inline/Extend and boredom cases separately failed,
+while owner-literal and invalid-extension controls already passed.
+
+Selected graph `McpClient::output_of` also labelled its fixed withholding notice
+external despite delivering no server text. That local refusal is now internal;
+retained text and server error content remain external. An actual MCP/Agent
+regression failed on the prior implementation, then verified that local refusals
+neither arm new untrusted taint nor clear taint established by earlier results.
+A first test build failed because its NoModel fixture omitted Provider::local;
+that setup error is separate from the observed behavioral RED.
+
+The combined focused suites passed 41 chat lifecycle, four one-shot inline-note
+and 12 selected-MCP tests. Independent review found no medium/major issue in the
+notice changes. Full local workspace qualification passed 6,487 default tests
+with 25 ignored and 7,358 memory-enabled tests with 30 ignored. Strict Clippy
+passed; the final formatting-only module ordering correction passes rustfmt.
+No real model or production activation is implied by these authored tests.
+
 ### Session task storage foundation (2026-11-10, prototype)
 
 `Memory::enable_session_tasks` explicitly migrates an encrypted v8 store to v9;

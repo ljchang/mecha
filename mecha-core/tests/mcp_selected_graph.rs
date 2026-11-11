@@ -119,7 +119,7 @@ async fn selected_graph_requires_enabled_operator_graph_origin_before_spawn() {
 }
 
 #[tokio::test]
-async fn selected_graph_nontext_empty_and_malformed_results_are_external_errors() {
+async fn selected_graph_nontext_empty_and_malformed_results_are_harness_errors() {
     let f = Fixture::new("ok");
     let (client, tools) = selected(&f.cfg, f.root.as_path()).await.unwrap();
     let ctx = ToolCtx {
@@ -129,9 +129,13 @@ async fn selected_graph_nontext_empty_and_malformed_results_are_external_errors(
     for mode in ["image", "invalid", "empty"] {
         let out = tools[0].call(json!({"mode":mode}), &ctx).await.unwrap();
         assert!(
-            out.is_error && out.external,
+            out.is_error && !out.external,
             "accepted {mode}: {}",
             out.content
+        );
+        assert_eq!(
+            out.content,
+            "Selected graph response withheld: expected nonempty text-only MCP content."
         );
         assert!(out.content.len() < 512);
     }
@@ -464,4 +468,111 @@ async fn selected_graph_bwrap_delivers_frozen_environment_and_workspace() {
         "forbidden inherited sentinel reached the server"
     );
     graph.client().close().await.unwrap();
+}
+
+#[tokio::test]
+async fn selected_graph_withholding_does_not_arm_or_clear_conversation_taint() {
+    use mecha_core::agent::{Agent, Conversation, RunContext};
+    use mecha_core::config::{AgentConfig, PermissionMode};
+    use mecha_core::message::{CompletionRequest, CompletionResponse};
+    use mecha_core::provider::{Provider, StreamSink};
+    use mecha_core::tool::{ModeApprover, Registry};
+
+    struct NoModel;
+    #[async_trait::async_trait]
+    impl Provider for NoModel {
+        fn id(&self) -> &str {
+            "authored-no-model"
+        }
+        fn default_model(&self) -> &str {
+            "authored-no-model"
+        }
+        fn local(&self) -> bool {
+            true
+        }
+        async fn complete(
+            &self,
+            _: &CompletionRequest,
+            _: Option<&StreamSink>,
+        ) -> anyhow::Result<CompletionResponse> {
+            panic!("a harness dispatch must not call a model")
+        }
+    }
+
+    let f = Fixture::new("ok");
+    let (client, tools) = selected(&f.cfg, &f.root).await.unwrap();
+    let name = tools[0].name().to_string();
+    let mut registry = Registry::new();
+    registry.insert(Arc::clone(&tools[0]));
+    let ctx = ToolCtx {
+        workspace: f.root.clone(),
+        ..Default::default()
+    };
+    let approver = Arc::new(ModeApprover {
+        mode: PermissionMode::Allow,
+    });
+    let agent = Agent::new(
+        Box::new(NoModel),
+        registry,
+        approver.clone(),
+        ctx.clone(),
+        AgentConfig::default(),
+        None,
+    )
+    .unwrap();
+    let run = RunContext::new(ctx, approver);
+    let mut conversation = Conversation::new();
+    for mode in ["image", "invalid", "empty"] {
+        let out = agent
+            .dispatch_one(&run, &mut conversation, &name, json!({"mode": mode}), &None)
+            .await;
+        assert!(out.is_error && !out.external, "{mode}: {}", out.content);
+        assert!(
+            !conversation.taint.untrusted,
+            "{mode} admitted no server words"
+        );
+    }
+    let retained = agent
+        .dispatch_one(&run, &mut conversation, &name, json!({}), &None)
+        .await;
+    assert!(!retained.is_error && retained.external);
+    assert!(retained
+        .content
+        .contains("Authored snapshot: project Cedar is active."));
+    assert!(
+        conversation.taint.untrusted,
+        "retained graph text must arm taint"
+    );
+    let prior = conversation.taint;
+    let withheld = agent
+        .dispatch_one(
+            &run,
+            &mut conversation,
+            &name,
+            json!({"mode": "image"}),
+            &None,
+        )
+        .await;
+    assert!(withheld.is_error && !withheld.external);
+    assert_eq!(
+        conversation.taint, prior,
+        "a local refusal cannot reset existing taint"
+    );
+    let mut error_conversation = Conversation::new();
+    let remote_error = agent
+        .dispatch_one(
+            &run,
+            &mut error_conversation,
+            &name,
+            json!({"mode": "wire_error"}),
+            &None,
+        )
+        .await;
+    assert!(remote_error.is_error && remote_error.external);
+    assert!(remote_error.content.contains("authored wire error"));
+    assert!(
+        error_conversation.taint.untrusted,
+        "retained remote errors must arm taint"
+    );
+    client.close().await.unwrap();
 }

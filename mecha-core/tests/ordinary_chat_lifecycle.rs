@@ -2384,3 +2384,381 @@ fn web_ingress_does_not_reencode_cli_attachments_or_admit_web_metadata_into_them
         assert!(refused);
     }
 }
+
+struct HarnessNoticeProvider {
+    replies: std::sync::Mutex<std::collections::VecDeque<Message>>,
+}
+#[async_trait::async_trait]
+impl mecha_core::provider::Provider for HarnessNoticeProvider {
+    fn id(&self) -> &str {
+        "fixture"
+    }
+    fn default_model(&self) -> &str {
+        "fixture"
+    }
+    fn local(&self) -> bool {
+        true
+    }
+    async fn complete(
+        &self,
+        _: &mecha_core::message::CompletionRequest,
+        _: Option<&mecha_core::provider::StreamSink>,
+    ) -> anyhow::Result<mecha_core::message::CompletionResponse> {
+        let message = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected request");
+        let stop_reason = if message.tool_uses().is_empty() {
+            mecha_core::message::StopReason::EndTurn
+        } else {
+            mecha_core::message::StopReason::ToolUse
+        };
+        Ok(mecha_core::message::CompletionResponse {
+            message,
+            stop_reason,
+            usage: Default::default(),
+            refusal: None,
+            model: "fixture".into(),
+            malformed_tool_args: 0,
+        })
+    }
+}
+
+async fn retained_agent_harness_notice(web: bool, empty_retry: bool) {
+    use mecha_core::agent::Agent;
+    use mecha_core::config::PermissionMode;
+    use mecha_core::tool::{ModeApprover, Registry, ToolCtx};
+    use std::sync::Arc;
+    let f = Fixture::new();
+    fs::write(
+        f.workspace.join("note.txt"),
+        "authored unchanged observation",
+    )
+    .unwrap();
+    let s = if web { web_session(&f) } else { f.session() };
+    let mut chat = if web {
+        f.memory()
+            .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+    } else {
+        f.memory().attach_chat(&s, ChatAttachMode::Create)
+    }
+    .unwrap();
+    f.config(&s);
+    let first = if web {
+        let turn = web_record_turn(
+            &mut chat,
+            &s,
+            "Earlier exact owner input",
+            1,
+            OwnerSource::AuthenticatedWeb,
+        );
+        chat.finish_turn(&turn)
+    } else {
+        f.turn(
+            &mut chat,
+            &s,
+            "Earlier exact owner input",
+            "Keep authored provenance",
+        )
+    };
+    assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+    let prior = Session::read(&s.path).unwrap().convo.messages;
+    let prior_decisions = recorded_context(&s).decisions().len();
+    // An owner is allowed to type harness-looking text. Its first block must
+    // remain owner evidence even though later blocks use the same voice.
+    let prompt = if empty_retry {
+        "Your previous turn ended without producing anything — the token budget went entirely to reasoning before you began your answer. Do not start the task over and do not re-derive what you already worked out. Either give your answer now, briefly, using what you already know, or make the single next tool call. Keep your reasoning short this turn.".to_string()
+    } else {
+        mecha_core::boredom::Rung::Change.notice("fs_read", &Default::default())
+    };
+    let prompt = prompt.as_str();
+    let owner = OwnerInput::new(
+        if web {
+            OwnerSource::AuthenticatedWeb
+        } else {
+            OwnerSource::CliChat
+        },
+        prompt.into(),
+    )
+    .unwrap();
+    let turn = if web {
+        chat.begin_authenticated_web_turn(&s, &owner, 2)
+    } else {
+        chat.begin_turn(&s, &owner)
+    }
+    .unwrap();
+    let mut convo = Session::read(&s.path).unwrap().convo;
+    convo.push(Message::user(prompt));
+    s.append(&Record::Message(Message::user(prompt))).unwrap();
+    let before = convo.messages.clone();
+    let mut registry = Registry::new();
+    registry.insert(Arc::new(mecha_core::tool::builtin::FsRead));
+    registry.insert(chat.goal_memory(&turn).unwrap());
+    let mut replies = Vec::new();
+    if empty_retry {
+        replies.push(Message::assistant(Vec::new()));
+    } else {
+        for index in 0..3 {
+            replies.push(Message::assistant(vec![Block::ToolUse {
+                id: format!("notice-read-{index}"),
+                name: "fs_read".into(),
+                input: serde_json::json!({"path":"note.txt"}),
+            }]));
+        }
+    }
+    replies.push(Message::assistant(vec![Block::text(
+        "Authored final answer.",
+    )]));
+    let agent = Agent::new(
+        Box::new(HarnessNoticeProvider {
+            replies: std::sync::Mutex::new(replies.into()),
+        }),
+        registry,
+        Arc::new(ModeApprover {
+            mode: PermissionMode::ReadOnly,
+        }),
+        ToolCtx {
+            workspace: f.workspace.clone(),
+            ..Default::default()
+        },
+        mecha_core::config::AgentConfig {
+            max_turns: 12,
+            boredom: true,
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap()
+    .with_dynamic_goals();
+    let cx = agent
+        .context()
+        .as_ref()
+        .clone()
+        .with_goal_ingress(vec![owner], Some(Arc::new(s.clone())));
+    let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+    assert_eq!(outcome.stop_cause, StopCause::Completed);
+    assert_eq!(&convo.messages[..prior.len()], prior.as_slice());
+    assert_eq!(convo.messages[prior.len()].content[0], Block::text(prompt));
+    if empty_retry {
+        assert_eq!(convo.messages[prior.len()].content.len(), 2);
+        assert_eq!(
+            convo.messages.len(),
+            before.len() + 1,
+            "empty reply is not persisted"
+        );
+    } else {
+        assert_eq!(outcome.boredom_notices, 1);
+        assert!(convo.messages.iter().any(|m| m.content.iter().any(|b| matches!(b, Block::Text { text } if text.starts_with("Nothing is being learned here: `fs_read`")))));
+    }
+    let bindings: Vec<_> = recorded_context(&s)
+        .decisions()
+        .iter()
+        .skip(prior_decisions)
+        .cloned()
+        .collect();
+    assert_eq!(bindings[0].conversation_messages().unwrap(), before);
+    assert_eq!(bindings.len(), if empty_retry { 2 } else { 4 });
+    if empty_retry {
+        let next = bindings[1].conversation_messages().unwrap();
+        assert_eq!(next.len(), before.len());
+        assert_eq!(next.last().unwrap().content.len(), 2);
+    }
+    s.record_run(&before, &convo).unwrap();
+    s.record_outcome(&outcome).unwrap();
+    s.append(&Record::Taint(convo.taint)).unwrap();
+    let source = fs::read_to_string(&s.path).unwrap();
+    assert_eq!(
+        Session::read(&s.path).unwrap().convo.messages,
+        convo.messages
+    );
+    if empty_retry {
+        assert!(source.lines().any(|line| matches!(
+            serde_json::from_str::<Record>(line),
+            Ok(Record::Extend { .. })
+        )));
+    }
+    let report = chat.finish_turn(&turn);
+    assert_eq!(
+        report.status,
+        SessionMemoryStatus::Retained,
+        "web={web} empty={empty_retry}: {report:?}"
+    );
+    let seal: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.request
+                .authority
+                .join(format!("{}.chat-seal", report.run_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let originals = seal["payload"]["originals"].as_array().unwrap();
+    let owners: Vec<_> = originals
+        .iter()
+        .filter(|p| p["kind"] == "UserRequest")
+        .collect();
+    assert_eq!(owners.len(), 1);
+    assert_eq!(owners[0]["text"], prompt);
+    assert_eq!(owners[0]["pointer"], "/content/0/text");
+    assert!(originals
+        .iter()
+        .all(|p| p["text"] != "Earlier exact owner input"));
+    assert_eq!(
+        originals
+            .iter()
+            .filter(|p| p["kind"] == "ToolResult")
+            .count(),
+        if empty_retry { 0 } else { 3 }
+    );
+    assert_eq!(
+        recorded_context(&s)
+            .decisions()
+            .iter()
+            .skip(prior_decisions)
+            .cloned()
+            .collect::<Vec<_>>(),
+        bindings,
+        "retention must not rewrite replay bindings"
+    );
+}
+
+#[tokio::test]
+async fn native_empty_retry_notice_retains_exact_owner_and_decision_histories() {
+    for web in [false, true] {
+        retained_agent_harness_notice(web, true).await;
+    }
+}
+
+#[tokio::test]
+async fn native_boredom_notice_retains_exact_owner_and_decision_histories() {
+    for web in [false, true] {
+        retained_agent_harness_notice(web, false).await;
+    }
+}
+
+#[test]
+fn native_inline_notices_cannot_rewrite_history_or_admit_arbitrary_user_text() {
+    let retry = "Your previous turn ended without producing anything — the token budget went entirely to reasoning before you began your answer. Do not start the task over and do not re-derive what you already worked out. Either give your answer now, briefly, using what you already know, or make the single next tool call. Keep your reasoning short this turn.";
+    for mode in [
+        "unknown",
+        "canonical-prefix",
+        "wrong-tail",
+        "rewrite",
+        "edited-owner",
+    ] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+        f.config(&s);
+        assert_eq!(
+            f.turn(&mut chat, &s, "Prior owner", "Keep provenance")
+                .status,
+            SessionMemoryStatus::Retained
+        );
+        let owner = OwnerInput::new(OwnerSource::CliChat, "Current owner".into()).unwrap();
+        let turn = chat.begin_turn(&s, &owner).unwrap();
+        let mut history = Session::read(&s.path).unwrap().convo.messages;
+        history.push(Message::user(owner.text()));
+        s.append(&Record::Message(Message::user(owner.text())))
+            .unwrap();
+        let mut context = recorded_context(&s);
+        let version = context
+            .transition(CharterSnapshot::disabled(), Some(owner))
+            .unwrap()
+            .unwrap();
+        let first = DecisionBinding::new(
+            context.next_decision(),
+            version.revision(),
+            &history,
+            Some(version.prompt_block()),
+            true,
+            0,
+        )
+        .unwrap()
+        .with_conversation_messages(&history)
+        .unwrap();
+        context.bind(first.clone()).unwrap();
+        s.append(&Record::GoalContextDecision {
+            binding: first,
+            versions: vec![version.clone()],
+        })
+        .unwrap();
+        let text = match mode {
+            "unknown" => "An unrecognized owner-like instruction".to_string(),
+            "canonical-prefix" => format!(
+                "{} Extra untrusted instruction.",
+                mecha_core::boredom::Rung::Change.notice("fs_read", &Default::default())
+            ),
+            _ => retry.to_string(),
+        };
+        let index = if mode == "wrong-tail" {
+            0
+        } else {
+            history.len() - 1
+        };
+        history[index].content.push(Block::text(text.clone()));
+        if mode == "edited-owner" {
+            history[index].content[0] = Block::text("Substituted owner");
+        }
+        if mode == "rewrite" {
+            s.append(&Record::Rewrite {
+                messages: history.clone(),
+            })
+            .unwrap();
+        } else {
+            s.append(&Record::Extend {
+                index,
+                blocks: vec![Block::text(text)],
+            })
+            .unwrap();
+        }
+        // Recompute a structurally valid binding: rejection must concern the
+        // actual history transition, not merely a mismatched message digest.
+        let second = DecisionBinding::new(
+            context.next_decision(),
+            version.revision(),
+            &history,
+            Some(version.prompt_block()),
+            false,
+            0,
+        )
+        .unwrap()
+        .with_conversation_messages(&history)
+        .unwrap();
+        s.append(&Record::GoalContextDecision {
+            binding: second,
+            versions: vec![],
+        })
+        .unwrap();
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            "Final answer",
+        )])))
+        .unwrap();
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Completed),
+            turns: 2,
+            context_overflows: Some(0),
+            ..Default::default()
+        }))
+        .unwrap();
+        s.append(&Record::Taint(Taint {
+            private: true,
+            untrusted: false,
+        }))
+        .unwrap();
+        assert_eq!(
+            chat.finish_turn(&turn).status,
+            SessionMemoryStatus::Unavailable,
+            "{mode}"
+        );
+        assert!(
+            !f.request
+                .authority
+                .join(format!("{}.chat-seal", turn.run_id()))
+                .exists(),
+            "{mode} sealed unsupported content"
+        );
+    }
+}

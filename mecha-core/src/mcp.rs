@@ -1224,13 +1224,13 @@ impl McpClient {
 
     /// A `tools/call` result as a [`ToolOutput`] — one conversion for the
     /// inline call and the deferred one, so a late result carries exactly the
-    /// provenance an inline one would (`external`, always; §8).
+    /// provenance an inline one would: retained server content is external;
+    /// a local withholding notice contains only the harness's words (§8).
     fn output_of(&self, result: &Value) -> ToolOutput {
         if self.text_only && !text_only_result(result) {
             return ToolOutput::err(
                 "Selected graph response withheld: expected nonempty text-only MCP content.",
-            )
-            .from_outside();
+            );
         }
         // Content is a list of typed parts; we flatten the text ones and note
         // anything else rather than silently dropping it.

@@ -13103,6 +13103,20 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   Strict typed-record validation must use the same JSON text serialization as
   the native writer: `to_value` widens f32 sensor readings to f64 and once refused
   valid Linux Outcomes. Unknown, duplicate and noncanonical fields still refuse.
+- **Inline loop notes are audit data, never a second owner instruction.**
+  Ordinary capture recognizes only exact empty-retry text and canonical boredom
+  renderings for observed configured tools and bounded argument counts. The
+  frozen first owner block is matched before notice recognition, even when the
+  owner literally quotes a notice. Preserve its original pointer; skip supported
+  suffixes without renumbering evidence. Validate native Extend only at the
+  eligible current user tail; arbitrary Rewrite remains unsupported. Chat binds
+  the exact history at each request, not an earlier request reconstructed from
+  a final transcript that already contains later nudges. A transition is one
+  complete assistant/result pair or one exact empty-retry addition; final native
+  history must match the final binding. Broad prefix recognition could admit
+  arbitrary added text; substituting final transcript contents for earlier
+  bindings would rewrite historical context. These checks classify control
+  text; they do not grade task success.
 - **Oversized invocation metadata is not argument evidence.** The ordinary and
   chat adapters share `recording::action_invocation`: hash the full native JSON
   input, retain Complete content through 1,024 serialized bytes, otherwise retain

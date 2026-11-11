@@ -1,7 +1,8 @@
 //! Strict capture of one new span, retaining native absolute source pointers.
 use super::*;
 use crate::memory::SourceKey;
-use crate::message::{Block, Role};
+use crate::memory_session::inline_notes;
+use crate::message::{Block, Message, Role};
 use authority::{digest, Attempt};
 use std::collections::BTreeMap;
 pub(super) fn capture(
@@ -41,6 +42,7 @@ pub(super) fn capture(
     );
     expected_owners.push(f.owner.clone());
     let mut external_results = a.graph_surface.is_some() && prior.convo.taint.untrusted;
+    let prior_messages = prior.convo.messages.len();
     let mut expected_history = prior.convo.messages;
     expected_history.push(crate::message::Message::user(f.owner.text()));
 
@@ -69,6 +71,7 @@ pub(super) fn capture(
     let mut matched = BTreeSet::new();
     let mut consulted = f.dependencies.clone();
     let mut decisions = vec![];
+    let mut decision_calls = BTreeMap::new();
     let mut used_versions = BTreeSet::new();
     let mut owner_line = None;
     let mut owner = 0;
@@ -101,66 +104,44 @@ pub(super) fn capture(
                 let sent = binding
                     .conversation_messages()
                     .ok_or_else(|| anyhow::anyhow!("chat decision lacks native history"))?;
-                // Native decisions are written during execution; the CLI appends
-                // assistant/results at run end. Reconstruct the exact request
-                // boundaries from that final append-only native history.
-                if !decisions.is_empty() {
-                    let index = expected_history.len();
-                    let response = transcript
-                        .convo
-                        .messages
-                        .get(index)
-                        .ok_or_else(|| anyhow::anyhow!("chat decision skips response"))?;
-                    let result = transcript
-                        .convo
-                        .messages
-                        .get(index + 1)
-                        .ok_or_else(|| anyhow::anyhow!("chat decision skips tool delivery"))?;
-                    let calls: BTreeSet<_> = response
-                        .content
-                        .iter()
-                        .filter_map(|b| {
-                            if let Block::ToolUse { id, .. } = b {
-                                Some(id.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    let returned: BTreeSet<_> = result
-                        .content
-                        .iter()
-                        .filter_map(|b| {
-                            if let Block::ToolResult { tool_use_id, .. } = b {
-                                Some(tool_use_id.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+                // Bindings preserve the exact history at each request. A later
+                // empty retry can extend the final user message, so comparing
+                // every earlier binding to the final native prefix is wrong.
+                // Advance only through the loop's two supported transitions;
+                // the final check still requires exact native history coverage.
+                if decisions.is_empty() {
                     ensure!(
-                        response.role == Role::Assistant
-                            && result.role == Role::User
-                            && !calls.is_empty()
-                            && calls == returned
-                            && result
-                                .content
-                                .iter()
-                                .all(|b| matches!(b, Block::ToolResult { .. })),
-                        "chat decision boundary lacks complete native tool delivery"
+                        sent == expected_history,
+                        "chat initial decision history changed"
                     );
-                    expected_history.push(response.clone());
-                    expected_history.push(result.clone());
+                } else {
+                    validate_decision_transition(
+                        &expected_history,
+                        sent,
+                        &config.tools,
+                        &mut decision_calls,
+                    )?;
+                    expected_history = sent.to_vec();
                 }
-                ensure!(
-                    sent == expected_history && transcript.convo.messages.starts_with(sent),
-                    "chat decision history differs from exact native boundary"
-                );
                 used_versions.insert(binding.version());
                 decisions.push(ChatDecisionLocator::from_binding(
                     (line + 1) as u64,
                     &binding,
                 )?);
+            }
+            Record::Extend { index, blocks } => {
+                // record_run persists an initial owner's folded retry as an
+                // Extend. Never accept edits to a prior retained conversation,
+                // another message, or arbitrary known-looking user content.
+                ensure!(
+                    !ended
+                        && messages == 1
+                        && index == prior_messages
+                        && !blocks.is_empty()
+                        && blocks.iter().all(|block| matches!(block,
+                            Block::Text { text } if inline_notes::empty_retry(text))),
+                    "chat owner extension unsupported"
+                );
             }
             Record::GoalAnchor { goal } => {
                 ensure!(goal.is_none(), "chat profile has no confirmed anchor")
@@ -225,6 +206,11 @@ pub(super) fn capture(
                 messages += 1;
                 final_assistant = m.role == Role::Assistant
                     && m.content.iter().any(|b| matches!(b, Block::Text { .. }));
+                let result_prefix = m
+                    .content
+                    .iter()
+                    .take_while(|block| matches!(block, Block::ToolResult { .. }))
+                    .count();
                 for (index, b) in m.content.into_iter().enumerate() {
                     let (kind, field, text) = match b {
                         // The full native transcript stays bound by the seal.
@@ -232,16 +218,36 @@ pub(super) fn capture(
                         Block::Thinking { .. } if m.role == Role::Assistant => continue,
                         Block::Text { text } => {
                             if m.role == Role::User {
-                                ensure!(
-                                    owner == 0
-                                        && messages == 1
-                                        && index == 0
-                                        && text == f.owner.text(),
-                                    "ordinary owner prompt changed"
-                                );
-                                owner += 1;
-                                owner_line = Some((line + 1) as u64);
-                                (PassageKind::UserRequest, "text", text)
+                                if owner == 0 && messages == 1 && index == 0 {
+                                    ensure!(
+                                        text == f.owner.text(),
+                                        "ordinary owner prompt changed"
+                                    );
+                                    owner += 1;
+                                    owner_line = Some((line + 1) as u64);
+                                    (PassageKind::UserRequest, "text", text)
+                                } else {
+                                    let observed_tools = calls
+                                        .values()
+                                        .filter(|(name, _, complete)| {
+                                            *complete && config.tools.contains(name)
+                                        })
+                                        .map(|(name, _, _)| name.clone())
+                                        .collect();
+                                    ensure!(
+                                        result_prefix > 0
+                                            && index >= result_prefix
+                                            && inline_notes::supported(
+                                                &text,
+                                                &observed_tools,
+                                                calls.len()
+                                            ),
+                                        "ordinary user text is not a supported inline notice"
+                                    );
+                                    // Retain the raw native block and its decision
+                                    // history, but never mint owner evidence for it.
+                                    continue;
+                                }
                             } else {
                                 (PassageKind::AssistantText, "text", text)
                             }
@@ -456,4 +462,93 @@ pub(super) fn capture(
     };
     OrdinaryObservationCapture::try_from_host(payload.clone())?;
     Ok(payload)
+}
+
+/// A retry grows only the current user tail; a normal tool turn appends exactly
+/// one assistant/result pair. Neither path can edit or omit earlier content.
+fn validate_decision_transition(
+    previous: &[Message],
+    next: &[Message],
+    configured: &[String],
+    calls: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    if next.len() == previous.len() {
+        let index = previous
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("chat retry history missing"))?;
+        let old = &previous[index];
+        let new = &next[index];
+        let mut extended = old.clone();
+        extended
+            .content
+            .push(Block::text(crate::agent::EMPTY_TURN_NUDGE));
+        ensure!(
+            old.role == Role::User && next[..index] == previous[..index] && *new == extended,
+            "chat retry changed native history"
+        );
+        return Ok(());
+    }
+    ensure!(
+        next.len() == previous.len() + 2 && next.starts_with(previous),
+        "chat decision skips or changes native history"
+    );
+    let response = &next[previous.len()];
+    let result = &next[previous.len() + 1];
+    let requested: Vec<_> = response
+        .content
+        .iter()
+        .filter_map(|block| {
+            if let Block::ToolUse { id, name, .. } = block {
+                Some((id, name))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let returned: Vec<_> = result
+        .content
+        .iter()
+        .filter_map(|block| {
+            if let Block::ToolResult { tool_use_id, .. } = block {
+                Some(tool_use_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let requested_ids: BTreeSet<_> = requested.iter().map(|(id, _)| *id).collect();
+    let returned_ids: BTreeSet<_> = returned.iter().copied().collect();
+    ensure!(
+        response.role == Role::Assistant
+            && result.role == Role::User
+            && !requested.is_empty()
+            && requested_ids.len() == requested.len()
+            && returned_ids.len() == returned.len()
+            && requested_ids == returned_ids,
+        "chat decision boundary lacks complete native tool delivery"
+    );
+    for (id, name) in requested {
+        ensure!(
+            configured.contains(name)
+                && calls.insert(id.clone(), name.clone()).is_none()
+                && calls.len() <= 32,
+            "chat decision tool surface changed"
+        );
+    }
+    let observed = calls.values().cloned().collect();
+    let mut notes = false;
+    for block in &result.content {
+        match block {
+            Block::ToolResult { .. } if !notes => {}
+            Block::Text { text }
+                if !inline_notes::empty_retry(text)
+                    && inline_notes::supported(text, &observed, calls.len()) =>
+            {
+                notes = true
+            }
+            _ => anyhow::bail!("chat tool delivery contains unsupported inline content"),
+        }
+    }
+    Ok(())
 }

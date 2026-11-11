@@ -138,6 +138,8 @@ pub(super) fn capture(
     let mut taint = false;
     let mut ended = false;
     let mut final_assistant = false;
+    let mut configured_tools = BTreeSet::new();
+    let mut last_accepts_notes = false;
     for (line, r) in records(bytes)?.into_iter().enumerate() {
         ensure!(!ended, "ordinary transcript appended after outcome");
         match r {
@@ -157,6 +159,7 @@ pub(super) fn capture(
                     "ordinary configuration unavailable"
                 );
                 surface(&c.tools)?;
+                configured_tools.extend(c.tools);
                 config += 1;
             }
             Record::GoalAnchor { goal } => {
@@ -195,6 +198,27 @@ pub(super) fn capture(
                 );
                 ended = true;
             }
+            Record::Extend { index, blocks } => {
+                // Native record_run uses Extend for a nudge folded into the
+                // already-recorded owner/result tail. It is audit data, not a
+                // new owner input or permission to rewrite earlier messages.
+                ensure!(
+                    !taint
+                        && last_accepts_notes
+                        && index.checked_add(1) == Some(messages)
+                        && !blocks.is_empty(),
+                    "ordinary inline extension unavailable"
+                );
+                for block in blocks {
+                    let Block::Text { text } = block else {
+                        anyhow::bail!("ordinary inline extension is not text")
+                    };
+                    ensure!(
+                        supported_note(&text, &configured_tools, &calls),
+                        "ordinary inline extension unsupported"
+                    );
+                }
+            }
             Record::Message(m) => {
                 ensure!(
                     !taint
@@ -206,8 +230,15 @@ pub(super) fn capture(
                     "ordinary message unsupported"
                 );
                 messages += 1;
+                let note_container = m.role == Role::User
+                    && (messages == 1
+                        || m.content
+                            .iter()
+                            .any(|b| matches!(b, Block::ToolResult { .. })));
+                last_accepts_notes = note_container;
                 final_assistant = m.role == Role::Assistant
                     && m.content.iter().any(|b| matches!(b, Block::Text { .. }));
+                let mut saw_note = false;
                 for (index, b) in m.content.into_iter().enumerate() {
                     let (kind, field, text) = match b {
                         // The full native transcript stays bound by the seal.
@@ -215,12 +246,21 @@ pub(super) fn capture(
                         Block::Thinking { .. } if m.role == Role::Assistant => continue,
                         Block::Text { text } => {
                             if m.role == Role::User {
-                                ensure!(
-                                    owner == 0 && messages == 1 && index == 0 && text == f.prompt,
-                                    "ordinary owner prompt changed"
-                                );
-                                owner += 1;
-                                (PassageKind::UserRequest, "text", text)
+                                // The original frozen owner block wins even if
+                                // its bytes happen to equal a harness notice.
+                                if owner == 0 && messages == 1 && index == 0 && text == f.prompt {
+                                    owner += 1;
+                                    (PassageKind::UserRequest, "text", text)
+                                } else {
+                                    ensure!(
+                                        owner == 1
+                                            && note_container
+                                            && supported_note(&text, &configured_tools, &calls),
+                                        "ordinary owner prompt or inline note changed"
+                                    );
+                                    saw_note = true;
+                                    continue;
+                                }
                             } else {
                                 (PassageKind::AssistantText, "text", text)
                             }
@@ -255,7 +295,10 @@ pub(super) fn capture(
                             content,
                             is_error,
                         } => {
-                            ensure!(m.role == Role::User, "ordinary result unsupported");
+                            ensure!(
+                                m.role == Role::User && !saw_note,
+                                "ordinary result unsupported"
+                            );
                             let (name, input, complete) = calls
                                 .get_mut(&tool_use_id)
                                 .ok_or_else(|| anyhow::anyhow!("ordinary orphan result"))?;
@@ -379,4 +422,18 @@ pub(super) fn capture(
     };
     OrdinaryObservationCapture::try_from_host(payload.clone())?;
     Ok(payload)
+}
+
+fn supported_note(
+    text: &str,
+    configured: &BTreeSet<String>,
+    calls: &BTreeMap<String, (String, serde_json::Value, bool)>,
+) -> bool {
+    let observed: BTreeSet<_> = calls
+        .values()
+        .filter(|(name, _, complete)| *complete && configured.contains(name))
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let completed = calls.values().filter(|(_, _, complete)| *complete).count();
+    super::inline_notes::supported(text, &observed, completed)
 }

@@ -696,6 +696,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ordinary memory capture preserves exact owner text and request histories when
+  the agent appends an empty-response retry nudge or boredom notice. Canonical
+  loop notes remain audit-only; unknown notes and rewritten histories refuse.
+- Selected graph responses withheld by Mecha now carry harness provenance.
+  Retained server text/errors remain external, and prior conversation taint is
+  never cleared by a local refusal.
+
 - Web archive/delete recognizes ordinary native recordings with blank lines,
   future message blocks and an ordinary torn final payload. Known memory
   attachments, ambiguous records and malformed UTF-8 still refuse mutation,
