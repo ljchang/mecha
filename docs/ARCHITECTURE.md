@@ -13127,8 +13127,12 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   model writes is outside once anything outside or unrecorded has entered
   the conversation — a chat turn starts from the earlier turns' recorded
   taint. The store dropped `tool_provenance` at capture until 2026-11-11,
-  so every stored passage was of unknown origin. A capture's own record is
-  trusted only when every passage it admitted was. The field is absent
+  so every stored passage was of unknown origin. **The transcript's
+  recorded taint outranks the walk** (`Intake::settle`): it is armed by
+  more than tool results (notes, persona blocks, a digest), so where it
+  says untrusted, or is missing, and the walk saw nothing outside, no
+  passage of that capture is sealed as local (review of #863). A capture's
+  own record is trusted only when every passage it admitted was. The field is absent
   from the wire when unknown, so earlier captures keep their digests and
   read as untrusted.
 

@@ -148,6 +148,21 @@ impl Intake {
         self.outside |= recorded != Some(false);
         recorded
     }
+    /// Reconcile the walk with the transcript's own recorded taint, which is
+    /// the harness's verdict on everything that entered the conversation and
+    /// is armed by more than tool results: notes, persona blocks, a digest.
+    /// Where it says untrusted and the walk saw nothing outside, something
+    /// entered that this type cannot place, so no passage is sealed as
+    /// local: each becomes unknown, and unknown reads as outside. `None` is
+    /// a transcript with no taint record, and is the same case.
+    pub fn settle(&mut self, recorded_untrusted: Option<bool>, originals: &mut [OriginalPassage]) {
+        if recorded_untrusted != Some(false) && !self.outside {
+            self.outside = true;
+            for passage in originals {
+                passage.external = None;
+            }
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiptStatus {
@@ -532,7 +547,11 @@ fn capture_untrusted(conn: &Connection, reference: &RevisionRef, projection: &Ca
     // capture with no reader — an older projection, a forgotten one, one
     // that no longer reconstructs — is unknown.
     match native_reader(conn, reference, projection) {
-        Ok(Some(reader)) => reader.originals.iter().any(|d| d.external != Some(false)),
+        // An empty list vouches for nothing: "all of none" is not "all local".
+        Ok(Some(reader)) => {
+            reader.originals.is_empty()
+                || reader.originals.iter().any(|d| d.external != Some(false))
+        }
         _ => true,
     }
 }

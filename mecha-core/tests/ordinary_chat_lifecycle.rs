@@ -136,6 +136,20 @@ impl Fixture {
         charter: &str,
         outcome: RunStats,
     ) -> mecha_core::memory_session::chat::ChatMemoryTurn {
+        self.record_turn_tainted(chat, s, prompt, charter, outcome, false)
+    }
+    /// A turn whose recorded taint the caller chooses. No tool ran in it, so
+    /// `untrusted` models something entering the conversation that the
+    /// recorder's walk over tool results cannot see.
+    fn record_turn_tainted(
+        &self,
+        chat: &mut ChatMemory,
+        s: &Session,
+        prompt: &str,
+        charter: &str,
+        outcome: RunStats,
+        untrusted: bool,
+    ) -> mecha_core::memory_session::chat::ChatMemoryTurn {
         let owner = OwnerInput::new(OwnerSource::CliChat, prompt.into()).unwrap();
         let turn = chat.begin_turn(s, &owner).unwrap();
         let mut transcript = Session::read(&s.path).unwrap();
@@ -176,7 +190,7 @@ impl Fixture {
         s.append(&Record::Outcome(outcome)).unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: false,
+            untrusted,
         }))
         .unwrap();
         turn
@@ -1874,7 +1888,14 @@ fn unauthenticated_report_protocol_never_becomes_attachment_authority() {
 
 #[tokio::test]
 async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
-    for provenance in [true, false] {
+    // Two first turns: one that took in nothing from outside, and one whose
+    // recorded taint says something did. The second seals no passage as
+    // local, so recalling it is genuinely external. Either way the native
+    // record of the recall must say what the recall was — and the case that
+    // matters is the last: an outside recall recorded as local is refused.
+    for (first_untrusted, provenance) in
+        [(false, false), (false, true), (true, true), (true, false)]
+    {
         let f = Fixture::new();
         let s = f.session();
         let mut chat = f
@@ -1882,7 +1903,20 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
             .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
             .unwrap();
         graph_config(&f, &s);
-        let first = f.turn(&mut chat, &s, "The authored label is coral", "Keep records");
+        let first = f.record_turn_tainted(
+            &mut chat,
+            &s,
+            "The authored label is coral",
+            "Keep records",
+            RunStats {
+                stop_cause: Some(StopCause::Completed),
+                turns: 1,
+                context_overflows: Some(0),
+                ..Default::default()
+            },
+            first_untrusted,
+        );
+        let first = chat.finish_turn(&first);
         assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
         let owner =
             OwnerInput::new(OwnerSource::CliChat, "Find the prior coral label".into()).unwrap();
@@ -1921,9 +1955,9 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
         let input = serde_json::json!({"memory":{"query":"coral"}});
         let output = tool.call(input.clone(), &context).await.unwrap();
         assert!(!output.is_error, "{}", output.content);
-        // A recall of the owner's words and a clean reply is local, so the
-        // tracked attempt is local and the native record must say the same.
-        assert!(!output.external, "{}", output.content);
+        // A recall of the owner's words and a clean reply is local. The same
+        // words from a turn recorded as untrusted are of unknown origin.
+        assert_eq!(output.external, first_untrusted, "{}", output.content);
         let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
         assert!(packet["confirmed_goal"].is_null());
         assert_eq!(packet["goal_context_revision"], 2);
@@ -1974,11 +2008,11 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
         .unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: provenance,
+            untrusted: first_untrusted || provenance,
         }))
         .unwrap();
         let second = chat.finish_turn(&turn);
-        if provenance {
+        if provenance != first_untrusted {
             assert_eq!(second.status, SessionMemoryStatus::Unavailable);
             continue;
         }

@@ -371,6 +371,8 @@ fn events_mode(
     // The transcript is read from its header, so the conversation starts
     // having taken in nothing.
     let mut intake = Intake::starting(false);
+    // The transcript's own recorded taint, merged over every record of it.
+    let mut recorded_untrusted = None;
     for (line, raw) in text.lines().enumerate() {
         ensure!(!raw.trim().is_empty(), "capture refused");
         let record = strict_record(raw)?;
@@ -391,6 +393,9 @@ fn events_mode(
             | Record::LateResult { .. }
             | Record::LateFailure { .. } => anyhow::bail!("capture refused"),
             Record::Outcome(_) => completed = true,
+            Record::Taint(recorded) => {
+                recorded_untrusted = Some(recorded_untrusted.unwrap_or(false) | recorded.untrusted);
+            }
             Record::Message(mut message) => {
                 let provenance = std::mem::take(&mut message.tool_provenance);
                 for (index, block) in message.content.into_iter().enumerate() {
@@ -537,6 +542,7 @@ fn events_mode(
             _ => {}
         }
     }
+    intake.settle(recorded_untrusted, &mut originals);
     ensure!(
         meta == 1
             && !originals.is_empty()

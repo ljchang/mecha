@@ -546,7 +546,10 @@ def wire_evidence(wire,calls,sources,native=()):
         raw=content[len(MEMORY_PREFIX):-len('\n</untrusted-content>')] if wrapped else content
         packet=decode(raw)['memory'];records=packet['records']
         require(isinstance(records,list),'native records are not a list')
-        require(wrapped or not records,'nonempty native recall missing external wrapper')
+        # A recall is wrapped when any record in it is untrusted: from outside, of
+        # unrecorded origin, or model-derived. One made only of records stored as
+        # local arrives bare.
+        require(wrapped or all(isinstance(r,dict) and r.get('untrusted_input') is False for r in records),'native recall with untrusted records missing external wrapper')
     except (LifetimeError,ValueError,KeyError,TypeError) as error:
         result.update(recall_status='error',packet_errors=[str(error)]);return result
     result['recall_status']='unacknowledged'

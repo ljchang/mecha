@@ -191,6 +191,8 @@ pub(super) fn capture(
                 );
                 ensure!(!taint && messages > 0, "ordinary taint unavailable");
                 taint = true;
+                // No message follows this record, so every passage is in.
+                intake.settle(Some(recorded.untrusted), &mut originals);
             }
             Record::Outcome(s) => {
                 ensure!(
