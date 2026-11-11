@@ -1,4 +1,5 @@
-//! Host operations over an explicitly selected ordinary-run memory authority.
+//! Host operations over a memory store: the mecha home's
+//! (`mecha_core::memory_home`) unless `--request` names a manifest.
 
 use anyhow::{ensure, Result};
 use mecha_core::memory_session::{
@@ -8,15 +9,17 @@ use std::path::PathBuf;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Owner-selected request manifest.
+    /// A request manifest naming another store. Without it, the store under
+    /// the mecha home (`~/.mecha/memory`).
     #[arg(long, value_name = "REQUEST_JSON")]
-    pub request: PathBuf,
+    pub request: Option<PathBuf>,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
-    /// Create a new encrypted store, private authority and key.
+    /// Create a new encrypted store, private authority and key. Refuses a
+    /// store that already exists, whole or partial.
     Init,
     /// Explicitly upgrade live encrypted ordinary storage to Task/Plan schema v10.
     EnablePlanning,
@@ -56,13 +59,34 @@ pub enum Cmd {
     },
 }
 pub async fn execute(args: Args) -> Result<()> {
-    let request_path = std::path::absolute(args.request)?;
-    let request = SessionMemory::load_request(&request_path)?;
+    // A manifest is a file a task could have written, so it is held to the
+    // workspace rule below; the home store's request is built in code and has
+    // no file to check.
+    let request_path = args.request.map(std::path::absolute).transpose()?;
+    let home = mecha_core::work::mecha_home()?;
+    let request = match &request_path {
+        Some(path) => SessionMemory::load_request(path)?,
+        None => mecha_core::memory_home::request(&home)?,
+    };
+    let manifest_outside = |workspace: &std::path::Path| match &request_path {
+        Some(path) => SessionMemory::validate_request_path(path, workspace),
+        None => Ok(()),
+    };
     let mut failed = false;
     let report = match args.cmd {
         Cmd::Init => {
-            SessionMemory::initialize(&request)?;
-            serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized"})
+            // The manifest report is a wire format its callers compare whole;
+            // the home store's adds where the store is, since no manifest said.
+            match &request_path {
+                Some(_) => {
+                    SessionMemory::initialize(&request)?;
+                    serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized"})
+                }
+                None => {
+                    mecha_core::memory_home::initialize(&home)?;
+                    serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized","store":mecha_core::memory_home::dir(&home)})
+                }
+            }
         }
         Cmd::EnablePlanning => {
             let memory = SessionMemory::open_for_recovery(&request)?;
@@ -96,7 +120,7 @@ pub async fn execute(args: Args) -> Result<()> {
             run_id,
         } => {
             let workspace = workspace.canonicalize()?;
-            SessionMemory::validate_request_path(&request_path, &workspace)?;
+            manifest_outside(&workspace)?;
             let memory = SessionMemory::open(&request, &workspace)?;
             let sources = if let Some(input) = input {
                 memory.learning_sources(&SessionMemory::load_learning_selections(
@@ -121,7 +145,7 @@ pub async fn execute(args: Args) -> Result<()> {
             seed,
         } => {
             let workspace = workspace.canonicalize()?;
-            SessionMemory::validate_request_path(&request_path, &workspace)?;
+            manifest_outside(&workspace)?;
             let memory = SessionMemory::open(&request, &workspace)?;
             let input =
                 SessionMemory::load_learning_input(&std::path::absolute(input)?, &workspace)?;

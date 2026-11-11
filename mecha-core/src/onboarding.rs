@@ -1075,6 +1075,10 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
             "Letting the assistant run a short Python program over what its read-only tools \
              return, in a sandboxed interpreter, without reading it all into the conversation."
         }
+        Feature::Memory => {
+            "The assistant's own memory: what its runs did and observed, kept in an encrypted \
+             store on this machine and recalled when a later task needs it."
+        }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Incognito
         | Feature::Tasks
@@ -2262,11 +2266,13 @@ mod tests {
                 "messages",
                 "system",
                 "code",
+                "memory",
                 "charter"
             ]
             .into_iter()
-            // Code mode is a step only in a build that can run it.
+            // Code mode and memory are steps only in a build that can run them.
             .filter(|id| *id != "code" || crate::interpreter::BUILT)
+            .filter(|id| *id != "memory" || crate::memory_home::BUILT)
             .collect::<Vec<_>>()
         );
     }

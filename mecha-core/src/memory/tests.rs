@@ -109,6 +109,36 @@ fn opener_refuses_unrelated_existing_databases_without_mutating_them() {
     assert!(Memory::create(&home.join("bad.memory-prototype.sqlite"), "test").is_err());
 }
 
+/// The one place under a mecha home a store may live is `memory/store`; every
+/// other directory beneath `.mecha` — and any path through `.mecha-graph` —
+/// is still refused.
+#[test]
+fn a_mecha_home_holds_a_store_only_in_its_memory_store_directory() {
+    let f = Fixture::new();
+    let home = f.dir.join(".mecha");
+    let store = home.join("memory").join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    assert!(Memory::create(&store.join("agent.memory-prototype.sqlite"), "test").is_ok());
+    for refused in [
+        home.join("memory"),
+        home.join("memory").join("store").join("deeper"),
+        home.join("sessions").join("memory").join("store"),
+        f.dir
+            .join(".mecha-graph")
+            .join(".mecha")
+            .join("memory")
+            .join("store"),
+        home.join(".mecha").join("memory").join("store"),
+    ] {
+        std::fs::create_dir_all(&refused).unwrap();
+        assert!(
+            Memory::create(&refused.join("bad.memory-prototype.sqlite"), "test").is_err(),
+            "{} must not hold a store",
+            refused.display()
+        );
+    }
+}
+
 #[test]
 fn ended_and_retracted_relations_have_distinct_temporal_answers() {
     let mut f = Fixture::new();

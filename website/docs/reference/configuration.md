@@ -475,6 +475,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # messages = false   # messages between sessions on this machine
 # system = false     # the assistant reads this machine's state (system_read)
 # code = false       # programs over tool results (code)
+# memory = false     # the assistant's own encrypted memory of its runs
 ```
 
 `mail_rules` requires `mail` and defaults off. With either switch off, the
@@ -515,7 +516,12 @@ aside. `code`
 with the cargo feature `monty`; there each run that registers it first proves
 the worker starts under the sandbox and refuses to start when it does not. A
 build without `monty` reads the row as not in this build and registers no
-`code`, so one `config.toml` shared with such a build never stops it. An
+`code`, so one `config.toml` shared with such a build never stops it.
+`memory` is the same shape: its store is the cargo feature `memory-prototype`,
+a build without it reads the row as not in this build, and with the switch on
+and no store yet the row reads unready and names `mecha memory-session init`.
+Its store, key and authority are fixed under `~/.mecha/memory/` and are not
+configurable — no `mecha.toml` can say where memory or its key lives. An
 `[[mcp]]` server that belongs to no feature starts as it always has. A feature switched on without the settings it
 needs reads **unready** in `mecha features`, with what is missing; one switched
 off keeps its settings for later. A key that is absent is unanswered, and reads

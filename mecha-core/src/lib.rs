@@ -142,6 +142,7 @@ pub mod memory_decision_runtime;
 pub mod memory_experience_bridge;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_factual_support;
+pub mod memory_home;
 #[cfg(feature = "memory-prototype")]
 pub mod memory_hybrid_workflow;
 #[cfg(feature = "memory-prototype")]

@@ -1301,6 +1301,9 @@ fn the_closing_note_names_each_way_back() {
         // Built in by default since code mode's interpreter shipped, so a
         // no is an answer it needs too.
         "code",
+        // A step in a build with the store; a no is its answer there, and a
+        // build without it has no step to answer.
+        "memory",
     ]
     .iter()
     .map(|id| format!("{id} = false\n"))

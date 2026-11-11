@@ -111,6 +111,7 @@ pub const FEATURES_STARTER: &str = r#"
 # messages = false   # messages between sessions on this machine
 # system = false     # the assistant reads this machine's state (system_read)
 # code = false       # programs over tool results (code)
+# memory = false     # the assistant's own encrypted memory of its runs
 "#;
 
 /// A commented starting point rather than a dump of defaults — the point of the
