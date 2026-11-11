@@ -27,9 +27,9 @@ fn memory_row(home: &Path) -> serde_json::Value {
     rows.as_array()
         .unwrap()
         .iter()
-        .cloned()
         .find(|row| row["id"] == "memory")
         .expect("a memory row")
+        .clone()
 }
 
 #[test]
