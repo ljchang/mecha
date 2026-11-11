@@ -656,6 +656,9 @@ pub struct Facts {
     /// (`memory_home::initialized`): its database, key and authority
     /// identity as files. Never an open.
     pub memory_store_initialized: bool,
+    /// Whether the home holds some of a memory store and not all of it
+    /// (`memory_home::partial`).
+    pub memory_store_partial: bool,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -712,6 +715,7 @@ impl Facts {
                     .is_ok_and(|m| m.is_file() && m.len() == pin.binary_bytes)
             }),
             memory_store_initialized: crate::memory_home::initialized(home),
+            memory_store_partial: crate::memory_home::partial(home),
             config: global.clone(),
         }
     }
@@ -2019,13 +2023,23 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // The home store, by its three files and no open (a page load asks
         // this, and an open reads the key). `state` has already answered for
         // a build without the store.
-        Feature::Memory => match facts.memory_store_initialized {
-            true => on("the encrypted store in the mecha home's memory/"),
-            false => off(
-                "no memory store in the mecha home yet",
-                crate::memory_home::INIT_COMMAND,
-            ),
-        },
+        // A partial store is its own answer: `init` refuses one, so the row
+        // must not print it as the fix (the #443 shape; review of #862).
+        Feature::Memory => {
+            if facts.memory_store_initialized {
+                on("the encrypted store in the mecha home's memory/")
+            } else if facts.memory_store_partial {
+                off(
+                    "the memory store in the mecha home is incomplete",
+                    crate::memory_home::REPAIR,
+                )
+            } else {
+                off(
+                    "no memory store in the mecha home yet",
+                    crate::memory_home::INIT_COMMAND,
+                )
+            }
+        }
     }
 }
 
@@ -2552,6 +2566,14 @@ mod tests {
             panic!("switched on with no store is unready, and says how to make one")
         };
         assert_eq!(fix.as_deref(), Some(crate::memory_home::INIT_COMMAND));
+        // Some of a store and not all: `init` would refuse, so it is not the fix.
+        facts.memory_store_partial = true;
+        let State::Unready { reason, fix } = memory(&facts) else {
+            panic!("a partial store is unready")
+        };
+        assert!(reason.contains("incomplete"), "{reason}");
+        assert_eq!(fix.as_deref(), Some(crate::memory_home::REPAIR));
+        facts.memory_store_partial = false;
         facts.memory_store_initialized = true;
         assert_eq!(memory(&facts).word(), "on");
         set_switch(&mut facts.config, Feature::Memory, false);

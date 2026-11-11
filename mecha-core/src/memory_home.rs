@@ -13,6 +13,11 @@
 //! from configuration: a cloned repository's `mecha.toml` must not be able to
 //! say where the owner's memory or its key is.
 //!
+//! The home is `work::mecha_home()`, so the store follows `MECHA_HOME`, and
+//! that is deliberate: a redirected home gets a store of its own beside its
+//! other state, and can never read or replace another home's — the session
+//! layer admits only the directory of the home it was started in.
+//!
 //! The paths and [`initialized`] are in every build, so `mecha features` can
 //! say what a build without the store would need; opening one is the cargo
 //! feature `memory-prototype`'s ([`BUILT`]).
@@ -60,6 +65,19 @@ pub fn initialized(home: &Path) -> bool {
     let file = |p: PathBuf| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file());
     file(db(home)) && file(key_file(home)) && file(authority(home).join("identity"))
 }
+
+/// Whether `home` holds some of a store and not all of it: any of the three
+/// paths exists, in any form, and [`initialized`] is false. `init` refuses
+/// this by name, so a row must not offer `init` as its fix.
+pub fn partial(home: &Path) -> bool {
+    let exists = |p: PathBuf| std::fs::symlink_metadata(p).is_ok();
+    !initialized(home) && (exists(db(home)) || exists(key_file(home)) || exists(authority(home)))
+}
+
+/// What a row says to do about a [`partial`] store.
+pub const REPAIR: &str =
+    "restore the missing file under the mecha home's memory/, or move memory/ aside and run \
+     `mecha memory-session init`";
 
 #[cfg(feature = "memory-prototype")]
 mod open {
@@ -128,7 +146,16 @@ mod open {
                     .with_context(|| format!("creating {}", directory.display()))?;
             }
         }
-        SessionMemory::initialize(&request)?;
+        // Every path was just proved absent, so a failure past this point
+        // can only have left this call's own leftovers — a key written before
+        // the database could be made, say. Take them back: a half-made store
+        // is one `init` itself would then refuse.
+        if let Err(error) = SessionMemory::initialize(&request) {
+            let _ = std::fs::remove_file(&request.db);
+            let _ = std::fs::remove_file(&request.key_file);
+            let _ = std::fs::remove_dir_all(&request.authority);
+            return Err(error);
+        }
         Ok(request)
     }
 }
@@ -169,7 +196,7 @@ mod tests {
     fn a_partial_store_is_not_initialized() {
         let scratch = Scratch::new();
         let home = scratch.0.as_path();
-        assert!(!initialized(home));
+        assert!(!initialized(home) && !partial(home));
         for file in [db(home), key_file(home)] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, b"x").unwrap();
@@ -184,6 +211,7 @@ mod tests {
         std::fs::rename(key_file(home), &moved).unwrap();
         std::os::unix::fs::symlink(&moved, key_file(home)).unwrap();
         assert!(!initialized(home));
+        assert!(partial(home));
     }
 
     /// The whole path, on a home spelled as the real one is: `init` makes a
@@ -202,13 +230,14 @@ mod tests {
         let workspace = root.join("work");
         std::fs::create_dir(&workspace).unwrap();
 
-        // Not this process's home yet: the spelling alone admits nothing.
+        // Not this process's home yet: the spelling alone admits nothing,
+        // and the refused attempt leaves no half-made store behind.
         let refused = initialize(&home).unwrap_err();
         assert!(
             format!("{refused:#}").contains("live Mecha directories"),
             "{refused:#}"
         );
-        std::fs::remove_dir_all(dir(&home)).unwrap();
+        assert!(!partial(&home) && !initialized(&home));
 
         std::env::set_var("MECHA_HOME", &home);
         let request = initialize(&home).unwrap();
@@ -216,6 +245,27 @@ mod tests {
         assert_eq!(request, super::request(&home).unwrap());
         SessionMemory::open(&request, &workspace).unwrap();
         SessionMemory::open_for_recovery(&request).unwrap();
+
+        // A manifest cannot claim the home store's database with a key and
+        // authority of its own: the admission is for the whole home request.
+        let foreign = root.join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::set_permissions(
+            &foreign,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let mut claim = request.clone();
+        claim.key_file = foreign.join("k.key");
+        claim.authority = foreign.join("authority");
+        std::fs::rename(db(&home), root.join("aside.sqlite")).unwrap();
+        let refused = SessionMemory::initialize(&claim).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("live Mecha directories"),
+            "{refused:#}"
+        );
+        assert!(!db(&home).exists());
+        std::fs::rename(root.join("aside.sqlite"), db(&home)).unwrap();
 
         let key = std::fs::read(key_file(&home)).unwrap();
         let again = initialize(&home).unwrap_err().to_string();

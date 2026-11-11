@@ -6,12 +6,16 @@
 use std::{path::Path, process::Command};
 
 fn mecha(home: &Path, args: &[&str]) -> std::process::Output {
+    mecha_in(home, home.parent().unwrap(), args)
+}
+
+fn mecha_in(home: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_mecha"))
         .args(args)
         .env("MECHA_HOME", home)
         .env("MECHA_SESSION_KIND", "test")
         .env_remove("MECHA_LOG")
-        .current_dir(home.parent().unwrap())
+        .current_dir(cwd)
         .output()
         .unwrap()
 }
@@ -94,8 +98,14 @@ fn init_without_a_manifest_makes_the_home_store_once_and_features_reads_it() {
     // opener (review of #862).
     let store = home.join("memory/store/agent.memory-prototype.sqlite");
     let before = std::fs::read(&store).unwrap();
-    let fixture = mecha(
+    // Run from a directory that holds neither the key nor the store, so the
+    // key-location rule has nothing to refuse and the store rule is the one
+    // answering.
+    let cwd = root.join("elsewhere");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let fixture = mecha_in(
         &home,
+        &cwd,
         &[
             "memory",
             "--experimental",
@@ -107,5 +117,7 @@ fn init_without_a_manifest_makes_the_home_store_once_and_features_reads_it() {
         ],
     );
     assert!(!fixture.status.success());
+    let why = String::from_utf8_lossy(&fixture.stderr);
+    assert!(why.contains("live Mecha directories"), "{why}");
     assert_eq!(std::fs::read(&store).unwrap(), before);
 }
