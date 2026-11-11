@@ -154,7 +154,10 @@ impl Intake {
     }
     /// Something other than a tool result brought outside content in: a
     /// note or a user-role block the harness's own content rule
-    /// (`Taint::arm_for_content`) reads as untrusted. A notes record has no
+    /// (`Taint::arm_for_content`) reads as untrusted, or user-role content
+    /// a recorder keeps out of the capture without refusing it — a
+    /// delivered inter-agent message arms the taint from its sender, not
+    /// from any stem that rule knows. A notes record has no
     /// position among the messages, so this cannot say when it arrived;
     /// [`Intake::settle`] therefore treats it as present from the start.
     pub fn ambient(&mut self) {

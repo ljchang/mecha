@@ -334,7 +334,9 @@ impl GoalMemory {
             let base = GoalContext.call(base_input, ctx).await?;
             ensure!(!base.is_error, "goal context unavailable");
             let mut answer: Value = serde_json::from_str(&base.content)?;
-            let external = !result.packet.records.is_empty();
+            // Derived, as on the lexical route: outside when any delivered
+            // record is untrusted, never because the packet is non-empty.
+            let external = result.packet.records.iter().any(|hit| hit.untrusted_input);
             answer["memory"] = serde_json::to_value(&result.packet)?;
             let output = ToolOutput::ok(answer.to_string());
             Ok::<_, anyhow::Error>((

@@ -520,6 +520,18 @@ fn events_mode(
                             external = intake.authored();
                             Some((PassageKind::AssistantText, "text", text))
                         }
+                        // User-role content this walk does not place: a
+                        // harness voice (a delivered inter-agent message, a
+                        // resumed question, a notice) or a picture. It is
+                        // kept out of the capture, but it was in front of
+                        // the model and may carry a sender's text, so what
+                        // the model wrote is recorded as outside. Refusing
+                        // by stem would miss the next voice added.
+                        Block::Text { .. } | Block::Image { .. } if message.role == Role::User => {
+                            intake.ambient();
+                            external = None;
+                            None
+                        }
                         _ => {
                             external = None;
                             None

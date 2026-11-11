@@ -439,7 +439,9 @@ async fn native_completion_encrypted_repair_preserves_source_closure_and_capture
                 .feedback_delivered
         );
         assert!(report.recall.as_ref().unwrap().protocol_satisfied());
-        assert!(report.taint.private && report.taint.untrusted);
+        // The earlier runs kept only local content, so recalling it is private
+        // and not from outside, on this route as on the lexical one.
+        assert!(report.taint.private && !report.taint.untrusted);
         assert_eq!(report.capture_error.is_some(), failure != "none");
         assert_eq!(report.receipt.is_some(), failure == "none");
         if failure == "none" {

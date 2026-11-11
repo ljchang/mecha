@@ -260,7 +260,9 @@ async fn native_controlled_recall_uses_observations_and_recaptures_uncited_origi
     let report = run("followup", None).await?;
     assert_eq!(report.check.verdict, CheckVerdict::Passed);
     assert!(report.recall.as_ref().unwrap().protocol_satisfied());
-    assert!(report.taint.private && report.taint.untrusted);
+    // The earlier runs kept only local content, so recalling it is private
+        // and not from outside, on this route as on the lexical one.
+        assert!(report.taint.private && !report.taint.untrusted);
     let receipt = report.receipt.as_ref().context("followup not captured")?;
     let memory = Memory::open_with_storage(&fixture.database, fixture.storage()?)?
         .with_source_guard(Arc::new(fixture.authority.clone()));
@@ -444,7 +446,9 @@ async fn native_controlled_dense_recall_crosses_vocabulary_gap_in_actual_agent_a
             .as_ref()
             .context("controlled capture failed")?;
         if dense {
-            assert!(report.taint.private && report.taint.untrusted);
+            // The earlier runs kept only local content, so recalling it is private
+        // and not from outside, on this route as on the lexical one.
+        assert!(report.taint.private && !report.taint.untrusted);
             let memory = Memory::open_with_storage(&database, fixture.storage()?)?
                 .with_source_guard(Arc::new(fixture.authority.clone()));
             let prepared = memory.prepare_interpretation(

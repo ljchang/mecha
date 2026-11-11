@@ -502,7 +502,8 @@ fn knowledge_bundle(
             Record::Concept(_) => {}
             Record::Interpretation(_) | Record::Task(_) | Record::Plan(_) => return Ok(None),
         }
-        bundle.push(Hit::read(conn, input, seq, record, possible)?);
+        // Labelled once, at `add`, the one door into a packet.
+        bundle.push(Hit::unlabelled(conn, input, seq, record, possible)?);
     }
     Ok(Some(bundle))
 }
