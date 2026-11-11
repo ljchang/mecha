@@ -289,7 +289,6 @@ impl Feature {
             // A binary on PATH, and the trial's own `requests` store under
             // `$MECHA_HOME`.
             Feature::Frontdoor => true,
-
             // Operator-only tables: the surfaces, the image server, the OCR
             // server and parser sandbox, the mailbox.
             Feature::Web
@@ -803,8 +802,8 @@ pub fn state(facts: &Facts, f: Feature) -> State {
     // print a command the same binary rejects. Switched on (by another
     // build sharing the file), it is a yes this build cannot honour, and
     // reads unready, shown, rather than off.
-    if let Some(why) = unbuilt(f) {
-        let (reason, fix) = (why.to_string(), Some(build_fix(f).to_string()));
+    if let Some((why, build)) = unbuilt_with_fix(f) {
+        let (reason, fix) = (why.to_string(), Some(build.to_string()));
         return match switch(&facts.config, f) {
             Some(Switch::On) => State::Unready { reason, fix },
             _ => State::Off { reason, fix },
@@ -1070,10 +1069,9 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
     for id in ids {
         let f = Feature::parse(id)
             .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
-        if let Some(why) = unbuilt(f) {
+        if let Some((why, build)) = unbuilt_with_fix(f) {
             return Err(format!(
-                "`{id}` cannot be switched on here: {why} — {}",
-                build_fix(f)
+                "`{id}` cannot be switched on here: {why} — {build}"
             ));
         }
         // A switch on with these unmet would stop every start, not degrade
@@ -1594,13 +1592,21 @@ pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Resul
 /// default and left out by `--no-default-features`; memory's store is the
 /// cargo feature `memory-prototype`, off by default.
 pub fn unbuilt(f: Feature) -> Option<&'static str> {
+    unbuilt_with_fix(f).map(|(why, _)| why)
+}
+
+/// [`unbuilt`]'s reason beside the build that would have `f`, from one match
+/// so a third built-out feature cannot take another's fix.
+pub fn unbuilt_with_fix(f: Feature) -> Option<(&'static str, &'static str)> {
     match f {
-        Feature::Code if !crate::interpreter::BUILT => {
-            Some("this mecha was built without code mode's interpreter (the cargo feature `monty`)")
-        }
-        Feature::Memory if !crate::memory_home::BUILT => Some(
+        Feature::Code if !crate::interpreter::BUILT => Some((
+            "this mecha was built without code mode's interpreter (the cargo feature `monty`)",
+            BUILD_WITH_MONTY,
+        )),
+        Feature::Memory if !crate::memory_home::BUILT => Some((
             "this mecha was built without the memory store (the cargo feature `memory-prototype`)",
-        ),
+            BUILD_WITH_MEMORY,
+        )),
         _ => None,
     }
 }
@@ -1610,14 +1616,6 @@ pub const BUILD_WITH_MONTY: &str = "build mecha with `--features monty`";
 
 /// The fix [`unbuilt`] names for memory.
 pub const BUILD_WITH_MEMORY: &str = "build mecha with `--features memory-prototype`";
-
-/// The build that would have `f`, for a feature [`unbuilt`] names.
-pub fn build_fix(f: Feature) -> &'static str {
-    match f {
-        Feature::Memory => BUILD_WITH_MEMORY,
-        _ => BUILD_WITH_MONTY,
-    }
-}
 
 fn on(detail: impl Into<String>) -> State {
     State::On {
@@ -2022,7 +2020,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // this, and an open reads the key). `state` has already answered for
         // a build without the store.
         Feature::Memory => match facts.memory_store_initialized {
-            true => on("the encrypted store under ~/.mecha/memory"),
+            true => on("the encrypted store in the mecha home's memory/"),
             false => off(
                 "no memory store in the mecha home yet",
                 crate::memory_home::INIT_COMMAND,
@@ -3229,7 +3227,14 @@ mod tests {
             // Not in this build: the fix is the build, which `enable` names
             // when it refuses.
             if unbuilt(f).is_some() {
-                assert_eq!(fix, build_fix(f), "{}", f.id());
+                // Against the constants, not the function that built the
+                // row, or this would hold for any mapping.
+                let expected = match f {
+                    Feature::Code => BUILD_WITH_MONTY,
+                    Feature::Memory => BUILD_WITH_MEMORY,
+                    other => panic!("{} is built out with no fix pinned here", other.id()),
+                };
+                assert_eq!(fix, expected, "{}", f.id());
                 continue;
             }
             let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();

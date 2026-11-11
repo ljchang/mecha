@@ -13098,10 +13098,13 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   that never contain one another, because the key policy refuses a key under
   the database's directory or the authority's. A layered `mecha.toml` must not
   be able to say where the owner's memory or its key is, so there is no
-  `[memory]` path setting to strip. `memory::sql::validate_path` admits
-  exactly `.mecha/memory/store` beneath a mecha home and still refuses every
-  other directory there, by spelling, so the module names no host path and
-  the standalone `prototypes/memory` crate compiles it unchanged.
+  `[memory]` path setting to strip. **The admission is the caller's, never
+  the path's**: `memory::sql::validate_path` refuses every directory under
+  `.mecha` unless the `StorageAccess` it is handed was admitted to exactly
+  that directory (`admitting_home_store`), and only `memory_session`'s
+  authority builds one, for a request whose database is in this process's
+  own home store. A rule by spelling admitted `mecha memory`'s synthetic
+  fixture surface to the live store too (review of #862).
 - **`memory` is a registered feature whose switch gates nothing yet**
   (`Feature::Memory`, `gated() == false`): the row reads the build
   (`memory_home::BUILT`), the switch and the store's three files, never an

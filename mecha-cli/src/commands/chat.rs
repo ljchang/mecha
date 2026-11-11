@@ -53,7 +53,7 @@ pub(crate) struct MemoryPreparation {
 }
 #[cfg(feature = "memory-prototype")]
 enum MemoryState {
-    Fresh(mecha_core::memory_session::SessionMemory),
+    Fresh(Box<mecha_core::memory_session::SessionMemory>),
     Resumed(Box<mecha_core::memory_session::chat::ChatMemory>),
 }
 #[cfg(feature = "memory-prototype")]
@@ -124,7 +124,7 @@ pub(crate) async fn preflight_memory(
         }
         MemoryState::Resumed(Box::new(chat))
     } else {
-        MemoryState::Fresh(profile.memory)
+        MemoryState::Fresh(Box::new(profile.memory))
     };
     let graph = if let Some(selection) = profile.graph {
         let opts = GlobalOpts {
@@ -297,7 +297,7 @@ pub async fn execute(
     let mut session = None;
     #[cfg(feature = "memory-prototype")]
     let (mut chat_memory, mut fresh_memory) = match memory_state {
-        Some(MemoryState::Fresh(memory)) => (None, Some(memory)),
+        Some(MemoryState::Fresh(memory)) => (None, Some(*memory)),
         Some(MemoryState::Resumed(chat)) => (Some(*chat), None),
         None => (None, None),
     };

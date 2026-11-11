@@ -43,14 +43,15 @@ impl Memory {
             self.conn.is_autocommit(),
             "cannot snapshot an active caller transaction"
         );
-        let destination = sql::validate_path(destination)?;
+        let destination = sql::validate_path(destination, &destination_storage)?;
         ensure!(
             !destination.try_exists()? && fs::symlink_metadata(&destination).is_err(),
             "snapshot destination already exists"
         );
-        let source_path = sql::validate_existing_path(Path::new(
-            self.conn.path().context("missing memory path")?,
-        ))?;
+        let source_path = sql::validate_existing_path(
+            Path::new(self.conn.path().context("missing memory path")?),
+            &self.storage_access(),
+        )?;
         let file_identity = FileIdentity::at(&source_path)?;
         let source = self.reopen_read_only()?;
         let pinned = source.conn.unchecked_transaction()?;
@@ -216,12 +217,12 @@ fn restore_with_files(
             && current.storage.is_encrypted(),
         "restore requires encrypted backup, destination and current authority"
     );
-    let destination = sql::validate_path(destination)?;
+    let destination = sql::validate_path(destination, &destination_storage)?;
     ensure!(
         !destination.try_exists()? && fs::symlink_metadata(&destination).is_err(),
         "restore destination already exists"
     );
-    let current_path = sql::validate_existing_path(&current.path)?;
+    let current_path = sql::validate_existing_path(&current.path, &current.storage)?;
     let current_file = FileIdentity::at(&current_path)?;
     // Refuse unsupported authority before writable configuration can touch it.
     let probe = Memory::open_read_only_with_storage(&current_path, current.storage.clone())?;
@@ -250,7 +251,7 @@ fn restore_with_files(
     }
     let state = SuppressionState::read(&held)?;
     current_file.check(&current_path)?;
-    let backup_path = sql::validate_existing_path(backup)?;
+    let backup_path = sql::validate_existing_path(backup, &backup_storage)?;
     let backup_file = FileIdentity::at(&backup_path)?;
     let source = Memory::open_read_only_with_storage(&backup_path, backup_storage.clone())?;
     let pinned = source.conn.unchecked_transaction()?;

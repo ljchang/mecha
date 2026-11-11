@@ -83,8 +83,8 @@ pub async fn execute(args: Args) -> Result<()> {
                     serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized"})
                 }
                 None => {
-                    mecha_core::memory_home::initialize(&home)?;
-                    serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized","store":mecha_core::memory_home::dir(&home)})
+                    let made = mecha_core::memory_home::initialize(&home)?;
+                    serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized","store":made.authority.parent()})
                 }
             }
         }

@@ -148,7 +148,8 @@ overwrites existing paths. Without `--request` they are
 `memory/store/agent.memory-prototype.sqlite`, `memory/key/agent.key` and
 `memory/authority/` under the mecha home, each in a directory only you can
 read, and `mecha features` reads `memory` from those three files. Keep a copy
-of the key somewhere else: a store whose key is lost cannot be opened. `retry` admits an already sealed capture after current
+of the key somewhere else: a store whose key is lost cannot be opened. `retry`
+admits an already sealed capture after current
 source checks, and `forget` withdraws an episode and purges dependent memory in
 the selected store. These commands print JSON and execute no provider or tool.
 They do not require the original task directory and do not discover other stores.

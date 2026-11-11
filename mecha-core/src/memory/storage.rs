@@ -20,7 +20,7 @@ struct SecretKey(Zeroizing<[u8; KEY_BYTES]>);
 /// Decryption authority supplied by the host, independent of memory scopes.
 /// Cloning shares the key. Removing the original file does not revoke handles.
 #[derive(Clone)]
-pub struct StorageAccess(Option<Arc<SecretKey>>);
+pub struct StorageAccess(Option<Arc<SecretKey>>, Option<Arc<PathBuf>>);
 
 impl fmt::Debug for StorageAccess {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -99,11 +99,36 @@ impl KeyFilePolicy {
 impl StorageAccess {
     /// Explicit plaintext access for synthetic fixture and legacy commands.
     pub fn plaintext_fixture() -> Self {
-        Self(None)
+        Self(None, None)
     }
 
     pub fn is_encrypted(&self) -> bool {
         self.0.is_some()
+    }
+
+    /// Admit one directory beneath a live mecha home as this access's store
+    /// root. The path rule refuses every directory under `.mecha` to an
+    /// access that does not carry this, so the admission belongs to the
+    /// caller that built the access — the session layer, for the home store —
+    /// and never to a path's spelling. Plaintext fixture access cannot carry
+    /// one: what lives in a mecha home is encrypted.
+    pub fn admitting_home_store(mut self, directory: &Path) -> Result<Self> {
+        ensure!(
+            self.is_encrypted(),
+            "a store in a mecha home must be encrypted"
+        );
+        self.1 = Some(Arc::new(
+            directory
+                .canonicalize()
+                .context("resolve the home store directory")?,
+        ));
+        Ok(self)
+    }
+
+    /// Whether `parent`, already canonical, is the directory this access was
+    /// admitted to.
+    pub(super) fn admits_home_store(&self, parent: &Path) -> bool {
+        self.1.as_deref().is_some_and(|admitted| admitted == parent)
     }
 
     pub fn load_key_file(path: &Path, policy: &KeyFilePolicy) -> Result<Self> {
@@ -132,7 +157,7 @@ impl StorageAccess {
         for (byte, pair) in key.0.iter_mut().zip(input.as_chunks::<2>().0) {
             *byte = hex_digit(pair[0])? << 4 | hex_digit(pair[1])?;
         }
-        Ok(Self(Some(secret)))
+        Ok(Self(Some(secret), None))
     }
 
     pub fn generate_key_file(path: &Path, policy: &KeyFilePolicy) -> Result<Self> {
@@ -154,7 +179,7 @@ impl StorageAccess {
             },
             File::sync_all,
         )?;
-        Ok(Self(Some(secret)))
+        Ok(Self(Some(secret), None))
     }
 }
 

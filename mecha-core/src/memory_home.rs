@@ -101,7 +101,11 @@ mod open {
             );
         }
         for directory in [
-            dir(home),
+            request
+                .authority
+                .parent()
+                .expect("the memory directory")
+                .to_path_buf(),
             request
                 .db
                 .parent()
@@ -174,18 +178,30 @@ mod tests {
     }
 
     /// The whole path, on a home spelled as the real one is: `init` makes a
-    /// store the session API opens, and a second `init` refuses.
+    /// store the session API opens, and a second `init` refuses. The home is
+    /// this process's (`MECHA_HOME`, under the guard's lock), because that is
+    /// the only home whose store the session layer admits — and the same
+    /// request against a home that is not this process's is refused.
     #[cfg(feature = "memory-prototype")]
     #[test]
-    fn init_makes_a_store_under_a_mecha_home_that_opens_and_is_made_once() {
+    fn init_makes_a_store_under_this_process_s_home_that_opens_and_is_made_once() {
         use crate::memory_session::SessionMemory;
-        let scratch = Scratch::new();
-        let root = scratch.0.canonicalize().unwrap();
+        let guard = crate::work::tests::HomeGuard::new();
+        let root = guard.dir().canonicalize().unwrap();
         let home = root.join(".mecha");
         std::fs::create_dir(&home).unwrap();
         let workspace = root.join("work");
         std::fs::create_dir(&workspace).unwrap();
 
+        // Not this process's home yet: the spelling alone admits nothing.
+        let refused = initialize(&home).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("live Mecha directories"),
+            "{refused:#}"
+        );
+        std::fs::remove_dir_all(dir(&home)).unwrap();
+
+        std::env::set_var("MECHA_HOME", &home);
         let request = initialize(&home).unwrap();
         assert!(initialized(&home));
         assert_eq!(request, super::request(&home).unwrap());

@@ -175,6 +175,20 @@ pub(super) struct Seal {
     pub attempts: Vec<Attempt>,
     pub payload: HostCapture,
 }
+/// The one place a store under a live mecha home is admitted: a request whose
+/// database is in this process's own home store directory (`memory_home`).
+/// Any other request keeps the access as it was, and the store's path rule
+/// refuses it anything beneath `.mecha`.
+fn admit_home(r: &SessionMemoryRequest, storage: StorageAccess) -> Result<StorageAccess> {
+    let home = std::path::absolute(crate::work::mecha_home()?)?;
+    let store = crate::memory_home::db(&home);
+    match (r.db.parent(), store.parent()) {
+        (Some(requested), Some(home_store)) if requested == home_store => {
+            storage.admitting_home_store(home_store)
+        }
+        _ => Ok(storage),
+    }
+}
 pub(super) fn initialize(r: &SessionMemoryRequest) -> Result<()> {
     validate_request(r)?;
     ensure!(
@@ -182,7 +196,7 @@ pub(super) fn initialize(r: &SessionMemoryRequest) -> Result<()> {
         "ordinary initialization requires new paths"
     );
     let policy = KeyFilePolicy::new(&[r.db.parent().unwrap().into(), r.authority.clone()])?;
-    let storage = StorageAccess::generate_key_file(&r.key_file, &policy)?;
+    let storage = admit_home(r, StorageAccess::generate_key_file(&r.key_file, &policy)?)?;
     fs::DirBuilder::new().mode(0o700).create(&r.authority)?;
     let m = Memory::create_supported_situated_with_storage(&r.db, &r.domain, storage)?;
     let identity = Identity {
@@ -216,6 +230,7 @@ pub(super) fn open(
     let policy = KeyFilePolicy::new(&excluded)?;
     let storage = StorageAccess::load_key_file(&r.key_file, &policy)?;
     ensure!(storage.is_encrypted(), "ordinary storage must be encrypted");
+    let storage = admit_home(r, storage)?;
     let m = Memory::open_with_storage(&r.db, storage.clone())?;
     m.check_access(&Access {
         domain: r.domain.clone(),

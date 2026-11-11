@@ -34,9 +34,16 @@ fn memory_row(home: &Path) -> serde_json::Value {
 
 #[test]
 fn init_without_a_manifest_makes_the_home_store_once_and_features_reads_it() {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
     let root = std::env::temp_dir().join(format!("mecha-memhome-cli-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
-    let root = root.canonicalize().unwrap();
+    let scratch = Scratch(root.canonicalize().unwrap());
+    let root = scratch.0.clone();
     // Spelled as the real home is, so the store's own path rule is the one
     // under test.
     let home = root.join(".mecha");
@@ -82,5 +89,23 @@ fn init_without_a_manifest_makes_the_home_store_once_and_features_reads_it() {
     );
     assert_eq!(memory_row(&home)["state"], "on");
 
-    let _ = std::fs::remove_dir_all(&root);
+    // The synthetic-fixture surface cannot reach it: `mecha memory` holds the
+    // right key and names the right file, and is still not the admitted
+    // opener (review of #862).
+    let store = home.join("memory/store/agent.memory-prototype.sqlite");
+    let before = std::fs::read(&store).unwrap();
+    let fixture = mecha(
+        &home,
+        &[
+            "memory",
+            "--experimental",
+            "--db",
+            store.to_str().unwrap(),
+            "--key-file",
+            home.join("memory/key/agent.key").to_str().unwrap(),
+            "inspect",
+        ],
+    );
+    assert!(!fixture.status.success());
+    assert_eq!(std::fs::read(&store).unwrap(), before);
 }

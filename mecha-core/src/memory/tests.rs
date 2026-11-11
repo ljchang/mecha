@@ -109,34 +109,41 @@ fn opener_refuses_unrelated_existing_databases_without_mutating_them() {
     assert!(Memory::create(&home.join("bad.memory-prototype.sqlite"), "test").is_err());
 }
 
-/// The one place under a mecha home a store may live is `memory/store`; every
-/// other directory beneath `.mecha` — and any path through `.mecha-graph` —
-/// is still refused.
+/// A directory under a mecha home holds a store only for an encrypted access
+/// admitted to exactly that directory. The path's spelling admits nothing:
+/// the plaintext fixture constructors and an unadmitted key are both refused
+/// in the very directory the admitted one opens.
 #[test]
-fn a_mecha_home_holds_a_store_only_in_its_memory_store_directory() {
+fn a_mecha_home_holds_a_store_only_for_an_access_admitted_to_that_directory() {
     let f = Fixture::new();
     let home = f.dir.join(".mecha");
     let store = home.join("memory").join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    assert!(Memory::create(&store.join("agent.memory-prototype.sqlite"), "test").is_ok());
-    for refused in [
-        home.join("memory"),
-        home.join("memory").join("store").join("deeper"),
-        home.join("sessions").join("memory").join("store"),
-        f.dir
-            .join(".mecha-graph")
-            .join(".mecha")
-            .join("memory")
-            .join("store"),
-        home.join(".mecha").join("memory").join("store"),
-    ] {
-        std::fs::create_dir_all(&refused).unwrap();
-        assert!(
-            Memory::create(&refused.join("bad.memory-prototype.sqlite"), "test").is_err(),
-            "{} must not hold a store",
-            refused.display()
-        );
+    let elsewhere = home.join("sessions");
+    let keys = f.dir.join("keys");
+    for dir in [&store, &elsewhere, &keys] {
+        std::fs::create_dir_all(dir).unwrap();
     }
+    std::fs::set_permissions(&keys, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let policy = KeyFilePolicy::new(std::slice::from_ref(&store)).unwrap();
+    let key = StorageAccess::generate_key_file(&keys.join("k.key"), &policy).unwrap();
+    let db = store.join("agent.memory-prototype.sqlite");
+
+    assert!(Memory::create(&db, "test").is_err());
+    assert!(StorageAccess::plaintext_fixture()
+        .admitting_home_store(&store)
+        .is_err());
+    assert!(Memory::create_supported_situated_with_storage(&db, "test", key.clone()).is_err());
+    let other = key.clone().admitting_home_store(&elsewhere).unwrap();
+    assert!(Memory::create_supported_situated_with_storage(&db, "test", other).is_err());
+    assert!(!db.exists());
+
+    let admitted = key.clone().admitting_home_store(&store).unwrap();
+    Memory::create_supported_situated_with_storage(&db, "test", admitted.clone()).unwrap();
+    Memory::open_with_storage(&db, admitted).unwrap();
+    // The store exists and the key is right; the opener still has to be the
+    // admitted one.
+    assert!(Memory::open_with_storage(&db, key.clone()).is_err());
+    assert!(Memory::open_read_only_with_storage(&db, key).is_err());
 }
 
 #[test]
