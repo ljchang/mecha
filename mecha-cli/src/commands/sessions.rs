@@ -535,7 +535,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 return Ok(());
             }
 
-            let (meta, convo) = Session::load(&path)?;
+            // Inspection keeps strict parsing without authorizing continuation.
+            let transcript = Session::read(&path)?;
+            let (meta, convo) = (transcript.meta, transcript.convo);
             println!(
                 "{} · {} ({}) · {}\n",
                 meta.id,

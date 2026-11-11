@@ -696,6 +696,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Session taint readers agree after an explicit goal-context clear, preventing
+  stale clean checkpoints from covering new untrusted messages. A new suffix
+  without a checkpoint remains unknown.
+- `sessions show` can inspect memory-attached transcripts without attempting to
+  resume them. Strict parsing and ordinary execution restrictions remain intact.
+
 - `questions answer` and `tasks work --resume` explicitly refuse versioned
   dynamic-goal sessions at their resume boundaries, preserving pending questions
   and native history instead of failing later with an unusable flag suggestion.

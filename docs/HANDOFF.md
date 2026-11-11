@@ -46,6 +46,9 @@ refuse marked transcripts; historical Stop/Error replay uses recorded answers,
 and Live replay refuses before router/provider setup. Context-only observations do not manufacture confirmed
 goals, and task success stays NotEvaluated.
 
+Read-only `sessions show` uses strict transcript parsing without the execution
+resume gate, so memory-attached history remains inspectable in default builds.
+
 Live dynamic-goal provider-pause continuation remains unsupported and now
 refuses explicitly before another request or tool dispatch. Request-only goal
 evidence cannot be reconstructed as an unchanged server continuation merely by
@@ -140,6 +143,10 @@ transcripts or recovery sidecars. The user-facing command is in
    reconciliation needs an explicit durable append boundary before marking its
    receipt complete. Use a concrete controller; no generic store framework or
    separate step-ID system is required for the first adapter.
+   Settle that native audit boundary first, including file creation durability.
+   Bind receipts to ordered feedback contributions: the agent combines feedback
+   from a batch onto its final result, so multiple todo calls cannot be treated
+   as one receipt per message. Only then wire the explicit CLI profile.
    A DB commit followed by failed JSONL append must recover without rerunning the
    operation; native JSONL is audit/replay evidence, not the task authority.
    `Message.planning` is currently refused by both recorders, so allowlisting todo

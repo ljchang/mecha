@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Decode the discriminator even when the payload is truncated. The visitor
-/// retains a recognized tag before a later parse error; no raw substring can
+/// Retain a fully decoded discriminator when later payload parsing fails.
+/// A torn discriminator itself is not recognized. No raw substring can
 /// mistake quoted content for authority or miss JSON Unicode escapes.
 fn malformed_dynamic_record(line: &str) -> bool {
     use serde::de::{IgnoredAny, MapAccess, Visitor};
@@ -3335,8 +3335,8 @@ pub type Header = (SessionMeta, PathBuf, bool);
 #[derive(Debug, Clone, Default)]
 pub struct TaintTimeline {
     /// (messages recorded before this checkpoint, taint merged up to it).
-    /// Merged, not raw: taint only grows, so each entry is the union of every
-    /// checkpoint at or before it.
+    /// Merged, not raw: within a conversation taint only grows, so each entry
+    /// is the union of checkpoints since the last explicit history clear.
     checkpoints: Vec<(usize, Taint)>,
 }
 
@@ -3348,6 +3348,14 @@ impl TaintTimeline {
         for record in records {
             match record {
                 Record::Message(_) => messages += 1,
+                // Unlike a rewrite, an explicit clear discards the entire
+                // conversation. Match Session::parse: old positions and taint
+                // cannot cover the new history, whose indices restart at zero.
+                Record::GoalContextClear => {
+                    messages = 0;
+                    merged = Taint::default();
+                    checkpoints.clear();
+                }
                 // The list was replaced, so every position recorded before it
                 // is a claim about a list that no longer exists — drop them.
                 // Not clamp: clamping several stale checkpoints onto the new
@@ -4142,6 +4150,80 @@ mod tests {
             );
             assert!(covering.private, "the dropped checkpoint's taint was lost");
         }
+    }
+
+    fn assert_goal_context_clear_taint_readers(before: Taint, after: Option<Taint>) {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-clear-taint")).unwrap();
+        let mut records: Vec<Record> = (0..3)
+            .map(|_| Record::Message(Message::user("Discarded conversation.")))
+            .collect();
+        records.push(Record::Taint(before));
+        records.push(Record::GoalContextClear);
+        let current = vec![
+            Message::user("Inspect the new page."),
+            Message::assistant(vec![Block::text("Synthetic page-derived reply.")]),
+        ];
+        records.extend(current.iter().cloned().map(Record::Message));
+        if let Some(taint) = after {
+            records.push(Record::Taint(taint));
+            // Within the new conversation a later clean checkpoint still
+            // cannot erase the untrusted provenance that already arrived.
+            records.push(Record::Taint(Taint::default()));
+        }
+        for record in &records {
+            session.append(record).unwrap();
+        }
+        let parsed = Session::read(&session.path).unwrap();
+        let public = Session::taint_timeline(&session.path).unwrap();
+        let direct = TaintTimeline::from_records(records);
+        assert_eq!(parsed.convo.messages, current);
+        assert_eq!(parsed.convo.taint, after.unwrap_or_default());
+        for index in 0..=current.len() {
+            let expected = if index < current.len() { after } else { None };
+            assert_eq!(parsed.taint_timeline.covering(index), expected);
+            assert_eq!(
+                public.covering(index),
+                expected,
+                "public timeline diverged after clear at message {index}"
+            );
+            assert_eq!(
+                direct.covering(index),
+                expected,
+                "record timeline diverged after clear at message {index}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn goal_context_clear_taint_does_not_let_an_old_clean_checkpoint_cover_new_untrusted_data() {
+        assert_goal_context_clear_taint_readers(
+            Taint {
+                private: true,
+                untrusted: false,
+            },
+            Some(Taint {
+                private: false,
+                untrusted: true,
+            }),
+        );
+    }
+
+    #[test]
+    fn goal_context_clear_taint_torn_new_history_is_unknown() {
+        assert_goal_context_clear_taint_readers(Taint::default(), None);
+    }
+
+    #[test]
+    fn goal_context_clear_taint_discards_only_the_removed_conversations_taint() {
+        assert_goal_context_clear_taint_readers(
+            Taint {
+                private: true,
+                untrusted: true,
+            },
+            Some(Taint::default()),
+        );
     }
 
     #[test]

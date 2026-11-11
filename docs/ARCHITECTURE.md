@@ -9745,6 +9745,18 @@ a tool-less final answer is not an owner charter edit. Record the actual request
 tool surface separately. Clear preserves audit history and its total budgets;
 limit recovery requires a fresh session, not another clear.
 
+**Every taint reader must follow the same conversation boundary.** An explicit
+`GoalContextClear` discards the active messages, cumulative taint and positional
+checkpoints in both `Session::parse` and `TaintTimeline::from_records`. Keeping
+old checkpoints can classify a new untrusted message as clean. A rewrite is
+different: it retains conversation taint. A new suffix without a recorded taint
+checkpoint remains unknown, never implicitly clean.
+
+**Inspection is not execution.** Read-only session display uses the strict
+`Session::read` parser, including feature-independent memory markers. Ordinary
+`Session::load` keeps its memory-resume refusal; applying that execution gate to
+display prevents the owner from inspecting the very transcript named in an error.
+
 **A provider pause is not a new owner turn.** Live dynamic-goal execution refuses
 the raw PauseTurn envelope before empty-response nudges or tool dispatch.
 `run_in` refuses assistant-tail live entry before any host note can create an

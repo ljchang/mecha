@@ -14,6 +14,31 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Session inspection and clear-boundary taint parity (2026-11-10)
+
+Review found the secondary public taint reader retaining positions and clean
+checkpoints from before `GoalContextClear`. The strict session parser already
+reset these correctly. `TaintTimeline::from_records` now resets its message count,
+cumulative taint and checkpoints at that same explicit boundary. Rewrites and
+ordinary turns still preserve cumulative taint. Three reader-parity regressions
+failed before the fix and passed afterward: new untrusted data, an uncheckpointed
+suffix that must remain unknown, and new clean history after discarded tainted
+history. Four existing rewrite/taint controls also passed. The discriminator
+comment now accurately describes fully decoded tags, without changing parsing.
+
+Pretty `sessions show` also used the ordinary execution loader and therefore
+refused memory-attached transcripts with irrelevant resume advice. It now uses
+strict `Session::read` for inspection. A default-feature actual CLI regression
+failed before the change; all three tests then passed, covering all three marker
+versions, byte-preserving raw output, ordinary chat-resume refusal and strict
+malformed-history refusal. This changes no execution authority or output format.
+
+Independent scoped source review found no concrete correctness or security
+regression. Full local workspace suites passed 6,508 default tests (25 ignored)
+and 7,379 memory-enabled tests (30 ignored), with zero failures. Strict
+all-target/all-feature Clippy and formatting passed on frozen runtime source.
+No model or production runtime was invoked by this qualification.
+
 ### Explicit delegated-resume boundaries (2026-11-10)
 
 PR review found `questions answer` and `tasks work --resume` loading versioned
