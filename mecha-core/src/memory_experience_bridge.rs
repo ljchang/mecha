@@ -625,6 +625,13 @@ fn safe<T>(result: Result<T>) -> Result<T> {
 // closes both leaf and ancestor symlink replacement races. These are host paths,
 // never tool paths (which belong to ToolCtx::resolve).
 pub(crate) fn open_nofollow(path: &Path, directory: bool) -> std::io::Result<File> {
+    open_nofollow_mode(path, directory, false)
+}
+/// Open an existing native source for authenticated read/append, never create.
+pub(crate) fn open_append_nofollow(path: &Path) -> std::io::Result<File> {
+    open_nofollow_mode(path, false, true)
+}
+fn open_nofollow_mode(path: &Path, directory: bool, append: bool) -> std::io::Result<File> {
     use std::{
         ffi::CString,
         os::fd::{AsRawFd, FromRawFd},
@@ -641,8 +648,11 @@ pub(crate) fn open_nofollow(path: &Path, directory: bool) -> std::io::Result<Fil
         use std::os::unix::ffi::OsStrExt;
         let name = CString::new(name.as_bytes())
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        let flags = libc::O_RDONLY
-            | libc::O_CLOEXEC
+        let flags = if append && i + 1 == parts.len() {
+            libc::O_RDWR | libc::O_APPEND
+        } else {
+            libc::O_RDONLY
+        } | libc::O_CLOEXEC
             | libc::O_NOFOLLOW
             | libc::O_NONBLOCK
             | if i + 1 < parts.len() || directory {

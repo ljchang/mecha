@@ -112,6 +112,7 @@ pub enum Record {
     Concept(super::concept::Concept),
     Interpretation(super::interpretation::Interpretation),
     Task(super::task::TaskRevision),
+    Plan(super::plan::PlanRevision),
 }
 
 #[derive(Clone, Debug)]

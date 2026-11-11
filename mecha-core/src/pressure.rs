@@ -587,6 +587,7 @@ mod tests {
     fn msg(text: &str) -> Message {
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -990,6 +991,7 @@ mod tests {
         let text = vec![msg("hello")];
         let with_image = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -1014,6 +1016,7 @@ mod tests {
     fn every_other_block_kind_counts_toward_the_size() {
         let m = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::Assistant,

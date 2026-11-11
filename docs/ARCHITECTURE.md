@@ -13099,23 +13099,45 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   searches and context packets exclude Task dependency closures: domain/scopes
   alone do not prove that binding, and a relation consulting a Task must not
   reopen access indirectly. `TaskRef` is data, not a capability. The current API
-  is for owner-host operations; a later model plan/progress adapter must preserve
-  authorship instead of rewriting owner intent or claiming verified success.
+  preserves owner-host authorship; the separate `memory::plan` adapter records
+  model progress without rewriting owner intent or claiming verified success.
   Closed/Cancelled remain SQL-active revisions with terminal payload status, so
   closure stays readable without permitting another content update.
 - **Task retries acknowledge commits before testing stale expected heads.**
   The IMMEDIATE transaction checks the host operation key and exact payload
   before CAS, reauthorizes an existing result and returns its original receipt.
   A conflicting request or forgotten operation refuses. The receipt proves only
-  a database commit; there is no native append or execution claim. A later tool
-  adapter must reconcile pending native audit writes without repeating a saved
+  a database commit; there is no native append or execution claim. Task-chat plan
+  operations separately reconcile pending native audit without repeating a saved
   operation. Forgetting scrubs receipt content through the same closure purge
   and retains opaque tombstones. Task outcomes must not create a dependency
   cycle back into their own Task object.
+- **A durable todo publishes all effects together.** `tool::todo_memory` stages
+  tracker state, declarations, counters, goal deltas, feedback and exact echo
+  before committing. Publishing only the cloned tracker leaves other shared
+  state changed after a rejected write. The task profile dispatches tools in
+  authored order and binds each successful todo to a host turn/ordinal plus its
+  exact feedback range; provider IDs alone cannot identify occurrences across
+  turns. A dropped item's declaration stays intact, and completing it after
+  restart cannot substitute a different check.
+- **Recovery verifies bytes; it never grants execution authority.** The private
+  live Plan permit is revoked on finish/drop. `BoundNativeSession` pins source
+  identity and exact prefix; final bytes are fingerprinted durably before append,
+  synced and checked against the complete SQL receipt set before capture seals.
+  `chat::task_audit` uses separate verified evidence to reconcile pending or
+  already-audited receipts without minting a live permit. Zero-todo turns require
+  the same final fingerprint. Missing or ambiguous bytes remain blocked. Native
+  task-start reservation precedes Task creation, so interrupted attachment cannot
+  later masquerade as an ordinary unmarked conversation.
+- **Operational plans are not generic episodic originals.** V4 task recording
+  validates exact native todo input/result/feedback against the typed store before
+  omitting those fields from generic capture. Ordinary tool source pointers retain
+  their absolute positions. Independent prose and search invocations remain
+  ordinary evidence; task forgetting does not claim to erase native JSONL.
 - **A restored task snapshot is historical, not a current task authority.**
   Keyed v8-to-v9 migration is explicit; ordinary open never upgrades. Backup
   preserves the validated source schema version and complete inventory. Restore
-  refuses mixed versions and requires a live v9 deletion authority, then marks
+  refuses mixed versions and requires matching live deletion authority, then marks
   its output historical. Typed task bindings/operations refuse that copy. This
   is a guard on explicit restore, not detection of arbitrary owner-level byte
   replacement. Existing v8 recovery semantics and serialized records remain.

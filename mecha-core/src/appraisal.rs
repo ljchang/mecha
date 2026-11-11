@@ -4329,6 +4329,7 @@ mod tests {
             }]),
             crate::message::Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: crate::message::Role::User,
@@ -4384,6 +4385,7 @@ mod tests {
             }]),
             crate::message::Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: crate::message::Role::User,

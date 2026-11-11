@@ -496,7 +496,7 @@ fn knowledge_bundle(
             }
             Record::Entity { .. } => {}
             Record::Concept(_) => {}
-            Record::Interpretation(_) | Record::Task(_) => return Ok(None),
+            Record::Interpretation(_) | Record::Task(_) | Record::Plan(_) => return Ok(None),
         }
         bundle.push(Hit {
             required_scopes: required_scopes(conn, &input.revision)?,

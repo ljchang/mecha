@@ -9,11 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental encrypted CLI task chat persists versioned todo plans and check
+  declarations in Mecha memory, with explicit `enable-planning` migration,
+  `--memory-task` creation and `--memory-task-resume` restoration. Native audit
+  reconciliation and storage-only repair distinguish committed plans from
+  completed recordings. The local-only profile preserves checks as Skipped;
+  web/task-board migration and executable verification remain separate work.
+
 - Experimental memory has host-only, session-bound task records with versioned
   updates, conflict checks, exact retry receipts and forgetting. Explicit keyed
   migration enables schema v9; encrypted backups retain their source schema,
   and restored historical task copies cannot authorize live task operations.
-  Todo/planning tools and existing task-board consumers are not yet connected.
+  Existing task-board consumers remain separate from the CLI task-chat adapter.
 
 - Experimental authenticated web chat can opt into encrypted episodic memory
   through an explicitly configured `serve --episodic-memory` profile and the

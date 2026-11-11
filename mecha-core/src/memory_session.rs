@@ -4,6 +4,7 @@ mod authority;
 pub mod chat;
 mod inline_notes;
 pub mod learning;
+pub(crate) mod native_writer;
 mod recall;
 mod recording;
 pub mod surface;
@@ -83,6 +84,8 @@ struct RunState {
     next: usize,
     tool_created: bool,
     sealed: bool,
+    task_started: bool,
+    task_live: Option<std::sync::Weak<chat::task_plan::LivePlanTurn>>,
 }
 pub struct SessionMemoryRun {
     id: String,

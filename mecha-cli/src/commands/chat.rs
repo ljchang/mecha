@@ -34,12 +34,22 @@ pub struct Args {
         conflicts_with = "no_mcp"
     )]
     pub memory_graph_server: Option<String>,
+    /// Create one durable Task from this strict owner-authored JSON file.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, value_name = "TASK_JSON", requires_all = ["episodic_memory", "dynamic_goals"], conflicts_with_all = ["resume", "memory_task_resume", "memory_graph_server"])]
+    pub memory_task: Option<std::path::PathBuf>,
+    /// Resume this session's exact durable Task and Plan from encrypted storage.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["episodic_memory", "dynamic_goals", "resume"], conflicts_with_all = ["memory_task", "memory_graph_server"])]
+    pub memory_task_resume: bool,
 }
 
 #[cfg(feature = "memory-prototype")]
 pub(crate) struct MemoryPreparation {
     state: MemoryState,
     graph: Option<PreparedMemoryGraph>,
+    task_draft: Option<mecha_core::memory::TaskDraft>,
+    task_conversation: Option<(Session, Conversation)>,
 }
 #[cfg(feature = "memory-prototype")]
 enum MemoryState {
@@ -72,19 +82,46 @@ pub(crate) async fn preflight_memory(
         global,
         path,
         args.memory_graph_server.as_deref(),
+        args.memory_task.is_some() || args.memory_task_resume,
     )?;
+    let task_draft = args
+        .memory_task
+        .as_ref()
+        .map(|path| {
+            // Match the canonical effective workspace used by the profile.
+            let config = mecha_core::config::Config::load_global()?;
+            let workspace = global
+                .workspace
+                .as_ref()
+                .or(config.tools.workspace.as_ref())
+                .cloned()
+                .unwrap_or(std::env::current_dir()?);
+            mecha_core::memory_session::SessionMemory::load_task_draft(
+                &std::path::absolute(path)?,
+                &workspace.canonicalize()?,
+            )
+        })
+        .transpose()?;
+    let mut task_conversation = None;
     let state = if let Some(id) = &args.resume {
         let path = Session::find(&Session::default_dir()?, id)?;
         let t = Session::read(&path)?;
         let session = Session { meta: t.meta, path };
         let mode = mecha_core::memory_session::chat::ChatAttachMode::Resume;
-        let chat = if profile.graph.is_some() {
+        let chat = if args.memory_task_resume {
+            profile
+                .memory
+                .attach_task_chat(&session, None, &global.tools)?
+        } else if profile.graph.is_some() {
             profile
                 .memory
                 .attach_chat_with_graph(&session, mode, None)?
         } else {
             profile.memory.attach_chat(&session, mode)?
         };
+        if args.memory_task_resume {
+            task_conversation = Some(chat.task_conversation()?);
+        }
         MemoryState::Resumed(Box::new(chat))
     } else {
         MemoryState::Fresh(profile.memory)
@@ -145,7 +182,12 @@ pub(crate) async fn preflight_memory(
     } else {
         None
     };
-    Ok(Some(MemoryPreparation { state, graph }))
+    Ok(Some(MemoryPreparation {
+        state,
+        graph,
+        task_draft,
+        task_conversation,
+    }))
 }
 
 #[cfg(feature = "memory-prototype")]
@@ -219,9 +261,20 @@ pub async fn execute(
         "--dynamic-goals requires a local chat terminal"
     );
     #[cfg(feature = "memory-prototype")]
-    let (memory_state, prepared_graph) = match memory_preparation {
-        Some(memory) => (Some(memory.state), memory.graph),
-        None => (None, None),
+    let (memory_state, prepared_graph, task_draft, mut task_conversation) = match memory_preparation
+    {
+        Some(memory) => (
+            Some(memory.state),
+            memory.graph,
+            memory.task_draft,
+            memory.task_conversation,
+        ),
+        None => (None, None, None, None),
+    };
+    #[cfg(feature = "memory-prototype")]
+    let carried_todo = match &memory_state {
+        Some(MemoryState::Resumed(chat)) if chat.is_task_chat() => Some(chat.task_todo()?),
+        _ => None,
     };
     #[cfg(feature = "memory-prototype")]
     let (mut prepared, graph_surface) = match prepared_graph {
@@ -229,7 +282,10 @@ pub async fn execute(
             setup::finish_prepared_tools(*graph.tools, &opts).await?,
             Some(graph.surface),
         ),
-        None => (setup::prepare(&opts, interactive).await?, None),
+        None => (
+            setup::prepare_carrying(&opts, interactive, carried_todo).await?,
+            None,
+        ),
     };
     #[cfg(not(feature = "memory-prototype"))]
     let mut prepared = setup::prepare(&opts, interactive).await?;
@@ -250,7 +306,19 @@ pub async fn execute(
     #[cfg(not(feature = "memory-prototype"))]
     let memory_enabled = false;
 
-    if let Some(id) = &args.resume {
+    #[cfg(feature = "memory-prototype")]
+    if let Some((saved, prior)) = task_conversation.take() {
+        println!(
+            "resumed {} ({} messages)",
+            saved.meta.id,
+            prior.messages.len()
+        );
+        convo = prior;
+        session = Some(saved);
+    }
+    if session.is_some() {
+        // Authenticated task resume was carried from preflight under the same lease.
+    } else if let Some(id) = &args.resume {
         let path = Session::find(&session_dir, id)?;
         // **The other door onto one transcript.** A delegated run is a
         // detached child, so nothing in *this* process can see that its
@@ -314,7 +382,13 @@ pub async fn execute(
     if let Some(memory) = fresh_memory.take() {
         let session = session.as_ref().expect("recording required");
         let mode = mecha_core::memory_session::chat::ChatAttachMode::Create;
-        chat_memory = Some(if let Some(surface) = &graph_surface {
+        chat_memory = Some(if let Some(draft) = task_draft {
+            eprintln!(
+                "mecha: task startup session {} (retry-task-start uses this identity)",
+                session.meta.id
+            );
+            memory.attach_task_chat(session, Some(draft), &opts.tools)?
+        } else if let Some(surface) = &graph_surface {
             memory.attach_chat_with_graph(session, mode, Some(surface.clone()))?
         } else {
             memory.attach_chat(session, mode)?
@@ -322,6 +396,29 @@ pub async fn execute(
     }
     #[cfg(feature = "memory-prototype")]
     if let Some(memory) = &chat_memory {
+        if memory.is_task_chat() {
+            let todo = memory.task_todo()?;
+            prepared.agent.registry_mut().insert(todo.clone());
+            prepared.todo = Some(todo.clone());
+            let registered: std::sync::Arc<dyn mecha_core::tool::Tool> = todo.clone();
+            anyhow::ensure!(
+                std::sync::Arc::ptr_eq(prepared.todo.as_ref().expect("installed todo"), &todo)
+                    && std::sync::Arc::ptr_eq(
+                        prepared
+                            .agent
+                            .registry()
+                            .get("todo")
+                            .expect("installed todo"),
+                        &registered
+                    ),
+                "task todo handle differs from registry"
+            );
+            let task = memory.task_diagnostics()?;
+            println!("task: {} ({:?})", task.value.title, task.value.status);
+            if let Some(plan) = memory.task_plan_summary()? {
+                println!("committed plan: {plan}");
+            }
+        }
         let graph_names: Vec<_> = graph_surface.as_ref().map_or_else(Vec::new, |surface| {
             surface
                 .graph_tools
@@ -343,13 +440,21 @@ pub async fn execute(
         if !memory_enabled {
             setup::register_recall(&mut prepared.agent, s);
         }
-        s.append(&Record::Config(RunConfig::of(
+        let config = RunConfig::of(
             &prepared.agent,
             &prepared.config,
             &prepared.provider_name,
             &prepared.levers_off,
             Some(&prepared.rules),
-        )))?;
+        );
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = chat_memory.as_ref().filter(|m| m.is_task_chat()) {
+            memory.task_record_config(config)?;
+        } else {
+            s.append(&Record::Config(config))?;
+        }
+        #[cfg(not(feature = "memory-prototype"))]
+        s.append(&Record::Config(config))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&s.meta.id);
@@ -480,6 +585,16 @@ pub async fn execute(
         } else {
             None
         };
+        #[cfg(feature = "memory-prototype")]
+        if chat_memory.as_ref().is_some_and(|m| m.is_task_chat()) {
+            anyhow::ensure!(
+                !convo
+                    .messages
+                    .last()
+                    .is_some_and(|m| m.role == mecha_core::message::Role::User),
+                "task cannot rewrite an incomplete owner tail"
+            );
+        }
         let recorded = if convo
             .messages
             .last()
@@ -496,6 +611,16 @@ pub async fn execute(
             let user = Message::user(input);
             convo.push(user.clone());
             if let Some(s) = &session {
+                #[cfg(feature = "memory-prototype")]
+                if let Some(memory) = chat_memory.as_ref().filter(|m| m.is_task_chat()) {
+                    memory.task_record_owner(
+                        memory_turn.as_ref().expect("turn"),
+                        owner_input.as_ref().expect("owner"),
+                    )?;
+                } else {
+                    s.append(&Record::Message(user))?;
+                }
+                #[cfg(not(feature = "memory-prototype"))]
                 s.append(&Record::Message(user))?;
             }
             convo.messages.clone()
@@ -511,8 +636,24 @@ pub async fn execute(
         );
 
         let mut cx = prepared.agent.context().as_ref().clone();
+        #[cfg(feature = "memory-prototype")]
+        let mut task_active = None;
         if let Some(owner_input) = owner_input {
-            cx = cx.with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new));
+            #[cfg(feature = "memory-prototype")]
+            if let Some(memory) = chat_memory.as_ref().filter(|m| m.is_task_chat()) {
+                let (context, active) =
+                    memory.task_context(memory_turn.as_ref().expect("turn"), owner_input, cx)?;
+                cx = context;
+                task_active = Some(active);
+            } else {
+                cx = cx
+                    .with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new));
+            }
+            #[cfg(not(feature = "memory-prototype"))]
+            {
+                cx = cx
+                    .with_goal_ingress(vec![owner_input], session.clone().map(std::sync::Arc::new));
+            }
         }
         let result =
             crate::interrupt::run_interruptible(&prepared.agent, &cx, &mut convo, Some(tx.clone()))
@@ -529,17 +670,26 @@ pub async fn execute(
                     (chat_memory.as_mut(), memory_turn.as_ref(), session.as_ref())
                 {
                     let recording = (|| -> Result<()> {
+                        if let Some(active) = task_active.take() {
+                            return memory.task_record_final(
+                                turn,
+                                active,
+                                &recorded,
+                                &convo,
+                                Some(&outcome),
+                            );
+                        }
                         s.record_run(&recorded, &convo)?;
                         s.record_outcome(&outcome)?;
                         s.append(&Record::Taint(convo.taint))?;
                         Ok(())
                     })();
-                    let report = memory.finish_turn(turn);
-                    report_memory(&report);
                     if let Err(error) = recording {
                         eprintln!("chat recording failed: {error:#}");
                         break;
                     }
+                    let report = memory.finish_turn(turn);
+                    report_memory(&report);
                     if report.status != mecha_core::memory_session::SessionMemoryStatus::Retained {
                         break;
                     }
@@ -561,6 +711,14 @@ pub async fn execute(
                 if let (Some(memory), Some(turn), Some(s)) =
                     (chat_memory.as_mut(), memory_turn.as_ref(), session.as_ref())
                 {
+                    if let Some(active) = task_active.take() {
+                        if let Err(error) =
+                            memory.task_record_final(turn, active, &recorded, &convo, None)
+                        {
+                            eprintln!("task recording failed: {error:#}");
+                        }
+                        break;
+                    }
                     if let Err(error) = s.record_run(&recorded, &convo) {
                         eprintln!("chat recording failed: {error:#}");
                     }

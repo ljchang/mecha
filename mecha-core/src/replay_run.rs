@@ -1560,9 +1560,11 @@ mod tests {
     /// until its author decides which it is (a count per file would let a
     /// writer replace a read in the same file unnoticed).
     ///
-    /// Not covered: a `read_only()` that *computes* its answer. The gate
-    /// trusts it as a real run's approver does; ROLLOUT's closed effect class
-    /// is what replaces this list and this test.
+    /// Computed answers require an explicit CONDITIONAL entry plus runtime
+    /// gate controls for each supported mode. Todo's volatile mode is a pure
+    /// read here; its durable mode reports a write and must be refused. Other
+    /// computed methods remain outside this inventory; the gate trusts them
+    /// as a real run's approver does until ROLLOUT's closed effect class lands.
     ///
     /// `PURE` entries are refused anyway when their capabilities say so:
     /// `WebSearch`/`WebOpen` for egress, `Subagent` for starting a child run,
@@ -1779,6 +1781,13 @@ mod tests {
                 PURE,
             ),
         ];
+        // The source method must still be found with this exact registered
+        // identity. These entries cannot synthesize a missing method. The
+        // todo_live_replay_* tests below check both branches against LiveGate;
+        // treating todo as an unconditional name-based writer would break
+        // volatile replay, while treating both modes as pure would allow writes.
+        const CONDITIONAL: &[(&str, &str, Option<&str>)] =
+            &[("mecha-core/src/tool/todo.rs", "TodoTool", Some("todo"))];
         const KEY: &str = "fn read_only(&self) -> bool {";
 
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -1877,14 +1886,23 @@ mod tests {
                         .map(str::trim)
                         .filter(|l| !l.is_empty() && !l.starts_with("//"))
                         .collect();
-                    if lines == ["true"] {
-                        let rel = file.strip_prefix(workspace).unwrap();
+                    let rel = file
+                        .strip_prefix(workspace)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    // Inspect computed methods only in explicitly named files;
+                    // the default trait method is not an implementation.
+                    if lines == ["true"] || CONDITIONAL.iter().any(|(f, _, _)| *f == rel) {
                         let imp = impl_start(code, at);
-                        found.insert((
-                            rel.to_string_lossy().replace('\\', "/"),
-                            implementing_type(code, imp),
-                            registered_name(code, imp),
-                        ));
+                        let ty = implementing_type(code, imp);
+                        let name = registered_name(code, imp);
+                        let conditional = CONDITIONAL
+                            .iter()
+                            .any(|(f, t, n)| *f == rel && *t == ty && *n == name.as_deref());
+                        if lines == ["true"] || conditional {
+                            found.insert((rel, ty, name));
+                        }
                     }
                     from = body_end;
                 }
@@ -1940,6 +1958,30 @@ mod tests {
             "GraphTool answers read_only() for every name it is built with; a new \
              constructor must be a read, or GraphTool must stop answering read-only"
         );
+    }
+
+    /// An unconditional name-based todo refusal would regress the legacy mode.
+    #[test]
+    fn todo_live_replay_allows_volatile_bookkeeping() {
+        let todo = crate::tool::todo::TodoTool::new();
+        assert!(todo.read_only());
+        assert_eq!(
+            LiveGate::reads_only().refuses(&todo, &json!({"items": []})),
+            None
+        );
+    }
+
+    /// Returning true for the durable branch would let replay change the store.
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn todo_live_replay_refuses_durable_store_writes() -> Result<()> {
+        let fixture = crate::memory_session::chat::task_plan::tests::Fixture::new()?;
+        assert!(!fixture.tool.read_only());
+        assert_eq!(
+            LiveGate::reads_only().refuses(fixture.tool.as_ref(), &json!({"items": []})),
+            Some("it writes".into())
+        );
+        Ok(())
     }
 
     /// Review of #713: a live replay without a gate is refused where it is
@@ -2928,6 +2970,7 @@ decision = "prompt"
                 Some("shot.png".into()),
             )],
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
         }];

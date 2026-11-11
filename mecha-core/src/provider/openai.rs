@@ -1845,6 +1845,7 @@ mod tests {
     fn an_image_rides_as_a_parts_array_only_when_the_model_can_see() {
         let msg = Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,

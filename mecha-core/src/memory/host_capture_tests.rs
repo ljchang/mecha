@@ -1369,7 +1369,7 @@ fn native_context_prepares_typed_metadata_without_rewriting_source_bytes() {
 
 #[test]
 fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
-    for version in [6, 7, 8, 9] {
+    for version in [6, 7, 8, 9, 10] {
         let (path, _, state) = fixture();
         std::fs::remove_file(&path).unwrap();
         let create = match version {
@@ -1380,13 +1380,18 @@ fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
         let mut db = create(&path, "test")
             .unwrap()
             .with_source_guard(Arc::new(Guard(state)));
-        if version == 9 {
+        if version >= 9 {
             db.conn
                 .execute_batch(include_str!("task_schema.sql"))
                 .unwrap();
         }
+        if version == 10 {
+            db.conn
+                .execute_batch(include_str!("plan_schema.sql"))
+                .unwrap();
+        }
         let make = |id: String| {
-            let mut capture = if matches!(version, 8 | 9) {
+            let mut capture = if matches!(version, 8..=10) {
                 rich_input()
             } else {
                 input()
@@ -1397,7 +1402,7 @@ fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
             }
             capture
         };
-        let admit = if matches!(version, 8 | 9) {
+        let admit = if matches!(version, 8..=10) {
             Memory::admit_host_capture_with_evidence
         } else {
             Memory::admit_host_capture
@@ -1411,7 +1416,7 @@ fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
             let mut capture = make(format!("recapture-{count}"));
             capture.consulted = sources[..count].to_vec();
             let result = admit(&mut db, capture, &access());
-            let accepted = count <= if matches!(version, 8 | 9) { 64 } else { 32 };
+            let accepted = count <= if matches!(version, 8..=10) { 64 } else { 32 };
             assert_eq!(
                 result.is_ok(),
                 accepted,

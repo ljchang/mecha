@@ -84,13 +84,14 @@ pub(crate) fn validate_memory_config_with_graph(
 }
 
 pub(crate) fn open_profile(global: &mut GlobalOpts, path: &Path) -> Result<SessionMemory> {
-    Ok(open_chat_profile(global, path, None)?.memory)
+    Ok(open_chat_profile(global, path, None, false)?.memory)
 }
 
 pub(crate) fn open_chat_profile(
     global: &mut GlobalOpts,
     path: &Path,
     graph_server: Option<&str>,
+    task: bool,
 ) -> Result<ChatProfilePreparation> {
     // Check the merged options before configuration or provider startup.
     anyhow::ensure!(
@@ -133,7 +134,19 @@ pub(crate) fn open_chat_profile(
         .filter(|name| !graph_names.contains(name))
         .cloned()
         .collect();
-    let memory = open_memory_at(&path, &workspace, &local_tools)?;
+    let memory = if task {
+        anyhow::ensure!(
+            graph_server.is_none(),
+            "task chat does not admit graph tools"
+        );
+        SessionMemory::validate_request_path(&path, &workspace)?;
+        let request = SessionMemory::load_request(&path)?;
+        let memory = SessionMemory::open(&request, &workspace)?;
+        memory.validate_task_surface(&local_tools, &workspace, &[])?;
+        memory
+    } else {
+        open_memory_at(&path, &workspace, &local_tools)?
+    };
     global.global_config_only = true;
     Ok(ChatProfilePreparation { memory, graph })
 }

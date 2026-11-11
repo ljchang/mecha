@@ -700,7 +700,7 @@ impl Memory {
             matches!(
                 self.conn
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-                8 | 9
+                8..=10
             ),
             "evaluated interpretation requires version 8"
         );

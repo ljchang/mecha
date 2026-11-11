@@ -4829,6 +4829,7 @@ mod tests {
             Message::assistant(vec![tool_use("t1")]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4858,6 +4859,7 @@ mod tests {
             Message::assistant(vec![tool_use("t1")]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -5554,6 +5556,7 @@ mod tests {
             // miner reads as a steer.
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -5632,6 +5635,7 @@ mod tests {
             }]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -5663,6 +5667,7 @@ mod tests {
             }]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -5720,6 +5725,7 @@ mod tests {
             }]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -6107,6 +6113,7 @@ mod tests {
         // A tool-results message carrying steering text is not a followup turn.
         let steered = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -6139,6 +6146,7 @@ mod tests {
         );
         let messages = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -6960,6 +6968,7 @@ mod tests {
             Message::assistant(vec![tool_use("t1")]),
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,

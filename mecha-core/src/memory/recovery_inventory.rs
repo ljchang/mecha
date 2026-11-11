@@ -119,9 +119,9 @@ pub(in super::super) fn integrity(conn: &Connection) -> Result<()> {
     ensure!(
         matches!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-            8 | 9
+            8..=10
         ),
-        "snapshots require schema v8 or v9"
+        "snapshots require schema v8, v9 or v10"
     );
     Ok(())
 }

@@ -699,6 +699,7 @@ pub(crate) fn fixture_session(dir: &Path, id: &str, n: u32, serves: Option<&str>
         Message::assistant(calls),
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -843,6 +844,7 @@ mod tests {
                 }]),
                 Message {
                     harness: false,
+                    plan_results: Vec::new(),
                     planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
@@ -1014,6 +1016,7 @@ mod tests {
                 Message::assistant(calls),
                 Message {
                     harness: false,
+                    plan_results: Vec::new(),
                     planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,
@@ -1138,6 +1141,7 @@ mod tests {
                 }]),
                 Message {
                     harness: false,
+                    plan_results: Vec::new(),
                     planning: None,
                     tool_provenance: Default::default(),
                     role: mecha_core::message::Role::User,

@@ -59,6 +59,7 @@ pub(super) fn purge_seeded(conn: &rusqlite::Connection) -> Result<PurgeCounts> {
         }
     }
     task::invalidate_forgotten(conn)?;
+    plan::invalidate_forgotten(conn)?;
     interpretation::invalidate_forgotten(conn)?;
     host_capture::invalidate_forgotten(conn)?;
     durable_action::invalidate_forgotten(conn)?;

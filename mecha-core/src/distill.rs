@@ -1628,6 +1628,7 @@ mod tests {
     fn msg(role: Role, text: &str) -> Message {
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role,

@@ -3907,6 +3907,7 @@ fn submit(
     } else {
         let user = Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: mecha_core::message::Role::User,

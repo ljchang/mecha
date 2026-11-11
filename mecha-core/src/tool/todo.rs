@@ -9,6 +9,10 @@
 //! It also gives the *user* something to look at during a long run, which is
 //! most of why it's worth having.
 
+#[cfg(feature = "memory-prototype")]
+#[path = "todo_memory.rs"]
+pub(crate) mod memory;
+
 use super::{CarriedState, Tool, ToolCtx, ToolOutput};
 use crate::compact::CARRIED_HEADER;
 use crate::goal::GoalRef;
@@ -233,6 +237,8 @@ pub struct Plan {
 /// indistinguishable from this one's.
 #[derive(Default)]
 pub struct TodoTool {
+    #[cfg(feature = "memory-prototype")]
+    memory: Option<memory::TodoMemory>,
     lists: Mutex<HashMap<PlanKey, Tracked>>,
 }
 
@@ -287,7 +293,7 @@ impl PlanKey {
 /// is written down, and a mark that goes missing costs one silent completion —
 /// which is the right price, because the alternative is a second source of
 /// truth about a plan whose record is already the transcript (D15).
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Tracked {
     plan: Plan,
     /// Where each started step's span began, keyed by the item's content.
@@ -493,7 +499,7 @@ impl Tracked {
         step_escalation: Option<
             &std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>,
         >,
-        step_counts: Option<&std::sync::Arc<crate::tool::StepCounts>>,
+        step_counts: Option<&crate::tool::StepCounts>,
     ) -> Vec<String> {
         let before: HashMap<&str, Status> = self
             .plan
@@ -907,6 +913,219 @@ impl Tracked {
 }
 
 impl TodoTool {
+    fn parse_plan(input: &Value) -> std::result::Result<Plan, String> {
+        let Some(raw) = input.get("items").and_then(Value::as_array) else {
+            return Err(String::from(
+                "`items` must be an array of {content, status}",
+            ));
+        };
+
+        let mut items = Vec::with_capacity(raw.len());
+        for (i, entry) in raw.iter().enumerate() {
+            let Some(content) = entry.get("content").and_then(Value::as_str) else {
+                return Err(format!("item {i} has no `content` string"));
+            };
+            // Same grammar, same rule as the predictions below: `render`
+            // writes an item on one line and `parse_section` reads line by
+            // line, so a newline in `content` re-parses its tail as further
+            // items — a forged completed step carrying a `check:` the
+            // freeze never saw. The hole predates the predictions in the
+            // carried block; every resume now reads through this grammar
+            // (found on review).
+            if forges_a_line(content) {
+                return Err(format!(
+                    "item {i}: `content` must be a single line without a harness truncation marker"
+                ));
+            }
+            // Trimmed and non-empty at the door, exactly as `parse_section`
+            // reads a step back: a blank step rendered as `[ ] ` parsed to
+            // nothing, so the echo's item count fell one short of its own
+            // header and `parse_whole_echo` refused every echo in the
+            // transcript — reverting every resume to the input, silently;
+            // and a step padded with whitespace re-keyed its freeze without
+            // the model rewording it (found on review).
+            let content = content.trim();
+            if content.is_empty() {
+                return Err(format!("item {i}: `content` must not be empty"));
+            }
+            let status = match entry.get("status").and_then(Value::as_str) {
+                Some("pending") => Status::Pending,
+                Some("in_progress") => Status::InProgress,
+                Some("completed") => Status::Completed,
+                other => {
+                    return Err(format!(
+                        "item {i} has status {other:?}; expected pending, in_progress, or completed"
+                    ))
+                }
+            };
+            // Strict on the way in, like `serves`: the model can fix a wrong
+            // type on the next call, and a silently dropped prediction
+            // leaves a plan claiming less than the model believed it said.
+            // Shape as well as type: `render` writes each prediction as one
+            // indented line and `parse_carried` reads the section line by
+            // line, so a value holding a newline splits across that boundary
+            // and its tail re-parses as plan syntax — a `check` of
+            // `make test\n[x] deploy` came back from a compaction as a
+            // completed step nobody wrote, and an `expect` ending in
+            // `\ncheck: …` came back carrying a check the step never
+            // declared, which is the field slated for execution (found on
+            // review). The model can fix a refused write on the next call.
+            let string_field = |key: &str| -> std::result::Result<Option<String>, String> {
+                match entry.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+                    Some(Value::String(s)) if forges_a_line(s) => Err(format!(
+                        "item {i}: `{key}` must be a single line without a harness truncation marker"
+                    )),
+                    Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+                    Some(_) => Err(format!("item {i}: `{key}` must be a string")),
+                }
+            };
+            let expect = string_field("expect")?;
+            let check = string_field("check")?;
+            let expect_calls = match entry.get("expect_calls") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(n) => Some(n),
+                    None => {
+                        return Err(format!(
+                            "item {i}: `expect_calls` must be a non-negative integer"
+                        ))
+                    }
+                },
+            };
+            items.push(TodoItem {
+                content: content.to_string(),
+                status,
+                expect,
+                check,
+                expect_calls,
+            });
+        }
+
+        // Strict on the way in, unlike every reader of a record: the model can
+        // fix this on the next call, and a silently dropped reference leaves a
+        // plan claiming to serve something it does not.
+        let goal = match input.get("serves") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                // Present but not a string is an error, not an absence. The
+                // object spelling — `{"kind": "task", "id": …}` — is the one a
+                // model reaches for, and dropping it silently would leave a
+                // plan claiming to serve nothing while the model believed it
+                // had said so.
+                let Some(raw) = value.as_str() else {
+                    return Err(String::from("`serves` must be a string like `task:<id>`"));
+                };
+                // An empty string is how a model spells an omitted optional
+                // field. Refusing it would throw away an otherwise-valid plan
+                // update over a field that was not being used.
+                if raw.trim().is_empty() {
+                    None
+                } else {
+                    match raw.parse::<GoalRef>() {
+                        Ok(goal) if goal.a_plan_can_name() => Some(goal),
+                        Ok(goal) => return Err(GoalRef::not_a_plans_to_name(&goal)),
+                        Err(e) => return Err(format!("`serves`: {e}")),
+                    }
+                }
+            }
+        };
+
+        Ok(Plan { goal, items })
+    }
+
+    fn result_text(
+        plan: &Plan,
+        findings: &[String],
+        context: Option<&crate::pressure::Forecast>,
+    ) -> String {
+        format!(
+            "{}{}{}{}",
+            Self::render(plan),
+            Self::progress_note(plan),
+            if findings.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{}", findings.join("\n"))
+            },
+            context.map(|f| format!("\n\n{f}")).unwrap_or_default()
+        )
+    }
+
+    fn finish_feedback(
+        tracked: &mut Tracked,
+        ctx: &ToolCtx,
+        anchor: Option<GoalRef>,
+        verified: &mut std::collections::HashSet<String>,
+        checks_available: bool,
+    ) -> (
+        crate::planning::Feedback,
+        std::collections::HashSet<String>,
+        Option<String>,
+    ) {
+        let mut steps = std::mem::take(&mut tracked.observations);
+        let mut removals = std::collections::HashSet::new();
+        for step in &mut steps {
+            step.call_id = ctx.call_id.clone();
+            removals.insert(crate::planning::verification_key(
+                step.goal.as_ref(),
+                &step.step,
+            ));
+            if !checks_available && step.verification == crate::planning::Verification::Pending {
+                step.verification = crate::planning::Verification::Skipped;
+            }
+        }
+        for step in tracked
+            .plan
+            .items
+            .iter()
+            .filter(|s| s.status != Status::Completed)
+        {
+            removals.insert(crate::planning::verification_key(
+                tracked.plan.goal.as_ref(),
+                &step.content,
+            ));
+        }
+        verified.retain(|key| !removals.contains(key));
+        let mut decision = crate::planning::Decision::assess(
+            &tracked.plan,
+            anchor,
+            ctx.goal_readings.as_deref(),
+            ctx.context.as_ref().and_then(|f| f.turns_left),
+            verified,
+            ctx.goal_guidance,
+            ctx.goal_commitments.as_deref(),
+        );
+        if let Some(bound) = &ctx.appraisal_evidence {
+            decision.with_owner_evidence(bound);
+        }
+        let guidance = decision
+            .applied
+            .then(|| decision.action.guidance().to_string());
+        (
+            crate::planning::Feedback {
+                steps,
+                decisions: vec![decision],
+            },
+            removals,
+            guidance,
+        )
+    }
+
+    fn progress_note(plan: &Plan) -> String {
+        let in_progress = plan
+            .items
+            .iter()
+            .filter(|i| i.status == Status::InProgress)
+            .count();
+        if in_progress > 1 {
+            format!("\n(note: {in_progress} items are in_progress — finish one before starting another)")
+        } else {
+            String::new()
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -1016,6 +1235,10 @@ impl TodoTool {
     /// existing, and the reason the TUI reads a trigger's last answer from the
     /// session file rather than caching it.
     pub fn rehydrate(&self, key: &PlanKey, messages: &[Message]) -> Option<usize> {
+        #[cfg(feature = "memory-prototype")]
+        if self.memory.is_some() {
+            return None;
+        }
         let plan = Self::plan_from_transcript(messages)?;
         let n = plan.items.len();
         // Freezes from every echo the transcript holds, not only the plan
@@ -1325,6 +1548,10 @@ impl TodoTool {
     /// that has not written a plan and one that never will look the same from
     /// here, and both render as no pane.
     pub fn items_in(&self, key: &PlanKey) -> Vec<TodoItem> {
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.memory {
+            return memory.plan().items;
+        }
         self.lists
             .lock()
             .unwrap()
@@ -1335,6 +1562,10 @@ impl TodoTool {
 
     /// What this run's plan serves, if it said.
     pub fn goal_in(&self, key: &PlanKey) -> Option<GoalRef> {
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.memory {
+            return memory.plan().goal;
+        }
         self.lists
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1385,6 +1616,10 @@ impl TodoTool {
     /// would have to ask this tool by name, which it never does); exposed so
     /// a caller that already holds the tool can read it.
     pub fn tampered_in(&self, key: &PlanKey) -> u32 {
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.memory {
+            return memory.tampered();
+        }
         self.lists
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1467,8 +1702,30 @@ impl Tool for TodoTool {
     }
 
     fn read_only(&self) -> bool {
-        // Touches nothing outside the agent's own head.
+        #[cfg(feature = "memory-prototype")]
+        if self.memory.is_some() {
+            return false;
+        }
         true
+    }
+
+    fn effect(&self) -> Option<super::effect::Effect> {
+        #[cfg(feature = "memory-prototype")]
+        if self.memory.is_some() {
+            return Some(super::effect::Effect::StoreWrite);
+        }
+        None
+    }
+
+    fn capabilities(&self) -> super::Capabilities {
+        #[cfg(feature = "memory-prototype")]
+        if self.memory.is_some() {
+            return super::Capabilities {
+                private_data: true,
+                ..Default::default()
+            };
+        }
+        super::Capabilities::default()
     }
 
     /// The list survives a compaction verbatim.
@@ -1485,6 +1742,14 @@ impl Tool for TodoTool {
     /// current answer and a summariser would only be a lossy path to a worse
     /// copy of it.
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.memory {
+            let plan = memory.plan();
+            return (!plan.items.is_empty()).then(|| CarriedState {
+                label: "todo".into(),
+                body: Self::render(&plan),
+            });
+        }
         let lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
         let plan = &lists.get(&PlanKey::of(ctx))?.plan;
         // An empty list is genuinely nothing to carry, and an empty section in
@@ -1522,6 +1787,10 @@ impl Tool for TodoTool {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.memory {
+            return memory.call(input, ctx);
+        }
         // Registered before validation, and unconditionally: a write this
         // tool goes on to reject below is still this tool touching its own
         // state and nothing else, so it must count as bookkeeping exactly
@@ -1533,155 +1802,17 @@ impl Tool for TodoTool {
             (own_calls_before, tracked.last_real)
         };
 
-        let Some(raw) = input.get("items").and_then(Value::as_array) else {
-            return Ok(ToolOutput::err(
-                "`items` must be an array of {content, status}",
-            ));
+        let plan = match Self::parse_plan(&input) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(ToolOutput::err(error)),
         };
-
-        let mut items = Vec::with_capacity(raw.len());
-        for (i, entry) in raw.iter().enumerate() {
-            let Some(content) = entry.get("content").and_then(Value::as_str) else {
-                return Ok(ToolOutput::err(format!("item {i} has no `content` string")));
-            };
-            // Same grammar, same rule as the predictions below: `render`
-            // writes an item on one line and `parse_section` reads line by
-            // line, so a newline in `content` re-parses its tail as further
-            // items — a forged completed step carrying a `check:` the
-            // freeze never saw. The hole predates the predictions in the
-            // carried block; every resume now reads through this grammar
-            // (found on review).
-            if forges_a_line(content) {
-                return Ok(ToolOutput::err(format!(
-                    "item {i}: `content` must be a single line without a harness truncation marker"
-                )));
-            }
-            // Trimmed and non-empty at the door, exactly as `parse_section`
-            // reads a step back: a blank step rendered as `[ ] ` parsed to
-            // nothing, so the echo's item count fell one short of its own
-            // header and `parse_whole_echo` refused every echo in the
-            // transcript — reverting every resume to the input, silently;
-            // and a step padded with whitespace re-keyed its freeze without
-            // the model rewording it (found on review).
-            let content = content.trim();
-            if content.is_empty() {
-                return Ok(ToolOutput::err(format!(
-                    "item {i}: `content` must not be empty"
-                )));
-            }
-            let status = match entry.get("status").and_then(Value::as_str) {
-                Some("pending") => Status::Pending,
-                Some("in_progress") => Status::InProgress,
-                Some("completed") => Status::Completed,
-                other => {
-                    return Ok(ToolOutput::err(format!(
-                        "item {i} has status {other:?}; expected pending, in_progress, or completed"
-                    )))
-                }
-            };
-            // Strict on the way in, like `serves`: the model can fix a wrong
-            // type on the next call, and a silently dropped prediction
-            // leaves a plan claiming less than the model believed it said.
-            // Shape as well as type: `render` writes each prediction as one
-            // indented line and `parse_carried` reads the section line by
-            // line, so a value holding a newline splits across that boundary
-            // and its tail re-parses as plan syntax — a `check` of
-            // `make test\n[x] deploy` came back from a compaction as a
-            // completed step nobody wrote, and an `expect` ending in
-            // `\ncheck: …` came back carrying a check the step never
-            // declared, which is the field slated for execution (found on
-            // review). The model can fix a refused write on the next call.
-            let string_field = |key: &str| -> std::result::Result<Option<String>, String> {
-                match entry.get(key) {
-                    None | Some(Value::Null) => Ok(None),
-                    Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
-                    Some(Value::String(s)) if forges_a_line(s) => Err(format!(
-                        "item {i}: `{key}` must be a single line without a harness truncation marker"
-                    )),
-                    Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
-                    Some(_) => Err(format!("item {i}: `{key}` must be a string")),
-                }
-            };
-            let expect = match string_field("expect") {
-                Ok(v) => v,
-                Err(e) => return Ok(ToolOutput::err(e)),
-            };
-            let check = match string_field("check") {
-                Ok(v) => v,
-                Err(e) => return Ok(ToolOutput::err(e)),
-            };
-            let expect_calls = match entry.get("expect_calls") {
-                None | Some(Value::Null) => None,
-                Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
-                    Some(n) => Some(n),
-                    None => {
-                        return Ok(ToolOutput::err(format!(
-                            "item {i}: `expect_calls` must be a non-negative integer"
-                        )))
-                    }
-                },
-            };
-            items.push(TodoItem {
-                content: content.to_string(),
-                status,
-                expect,
-                check,
-                expect_calls,
-            });
-        }
-
-        // Nudge rather than reject: two items in flight is a mild smell, not an
-        // error, and refusing the write would lose the update entirely.
-        let in_progress = items
-            .iter()
-            .filter(|i| i.status == Status::InProgress)
-            .count();
-        let mut note = String::new();
-        if in_progress > 1 {
-            note = format!(
-                "\n(note: {in_progress} items are in_progress — finish one before starting another)"
-            );
-        }
-
-        // Strict on the way in, unlike every reader of a record: the model can
-        // fix this on the next call, and a silently dropped reference leaves a
-        // plan claiming to serve something it does not.
-        let goal = match input.get("serves") {
-            None | Some(Value::Null) => None,
-            Some(value) => {
-                // Present but not a string is an error, not an absence. The
-                // object spelling — `{"kind": "task", "id": …}` — is the one a
-                // model reaches for, and dropping it silently would leave a
-                // plan claiming to serve nothing while the model believed it
-                // had said so.
-                let Some(raw) = value.as_str() else {
-                    return Ok(ToolOutput::err(
-                        "`serves` must be a string like `task:<id>`",
-                    ));
-                };
-                // An empty string is how a model spells an omitted optional
-                // field. Refusing it would throw away an otherwise-valid plan
-                // update over a field that was not being used.
-                if raw.trim().is_empty() {
-                    None
-                } else {
-                    match raw.parse::<GoalRef>() {
-                        Ok(goal) if goal.a_plan_can_name() => Some(goal),
-                        Ok(goal) => {
-                            return Ok(ToolOutput::err(GoalRef::not_a_plans_to_name(&goal)))
-                        }
-                        Err(e) => return Ok(ToolOutput::err(format!("`serves`: {e}"))),
-                    }
-                }
-            }
-        };
+        let goal = plan.goal.clone();
 
         // §17.7 item 4's sensor: every plan write is judged against the
         // goal the owner last confirmed, before the tracker reshapes it.
         if let Some(track) = &ctx.goal_track {
             track.note_plan(goal.as_ref());
         }
-        let plan = Plan { goal, items };
         // What the steps that just finished actually did, against the run's
         // own record of what it has done. The harness computes the fact; the
         // plan action it argues for — accept, revise the step, revise the
@@ -1709,7 +1840,7 @@ impl Tool for TodoTool {
                 own_calls_before,
                 last_real,
                 ctx.step_escalation.as_ref(),
-                ctx.step_counts.as_ref(),
+                ctx.step_counts.as_deref(),
             );
             if let Some(queue) = &ctx.step_checks {
                 let mut queue = queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -1747,88 +1878,26 @@ impl Tool for TodoTool {
             }
             if let Some(feedback) = &ctx.plan_feedback {
                 let mut feedback = feedback.lock().unwrap_or_else(|e| e.into_inner());
-                let mut observations = std::mem::take(&mut tracked.observations);
                 let mut verified = ctx.verified_steps.lock().unwrap_or_else(|e| e.into_inner());
-                for step in &mut observations {
-                    step.call_id = ctx.call_id.clone();
-                    verified.remove(&crate::planning::verification_key(
-                        step.goal.as_ref(),
-                        &step.step,
-                    ));
-                }
-                for step in tracked
-                    .plan
-                    .items
-                    .iter()
-                    .filter(|i| i.status != Status::Completed)
-                {
-                    verified.remove(&crate::planning::verification_key(
-                        tracked.plan.goal.as_ref(),
-                        &step.content,
-                    ));
-                }
-                if ctx.step_checks.is_none() {
-                    for step in &mut observations {
-                        if step.verification == crate::planning::Verification::Pending {
-                            step.verification = crate::planning::Verification::Skipped;
-                        }
-                    }
-                }
-                feedback.steps.extend(observations);
-                let mut decision = crate::planning::Decision::assess(
-                    &tracked.plan,
+                let (contribution, _, guidance) = Self::finish_feedback(
+                    tracked,
+                    ctx,
                     ctx.goal_track.as_ref().and_then(|g| g.anchor()),
-                    ctx.goal_readings.as_deref(),
-                    ctx.context.as_ref().and_then(|f| f.turns_left),
-                    &verified,
-                    ctx.goal_guidance,
-                    ctx.goal_commitments.as_deref(),
+                    &mut verified,
+                    ctx.step_checks.is_some(),
                 );
-                if let Some(bound) = &ctx.appraisal_evidence {
-                    decision.with_owner_evidence(bound);
-                }
-                if decision.applied {
-                    findings.push(decision.action.guidance().to_string());
-                }
-                feedback.decisions.push(decision);
+                feedback.steps.extend(contribution.steps);
+                feedback.decisions.extend(contribution.decisions);
+                findings.extend(guidance);
             } else {
                 tracked.observations.clear();
             }
-            (findings, Self::render(&tracked.plan))
+            (findings, tracked.plan.clone())
         };
-        let findings = match findings.is_empty() {
-            true => String::new(),
-            false => format!("\n\n{}", findings.join("\n")),
-        };
-        // The headroom reading, on the one result where it changes a
-        // decision. Not the turn tail and not the system prompt: the tail
-        // would leave one stale reading per turn in an append-only transcript
-        // — the distractor shape `evict_superseded_results` exists to remove —
-        // and the system prompt sits inside the cached prefix, so a per-turn
-        // value there re-pays the whole thing including the tool specs. Here
-        // it costs nothing on any turn that does not touch the plan, and the
-        // accumulation is bounded by plan revisions rather than by turns.
-        //
-        // Bounded, not absent: an earlier `todo` result is *not* generally
-        // superseded by this one. `compact::target_of` falls through to
-        // `{name}\0{input}` for a call with no `path`, so two `todo` calls are
-        // the same target only when their item lists are byte-identical — and a
-        // second `todo` call exists precisely to change the list. So a run that
-        // revises its plan ten times carries ten readings until a compaction
-        // thins them. That is the same distractor shape as the turn tail, at a
-        // far lower rate, which is the trade being made and not a case of
-        // avoiding it.
-        //
-        // Absent when the run has no compaction threshold or has not sent a
-        // request yet — a missing line is right where there is no measurement,
-        // and inventing one would put a guess in the one place every other
-        // number is measured.
-        let context = match &ctx.context {
-            Some(f) => format!("\n\n{f}"),
-            None => String::new(),
-        };
-        Ok(ToolOutput::ok(format!(
-            "{rendered}{note}{findings}{context}"
+        Ok(ToolOutput::ok(Self::result_text(
+            &rendered,
+            &findings,
+            ctx.context.as_ref(),
         )))
     }
 }
@@ -2144,6 +2213,7 @@ mod tests {
             .collect();
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::Assistant,
@@ -2158,6 +2228,7 @@ mod tests {
     fn result(id: &str, is_error: bool) -> Message {
         Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -2292,6 +2363,7 @@ mod tests {
         // sent me back to read `rebuild`.
         let head = Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -2324,6 +2396,7 @@ mod tests {
         let msgs = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4132,6 +4205,7 @@ mod tests {
         let messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4143,6 +4217,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4208,6 +4283,7 @@ mod tests {
         let messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4219,6 +4295,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4230,6 +4307,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4241,6 +4319,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4330,6 +4409,7 @@ mod tests {
         let mut messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4341,6 +4421,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4461,6 +4542,7 @@ mod tests {
         let mut messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4472,6 +4554,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4483,6 +4566,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4494,6 +4578,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4581,6 +4666,7 @@ mod tests {
         let messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4592,6 +4678,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4649,6 +4736,7 @@ mod tests {
         let messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -4656,6 +4744,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -4667,6 +4756,7 @@ mod tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,

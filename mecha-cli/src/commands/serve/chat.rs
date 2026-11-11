@@ -5720,6 +5720,7 @@ mod rollback_tests {
             }]));
         conversation.messages.push(Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -5768,6 +5769,7 @@ mod rollback_tests {
             }]));
         conversation.messages.push(Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -5989,6 +5991,7 @@ mod wire_tests {
     fn a_steer_is_read_back_as_part_of_its_turn() {
         let msg = |role, content| Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role,
@@ -6047,6 +6050,7 @@ mod wire_tests {
         let messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -6054,6 +6058,7 @@ mod wire_tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -6070,6 +6075,7 @@ mod wire_tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -6169,6 +6175,7 @@ mod wire_tests {
     fn a_spoken_turn_reads_back_as_the_owners_words() {
         let messages = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -6194,6 +6201,7 @@ mod wire_tests {
     fn a_folded_calendar_reference_is_not_shown_as_the_owners_words() {
         let messages = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -6414,6 +6422,7 @@ mod wire_tests {
         let messages = vec![
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::Assistant,
@@ -6425,6 +6434,7 @@ mod wire_tests {
             },
             Message {
                 harness: false,
+                plan_results: Vec::new(),
                 planning: None,
                 tool_provenance: Default::default(),
                 role: Role::User,
@@ -6490,6 +6500,7 @@ mod wire_tests {
     fn a_tool_result_only_message_adds_no_empty_user_entry() {
         let messages = vec![Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,

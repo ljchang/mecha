@@ -15,6 +15,8 @@ pub const CHAT_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v1";
 pub const CHAT_RECORDER_VERSION: &str = "ordinary-chat-recorder-v1";
 pub const CHAT_WEB_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v2";
 pub const CHAT_WEB_RECORDER_VERSION: &str = "ordinary-chat-recorder-v2";
+pub const CHAT_TASK_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v3";
+pub const CHAT_TASK_RECORDER_VERSION: &str = "ordinary-chat-recorder-v3";
 
 /// The currently supported authenticated chat ingress, independent of runtime types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,7 +178,10 @@ impl ChatObservationContext {
             identity.check_version.as_str(),
             identity.evaluator_version.as_str(),
         ) {
-            (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION) => ChatOwnerSource::CliChat,
+            (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION)
+            | (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION) => {
+                ChatOwnerSource::CliChat
+            }
             (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION) => {
                 ChatOwnerSource::AuthenticatedWeb
             }

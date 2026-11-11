@@ -68,6 +68,127 @@ fn extension_of(
         .then(|| (index, is.content[kept..].to_vec()))
 }
 
+/// Canonical native bytes, including the single record terminator.
+pub(crate) fn encode_record_line(record: &Record) -> Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(record)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Construct the outcome once, including its recording timestamp.
+pub(crate) fn outcome_record(outcome: &crate::agent::RunOutcome) -> Record {
+    let mut row = RunStats::from(outcome);
+    row.ended_at = Some(Utc::now());
+    Record::Outcome(row)
+}
+
+/// Shared native run order. The sink owns append durability and the proof that
+/// an Extend still addresses the exact currently recorded logical history.
+/// Legacy program/blob persistence remains with Session::record_run.
+pub(crate) fn record_run_messages_and_metadata<S>(
+    sink: &mut S,
+    before: &[Message],
+    convo: &Conversation,
+    mut append: impl FnMut(&mut S, &Record) -> Result<()>,
+    mut prove_before: impl FnMut(&mut S, &[Message]) -> Result<bool>,
+) -> Result<()> {
+    let mut prev: &[Message] = before;
+    for state in &convo.rewritten {
+        record_transition(sink, prev, state, &mut append, &mut prove_before)?;
+        prev = state;
+    }
+    record_transition(sink, prev, &convo.messages, &mut append, &mut prove_before)?;
+    // The harness's notes the run sent — the calendar reference
+    // (`Agent::now_notes`), which is no longer in the messages: what the
+    // run read, kept beside what it said. After the messages, which
+    // `Session::read` allows: a notes line pushes no taint checkpoint.
+    if !convo.harness_notes.is_empty() {
+        append(
+            sink,
+            &Record::Notes {
+                notes: convo.harness_notes.clone(),
+            },
+        )?;
+    }
+    // Unconditionally, like the anchor below: an empty set is how a
+    // `/clear` reaches the file.
+    append(
+        sink,
+        &Record::Grants {
+            grants: convo.grants.clone(),
+        },
+    )?;
+    append(
+        sink,
+        &Record::GoalAnchor {
+            goal: convo.goal_anchor.clone(),
+        },
+    )?;
+    Ok(())
+}
+
+/// One before→after step. When the run only appended, the new tail is
+/// appended here too. When it rewrote what was already recorded —
+/// compaction, eviction, thinning, all of which edit earlier messages in
+/// place — a [`Record::Rewrite`] carries the whole current list instead,
+/// because slicing a rewritten transcript records a lie: the old head
+/// stays in the file, the rebuilt one (summary included) never lands.
+///
+/// Comparison, not a flag from the loop: any mutation the loop grows
+/// later is caught by construction, and the clone this costs is one more
+/// beside the one the loop already pays per request.
+///
+/// **A fold into the last recorded message is an extension, not a
+/// rewrite** (3a-3): when everything but that message is unchanged and it
+/// only gained blocks at its end — the calendar reference or the
+/// situation brief folded into the owner's turn the door already wrote —
+/// a [`Record::Extend`] carries those blocks, followed by the new tail.
+/// Anything else that touched recorded messages is still a rewrite.
+///
+/// **An extension is written only when the file provably ends on
+/// `before`** (review of #316). A rewrite carries the whole list, so it
+/// repaired a caller whose `before` was not what the file held; an
+/// extension carries an index, and against a file that does not end
+/// where `before` does it would be skipped on load and the head lost —
+/// which is what the Slack door, whose per-run session held none of the
+/// thread, would have recorded. So the file is read back first (once per
+/// fold, which is rare) and anything short of `before` exactly falls
+/// back to the rewrite.
+fn record_transition<S>(
+    sink: &mut S,
+    before: &[Message],
+    after: &[Message],
+    append: &mut impl FnMut(&mut S, &Record) -> Result<()>,
+    prove_before: &mut impl FnMut(&mut S, &[Message]) -> Result<bool>,
+) -> Result<()> {
+    let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
+    if !appended_only {
+        if let Some((index, blocks)) = extension_of(before, after) {
+            if prove_before(sink, before)? {
+                append(sink, &Record::Extend { index, blocks })?;
+            } else {
+                return append(
+                    sink,
+                    &Record::Rewrite {
+                        messages: after.to_vec(),
+                    },
+                );
+            }
+        } else {
+            return append(
+                sink,
+                &Record::Rewrite {
+                    messages: after.to_vec(),
+                },
+            );
+        }
+    }
+    for message in &after[before.len()..] {
+        append(sink, &Record::Message(message.clone()))?;
+    }
+    Ok(())
+}
+
 /// A `message` record whose blocks a newer build wrote, read as far as this
 /// build can.
 ///
@@ -142,6 +263,7 @@ fn lenient_message(v: &serde_json::Value) -> Option<Message> {
         );
     }
     Some(Message {
+        plan_results: Vec::new(),
         harness: v.get("harness").and_then(|v| v.as_bool()).unwrap_or(false),
         planning: v
             .get("planning")
@@ -225,7 +347,11 @@ impl ChatMemoryMarker {
         anyhow::ensure!(
             matches!(
                 self.protocol.as_str(),
-                "ordinary-chat-memory-v1" | "ordinary-chat-memory-v2" | "ordinary-chat-memory-v3"
+                "ordinary-chat-memory-v1"
+                    | "ordinary-chat-memory-v2"
+                    | "ordinary-chat-memory-v3"
+                    | "ordinary-chat-memory-v4"
+                    | "ordinary-chat-task-start-v1"
             ) && !self.conversation_id.is_empty()
                 && self.conversation_id.len() <= 256
                 && !self.authority.is_empty()
@@ -2039,9 +2165,8 @@ impl Session {
         // atomic, not the pair: two writers on one session (a turn and the
         // titler, or a spoken direction) could interleave `{A}{B}\n\n`, and
         // both records would be lost to the parser.
-        let mut line = serde_json::to_string(record)?;
-        line.push('\n');
-        file.write_all(line.as_bytes())
+        let line = encode_record_line(record)?;
+        file.write_all(&line)
             .with_context(|| format!("writing {}", self.path.display()))?;
         Ok(())
     }
@@ -2069,29 +2194,16 @@ impl Session {
     ///
     /// [`Conversation::rewritten`]: crate::agent::Conversation
     pub fn record_run(&self, before: &[Message], convo: &Conversation) -> Result<()> {
-        let mut prev: &[Message] = before;
-        for state in &convo.rewritten {
-            self.record_transition(prev, state)?;
-            prev = state;
-        }
-        self.record_transition(prev, &convo.messages)?;
-        // The harness's notes the run sent — the calendar reference
-        // (`Agent::now_notes`), which is no longer in the messages: what the
-        // run read, kept beside what it said. After the messages, which
-        // `Session::read` allows: a notes line pushes no taint checkpoint.
-        if !convo.harness_notes.is_empty() {
-            self.append(&Record::Notes {
-                notes: convo.harness_notes.clone(),
-            })?;
-        }
-        // Unconditionally, like the anchor below: an empty set is how a
-        // `/clear` reaches the file.
-        self.append(&Record::Grants {
-            grants: convo.grants.clone(),
-        })?;
-        self.append(&Record::GoalAnchor {
-            goal: convo.goal_anchor.clone(),
-        })?;
+        let mut sink = self;
+        record_run_messages_and_metadata(
+            &mut sink,
+            before,
+            convo,
+            |session, record| session.append(record),
+            |session, before| {
+                Ok(Session::read(&session.path).is_ok_and(|t| t.convo.messages == before))
+            },
+        )?;
         self.record_programs(convo)
     }
 
@@ -2173,9 +2285,7 @@ impl Session {
     ///
     /// [`record_run`]: Session::record_run
     pub fn record_outcome(&self, outcome: &crate::agent::RunOutcome) -> Result<()> {
-        let mut row = RunStats::from(outcome);
-        row.ended_at = Some(Utc::now());
-        self.append(&Record::Outcome(row))
+        self.append(&outcome_record(outcome))
     }
 
     /// Every outcome recorded in a transcript, in order, with the model and
@@ -2295,49 +2405,6 @@ impl Session {
             }))
     }
 
-    /// One before→after step. When the run only appended, the new tail is
-    /// appended here too. When it rewrote what was already recorded —
-    /// compaction, eviction, thinning, all of which edit earlier messages in
-    /// place — a [`Record::Rewrite`] carries the whole current list instead,
-    /// because slicing a rewritten transcript records a lie: the old head
-    /// stays in the file, the rebuilt one (summary included) never lands.
-    ///
-    /// Comparison, not a flag from the loop: any mutation the loop grows
-    /// later is caught by construction, and the clone this costs is one more
-    /// beside the one the loop already pays per request.
-    ///
-    /// **A fold into the last recorded message is an extension, not a
-    /// rewrite** (3a-3): when everything but that message is unchanged and it
-    /// only gained blocks at its end — the calendar reference or the
-    /// situation brief folded into the owner's turn the door already wrote —
-    /// a [`Record::Extend`] carries those blocks, followed by the new tail.
-    /// Anything else that touched recorded messages is still a rewrite.
-    ///
-    /// **An extension is written only when the file provably ends on
-    /// `before`** (review of #316). A rewrite carries the whole list, so it
-    /// repaired a caller whose `before` was not what the file held; an
-    /// extension carries an index, and against a file that does not end
-    /// where `before` does it would be skipped on load and the head lost —
-    /// which is what the Slack door, whose per-run session held none of the
-    /// thread, would have recorded. So the file is read back first (once per
-    /// fold, which is rare) and anything short of `before` exactly falls
-    /// back to the rewrite.
-    fn record_transition(&self, before: &[Message], after: &[Message]) -> Result<()> {
-        let appended_only = after.len() >= before.len() && after[..before.len()] == *before;
-        if appended_only {
-            self.append_messages(&after[before.len()..])
-        } else if let Some((index, blocks)) = extension_of(before, after)
-            .filter(|_| Session::read(&self.path).is_ok_and(|t| t.convo.messages == before))
-        {
-            self.append(&Record::Extend { index, blocks })?;
-            self.append_messages(&after[before.len()..])
-        } else {
-            self.append(&Record::Rewrite {
-                messages: after.to_vec(),
-            })
-        }
-    }
-
     /// Read a transcript back, taint included.
     ///
     /// Legacy transcripts tolerate unparseable lines, including a truncated
@@ -2412,10 +2479,10 @@ impl Session {
         let mut pending_notes = Vec::new();
         let mut goal_context = crate::goal_context::GoalContextState::default();
         let mut goal_context_initial_run = false;
-        let mut chat_memory = None;
+        let mut chat_memory: Option<ChatMemoryMarker> = None;
         let mut prior_owner_messages = 0usize;
         let mut prior_run_ambiguous = false;
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        for (record_index, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
             let record = match serde_json::from_str::<Record>(line) {
                 Err(error) if malformed_dynamic_record(line) || chat_memory.is_some() => {
                     return Err(error).context("malformed dynamic goal context record");
@@ -2423,12 +2490,29 @@ impl Session {
                 Err(error) => lenient_record(line).ok_or(error),
                 Ok(record) => Ok(record),
             };
+            if chat_memory
+                .as_ref()
+                .is_some_and(|m| m.protocol == "ordinary-chat-task-start-v1")
+            {
+                anyhow::ensure!(
+                    matches!(&record, Ok(Record::ChatMemory { marker }) if marker.protocol == "ordinary-chat-memory-v4"),
+                    "task startup reservation requires exact final marker next"
+                );
+            }
             match record {
                 Ok(Record::Meta(m)) => meta = Some(m),
                 Ok(Record::ChatMemory { marker }) => {
                     marker.validate()?;
                     anyhow::ensure!(
-                        chat_memory.is_none()
+                        (chat_memory.is_none()
+                            || chat_memory.as_ref().is_some_and(|start| start.protocol
+                                == "ordinary-chat-task-start-v1"
+                                && marker.protocol == "ordinary-chat-memory-v4"
+                                && start.conversation_id == marker.conversation_id
+                                && start.authority == marker.authority
+                                && record_index == 2))
+                            && (marker.protocol != "ordinary-chat-task-start-v1"
+                                || record_index == 1)
                             && messages.is_empty()
                             && configs.is_empty()
                             && meta
@@ -2816,6 +2900,7 @@ impl Session {
                         admit(
                             Message {
                                 harness: false,
+                                plan_results: Vec::new(),
                                 planning: None,
                                 tool_provenance: Default::default(),
                                 role,

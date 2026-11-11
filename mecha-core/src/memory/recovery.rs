@@ -227,10 +227,10 @@ fn restore_with_files(
     let probe = Memory::open_read_only_with_storage(&current_path, current.storage.clone())?;
     let authority_version = task::version(&probe.conn)?;
     ensure!(
-        matches!(authority_version, 8 | 9),
-        "restore current authority requires schema v8 or v9"
+        matches!(authority_version, 8..=10),
+        "restore current authority requires schema v8, v9 or v10"
     );
-    if authority_version == 9 {
+    if matches!(authority_version, 9 | 10) {
         task::require_live(&probe.conn)?;
     }
     drop(probe);
@@ -245,7 +245,7 @@ fn restore_with_files(
         task::version(&held)? == authority_version,
         "restore authority schema changed"
     );
-    if authority_version == 9 {
+    if matches!(authority_version, 9 | 10) {
         task::require_live(&held)?;
     }
     let state = SuppressionState::read(&held)?;
@@ -289,7 +289,7 @@ fn restore_with_files(
             "UPDATE meta SET security_epoch=?1 WHERE singleton=1",
             [state.epoch],
         )?;
-        if authority_version == 9 {
+        if matches!(authority_version, 9 | 10) {
             tx.execute(
                 "UPDATE task_store_state SET disposition='historical' WHERE singleton=1",
                 [],
@@ -320,7 +320,7 @@ fn restore_with_files(
         SuppressionState::read(&fresh.conn)? == state,
         "current restore authority changed"
     );
-    if authority_version == 9 {
+    if matches!(authority_version, 9 | 10) {
         task::require_live(&fresh.conn)?;
     }
     stage.publish(&destination, ops)?;

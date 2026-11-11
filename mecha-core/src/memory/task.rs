@@ -20,7 +20,7 @@ pub enum TaskStatus {
     Cancelled,
 }
 impl TaskStatus {
-    fn terminal(self) -> bool {
+    pub(super) fn terminal(self) -> bool {
         matches!(self, Self::Closed | Self::Cancelled)
     }
 }
@@ -29,6 +29,11 @@ impl TaskStatus {
 pub struct TaskDraft {
     pub title: String,
     pub intent: String,
+}
+impl TaskDraft {
+    pub fn validate(&self) -> Result<()> {
+        validate_draft(self)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,10 +51,10 @@ pub struct TaskView {
 }
 /// Trusted host construction only; not deserializable and never a model DTO.
 pub struct TaskSession {
-    instance: String,
-    account: String,
-    session_id: String,
-    access: Access,
+    pub(super) instance: String,
+    pub(super) account: String,
+    pub(super) session_id: String,
+    pub(super) access: Access,
 }
 pub struct TaskOperationId(String);
 impl TaskOperationId {
@@ -156,7 +161,7 @@ fn native_id(id: &str) -> Result<()> {
     );
     Ok(())
 }
-fn validate_ref(r: &RevisionRef) -> Result<()> {
+pub(super) fn validate_ref(r: &RevisionRef) -> Result<()> {
     Uuid::parse_str(&r.object).context("invalid task object id")?;
     Uuid::parse_str(&r.revision).context("invalid task revision id")?;
     Ok(())
@@ -203,7 +208,7 @@ pub(super) fn version(conn: &Connection) -> Result<i64> {
 }
 pub(super) fn require_live(conn: &Connection) -> Result<()> {
     ensure!(
-        version(conn)? == 9,
+        matches!(version(conn)?, 9 | 10),
         "session tasks require explicit schema v9 migration"
     );
     check_identity(conn)?;
@@ -220,9 +225,9 @@ pub(super) fn require_live(conn: &Connection) -> Result<()> {
 }
 /// Generic Access is insufficient even for an indirect dependency on a Task.
 pub(super) fn contains_task(conn: &Connection, r: &RevisionRef) -> Result<bool> {
-    Ok(conn.query_row("WITH RECURSIVE inputs(id) AS (SELECT ?1 UNION SELECT d.input FROM dependency d JOIN inputs i ON d.output=i.id) SELECT EXISTS(SELECT 1 FROM inputs JOIN revision r ON r.id=inputs.id JOIN object o ON o.id=r.object_id WHERE o.kind='task' OR json_extract(r.payload,'$.kind')='task')", [&r.revision], |r| r.get(0))?)
+    Ok(conn.query_row("WITH RECURSIVE inputs(id) AS (SELECT ?1 UNION SELECT d.input FROM dependency d JOIN inputs i ON d.output=i.id) SELECT EXISTS(SELECT 1 FROM inputs JOIN revision r ON r.id=inputs.id JOIN object o ON o.id=r.object_id WHERE o.kind IN ('task','plan') OR json_extract(r.payload,'$.kind') IN ('task','plan'))", [&r.revision], |r| r.get(0))?)
 }
-fn canonical_value(conn: &Connection, reference: &RevisionRef) -> Result<TaskRevision> {
+pub(super) fn canonical_value(conn: &Connection, reference: &RevisionRef) -> Result<TaskRevision> {
     validate_ref(reference)?;
     let (kind, lifecycle, payload): (String, String, String) = conn.query_row("SELECT o.kind,r.lifecycle,r.payload FROM revision r JOIN object o ON o.id=r.object_id WHERE r.id=?1 AND r.object_id=?2", params![reference.revision,reference.object], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let Record::Task(value) = serde_json::from_str::<Record>(&payload)? else {
@@ -237,7 +242,7 @@ fn canonical_value(conn: &Connection, reference: &RevisionRef) -> Result<TaskRev
     validate_value(&value)?;
     Ok(value)
 }
-fn authorize(
+pub(super) fn authorize(
     conn: &Connection,
     session: &TaskSession,
     reference: &RevisionRef,
@@ -260,7 +265,11 @@ fn authorize(
     );
     Ok(value)
 }
-fn session_check(conn: &Connection, instance: &str, session: &TaskSession) -> Result<()> {
+pub(super) fn session_check(
+    conn: &Connection,
+    instance: &str,
+    session: &TaskSession,
+) -> Result<()> {
     require_live(conn)?;
     let (actual, domain): (String, String) = conn.query_row(
         "SELECT instance,domain FROM meta WHERE singleton=1",
@@ -717,7 +726,7 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
-    if version(conn)? != 9 {
+    if !matches!(version(conn)?, 9 | 10) {
         return Ok(());
     }
     conn.execute("UPDATE task_operation SET payload_hash=NULL,receipt_id=NULL,task_object=NULL,before_revision=NULL,after_revision=NULL,operation=NULL,state='forgotten' WHERE task_object IN (SELECT id FROM doomed)", [])?;

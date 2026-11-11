@@ -794,3 +794,11 @@ fn task_binding_accepts_real_native_session_id() -> Result<()> {
     f.db.task_session("owner", &native, access())?;
     Ok(())
 }
+
+#[test]
+fn plan_schema_v10_is_recognized_after_explicit_extension() -> Result<()> {
+    let f = Fixture::new()?;
+    f.db.conn.execute_batch(include_str!("plan_schema.sql"))?;
+    sql::check_identity(&f.db.conn)?;
+    Ok(())
+}

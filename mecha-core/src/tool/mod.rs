@@ -732,6 +732,11 @@ pub struct PersonAsk {
 /// What a tool is allowed to touch.
 #[derive(Debug, Clone)]
 pub struct ToolCtx {
+    #[cfg(feature = "memory-prototype")]
+    pub task_plan: Option<Arc<crate::memory_session::chat::task_plan::LivePlanTurn>>,
+    #[cfg(feature = "memory-prototype")]
+    pub plan_call: Option<Arc<todo::memory::PlanCall>>,
+    pub goal_decision: Arc<std::sync::Mutex<Option<crate::planning::GoalDecisionStamp>>>,
     /// Owner-bound evidence for the confirmed goal; never supplied by a model tool.
     pub appraisal_evidence: Option<crate::anticipation::BoundEvidence>,
     /// How the user will review a call this run stages, in this surface's
@@ -1110,27 +1115,30 @@ impl GoalTrack {
     /// no anchor stands — a plan with no confirmed goal cannot drift from
     /// one, and counting it would make the denominator every planned run.
     pub fn note_plan(&self, serves: Option<&crate::goal::GoalRef>) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let Some(anchor) = self.anchor() else {
-            return;
+        self.apply_plan_delta(Self::plan_delta(self.anchor().as_ref(), serves));
+    }
+
+    pub(crate) fn plan_delta(
+        anchor: Option<&crate::goal::GoalRef>,
+        serves: Option<&crate::goal::GoalRef>,
+    ) -> (u32, u32, u32) {
+        let Some(anchor) = anchor else {
+            return (0, 0, 0);
         };
-        self.plan_writes.fetch_add(1, Relaxed);
-        // An anchor no plan can name (a trigger, a request) has no drift to
-        // judge — every named goal would read as a changed pointer — but the
-        // write still happened: counting it keeps "planned under an anchor it
-        // cannot judge" apart from "never planned" (found on review).
         if !anchor.a_plan_can_name() {
-            return;
+            return (1, 0, 0);
         }
-        match crate::goal::drift_of(&anchor, serves) {
-            crate::goal::Drift::Same => {}
-            crate::goal::Drift::Changed => {
-                self.drifted_writes.fetch_add(1, Relaxed);
-            }
-            crate::goal::Drift::Unnamed => {
-                self.unnamed_writes.fetch_add(1, Relaxed);
-            }
+        match crate::goal::drift_of(anchor, serves) {
+            crate::goal::Drift::Same => (1, 0, 0),
+            crate::goal::Drift::Changed => (1, 1, 0),
+            crate::goal::Drift::Unnamed => (1, 0, 1),
         }
+    }
+    pub(crate) fn apply_plan_delta(&self, delta: (u32, u32, u32)) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.plan_writes.fetch_add(delta.0, Relaxed);
+        self.drifted_writes.fetch_add(delta.1, Relaxed);
+        self.unnamed_writes.fetch_add(delta.2, Relaxed);
     }
 
     /// `(anchor, plan writes, changed-pointer writes, unnamed writes)` as
@@ -1188,6 +1196,11 @@ impl StepCounts {
 impl Default for ToolCtx {
     fn default() -> Self {
         ToolCtx {
+            #[cfg(feature = "memory-prototype")]
+            task_plan: None,
+            #[cfg(feature = "memory-prototype")]
+            plan_call: None,
+            goal_decision: Arc::default(),
             appraisal_evidence: None,
             review_hint: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),

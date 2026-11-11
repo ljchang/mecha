@@ -13,6 +13,13 @@ use std::{
 };
 #[path = "chat_recording.rs"]
 mod capture;
+mod task_audit;
+pub(crate) mod task_host;
+pub(crate) mod task_plan;
+mod task_start;
+pub use task_host::TaskChatTurn;
+pub const CHAT_TASK_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v4";
+const CHAT_TASK_START_PROTOCOL: &str = "ordinary-chat-task-start-v1";
 #[path = "chat_recall.rs"]
 mod tracking;
 pub const CHAT_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v1";
@@ -87,6 +94,8 @@ impl WebIngress {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attachment {
+    #[serde(skip)]
+    task: Option<task_start::TaskAttachment>,
     // This is the original V1 wire shape. V2 is dispatched explicitly below;
     // its required graph field is validated before normalizing this value.
     #[serde(skip)]
@@ -111,10 +120,14 @@ impl Attachment {
             CHAT_MEMORY_PROTOCOL => CHAT_MEMORY_PROTOCOL,
             CHAT_GRAPH_MEMORY_PROTOCOL => CHAT_GRAPH_MEMORY_PROTOCOL,
             CHAT_WEB_MEMORY_PROTOCOL => CHAT_WEB_MEMORY_PROTOCOL,
+            CHAT_TASK_MEMORY_PROTOCOL => CHAT_TASK_MEMORY_PROTOCOL,
             _ => unreachable!("attachment protocol authenticated before normalization"),
         }
     }
     fn validate_tools(&self, names: &[String]) -> Result<()> {
+        if let Some(task) = &self.task {
+            return task.validate_tools(names);
+        }
         match &self.graph_surface {
             Some(graph) => graph.validate_tools(names),
             None => recording::surface(names),
@@ -135,7 +148,9 @@ impl Attachment {
         }
     }
     fn observation_protocol(&self) -> (&'static str, &'static str) {
-        if self.web_ingress.is_some() {
+        if self.task.is_some() {
+            (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION)
+        } else if self.web_ingress.is_some() {
             (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION)
         } else {
             (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION)
@@ -144,6 +159,18 @@ impl Attachment {
     fn encoded(&self) -> Result<Vec<u8>> {
         match self.protocol.as_str() {
             CHAT_MEMORY_PROTOCOL => Ok(serde_json::to_vec(self)?), // Preserve original V1 bytes.
+            CHAT_TASK_MEMORY_PROTOCOL => {
+                let mut wire = serde_json::to_value(self)?;
+                wire.as_object_mut().expect("attachment object").insert(
+                    "task".into(),
+                    serde_json::to_value(
+                        self.task
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("task attachment missing"))?,
+                    )?,
+                );
+                Ok(serde_json::to_vec(&wire)?)
+            }
             CHAT_GRAPH_MEMORY_PROTOCOL => {
                 let mut wire = serde_json::to_value(self)?;
                 wire.as_object_mut().expect("attachment object").insert(
@@ -245,7 +272,8 @@ type RetainedTurnCheckpoint = (String, CaptureReceipt, u64);
 type ChatContinuation = (Vec<u8>, Option<RetainedTurnCheckpoint>);
 
 pub struct ChatMemory {
-    memory: SessionMemory,
+    task_runtime: Option<task_host::TaskRuntime>,
+    memory: Arc<SessionMemory>,
     attachment: Attachment,
     digest: String,
     lease: Arc<Lease>,
@@ -256,6 +284,20 @@ pub struct ChatMemoryTurn {
     attachment: String,
     session_id: String,
     state: Arc<Mutex<RunState>>,
+}
+impl Drop for ChatMemoryTurn {
+    fn drop(&mut self) {
+        if let Some(live) = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .task_live
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            let _ = live.finish();
+        }
+    }
 }
 impl ChatMemoryTurn {
     pub fn run_id(&self) -> &str {
@@ -287,7 +329,22 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
     // reserialize historical V1 bytes to derive their authority identity.
     let mut wire: crate::memory::plan_extraction::UniqueValue = serde_json::from_slice(&bytes)?;
     let mut web_ingress = None;
+    let mut task = None;
     let graph = match wire.0.get("protocol").and_then(|v| v.as_str()) {
+        Some(CHAT_TASK_MEMORY_PROTOCOL) => {
+            ensure!(
+                wire.0.get("graph_surface").is_none() && wire.0.get("ingress").is_none(),
+                "task mixed profile"
+            );
+            task = Some(serde_json::from_value::<task_start::TaskAttachment>(
+                wire.0
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("task")
+                    .ok_or_else(|| anyhow::anyhow!("task attachment missing"))?,
+            )?);
+            None
+        }
         Some(CHAT_MEMORY_PROTOCOL) => {
             ensure!(
                 wire.0.get("graph_surface").is_none() && wire.0.get("ingress").is_none(),
@@ -330,6 +387,10 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
     }
     value.graph_surface = graph;
     value.web_ingress = web_ingress;
+    value.task = task;
+    if let Some(task) = &value.task {
+        task.validate_tools(&task.tools)?;
+    }
     ensure!(
         value.session_id == session && value.authority == a.identity && value.request == a.request,
         "chat attachment authority changed"
@@ -391,11 +452,14 @@ fn validate_source_ingress(a: &Attachment, bytes: &[u8], attachment_digest: &str
     );
     let header = recording::records(&bytes[..initial])?;
     ensure!(
-        header.len() == 1
+        header.len() == if a.task.is_some() { 2 } else { 1 }
             && matches!(&header[0], Record::Meta(m)
         if m.id == a.session_id && m.kind == Some(a.session_kind())),
         "chat native ingress changed"
     );
+    if a.task.is_some() {
+        task_start::validate_reservation(a, &header)?;
+    }
     let marker_end = bytes[initial..]
         .iter()
         .position(|b| *b == b'\n')
@@ -560,6 +624,7 @@ impl SessionMemory {
             let meta = open_nofollow(&session.path, false)?.metadata()?;
             ensure!(meta.nlink() == 1, "chat source aliased");
             let a = Attachment {
+                task: None,
                 graph_surface: graph,
                 web_ingress: web.then(WebIngress::authenticated),
                 protocol: protocol.into(),
@@ -595,7 +660,8 @@ impl SessionMemory {
             "chat workspace/source changed"
         );
         let chat = ChatMemory {
-            memory: self,
+            task_runtime: None,
+            memory: Arc::new(self),
             attachment,
             digest,
             lease: Arc::new(lease),
@@ -623,7 +689,21 @@ impl SessionMemory {
             Ok((f, lease))
         })();
         match prepared {
-            Ok((f, _lease)) => retry(self, id, Some(&f)),
+            Ok((f, _lease)) => {
+                if let Ok((_, a)) = frozen_metadata(&self.authority, id) {
+                    if a.task.is_some() && task_audit::recover(self, id).is_err() {
+                        return ChatMemoryReport::new(
+                            self,
+                            id,
+                            Some(&f),
+                            SessionMemoryStatus::Pending,
+                            Some(SessionMemoryReason::RecordingUnavailable),
+                            None,
+                        );
+                    }
+                }
+                retry(self, id, Some(&f))
+            }
             Err(_) => ChatMemoryReport::new(
                 self,
                 id,
@@ -752,6 +832,12 @@ impl ChatMemory {
         grants: &[crate::grant::Grant],
     ) -> Result<()> {
         self.lease.validate()?;
+        if let Some(task) = &self.attachment.task {
+            self.memory
+                .validate_task_surface(names, workspace, grants)?;
+            task.validate_tools(names)?;
+            return Ok(());
+        }
         let graph = self.graph_surface()?;
         if let Some(graph) = graph {
             ensure!(grants.is_empty(), "ordinary memory does not support grants");
@@ -1014,6 +1100,16 @@ impl ChatMemory {
         }))
     }
     pub fn finish_turn(&mut self, turn: &ChatMemoryTurn) -> ChatMemoryReport {
+        if let Some(live) = turn
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .task_live
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            let _ = live.finish();
+        }
         let prepared = (|| -> Result<Turn> {
             self.lease.validate()?;
             ensure!(
@@ -1022,6 +1118,9 @@ impl ChatMemory {
                     && turn.session_id == self.attachment.session_id,
                 "chat authority changed"
             );
+            if self.attachment.task.is_some() {
+                task_audit::recover(&self.memory, &turn.id)?;
+            }
             let mut state = turn
                 .state
                 .lock()
@@ -1073,3 +1172,6 @@ impl ChatMemory {
         }
     }
 }
+
+#[cfg(test)]
+mod task_tests;

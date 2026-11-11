@@ -256,6 +256,9 @@ impl QueuedSteer {
 pub(crate) struct GoalIngress {
     inputs: Vec<crate::goal_context::OwnerInput>,
     session: Option<Arc<crate::session::Session>>,
+    #[cfg(feature = "memory-prototype")]
+    pub(crate) task_recorder:
+        Option<Arc<crate::memory_session::chat::task_host::TaskDecisionRecorder>>,
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
@@ -1103,7 +1106,12 @@ impl RunContext {
         inputs: Vec<crate::goal_context::OwnerInput>,
         session: Option<Arc<crate::session::Session>>,
     ) -> Self {
-        self.goal_ingress = Some(GoalIngress { inputs, session });
+        self.goal_ingress = Some(GoalIngress {
+            inputs,
+            session,
+            #[cfg(feature = "memory-prototype")]
+            task_recorder: None,
+        });
         self
     }
 
@@ -1718,7 +1726,22 @@ type Batch = (
     Vec<Block>,
     std::collections::BTreeMap<String, bool>,
     Vec<crate::tool::code::record::ProgramCall>,
+    PlanBatch,
 );
+
+#[derive(Default)]
+struct PlanBatch {
+    audits: Vec<crate::message::PlanResultAudit>,
+    feedback: crate::planning::Feedback,
+}
+impl PlanBatch {
+    fn attach(self, message: &mut Message) {
+        if !self.audits.is_empty() {
+            message.plan_results = self.audits;
+            message.planning = Some(self.feedback);
+        }
+    }
+}
 
 /// The sub-call passes' usage of every program in `trace`
 /// (`ToolCallTrace::program`): what the loop adds to the run's own after a
@@ -3195,6 +3218,15 @@ impl Agent {
                 .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
             tools.goal_context_version = Arc::default();
+            tools.goal_decision = Arc::default();
+            #[cfg(feature = "memory-prototype")]
+            if tools.task_plan.is_some() {
+                tools.verified_steps = Arc::default();
+                tools.step_checks = None;
+                tools.step_checks_unavailable = true;
+                tools.step_escalation = None;
+                tools.plan_call = None;
+            }
             // Past appraisals are keyed on the tool set the run record will
             // name — this registry, after whatever a front-end withheld
             // since the block was rendered (`PastAppraisals::for_registry`).
@@ -4370,7 +4402,7 @@ impl Agent {
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
-                    let (results, provenance, reads) = self
+                    let (results, provenance, reads, plan_batch) = self
                         .run_tools(
                             cx,
                             &response.message,
@@ -4571,7 +4603,11 @@ impl Agent {
 
                     let mut result_message = Message::tool_results(results);
                     result_message.tool_provenance = provenance;
+                    plan_batch.attach(&mut result_message);
                     messages.push(result_message);
+                    crate::planning::validate_plan_results(
+                        messages.last().expect("just appended result"),
+                    )?;
                     // The next request closes the run (§5.5): on a repeat
                     // call in every chat, or right after the picture is
                     // queued where the run is set to end then.
@@ -4664,7 +4700,7 @@ impl Agent {
                         // Preserve refused checks in their trace, without reporting
                         // harness dispatch as a model-initiated send attempt.
                         let mut check_blocks = 0;
-                        let (results, provenance, reads) = self
+                        let (results, provenance, reads, plan_batch) = self
                             .run_tools(
                                 cx,
                                 &request,
@@ -4725,6 +4761,7 @@ impl Agent {
                         }
                         let mut answer = Message::tool_results(results);
                         answer.tool_provenance = provenance;
+                        plan_batch.attach(&mut answer);
                         messages.push(answer);
                         if trace[start..].iter().any(|c| c.is_error && !c.denied) {
                             // The executor knows which step this check belongs to.
@@ -4928,6 +4965,12 @@ impl Agent {
                 .goal_context_version
                 .lock()
                 .unwrap_or_else(|err| err.into_inner()) = Some(version.clone());
+            *cx.tools
+                .goal_decision
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(
+                crate::planning::GoalDecisionStamp::capture(binding, version)?,
+            );
             schedule.pop_front();
             return Ok(Some(evidence_bytes));
         }
@@ -4986,10 +5029,19 @@ impl Agent {
         .with_conversation_messages(conversation_messages)?
         .with_tool_surface(&request.tools, request.tool_choice)?;
         candidate.bind(binding.clone())?;
+        let goal_stamp = crate::planning::GoalDecisionStamp::capture(&binding, &version)?;
+        #[cfg(feature = "memory-prototype")]
+        if let Some(recorder) = &ingress.task_recorder {
+            recorder.record(binding.clone(), versions.clone())?;
+        }
         if let Some(session) = &ingress.session {
             session.append(&crate::session::Record::GoalContextDecision { binding, versions })?;
         }
         *state = candidate;
+        *cx.tools
+            .goal_decision
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(goal_stamp);
         inputs.clear();
         *cx.tools
             .goal_context_version
@@ -5897,7 +5949,7 @@ impl Agent {
         Self::arm_at_start(cx, convo);
         let mut trace = Vec::new();
         let mut blocked_sends = 0;
-        let (blocks, provenance, reads) = self
+        let (blocks, provenance, reads, _plan_batch) = self
             .dispatch(
                 cx,
                 vec![(call_id.clone(), name.to_string(), input)],
@@ -5958,6 +6010,46 @@ impl Agent {
         // turn's may; a harness call's runs inline (`dispatch_one`).
         defer: bool,
     ) -> Batch {
+        #[cfg(feature = "memory-prototype")]
+        let task_batch = if let Some(live) = &cx.tools.task_plan {
+            let mut ids = std::collections::HashSet::new();
+            let reservation = if !defer
+                || cx
+                    .tools
+                    .goal_decision
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_none()
+            {
+                Err(anyhow::anyhow!(
+                    "task batch requires a bound native model decision"
+                ))
+            } else if calls.iter().all(|(id, _, _)| ids.insert(id)) {
+                live.reserve_batch(calls.len())
+            } else {
+                Err(anyhow::anyhow!("duplicate provider call id in task batch"))
+            };
+            match reservation {
+                Ok(batch) => Some(batch),
+                Err(error) => {
+                    return (
+                        calls
+                            .iter()
+                            .map(|(id, _, _)| Block::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: format!("Task batch refused: {error}"),
+                                is_error: true,
+                            })
+                            .collect(),
+                        calls.iter().map(|(id, _, _)| (id.clone(), false)).collect(),
+                        vec![],
+                        PlanBatch::default(),
+                    )
+                }
+            }
+        } else {
+            None
+        };
         // Refusals and staging notices are ours; executed results overwrite
         // their entries with the tool's actual per-call classification.
         let mut provenance: std::collections::BTreeMap<String, bool> =
@@ -6066,8 +6158,9 @@ impl Agent {
         } else {
             (None, None)
         };
-        let executing =
-            futures::future::join_all(approved.into_iter().map(|(i, tool, id, name, input)| {
+        let execution_futures = approved
+            .into_iter()
+            .map(|(i, tool, id, name, input)| {
                 // Stamp the call's own id onto the context it runs under, so
                 // a tool that contains a run — a subagent — can tag the
                 // events it forwards. Only when somebody is watching: the
@@ -6095,11 +6188,54 @@ impl Agent {
                     host_calls,
                     None,
                 );
+                #[cfg(feature = "memory-prototype")]
+                let tool_ctx = {
+                    let mut tool_ctx = (*tool_ctx).clone();
+                    if let (Some(live), Some((start, batch)), Some(goal)) = (
+                        &cx.tools.task_plan,
+                        task_batch,
+                        cx.tools
+                            .goal_decision
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clone(),
+                    ) {
+                        tool_ctx.plan_call =
+                            Some(Arc::new(crate::tool::todo::memory::PlanCall::new(
+                                Arc::clone(live),
+                                start + i as u32,
+                                batch,
+                                goal,
+                                cx.tools.goal_track.as_ref().and_then(|g| g.anchor()),
+                                host_cap,
+                            )));
+                    }
+                    Arc::new(tool_ctx)
+                };
                 async move {
                     let out = Self::execute(&tool, &name, input, &tool_ctx).await;
-                    (i, id, name, out)
+                    #[cfg(feature = "memory-prototype")]
+                    let contribution = tool_ctx.plan_call.as_ref().and_then(|call| call.take());
+                    #[cfg(not(feature = "memory-prototype"))]
+                    let contribution: Option<(
+                        crate::message::PlanResultAudit,
+                        crate::planning::Feedback,
+                    )> = None;
+                    (i, id, name, out, contribution)
                 }
-            }));
+            })
+            .collect::<Vec<_>>();
+        let executing = async {
+            #[cfg(feature = "memory-prototype")]
+            if task_batch.is_some() {
+                let mut executed = Vec::with_capacity(execution_futures.len());
+                for execution in execution_futures {
+                    executed.push(execution.await);
+                }
+                return executed;
+            }
+            futures::future::join_all(execution_futures).await
+        };
         // Only the calls' contexts hold a sender now, so the serving loop ends
         // when the last of them is done.
         drop(host_tx);
@@ -6139,7 +6275,8 @@ impl Agent {
         // into `role: "tool"` messages ahead of the parts array anyway.
         let mut pictures = Vec::new();
         let mut batch_reads = Vec::new();
-        for (i, id, name, mut out) in executed {
+        let mut plan_batch = PlanBatch::default();
+        for (i, id, name, mut out, contribution) in executed {
             // A deferred call's slow half (`ToolOutput::deferred`): handed to
             // the host's queue, where it outlives this run and its output
             // answers the call late; refused in the tool's own words when the
@@ -6329,6 +6466,16 @@ impl Agent {
                     content: out.content.clone(),
                 },
             );
+            if let Some((mut audit, feedback)) = contribution {
+                audit.result_index = i;
+                audit.steps_start = plan_batch.feedback.steps.len();
+                audit.decisions_start = plan_batch.feedback.decisions.len();
+                plan_batch.feedback.steps.extend(feedback.steps);
+                plan_batch.feedback.decisions.extend(feedback.decisions);
+                audit.steps_end = plan_batch.feedback.steps.len();
+                audit.decisions_end = plan_batch.feedback.decisions.len();
+                plan_batch.audits.push(audit);
+            }
             results[i] = Some(Block::ToolResult {
                 tool_use_id: id,
                 content: out.content,
@@ -6341,7 +6488,7 @@ impl Agent {
         }
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
-        (blocks, provenance, batch_reads)
+        (blocks, provenance, batch_reads, plan_batch)
     }
 
     /// What a batch of calls will arm, forecast from declared reach before
@@ -6635,7 +6782,7 @@ impl Agent {
             }
         };
         match result {
-            Ok(resp) => PassAnswer::Answered(resp),
+            Ok(resp) => PassAnswer::Answered(Box::new(resp)),
             Err(e) => PassAnswer::Failed(crate::tool::code::pass_failure(&e)),
         }
     }
@@ -6703,6 +6850,10 @@ impl Agent {
         program_room: Option<usize>,
     ) -> Arc<ToolCtx> {
         Arc::new(ToolCtx {
+            #[cfg(feature = "memory-prototype")]
+            plan_call: None,
+            #[cfg(feature = "memory-prototype")]
+            task_plan: None,
             call_id: Some(id.to_string()),
             taint: Some(turn_taint),
             recorded_taint: Some(recorded_taint),
@@ -10476,6 +10627,7 @@ mod tests {
         assert!(!taint.private);
         taint.arm_for_content(&[Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -13608,6 +13760,7 @@ justification = "echo is off on this box"
         let mut taint = Taint::default();
         taint.arm_for_content(&[Message {
             harness: false,
+            plan_results: Vec::new(),
             planning: None,
             tool_provenance: Default::default(),
             role: Role::User,
@@ -22969,5 +23122,233 @@ justification = "this box never sends from an armed conversation"
         );
         assert_eq!(texts[2], "Let me look. Then", "a tool turn keeps its text");
         assert_eq!(sent[2].thinking(), "chose a call", "and its thinking");
+    }
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn durable_todo_dispatch_orders_two_writes_and_reused_ids() -> Result<()> {
+        let f = crate::memory_session::chat::task_plan::tests::Fixture::new()?;
+        let (agent, _) = agent_with_tools(vec![], vec![f.tool.clone()], PermissionMode::Allow);
+        let mut cx = (*agent.cx).clone();
+        cx.tools = Arc::new(f.ctx.clone());
+        let mut trace = vec![];
+        let mut taint = Taint::default();
+        let mut blocked = 0;
+        let mut pictures = RunPictures::default();
+        let input = |status: &str| json!({"items":[{"content":"Inspect fixture","status":status,"check":"inspect fixture"}],"serves":"task:synthetic"});
+        let (blocks, provenance, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![
+                    ("first".into(), "todo".into(), input("in_progress")),
+                    ("second".into(), "todo".into(), input("completed")),
+                ],
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked,
+                &mut pictures,
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert_eq!(blocks.len(), 2);
+        assert!(
+            blocks.iter().all(|b| matches!(
+                b,
+                Block::ToolResult {
+                    is_error: false,
+                    ..
+                }
+            )),
+            "{blocks:?}"
+        );
+        assert!(taint.private);
+        let mut message = Message::tool_results(blocks);
+        message.tool_provenance = provenance;
+        audits.attach(&mut message);
+        crate::planning::validate_plan_results(&message)?;
+        assert_eq!(
+            message
+                .plan_results
+                .iter()
+                .map(|a| a.ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            message
+                .plan_results
+                .iter()
+                .map(|a| a.result_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(message.planning.as_ref().unwrap().decisions.len(), 2);
+        assert!(message
+            .planning
+            .as_ref()
+            .unwrap()
+            .steps
+            .iter()
+            .all(|s| s.call_id.as_deref() == Some("second")));
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![("first".into(), "todo".into(), input("pending"))],
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked,
+                &mut pictures,
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+        assert_eq!(audits.audits[0].ordinal, 2);
+        let counts = f.ctx.goal_track.as_ref().unwrap().snapshot();
+        let before_trace = trace.len();
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![
+                    ("duplicate".into(), "todo".into(), input("pending")),
+                    ("duplicate".into(), "todo".into(), input("completed")),
+                ],
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked,
+                &mut pictures,
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(blocks
+            .iter()
+            .all(|b| matches!(b, Block::ToolResult { is_error: true, .. })));
+        assert!(audits.audits.is_empty());
+        assert_eq!(trace.len(), before_trace, "duplicates refuse before gates");
+        assert_eq!(f.ctx.goal_track.as_ref().unwrap().snapshot(), counts);
+        Ok(())
+    }
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn durable_todo_batch_keeps_first_receipt_when_second_commit_fails() -> Result<()> {
+        use crate::memory_session::chat::task_plan::tests::Fixture;
+        struct StopAfterFirst {
+            fixture: Arc<Fixture>,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        #[async_trait]
+        impl Tool for StopAfterFirst {
+            fn name(&self) -> &str {
+                "todo"
+            }
+            fn description(&self) -> &str {
+                self.fixture.tool.description()
+            }
+            fn input_schema(&self) -> Value {
+                self.fixture.tool.input_schema()
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                self.fixture.tool.capabilities()
+            }
+            async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let output = self.fixture.tool.call(input, ctx).await?;
+                if self
+                    .calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    == 0
+                {
+                    self.fixture.stop()?;
+                }
+                Ok(output)
+            }
+        }
+        let f = Arc::new(Fixture::new()?);
+        let wrapper = Arc::new(StopAfterFirst {
+            fixture: Arc::clone(&f),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (agent, _) = agent_with_tools(vec![], vec![wrapper], PermissionMode::Allow);
+        let mut cx = (*agent.cx).clone();
+        cx.tools = Arc::new(f.ctx.clone());
+        let input = |status: &str| json!({"items":[{"content":"Inspect fixture","status":status,"check":"inspect fixture"}],"serves":"task:synthetic"});
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![
+                    ("first".into(), "todo".into(), input("in_progress")),
+                    ("second".into(), "todo".into(), input("completed")),
+                ],
+                &None,
+                &mut vec![],
+                &mut Taint::default(),
+                &mut 0,
+                &mut RunPictures::default(),
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolResult {
+                is_error: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &blocks[1],
+            Block::ToolResult { is_error: true, .. }
+        ));
+        let mut message = Message::tool_results(blocks);
+        audits.attach(&mut message);
+        crate::planning::validate_plan_results(&message)?;
+        assert_eq!(message.plan_results.len(), 1);
+        assert_eq!(message.plan_results[0].result_index, 0);
+        assert_eq!(message.planning.as_ref().unwrap().decisions.len(), 1);
+        assert_eq!(f.ctx.goal_track.as_ref().unwrap().snapshot().1, 1);
+        assert_eq!(f.ctx.step_counts.as_ref().unwrap().snapshot(), (0, 0, 0, 0));
+        // Ordinary policy still owns durable mutation approval.
+        let f = Fixture::new()?;
+        let (agent, _) = agent_with_tools(vec![], vec![f.tool.clone()], PermissionMode::ReadOnly);
+        let mut cx = (*agent.cx).clone();
+        cx.tools = Arc::new(f.ctx.clone());
+        let (blocks, _, _, audits) = agent
+            .dispatch(
+                &cx,
+                vec![("denied".into(), "todo".into(), input("pending"))],
+                &None,
+                &mut vec![],
+                &mut Taint::default(),
+                &mut 0,
+                &mut RunPictures::default(),
+                24000,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(
+            &blocks[0],
+            Block::ToolResult { is_error: true, .. }
+        ));
+        assert!(audits.audits.is_empty());
+        assert_eq!(f.ctx.goal_track.as_ref().unwrap().snapshot().1, 0);
+        assert!(f
+            .tool
+            .items_in(&crate::tool::todo::PlanKey::of(&f.ctx))
+            .is_empty());
+        Ok(())
     }
 }

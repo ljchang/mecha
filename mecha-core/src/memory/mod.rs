@@ -107,3 +107,7 @@ pub use task::{
     TaskCommit, TaskDraft, TaskOperation, TaskOperationId, TaskReceipt, TaskRef, TaskRevision,
     TaskSession, TaskStatus, TaskView,
 };
+
+pub(crate) mod plan;
+#[cfg(test)]
+mod plan_tests;

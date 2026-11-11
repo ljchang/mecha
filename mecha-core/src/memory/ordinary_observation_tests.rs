@@ -1072,11 +1072,16 @@ fn web_observation_native_converter_preserves_exact_owner_order_and_rejects_cli_
 
 #[test]
 fn task_schema_preserves_ordinary_projection_and_recall() {
-    for version in [8, 9] {
+    for version in [8, 9, 10] {
         let mut f = Fixture::new(Memory::create_supported_situated);
-        if version == 9 {
+        if version >= 9 {
             f.db.conn
                 .execute_batch(include_str!("task_schema.sql"))
+                .unwrap();
+        }
+        if version == 10 {
+            f.db.conn
+                .execute_batch(include_str!("plan_schema.sql"))
                 .unwrap();
         }
         let receipt = admit(

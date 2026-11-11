@@ -608,7 +608,10 @@ fn visible_sources(packet: &ContextPacket) -> Vec<VisibleSource> {
                     text: r.text.clone(),
                 }],
             ),
-            Record::Entity { .. } | Record::Interpretation(_) | Record::Task(_) => continue,
+            Record::Entity { .. }
+            | Record::Interpretation(_)
+            | Record::Task(_)
+            | Record::Plan(_) => continue,
         };
         let metadata = match &hit.record {
             Record::Evidence(e) => {
@@ -618,7 +621,10 @@ fn visible_sources(packet: &ContextPacket) -> Vec<VisibleSource> {
                 json!({"status":c.status,"support":c.support,"counterexamples":c.counterexamples,"consulted":c.consulted})
             }
             Record::Relation(r) => json!({"valid":r.valid,"possible_time":hit.possible_time}),
-            Record::Entity { .. } | Record::Interpretation(_) | Record::Task(_) => json!({}),
+            Record::Entity { .. }
+            | Record::Interpretation(_)
+            | Record::Task(_)
+            | Record::Plan(_) => json!({}),
         };
         sources.push(VisibleSource {
             id: hit.reference.revision.clone(),

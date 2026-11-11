@@ -22,6 +22,18 @@ maps which document holds what.
 
 ## Where the work is
 
+**Latest durable-planning qualification (2026-11-11):** the opt-in CLI task
+profile supports owner Task creation, ordered model Plan updates and authenticated
+restart/resume in Mecha memory. Actual CLI tests passed locally and on Spark,
+including a real post-commit process kill that stays pending without native
+evidence. Local workspace suites passed 6,513 default / 7,455 memory-enabled tests
+(25 / 30 ignored), both all-target builds, strict all-feature Clippy and fmt;
+standalone memory passed 456 tests. Spark passed 50 required-backend tests with
+skips disabled. See HISTORY and the user memory documentation for exact scope.
+The web task adapter, existing graph task-board/mail migration and cross-session
+task selection remain open; this is not production activation or a model benefit
+claim.
+
 **Ordinary-run integration (qualified 2026-11-10, opt-in prototype):** fresh one-shot
 `run --episodic-memory` now connects the existing Agent loop to source-linked
 observation capture and guarded lexical recall through `memory_session`. Host-only
@@ -74,8 +86,10 @@ storage establishes production/private-data readiness.
 compaction, broader tool coverage, live resource-state appraisal and automatic
 learning selection/scheduling. In this first chat profile, incomplete or
 noncompleted turns, compaction, overflow and unavailable capture stop further
-memory-enabled execution. A complete seal can retry storage admission; an
-ambiguous unsealed turn requires a fresh chat. Transcripts are bounded to 4 MiB,
+memory-enabled execution. A complete seal can retry storage admission; missing or
+ambiguous unsealed evidence requires a fresh chat. The V4 task profile separately
+recovers complete native bytes authenticated by its prepared fingerprint, without
+executing tools. Transcripts are bounded to 4 MiB,
 with smaller per-passage and context limits. Oversized tool inputs now retain
 explicit omitted-content metadata, exact native pointers and full-input digests;
 tool results above 4,096 bytes still withhold capture. External files, key loss
@@ -129,37 +143,20 @@ transcripts or recovery sidecars. The user-facing command is in
 
 **Remaining daily-use increments:**
 
-1. Connect Mecha-owned todos/tasks/plans to the new memory database (owner
-   decision, 2026-11-10). The host-only `memory::task` foundation now supplies
-   session-bound Task records, revision CAS, idempotent database receipts,
-   forgetting and explicit encrypted schema migration. It has no Plan record,
-   TodoTool adapter, native audit reconciliation or user-facing task command yet.
-   Next deliver a vertical CLI chat slice: persist plans/check freezes through
-   the existing TodoTool, then restore the exact DB plan after restart. Follow
-   with the owned web runtime. Keep owner task closure separate from model step
-   completion and verified outcomes. Stage goal/feedback/check-queue effects as
-   well as Tracked; cloning that struct alone leaves shared counters mutated.
-   `Session::append` currently writes without sync_data: exact native audit
-   reconciliation needs an explicit durable append boundary before marking its
-   receipt complete. Use a concrete controller; no generic store framework or
-   separate step-ID system is required for the first adapter.
-   Settle that native audit boundary first, including file creation durability.
-   Bind receipts to ordered feedback contributions: the agent combines feedback
-   from a batch onto its final result, so multiple todo calls cannot be treated
-   as one receipt per message. Only then wire the explicit CLI profile.
-   A DB commit followed by failed JSONL append must recover without rerunning the
-   operation; native JSONL is audit/replay evidence, not the task authority.
-   `Message.planning` is currently refused by both recorders, so allowlisting todo
-   alone is insufficient. Then cut over the task board and its consumers: CLI
-   closure/follow-up/delegated updates, TUI/web routes, goal/appraisal linkage,
-   manual mail capture and the automated mail-rule TaskSink. Several bypass the
-   CLI and call graph tools directly. Preserve old graph IDs as historical
-   pointers; new TaskRefs must not be treated as graph nodes. No implicit dual
-   writes or fallback to graph when Mecha storage is unavailable.
-   Task validation currently scans its retained operation ledger on each API
-   call; realistic volume/cost remains unmeasured. The first API binds one native
-   session; cross-session selection, full board vocabulary and model delegation
-   still need explicit adapters and provenance rules.
+1. Extend durable task memory to the owned web runtime, then migrate board
+   consumers. The opt-in CLI task-chat path now persists session-bound Tasks and
+   versioned Plans in encrypted schema v10, restores check declarations after
+   restart, and reconciles database receipts against durable native audit.
+   `TodoTool::with_memory` restores the actual database snapshot; native JSONL is
+   audit/replay evidence, not task authority. The local-only profile preserves
+   declared checks as Skipped. Remaining work: web/TUI integration; board
+   closure, follow-up and delegated updates; manual mail capture and automated
+   mail-rule TaskSink integration; cross-session task selection; and realistic
+   operation-ledger volume/cost qualification. Several existing consumers bypass
+   the CLI and call graph tools directly. Keep owner closure separate from model
+   step completion and verified outcomes; preserve old graph IDs as historical
+   pointers. Do not treat Mecha TaskRefs as graph nodes, introduce implicit dual
+   writes or fall back to graph when Mecha storage is unavailable.
 2. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
    dependencies, goal versions and taint; force compaction/restart/interruption
    tests before permitting continued memory-enabled execution.
@@ -1812,7 +1809,9 @@ probes remain available.
 Goal persistence, event attribution, declared plan checks and goal-specific context
 are implemented; the implementation history and earlier pilot comparisons are in
 HISTORY under this date. Guidance remains opt-in through
-`[agent] goal_guidance = true`; declared check execution defaults on.
+`[agent] goal_guidance = true`; declared check execution defaults on in that
+legacy/general surface. The separate V4 memory task-chat profile preserves
+declarations but deliberately marks verification Skipped.
 
 `mismatch::ArtifactCase::criteria` now supplies owner-bound, post-run field
 verdicts and optional pinned count context without sending expected answers to
@@ -2330,11 +2329,11 @@ A working agent harness, used and measured rather than just compiled.
 | Area | State |
 |---|---|
 | Providers | Anthropic (raw HTTP, **verified live**) + OpenAI-compatible (llama-server, vLLM, Ollama) |
-| Agent loop | Streaming, tool dispatch, parallel execution, forced final answer |
+| Agent loop | Streaming, tool dispatch, parallel execution (authored serial order in the durable task profile), forced final answer |
 | Tools | `fs_read/write/edit/list`, `shell`, `http_fetch`, `todo`, `web_search`, `ask_user`; `recall` on session-recording front-ends (chat, TUI, resumed runs) — searches the transcript union, including what compaction rewrote away |
 | Planning | `Phase::Plan` hides writing tools structurally — not offered, not dispatchable |
 | MCP | stdio client; per-server on/off; capability overrides that only widen; `prefix_tools = false` for a server whose tools carry their own namespace (collision fails startup loudly) |
-| Memory | mecha-graph (the artist formerly known as pkg, now public) wired as MCP server `graph`, unprefixed `kg_*` tools — the user's mail, Slack, calendar, conversations |
+| Memory | Independent owner information in mecha-graph over MCP; default-off Mecha-owned encrypted episodes and CLI Task/Plan state through explicit memory adapters. No task-board or owner-graph migration is implied. |
 | Subagents | `Agent` wrapped as a `Tool`, allowlisted registry, per-profile model |
 | Search | `SearchBackend` trait — Exa, Tavily, SearXNG — a preference-ordered chain, first to *answer* wins. An exhausted chain of genuine empties is an answer; only a chain where nothing answered is an error. `prefer_deep` promotes a backend to the head on `depth: "deep"`, reordering and never filtering, so every backend stays reachable as a fallback at either depth. Since #241 each backend also declares an egress class **per depth** (`SearchBackend::egress`, defaulting to `Chosen`): searxng and tavily blind at both, **exa blind at quick and not at deep** — `deep-reasoning` fetches pages the query steers it towards. An armed conversation is served by `search_blind` (blind entries, quick depth) and the result says so on every exit path, empty and failing included |
 | Security | Path jail, SSRF guard, trifecta interlock, leak guard, capability model. The send axis is a **class** since #241 (2026-09-17): `Egress::None < Blind < Chosen`, `union` a max. The interlock fires on `Chosen` — a recipient the *model* names — and `block_sends_after_private` on both, so `web_search` (schema has no destination) keeps working in a conversation holding mail or graph data. `docs/EGRESS-DESIGN.md` |

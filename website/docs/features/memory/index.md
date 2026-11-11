@@ -156,6 +156,78 @@ TUI memory attachment and automatic learning remain separate work. The distinct
 authenticated web profile is described below. SQLCipher does not encrypt the native transcript, terminal history
 or private recovery files.
 
+### Durable todos and planning in CLI memory chat
+
+The separate task-chat profile stores the owner's task and the model's versioned
+plan in Mecha's encrypted database. Restart restores the database plan, including
+check declarations for unfinished items dropped from the visible list. The owner
+task's title, intent and lifecycle remain separate from model-authored progress.
+Marking every step complete does not close the task or verify its success.
+
+First enable planning explicitly on the initialized store:
+
+```bash
+mecha memory-session --request /absolute/path/memory.json enable-planning
+```
+
+This upgrades ordinary schema v8 through task v9 to plan v10. Each step is atomic;
+retry continues from the surviving version. Opening or starting a chat never
+performs the migration implicitly. A restored historical database cannot become
+live task authority through this command.
+
+Create a private owner-authored JSON file outside the workspace, with exactly
+`{"title":"Prepare the demo","intent":"Organize and check the demo work."}`.
+Use the same isolated workspace, manifest and restricted flags as the ordinary
+chat profile. Select both `goal_context` and `todo`; optionally include
+`fs_read`, `fs_write` and `fs_list`. Add:
+
+```bash
+chat --dynamic-goals --episodic-memory /absolute/path/memory.json \
+  --memory-task /absolute/path/task.json
+```
+
+The task file establishes the owner container; tell the agent what to do in chat.
+It is not silently inserted as owner speech or charter content. Resume with the
+same manifest, workspace and exact tool selection:
+
+```bash
+chat --dynamic-goals --episodic-memory /absolute/path/memory.json \
+  --resume SESSION_ID --memory-task-resume
+```
+
+Resume cannot replace the task draft or select a different TaskRef. The CLI shows
+the stored plan before accepting another turn. Plans are bounded to 32 items,
+512 UTF-8 bytes per content/expect/check field, 256 preserved declarations and
+32 KiB per snapshot. Exceeding a bound refuses; it never evicts old checks.
+
+This first profile supports local file/context tools and durable `todo` only.
+Graph MCP, shell, code/program tools, delegation, compaction and background jobs
+are excluded. Declared checks are preserved but **Skipped**, never executed or
+reported as passing. Existing approval and taint gates still apply; a durable
+todo is a private-data write. Structured todo calls/results remain in typed plan
+revisions and native audit; generic episodic recall does not expose that state.
+Independent ordinary observations continue to be retained and recalled.
+
+A database commit and a complete native audit are distinct. If final recording
+fails, use `memory-session --request FILE retry RUN_ID`. Recovery may verify and
+sync already-complete authenticated bytes, reconcile the original receipts and
+finish retention. It never reruns a model/tool or invents missing results. Missing,
+partial or conflicting source evidence remains pending and blocks continuation,
+including a turn with no todo writes. Startup prints its session ID; an interrupted
+task attachment has the separate storage-only repair command:
+
+```bash
+mecha memory-session --request /absolute/path/memory.json \
+  retry-task-start SESSION_ID --task /absolute/path/task.json
+```
+
+That repair requires the original exact draft and startup evidence. It neither
+adopts an arbitrary task nor truncates a damaged transcript. Task/plan storage does
+not migrate the existing graph task board, mail task capture or web task routes;
+those consumers still need explicit adapters. SQLCipher does not encrypt native
+JSONL, and forgetting a task in the database does not promise to erase independent
+prose or copies in the session transcript.
+
 ### Read-only owner-graph access in CLI memory chat
 
 Add `--memory-graph-server NAME` to explicitly select one enabled owner-global

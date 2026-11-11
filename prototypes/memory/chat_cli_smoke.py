@@ -90,6 +90,8 @@ class AuthoredTransport:
                             raise AssertionError("unexpected or excessive provider request")
                         response_message = json.loads(json.dumps(outer.queue.pop(0)))
                         outer.requests.append({"case": outer.label, "request": request})
+                    if outer.before_response(request) is False:
+                        return
                     finish = "tool_calls" if "tool_calls" in response_message else "stop"
                     usage = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
                     if request.get("stream"):
@@ -114,6 +116,9 @@ class AuthoredTransport:
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+
+    def before_response(self, request):
+        """Test-only subclass seam for a deterministic post-dispatch process stop."""
 
     def script(self, label, responses):
         with self.lock:

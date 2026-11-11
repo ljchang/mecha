@@ -13,6 +13,33 @@ pub(super) fn capture(
     attempts: &[Attempt],
     id: &str,
 ) -> Result<HostCapture> {
+    capture_impl(memory, f, a, bytes, attempts, id, false)
+}
+/// Only authenticated V4 storage recovery may use its frozen canonical workspace
+/// spelling without reopening a directory that may legitimately have been removed.
+pub(super) fn capture_task_recovery(
+    memory: &SessionMemory,
+    f: &Turn,
+    a: &Attachment,
+    bytes: &[u8],
+    attempts: &[Attempt],
+    id: &str,
+) -> Result<HostCapture> {
+    ensure!(
+        memory.workspace.is_none() && a.task.is_some() && a.protocol == CHAT_TASK_MEMORY_PROTOCOL,
+        "historical workspace comparison requires task recovery authority"
+    );
+    capture_impl(memory, f, a, bytes, attempts, id, true)
+}
+fn capture_impl(
+    memory: &SessionMemory,
+    f: &Turn,
+    a: &Attachment,
+    bytes: &[u8],
+    attempts: &[Attempt],
+    id: &str,
+    task_recovery: bool,
+) -> Result<HostCapture> {
     ensure!(
         bytes.len() > f.start_length as usize
             && digest(&bytes[..f.start_length as usize]) == f.start_digest,
@@ -50,10 +77,17 @@ pub(super) fn capture(
         .configs
         .last()
         .ok_or_else(|| anyhow::anyhow!("chat configuration missing"))?;
-    ensure!(
-        config.workspace.canonicalize()? == a.workspace,
-        "chat workspace changed"
-    );
+    if task_recovery {
+        ensure!(
+            config.workspace == a.workspace && a.workspace.is_absolute(),
+            "task historical workspace changed"
+        );
+    } else {
+        ensure!(
+            config.workspace.canonicalize()? == a.workspace,
+            "chat workspace changed"
+        );
+    }
     a.validate_tools(&config.tools)?;
     ensure!(
         !transcript.convo.goal_context.has_cleared(),
@@ -67,6 +101,8 @@ pub(super) fn capture(
     db.validate_dependency_roots(&f.dependencies, &memory.access())?;
     let mut originals = vec![];
     let mut receipts = vec![];
+    let mut all_calls = 0usize;
+    let mut observed_names = BTreeSet::new();
     let mut calls = BTreeMap::<String, (String, serde_json::Value, bool)>::new();
     let mut matched = BTreeSet::new();
     let mut consulted = f.dependencies.clone();
@@ -120,6 +156,7 @@ pub(super) fn capture(
                         sent,
                         &config.tools,
                         &mut decision_calls,
+                        a.task.is_some(),
                     )?;
                     expected_history = sent.to_vec();
                 }
@@ -180,7 +217,11 @@ pub(super) fn capture(
             }
             Record::Message(m) => {
                 ensure!(
-                    !ended && messages < 128 && !m.harness && m.planning.is_none(),
+                    !ended
+                        && messages < 128
+                        && !m.harness
+                        && (a.task.is_some()
+                            || (m.planning.is_none() && m.plan_results.is_empty())),
                     "ordinary message unsupported"
                 );
                 if a.graph_surface.is_some() {
@@ -227,20 +268,14 @@ pub(super) fn capture(
                                     owner_line = Some((line + 1) as u64);
                                     (PassageKind::UserRequest, "text", text)
                                 } else {
-                                    let observed_tools = calls
-                                        .values()
-                                        .filter(|(name, _, complete)| {
-                                            *complete && config.tools.contains(name)
-                                        })
-                                        .map(|(name, _, _)| name.clone())
-                                        .collect();
+                                    let observed_tools = observed_names.clone();
                                     ensure!(
                                         result_prefix > 0
                                             && index >= result_prefix
                                             && inline_notes::supported(
                                                 &text,
                                                 &observed_tools,
-                                                calls.len()
+                                                all_calls
                                             ),
                                         "ordinary user text is not a supported inline notice"
                                     );
@@ -259,17 +294,27 @@ pub(super) fn capture(
                         } => {
                             ensure!(
                                 m.role == Role::Assistant
-                                    && !calls.contains_key(&call_id)
-                                    && calls.len() < 32
+                                    && (!calls.contains_key(&call_id)
+                                        || (a.task.is_some()
+                                            && name == "todo"
+                                            && calls
+                                                .get(&call_id)
+                                                .is_some_and(|(n, _, done)| n == "todo" && *done)))
+                                    && all_calls < 32
                                     && a.graph_surface.as_ref().map_or_else(
                                         || matches!(
                                             name.as_str(),
                                             "fs_read" | "fs_write" | "fs_list" | "goal_context"
-                                        ),
+                                        ) || (a.task.is_some() && name == "todo"),
                                         |graph| graph.contains_tool(&name)
                                     ),
                                 "ordinary invocation unsupported"
                             );
+                            all_calls += 1;
+                            if a.task.is_some() && name == "todo" {
+                                calls.insert(call_id, (name, input, false));
+                                continue;
+                            }
                             let action = recording::action_invocation(&call_id, &name, &input)?;
                             // Recall reconciliation needs the complete native input, even
                             // when the reader-facing invocation omits its contents.
@@ -291,6 +336,10 @@ pub(super) fn capture(
                                 .ok_or_else(|| anyhow::anyhow!("ordinary orphan result"))?;
                             ensure!(!*complete, "ordinary duplicate result");
                             *complete = true;
+                            observed_names.insert(name.clone());
+                            if a.task.is_some() && name == "todo" {
+                                continue;
+                            }
                             let external = if a.graph_surface.is_some() {
                                 m.tool_provenance.get(&tool_use_id).copied()
                             } else {
@@ -471,6 +520,7 @@ fn validate_decision_transition(
     next: &[Message],
     configured: &[String],
     calls: &mut BTreeMap<String, String>,
+    task: bool,
 ) -> Result<()> {
     if next.len() == previous.len() {
         let index = previous
@@ -529,9 +579,14 @@ fn validate_decision_transition(
         "chat decision boundary lacks complete native tool delivery"
     );
     for (id, name) in requested {
+        let key = if task && name == "todo" {
+            format!("task-occurrence-{}:{id}", calls.len())
+        } else {
+            id.clone()
+        };
         ensure!(
             configured.contains(name)
-                && calls.insert(id.clone(), name.clone()).is_none()
+                && calls.insert(key, name.clone()).is_none()
                 && calls.len() <= 32,
             "chat decision tool surface changed"
         );

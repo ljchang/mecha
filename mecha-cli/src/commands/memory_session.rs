@@ -18,6 +18,14 @@ pub struct Args {
 pub enum Cmd {
     /// Create a new encrypted store, private authority and key.
     Init,
+    /// Explicitly upgrade live encrypted ordinary storage to Task/Plan schema v10.
+    EnablePlanning,
+    /// Complete only this exact reserved task startup; never execute a model or tool.
+    RetryTaskStart {
+        session_id: String,
+        #[arg(long, value_name = "TASK_JSON")]
+        task: PathBuf,
+    },
     /// Retry capture from an existing finalized recording.
     Retry { run_id: String },
     /// Withdraw a capture and its retained dependents.
@@ -55,6 +63,16 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::Init => {
             SessionMemory::initialize(&request)?;
             serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized"})
+        }
+        Cmd::EnablePlanning => {
+            let memory = SessionMemory::open_for_recovery(&request)?;
+            let version = memory.enable_planning()?;
+            serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"planning_enabled","schema_version":version})
+        }
+        Cmd::RetryTaskStart { session_id, task } => {
+            let memory = SessionMemory::open_for_recovery(&request)?;
+            memory.retry_task_start_file(&session_id, &std::path::absolute(task)?)?;
+            serde_json::json!({"protocol":mecha_core::memory_session::chat::CHAT_TASK_MEMORY_PROTOCOL,"status":"attached","conversation_id":session_id})
         }
         Cmd::Retry { run_id } => {
             let memory = SessionMemory::open_for_recovery(&request)?;

@@ -152,7 +152,7 @@ impl Memory {
         ensure!(
             matches!(
                 tx.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-                8 | 9
+                8..=10
             ),
             "native concept appraisal requires version 8"
         );

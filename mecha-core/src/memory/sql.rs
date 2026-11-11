@@ -60,17 +60,20 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        app == 1296912466 && matches!(version, 1..=9),
+        app == 1296912466 && matches!(version, 1..=10),
         "not a supported Mecha memory prototype"
     );
     if version >= 6 {
         host_capture::validate_schema(conn)?;
-        if matches!(version, 7..=9) {
+        if matches!(version, 7..=10) {
             interpretation::validate_schema(conn)?;
         }
     }
-    if version == 9 {
+    if matches!(version, 9 | 10) {
         task::validate_schema(conn)?;
+    }
+    if version == 10 {
+        plan::validate_schema(conn)?;
     }
     Ok(())
 }
@@ -366,7 +369,7 @@ pub(super) fn append(
 ) -> Result<RevisionRef> {
     if let Record::Task(_) = record {
         ensure!(
-            task::version(conn)? == 9 && state == "active",
+            matches!(task::version(conn)?, 9 | 10) && state == "active",
             "invalid task append schema or lifecycle"
         );
         if let Some(previous) = previous {
@@ -381,6 +384,14 @@ pub(super) fn append(
         }
         ensure!(dependencies.is_empty(), "task dependencies are not exposed");
     }
+    if let Record::Plan(plan) = record {
+        ensure!(
+            task::version(conn)? == 10
+                && state == "active"
+                && dependencies == [plan.task.reference.clone()],
+            "invalid plan append"
+        );
+    }
     let kind = match record {
         Record::Evidence(_) => "evidence",
         Record::Entity { .. } => "entity",
@@ -388,6 +399,7 @@ pub(super) fn append(
         Record::Concept(_) => "concept",
         Record::Interpretation(_) => "interpretation",
         Record::Task(_) => "task",
+        Record::Plan(_) => "plan",
     };
     let reference = RevisionRef {
         object: previous
@@ -432,7 +444,7 @@ pub(super) fn append(
         Record::Entity { label } => label,
         Record::Relation(r) => &r.text,
         Record::Concept(c) => &c.principle,
-        Record::Interpretation(_) | Record::Task(_) => "",
+        Record::Interpretation(_) | Record::Task(_) | Record::Plan(_) => "",
     };
     let transcript_text = match record {
         Record::Evidence(Capture {

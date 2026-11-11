@@ -14,6 +14,64 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Durable CLI task plans and native audit recovery (2026-11-11)
+
+The opt-in CLI task-chat adapter now persists the owner's Task and the model's
+versioned Plan in Mecha memory. `enable-planning` explicitly sequences encrypted
+v8→v9→v10 migration. `--memory-task` creates one owner container;
+`--memory-task-resume` restores its exact TaskRef, tool surface and database plan.
+The draft does not become owner speech or charter authority. Model completion
+cannot close the owner's task. Existing `TodoTool` parsing, check freezes and
+feedback are reused; shared effects publish only after commit. Calls dispatch in
+authored order, and native metadata identifies each ordered feedback contribution.
+The first profile permits local file/context tools and todo; declared checks stay
+Skipped. Board, mail and web consumers remain unmigrated.
+
+`BoundNativeSession` binds a no-follow append descriptor to exact native identity
+and prefix. Startup reservation is durably synced before Task creation or replay.
+Final native bytes are fingerprinted before append, synced, reconciled against the
+complete original SQL receipt set, then sealed and retained. Live permits revoke
+on finish/drop. Recovery has no execution capability: it can verify existing bytes
+and finish missing storage stages, never append invented results or rerun tools.
+Missing/partial/conflicting evidence remains pending, including zero-todo turns.
+Exact complete task recordings recover without the removed execution directory;
+live and legacy capture retain their canonical-path checks. Generic capture omits
+structured todo state only after exact audit validation; independent evidence
+keeps its original native pointer.
+
+The actual authored CLI pilot exercises three retained turns and three plan
+revisions across changed goals and a fresh process. An unfinished item dropped
+before restart retains its open check; re-adding it completed with a changed check
+restores the original, freezes it and reports tampering without executing it.
+Independent encrypted SQL, native records and provider-visible echoes agree.
+Authenticated goal_context recalls the exact ordinary source; generic plan recall
+stays empty, and a bare reader without source authority withholds host evidence.
+Six provider requests cover the successful workflow; two more place a real
+process kill after commit. Retry leaves missing audit pending, makes no provider
+request and changes neither Plan nor transcript; resume refuses. Finer
+sync/audit/seal crash boundaries are core host fault fixtures, not additional CLI
+process kills. These are engineering checks, not model planning-quality results.
+
+Independent review found two recovery ordering defects and both were observed
+RED before fixing: retry of visible but unsynced startup bytes created a Task
+before sync failed, and complete-native recovery required the old workspace to
+exist. The corrected tests prove zero Task/operation rows on failed pre-create
+sync, successful removed-workspace recovery, and explicit foreign-workspace
+refusal. Earlier storage review also caught open-check substitution through an
+absent-item declaration; transitions now preserve absent declarations exactly.
+
+Final local qualification passed 6,513 default workspace tests (25 ignored),
+7,455 memory-enabled tests (30 ignored), both all-target workspace builds,
+strict all-target/all-feature Clippy and formatting. The standalone memory
+harness passed 456 tests. The rebuilt actual CLI pilot passed locally and on
+Spark; Spark also passed all 50 required-backend tests with skipping disabled.
+The full-suite replay inventory needed an explicit conditional TodoTool entry;
+test-only controls now prove volatile todo remains permitted and durable todo
+remains refused by the unchanged live-replay gate. Linux qualified the same
+production source; its copy predates only that test repair and final prose.
+No production service was activated and no model-quality trial was run.
+
+
 ### Session inspection and clear-boundary taint parity (2026-11-10)
 
 Review found the secondary public taint reader retaining positions and clean

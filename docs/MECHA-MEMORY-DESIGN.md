@@ -7,13 +7,12 @@ plans will use this memory database as their authoritative store, rather than
 mecha-graph. Reuse existing tool/planning interfaces through a core storage API;
 retain versioned goal links, plan/status revisions and outcome evidence. Native
 JSONL remains audit/replay evidence, not the sole task store. The owner graph
-remains independent personal context. A first host-only, session-bound Task store
-is implemented through `Memory::enable_session_tasks` and the typed `task_*`
-APIs: explicit keyed v8-to-v9 migration, revisions, conflict checks, exact retry
-receipts, forgetting and schema-preserving encrypted snapshots. This is database
-persistence only; Plan/TodoTool integration, native audit recovery and migration
-of existing graph-backed task consumers remain open. See HISTORY for measured
-checks and HANDOFF for the next adapter work.
+remains independent personal context. The first host-only, session-bound Task store and the CLI durable Plan/TodoTool
+adapter are implemented through explicit encrypted v8→v9→v10 migration, typed
+operations, staged runtime effects and exact native audit recovery. The owner
+web runtime and graph-backed task-board/mail consumers remain integration work.
+See HISTORY for the authored restart/crash qualification and HANDOFF for current
+remaining work; §31.27 retains the design and limits.
 
 **Authenticated-web addendum, 2026-11-10:** the separately versioned bounded
 web-memory profile is implemented and qualified, using the existing Agent loop
@@ -4251,3 +4250,123 @@ This qualifies mechanics, not semantic benefit, private data or daily-use cutove
 Web attachment, planning/todo continuity and safe compaction remain separate
 usable increments, specified in the implementation plan rather than inferred
 from tool allowlisting alone.
+
+
+### 31.27 Durable task plans in ordinary chat
+
+**Owner direction, 2026-11-10; implementation in progress.** Mecha-owned tasks,
+todos and plans use the encrypted Mecha database. The existing owner-information
+graph remains independent. First deliver an actual CLI plan/update/restart slice;
+connect the owned web runtime afterward. The implementation plan is
+`superpowers/plans/2026-11-10-durable-task-planning.md`.
+
+The host creates one task from explicit owner startup intent and binds its exact
+TaskRef to the authenticated conversation attachment. Models may propose and
+revise that task's plan using the existing todo schema. They cannot change the
+owner's task identity/intent, close or cancel the task, or create owner authority
+through `serves`. Existing GoalRef::Task strings remain legacy proposed graph
+associations; they are never reinterpreted as Mecha TaskRefs. Changed chat goals
+and owner-authored charter versions remain separately bound to each plan update.
+
+Use one typed Plan revision and a small operation/audit ledger in the existing
+store, enabled by an explicit keyed v9-to-v10 migration. Opening never migrates.
+The canonical Plan contains ordered todo items and the lifetime check declarations,
+including dropped open declarations as well as frozen checks. Store check text,
+not process-local hashes. Process counters, escalation history and work marks
+restart empty. Current Task/Plan heads, session/account/domain/scopes and source
+withdrawal are checked together under the write transaction. Plan depends on the
+exact Task revision; Task does not depend on its plan or outcomes. Generic memory
+read/search/recall cannot expose Plan payloads or their private dependency closure.
+Historical restore remains an offline copy without live task/plan authority.
+
+Implementation bounds are 32 current items, 512 UTF-8 bytes per content/expect/check
+field, 256 retained check declarations and 32 KiB for the canonical snapshot.
+Reject duplicate trimmed item content and capacity overflow; never silently evict
+lifetime checks. A concrete adapter reuses TodoTool parsing, transition assessment
+and rendering. No general store trait, project registry or new step-ID vocabulary
+is required. The first task profile admits the existing bounded local file/context
+surface plus todo, with no shell, MCP, program tool, deferred jobs, escalation,
+steering or compaction. Declared executable checks remain unverified/Skipped.
+
+Every write has a host-issued occurrence within the authenticated native turn;
+provider call IDs are audit data, not idempotency keys. The profile executes calls
+in authored order. Duplicate provider IDs within one batch refuse before durable
+writes; todo IDs reused in later batches remain distinct occurrences. Stage the
+normalized plan, check corrections, rendered result, planning feedback, verified
+set removals, goal bookkeeping and counter deltas before committing. After commit,
+publish those local effects once. A rejected call may retain only its own explicit
+bookkeeping observation. An uncertain commit blocks until its exact receipt is
+resolved; it cannot fall back to volatile state or mecha-graph.
+
+A Plan revision and its pending receipt commit atomically. Before commit, enforce
+the actual dispatch result cap so later rendering cannot truncate the audited
+echo. Attach feature-independent native audit metadata to the initial result
+message, before any early exit, and bind its ordered per-call feedback contributions.
+Raw feedback/sensor data and native receipt metadata never enter provider payloads.
+All-completed steps do not establish task success or owner closure.
+
+Native audit has a distinct durable boundary: append through an authenticated
+no-follow descriptor, verify its identity and expected rolling prefix, sync the
+file and relevant directory entries, then verify the exact native bytes. Reuse
+Session's canonical record encoding and transition logic without changing its
+public layout or old serialized output. Goal decision records, owner messages,
+configuration and final results all use the same bound writer in this profile.
+A partial write poisons the live writer. Deletion/replacement/foreign growth or
+same-size mutation refuses, with no recreation or alternate source file.
+
+Only an exact native proof may mark pending Plan receipts audited. Later calls
+in the same authenticated live turn may see its pending commits; a restarted
+process cannot inherit that allowance. Audit completion precedes capture sealing
+and is independent of retention or semantic success. Recovery under the same
+lease can verify/sync already complete native records, reconcile receipts and
+retry capture without invoking a model/tool or fabricating a missing result.
+A missing or ambiguous native result remains visibly pending and blocks execution.
+Zero-todo turns still require the authenticated sync gate before capture.
+
+Use a separate task CLI attachment V4 and observation/recorder pair; preserve
+existing CLI V1/V2 and authenticated web V3 bytes and strict refusal behavior.
+Generic episodic capture validates every todo occurrence, then omits its structured
+invocation, result, input digests and planning metadata. Those belong to typed Plan
+storage and the native audit trail, not generic source passages. Track all calls
+for limits and canonical harness notes even when their content is omitted. Ordinary
+owner input and independently captured observations retain their own source roles.
+Forgetting a Task erases dependent Plan content and scrubbed receipt state; it does
+not promise deletion of independent owner prose or external native JSONL.
+
+The CLI must wire the same durable TodoTool handle into the registry and Prepared
+state, restore from DB before provider setup, and expose committed/pending/retained
+states distinctly. Qualification requires a real CLI scripted-transport workflow,
+two writes in one batch, fresh-process resume, failure at every commit/sync/audit
+boundary, and a graph fail-on-call sentinel. Existing board/mail/delegation writers,
+cross-session task selection, TUI attachment and full GTD remain later cutovers.
+
+Builder review fixed three cross-layer contracts before implementation. New Plan
+commits require a non-deserializable live-turn permit, bound to store, attachment,
+exact task and authenticated turn; commit holds its liveness guard and the host
+checks the held lease. Finish/drop revokes it. Recovery receives only a distinct
+verified-audit value, never this execution permit. Before final native appends,
+the host durably prepares the expected source identity, endpoint and digest from
+canonical bytes. Recovery requires this expectation even for zero-todo turns;
+canonical-looking uncheckpointed bytes alone are insufficient. No second native
+transcript is stored. The explicit owner command `memory-session --request
+REQUEST_JSON enable-planning` upgrades v8 through v9 to v10, with each keyed step
+atomic and retryable; opening or attaching never performs this upgrade.
+
+Plan steps and declarations use strict storage DTOs. Existing planning feedback
+is retained as bounded duplicate-free JSON text and a digest; storage preserves
+the exact text rather than importing the runtime planner into the standalone
+memory crate. Loaded feedback is unverified until the runtime adapter checks its
+exact typed text round-trip and task-profile semantics. This avoids widening f32
+sensor values through `serde_json::Value` and does not make an opaque digest a
+semantic verdict.
+
+The initial CLI slice treats TaskDraft as canonical owner container metadata;
+the agent receives its directions through actual chat, not a synthetic message
+made from the draft. Startup reserves the native task protocol before creating
+the database Task and records a private exact startup claim. An explicit startup
+retry can finish the original deterministic operation using the same draft; a
+torn or altered native reservation remains blocked. Recovery reads every original
+receipt for the selected turn, including already-audited siblings, before proving
+the complete native audit. A missing seal hash can be completed only after the
+existing seal exactly matches the capture regenerated from authenticated native
+bytes. These recovery paths never dispatch a model or tool.

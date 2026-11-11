@@ -112,3 +112,33 @@ fn web_memory_v3_marker_never_recovers_duplicate_or_unknown_tail_records() {
         assert!(Session::parse(std::path::Path::new("authored-web"), &invalid).is_err());
     }
 }
+
+#[test]
+fn task_start_reservation_is_readable_and_only_finalizes_to_matching_v4() {
+    let header = serde_json::json!({"record":"meta","id":"authored-task","created_at":"2026-01-01T00:00:00Z","provider":"test","model":"test","workspace":"/tmp","kind":"chat"});
+    let start = serde_json::json!({"record":"chat_memory","marker":{"protocol":"ordinary-chat-task-start-v1","conversation_id":"authored-task","authority":"authored-authority","attachment":"a".repeat(64)}});
+    let mut final_marker = start.clone();
+    final_marker["marker"]["protocol"] = "ordinary-chat-memory-v4".into();
+    final_marker["marker"]["attachment"] = "b".repeat(64).into();
+    let path = std::env::temp_dir().join(format!("task-marker-{}.jsonl", uuid::Uuid::new_v4()));
+    let reserved = format!("{header}\n{start}\n");
+    assert!(
+        Session::parse(&path, &reserved).is_ok(),
+        "reservation must be inspectable"
+    );
+    std::fs::write(&path, &reserved).unwrap();
+    assert!(Session::load(&path).is_err());
+    let complete = format!("{reserved}{final_marker}\n");
+    assert_eq!(
+        Session::parse(&path, &complete)
+            .unwrap()
+            .chat_memory
+            .unwrap()
+            .protocol,
+        "ordinary-chat-memory-v4"
+    );
+    assert!(Session::parse(&path, &format!("{complete}{final_marker}\n")).is_err());
+    final_marker["marker"]["authority"] = "other".into();
+    assert!(Session::parse(&path, &format!("{reserved}{final_marker}\n")).is_err());
+    std::fs::remove_file(path).unwrap();
+}
