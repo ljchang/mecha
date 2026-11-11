@@ -9745,6 +9745,16 @@ a tool-less final answer is not an owner charter edit. Record the actual request
 tool surface separately. Clear preserves audit history and its total budgets;
 limit recovery requires a fresh session, not another clear.
 
+**A provider pause is not a new owner turn.** Live dynamic-goal execution refuses
+the raw PauseTurn envelope before empty-response nudges or tool dispatch.
+`run_in` refuses assistant-tail live entry before any host note can create an
+apparent owner boundary, or any charter refresh or state mutation occurs.
+Owner evidence is a request-only projection: skipping it would remove prior
+evidence, while appending it would create an extra user turn. Correct continuation
+requires a separately frozen request contract; do not approximate it with either
+rewrite. Exact historical replay remains on its recorded path. This boundary also
+prevents request-only notes or next-loop budget notices from masking the pause.
+
 The charter file remains the current authority. Stored `CharterSnapshot` values
 retain historical bytes and rendering for replay, never an alternate policy-write
 path. `appraisal::charter_for_transcript` selects a historical charter only when

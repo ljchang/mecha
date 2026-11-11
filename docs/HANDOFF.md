@@ -46,6 +46,13 @@ refuse marked transcripts; historical Stop/Error replay uses recorded answers,
 and Live replay refuses before router/provider setup. Context-only observations do not manufacture confirmed
 goals, and task success stays NotEvaluated.
 
+Live dynamic-goal provider-pause continuation remains unsupported and now
+refuses explicitly before another request or tool dispatch. Request-only goal
+evidence cannot be reconstructed as an unchanged server continuation merely by
+appending a user turn. Ordinary non-dynamic pause handling and recorded historical
+replay retain their existing behavior. Memory chats still apply their normal
+incomplete-capture stop; this is not permission to resume an unsealed turn.
+
 Focused tests and the real CLI authored-transport trial passed: three retained
 turns across changed goals/charters and restart, exact six-request historical
 replay, default-off control and five pre-provider refusals. Independent source

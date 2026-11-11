@@ -696,6 +696,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Live dynamic-goal sessions explicitly refuse unsupported provider-pause
+  continuation instead of silently adding a user turn or changing prior goal
+  evidence. Ordinary pause handling and exact historical replay remain unchanged.
+
 - Ordinary memory capture preserves exact owner text and request histories when
   the agent appends an empty-response retry nudge or boredom notice. Canonical
   loop notes remain audit-only; unknown notes and rewritten histories refuse.

@@ -14,6 +14,40 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Explicit dynamic-goal provider-pause boundary (2026-11-10)
+
+PR review found `Agent::attach_owner_evidence` appending a new user message after
+a paused assistant response. Owner evidence exists only in the request projection;
+merely skipping that append would instead erase previously supplied evidence.
+The bounded live profile now refuses the raw PauseTurn envelope before empty
+response handling or tool dispatch and retains its exact assistant message for
+audit. `run_in` also refuses live assistant-tail entry before any host note,
+charter refresh, recording or context mutation. Historical replay uses its existing exact
+recorded path; ordinary non-dynamic pause handling is unchanged. Supporting live
+continuation requires a frozen request contract, not a message-placement shortcut.
+
+Regression runs first reproduced four live failures with two passing controls,
+then two more failures for pauses without usable text and pauses carrying tool
+calls. The latter executed the test echo tool before the fix. A separate direct
+assistant-tail test also failed by dispatching a provider request. Request-only
+notes and next-loop budget notices are covered because either can mask a pause
+if validation looks only at the rebuilt request's final role. The tests are
+scripted transport checks; no actual model or production runtime was used.
+
+Independent review found that a budget note could also mask an already-paused
+tail on a fresh run entry; its regression failed before moving the entry guard
+ahead of all loop mutations. The first candidate test run separately exposed a
+fixture error: `run_in` mints a private goal-context binding, so the caller's
+outer slot correctly remains empty. The corrected test checks that isolation
+and the actual recorded decision/version. All ten focused cases now pass;
+independent review found no remaining medium or major issue in the frozen fix.
+An initial full-suite attempt was blocked by sandbox-denied loopback listeners;
+the unchanged source was then qualified with local test sockets available.
+Full workspace suites passed 6,497 default tests (25 ignored) and 7,368
+memory-enabled tests (30 ignored), with zero failures.
+Strict Clippy and formatting pass after removing two needless borrows in the
+new test calls; all ten focused tests passed again after that test-only cleanup.
+
 ### Inline loop notices and selected-result provenance (2026-11-10)
 
 PR review found ordinary capture mistaking the harness's own empty-response

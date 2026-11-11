@@ -3114,6 +3114,21 @@ impl Agent {
                 || convo.goal_context_replay.is_some(),
             "dynamic goal context requires --dynamic-goals at a supported chat boundary"
         );
+        // Check the incoming native boundary before budget notices, steering,
+        // or request-only notes can append a user message to an assistant tail.
+        // A retry must not disguise an unsupported dynamic-goal continuation.
+        if convo.goal_context_replay.is_none()
+            && (convo.goal_context.current().is_some()
+                || cx
+                    .goal_ingress
+                    .as_ref()
+                    .is_some_and(|ingress| !ingress.inputs.is_empty()))
+        {
+            anyhow::ensure!(
+                convo.messages.last().is_some_and(|m| m.role == Role::User),
+                "live dynamic-goal request requires an owner or tool-result turn"
+            );
+        }
         // **The `compact` channel is minted per run, here, and not by whoever
         // built the context.** Setup decides whether this run compacts at all
         // — that is a config question, and `None` means the tool is not in the
@@ -4235,6 +4250,22 @@ impl Agent {
                     ),
                     verdict => tracing::debug!(?verdict, "cache lens"),
                 }
+            }
+
+            // Dynamic owner evidence is a request-only projection. Rebuilding
+            // it after a server pause would change the paused request rather
+            // than resume it unchanged. Refuse the raw envelope before an
+            // empty-turn nudge, closing rewrite or client tool dispatch can
+            // disguise that boundary; keep the returned message for audit.
+            // Historical replay still follows its exact recorded projection.
+            if response.stop_reason == StopReason::PauseTurn
+                && convo.goal_context.current().is_some()
+                && convo.goal_context_replay.is_none()
+            {
+                messages.push(response.message);
+                anyhow::bail!(
+                    "live dynamic-goal continuation after a provider pause is unsupported"
+                );
             }
 
             // The closing reply answers in words. A call the model still made,
@@ -8125,6 +8156,298 @@ mod tests {
             .messages
             .iter()
             .any(|m| m.text().contains("remote suggestion")));
+    }
+
+    async fn assert_dynamic_goal_pause_refused(
+        change_charter: bool,
+        tail_note: bool,
+        budget_note: bool,
+        pause_blocks: Option<Vec<Block>>,
+    ) {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+
+        struct ChangeDuringPause {
+            inner: Arc<ScriptedProvider>,
+            charter: std::path::PathBuf,
+        }
+        #[async_trait]
+        impl Provider for ChangeDuringPause {
+            fn local(&self) -> bool {
+                true
+            }
+            fn id(&self) -> &str {
+                self.inner.id()
+            }
+            fn default_model(&self) -> &str {
+                self.inner.default_model()
+            }
+            async fn complete(
+                &self,
+                request: &CompletionRequest,
+                sink: Option<&StreamSink>,
+            ) -> Result<CompletionResponse> {
+                let response = self.inner.complete(request, sink).await?;
+                std::fs::write(
+                    &self.charter,
+                    "[[line]]\nid = 'garden'\ntext = 'Protect the seedlings.'\n",
+                )?;
+                Ok(response)
+            }
+        }
+
+        let dir = std::env::temp_dir().join(crate::session::Session::new_id());
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("charter.toml");
+        std::fs::write(
+            &path,
+            "[[line]]\nid = 'garden'\ntext = 'Preserve the old vines.'\n",
+        )
+        .unwrap();
+        let paused = assistant(
+            pause_blocks.unwrap_or_else(|| vec![Block::text("Server work paused.")]),
+            StopReason::PauseTurn,
+        );
+        let (mut agent, provider) = agent_with(
+            vec![
+                paused.clone(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        if change_charter {
+            agent.provider = Box::new(ChangeDuringPause {
+                inner: Arc::clone(&provider),
+                charter: path.clone(),
+            });
+        }
+        let agent = agent.with_goal_charter(path, None).unwrap();
+        let owner = "Inspect the garden.";
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()],
+            None,
+        );
+        if tail_note {
+            cx.notes = Arc::from(vec!["A request-only harness note.".to_string()]);
+        }
+        if budget_note {
+            cx.budget_notice = true;
+            cx.budget.max_turns = Some(3);
+        }
+        let mut convo = Conversation::user(owner);
+        let result = agent.run_in(&cx, &mut convo, None).await;
+        std::fs::remove_dir_all(dir).unwrap();
+        let error = result.expect_err("live dynamic goals must not alter a paused continuation");
+        assert!(format!("{error:#}")
+            .contains("live dynamic-goal continuation after a provider pause is unsupported"));
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "no modified continuation reaches the provider"
+        );
+        assert_eq!(convo.messages, vec![Message::user(owner), paused.message]);
+        assert_eq!(convo.goal_context.decisions().len(), 1);
+        assert_eq!(convo.goal_context.versions().len(), 1);
+        let binding = &convo.goal_context.decisions()[0];
+        binding.verify_messages(&seen[0].messages).unwrap();
+        assert_eq!(binding.system(), seen[0].system.as_deref());
+        let version = convo.goal_context.current().unwrap();
+        assert!(version
+            .charter()
+            .prompt_block()
+            .unwrap()
+            .contains("Preserve the old vines."));
+        assert_eq!(binding.version(), version.revision());
+        assert!(cx.tools.goal_context_version.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_refuses_before_second_request() {
+        assert_dynamic_goal_pause_refused(false, false, false, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_tail_notes_cannot_mask_assistant_boundary() {
+        assert_dynamic_goal_pause_refused(false, true, false, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_does_not_activate_changed_charter() {
+        assert_dynamic_goal_pause_refused(true, false, false, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_budget_notice_cannot_mask_assistant_boundary() {
+        assert_dynamic_goal_pause_refused(false, false, true, None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_without_usable_text_is_not_nudged() {
+        assert_dynamic_goal_pause_refused(
+            false,
+            false,
+            false,
+            Some(vec![Block::Thinking {
+                text: "Server-side work remains in progress.".into(),
+                signature: Some("synthetic-pause-signature".into()),
+            }]),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_with_tool_use_is_not_dispatched() {
+        assert_dynamic_goal_pause_refused(
+            false,
+            false,
+            false,
+            Some(vec![Block::ToolUse {
+                id: "paused-call".into(),
+                name: "echo".into(),
+                input: json!({"text": "must not run"}),
+            }]),
+        )
+        .await;
+    }
+
+    async fn assert_dynamic_goal_assistant_tail_refused(budget_turns: Option<u32>) {
+        use crate::goal_context::{OwnerInput, OwnerSource};
+        let owner = "Inspect the garden.";
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()],
+            None,
+        );
+        // Projection appends a user message for these notes. Only the native
+        // boundary can prove that an owner or tool-result turn actually exists.
+        cx.notes = Arc::from(vec!["A request-only harness note.".to_string()]);
+        cx.budget_notice = budget_turns.is_some();
+        cx.budget.max_turns = budget_turns;
+        let native = vec![
+            Message::user(owner),
+            Message::assistant(vec![Block::text("Paused.")]),
+        ];
+        let mut convo = Conversation::from(native.clone());
+        let error = agent
+            .run_in(&cx, &mut convo, None)
+            .await
+            .expect_err("an assistant tail is not a new live owner decision");
+        assert!(format!("{error:#}")
+            .contains("live dynamic-goal request requires an owner or tool-result turn"));
+        assert!(provider.seen.lock().unwrap().is_empty());
+        assert_eq!(convo.messages, native);
+        assert!(convo.goal_context.versions().is_empty());
+        assert!(convo.goal_context.decisions().is_empty());
+        assert!(cx.tools.goal_context_version.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_direct_assistant_tail_entry_is_refused() {
+        assert_dynamic_goal_assistant_tail_refused(None).await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_direct_budget_note_cannot_create_owner_boundary() {
+        for turns in [1, 2] {
+            assert_dynamic_goal_assistant_tail_refused(Some(turns)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_guard_leaves_ordinary_resume_unchanged() {
+        let paused = assistant(
+            vec![Block::text("Server work paused.")],
+            StopReason::PauseTurn,
+        );
+        let (agent, provider) = agent_with(
+            vec![
+                paused.clone(),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("Inspect the garden.");
+        agent
+            .run_in(agent.context(), &mut convo, None)
+            .await
+            .unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let mut expected = seen[0].messages.clone();
+        expected.push(paused.message);
+        assert_eq!(seen[1].messages, expected);
+        assert!(convo.goal_context.decisions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dynamic_goal_pause_turn_historical_replay_keeps_recorded_projection() {
+        use crate::goal_context::{DecisionBinding, OwnerInput, OwnerSource};
+        let owner = "Inspect the garden.";
+        let (agent, provider) = agent_with(
+            vec![assistant(vec![Block::text("done")], StopReason::EndTurn)],
+            PermissionMode::Allow,
+        );
+        let cx = agent.context().as_ref().clone().with_goal_ingress(
+            vec![OwnerInput::new(OwnerSource::CliChat, owner.into()).unwrap()],
+            None,
+        );
+        let mut original = Conversation::user(owner);
+        agent.run_in(&cx, &mut original, None).await.unwrap();
+        let first = original.goal_context.decisions()[0].clone();
+        let version = original.goal_context.current().unwrap().clone();
+        let paused = assistant(
+            vec![Block::text("Server work paused.")],
+            StopReason::PauseTurn,
+        );
+        let native = vec![Message::user(owner), paused.message.clone()];
+        let mut historical = provider.seen.lock().unwrap()[0].clone();
+        historical.messages = agent.wire(&native, &agent.request_notes(&cx)).into_owned();
+        // Historical live code appended evidence as a new user message. Replay
+        // preserves that exact recorded request; the live refusal is not a rewrite.
+        historical
+            .messages
+            .push(Message::user(version.owner_prompt_block()));
+        historical.trailing_notes = 1;
+        let second = DecisionBinding::new(
+            2,
+            version.revision(),
+            &historical.messages,
+            historical.system.clone(),
+            false,
+            historical.trailing_notes,
+        )
+        .unwrap()
+        .with_conversation_messages(&native)
+        .unwrap()
+        .with_tool_surface(&historical.tools, historical.tool_choice)
+        .unwrap();
+        let (replayer, replay_provider) = agent_with(
+            vec![
+                paused,
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut replay = Conversation::user(owner);
+        replay.goal_context_replay = Some(VecDeque::from([
+            (first.clone(), version.clone()),
+            (second.clone(), version),
+        ]));
+        replayer
+            .run_in(replayer.context(), &mut replay, None)
+            .await
+            .unwrap();
+        let seen = replay_provider.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        for (request, binding) in seen.iter().zip([first, second]) {
+            binding.verify_messages(&request.messages).unwrap();
+            assert_eq!(request.trailing_notes, binding.trailing_notes());
+            assert_eq!(request.system.as_deref(), binding.system());
+        }
+        assert!(replay.goal_context_replay.as_ref().unwrap().is_empty());
     }
 
     #[tokio::test]
