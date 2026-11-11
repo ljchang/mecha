@@ -153,7 +153,9 @@ admits an already sealed capture after current source checks, and `forget`
 withdraws an episode and purges dependent memory in
 the selected store. These commands print JSON and execute no provider or tool.
 They do not require the original task directory and do not discover other stores.
-See [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
+See [the home store](/docs/features/memory#the-home-store-and-the-memory-switch)
+for the `memory` switch, and
+[episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
 for the manifest, supported run profile and external-file protection limits.
 
 ## `chat`

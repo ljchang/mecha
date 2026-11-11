@@ -652,13 +652,9 @@ pub struct Facts {
     /// is checked every time a pool starts (`worker::verify`), not on every
     /// read of this row, which a page load makes.
     pub code_worker_installed: bool,
-    /// Whether the home holds an initialized memory store
-    /// (`memory_home::initialized`): its database, key and authority
-    /// identity as files. Never an open.
-    pub memory_store_initialized: bool,
-    /// Whether the home holds some of a memory store and not all of it
-    /// (`memory_home::partial`).
-    pub memory_store_partial: bool,
+    /// What the home holds of a memory store (`memory_home::store`): none of
+    /// it, all of it, some of it, or unreadable. Never an open.
+    pub memory_store: crate::memory_home::Store,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -714,8 +710,7 @@ impl Facts {
                 std::fs::metadata(crate::interpreter::worker::installed_path(home))
                     .is_ok_and(|m| m.is_file() && m.len() == pin.binary_bytes)
             }),
-            memory_store_initialized: crate::memory_home::initialized(home),
-            memory_store_partial: crate::memory_home::partial(home),
+            memory_store: crate::memory_home::store(home),
             config: global.clone(),
         }
     }
@@ -2026,18 +2021,15 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // A partial store is its own answer: `init` refuses one, so the row
         // must not print it as the fix (the #443 shape; review of #862).
         Feature::Memory => {
-            if facts.memory_store_initialized {
-                on("the encrypted store in the mecha home's memory/")
-            } else if facts.memory_store_partial {
-                off(
-                    "the memory store in the mecha home is incomplete",
-                    crate::memory_home::REPAIR,
-                )
-            } else {
-                off(
-                    "no memory store in the mecha home yet",
-                    crate::memory_home::INIT_COMMAND,
-                )
+            use crate::memory_home::{Store, INIT_COMMAND, READABLE, REPAIR};
+            match facts.memory_store {
+                Store::Whole => on("the encrypted store in the mecha home's memory/"),
+                Store::Absent => off("no memory store in the mecha home yet", INIT_COMMAND),
+                Store::Partial => off("the memory store in the mecha home is incomplete", REPAIR),
+                Store::Unreadable => off(
+                    "the memory store in the mecha home could not be read",
+                    READABLE,
+                ),
             }
         }
     }
@@ -2540,6 +2532,7 @@ mod tests {
     /// else; with it, the switch and then the home store's three files.
     #[test]
     fn memory_reads_its_build_its_switch_and_the_home_store() {
+        use crate::memory_home::Store;
         let memory = |facts: &Facts| state(facts, Feature::Memory);
         let mut facts = empty_machine();
         if !crate::memory_home::BUILT {
@@ -2567,14 +2560,20 @@ mod tests {
         };
         assert_eq!(fix.as_deref(), Some(crate::memory_home::INIT_COMMAND));
         // Some of a store and not all: `init` would refuse, so it is not the fix.
-        facts.memory_store_partial = true;
+        facts.memory_store = Store::Partial;
         let State::Unready { reason, fix } = memory(&facts) else {
             panic!("a partial store is unready")
         };
         assert!(reason.contains("incomplete"), "{reason}");
         assert_eq!(fix.as_deref(), Some(crate::memory_home::REPAIR));
-        facts.memory_store_partial = false;
-        facts.memory_store_initialized = true;
+        // Could not be read: a finding of its own, never "no store yet".
+        facts.memory_store = Store::Unreadable;
+        let State::Unready { reason, fix } = memory(&facts) else {
+            panic!("an unreadable store is unready")
+        };
+        assert!(reason.contains("could not be read"), "{reason}");
+        assert_eq!(fix.as_deref(), Some(crate::memory_home::READABLE));
+        facts.memory_store = Store::Whole;
         assert_eq!(memory(&facts).word(), "on");
         set_switch(&mut facts.config, Feature::Memory, false);
         assert_eq!(memory(&facts).word(), "off");

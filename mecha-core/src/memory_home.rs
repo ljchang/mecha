@@ -55,29 +55,72 @@ pub fn authority(home: &Path) -> PathBuf {
     dir(home).join("authority")
 }
 
-/// Whether `home` holds an initialized store — all three of the database, its
-/// key and the authority's identity, as regular files. No open, no key read:
-/// a page load asks this. A symlink is not one — every opener of the three
-/// refuses a link, and a row that says on for a store nothing can open is the
-/// wrong answer. A partial set is not initialized, and `init` refuses it by
-/// name rather than building over it.
+/// What `home` holds of a memory store, from one read of its three paths.
+///
+/// Four answers kept apart, because each has a different next step and
+/// `init` treats them differently: nothing (run `init`), all of it, some of
+/// it (`init` refuses, so a row must not offer it), and could not be read —
+/// which is a finding of its own, never an empty home.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Store {
+    /// None of the three paths exists.
+    #[default]
+    Absent,
+    /// The database, its key and the authority's identity, each a regular
+    /// file. A symlink is not one: every opener of the three refuses a link,
+    /// and a row that says on for a store nothing can open is the wrong
+    /// answer.
+    Whole,
+    /// Something is at one of the paths, in any form, and it is not `Whole`.
+    Partial,
+    /// A path could not be read for a reason other than its absence.
+    Unreadable,
+}
+
+/// One path, by the link and never its target: absent, a regular file,
+/// something else, or unreadable.
+fn entry(path: &Path) -> std::io::Result<Option<bool>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta.is_file())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Read what `home` holds. No open, no key read: a page load asks this.
+pub fn store(home: &Path) -> Store {
+    let read = [
+        entry(&db(home)),
+        entry(&key_file(home)),
+        entry(&authority(home).join("identity")),
+        entry(&authority(home)),
+    ];
+    if read.iter().any(|r| r.is_err()) {
+        return Store::Unreadable;
+    }
+    let [db, key, identity, authority] = read.map(|r| r.unwrap_or(None));
+    if [db, key, identity] == [Some(true); 3] {
+        Store::Whole
+    } else if [db, key, identity, authority] == [None; 4] {
+        Store::Absent
+    } else {
+        Store::Partial
+    }
+}
+
+/// Whether `home` holds a whole store ([`Store::Whole`]).
 pub fn initialized(home: &Path) -> bool {
-    let file = |p: PathBuf| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file());
-    file(db(home)) && file(key_file(home)) && file(authority(home).join("identity"))
+    store(home) == Store::Whole
 }
 
-/// Whether `home` holds some of a store and not all of it: any of the three
-/// paths exists, in any form, and [`initialized`] is false. `init` refuses
-/// this by name, so a row must not offer `init` as its fix.
-pub fn partial(home: &Path) -> bool {
-    let exists = |p: PathBuf| std::fs::symlink_metadata(p).is_ok();
-    !initialized(home) && (exists(db(home)) || exists(key_file(home)) || exists(authority(home)))
-}
-
-/// What a row says to do about a [`partial`] store.
+/// What a row says to do about a [`Store::Partial`] store.
 pub const REPAIR: &str =
     "restore the missing file under the mecha home's memory/, or move memory/ aside and run \
      `mecha memory-session init`";
+
+/// What a row says to do about a [`Store::Unreadable`] store.
+pub const READABLE: &str =
+    "make the mecha home's memory/ and what is under it readable by you again";
 
 #[cfg(feature = "memory-prototype")]
 mod open {
@@ -113,9 +156,14 @@ mod open {
     /// replace a key.
     pub fn initialize(home: &Path) -> Result<SessionMemoryRequest> {
         let request = request(home)?;
+        // By the link, as `store` reads: a dangling symlink is something
+        // here, and `init` refuses it rather than removing what it did not
+        // make. An error other than absence is the caller's to see.
         for path in [&request.db, &request.key_file, &request.authority] {
             ensure!(
-                !path.try_exists()?,
+                super::entry(path)
+                    .with_context(|| format!("reading {}", path.display()))?
+                    .is_none(),
                 "{} already exists — the home store is initialized once, and a \
                  partial one is repaired by hand, never built over",
                 path.display()
@@ -196,7 +244,7 @@ mod tests {
     fn a_partial_store_is_not_initialized() {
         let scratch = Scratch::new();
         let home = scratch.0.as_path();
-        assert!(!initialized(home) && !partial(home));
+        assert_eq!(store(home), Store::Absent);
         for file in [db(home), key_file(home)] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, b"x").unwrap();
@@ -210,8 +258,28 @@ mod tests {
         let moved = home.join("moved.key");
         std::fs::rename(key_file(home), &moved).unwrap();
         std::os::unix::fs::symlink(&moved, key_file(home)).unwrap();
-        assert!(!initialized(home));
-        assert!(partial(home));
+        assert_eq!(store(home), Store::Partial);
+    }
+
+    /// Unreadable is its own answer, never an empty home: a directory the
+    /// owner cannot search hides whether anything is in it.
+    #[test]
+    fn a_store_that_cannot_be_read_is_not_an_absent_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let home = scratch.0.as_path();
+        std::fs::create_dir_all(dir(home).join("store")).unwrap();
+        std::fs::write(db(home), b"x").unwrap();
+        let locked = dir(home).join("store");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads through any mode; the assertion means something only
+        // where the lock holds.
+        let holds = std::fs::symlink_metadata(db(home)).is_err();
+        let read = store(home);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if holds {
+            assert_eq!(read, Store::Unreadable);
+        }
     }
 
     /// The whole path, on a home spelled as the real one is: `init` makes a
@@ -237,7 +305,7 @@ mod tests {
             format!("{refused:#}").contains("live Mecha directories"),
             "{refused:#}"
         );
-        assert!(!partial(&home) && !initialized(&home));
+        assert_eq!(store(&home), Store::Absent);
 
         std::env::set_var("MECHA_HOME", &home);
         let request = initialize(&home).unwrap();
@@ -266,6 +334,19 @@ mod tests {
         );
         assert!(!db(&home).exists());
         std::fs::rename(root.join("aside.sqlite"), db(&home)).unwrap();
+
+        // A dangling link where the key would go is something there: `init`
+        // refuses it and leaves it, where following the link read it as
+        // absent and the failed attempt then removed it.
+        let other = root.join("other-home").join(".mecha");
+        std::fs::create_dir_all(dir(&other).join("key")).unwrap();
+        std::os::unix::fs::symlink(root.join("nowhere"), key_file(&other)).unwrap();
+        std::env::set_var("MECHA_HOME", &other);
+        assert_eq!(store(&other), Store::Partial);
+        let refused = initialize(&other).unwrap_err().to_string();
+        assert!(refused.contains("already exists"), "{refused}");
+        assert!(std::fs::symlink_metadata(key_file(&other)).is_ok());
+        std::env::set_var("MECHA_HOME", &home);
 
         let key = std::fs::read(key_file(&home)).unwrap();
         let again = initialize(&home).unwrap_err().to_string();
