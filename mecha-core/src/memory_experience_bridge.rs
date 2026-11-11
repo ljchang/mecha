@@ -490,6 +490,7 @@ fn events_mode(
                             pointer,
                             text,
                             occurred_at: None,
+                            external: None,
                         });
                     }
                 }
@@ -960,6 +961,7 @@ impl LocalAuthority {
                 pointer: "/artifact_observation".into(),
                 text: serde_json::to_string(observation)?,
                 occurred_at: None,
+                external: None,
             });
             ensure!(projected.originals.len() <= 16, "capture refused");
             ArtifactCheck {

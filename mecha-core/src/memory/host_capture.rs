@@ -104,6 +104,15 @@ pub struct OriginalPassage {
     pub pointer: String,
     pub text: String,
     pub occurred_at: Option<String>,
+    /// Whether this passage's bytes came from outside the harness, as the
+    /// loop recorded it beside the result (`Message::tool_provenance`):
+    /// `Some(true)` for third-party content, `Some(false)` for a result the
+    /// harness or a local tool produced, `None` where the transcript says
+    /// nothing — which every reader treats as untrusted, never as clean.
+    /// Absent from the wire when `None`, so a capture sealed before this
+    /// field existed keeps its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<bool>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiptStatus {
@@ -173,6 +182,10 @@ pub(crate) struct OriginalDescriptor {
     pub(crate) pointer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     occurred_at: Option<String>,
+    /// [`OriginalPassage::external`], kept with the descriptor because the
+    /// evidence row stores the bytes and nothing about where they came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) external: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -213,6 +226,7 @@ fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64)
                 line: p.line,
                 pointer: p.pointer.clone(),
                 occurred_at: p.occurred_at.clone(),
+                external: p.external,
             })
             .collect(),
         receipts: input.receipts.clone(),
@@ -296,6 +310,7 @@ fn projection_input_for_receipt(
                     pointer: d.pointer,
                     text: original.text,
                     occurred_at: d.occurred_at,
+                    external: d.external,
                 });
             }
             HostCapture {

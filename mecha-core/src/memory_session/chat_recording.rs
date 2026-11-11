@@ -215,7 +215,7 @@ fn capture_impl(
                 );
                 ended = true;
             }
-            Record::Message(m) => {
+            Record::Message(mut m) => {
                 ensure!(
                     !ended
                         && messages < 128
@@ -252,7 +252,11 @@ fn capture_impl(
                     .iter()
                     .take_while(|block| matches!(block, Block::ToolResult { .. }))
                     .count();
+                // What the loop recorded beside each result: whether its bytes
+                // came from outside. Read before the blocks are consumed.
+                let provenance = std::mem::take(&mut m.tool_provenance);
                 for (index, b) in m.content.into_iter().enumerate() {
+                    let mut external = None;
                     let (kind, field, text) = match b {
                         // The full native transcript stays bound by the seal.
                         // Reasoning and its opaque signature are audit data.
@@ -330,6 +334,7 @@ fn capture_impl(
                             content,
                             is_error,
                         } => {
+                            external = provenance.get(&tool_use_id).copied();
                             ensure!(m.role == Role::User, "ordinary result unsupported");
                             let (name, input, complete) = calls
                                 .get_mut(&tool_use_id)
@@ -341,7 +346,7 @@ fn capture_impl(
                                 continue;
                             }
                             let external = if a.graph_surface.is_some() {
-                                m.tool_provenance.get(&tool_use_id).copied()
+                                provenance.get(&tool_use_id).copied()
                             } else {
                                 None
                             };
@@ -424,6 +429,7 @@ fn capture_impl(
                         pointer,
                         text,
                         occurred_at: None,
+                        external,
                     });
                 }
             }

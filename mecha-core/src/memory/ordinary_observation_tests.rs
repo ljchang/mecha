@@ -72,6 +72,7 @@ fn passage(
         pointer: pointer.into(),
         text: text.into(),
         occurred_at: None,
+        external: None,
     }
 }
 
@@ -260,6 +261,61 @@ fn successful_tool_and_assistant_claim_still_yield_not_evaluated() {
         .db
         .capture_semantic_assessment(&forged, &f.access)
         .is_err());
+}
+
+/// What the transcript recorded about where a result came from is stored
+/// with the passage and read back unchanged — outside, local, and unknown
+/// kept apart, because unknown is never read as local.
+#[test]
+fn where_a_result_came_from_survives_admission_and_the_canonical_reader() {
+    let mut f = Fixture::new(Memory::create_supported_situated);
+    let mut input = with_invocation(
+        capture("provenance", "a", "Read the fixture record"),
+        ReceiptStatus::Succeeded,
+    );
+    for (pointer, text, external) in [
+        (
+            "/content/2/content",
+            "fetched from a third party",
+            Some(true),
+        ),
+        ("/content/3/content", "read from the workspace", Some(false)),
+        ("/content/4/content", "recorded before provenance", None),
+    ] {
+        let mut result = passage(
+            "provenance",
+            PassageKind::ToolResult,
+            "test-host",
+            pointer,
+            text,
+        );
+        result.external = external;
+        input.originals.push(result);
+    }
+    let receipt = admit(&mut f, input);
+    let Some(Record::Evidence(projection)) = f.db.read(&receipt.projection, &f.access).unwrap()
+    else {
+        panic!("missing ordinary projection");
+    };
+    let canonical = projection_input(&f.db.conn, &projection).unwrap();
+    let stored: Vec<_> = canonical
+        .originals
+        .iter()
+        .filter(|p| p.kind == PassageKind::ToolResult)
+        .map(|p| (p.text.as_str(), p.external))
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            ("fetched from a third party", Some(true)),
+            ("read from the workspace", Some(false)),
+            ("recorded before provenance", None),
+        ]
+    );
+    // And it is part of what the store authenticates: the same passages with
+    // a different answer are a different capture.
+    let wire = serde_json::to_string(&canonical).unwrap();
+    assert!(wire.contains(r#""external":true"#) && wire.contains(r#""external":false"#));
 }
 
 #[test]

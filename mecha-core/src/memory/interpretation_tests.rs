@@ -54,6 +54,7 @@ fn input(id: &str) -> HostCapture {
             pointer: "/tool/call1".into(),
             text: "convert synthetic CSV to JSON".into(),
             occurred_at: None,
+            external: None,
         }],
         receipts: vec![ToolReceipt {
             call_id: "call1".into(),
@@ -1076,6 +1077,7 @@ fn metadata_rich_input(id: &str) -> HostCapture {
         })
         .unwrap(),
         occurred_at: None,
+        external: None,
     });
     let digest = Sha256::digest(b"[]")
         .iter()
@@ -1099,6 +1101,7 @@ fn metadata_rich_input(id: &str) -> HostCapture {
         })
         .unwrap(),
         occurred_at: None,
+        external: None,
     });
     i
 }

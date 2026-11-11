@@ -399,6 +399,7 @@ mod tests {
                     pointer: format!("/observation/{i}"),
                     text: text.clone(),
                     occurred_at: None,
+                    external: None,
                 })
                 .collect(),
             receipts: vec![ToolReceipt {

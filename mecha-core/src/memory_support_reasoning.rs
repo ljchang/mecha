@@ -487,14 +487,15 @@ mod tests {
                 kind: PassageKind::ToolResult, line: 1, pointer: "/result".into(),
                 text: format!("The prior inventory passed its old check. The current inventory is empty.{}", if large { "🦀".repeat(1000) } else { String::new() }),
                 occurred_at: None,
+                external: None,
             }, OriginalPassage {
                 source: SourceKey { connector: "host-action-invocation-v1".into(), account: "test".into(), id: "requested".into() },
                 kind: PassageKind::ActionInvocation, line: 1, pointer: "/content/0/input".into(),
-                text: serde_json::to_string(&ActionInvocation { call_id: "authored-call".into(), tool_name: "read_inventory".into(), input_status: InputStatus::Oversized, input: Value::Null, input_digest: "a".repeat(64) }).unwrap(), occurred_at: None,
+                text: serde_json::to_string(&ActionInvocation { call_id: "authored-call".into(), tool_name: "read_inventory".into(), input_status: InputStatus::Oversized, input: Value::Null, input_digest: "a".repeat(64) }).unwrap(), occurred_at: None, external: None,
             }, OriginalPassage {
                 source: SourceKey { connector: "host-artifact-observation-v1".into(), account: "test".into(), id: "missing".into() },
                 kind: PassageKind::ArtifactObservation, line: 1, pointer: "/artifact_observation".into(),
-                text: serde_json::to_string(&ArtifactObservation { content_status: ContentStatus::Missing, artifact_text: None, artifact_digest: None, verdict: CheckVerdict::Unavailable }).unwrap(), occurred_at: None,
+                text: serde_json::to_string(&ArtifactObservation { content_status: ContentStatus::Missing, artifact_text: None, artifact_digest: None, verdict: CheckVerdict::Unavailable }).unwrap(), occurred_at: None, external: None,
             }],
             receipts: vec![ToolReceipt { call_id: "authored-call".into(), tool_name: "read_inventory".into(), status: ReceiptStatus::Succeeded }], artifact: ArtifactCheck { artifact_digest: None, verdict: CheckVerdict::Unavailable },
             consulted: vec![], scopes: BTreeSet::new(), occurred_at: None,

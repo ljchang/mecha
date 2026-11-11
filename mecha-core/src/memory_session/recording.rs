@@ -219,7 +219,7 @@ pub(super) fn capture(
                     );
                 }
             }
-            Record::Message(m) => {
+            Record::Message(mut m) => {
                 ensure!(
                     !taint
                         && config == 1
@@ -239,7 +239,11 @@ pub(super) fn capture(
                 final_assistant = m.role == Role::Assistant
                     && m.content.iter().any(|b| matches!(b, Block::Text { .. }));
                 let mut saw_note = false;
+                // What the loop recorded beside each result: whether its bytes
+                // came from outside. Read before the blocks are consumed.
+                let provenance = std::mem::take(&mut m.tool_provenance);
                 for (index, b) in m.content.into_iter().enumerate() {
+                    let mut external = None;
                     let (kind, field, text) = match b {
                         // The full native transcript stays bound by the seal.
                         // Reasoning and its opaque signature are audit data.
@@ -295,6 +299,7 @@ pub(super) fn capture(
                             content,
                             is_error,
                         } => {
+                            external = provenance.get(&tool_use_id).copied();
                             ensure!(
                                 m.role == Role::User && !saw_note,
                                 "ordinary result unsupported"
@@ -371,6 +376,7 @@ pub(super) fn capture(
                         pointer,
                         text,
                         occurred_at: None,
+                        external,
                     });
                 }
             }
