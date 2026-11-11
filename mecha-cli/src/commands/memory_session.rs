@@ -63,10 +63,10 @@ pub async fn execute(args: Args) -> Result<()> {
     // workspace rule below; the home store's request is built in code and has
     // no file to check.
     let request_path = args.request.map(std::path::absolute).transpose()?;
-    let home = mecha_core::work::mecha_home()?;
+    // The home is asked for only when it is the store: a manifest needs none.
     let request = match &request_path {
         Some(path) => SessionMemory::load_request(path)?,
-        None => mecha_core::memory_home::request(&home)?,
+        None => mecha_core::memory_home::request(&mecha_core::work::mecha_home()?)?,
     };
     let manifest_outside = |workspace: &std::path::Path| match &request_path {
         Some(path) => SessionMemory::validate_request_path(path, workspace),
@@ -83,7 +83,8 @@ pub async fn execute(args: Args) -> Result<()> {
                     serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized"})
                 }
                 None => {
-                    let made = mecha_core::memory_home::initialize(&home)?;
+                    let made =
+                        mecha_core::memory_home::initialize(&mecha_core::work::mecha_home()?)?;
                     serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"status":"initialized","store":made.authority.parent()})
                 }
             }

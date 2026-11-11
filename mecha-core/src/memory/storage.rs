@@ -112,7 +112,13 @@ impl StorageAccess {
     /// caller that built the access — the session layer, for the home store —
     /// and never to a path's spelling. Plaintext fixture access cannot carry
     /// one: what lives in a mecha home is encrypted.
-    pub fn admitting_home_store(mut self, directory: &Path) -> Result<Self> {
+    ///
+    /// Crate-visible on purpose: the set of callers that can mint an
+    /// admission is the boundary, and the CLI's fixture commands already hold
+    /// an owner-keyed access they must not be able to admit (review of #862).
+    /// Unused in the standalone qualification crate, which has no home.
+    #[allow(dead_code)]
+    pub(crate) fn admitting_home_store(mut self, directory: &Path) -> Result<Self> {
         ensure!(
             self.is_encrypted(),
             "a store in a mecha home must be encrypted"

@@ -32,8 +32,8 @@ pub fn dir(home: &Path) -> PathBuf {
     home.join("memory")
 }
 
-/// The database. Its directory is the one place under a mecha home the store
-/// accepts (`memory::sql::validate_path`).
+/// The database. Its directory is the one place under a mecha home the
+/// session layer admits a store to (`StorageAccess::admitting_home_store`).
 pub fn db(home: &Path) -> PathBuf {
     dir(home)
         .join("store")
@@ -51,11 +51,14 @@ pub fn authority(home: &Path) -> PathBuf {
 }
 
 /// Whether `home` holds an initialized store — all three of the database, its
-/// key and the authority's identity, as files. No open, no key read: a page
-/// load asks this. A partial set is not initialized, and `init` refuses it by
+/// key and the authority's identity, as regular files. No open, no key read:
+/// a page load asks this. A symlink is not one — every opener of the three
+/// refuses a link, and a row that says on for a store nothing can open is the
+/// wrong answer. A partial set is not initialized, and `init` refuses it by
 /// name rather than building over it.
 pub fn initialized(home: &Path) -> bool {
-    db(home).is_file() && key_file(home).is_file() && authority(home).join("identity").is_file()
+    let file = |p: PathBuf| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file());
+    file(db(home)) && file(key_file(home)) && file(authority(home).join("identity"))
 }
 
 #[cfg(feature = "memory-prototype")]
@@ -175,6 +178,12 @@ mod tests {
         std::fs::create_dir_all(authority(home)).unwrap();
         std::fs::write(authority(home).join("identity"), b"x").unwrap();
         assert!(initialized(home));
+        // Relocated and left behind as a link: every opener refuses it, so
+        // the row must not call it a store.
+        let moved = home.join("moved.key");
+        std::fs::rename(key_file(home), &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, key_file(home)).unwrap();
+        assert!(!initialized(home));
     }
 
     /// The whole path, on a home spelled as the real one is: `init` makes a

@@ -149,8 +149,8 @@ overwrites existing paths. Without `--request` they are
 `memory/authority/` under the mecha home, each in a directory only you can
 read, and `mecha features` reads `memory` from those three files. Keep a copy
 of the key somewhere else: a store whose key is lost cannot be opened. `retry`
-admits an already sealed capture after current
-source checks, and `forget` withdraws an episode and purges dependent memory in
+admits an already sealed capture after current source checks, and `forget`
+withdraws an episode and purges dependent memory in
 the selected store. These commands print JSON and execute no provider or tool.
 They do not require the original task directory and do not discover other stores.
 See [episodic memory](/docs/features/memory#experimental-episodic-memory-for-ordinary-runs)
