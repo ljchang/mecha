@@ -4,7 +4,7 @@ use rusqlite::{types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Inventory {
+pub(in super::super) struct Inventory {
     schema: [u8; 32],
     tables: Vec<Table>,
     application: i64,
@@ -64,7 +64,7 @@ fn rows(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result
     }
     Ok((h.finalize().into(), count))
 }
-pub(super) fn inventory(conn: &Connection) -> Result<Inventory> {
+pub(in super::super) fn inventory(conn: &Connection) -> Result<Inventory> {
     let schema = rows(
         conn,
         "SELECT type,name,tbl_name,sql FROM sqlite_schema",
@@ -97,7 +97,7 @@ pub(super) fn inventory(conn: &Connection) -> Result<Inventory> {
         version: conn.query_row("PRAGMA user_version", [], |r| r.get(0))?,
     })
 }
-pub(super) fn integrity(conn: &Connection) -> Result<()> {
+pub(in super::super) fn integrity(conn: &Connection) -> Result<()> {
     let mut cipher = conn.prepare("PRAGMA cipher_integrity_check")?;
     ensure!(
         cipher.query([])?.next()?.is_none(),
@@ -117,8 +117,11 @@ pub(super) fn integrity(conn: &Connection) -> Result<()> {
     );
     super::super::sql::check_identity(conn)?;
     ensure!(
-        conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 8,
-        "snapshots require schema v8"
+        matches!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+            8 | 9
+        ),
+        "snapshots require schema v8 or v9"
     );
     Ok(())
 }

@@ -18,6 +18,23 @@ for the shared SQLite dependency; ordinary builds use bundled SQLite. The
 standalone harness always selects the cipher backend. Neither backend encrypts
 an existing plaintext store implicitly: an explicit key capability is required.
 
+## Mecha-owned task storage
+
+The host library can explicitly call `Memory::enable_session_tasks` on an
+encrypted v8 store to migrate it to v9. Normal opening never upgrades a store.
+`task_session` binds operations to the store, account, native session and current
+access scopes; `task_create`, `task_read`, `task_revise`, `task_set_status` and
+`task_forget` supply versioned task state with conflict checks and exact retries.
+A task receipt proves a database commit, not transcript retention or task success.
+Generic memory read/search/recall cannot inspect task records or their dependent
+closure without the typed task-session reader.
+
+This foundation is host-only. Persistent plans, TodoTool integration, native audit
+reconciliation and CLI/web task-board consumers remain unconnected. New task
+storage does not call mecha-graph or migrate its records. The owner personal graph
+remains independently queryable. Full-history validation cost is not yet measured
+at realistic scale.
+
 ## Learning from ordinary sessions
 
 `memory-session --request FILE sources --workspace WORKSPACE --run-id RUN_ID`
@@ -126,11 +143,11 @@ This remains synthetic-only; operational checks do not qualify private ingestion
 
 ## Encrypted database snapshots
 
-`memory backup` accepts an encrypted v8 source and a new destination with an
+`memory backup` accepts an encrypted v8 or v9 source and a new destination with an
 explicit destination key. It copies canonical tables, revisions, provenance,
 restrictions, receipts and FTS state, then independently reopens and verifies the
 copy before publishing it without overwriting another file. Source and destination
-keys may differ. For the synthetic store above:
+keys may differ. The copy preserves its source schema version. For the synthetic store above:
 
 ```bash
 mkdir -m 700 "$MEMORY_DEMO_ROOT/backups"
@@ -154,7 +171,9 @@ corpus-scale performance is not yet qualified.
 ## Restore with current deletion and access rules
 
 `memory restore` creates a new offline historical copy. It requires both the
-snapshot and the current authoritative encrypted v8 store. It applies current
+snapshot and the current authoritative encrypted store of the same version
+(v8 or v9). A restored v9 copy cannot authorize live task operations or serve as
+current restore authority. It applies current
 forgetting to the copied history, including derived concepts and capture records,
 and refuses a surviving object whose restored access scopes would be weaker than
 its current scopes. Missing or incompatible current authority is a refusal.
@@ -1290,8 +1309,9 @@ Current source restrictions still apply; model input cannot set the policy clock
 
 This is a compact executable subset, not the full proposed 26-table production
 schema. Relations use typed JSON plus revision/dependency/search tables to test
-semantics before optimizing relational projections. No schema upgrade path is
-promised; fixtures are disposable.
+semantics before optimizing relational projections. The explicit encrypted
+v8-to-v9 task migration is supported; no general upgrade promise is made for
+earlier disposable fixture schemas.
 
 Do **not** import private data: encryption is explicit and database-only, while
 existing plaintext fixture entry points remain available. Source suppression uses
@@ -1303,7 +1323,7 @@ text as synthetic or form a filesystem security sandbox.
 Also deferred: actual mecha-graph export/import and paired retrieval evaluation,
 automatic identity resolution, model extraction/generation retirement, semantic
 or vector ranking, persistent query receipts, date-only/approximate/recurring-event reasoning,
-scenario branches, autonomous concept selection/evaluation, live appraisal/rumination integration, task storage,
+scenario branches, autonomous concept selection/evaluation, live appraisal/rumination integration, task-board and todo/planning integration,
 background job leases and all nightly activity migration. `read` deliberately
 dereferences old evidence; callers needing current beliefs must use `search`.
 An unknown or forgotten reference currently returns `None`; richer unavailable

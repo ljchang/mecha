@@ -60,14 +60,17 @@ pub(super) fn check_identity(conn: &Connection) -> Result<()> {
     let app: i64 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
-        app == 1296912466 && matches!(version, 1..=8),
+        app == 1296912466 && matches!(version, 1..=9),
         "not a supported Mecha memory prototype"
     );
     if version >= 6 {
         host_capture::validate_schema(conn)?;
-        if matches!(version, 7 | 8) {
+        if matches!(version, 7..=9) {
             interpretation::validate_schema(conn)?;
         }
+    }
+    if version == 9 {
+        task::validate_schema(conn)?;
     }
     Ok(())
 }
@@ -361,12 +364,30 @@ pub(super) fn append(
     dependencies: &[RevisionRef],
     state: &str,
 ) -> Result<RevisionRef> {
+    if let Record::Task(_) = record {
+        ensure!(
+            task::version(conn)? == 9 && state == "active",
+            "invalid task append schema or lifecycle"
+        );
+        if let Some(previous) = previous {
+            for dependency in dependencies {
+                ensure!(
+                    closure(conn, dependency)?
+                        .iter()
+                        .all(|r| r.object != previous.object),
+                    "transitive task self-dependency is not permitted"
+                );
+            }
+        }
+        ensure!(dependencies.is_empty(), "task dependencies are not exposed");
+    }
     let kind = match record {
         Record::Evidence(_) => "evidence",
         Record::Entity { .. } => "entity",
         Record::Relation(_) => "relation",
         Record::Concept(_) => "concept",
         Record::Interpretation(_) => "interpretation",
+        Record::Task(_) => "task",
     };
     let reference = RevisionRef {
         object: previous
@@ -411,7 +432,7 @@ pub(super) fn append(
         Record::Entity { label } => label,
         Record::Relation(r) => &r.text,
         Record::Concept(c) => &c.principle,
-        Record::Interpretation(_) => "",
+        Record::Interpretation(_) | Record::Task(_) => "",
     };
     let transcript_text = match record {
         Record::Evidence(Capture {

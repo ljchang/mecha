@@ -116,14 +116,33 @@ transcripts or recovery sidecars. The user-facing command is in
 
 **Remaining daily-use increments:**
 
-1. Mecha-owned todos/tasks/plans in the new memory database (owner decision,
-   2026-11-10). Make V2 storage authoritative for their identities, versioned
-   goals, plan/status revisions and outcome evidence; reuse existing TodoTool and
-   planning interfaces through a core persistence adapter. Native JSONL remains
-   audit/replay evidence, not the sole task store. Do not use mecha-graph for this
-   state. `Message.planning` is currently refused by both recorders, so simply
-   allowlisting todo is insufficient. Preserve restart/idempotency and distinguish
-   model-reported completion from independently verified success.
+1. Connect Mecha-owned todos/tasks/plans to the new memory database (owner
+   decision, 2026-11-10). The host-only `memory::task` foundation now supplies
+   session-bound Task records, revision CAS, idempotent database receipts,
+   forgetting and explicit encrypted schema migration. It has no Plan record,
+   TodoTool adapter, native audit reconciliation or user-facing task command yet.
+   Next deliver a vertical CLI chat slice: persist plans/check freezes through
+   the existing TodoTool, then restore the exact DB plan after restart. Follow
+   with the owned web runtime. Keep owner task closure separate from model step
+   completion and verified outcomes. Stage goal/feedback/check-queue effects as
+   well as Tracked; cloning that struct alone leaves shared counters mutated.
+   `Session::append` currently writes without sync_data: exact native audit
+   reconciliation needs an explicit durable append boundary before marking its
+   receipt complete. Use a concrete controller; no generic store framework or
+   separate step-ID system is required for the first adapter.
+   A DB commit followed by failed JSONL append must recover without rerunning the
+   operation; native JSONL is audit/replay evidence, not the task authority.
+   `Message.planning` is currently refused by both recorders, so allowlisting todo
+   alone is insufficient. Then cut over the task board and its consumers: CLI
+   closure/follow-up/delegated updates, TUI/web routes, goal/appraisal linkage,
+   manual mail capture and the automated mail-rule TaskSink. Several bypass the
+   CLI and call graph tools directly. Preserve old graph IDs as historical
+   pointers; new TaskRefs must not be treated as graph nodes. No implicit dual
+   writes or fallback to graph when Mecha storage is unavailable.
+   Task validation currently scans its retained operation ledger on each API
+   call; realistic volume/cost remains unmeasured. The first API binds one native
+   session; cross-session selection, full board vocabulary and model delegation
+   still need explicit adapters and provenance rules.
 2. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
    dependencies, goal versions and taint; force compaction/restart/interruption
    tests before permitting continued memory-enabled execution.

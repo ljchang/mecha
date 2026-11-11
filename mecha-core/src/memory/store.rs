@@ -12,7 +12,7 @@ use uuid::Uuid;
 pub struct Memory {
     pub(super) conn: Connection,
     pub(super) instance: String,
-    domain: String,
+    pub(super) domain: String,
     storage: StorageAccess,
     pub(super) source_guard: Option<std::sync::Arc<dyn host_capture::ExternalSourceGuard>>,
 }
@@ -206,6 +206,7 @@ impl Memory {
         let record = lookup(&tx, reference)?;
         let result = if record.is_some()
             && !interpretation::contains_interpretation(&tx, reference)?
+            && !task::contains_task(&tx, reference)?
             && authorized_with_guard(&tx, reference, access, self.source_guard.as_deref())?
         {
             record
@@ -374,7 +375,8 @@ impl Memory {
         for row in rows {
             let (revision, object, seq, payload) = row?;
             let reference = RevisionRef { object, revision };
-            if interpretation::contains_interpretation(&tx, &reference)?
+            if task::contains_task(&tx, &reference)?
+                || interpretation::contains_interpretation(&tx, &reference)?
                 || !authorized_with_guard(&tx, &reference, access, Some(&selection))?
                 || !fresh(&tx, &reference, query.known_at.sequence)?
             {

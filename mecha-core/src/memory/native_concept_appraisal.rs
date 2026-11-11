@@ -150,7 +150,10 @@ impl Memory {
         self.live_identity()?;
         let tx = self.conn.unchecked_transaction()?;
         ensure!(
-            tx.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 8,
+            matches!(
+                tx.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+                8 | 9
+            ),
             "native concept appraisal requires version 8"
         );
         ensure!(

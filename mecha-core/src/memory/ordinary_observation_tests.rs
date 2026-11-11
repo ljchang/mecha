@@ -1069,3 +1069,29 @@ fn web_observation_native_converter_preserves_exact_owner_order_and_rejects_cli_
         .unwrap();
     assert!(ChatContextVersion::from_authenticated_web_version(state.current().unwrap()).is_err());
 }
+
+#[test]
+fn task_schema_preserves_ordinary_projection_and_recall() {
+    for version in [8, 9] {
+        let mut f = Fixture::new(Memory::create_supported_situated);
+        if version == 9 {
+            f.db.conn
+                .execute_batch(include_str!("task_schema.sql"))
+                .unwrap();
+        }
+        let receipt = admit(
+            &mut f,
+            capture("ordinary-task-schema", "a", "Sort synthetic amber records"),
+        );
+        let record = f.db.read(&receipt.projection, &f.access).unwrap().unwrap();
+        let Record::Evidence(value) = record else {
+            panic!("expected evidence")
+        };
+        assert_eq!(value.source.connector, "host-capture-projection-v2");
+        let source = f.db.reopen_read_only().unwrap();
+        assert!(source
+            .read(&receipt.projection, &f.access)
+            .unwrap()
+            .is_some());
+    }
+}

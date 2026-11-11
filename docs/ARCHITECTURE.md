@@ -13062,6 +13062,32 @@ not acquire capture or new output fields.
 See `MECHA-MEMORY-DESIGN.md` for the production design and
 `../prototypes/memory/README.md` for this implemented subset.
 
+- **Operational tasks have a typed authority boundary inside the memory store.**
+  `memory::task` reuses object/revision/scopes and erasure, but `TaskSession` binds
+  trusted host identity to one store, account and native session. Generic reads,
+  searches and context packets exclude Task dependency closures: domain/scopes
+  alone do not prove that binding, and a relation consulting a Task must not
+  reopen access indirectly. `TaskRef` is data, not a capability. The current API
+  is for owner-host operations; a later model plan/progress adapter must preserve
+  authorship instead of rewriting owner intent or claiming verified success.
+  Closed/Cancelled remain SQL-active revisions with terminal payload status, so
+  closure stays readable without permitting another content update.
+- **Task retries acknowledge commits before testing stale expected heads.**
+  The IMMEDIATE transaction checks the host operation key and exact payload
+  before CAS, reauthorizes an existing result and returns its original receipt.
+  A conflicting request or forgotten operation refuses. The receipt proves only
+  a database commit; there is no native append or execution claim. A later tool
+  adapter must reconcile pending native audit writes without repeating a saved
+  operation. Forgetting scrubs receipt content through the same closure purge
+  and retains opaque tombstones. Task outcomes must not create a dependency
+  cycle back into their own Task object.
+- **A restored task snapshot is historical, not a current task authority.**
+  Keyed v8-to-v9 migration is explicit; ordinary open never upgrades. Backup
+  preserves the validated source schema version and complete inventory. Restore
+  refuses mixed versions and requires a live v9 deletion authority, then marks
+  its output historical. Typed task bindings/operations refuse that copy. This
+  is a guard on explicit restore, not detection of arbitrary owner-level byte
+  replacement. Existing v8 recovery semantics and serialized records remain.
 - **Ordinary observations have no implicit semantic verdict.** The v8
   `ordinary-session-observation-v1` protocol enters the same authenticated
   host-capture transaction as checked synthetic episodes, through a separate
@@ -13170,8 +13196,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
 - **Native memory mutation protection survives missing chat and feature-off builds.**
   `guard_native_memory_mutation` runs after owner/intent authentication and uses
   the archive handlers' session directory, including their no-ChatState fallback.
-  Its bounded complete-line classifier denies unknown or marked sources and
-  ambiguous live/partial-forget claims. Browser keys and native session IDs have
+  Its bounded prefix classifier denies unknown or marked sources and ambiguous
+  live/partial-forget claims. Blank lines do not consume the record budget;
+  future message blocks and positively identified ordinary torn payloads at
+  physical EOF need not block archive/delete. A byte-budget cutoff is not EOF.
+  Decode top-level tags separately from message schemas, but validate payload
+  strings with `Value` and require valid UTF-8 before ordinary classification:
+  serde's `IgnoredAny` skips string validity, and even `Value` can report EOF
+  before checking bytes in an unfinished string. A recognized memory marker
+  still refuses immediately. Strict ordinary Message/Config boundaries rely on
+  the host's fresh Meta-only attachment placement, not a claim that every
+  historical parser state rejects a later marker. Browser keys and native IDs have
   different grammars: native IDs contain an uppercase timestamp `T`. Reusing
   `valid_key` broke ordinary deletion; test with `Session::new_id`. Reading an
   arbitrary byte prefix as UTF-8 also misclassified a marker when a later string

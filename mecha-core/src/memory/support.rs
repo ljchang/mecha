@@ -697,9 +697,11 @@ impl Memory {
         self.check_access(access)?;
         self.live_identity()?;
         ensure!(
-            self.conn
-                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?
-                == 8,
+            matches!(
+                self.conn
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+                8 | 9
+            ),
             "evaluated interpretation requires version 8"
         );
         let previous = p

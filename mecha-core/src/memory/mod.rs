@@ -98,3 +98,12 @@ pub(crate) mod storage_tests;
 
 #[cfg(test)]
 mod ordinary_observation_tests;
+
+#[cfg(test)]
+mod task_tests;
+
+mod task;
+pub use task::{
+    TaskCommit, TaskDraft, TaskOperation, TaskOperationId, TaskReceipt, TaskRef, TaskRevision,
+    TaskSession, TaskStatus, TaskView,
+};

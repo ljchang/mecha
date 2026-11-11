@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental memory has host-only, session-bound task records with versioned
+  updates, conflict checks, exact retry receipts and forgetting. Explicit keyed
+  migration enables schema v9; encrypted backups retain their source schema,
+  and restored historical task copies cannot authorize live task operations.
+  Todo/planning tools and existing task-board consumers are not yet connected.
+
 - Experimental authenticated web chat can opt into encrypted episodic memory
   through an explicitly configured `serve --episodic-memory` profile and the
   **Memory +** control. Each conversation owns its fixed runtime and memory
@@ -689,6 +695,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- Web archive/delete recognizes ordinary native recordings with blank lines,
+  future message blocks and an ordinary torn final payload. Known memory
+  attachments, ambiguous records and malformed UTF-8 still refuse mutation,
+  including when memory support is compiled out.
 
 - Selected graph launches refuse relative or empty PATH lookup components. Their
   bubblewrap launcher must resolve outside the model workspace, including through

@@ -6812,6 +6812,255 @@ mod boundary_tests {
     }
 
     #[tokio::test]
+    async fn web_memory_native_guard_keeps_legacy_ordinary_mutations_available() {
+        let home = crate::testenv::HomeGuard::new("web-marker-ordinary-compat");
+        let _graph = NoGraph::under(&home.dir);
+        let chat = chat::test_chat();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let routes = app(chat.clone());
+        let cases = [
+            ("blank-lines", format!("{}{}\n", " \n\t\n".repeat(6), r#"{"record":"message","role":"user","content":[{"type":"text","text":"ordinary"}]}"#)),
+            ("unknown-block", format!("{}\n", r#"{"record":"message","role":"user","content":[{"type":"future_block","value":"ordinary"}]}"#)),
+            ("torn-value", r#"{"record":"message","role":"assistant","content":[{"type":"text","text":"partial ordinary reply"#.into()),
+            ("no-newline", r#"{"record":"message","role":"user","content":[{"type":"text","text":"ordinary"}]}"#.into()),
+            ("nested-tag", format!("{}\n", r#"{"record":"message","role":"user","content":[{"type":"future_block","record":"chat_memory"}],"quoted":"\"record\":\"chat_memory\""}"#)),
+        ];
+        let mut failures = Vec::new();
+        for (label, tail) in cases {
+            for parked in [false, true] {
+                let id = format!("ordinary-{label}-{parked}");
+                let native = native_guard_source(chat.sessions_dir(), &id, false);
+                let mut bytes = std::fs::read(&native.path).unwrap();
+                bytes.extend_from_slice(tail.as_bytes());
+                std::fs::write(&native.path, bytes).unwrap();
+                let pending = native.path.with_extension("jsonl.forgetting");
+                if parked {
+                    std::fs::rename(&native.path, &pending).unwrap();
+                } else {
+                    let status = routes
+                        .clone()
+                        .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+                        .await
+                        .unwrap()
+                        .status();
+                    if status != StatusCode::NO_CONTENT {
+                        failures.push(format!("{label} archive: {status}"));
+                    }
+                }
+                let request = Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/sessions/{id}"))
+                    .header(TAILSCALE_LOGIN, "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .body(Body::empty())
+                    .unwrap();
+                let response = routes.clone().oneshot(request).await.unwrap();
+                if response.status() != StatusCode::OK {
+                    failures.push(format!(
+                        "{label} parked={parked} delete: {}",
+                        response.status()
+                    ));
+                } else {
+                    let report = body(response).await;
+                    assert_eq!(report["complete"], true, "{label}: {report}");
+                    assert!(
+                        !native.path.exists() && !pending.exists(),
+                        "{label} was not erased"
+                    );
+                }
+            }
+        }
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        let _ = std::fs::remove_dir_all(door);
+        assert!(
+            failures.is_empty(),
+            "ordinary mutation compatibility failures: {failures:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_memory_native_guard_refuses_ambiguous_discriminators_and_capped_prefixes() {
+        let home = crate::testenv::HomeGuard::new("web-marker-discriminator-refusal");
+        let _graph = NoGraph::under(&home.dir);
+        let chat = chat::test_chat();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let routes = app(chat.clone());
+        let cases = [
+            (
+                "future-then-marker",
+                concat!(
+                    r#"{"record":"message","role":"user","content":[{"type":"future_block"}]}"#,
+                    "\n",
+                    r#"{"record":"chat_memory","marker":{}}"#
+                ),
+            ),
+            ("malformed-marker", r#"{"record":"chat_memory","marker":"#),
+            (
+                "escaped-marker",
+                r#"{"\u0072ecord":"chat\u005fmemory","marker":{}}"#,
+            ),
+            (
+                "duplicate-hidden-marker",
+                r#"{"record":"message","record":"chat_memory","content":[]}"#,
+            ),
+            (
+                "duplicate-hidden-first",
+                r#"{"record":"chat_memory","record":"message","content":[]}"#,
+            ),
+            (
+                "escaped-duplicate",
+                r#"{"record":"message","\u0072ecord":"message","content":[]}"#,
+            ),
+            (
+                "torn-duplicate",
+                r#"{"record":"message","content":[],"record":"chat_mem"#,
+            ),
+            ("torn-key", r#"{"record":"message","content":[],"rec"#),
+            ("torn-tag", r#"{"record":"mess"#),
+            (
+                "missing-tag",
+                r#"{"content":[{"type":"text","text":"partial"#,
+            ),
+            ("unknown-tag", r#"{"record":"future_authority","value":{}}"#),
+            (
+                "malformed-payload",
+                r#"{"record":"message","content":[!],"record":"chat_memory"}"#,
+            ),
+        ];
+        for (index, (label, tail)) in cases.iter().enumerate() {
+            let id = format!("guard-case-{index}");
+            let native = native_guard_source(chat.sessions_dir(), &id, false);
+            let mut bytes = std::fs::read(&native.path).unwrap();
+            bytes.extend_from_slice(tail.as_bytes());
+            std::fs::write(&native.path, &bytes).unwrap();
+            assert_ne!(
+                chat::ordinary_mutation_source(chat.sessions_dir(), &id).ok(),
+                Some(true),
+                "{label}"
+            );
+            assert_eq!(
+                routes
+                    .clone()
+                    .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::CONFLICT,
+                "{label}"
+            );
+            let pending = native.path.with_extension("jsonl.forgetting");
+            std::fs::rename(&native.path, &pending).unwrap();
+            let deletion = Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/sessions/{id}"))
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .header("x-mecha-request", "1")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                routes.clone().oneshot(deletion).await.unwrap().status(),
+                StatusCode::CONFLICT,
+                "{label}"
+            );
+            assert_eq!(
+                std::fs::read(&pending).unwrap(),
+                bytes,
+                "{label} changed refused source"
+            );
+        }
+        let blank_marker = native_guard_source(chat.sessions_dir(), "blank-marker", false);
+        let mut bytes = std::fs::read(&blank_marker.path).unwrap();
+        bytes.extend_from_slice(" \n\t\n".repeat(10).as_bytes());
+        bytes.extend_from_slice(b"{\"record\":\"chat_memory\",\"marker\":{}}\n");
+        std::fs::write(&blank_marker.path, bytes).unwrap();
+        assert!(
+            chat::memory_marked(&blank_marker.path).unwrap(),
+            "blank lines must not exhaust the record budget before a marker"
+        );
+        let capped = native_guard_source(chat.sessions_dir(), "capped-ordinary", false);
+        let mut bytes = std::fs::read(&capped.path).unwrap();
+        bytes.extend_from_slice(
+            b"{\"record\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"",
+        );
+        bytes.resize(65_535, b'x');
+        bytes.extend_from_slice("é more unread bytes".as_bytes());
+        std::fs::write(&capped.path, bytes).unwrap();
+        assert!(
+            chat::memory_marked(&capped.path).is_err(),
+            "byte limit inside UTF-8 is not a physical torn EOF"
+        );
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        let _ = std::fs::remove_dir_all(door);
+    }
+
+    #[tokio::test]
+    async fn web_memory_native_guard_refuses_invalid_payload_strings() {
+        let home = crate::testenv::HomeGuard::new("web-marker-invalid-strings");
+        let _graph = NoGraph::under(&home.dir);
+        let chat = chat::test_chat();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let routes = app(chat.clone());
+        let cases: [(&str, &[u8]); 6] = [
+            ("raw-invalid-utf8", b"{\"record\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"\xff\"}]}\n"),
+            ("lone-surrogate", br#"{"record":"message","role":"user","content":[{"type":"text","text":"\uD800"}]}"#),
+            ("incomplete-codepoint", b"{\"record\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"bad\xc3"),
+            ("invalid-utf8-in-torn", b"{\"record\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"bad\xfftail"),
+            ("invalid-utf8-before-torn", b"{\"record\":\"message\",\"earlier\":\"\xff\",\"content\":[{\"type\":\"text\",\"text\":\"partial"),
+            ("surrogate-before-torn", br#"{"record":"message","earlier":"\uD800","content":[{"type":"text","text":"partial"#),
+        ];
+        let mut failures = Vec::new();
+        for (label, tail) in cases {
+            for operation in ["archive", "delete", "forgetting"] {
+                let id = format!("{label}-{operation}");
+                let native = native_guard_source(chat.sessions_dir(), &id, false);
+                let mut bytes = std::fs::read(&native.path).unwrap();
+                bytes.extend_from_slice(tail);
+                std::fs::write(&native.path, &bytes).unwrap();
+                let path = if operation == "forgetting" {
+                    let parked = native.path.with_extension("jsonl.forgetting");
+                    std::fs::rename(&native.path, &parked).unwrap();
+                    parked
+                } else {
+                    native.path.clone()
+                };
+                let request = if operation == "archive" {
+                    post(&format!("/api/sessions/{id}/archive"), "")
+                } else {
+                    Request::builder()
+                        .method("DELETE")
+                        .uri(format!("/api/sessions/{id}"))
+                        .header(TAILSCALE_LOGIN, "owner@example.com")
+                        .header("x-mecha-request", "1")
+                        .body(Body::empty())
+                        .unwrap()
+                };
+                let status = routes.clone().oneshot(request).await.unwrap().status();
+                if status != StatusCode::CONFLICT {
+                    failures.push(format!("{id}: status {status}, expected 409"));
+                }
+                if std::fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+                    failures.push(format!("{id}: refused source changed or disappeared"));
+                }
+            }
+        }
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        let _ = std::fs::remove_dir_all(door);
+        assert!(
+            failures.is_empty(),
+            "invalid string guard failures: {failures:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn web_memory_mutation_guards_classify_complete_lines_and_refuse_unknown() {
         use mecha_core::session::{ChatMemoryMarker, Record, Session, SessionKind, SessionMeta};
         let _home = crate::testenv::HomeGuard::new("web-memory-prefix-guard");
@@ -7070,6 +7319,10 @@ mod boundary_tests {
     ) {
         use clap::Parser;
         use std::os::unix::fs::PermissionsExt;
+        // macOS temp_dir may start with /var, a symlink to /private/var.
+        // Memory authority deliberately opens every component without following
+        // links, so this authored fixture must use its real directory spelling.
+        let home = home.canonicalize().unwrap();
         let request = mecha_core::memory_session::SessionMemoryRequest {
             protocol: "ordinary-session-memory-v1".into(),
             db: home.join("storage/host.memory-prototype.sqlite"),
@@ -7129,7 +7382,12 @@ mod boundary_tests {
         let profile =
             memory_chat::MemoryHostProfile::from_args(&args, cli.global.dynamic_goals).unwrap();
         let mut chat = chat::test_chat();
-        Arc::get_mut(&mut chat).unwrap().memory_profile = profile;
+        let door = chat.sessions_dir().parent().unwrap();
+        mecha_core::create_private_dir(door).unwrap();
+        let door = door.canonicalize().unwrap();
+        let state = Arc::get_mut(&mut chat).unwrap();
+        state.memory_profile = profile;
+        state.set_test_memory_roots(door.join("sessions"), door.join("work/web"));
         (chat, request)
     }
 

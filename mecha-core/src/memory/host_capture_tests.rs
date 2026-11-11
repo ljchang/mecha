@@ -1369,7 +1369,7 @@ fn native_context_prepares_typed_metadata_without_rewriting_source_bytes() {
 
 #[test]
 fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
-    for version in [6, 7, 8] {
+    for version in [6, 7, 8, 9] {
         let (path, _, state) = fixture();
         std::fs::remove_file(&path).unwrap();
         let create = match version {
@@ -1380,15 +1380,24 @@ fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
         let mut db = create(&path, "test")
             .unwrap()
             .with_source_guard(Arc::new(Guard(state)));
+        if version == 9 {
+            db.conn
+                .execute_batch(include_str!("task_schema.sql"))
+                .unwrap();
+        }
         let make = |id: String| {
-            let mut capture = if version == 8 { rich_input() } else { input() };
+            let mut capture = if matches!(version, 8 | 9) {
+                rich_input()
+            } else {
+                input()
+            };
             capture.identity.session_id = id.clone();
             for (index, passage) in capture.originals.iter_mut().enumerate() {
                 passage.source.id = format!("{id}-{index}");
             }
             capture
         };
-        let admit = if version == 8 {
+        let admit = if matches!(version, 8 | 9) {
             Memory::admit_host_capture_with_evidence
         } else {
             Memory::admit_host_capture
@@ -1402,7 +1411,7 @@ fn native_capture_dependency_bound_accepts_32_33_64_and_refuses_65() {
             let mut capture = make(format!("recapture-{count}"));
             capture.consulted = sources[..count].to_vec();
             let result = admit(&mut db, capture, &access());
-            let accepted = count <= if version == 8 { 64 } else { 32 };
+            let accepted = count <= if matches!(version, 8 | 9) { 64 } else { 32 };
             assert_eq!(
                 result.is_ok(),
                 accepted,

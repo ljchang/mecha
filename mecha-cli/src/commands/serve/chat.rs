@@ -1363,34 +1363,136 @@ fn strip_voice_preamble(text: &str) -> &str {
     }
 }
 
-/// A refusal hint only; executable resume always authenticates core authority.
-/// Inspect complete bounded lines, stopping as soon as the marker is known.
-/// Unknown or unreadable input is an error, never an ordinary-session verdict.
-pub(super) fn memory_marked(path: &std::path::Path) -> Result<bool> {
-    use std::io::{BufRead, Read};
-    let file = std::fs::File::open(path)?;
-    let mut input = std::io::BufReader::new(file).take(65_536);
-    let mut line = Vec::new();
-    let mut meta_seen = false;
-    for _ in 0..8 {
-        line.clear();
-        if input.read_until(b'\n', &mut line)? == 0 {
-            anyhow::ensure!(meta_seen, "missing native metadata");
-            return Ok(false);
+/// Only the top-level, decoded discriminator classifies a native record. Payload
+/// blocks from a newer writer need not deserialize as this binary's Message.
+#[derive(Default)]
+struct NativeRecordTag {
+    kind: Option<String>,
+    reading_payload: bool,
+}
+struct NativeRecordTagVisitor<'a>(&'a mut NativeRecordTag);
+impl<'de> serde::de::Visitor<'de> for NativeRecordTagVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("one native record object")
+    }
+
+    fn visit_map<M: serde::de::MapAccess<'de>>(
+        self,
+        mut map: M,
+    ) -> std::result::Result<(), M::Error> {
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "record" {
+                if self.0.kind.is_some() {
+                    return Err(serde::de::Error::custom("duplicate native record tag"));
+                }
+                self.0.kind = Some(map.next_value::<String>()?);
+            } else {
+                // Kept true on EOF inside a value, but not while reading a
+                // possible next key/tag. A torn key cannot prove ordinary.
+                self.0.reading_payload = true;
+                // Decode string values too: IgnoredAny skips UTF-8 and
+                // surrogate validation, which could misclassify corrupt data
+                // as a future ordinary block. The prefix byte cap bounds this.
+                map.next_value::<serde_json::Value>()?;
+                self.0.reading_payload = false;
+            }
         }
-        anyhow::ensure!(line.last() == Some(&b'\n'), "incomplete native prefix");
-        let record: Record = serde_json::from_slice(&line)?;
-        match record {
-            Record::Meta(_) if !meta_seen => meta_seen = true,
-            Record::ChatMemory { .. } => return Ok(true),
-            // Core rejects a memory marker after executable conversation or
-            // configuration records. Later large ordinary messages need not
-            // be read merely to prove this prefix is ordinary.
-            Record::Config(_) | Record::Message(_) if meta_seen => return Ok(false),
-            _ => anyhow::ensure!(meta_seen, "missing native metadata"),
+        Ok(())
+    }
+}
+
+/// A refusal hint only; executable resume always authenticates core authority.
+/// Legacy ordinary messages may have future blocks or a torn final value. Their
+/// discriminator must still be unique and positively ordinary. Unknown tags,
+/// ambiguous JSON, unreadable sources and exhausted bounds remain refusals.
+pub(super) fn memory_marked(path: &std::path::Path) -> Result<bool> {
+    use std::io::Read;
+    const PREFIX_BYTES: usize = 65_536;
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    // One lookahead byte distinguishes a physical EOF from our inspection cap.
+    file.take((PREFIX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    let capped = bytes.len() > PREFIX_BYTES;
+    bytes.truncate(PREFIX_BYTES);
+    let mut meta_seen = false;
+    let mut records = 0;
+    let mut offset = 0;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        offset += line.len();
+        if std::str::from_utf8(line).is_ok_and(|text| text.trim().is_empty()) {
+            continue;
+        }
+        records += 1;
+        anyhow::ensure!(records <= 8, "native prefix classification limit exceeded");
+        let mut tag = NativeRecordTag::default();
+        let mut decoder = serde_json::Deserializer::from_slice(line);
+        let parsed =
+            serde::Deserializer::deserialize_map(&mut decoder, NativeRecordTagVisitor(&mut tag))
+                .and_then(|()| decoder.end());
+        if tag.kind.as_deref() == Some("chat_memory") {
+            // A malformed marker is still not an ordinary conversation.
+            return Ok(true);
+        }
+        // A JSON decoder may report EOF before validating an unfinished
+        // string's bytes. Even a torn ordinary tail must be valid UTF-8.
+        // Do this after the marker check so an earlier marker still denies
+        // without requiring the rest of its record or later lines to decode.
+        std::str::from_utf8(line).context("native prefix is not valid UTF-8")?;
+        if let Err(error) = parsed {
+            let physical_tail = !capped && offset == bytes.len() && !line.ends_with(b"\n");
+            if meta_seen
+                && physical_tail
+                && error.is_eof()
+                && tag.kind.as_deref() == Some("message")
+                && tag.reading_payload
+            {
+                return Ok(false);
+            }
+            return Err(error).context("native prefix cannot be safely classified");
+        }
+        match tag.kind.as_deref() {
+            Some("meta") if !meta_seen => {
+                anyhow::ensure!(
+                    matches!(serde_json::from_slice::<Record>(line)?, Record::Meta(_)),
+                    "invalid native metadata"
+                );
+                meta_seen = true;
+            }
+            Some("message") if meta_seen => {
+                if matches!(
+                    serde_json::from_slice::<Record>(line),
+                    Ok(Record::Message(_))
+                ) {
+                    // Authenticated memory attachment requires the fresh
+                    // Meta-only prefix, before native messages or config.
+                    return Ok(false);
+                }
+                // A future message block is ordinary data, but core may skip
+                // it during legacy parsing. Continue checking for a marker
+                // until a proven native boundary or the physical EOF.
+            }
+            Some("config") if meta_seen => {
+                anyhow::ensure!(
+                    matches!(serde_json::from_slice::<Record>(line)?, Record::Config(_)),
+                    "invalid native configuration"
+                );
+                return Ok(false);
+            }
+            Some("meta") | None => anyhow::bail!("ambiguous native metadata or discriminator"),
+            _ => {
+                anyhow::ensure!(meta_seen, "missing native metadata");
+                // Other unknown/malformed record classes remain unknown; this
+                // compatibility exception is only for ordinary message data.
+                let _: Record = serde_json::from_slice(line)?;
+            }
         }
     }
-    anyhow::bail!("native prefix classification limit exceeded")
+    anyhow::ensure!(!capped, "native prefix byte limit exceeded");
+    anyhow::ensure!(meta_seen, "missing native metadata");
+    Ok(false)
 }
 
 pub(super) fn ordinary_mutation_source(dir: &std::path::Path, id: &str) -> Result<bool> {

@@ -456,7 +456,8 @@ fn knowledge_bundle(
     valid_at: Option<&str>,
     guard: Option<&dyn host_capture::ExternalSourceGuard>,
 ) -> Result<Option<Vec<Hit>>> {
-    if interpretation::contains_interpretation(conn, reference)?
+    if task::contains_task(conn, reference)?
+        || interpretation::contains_interpretation(conn, reference)?
         || !authorized_with_guard(conn, reference, access, guard)?
         || !fresh(conn, reference, query.known_at.sequence)?
     {
@@ -495,7 +496,7 @@ fn knowledge_bundle(
             }
             Record::Entity { .. } => {}
             Record::Concept(_) => {}
-            Record::Interpretation(_) => return Ok(None),
+            Record::Interpretation(_) | Record::Task(_) => return Ok(None),
         }
         bundle.push(Hit {
             required_scopes: required_scopes(conn, &input.revision)?,
@@ -522,7 +523,9 @@ pub(super) fn final_packet(
     // Never reuse selection verdicts here: external authority may have changed.
     let final_checks = SourceChecks::new(guard);
     for hit in &packet.records {
-        if !authorized_with_guard(conn, &hit.reference, access, Some(&final_checks))? {
+        if task::contains_task(conn, &hit.reference)?
+            || !authorized_with_guard(conn, &hit.reference, access, Some(&final_checks))?
+        {
             packet.clear_records();
             packet.bindings.clear();
             break;

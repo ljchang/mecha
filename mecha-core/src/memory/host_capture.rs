@@ -195,7 +195,7 @@ fn projection_text(input: &HostCapture, originals: &[RevisionRef], version: i64)
         return Ok(serde_json::to_string(input)?);
     }
     ensure!(
-        matches!(version, 7 | 8) && originals.len() == input.originals.len(),
+        matches!(version, 7..=9) && originals.len() == input.originals.len(),
         "invalid host projection version"
     );
     Ok(serde_json::to_string(&ProjectionV2 {
@@ -263,7 +263,7 @@ fn projection_input_for_receipt(
             ensure!(
                 matches!(
                     conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-                    7 | 8
+                    7..=9
                 ),
                 "unsupported host projection version"
             );
@@ -327,7 +327,10 @@ fn projection_input_for_receipt(
     if claims_ordinary_protocol(&input.identity) {
         ensure!(
             projection.source.connector == "host-capture-projection-v2"
-                && conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == 8,
+                && matches!(
+                    conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
+                    8 | 9
+                ),
             "ordinary observations require version 8"
         );
         validate_ordinary(&input)?;
@@ -349,7 +352,7 @@ pub(super) fn native_reader(
     if projection.source.connector != "host-capture-projection-v2"
         || !matches!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-            7 | 8
+            7..=9
         )
     {
         return Ok(None);
@@ -480,7 +483,7 @@ impl Memory {
             .query_row("PRAGMA user_version", [], |r| r.get(0))?;
         ensure!(
             if rich {
-                version == 8
+                matches!(version, 8 | 9)
             } else {
                 matches!(version, 6 | 7)
             },
@@ -629,7 +632,7 @@ fn admit(
     ensure!(
         match policy {
             Admission::Legacy => matches!(version, 6 | 7),
-            Admission::Rich | Admission::Ordinary => version == 8,
+            Admission::Rich | Admission::Ordinary => matches!(version, 8 | 9),
         },
         "host capture producer does not match store version"
     );
@@ -638,7 +641,7 @@ fn admit(
             !claims_ordinary_protocol(&input.identity),
             "ordinary observation requires ordinary admission"
         );
-        validate(&input, if version == 8 { 64 } else { 32 }, 1)?;
+        validate(&input, if matches!(version, 8 | 9) { 64 } else { 32 }, 1)?;
         if policy == Admission::Rich {
             validate_rich(&input)?;
         } else {
@@ -691,10 +694,10 @@ fn admit(
             )?;
             ensure!(
                 (safe && matches!(lookup(&tx, &member)?, Some(Record::Evidence(_))))
-                    || (matches!(version, 7 | 8)
+                    || (matches!(version, 7..=9)
                         && interpretation::canonical(&tx, &member)?
                         && matches!(lookup(&tx, &member)?, Some(Record::Interpretation(_))))
-                    || (matches!(version, 7 | 8) && concept::canonical_native(&tx, &member)?),
+                    || (matches!(version, 7..=9) && concept::canonical_native(&tx, &member)?),
                 "unsupported host dependency"
             );
             scopes.extend(required_scopes(&tx, &member.revision)?);
@@ -788,7 +791,7 @@ fn admit(
         originals.push(reference);
     }
     let projection_source = SourceKey {
-        connector: if matches!(version, 7 | 8) {
+        connector: if matches!(version, 7..=9) {
             "host-capture-projection-v2"
         } else {
             "host-capture-projection-v1"

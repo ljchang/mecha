@@ -14,6 +14,54 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Session task storage foundation (2026-11-10, prototype)
+
+`Memory::enable_session_tasks` explicitly migrates an encrypted v8 store to v9;
+ordinary open never upgrades it. `task_session` binds host-only Task operations
+to the current store, account, native session and scopes. Versioned create/read/
+revise/status operations use an IMMEDIATE transaction, current-head conflict
+checks and exact retry receipts. A receipt certifies only the database commit.
+No model-facing task tool, persistent Plan, native audit reconciliation or task
+board cutover is included in this checkpoint.
+
+Task payloads and their dependent closure are unavailable through generic memory
+read/search/recall, which lack task-session authority. Typed reads reauthorize
+current scopes. Forgetting purges content through the shared dependency lifecycle
+and retains opaque restrictions and operation tombstones. Encrypted snapshots
+preserve their schema version; historical v9 restores cannot authorize live task
+operations or become current restore authority. Existing v8 observation and
+appraisal behavior remains available in explicitly upgraded v9 stores.
+
+Local qualification passed 19 focused Task tests, 489 memory-filtered core tests
+and all 428 standalone harness tests. Independent source review found no major or
+medium issue; full-ledger validation cost remains unmeasured. The first broader
+memory-enabled macOS run exposed three web fixture errors: `/var` is a symlink,
+while encrypted storage rejects symlinked path components. This was fixture path
+construction, not permission to weaken the production path guard. The corrected
+fixture canonicalizes both authority and native session roots. All 13 focused
+web-memory host tests and the full memory-enabled workspace then passed locally:
+7,349 passed, 30 ignored. The default workspace passed 6,486 with 25 ignored;
+these are macOS counts, separate from the earlier Spark checkpoint. No new real
+model comparison, production activation or owner-graph migration was performed.
+Both all-target builds, strict all-target/all-feature Clippy and formatting
+passed locally. Required publication privacy checks remain a separate gate.
+
+### Native web mutation classification review (2026-11-10)
+
+`serve::chat::memory_marked` now classifies a bounded native prefix without
+requiring ordinary message payloads to match the current Message enum. It accepts
+ordinary blank lines, future blocks and positively classified torn final
+payloads at physical EOF; known memory markers and ambiguous prefixes still
+refuse mutation. Strict Meta and ordinary attachment boundaries remain intact.
+
+The first regression run failed on ordinary archive/delete and blank-line marker
+cases. Independent review then found that `IgnoredAny` does not validate skipped
+JSON strings, and a second test found that JSON EOF can precede UTF-8 validation
+inside a torn string. Discarded Value parsing plus explicit per-line UTF-8
+validation closes both cases. Each new malformed-string case failed with the
+prior implementation before the corrected six-test guard suite passed. Do not
+infer string validity from structural JSON skipping or an EOF classification.
+
 ### Authenticated encrypted web memory (2026-11-10, prototype)
 
 `SessionMemory::attach_authenticated_web_chat` and

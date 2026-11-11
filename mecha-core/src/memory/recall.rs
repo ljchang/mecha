@@ -351,7 +351,8 @@ pub(super) fn eligible(
             return Ok(None);
         }
     }
-    if interpretation::contains_interpretation(conn, &reference)?
+    if task::contains_task(conn, &reference)?
+        || interpretation::contains_interpretation(conn, &reference)?
         || !authorized_with_guard(conn, &reference, access, guard)?
         || !fresh(conn, &reference, query.known_at.sequence)?
     {

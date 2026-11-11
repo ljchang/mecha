@@ -229,7 +229,7 @@ fn require_situated(conn: &Connection) -> Result<()> {
     ensure!(
         matches!(
             conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-            7 | 8
+            7..=9
         ),
         "interpretation preparation requires version 7 or 8"
     );
@@ -260,7 +260,7 @@ pub(super) fn validate_schema(conn: &Connection) -> Result<()> {
 pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
     if !matches!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-        7 | 8
+        7..=9
     ) {
         return Ok(false);
     }
@@ -272,7 +272,7 @@ pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
         return Ok(false);
     };
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if (version == 8 && serde_json::to_vec(&record)?.len() > 16384)
+    if (matches!(version, 8 | 9) && serde_json::to_vec(&record)?.len() > 16384)
         || hash(&record)? != payload_hash
     {
         return Ok(false);
@@ -295,7 +295,7 @@ pub(super) fn canonical(conn: &Connection, r: &RevisionRef) -> Result<bool> {
     // revalidating every older interpretation. Schema/read walks validate those
     // records separately, keeping long histories bounded.
     let sources = source_fields_impl(conn, &refs, false)?;
-    let valid = if version == 8 {
+    let valid = if matches!(version, 8 | 9) {
         support::validate_evaluated_draft(&context, &sources, &i.draft)
     } else {
         validate_draft(&context, &sources, &i.draft)
@@ -857,7 +857,8 @@ impl Memory {
         let budget = policy.recall.max_bytes.min(20_000);
         let mut selected = vec![];
         'roots: for root in roots {
-            if !fresh(&tx, &root, i64::MAX)?
+            if task::contains_task(&tx, &root)?
+                || !fresh(&tx, &root, i64::MAX)?
                 || !fresh(&tx, &root, policy.recall.known_at.sequence)?
                 || !authorized_with_guard(&tx, &root, &policy.access, Some(&checks))?
             {
@@ -1054,7 +1055,7 @@ fn validate_roles(
 pub(super) fn invalidate_forgotten(conn: &Connection) -> Result<()> {
     if matches!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?,
-        7 | 8
+        7..=9
     ) {
         conn.execute("UPDATE interpretation_receipt SET state='forgotten',payload_hash=NULL,receipt_id=NULL,object_id=NULL,revision_id=NULL,context_key=NULL WHERE object_id IN (SELECT id FROM doomed)",[])?;
     }

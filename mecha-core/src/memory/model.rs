@@ -111,6 +111,7 @@ pub enum Record {
     Relation(RelationInput),
     Concept(super::concept::Concept),
     Interpretation(super::interpretation::Interpretation),
+    Task(super::task::TaskRevision),
 }
 
 #[derive(Clone, Debug)]

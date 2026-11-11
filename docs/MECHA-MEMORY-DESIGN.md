@@ -7,8 +7,13 @@ plans will use this memory database as their authoritative store, rather than
 mecha-graph. Reuse existing tool/planning interfaces through a core storage API;
 retain versioned goal links, plan/status revisions and outcome evidence. Native
 JSONL remains audit/replay evidence, not the sole task store. The owner graph
-remains independent personal context. This persistence integration is the next
-implementation slice; existing graph-backed consumers have not been migrated.
+remains independent personal context. A first host-only, session-bound Task store
+is implemented through `Memory::enable_session_tasks` and the typed `task_*`
+APIs: explicit keyed v8-to-v9 migration, revisions, conflict checks, exact retry
+receipts, forgetting and schema-preserving encrypted snapshots. This is database
+persistence only; Plan/TodoTool integration, native audit recovery and migration
+of existing graph-backed task consumers remain open. See HISTORY for measured
+checks and HANDOFF for the next adapter work.
 
 **Authenticated-web addendum, 2026-11-10:** the separately versioned bounded
 web-memory profile is implemented and qualified, using the existing Agent loop

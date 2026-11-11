@@ -7,7 +7,7 @@ use std::{fs, path::Path};
 #[path = "recovery_files.rs"]
 mod files;
 #[path = "recovery_inventory.rs"]
-mod inventory;
+pub(super) mod inventory;
 use files::{FileIdentity, FileOps, Stage, SystemFiles};
 
 #[derive(Debug, Serialize)]
@@ -20,7 +20,7 @@ pub struct BackupReport {
     pub scope: &'static str,
 }
 impl Memory {
-    /// Writes a new encrypted v8 snapshot, never replaces a live file.
+    /// Writes a new encrypted schema-preserving snapshot, never replaces a live file.
     /// Keys, raw JSONL and external authority/artifact files are not backed up.
     pub fn backup_encrypted(
         &self,
@@ -59,6 +59,7 @@ impl Memory {
         let epoch = pinned.query_row("SELECT security_epoch FROM meta", [], |r| {
             r.get::<_, i64>(0)
         })?;
+        let schema_version = task::version(&pinned)?;
         let expected = inventory::inventory(&pinned)?;
         file_identity.check(&source_path)?;
         let stage = Stage::reserve(&destination)?;
@@ -81,7 +82,7 @@ impl Memory {
         Ok(BackupReport {
             tables,
             rows,
-            schema_version: 8,
+            schema_version,
             sequence: snapshot.sequence,
             security_epoch: epoch,
             scope: concat!(
@@ -129,7 +130,11 @@ fn export_snapshot(
         |_| Ok(()),
     )
     .map_err(|_| anyhow::anyhow!("encrypted snapshot export failed"))?;
-    conn.execute_batch("PRAGMA main.application_id=1296912466; PRAGMA main.user_version=8; COMMIT; DETACH DATABASE snapshot_source;")?;
+    let application: i64 = pinned.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+    let version = task::version(pinned)?;
+    conn.pragma_update(Some("main"), "application_id", application)?;
+    conn.pragma_update(Some("main"), "user_version", version)?;
+    conn.execute_batch("COMMIT; DETACH DATABASE snapshot_source;")?;
     Ok(())
 }
 fn verify_snapshot(
@@ -176,7 +181,7 @@ pub struct RestoreReport {
     pub purged_revisions: usize,
     pub scope: &'static str,
 }
-/// Restore a NEW encrypted v8 offline historical copy using CURRENT authority.
+/// Restore a NEW encrypted offline historical copy using CURRENT authority.
 /// Newer factual/concept revisions and withdrawals are not merged: old heads
 /// are locally current within the copy. External authority still governs reads.
 /// This does not install a live store or propagate future cross-copy deletion.
@@ -220,13 +225,14 @@ fn restore_with_files(
     let current_file = FileIdentity::at(&current_path)?;
     // Refuse unsupported authority before writable configuration can touch it.
     let probe = Memory::open_read_only_with_storage(&current_path, current.storage.clone())?;
+    let authority_version = task::version(&probe.conn)?;
     ensure!(
-        probe
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?
-            == 8,
-        "restore current authority requires schema v8"
+        matches!(authority_version, 8 | 9),
+        "restore current authority requires schema v8 or v9"
     );
+    if authority_version == 9 {
+        task::require_live(&probe.conn)?;
+    }
     drop(probe);
     let mut authority = Memory::open_with_storage(&current_path, current.storage.clone())?;
     // A reserved writer blocks concurrent forgetting AND scope changes. A read
@@ -235,6 +241,13 @@ fn restore_with_files(
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     inventory::integrity(&held)?;
+    ensure!(
+        task::version(&held)? == authority_version,
+        "restore authority schema changed"
+    );
+    if authority_version == 9 {
+        task::require_live(&held)?;
+    }
     let state = SuppressionState::read(&held)?;
     current_file.check(&current_path)?;
     let backup_path = sql::validate_existing_path(backup)?;
@@ -242,6 +255,10 @@ fn restore_with_files(
     let source = Memory::open_read_only_with_storage(&backup_path, backup_storage.clone())?;
     let pinned = source.conn.unchecked_transaction()?;
     inventory::integrity(&pinned)?;
+    ensure!(
+        task::version(&pinned)? == authority_version,
+        "mixed schema restore is unsupported"
+    );
     let before = SuppressionState::read(&pinned)?;
     before.require_older_than(&state)?;
     let original = inventory::inventory(&pinned)?;
@@ -272,6 +289,12 @@ fn restore_with_files(
             "UPDATE meta SET security_epoch=?1 WHERE singleton=1",
             [state.epoch],
         )?;
+        if authority_version == 9 {
+            tx.execute(
+                "UPDATE task_store_state SET disposition='historical' WHERE singleton=1",
+                [],
+            )?;
+        }
         state.verify_restored(&tx, &held)?;
         tx.commit()?;
         conn.execute_batch("VACUUM;")?;
@@ -297,11 +320,14 @@ fn restore_with_files(
         SuppressionState::read(&fresh.conn)? == state,
         "current restore authority changed"
     );
+    if authority_version == 9 {
+        task::require_live(&fresh.conn)?;
+    }
     stage.publish(&destination, ops)?;
     drop(pinned);
     drop(held);
     Ok(RestoreReport {
-        schema_version: 8,
+        schema_version: authority_version,
         snapshot_sequence: before.sequence,
         authority_sequence: state.sequence,
         security_epoch: state.epoch,
