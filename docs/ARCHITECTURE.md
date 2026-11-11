@@ -9755,6 +9755,15 @@ requires a separately frozen request contract; do not approximate it with either
 rewrite. Exact historical replay remains on its recorded path. This boundary also
 prevents request-only notes or next-loop budget notices from masking the pause.
 
+**Delegated resume must preserve the owner-input contract as well as the jail.**
+`questions answer` and `tasks work --resume` do not construct dynamic goal ingress,
+so their transcript readers reject a versioned conversation before reopening it
+or dispatching a model. Task resume additionally checks before setup and rechecks
+at its existing load boundary; an early preflight must not become a stale snapshot
+carried past the single-writer check. A refusal preserves the pending question
+and native history. Do not suggest ordinary chat as an equivalent delegated
+resume: it does not reconstruct that question's outbox route and task narrowing.
+
 The charter file remains the current authority. Stored `CharterSnapshot` values
 retain historical bytes and rendering for replay, never an alternate policy-write
 path. `appraisal::charter_for_transcript` selects a historical charter only when

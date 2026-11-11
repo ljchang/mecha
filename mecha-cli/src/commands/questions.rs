@@ -281,6 +281,13 @@ async fn answer_and_resume(
     let path = Session::find(&dir, &q.session_id)
         .with_context(|| format!("the session that asked ({}) is gone", q.session_id))?;
     let asked = Session::read(&path)?;
+    anyhow::ensure!(
+        !asked.convo.has_dynamic_goal_context(),
+        "questions answer cannot resume versioned goal context; the question remains pending. \
+         Review it with `mecha questions show {}`; this delegated command cannot preserve \
+         the owner-input contract",
+        short(&q.id)
+    );
     opts.surface = asked.configs.first().and_then(|rc| rc.rules_surface);
     // The goal the same way: the one the asking run's block was matched
     // toward, restored off its record — never the conversation's anchor,

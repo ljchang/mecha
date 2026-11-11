@@ -14,6 +14,33 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Explicit delegated-resume boundaries (2026-11-10)
+
+PR review found `questions answer` and `tasks work --resume` loading versioned
+goal context without a supported dynamic owner-input boundary. The core refused
+eventually, but only after setup and with a flag suggestion that could not enable
+either path. Question resume now checks its loaded transcript before setup or
+answer mutation. Task resume checks before command setup and rechecks its existing
+load boundary, preserving the single-writer check rather than carrying an early
+snapshot past it. Delegated dynamic-goal continuation remains unsupported; this
+does not implement task migration or claim an ordinary chat can replace the
+delegation's task and outbox authority.
+
+Actual CLI regressions use isolated homes and a malformed project configuration
+as a setup sentinel, with ordinary-session controls. Active and cleared versioned
+histories must refuse while leaving session/question bytes and archive status
+unchanged; task refusal creates no task workspace. Both dynamic cases failed
+before the guards and ordinary controls passed. The first fixture used malformed
+global config, which stopped task dispatch at its feature gate; that fixture
+failure is separate from the corrected behavioral RED. A coverage-only core test
+also pins byte-exact charter replacement with trailing capability and learned-rule
+blocks; the existing rendering was correct, so no production change was needed.
+All four CLI regressions/controls and the charter-slot test passed. Independent
+review found no actionable correctness or security issue in the bounded guards.
+Full local workspace suites passed 6,502 default tests (25 ignored) and 7,373
+memory-enabled tests (30 ignored), with zero failures. Strict all-target,
+all-feature Clippy and formatting passed on the same frozen runtime source.
+
 ### Explicit dynamic-goal provider-pause boundary (2026-11-10)
 
 PR review found `Agent::attach_owner_evidence` appending a new user message after

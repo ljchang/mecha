@@ -2538,6 +2538,24 @@ fn clip(text: &str, max: usize) -> String {
     format!("{}…", text.chars().take(max - 1).collect::<String>())
 }
 
+/// Both the early preflight and the later authoritative read use this door.
+/// The preflight snapshot is discarded: setup must not make it the live history.
+fn load_task_resume(
+    path: &std::path::Path,
+) -> Result<(
+    mecha_core::session::SessionMeta,
+    mecha_core::agent::Conversation,
+)> {
+    let (meta, prior) = mecha_core::session::Session::load(path)?;
+    anyhow::ensure!(
+        !prior.has_dynamic_goal_context(),
+        "tasks work --resume cannot resume versioned goal context; this handover cannot \
+         preserve the owner-input contract. Start a fresh task run without --resume \
+         if you intend a new delegation"
+    );
+    Ok((meta, prior))
+}
+
 /// Hand one task to the agent: a seeded run whose subject is the task.
 ///
 /// The shape is `mail draft`'s, one noun over — a fresh `Conversation`, a
@@ -2566,6 +2584,14 @@ async fn work(
     unattended: bool,
     resume: Option<&str>,
 ) -> Result<()> {
+    // Refuse unsupported history before a permit, workspace, or MCP setup.
+    // Keep the later writer check and reread: this is only a preflight.
+    if let Some(id) = resume {
+        let dir = mecha_core::session::Session::default_dir()?;
+        let path = mecha_core::session::Session::find(&dir, id)?;
+        load_task_resume(&path)?;
+    }
+
     // **A seat, if this run is a background one.** Unattended delegations
     // queue against each other so the owner's own turn never does: throughput
     // saturates at the server's seat count, so an extra concurrent run buys
@@ -2772,7 +2798,7 @@ async fn work(
                 );
             }
             let path = mecha_core::session::Session::find(&session_dir, id)?;
-            let (meta, prior) = mecha_core::session::Session::load(&path)?;
+            let (meta, prior) = load_task_resume(&path)?;
             eprintln!(
                 "taking over {} ({} message(s) already said)",
                 meta.id,

@@ -52,6 +52,9 @@ evidence cannot be reconstructed as an unchanged server continuation merely by
 appending a user turn. Ordinary non-dynamic pause handling and recorded historical
 replay retain their existing behavior. Memory chats still apply their normal
 incomplete-capture stop; this is not permission to resume an unsealed turn.
+The legacy `questions answer` and `tasks work --resume` paths also refuse these
+versioned sessions explicitly. Preserving their delegated authority alongside
+dynamic owner-input versions is still integration work, not a flag workaround.
 
 Focused tests and the real CLI authored-transport trial passed: three retained
 turns across changed goals/charters and restart, exact six-request historical

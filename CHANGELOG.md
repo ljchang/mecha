@@ -696,6 +696,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `questions answer` and `tasks work --resume` explicitly refuse versioned
+  dynamic-goal sessions at their resume boundaries, preserving pending questions
+  and native history instead of failing later with an unusable flag suggestion.
+
 - Live dynamic-goal sessions explicitly refuse unsupported provider-pause
   continuation instead of silently adding a user turn or changing prior goal
   evidence. Ordinary pause handling and exact historical replay remain unchanged.

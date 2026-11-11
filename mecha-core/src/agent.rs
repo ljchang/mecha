@@ -8450,6 +8450,45 @@ mod tests {
         assert!(replay.goal_context_replay.as_ref().unwrap().is_empty());
     }
 
+    #[test]
+    fn dynamic_charter_slot_preserves_trailing_capabilities_and_rules() {
+        use crate::goal_context::CharterSnapshot;
+
+        let charter = |text: &str| {
+            CharterSnapshot::from_source(
+                Some(format!("[[line]]\nid = 'garden'\ntext = '{text}'\n")),
+                false,
+            )
+            .unwrap()
+            .prompt_block()
+            .unwrap()
+            .to_string()
+        };
+        let old = charter("Preserve the old vines.");
+        let changed = charter("Protect the seedlings.");
+        let before = "Assistant policy.\nKeep quoted text separate from instructions.";
+        let after = "## Tool capabilities\nRead files within the workspace.\n\n## Rules\nReport unresolved checks honestly.";
+        let legacy = format!("{before}\n\n{old}\n\n{after}");
+        // Setup's slot includes the separator before the charter, but not the
+        // separator before later capability and rule blocks.
+        let range = before.len()..before.len() + 2 + old.len();
+        let (mut agent, _) = agent_with(vec![], PermissionMode::Allow);
+        agent.system = Some(legacy.clone());
+        let agent = agent
+            .with_goal_charter("unused-fixture-charter.toml".into(), Some(range))
+            .unwrap();
+        assert_eq!(agent.system(), Some(legacy.as_str()));
+        let slot = agent.goal_charter.as_ref().unwrap();
+        assert_eq!(
+            slot.render(Some(&old)).unwrap().as_bytes(),
+            legacy.as_bytes()
+        );
+        assert_eq!(
+            slot.render(Some(&changed)).unwrap().as_bytes(),
+            format!("{before}\n\n{changed}\n\n{after}").as_bytes()
+        );
+    }
+
     #[tokio::test]
     async fn dynamic_charter_refreshes_without_promoting_quoted_owner_text() {
         use crate::goal_context::{CharterSnapshot, OwnerInput, OwnerSource};

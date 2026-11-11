@@ -159,6 +159,15 @@ active conversation evidence while preserving earlier recorded versions. A
 no-session CLI conversation keeps versions only in memory. Existing
 ordinary chats remain unchanged when the option is absent.
 
+Delegated `mecha questions answer` and `mecha tasks work --resume` cannot resume
+versioned goal context yet. They refuse explicitly and leave the question and
+recording unchanged; adding `--dynamic-goals` does not enable those resume paths.
+Ordinary chat is not a substitute for their delegated task and outbox contract.
+Live provider-pause continuation is also unsupported with dynamic goals; the
+agent stops rather than changing the paused request. Exact historical replay
+keeps its recorded behavior. Memory-enabled chats retain their separate
+incomplete-capture restrictions.
+
 An otherwise unparseable record after a dynamic decision stops loading, even if
 it is a torn final message or an unknown future record. Missing state could lose
 security provenance or misrepresent historical context. Readable fragments are
