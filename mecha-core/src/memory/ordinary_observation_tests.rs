@@ -390,6 +390,76 @@ fn recall_derives_trust_from_the_recorded_origin_and_reads_unknown_as_outside() 
     assert!(wire.get("origin").is_none());
 }
 
+/// The walk places a tool result in order, so text written before the first
+/// outside result is local. Outside content it cannot place, a note, may
+/// have been there from the first word: with one, text written before that
+/// result is outside too, and the owner's words and the results keep their
+/// own answers.
+#[test]
+fn outside_content_with_no_position_taints_what_the_model_wrote_before_any_result() {
+    let walk = |ambient: bool| {
+        let mut intake = Intake::starting(false);
+        if ambient {
+            intake.ambient();
+        }
+        let mut originals = Vec::new();
+        for (index, kind) in [
+            PassageKind::UserRequest,
+            PassageKind::AssistantText,
+            PassageKind::ToolResult,
+            PassageKind::AssistantText,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let external = match kind {
+                PassageKind::UserRequest => intake.owner(),
+                PassageKind::ToolResult => intake.result(Some(true)),
+                _ => intake.authored(),
+            };
+            let mut p = passage(
+                "walk",
+                kind,
+                "test-host",
+                &format!("/content/{index}/text"),
+                "x",
+            );
+            p.external = external;
+            originals.push(p);
+        }
+        intake.settle(Some(true), &mut originals);
+        originals
+            .into_iter()
+            .map(|p| p.external)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        walk(false),
+        [Some(false), Some(false), Some(true), Some(true)]
+    );
+    assert_eq!(
+        walk(true),
+        [Some(false), Some(true), Some(true), Some(true)]
+    );
+    // A recorded taint nothing accounts for seals nothing as local, and a
+    // missing taint record is the same case.
+    for recorded in [Some(true), None] {
+        let mut intake = Intake::starting(false);
+        let mut p = passage(
+            "walk",
+            PassageKind::UserRequest,
+            "test-host",
+            "/content/0/text",
+            "x",
+        );
+        p.external = intake.owner();
+        let mut originals = vec![p];
+        intake.settle(recorded, &mut originals);
+        assert_eq!(originals[0].external, None);
+        assert_eq!(intake.authored(), Some(true));
+    }
+}
+
 #[test]
 fn no_tool_run_is_an_observation_in_v8_only() {
     let mut older = Fixture::new(Memory::create_situated);

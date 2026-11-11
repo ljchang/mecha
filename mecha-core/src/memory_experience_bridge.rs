@@ -234,7 +234,10 @@ pub(crate) fn memory_packet_references_checked(
         let untrusted = match &hit.record {
             PacketRecord::Reader(
                 crate::memory::interpretation_reader::ReaderRecord::NativeCapture(reader),
-            ) => reader.originals.iter().any(|d| d.external != Some(false)),
+            ) => {
+                reader.originals.is_empty()
+                    || reader.originals.iter().any(|d| d.external != Some(false))
+            }
             PacketRecord::Canonical(crate::memory::Record::Evidence(_)) => {
                 hit.external != Some(false)
             }
@@ -396,7 +399,22 @@ fn events_mode(
             Record::Taint(recorded) => {
                 recorded_untrusted = Some(recorded_untrusted.unwrap_or(false) | recorded.untrusted);
             }
+            Record::Notes { notes } => {
+                let mut carried = crate::agent::Taint::default();
+                carried.arm_for_notes(&notes);
+                if carried.untrusted {
+                    intake.ambient();
+                }
+            }
             Record::Message(mut message) => {
+                // The harness's own content rule, asked of this message: a
+                // user-role block it reads as untrusted is outside content no
+                // tool result accounts for.
+                let mut content = crate::agent::Taint::default();
+                content.arm_for_content(std::slice::from_ref(&message));
+                if content.untrusted {
+                    intake.ambient();
+                }
                 let provenance = std::mem::take(&mut message.tool_provenance);
                 for (index, block) in message.content.into_iter().enumerate() {
                     let external;

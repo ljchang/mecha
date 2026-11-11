@@ -140,7 +140,7 @@ pub struct Hit {
     /// when a live capture says: the one field of `origin` a reader of the
     /// packet is shown, absent when unknown. The passage's own source id
     /// already names its session, line and field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub external: Option<bool>,
     /// The whole origin, for a caller in this process. Never on the wire: a
     /// packet is cut to a byte budget, and the capture's own record carries

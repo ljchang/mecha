@@ -193,6 +193,11 @@ fn capture_impl(
                     notes.len() <= 32 && notes.iter().all(|n| n.len() <= 8192),
                     "ordinary notes oversized"
                 );
+                let mut carried = crate::agent::Taint::default();
+                carried.arm_for_notes(&notes);
+                if carried.untrusted {
+                    intake.ambient();
+                }
             }
             Record::Summary { .. } => {}
             Record::Taint(recorded) => {
@@ -260,6 +265,14 @@ fn capture_impl(
                     .count();
                 // What the loop recorded beside each result: whether its bytes
                 // came from outside. Read before the blocks are consumed.
+                // The harness's own content rule, asked of this message: a
+                // user-role block it reads as untrusted is outside content no
+                // tool result accounts for.
+                let mut content = crate::agent::Taint::default();
+                content.arm_for_content(std::slice::from_ref(&m));
+                if content.untrusted {
+                    intake.ambient();
+                }
                 let provenance = std::mem::take(&mut m.tool_provenance);
                 for (index, b) in m.content.into_iter().enumerate() {
                     let external: Option<bool>;

@@ -13131,7 +13131,11 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   recorded taint outranks the walk** (`Intake::settle`): it is armed by
   more than tool results (notes, persona blocks, a digest), so where it
   says untrusted, or is missing, and the walk saw nothing outside, no
-  passage of that capture is sealed as local (review of #863). A capture's
+  passage of that capture is sealed as local. And a note or user-role
+  block that the harness's own content rule (`Taint::arm_for_content`)
+  reads as untrusted has no position among the messages, so everything the
+  model wrote in that capture is stored as outside (`Intake::ambient`;
+  both from review of #863). A capture's
   own record is trusted only when every passage it admitted was. The field is absent
   from the wire when unknown, so earlier captures keep their digests and
   read as untrusted.

@@ -125,12 +125,16 @@ pub struct OriginalPassage {
 #[derive(Clone, Copy, Debug)]
 pub struct Intake {
     outside: bool,
+    ambient: bool,
 }
 impl Intake {
     /// A conversation that begins here. Pass what the earlier turns already
     /// took in when the transcript is a continuation.
     pub fn starting(outside: bool) -> Self {
-        Self { outside }
+        Self {
+            outside,
+            ambient: false,
+        }
     }
     /// The owner's own words.
     pub fn owner(&self) -> Option<bool> {
@@ -148,14 +152,39 @@ impl Intake {
         self.outside |= recorded != Some(false);
         recorded
     }
-    /// Reconcile the walk with the transcript's own recorded taint, which is
-    /// the harness's verdict on everything that entered the conversation and
-    /// is armed by more than tool results: notes, persona blocks, a digest.
-    /// Where it says untrusted and the walk saw nothing outside, something
-    /// entered that this type cannot place, so no passage is sealed as
-    /// local: each becomes unknown, and unknown reads as outside. `None` is
-    /// a transcript with no taint record, and is the same case.
+    /// Something other than a tool result brought outside content in: a
+    /// note or a user-role block the harness's own content rule
+    /// (`Taint::arm_for_content`) reads as untrusted. A notes record has no
+    /// position among the messages, so this cannot say when it arrived;
+    /// [`Intake::settle`] therefore treats it as present from the start.
+    pub fn ambient(&mut self) {
+        self.ambient = true;
+        self.outside = true;
+    }
+    /// Reconcile the walk with the transcript's own recorded taint, the
+    /// harness's verdict on everything that entered the conversation.
+    ///
+    /// Outside content the walk could see but not place (`ambient`) may have
+    /// been in front of the model from its first word, so everything the
+    /// model wrote in this capture is recorded as outside, whatever a later
+    /// tool result would have explained. And where the recorded taint says
+    /// untrusted, or there is no taint record, while the walk saw nothing
+    /// that accounts for it, something entered that this type cannot name:
+    /// no passage is sealed as local, each becomes unknown, and unknown
+    /// reads as outside.
     pub fn settle(&mut self, recorded_untrusted: Option<bool>, originals: &mut [OriginalPassage]) {
+        if self.ambient {
+            for passage in originals.iter_mut() {
+                if matches!(
+                    passage.kind,
+                    PassageKind::AssistantText
+                        | PassageKind::ActionInvocation
+                        | PassageKind::ArtifactObservation
+                ) {
+                    passage.external = Some(true);
+                }
+            }
+        }
         if recorded_untrusted != Some(false) && !self.outside {
             self.outside = true;
             for passage in originals {
