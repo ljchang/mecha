@@ -329,40 +329,10 @@ pub async fn execute(
                 .map(|tool| tool.local_name.clone())
                 .collect()
         });
-        super::memory_profile::validate_memory_config_with_graph(
-            &opts,
-            &prepared.config,
-            &graph_names,
-        )?;
+        super::memory_profile::validate_memory_runtime(&opts, &prepared, memory, &graph_names)?;
         if let Some(surface) = &graph_surface {
             memory.validate_graph_surface(surface)?;
         }
-        let cx = prepared.agent.context();
-        anyhow::ensure!(
-            cx.hooks.is_empty(),
-            "chat memory requires no effective hooks"
-        );
-        anyhow::ensure!(
-            !prepared
-                .agent
-                .registry()
-                .iter()
-                .any(|tool| tool.runs_a_fresh_conversation()
-                    || tool.defers()
-                    || tool.hosts_programs()),
-            "chat memory requires direct tools"
-        );
-        let names: Vec<String> = prepared
-            .agent
-            .registry()
-            .iter()
-            .map(|tool| tool.name().into())
-            .collect();
-        memory.validate_surface(&names, &prepared.workspace, &cx.tools.grants.all())?;
-        anyhow::ensure!(
-            names.len() == opts.tools.len() && names.iter().all(|n| opts.tools.contains(n)),
-            "chat memory final registry differs from selected tools"
-        );
         prepared.agent.registry_mut().insert(memory.context_tool()?);
     }
 

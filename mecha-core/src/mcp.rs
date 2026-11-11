@@ -335,19 +335,22 @@ fn resolve_executable(
             workspace.join(path)
         }]
     } else {
-        std::env::split_paths(
+        let directories: Vec<_> = std::env::split_paths(
             environment
                 .get("PATH")
                 .context("selected graph launch has no PATH")?,
         )
-        .map(|directory| {
-            if directory.is_absolute() {
-                directory.join(path)
-            } else {
-                workspace.join(directory).join(path)
-            }
-        })
-        .collect()
+        .collect();
+        // PATH lookup must not implicitly choose code from the model workspace.
+        // Validate the whole list even if an earlier absolute entry matches.
+        anyhow::ensure!(
+            directories.iter().all(|directory| directory.is_absolute()),
+            "selected graph PATH requires only absolute directories"
+        );
+        directories
+            .into_iter()
+            .map(|directory| directory.join(path))
+            .collect()
     };
     candidates
         .into_iter()
@@ -1581,6 +1584,60 @@ fn result_claims_not_dispatched(result: &Value, trusted: bool, is_error: bool) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(unix)]
+    fn selected_path_rejects_workspace_relative_components_before_prepare() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace =
+            std::env::temp_dir().join(format!("mecha-selected-path-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(workspace.join("bin")).unwrap();
+        for directory in [&workspace, &workspace.join("bin")] {
+            let program = directory.join("mecha-graph-mcp");
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut config = McpServerConfig {
+            name: "graph".into(),
+            command: "mecha-graph-mcp".into(),
+            from_operator: true,
+            ..Default::default()
+        };
+        let selected = ["kg_search".to_string()].into();
+        let absolute = workspace.join("bin").display().to_string();
+        let mut accepted = Vec::new();
+        for path in [
+            ".".to_string(),
+            String::new(),
+            "bin".to_string(),
+            format!(".:{absolute}"),
+            format!(":{absolute}"),
+            format!("bin:{absolute}"),
+            format!("{absolute}:"),
+            format!("{absolute}:."),
+            format!("{absolute}:bin"),
+        ] {
+            config.env.insert("PATH".into(), path.clone());
+            if prepare_selected_graph(&config, &Sandbox::default(), &workspace, &selected).is_ok() {
+                accepted.push(path);
+            }
+        }
+        config.env.insert("PATH".into(), absolute);
+        assert!(
+            prepare_selected_graph(&config, &Sandbox::default(), &workspace, &selected).is_ok()
+        );
+        // An explicit operator-authored relative command is not PATH lookup.
+        config.command = "./bin/mecha-graph-mcp".into();
+        config.env.insert("PATH".into(), ".".into());
+        assert!(
+            prepare_selected_graph(&config, &Sandbox::default(), &workspace, &selected).is_ok()
+        );
+        std::fs::remove_dir_all(workspace).unwrap();
+        assert!(
+            accepted.is_empty(),
+            "selected PATH accepted workspace-relative components: {accepted:?}"
+        );
+    }
+
     #[test]
     fn local_transport_evidence_survives_without_trusting_error_text() {
         let pipe =

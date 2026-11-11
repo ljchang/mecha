@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental authenticated web chat can opt into encrypted episodic memory
+  through an explicitly configured `serve --episodic-memory` profile and the
+  **Memory +** control. Each conversation owns its fixed runtime and memory
+  reader; exact typed input, goal/charter versions and per-turn source lineage
+  survive authenticated resume. The page separates execution from retention,
+  rejects delayed duplicate turns, and preserves unsent drafts on refusal.
+  The first profile supports local file/context tools and typed input only;
+  todos, compaction, graph MCP and uploads remain unavailable in web memory.
+  Database encryption does not encrypt external transcripts or recovery files.
+
 - Experimental encrypted CLI chat can opt into one owner-configured read-only
   graph MCP with `--memory-graph-server NAME`. Selected tools and their runtime
   definitions are bound to the conversation; resume refuses changes before
@@ -679,6 +689,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- Selected graph launches refuse relative or empty PATH lookup components. Their
+  bubblewrap launcher must resolve outside the model workspace, including through
+  symlinks, so workspace code cannot stand in for confinement. Explicit
+  owner-selected relative server commands retain their existing behavior.
 
 - Memory-attached recordings refuse replay with live divergence before runtime
   setup; historical Stop/Error replay remains available. Cancellation during

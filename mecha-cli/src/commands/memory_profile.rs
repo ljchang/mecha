@@ -127,18 +127,73 @@ pub(crate) fn open_chat_profile(
         .context("ordinary memory workspace unavailable")?;
     mecha_core::work::ensure_outside_mecha_home(&workspace)?;
     let path = std::path::absolute(path)?;
-    SessionMemory::validate_request_path(&path, &workspace)?;
-    let request = SessionMemory::load_request(&path)?;
-    let memory = SessionMemory::open(&request, &workspace)?;
     let local_tools: Vec<_> = global
         .tools
         .iter()
         .filter(|name| !graph_names.contains(name))
         .cloned()
         .collect();
-    memory.validate_surface(&local_tools, &workspace, &[])?;
+    let memory = open_memory_at(&path, &workspace, &local_tools)?;
     global.global_config_only = true;
     Ok(ChatProfilePreparation { memory, graph })
+}
+
+/// Workspace-explicit local profile shared by CLI-independent hosts.
+pub(crate) fn open_local_profile_at(
+    global: &GlobalOpts,
+    config: &Config,
+    path: &Path,
+    workspace: &Path,
+) -> Result<SessionMemory> {
+    anyhow::ensure!(
+        global.no_mcp && global.no_code_tool && global.no_grants && !global.tools.is_empty(),
+        "memory requires an explicit local tool surface"
+    );
+    validate_memory_config(global, config)?;
+    mecha_core::work::ensure_outside_mecha_home(workspace)?;
+    open_memory_at(path, workspace, &global.tools)
+}
+
+fn open_memory_at(path: &Path, workspace: &Path, tools: &[String]) -> Result<SessionMemory> {
+    SessionMemory::validate_request_path(path, workspace)?;
+    let request = SessionMemory::load_request(path)?;
+    let memory = SessionMemory::open(&request, workspace)?;
+    memory.validate_surface(tools, workspace, &[])?;
+    Ok(memory)
+}
+
+pub(crate) fn validate_memory_runtime(
+    opts: &GlobalOpts,
+    prepared: &crate::setup::Prepared,
+    memory: &mecha_core::memory_session::chat::ChatMemory,
+    graph_names: &[String],
+) -> Result<()> {
+    validate_memory_config_with_graph(opts, &prepared.config, graph_names)?;
+    let cx = prepared.agent.context();
+    anyhow::ensure!(
+        cx.hooks.is_empty(),
+        "chat memory requires no effective hooks"
+    );
+    anyhow::ensure!(
+        !prepared
+            .agent
+            .registry()
+            .iter()
+            .any(|tool| tool.runs_a_fresh_conversation() || tool.defers() || tool.hosts_programs()),
+        "chat memory requires direct tools"
+    );
+    let names: Vec<String> = prepared
+        .agent
+        .registry()
+        .iter()
+        .map(|tool| tool.name().into())
+        .collect();
+    memory.validate_surface(&names, &prepared.workspace, &cx.tools.grants.all())?;
+    anyhow::ensure!(
+        names.len() == opts.tools.len() && names.iter().all(|n| opts.tools.contains(n)),
+        "chat memory final registry differs from selected tools"
+    );
+    Ok(())
 }
 
 fn select_graph(global: &GlobalOpts, config: &Config, name: &str) -> Result<GraphSelection> {

@@ -2,6 +2,20 @@
 
 Design draft · 2026-11-04 · original proposal retained below.
 
+**Task/planning ownership decision, 2026-11-10:** Mecha-owned todos, tasks and
+plans will use this memory database as their authoritative store, rather than
+mecha-graph. Reuse existing tool/planning interfaces through a core storage API;
+retain versioned goal links, plan/status revisions and outcome evidence. Native
+JSONL remains audit/replay evidence, not the sole task store. The owner graph
+remains independent personal context. This persistence integration is the next
+implementation slice; existing graph-backed consumers have not been migrated.
+
+**Authenticated-web addendum, 2026-11-10:** the separately versioned bounded
+web-memory profile is implemented and qualified, using the existing Agent loop
+with a dedicated runtime and tracked reader per conversation. Actual HTTP and
+browser restart/retention workflows are recorded in HISTORY. This does not enable
+web graph tools, todos/plans, compaction or automatic learning; see HANDOFF.
+
 **Conversation-memory addendum, 2026-11-10:** §31.25 has an opt-in local CLI
 implementation with per-turn prefix seals, changing context and authenticated
 resume. It retains NotEvaluated observations, not verified success. See HISTORY

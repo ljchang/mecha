@@ -14,6 +14,58 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+### Authenticated encrypted web memory (2026-11-10, prototype)
+
+`SessionMemory::attach_authenticated_web_chat` and
+`ChatMemory::begin_authenticated_web_turn` add closed Web/AuthenticatedWeb ingress
+under a V3 attachment and paired V2 observation/recorder protocol. CLI V1/V2 raw
+bytes and source doors remain unchanged. `serve::memory_chat` owns a fixed
+Prepared/Conversation/reader/lease in each ChatSlot, reserves tracked work before
+spawning, restores only after lease authentication, and separates retained status
+from execution's Done event. Stop and failed capture release the runtime and block
+unsafe continuation; retry remains storage-only. The browser's explicit Memory +
+profile accepts bounded exact typed text, preserves refused drafts, and requires
+authenticated resume without ordinary fresh-session fallback.
+
+The authored HTTP workflow retained three turns across goal/charter changes and
+restart, with six scripted provider requests, ten distinct original sources,
+exact source/reference recall, predecessor lineage, receipt identity, strict
+protocols and no recapture. Actual compiled-browser tests separately exercised
+creation, Send/Stop, page reconnect, history resume after server restart and
+retention details. An interrupted third turn kept two retained prefixes and
+refused resume; a separate restart fixture retained all three turns. Mobile
+390 px and desktop 1300 px checks had no document overflow. No real-model, private
+graph or production deployment was used for this increment.
+
+Review regressions exposed pre-lease stale conversation restoration, shutdown
+missing reserved work, byte-limited UTF-8 marker misclassification, browser-key
+validation rejecting native timestamp IDs, and live files hiding parked
+partial-forget claims. `guard_native_memory_mutation` now uses the same native
+directory as archive/delete even without ChatState and in feature-off builds;
+unknown/ambiguous sources refuse while ordinary generated IDs still work.
+Actual browser QA then exposed a 41-character UUID key against the existing
+32-character server limit; the shipping creation function now produces a bounded
+29-character key, with crypto/fallback regression coverage. Full-suite testing
+found an older voice fixture flattened only serve Args, omitting inherited flags;
+it now parses the real command tree without weakening production requirements.
+
+Both all-target builds, formatting and strict all-target/all-feature Clippy passed.
+Default workspace passed 6,493 tests with 25 existing ignored; memory workspace
+passed 7,334 with 30 ignored; required backend checks 49/49 had no skips, and the
+standalone memory harness passed 408/408. Focused host tests passed 10 feature-on
+and 3 feature-off controls; Node 24 web tests include 22 memory cases, and the full
+web suite and production build passed. Existing CLI/graph/web-context smokes
+remain green. The first failed full-suite run is preserved as a test-fixture
+failure; the corrected complete memory suite passed. These checks establish
+bounded integration mechanics, not semantic benefit or private-data readiness.
+
+Todo/planning persistence, broader web tools/graph, safe long-chat storage and
+compaction, continuous learning and operational protection remain open. The
+owner clarified that Mecha-owned tasks/plans belong in the new memory database;
+that is the next implementation slice, not a graph task-store migration completed
+by this change. External JSONL and recovery files remain separate protection
+surfaces; retention is explicitly NotEvaluated for task success.
+
 ### Selected graph observations in encrypted CLI chat (2026-11-10, prototype)
 
 `chat::preflight_memory` now authenticates the existing attachment/lease and
@@ -38,6 +90,18 @@ candidate was held before qualification. The corrected path rejects loader
 controls and unqualified scoped limits before spawn, and leaves ordinary bwrap
 and Landlock enforcement unchanged. CI now runs the selected-MCP target with
 backend skips disabled, rather than relying only on generic backend coverage.
+
+Follow-up review found selected executable discovery could implicitly select
+workspace code through a relative or empty PATH component. Selected lookup now
+refuses the entire invalid list before choosing a candidate; bwrap also refuses
+a canonical launcher inside the workspace, including an outside symlink pointing
+inward. Three filesystem regressions failed on the original resolver and passed
+with the fix; the required selected-graph integration target passed 11/11 with
+real bwrap. An initial constructor-based negative fixture was invalid because
+normalization replaced its supplied PATH. The corrected tests inspect the final
+effective resolver input, not the overwritten input; that distinction is necessary
+when testing any environment-normalizing launcher. These checks bind launch
+location/configuration, not executable content or arbitrary replacement races.
 
 `ChatGraphSurface` is part of `ordinary-chat-memory-v2` private authority. Existing
 V1 wire bytes remain unchanged, and turns/seals bind the original attachment

@@ -225,7 +225,7 @@ impl ChatMemoryMarker {
         anyhow::ensure!(
             matches!(
                 self.protocol.as_str(),
-                "ordinary-chat-memory-v1" | "ordinary-chat-memory-v2"
+                "ordinary-chat-memory-v1" | "ordinary-chat-memory-v2" | "ordinary-chat-memory-v3"
             ) && !self.conversation_id.is_empty()
                 && self.conversation_id.len() <= 256
                 && !self.authority.is_empty()

@@ -61,3 +61,54 @@ fn graph_memory_marker_is_recognized_but_ordinary_loader_refuses() {
     assert!(Session::load(&path).is_err());
     std::fs::remove_file(path).unwrap();
 }
+
+fn authored_web_memory_transcript() -> String {
+    let header = serde_json::json!({"record":"meta","id":"authored-web","created_at":"2026-01-01T00:00:00Z","provider":"test","model":"test","workspace":"/tmp","kind":"web"});
+    let marker = serde_json::json!({"record":"chat_memory","marker":{"protocol":"ordinary-chat-memory-v3","conversation_id":"authored-web","authority":"authored-authority","attachment":"a".repeat(64)}});
+    format!("{header}\n{marker}\n")
+}
+
+#[test]
+fn web_memory_v3_marker_is_readable_without_authorizing_ordinary_resume() {
+    let text = authored_web_memory_transcript();
+    let path = std::env::temp_dir().join(format!("web-marker-{}.jsonl", uuid::Uuid::new_v4()));
+    let transcript = Session::parse(&path, &text)
+        .expect("V3 must remain readable even when executable memory attachment is unavailable");
+    assert_eq!(transcript.meta.kind, Some(SessionKind::Web));
+    assert_eq!(
+        transcript.chat_memory.unwrap().protocol,
+        "ordinary-chat-memory-v3"
+    );
+    std::fs::write(&path, text).unwrap();
+    let ordinary_resume = Session::load(&path);
+    std::fs::remove_file(path).unwrap();
+    assert!(
+        ordinary_resume.is_err(),
+        "V3 requires authenticated web attachment"
+    );
+}
+
+#[test]
+fn web_memory_v3_marker_never_recovers_duplicate_or_unknown_tail_records() {
+    let text = authored_web_memory_transcript();
+    let marker = text.lines().nth(1).unwrap();
+    for suffix in [
+        format!("{marker}\n"),
+        "{\"record\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"unknown_web_block\"}]}\n".into(),
+    ] {
+        assert!(Session::parse(std::path::Path::new("authored-web"), &format!("{text}{suffix}")).is_err());
+    }
+    for invalid in [
+        text.replace("ordinary-chat-memory-v3", "ordinary-chat-memory-v999"),
+        text.replace(
+            "\"protocol\":",
+            "\"protocol\":\"ordinary-chat-memory-v1\",\"protocol\":",
+        ),
+        text.replace(
+            "\"attachment\":",
+            "\"unexpected_ingress\":true,\"attachment\":",
+        ),
+    ] {
+        assert!(Session::parse(std::path::Path::new("authored-web"), &invalid).is_err());
+    }
+}

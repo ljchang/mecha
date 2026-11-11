@@ -883,3 +883,189 @@ fn chat_native_conversion_preserves_owner_and_context_wire_bytes() {
         (2, 0, version.revision())
     );
 }
+
+fn authored_web_observation_wire() -> serde_json::Value {
+    let mut wire = serde_json::to_value(chat_capture()).unwrap();
+    wire["identity"]["check_version"] = json!("ordinary-chat-observation-v2");
+    wire["identity"]["evaluator_version"] = json!("ordinary-chat-recorder-v2");
+    wire["chat_context"]["versions"][0]["owner_inputs"][0]["source"] = json!("authenticated_web");
+    wire
+}
+
+#[test]
+fn web_observation_v2_retains_authenticated_source_without_a_success_verdict() {
+    let value: HostCapture = serde_json::from_value(authored_web_observation_wire())
+        .expect("the versioned web DTO must decode authenticated owner evidence");
+    OrdinaryObservationCapture::try_from_host(value.clone()).unwrap();
+    let mut f = Fixture::new(Memory::create_supported_situated);
+    let receipt = admit(&mut f, value.clone());
+    assert!(matches!(
+        f.db.capture_semantic_assessment(&receipt, &f.access)
+            .unwrap(),
+        SemanticAssessment::NotEvaluated
+    ));
+    let Some(Record::Evidence(projection)) = f.db.read(&receipt.projection, &f.access).unwrap()
+    else {
+        panic!("web observation projection missing");
+    };
+    let canonical = projection_input(&f.db.conn, &projection).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&canonical).unwrap(),
+        serde_json::to_vec(&value).unwrap()
+    );
+    let reader = native_reader(&f.db.conn, &receipt.projection, &projection)
+        .unwrap()
+        .unwrap();
+    let wire = serde_json::to_value(&reader).unwrap();
+    assert_eq!(
+        wire["chat_context"]["versions"][0]["owner_inputs"][0]["source"],
+        "authenticated_web"
+    );
+    assert!(wire.get("criterion").is_none());
+    let decoded: super::interpretation_reader::NativeCaptureReaderV1 =
+        serde_json::from_value(wire).unwrap();
+    decoded.validate_manifest(&receipt.originals).unwrap();
+}
+
+#[test]
+fn web_observation_v2_reserves_each_protocol_label_against_legacy_admission() {
+    for (check, recorder) in [
+        (
+            "ordinary-chat-observation-v2",
+            "authored-unrelated-recorder",
+        ),
+        ("authored-unrelated-check", "ordinary-chat-recorder-v2"),
+    ] {
+        let mut value = capture("web-protocol-spoof", "a", "Sort synthetic rows");
+        value.identity.check_version = check.into();
+        value.identity.evaluator_version = recorder.into();
+        assert!(
+            super::ordinary_observation::claims_ordinary_protocol(&value.identity),
+            "either reserved web label must prevent legacy artifact admission"
+        );
+        assert!(OrdinaryObservationCapture::try_from_host(value).is_err());
+    }
+}
+
+#[test]
+fn web_observation_v2_rejects_crossed_protocol_source_pairs() {
+    for (check, recorder, source) in [
+        (
+            "ordinary-chat-observation-v1",
+            "ordinary-chat-recorder-v1",
+            "authenticated_web",
+        ),
+        (
+            "ordinary-chat-observation-v2",
+            "ordinary-chat-recorder-v2",
+            "cli_chat",
+        ),
+        (
+            "ordinary-chat-observation-v1",
+            "ordinary-chat-recorder-v2",
+            "authenticated_web",
+        ),
+        (
+            "ordinary-chat-observation-v2",
+            "ordinary-chat-recorder-v1",
+            "cli_chat",
+        ),
+        (
+            "ordinary-chat-observation-v2",
+            "ordinary-chat-recorder-v2",
+            "tui",
+        ),
+        (
+            "ordinary-chat-observation-v2",
+            "ordinary-chat-recorder-v2",
+            "unverified",
+        ),
+    ] {
+        let mut wire = authored_web_observation_wire();
+        wire["identity"]["check_version"] = json!(check);
+        wire["identity"]["evaluator_version"] = json!(recorder);
+        wire["chat_context"]["versions"][0]["owner_inputs"][0]["source"] = json!(source);
+        let accepted = serde_json::from_value::<HostCapture>(wire)
+            .ok()
+            .is_some_and(|v| OrdinaryObservationCapture::try_from_host(v).is_ok());
+        assert!(!accepted, "accepted {check}/{recorder}/{source}");
+    }
+    // The old CLI pair remains valid: rejecting every context is not a fix.
+    OrdinaryObservationCapture::try_from_host(chat_capture()).unwrap();
+}
+
+#[test]
+fn web_observation_v2_refuses_mixed_owner_history_and_private_fields() {
+    let mut mixed = authored_web_observation_wire();
+    mixed["chat_context"]["versions"][0]["owner_inputs"] = json!([
+        {"source":"cli_chat","text":"Earlier synthetic instruction"},
+        {"source":"authenticated_web","text":"Sort synthetic cards"}
+    ]);
+    mixed["chat_context"]["owner_messages"][0]["owner_input_index"] = json!(1);
+    let accepted = serde_json::from_value::<HostCapture>(mixed)
+        .ok()
+        .is_some_and(|v| OrdinaryObservationCapture::try_from_host(v).is_ok());
+    assert!(
+        !accepted,
+        "web capture must reject mixed historical ingress"
+    );
+    for field in ["source", "charter", "sensor", "messages"] {
+        let mut wire = authored_web_observation_wire();
+        wire["chat_context"]["versions"][0][field] = json!("AUTHORED-PRIVATE-FIELD");
+        assert!(serde_json::from_value::<HostCapture>(wire).is_err());
+    }
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn cli_chat_converter_does_not_accept_authenticated_web_owner_input() {
+    use super::chat_observation::ChatContextVersion;
+    use crate::goal_context::{CharterSnapshot, GoalContextState, OwnerInput, OwnerSource};
+    let mut state = GoalContextState::default();
+    state
+        .transition(
+            CharterSnapshot::disabled(),
+            Some(
+                OwnerInput::new(OwnerSource::AuthenticatedWeb, "Sort synthetic cards".into())
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+    assert!(ChatContextVersion::from_version(state.current().unwrap()).is_err());
+}
+
+#[cfg(feature = "memory-prototype")]
+#[test]
+fn web_observation_native_converter_preserves_exact_owner_order_and_rejects_cli_history() {
+    use super::chat_observation::ChatContextVersion;
+    use crate::goal_context::{CharterSnapshot, GoalContextState, OwnerInput, OwnerSource};
+    let mut state = GoalContextState::default();
+    for text in [
+        "First authored web objective",
+        "Revised authored web objective",
+    ] {
+        state
+            .transition(
+                CharterSnapshot::disabled(),
+                Some(OwnerInput::new(OwnerSource::AuthenticatedWeb, text.into()).unwrap()),
+            )
+            .unwrap();
+    }
+    let version = state.current().unwrap();
+    let summary = ChatContextVersion::from_authenticated_web_version(version).unwrap();
+    assert_eq!(
+        serde_json::to_vec(summary.owner_inputs()).unwrap(),
+        serde_json::to_vec(version.owner_inputs()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&summary).unwrap()["context_digest"],
+        digest_bytes(&serde_json::to_vec(version).unwrap())
+    );
+    state
+        .transition(
+            CharterSnapshot::disabled(),
+            Some(OwnerInput::new(OwnerSource::CliChat, "A different ingress".into()).unwrap()),
+        )
+        .unwrap();
+    assert!(ChatContextVersion::from_authenticated_web_version(state.current().unwrap()).is_err());
+}

@@ -1155,14 +1155,14 @@ fn selected_bwrap_launcher(
     let path = environment
         .get("PATH")
         .context("selected bwrap has no PATH")?;
-    std::env::split_paths(path)
-        .map(|directory| {
-            if directory.is_absolute() {
-                directory.join("bwrap")
-            } else {
-                workspace.join(directory).join("bwrap")
-            }
-        })
+    let directories: Vec<_> = std::env::split_paths(path).collect();
+    anyhow::ensure!(
+        directories.iter().all(|directory| directory.is_absolute()),
+        "selected bwrap PATH requires only absolute directories"
+    );
+    let launcher = directories
+        .into_iter()
+        .map(|directory| directory.join("bwrap"))
         .find(|candidate| {
             #[cfg(unix)]
             {
@@ -1178,7 +1178,17 @@ fn selected_bwrap_launcher(
         })
         .context("selected bwrap launcher is unavailable on its frozen PATH")?
         .canonicalize()
-        .context("resolving selected bwrap launcher")
+        .context("resolving selected bwrap launcher")?;
+    // Unlike an explicitly owner-selected server, the confinement executable
+    // must not be writable through the model's workspace, even via a symlink.
+    let workspace = workspace
+        .canonicalize()
+        .context("resolving selected bwrap workspace")?;
+    anyhow::ensure!(
+        !launcher.starts_with(&workspace),
+        "selected bwrap launcher must be outside the workspace"
+    );
+    Ok(launcher)
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
@@ -1610,26 +1620,109 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn selected_path_rejects_workspace_relative_components_before_bwrap() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "mecha-selected-bwrap-path-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let workspace = root.join("workspace");
+        let trusted = root.join("trusted");
+        std::fs::create_dir_all(workspace.join("bin")).unwrap();
+        std::fs::create_dir_all(&trusted).unwrap();
+        for directory in [&workspace, &workspace.join("bin"), &trusted] {
+            let program = directory.join("bwrap");
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let absolute = trusted.display().to_string();
+        let mut accepted = Vec::new();
+        for path in [
+            ".".to_string(),
+            String::new(),
+            "bin".to_string(),
+            format!(".:{absolute}"),
+            format!(":{absolute}"),
+            format!("bin:{absolute}"),
+            format!("{absolute}:"),
+            format!("{absolute}:."),
+            format!("{absolute}:bin"),
+        ] {
+            let environment = BTreeMap::from([("PATH".into(), path.clone())]);
+            if selected_bwrap_launcher(&environment, &workspace).is_ok() {
+                accepted.push(path);
+            }
+        }
+        let environment = BTreeMap::from([("PATH".into(), absolute)]);
+        assert_eq!(
+            selected_bwrap_launcher(&environment, &workspace).unwrap(),
+            trusted.join("bwrap").canonicalize().unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            accepted.is_empty(),
+            "selected bwrap PATH accepted workspace-relative components: {accepted:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selected_bwrap_refuses_launchers_inside_the_workspace_even_through_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root =
+            std::env::temp_dir().join(format!("mecha-bwrap-containment-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        let trusted = root.join("trusted");
+        for directory in [&workspace, &outside, &trusted] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        for directory in [&workspace, &trusted] {
+            let program = directory.join("bwrap");
+            std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        symlink(workspace.join("bwrap"), outside.join("bwrap")).unwrap();
+        let mut accepted = Vec::new();
+        for directory in [&workspace, &outside] {
+            let environment = BTreeMap::from([("PATH".into(), directory.display().to_string())]);
+            if selected_bwrap_launcher(&environment, &workspace).is_ok() {
+                accepted.push(directory.display().to_string());
+            }
+        }
+        let environment = BTreeMap::from([("PATH".into(), trusted.display().to_string())]);
+        assert_eq!(
+            selected_bwrap_launcher(&environment, &workspace).unwrap(),
+            trusted.join("bwrap").canonicalize().unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            accepted.is_empty(),
+            "selected bwrap accepted workspace-owned launcher targets: {accepted:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn selected_bwrap_resolves_the_launcher_from_its_final_path() {
         use std::os::unix::fs::PermissionsExt;
-        let workspace =
+        let root =
             std::env::temp_dir().join(format!("mecha-selected-launcher-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
         for directory in ["first", "second"] {
-            std::fs::create_dir_all(workspace.join(directory)).unwrap();
-            let executable = workspace.join(directory).join("bwrap");
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+            let executable = root.join(directory).join("bwrap");
             std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         for directory in ["first", "second"] {
-            let environment = BTreeMap::from([("PATH".into(), directory.into())]);
+            let environment =
+                BTreeMap::from([("PATH".into(), root.join(directory).display().to_string())]);
             let launcher = selected_bwrap_launcher(&environment, &workspace).unwrap();
             assert_eq!(
                 launcher,
-                workspace
-                    .join(directory)
-                    .join("bwrap")
-                    .canonicalize()
-                    .unwrap()
+                root.join(directory).join("bwrap").canonicalize().unwrap()
             );
             assert!(launcher.is_absolute());
         }
@@ -1638,7 +1731,7 @@ mod tests {
             &workspace
         )
         .is_err());
-        std::fs::remove_dir_all(workspace).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

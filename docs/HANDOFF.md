@@ -35,7 +35,7 @@ mechanics trial, and `website/docs/features/memory/index.md` for the command.
 **Dynamic context and encrypted CLI chat (2026-11-10, opt-in prototype):**
 `--dynamic-goals` preserves owner-input and charter versions in CLI chat and TUI.
 `serve --dynamic-goals` now forwards the explicit flag through `ChatState::build`
-into the follower options, preserving it through provider rebuilds. This does not
+into the follower options, preserving it through provider rebuilds. The dynamic-goals flag alone does not
 attach encrypted memory to web chat. The owner-authored charter file remains current authority.
 The separate `chat --episodic-memory FILE --dynamic-goals` path now attaches the
 explicit encrypted store to local recorded CLI conversations. `ChatMemory`
@@ -49,15 +49,15 @@ goals, and task success stays NotEvaluated.
 Focused tests and the real CLI authored-transport trial passed: three retained
 turns across changed goals/charters and restart, exact six-request historical
 replay, default-off control and five pre-provider refusals. Independent source
-review has no remaining major/medium finding. The current graph checkpoint passed full workspace suites with
-6,485 default / 7,307 memory-enabled tests (25 / 30 ignored), both all-target
-builds, strict Clippy and actual CLI/web smoke workflows. The expanded required
-Linux backend set passed 49/49 with skips disabled; standalone memory passed 404/404.
+review has no remaining major/medium finding. The authenticated-web checkpoint passed full workspace suites with
+6,493 default / 7,334 memory-enabled tests (25 / 30 ignored), both all-target
+builds, strict Clippy and actual CLI/web smoke workflows. The required Linux
+backend set passed 49/49 with skips disabled; standalone memory passed 408/408.
 HISTORY records the bounded model diagnostic, including its strict
 format failure and control-tool deviation. Neither this CLI opt-in nor successful
 storage establishes production/private-data readiness.
 
-**Remaining ordinary integration:** web/TUI memory attachment, safe long-chat
+**Remaining ordinary integration:** TUI memory attachment, safe long-chat
 compaction, broader tool coverage, live resource-state appraisal and automatic
 learning selection/scheduling. In this first chat profile, incomplete or
 noncompleted turns, compaction, overflow and unavailable capture stop further
@@ -102,20 +102,38 @@ source assertions. Preserve this failure as a retrieval evaluation case; the
 mechanics pass is not evidence that action/result ranking is solved. Do not infer
 a global result-first ranking policy from this one authored case.
 
+**Authenticated web memory (2026-11-10, default-off):**
+`serve --episodic-memory` supplies an explicit fixed local profile. Memory + owns
+one runtime/reader/lease per conversation; V3 web ingress does not broaden CLI
+V1/V2 authority. Actual HTTP and compiled-browser workflows passed creation,
+exact typed text, changed-context recall, Stop, page reconnect and authenticated
+history resume after server restart. Retention status stays separate from task
+success. Unsupported routes and native mutation refuse, including without a chat
+runtime or memory feature. This is typed text/local tools only: no web todo,
+graph MCP, voice, uploads or compaction yet. SQLCipher does not encrypt native
+transcripts or recovery sidecars. The user-facing command is in
+`website/docs/features/memory/index.md`; full evidence and review fixes are in HISTORY.
+
 **Remaining daily-use increments:**
 
-1. Explicit encrypted web chat with a dedicated per-conversation Agent/reader and
-   attachment. Extend Web/AuthenticatedWeb identity as part of this usable slice,
-   attach before Config, authenticate restart before execution, and expose durable
-   retention/recovery status through actual Send/Stop/reconnect controls. The
-   shared Follower's Agent cannot own a conversation-specific tracked memory tool.
-2. Existing todo/planning continuity. `Message.planning` is currently refused by
-   both recorders, so allowlisting todo alone is insufficient. Attribute feedback,
-   preserve state through restart and distinguish completion from verified success.
-3. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
+1. Mecha-owned todos/tasks/plans in the new memory database (owner decision,
+   2026-11-10). Make V2 storage authoritative for their identities, versioned
+   goals, plan/status revisions and outcome evidence; reuse existing TodoTool and
+   planning interfaces through a core persistence adapter. Native JSONL remains
+   audit/replay evidence, not the sole task store. Do not use mecha-graph for this
+   state. `Message.planning` is currently refused by both recorders, so simply
+   allowlisting todo is insufficient. Preserve restart/idempotency and distinguish
+   model-reported completion from independently verified success.
+2. Safe long-chat compaction. Bind summaries/rewrites to original evidence,
    dependencies, goal versions and taint; force compaction/restart/interruption
    tests before permitting continued memory-enabled execution.
-4. Broader tool/result capture, reliable retrieval and the separately listed
+   Include decision-record growth: current bindings retain both full wire messages
+   and pre-projection conversation messages on every provider call. Repeated
+   prefixes grow quadratically; bounded prototype caps do not make this suitable
+   for daily long chats. Design a versioned, deduplicated representation and
+   measure replay cost before raising limits; do not discard exact request
+   evidence merely because a digest exists.
+3. Broader tool/result capture, reliable retrieval and the separately listed
    learning bridges, followed by realistic private-data/recovery qualification.
 
 Recovery, source withdrawal and permission checks are exit gates on every slice.
@@ -124,7 +142,8 @@ follows from authored tests. The implemented graph contract is in
 `superpowers/plans/2026-11-10-readonly-graph-memory-chat.md`; the source-audited next
 web contract is `superpowers/plans/2026-11-10-authenticated-web-memory-chat.md`.
 Its frozen V3 web attachment and V2 web observation pair preserve CLI V1/V2
-authority; implementing and testing that strict matrix is the first task.
+authority. The matrix and owned host integration are implemented and qualified; see HISTORY
+for actual HTTP/browser evidence and remaining limits.
 
 **Owner decision, 2026-11-05: keep personal knowledge and agent memory independent.**
 mecha-graph remains the owner's personal knowledge system; v2 develops Mecha's

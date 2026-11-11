@@ -54,6 +54,8 @@ mod listen;
 mod loras;
 mod mail;
 mod mail_rules;
+#[cfg(feature = "memory-prototype")]
+mod memory_chat;
 mod model;
 mod persona_chat;
 mod present;
@@ -68,6 +70,18 @@ mod settings;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["memory_provider", "dynamic_goals"])]
+    pub episodic_memory: Option<PathBuf>,
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory")]
+    pub memory_provider: Option<String>,
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory")]
+    pub memory_model: Option<String>,
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long = "memory-tool", requires = "episodic_memory")]
+    pub memory_tools: Vec<String>,
     /// Override `[web] port` for this run.
     #[arg(long)]
     pub port: Option<u16>,
@@ -174,6 +188,8 @@ pub async fn execute(args: Args, dynamic_goals: bool) -> Result<()> {
     // door, and a project file must have no say in it (config.rs strips
     // `[web]` from project layers as a second fence).
     let config = Config::load_global()?;
+    #[cfg(feature = "memory-prototype")]
+    let memory_profile = memory_chat::MemoryHostProfile::from_args(&args, dynamic_goals)?;
     // Latched before anything else can happen to this process's ancestry:
     // a `serve` a run's shell started stays not-a-person for its life, even
     // if it is reparented later (`chat::started_by_a_run`).
@@ -226,6 +242,12 @@ pub async fn execute(args: Args, dynamic_goals: bool) -> Result<()> {
 
     let chat = match chat::ChatState::build(dynamic_goals).await {
         Ok(c) => {
+            #[cfg(feature = "memory-prototype")]
+            let c = {
+                let mut c = c;
+                c.memory_profile = memory_profile;
+                c
+            };
             let c = Arc::new(c);
             c.spawn_incognito_reaper();
             Some(c)
@@ -1472,6 +1494,9 @@ const TAILSCALE_LOGIN: &str = "tailscale-user-login";
 /// process arrives over loopback (`tailscale serve` proxies to it), so the
 /// header is the only thing distinguishing the owner's phone from anything
 /// else that found the port. Fail closed on absence, not just mismatch.
+#[derive(Clone, Copy)]
+pub(super) struct VerifiedMutation(());
+
 async fn owner_guard(
     State(state): State<WebState>,
     request: Request<axum::body::Body>,
@@ -1495,7 +1520,69 @@ async fn owner_guard(
     {
         return unverified();
     }
+    let mut request = request;
+    if !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) {
+        request.extensions_mut().insert(VerifiedMutation(()));
+    }
+    #[cfg(feature = "memory-prototype")]
+    let request = match memory_chat::guard(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let request = match guard_native_memory_mutation(&state, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
     next.run(request).await
+}
+
+/// Marker refusal is feature-independent and uses the same directory as the
+/// archive handlers even when no chat provider could be built at startup.
+#[allow(clippy::result_large_err)]
+async fn guard_native_memory_mutation(
+    state: &WebState,
+    request: axum::extract::Request,
+) -> Result<axum::extract::Request, Response> {
+    use axum::extract::{FromRequestParts, MatchedPath, RawPathParams};
+    let template = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|p| p.as_str())
+        .unwrap_or_default();
+    if !matches!(
+        template,
+        "/api/sessions/{id}" | "/api/sessions/{id}/archive" | "/api/sessions/{id}/unarchive"
+    ) {
+        return Ok(request);
+    }
+    let (mut parts, body) = request.into_parts();
+    let captures = RawPathParams::from_request_parts(&mut parts, &())
+        .await
+        .ok();
+    let id = captures
+        .as_ref()
+        .and_then(|params| params.iter().find(|(key, _)| *key == "id"))
+        .map(|(_, value)| value);
+    let directory = state
+        .chat
+        .as_ref()
+        .map(|chat| Ok(chat.sessions_dir().to_path_buf()))
+        .unwrap_or_else(mecha_core::session::Session::default_dir);
+    let ordinary = match (directory, id) {
+        (Ok(dir), Some(id)) => matches!(chat::ordinary_mutation_source(&dir, id), Ok(true)),
+        _ => false,
+    };
+    if !ordinary {
+        return Err((
+            StatusCode::CONFLICT,
+            "Memory or unknown native conversations cannot be changed here",
+        )
+            .into_response());
+    }
+    Ok(axum::extract::Request::from_parts(parts, body))
 }
 
 /// Whether a request carries the page's own intent: the non-simple header a
@@ -1750,6 +1837,17 @@ async fn dictate(State(state): State<WebState>, body: axum::body::Bytes) -> Resp
 /// origin allowlist still covers its direct door. Body passed through
 /// verbatim both ways — this is a pipe, not a participant.
 async fn offer_proxy(State(state): State<WebState>, body: axum::body::Bytes) -> Response {
+    #[cfg(feature = "memory-prototype")]
+    if let (Some(chat), Ok(offer)) = (
+        &state.chat,
+        serde_json::from_slice::<serde_json::Value>(&body),
+    ) {
+        if let Some(key) = offer_session(&offer) {
+            if memory_chat::is_memory(chat, &key).await {
+                return memory_chat::unsupported();
+            }
+        }
+    }
     let Some(target) = &state.offer_target else {
         return (StatusCode::NOT_FOUND, "voice offers are disabled\n").into_response();
     };
@@ -2122,7 +2220,15 @@ async fn summary(State(state): State<WebState>) -> Json<serde_json::Value> {
         errors.push(format!("doctor: {e}"));
         serde_json::Value::Null
     });
+    #[cfg(feature = "memory-prototype")]
+    let memory_available = state
+        .chat
+        .as_ref()
+        .is_some_and(|chat| chat.memory_profile.is_some());
+    #[cfg(not(feature = "memory-prototype"))]
+    let memory_available = false;
     Json(serde_json::json!({
+        "chat_memory": {"available":memory_available,"mode":"episodic","max_input_bytes":2048,"typed_text_only":true},
         "owner": state.owner_login.as_str(),
         "queues": queues,
         "doctor": doctor,
@@ -4259,10 +4365,13 @@ mod boundary_tests {
     use tower::util::ServiceExt;
 
     fn app(chat: Arc<chat::ChatState>) -> Router {
+        app_with_optional_chat(Some(chat))
+    }
+    fn app_with_optional_chat(chat: Option<Arc<chat::ChatState>>) -> Router {
         router(
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
-                chat: Some(chat),
+                chat,
                 features_at_start: Arc::default(),
                 gate: Arc::default(),
                 review: Arc::new(review::ReviewState {
@@ -4742,17 +4851,17 @@ mod boundary_tests {
     /// nothing measured this read, only the handler downstream of it).
     #[test]
     fn serve_wires_the_voice_table_and_flags_override_it() {
-        #[derive(clap::Parser)]
-        struct Line {
-            #[command(flatten)]
-            args: Args,
-        }
         let args = |argv: &[&str]| {
-            <Line as clap::Parser>::try_parse_from(
-                std::iter::once("serve").chain(argv.iter().copied()),
+            // Serve options may require inherited global flags. Exercise the
+            // actual command tree rather than an incomplete flattened parser.
+            let cli = <crate::Cli as clap::Parser>::try_parse_from(
+                ["mecha", "serve"].into_iter().chain(argv.iter().copied()),
             )
-            .unwrap()
-            .args
+            .unwrap();
+            let crate::Command::Serve(args) = cli.command else {
+                unreachable!("parsed the serve command")
+            };
+            args
         };
         let mut config = mecha_core::config::Config::default();
         config.voice.stt_url = Some("http://127.0.0.1:1111/v1".into());
@@ -6530,6 +6639,934 @@ mod boundary_tests {
         chat.drain().await;
         assert!(!chat.sessions_dir().exists());
         assert!(!home.dir.join("sessions").exists());
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn web_memory_flags_parse_as_an_explicit_serve_profile() {
+        use clap::{CommandFactory, Parser};
+        let argv = [
+            "mecha",
+            "serve",
+            "--episodic-memory",
+            "/authored/request.json",
+            "--memory-provider",
+            "authored-provider",
+            "--memory-model",
+            "authored-model",
+            "--memory-tool",
+            "goal_context",
+            "--memory-tool",
+            "fs_read",
+            "--dynamic-goals",
+        ];
+        let cli = crate::Cli::try_parse_from(argv)
+            .expect("feature-enabled serve must accept its explicit memory profile flags");
+        assert!(matches!(cli.command, crate::Command::Serve(_)));
+        assert!(cli.global.dynamic_goals);
+        assert!(
+            cli.global.provider.is_none(),
+            "memory provider must not change ordinary following"
+        );
+        assert!(cli.global.model.is_none());
+        assert!(cli.global.tools.is_empty());
+
+        // Read values by their public flag names, without depending on future
+        // Rust field names or adding a placeholder production Args type.
+        let command = crate::Cli::command();
+        let matches = command.clone().try_get_matches_from(argv).unwrap();
+        let serve = command.find_subcommand("serve").unwrap();
+        let values = matches.subcommand_matches("serve").unwrap();
+        for (long, expected) in [
+            ("episodic-memory", vec!["/authored/request.json"]),
+            ("memory-provider", vec!["authored-provider"]),
+            ("memory-model", vec!["authored-model"]),
+            ("memory-tool", vec!["goal_context", "fs_read"]),
+        ] {
+            let id = serve
+                .get_arguments()
+                .find(|arg| arg.get_long() == Some(long))
+                .expect("serve memory flag must be registered")
+                .get_id()
+                .as_str();
+            let actual: Vec<_> = values
+                .get_raw(id)
+                .unwrap()
+                .map(|value| value.to_str().unwrap())
+                .collect();
+            assert_eq!(actual, expected, "wrong parsed value for --{long}");
+        }
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[test]
+    fn web_memory_flags_require_manifest_provider_and_dynamic_goals() {
+        use clap::Parser;
+        for argv in [
+            vec!["mecha", "serve", "--memory-provider", "authored"],
+            vec!["mecha", "serve", "--memory-model", "authored"],
+            vec!["mecha", "serve", "--memory-tool", "goal_context"],
+            vec![
+                "mecha",
+                "serve",
+                "--episodic-memory",
+                "/authored/request.json",
+                "--memory-tool",
+                "goal_context",
+                "--dynamic-goals",
+            ],
+            vec![
+                "mecha",
+                "serve",
+                "--episodic-memory",
+                "/authored/request.json",
+                "--memory-provider",
+                "authored",
+                "--memory-tool",
+                "goal_context",
+            ],
+        ] {
+            assert!(
+                crate::Cli::try_parse_from(argv.clone()).is_err(),
+                "accepted incomplete profile {argv:?}"
+            );
+        }
+        assert!(crate::Cli::try_parse_from(["mecha", "serve"]).is_ok());
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    async fn web_memory_open_probe(raw: &str) -> (StatusCode, bool, bool, bool, usize) {
+        let (chat, asked) = chat::test_chat_waiting_counted(Arc::new(tokio::sync::Notify::new()));
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        assert!(
+            !door.exists(),
+            "the probe starts without a transcript or workspace"
+        );
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app(Arc::clone(&chat)).oneshot(json_post("/api/chat/memory-open", raw.into())),
+        )
+        .await
+        .expect("memory-open refusal must not await a provider")
+        .unwrap();
+        let observed = (
+            response.status(),
+            chat.sessions_dir().exists(),
+            chat.work_dir().exists(),
+            door.exists(),
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+        );
+        chat.stop().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), chat.drain())
+            .await
+            .expect("memory-open probe shutdown exceeded its deadline");
+        if door.exists() {
+            std::fs::remove_dir_all(door).unwrap();
+        }
+        observed
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn web_memory_open_without_a_host_profile_never_creates_ordinary_chat() {
+        let home = crate::testenv::HomeGuard::new("web-memory-no-profile");
+        let observed = web_memory_open_probe(r#"{"memory":"episodic"}"#).await;
+        assert_eq!(
+            observed,
+            (StatusCode::SERVICE_UNAVAILABLE, false, false, false, 0),
+            "explicit memory opt-in must refuse without native files, workspace or provider calls"
+        );
+        assert_eq!(std::fs::read_dir(&home.dir).unwrap().count(), 0);
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn web_memory_open_rejects_unknown_or_malformed_optins_without_effects() {
+        let home = crate::testenv::HomeGuard::new("web-memory-bad-optin");
+        let mut failures = Vec::new();
+        for raw in [
+            r#"{"memory":"unknown"}"#,
+            r#"{"memory":null}"#,
+            r#"{"memory":true}"#,
+            r#"{"memory":{"mode":"episodic"}}"#,
+            r#"{"memory":"episodic","manifest":"/authored/forged.json"}"#,
+            r#"{"memory":"episodic","owner_source":"authenticated_web"}"#,
+            r#"{"memory":"episodic","memory":"episodic"}"#,
+            r#"{"memory":"episodic""#,
+            "[]",
+        ] {
+            let observed = web_memory_open_probe(raw).await;
+            let refused = matches!(
+                observed.0,
+                StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+            );
+            if !refused || observed.1 || observed.2 || observed.3 || observed.4 != 0 {
+                failures.push((raw, observed));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "memory opt-ins crossed the ordinary open boundary: {failures:?}"
+        );
+        assert_eq!(std::fs::read_dir(&home.dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn web_memory_mutation_guards_classify_complete_lines_and_refuse_unknown() {
+        use mecha_core::session::{ChatMemoryMarker, Record, Session, SessionKind, SessionMeta};
+        let _home = crate::testenv::HomeGuard::new("web-memory-prefix-guard");
+        let chat = chat::test_chat();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let routes = app(chat.clone());
+        let native = |id: &str| {
+            Session::create(
+                chat.sessions_dir(),
+                SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "fixture".into(),
+                    model: "fixture".into(),
+                    workspace: door.join("work").join(id),
+                    title: None,
+                    kind: Some(SessionKind::Web),
+                },
+            )
+            .unwrap()
+        };
+        let marked = native("marked-prefix");
+        marked
+            .append(&Record::ChatMemory {
+                marker: ChatMemoryMarker {
+                    protocol: "ordinary-chat-memory-v3".into(),
+                    conversation_id: marked.meta.id.clone(),
+                    authority: "authored".into(),
+                    attachment: "a".repeat(64),
+                },
+            })
+            .unwrap();
+        marked
+            .append(&Record::Message(mecha_core::message::Message::user(
+                "x".repeat(70_000),
+            )))
+            .unwrap();
+        let mut long = std::fs::read_to_string(&marked.path).unwrap();
+        long.insert(65_535, 'é');
+        std::fs::write(&marked.path, &long).unwrap();
+        assert!(std::str::from_utf8(&long.as_bytes()[..65_536]).is_err());
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(post("/api/sessions/marked-prefix/archive", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(std::fs::read_to_string(&marked.path).unwrap(), long);
+        std::fs::write(
+            chat.sessions_dir().join("malformed-prefix.jsonl"),
+            "{broken\n",
+        )
+        .unwrap();
+        // A directory has a readable name but cannot be read as native records,
+        // independently of whether the test runner has root's file permissions.
+        std::fs::create_dir(chat.sessions_dir().join("unreadable-prefix.jsonl")).unwrap();
+        for id in ["malformed-prefix", "unreadable-prefix"] {
+            assert_eq!(
+                routes
+                    .clone()
+                    .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::CONFLICT,
+                "unknown native source must not be classified ordinary"
+            );
+        }
+        let ordinary_id = Session::new_id();
+        let ordinary = native(&ordinary_id);
+        ordinary
+            .append(&Record::Message(mecha_core::message::Message::user(
+                "ordinary",
+            )))
+            .unwrap();
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(post(&format!("/api/sessions/{ordinary_id}/archive"), ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        let _ = std::fs::remove_dir_all(door);
+    }
+
+    fn native_guard_source(
+        dir: &std::path::Path,
+        id: &str,
+        memory: bool,
+    ) -> mecha_core::session::Session {
+        use mecha_core::session::{ChatMemoryMarker, Record, Session, SessionKind, SessionMeta};
+        let source = Session::create(
+            dir,
+            SessionMeta {
+                id: id.into(),
+                created_at: chrono::Utc::now(),
+                provider: "fixture".into(),
+                model: "fixture".into(),
+                workspace: dir.parent().unwrap().join("work"),
+                title: None,
+                kind: Some(SessionKind::Web),
+            },
+        )
+        .unwrap();
+        if memory {
+            source
+                .append(&Record::ChatMemory {
+                    marker: ChatMemoryMarker {
+                        protocol: "ordinary-chat-memory-v3".into(),
+                        conversation_id: id.into(),
+                        authority: "authored".into(),
+                        attachment: "a".repeat(64),
+                    },
+                })
+                .unwrap();
+        }
+        source
+    }
+
+    #[tokio::test]
+    async fn web_memory_native_guard_without_chat_uses_fallback_directory() {
+        let _home = crate::testenv::HomeGuard::new("web-memory-no-chat-guard");
+        let dir = mecha_core::session::Session::default_dir().unwrap();
+        let memory = native_guard_source(&dir, "memory-no-chat", true);
+        let routes = app_with_optional_chat(None);
+        let before = std::fs::read(&memory.path).unwrap();
+        for suffix in ["archive", "unarchive"] {
+            assert_eq!(
+                routes
+                    .clone()
+                    .oneshot(post(&format!("/api/sessions/memory-no-chat/{suffix}"), ""))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::CONFLICT
+            );
+        }
+        let deletion = Request::builder()
+            .method("DELETE")
+            .uri("/api/sessions/memory-no-chat")
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            routes.clone().oneshot(deletion).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(std::fs::read(&memory.path).unwrap(), before);
+        let id = mecha_core::session::Session::new_id();
+        let _ordinary = native_guard_source(&dir, &id, false);
+        assert_eq!(
+            routes
+                .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn web_memory_native_guard_checks_both_live_and_partial_forget_claims() {
+        let _home = crate::testenv::HomeGuard::new("web-memory-double-source-guard");
+        let chat = chat::test_chat();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let ordinary = native_guard_source(chat.sessions_dir(), "dual-source", false);
+        let memory = native_guard_source(chat.sessions_dir(), "memory-copy", true);
+        let pending = chat.sessions_dir().join("dual-source.jsonl.forgetting");
+        std::fs::copy(&memory.path, &pending).unwrap();
+        let routes = app(chat.clone());
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(post("/api/sessions/dual-source/archive", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert!(ordinary.path.exists() && pending.exists());
+        std::fs::remove_file(&pending).unwrap();
+        std::fs::copy(&ordinary.path, &pending).unwrap();
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(post("/api/sessions/dual-source/archive", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT,
+            "dual native claims are ambiguous even when both appear ordinary"
+        );
+        std::fs::remove_file(&pending).unwrap();
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(post("/api/sessions/dual-source/archive", ""))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        let _ = std::fs::remove_dir_all(door);
+    }
+
+    // HomeGuard holds this binary's shared environment lock; restore the
+    // external CI session-kind override before releasing that guard.
+    #[cfg(feature = "memory-prototype")]
+    struct AuthenticatedWebTestKind<'a> {
+        _home: &'a crate::testenv::HomeGuard,
+        previous: Option<std::ffi::OsString>,
+    }
+    #[cfg(feature = "memory-prototype")]
+    impl<'a> AuthenticatedWebTestKind<'a> {
+        fn new(home: &'a crate::testenv::HomeGuard) -> Self {
+            let previous = std::env::var_os("MECHA_SESSION_KIND");
+            std::env::remove_var("MECHA_SESSION_KIND");
+            Self {
+                _home: home,
+                previous,
+            }
+        }
+    }
+    #[cfg(feature = "memory-prototype")]
+    impl Drop for AuthenticatedWebTestKind<'_> {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var("MECHA_SESSION_KIND", value);
+            } else {
+                std::env::remove_var("MECHA_SESSION_KIND");
+            }
+        }
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    fn memory_host_fixture(
+        home: &std::path::Path,
+        endpoint: &str,
+    ) -> (
+        Arc<chat::ChatState>,
+        mecha_core::memory_session::SessionMemoryRequest,
+    ) {
+        use clap::Parser;
+        use std::os::unix::fs::PermissionsExt;
+        let request = mecha_core::memory_session::SessionMemoryRequest {
+            protocol: "ordinary-session-memory-v1".into(),
+            db: home.join("storage/host.memory-prototype.sqlite"),
+            key_file: home.join("keys/key"),
+            authority: home.join("authority"),
+            domain: "fixture".into(),
+            account: "fixture".into(),
+            scopes: Default::default(),
+        };
+        for name in ["storage", "keys"] {
+            mecha_core::create_private_dir(&home.join(name)).unwrap();
+        }
+        mecha_core::memory_session::SessionMemory::initialize(&request).unwrap();
+        let manifest = home.join("request.json");
+        std::fs::write(&manifest, serde_json::to_vec(&request).unwrap()).unwrap();
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                r#"
+ default_provider="fixture"
+ [providers.fixture]
+ kind="openai-compatible"
+ model="fixture"
+ base_url="{endpoint}"
+ api_key="authored-fixture-token"
+ max_retries=0
+ [tools]
+ enabled=["goal_context","fs_read"]
+ permission_mode="read-only"
+ "#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[line]]\nid='fixture'\ntext='Check authored observations'\n",
+        )
+        .unwrap();
+        let cli = crate::Cli::try_parse_from([
+            "mecha",
+            "serve",
+            "--dynamic-goals",
+            "--episodic-memory",
+            manifest.to_str().unwrap(),
+            "--memory-provider",
+            "fixture",
+            "--memory-tool",
+            "goal_context",
+            "--memory-tool",
+            "fs_read",
+        ])
+        .unwrap();
+        let crate::Command::Serve(args) = cli.command else {
+            unreachable!()
+        };
+        let profile =
+            memory_chat::MemoryHostProfile::from_args(&args, cli.global.dynamic_goals).unwrap();
+        let mut chat = chat::test_chat();
+        Arc::get_mut(&mut chat).unwrap().memory_profile = profile;
+        (chat, request)
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    async fn memory_snapshot(app: &Router, key: &str, phase: &str) -> serde_json::Value {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let response = app
+                    .clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let snapshot = body(response).await;
+                if snapshot["memory"]["phase"] == phase {
+                    return snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("authored memory turn did not finalize")
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn web_memory_shutdown_waits_for_reserved_but_unregistered_open() {
+        let home = crate::testenv::HomeGuard::new("web-memory-reservation-stop");
+        let _kind = AuthenticatedWebTestKind::new(&home);
+        let (mut chat, _) = memory_host_fixture(&home.dir, "http://127.0.0.1:9");
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let gate = Arc::new(memory_chat::TestGate::default());
+        Arc::get_mut(&mut chat)
+            .unwrap()
+            .memory_test_hooks
+            .reservation = Some(gate.clone());
+        let routes = app(chat.clone());
+        let opening = tokio::spawn(routes.clone().oneshot(json_post(
+            "/api/chat/reserved-stop",
+            r#"{"memory":"episodic"}"#.into(),
+        )));
+        tokio::time::timeout(std::time::Duration::from_secs(10), gate.reached.notified())
+            .await
+            .unwrap();
+        chat.stop().await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), chat.drain())
+                .await
+                .is_err(),
+            "shutdown missed an owned reservation before task registration"
+        );
+        gate.release.notify_one();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(10), opening)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        tokio::time::timeout(std::time::Duration::from_secs(10), chat.drain())
+            .await
+            .unwrap();
+        assert!(
+            !door.join("sessions").exists(),
+            "stopped reservation created native files"
+        );
+        drop(routes);
+        drop(chat);
+        let _ = std::fs::remove_dir_all(door);
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn web_memory_host_owns_two_chats_and_reauthenticates_resume() {
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let home = crate::testenv::HomeGuard::new("web-memory-host-lifecycle");
+        let _kind = AuthenticatedWebTestKind::new(&home);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let provider=Router::new().route("/v1/chat/completions",post({let calls=calls.clone();let seen=seen.clone();move |Json(request):Json<serde_json::Value>|{let calls=calls.clone();let seen=seen.clone();async move{
+            seen.lock().unwrap().push(request.clone());
+            calls.fetch_add(1,Ordering::SeqCst);
+            assert_eq!(request["stream"],true,"hidden title or secondary provider request");
+            let tools:Vec<_>=request["tools"].as_array().unwrap().iter().map(|tool|tool["function"]["name"].as_str().unwrap()).collect();
+            assert_eq!(tools,["fs_read","goal_context"]);
+            let chunk=serde_json::json!({"id":"fixture","model":"fixture","choices":[{"index":0,"delta":{"content":"Authored reply."},"finish_reason":null}]});
+            let end=serde_json::json!({"id":"fixture","model":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+            ([("content-type","text/event-stream")],format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"))
+        }}}));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
+        let (chat, _request) = memory_host_fixture(&home.dir, &endpoint);
+        let profile = chat.memory_profile.clone();
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let routes = app(chat.clone());
+        let mut ids = Vec::new();
+        for key in ["memory-a", "memory-b"] {
+            let response = routes
+                .clone()
+                .oneshot(json_post(
+                    &format!("/api/chat/{key}"),
+                    r#"{"memory":"episodic"}"#.into(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let opened = body(response).await;
+            assert_eq!(opened["memory"]["next_turn_ordinal"], 1);
+            ids.push(opened["session"].as_str().unwrap().to_string());
+        }
+        assert_ne!(ids[0], ids[1]);
+        for (key, text) in [
+            ("memory-a", "First authored objective"),
+            ("memory-b", "Independent authored objective"),
+        ] {
+            let response = routes
+                .clone()
+                .oneshot(json_post(
+                    &format!("/api/chat/{key}/send"),
+                    serde_json::json!({"text":text,"request_id":key,"memory_turn":1}).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let acknowledgement = body(response).await;
+            assert_eq!(acknowledgement["started"], true);
+            assert_eq!(acknowledgement["request_id"], key);
+        }
+        for key in ["memory-a", "memory-b"] {
+            let snapshot = memory_snapshot(&routes, key, "ready").await;
+            assert_eq!(snapshot["memory"]["next_turn_ordinal"], 2);
+            assert_eq!(snapshot["memory"]["last_report"]["status"], "retained");
+            assert_eq!(
+                snapshot["memory"]["last_report"]["semantic_assessment"],
+                "not_evaluated"
+            );
+            for suffix in [
+                "upload?name=forged.txt",
+                "mode",
+                "grants",
+                "jobs/order",
+                "answer",
+            ] {
+                assert_eq!(
+                    routes
+                        .clone()
+                        .oneshot(json_post(&format!("/api/chat/{key}/{suffix}"), "{}".into()))
+                        .await
+                        .unwrap()
+                        .status(),
+                    StatusCode::CONFLICT
+                );
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        {
+            let requests = seen.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            for request in requests.iter() {
+                let text = request.to_string();
+                assert!(
+                    text.contains("First authored objective")
+                        ^ text.contains("Independent authored objective"),
+                    "conversation state crossed owned runtimes"
+                );
+            }
+        }
+
+        let source = chat.sessions_dir().join(format!("{}.jsonl", ids[0]));
+        let before = std::fs::read(&source).unwrap();
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/chat/memory-a/send",
+                    r#"{"text":"delayed duplicate","request_id":"old","memory_turn":1}"#.into()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+        let same = body(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/resume",
+                    serde_json::json!({"id":ids[0],"memory":"episodic"}).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(same["key"], "memory-a");
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        // A restarted server uses the same native directory, not a second store.
+        let mut restarted = chat::test_chat();
+        let state = Arc::get_mut(&mut restarted).unwrap();
+        state.memory_profile = profile.clone();
+        state.set_test_memory_roots(door.join("sessions"), door.join("work/web"));
+        let read_gate = Arc::new(memory_chat::TestGate::default());
+        state.memory_test_hooks.resume_read = Some(read_gate.clone());
+        let routes = app(restarted.clone());
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(get("/api/chat/memory-a"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/resume",
+                    serde_json::json!({"id":ids[0]}).to_string()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let pending_resume = tokio::spawn(routes.clone().oneshot(json_post(
+            "/api/resume",
+            serde_json::json!({"id":ids[0],"memory":"episodic"}).to_string(),
+        )));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            read_gate.reached.notified(),
+        )
+        .await
+        .unwrap();
+        // Another legitimate host finishes a turn between the first metadata
+        // read and the resumed host acquiring the exclusive memory lease.
+        let mut writer = chat::test_chat();
+        let state = Arc::get_mut(&mut writer).unwrap();
+        state.memory_profile = profile;
+        state.set_test_memory_roots(door.join("sessions"), door.join("work/web"));
+        let writer_routes = app(writer.clone());
+        let response = writer_routes
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({"id":ids[0],"memory":"episodic"}).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let writer_snapshot = body(response).await;
+        let writer_key = writer_snapshot["key"].as_str().unwrap();
+        assert_eq!(writer_routes.clone().oneshot(json_post(&format!("/api/chat/{writer_key}/send"),r#"{"text":"Interleaved retained objective","request_id":"interleaved","memory_turn":2}"#.into())).await.unwrap().status(),StatusCode::OK);
+        let landed = memory_snapshot(&writer_routes, writer_key, "ready").await;
+        assert_eq!(landed["memory"]["next_turn_ordinal"], 3);
+        writer.stop().await;
+        writer.drain().await;
+        drop(writer_routes);
+        drop(writer);
+        read_gate.release.notify_one();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(10), pending_resume)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let resumed = body(response).await;
+        assert_eq!(resumed["session"], ids[0]);
+        assert_eq!(resumed["memory"]["next_turn_ordinal"], 3);
+        assert!(
+            resumed["entries"]
+                .to_string()
+                .contains("Interleaved retained objective"),
+            "resume used a conversation read before its authenticated lease"
+        );
+        assert!(resumed["memory"]["last_report"].is_null());
+        let key = resumed["key"].as_str().unwrap();
+        assert_eq!(routes.clone().oneshot(json_post(&format!("/api/chat/{key}/send"),r#"{"text":"Revised authored objective","request_id":"revised","memory_turn":3}"#.into())).await.unwrap().status(),StatusCode::OK);
+        let snapshot = memory_snapshot(&routes, key, "ready").await;
+        assert_eq!(snapshot["memory"]["next_turn_ordinal"], 4);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        let native = mecha_core::session::Session::read(&source).unwrap();
+        assert_eq!(
+            native.chat_memory.unwrap().protocol,
+            "ordinary-chat-memory-v3"
+        );
+        assert!(!String::from_utf8(std::fs::read(&source).unwrap())
+            .unwrap()
+            .contains("\"record\":\"rewrite\""));
+        restarted.stop().await;
+        restarted.drain().await;
+        drop(routes);
+        drop(restarted);
+        server.abort();
+        let _ = std::fs::remove_dir_all(door);
+    }
+
+    #[cfg(feature = "memory-prototype")]
+    #[tokio::test]
+    async fn web_memory_busy_stop_blocks_without_rollback_and_releases_the_lease() {
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let home = crate::testenv::HomeGuard::new("web-memory-stop");
+        let _kind = AuthenticatedWebTestKind::new(&home);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Router::new().route(
+            "/v1/chat/completions",
+            post({
+                let started = started.clone();
+                let release = release.clone();
+                let calls = calls.clone();
+                move || {
+                    let started = started.clone();
+                    let release = release.clone();
+                    let calls = calls.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        started.notify_one();
+                        release.notified().await;
+                        ([("content-type", "text/event-stream")], "data: [DONE]\n\n")
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
+        let (chat, request) = memory_host_fixture(&home.dir, &endpoint);
+        let door = chat.sessions_dir().parent().unwrap().to_path_buf();
+        let routes = app(chat.clone());
+        let opened = body(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/chat/memory-stop",
+                    r#"{"memory":"episodic"}"#.into(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = opened["session"].as_str().unwrap();
+        let path = chat.sessions_dir().join(format!("{id}.jsonl"));
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/chat/memory-stop/send",
+                    r#"{"text":"Authored waiting objective","request_id":"first","memory_turn":1}"#
+                        .into()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
+            .await
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/chat/memory-stop/send",
+                    r#"{"text":"Do not enqueue this","request_id":"second","memory_turn":1}"#
+                        .into()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(json_post("/api/chat/memory-stop/cancel", "{}".into()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let snapshot = memory_snapshot(&routes, "memory-stop", "blocked").await;
+        assert!(snapshot["memory"]["next_turn_ordinal"].is_null());
+        assert_eq!(snapshot["memory"]["last_report"]["status"], "unavailable");
+        assert_eq!(snapshot["memory"]["blocked_reason"], "interrupted");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(&before));
+        assert!(!String::from_utf8(bytes.clone())
+            .unwrap()
+            .contains("\"record\":\"rewrite\""));
+        let native = mecha_core::session::Session::read(&path).unwrap();
+        let recovery =
+            mecha_core::memory_session::SessionMemory::open(&request, &native.meta.workspace)
+                .unwrap();
+        let retried = recovery.retry_chat(
+            snapshot["memory"]["last_report"]["run_id"]
+                .as_str()
+                .unwrap(),
+        );
+        assert_eq!(
+            retried.conversation_id, id,
+            "blocked runtime must release its writer lease before host retry"
+        );
+        assert_ne!(
+            retried.status,
+            mecha_core::memory_session::SessionMemoryStatus::Retained
+        );
+        assert_eq!(
+            routes
+                .clone()
+                .oneshot(json_post(
+                    "/api/resume",
+                    serde_json::json!({"id":id,"memory":"episodic"}).to_string()
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        chat.stop().await;
+        chat.drain().await;
+        drop(routes);
+        drop(chat);
+        release.notify_waiters();
+        server.abort();
+        let _ = std::fs::remove_dir_all(door);
     }
 
     #[tokio::test]

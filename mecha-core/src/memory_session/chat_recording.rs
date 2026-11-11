@@ -17,6 +17,11 @@ pub(super) fn capture(
             && digest(&bytes[..f.start_length as usize]) == f.start_digest,
         "chat begin prefix changed"
     );
+    validate_source_ingress(a, bytes, &f.attachment)?;
+    ensure!(
+        f.owner.source() == a.owner_source(),
+        "chat owner ingress changed"
+    );
     let transcript = Session::parse(&a.source, std::str::from_utf8(bytes)?)?;
     let prior = Session::parse(
         &a.source,
@@ -28,6 +33,12 @@ pub(super) fn capture(
         .current()
         .map(|v| v.owner_inputs().to_vec())
         .unwrap_or_default();
+    ensure!(
+        expected_owners
+            .iter()
+            .all(|input| input.source() == a.owner_source()),
+        "chat prior owner ingress changed"
+    );
     expected_owners.push(f.owner.clone());
     let mut external_results = a.graph_surface.is_some() && prior.convo.taint.untrusted;
     let mut expected_history = prior.convo.messages;
@@ -382,13 +393,16 @@ pub(super) fn capture(
     let versions: Vec<_> = used_versions
         .iter()
         .map(|revision| {
-            ChatContextVersion::from_version(
-                transcript
-                    .convo
-                    .goal_context
-                    .version(*revision)
-                    .expect("validated version"),
-            )
+            let version = transcript
+                .convo
+                .goal_context
+                .version(*revision)
+                .expect("validated version");
+            if a.web_ingress.is_some() {
+                ChatContextVersion::from_authenticated_web_version(version)
+            } else {
+                ChatContextVersion::from_version(version)
+            }
         })
         .collect::<Result<_>>()?;
     let first_version = transcript
@@ -412,6 +426,7 @@ pub(super) fn capture(
         versions,
         decisions,
     };
+    let (observation, recorder) = a.observation_protocol();
     let payload = HostCapture {
         identity: CaptureIdentity {
             domain: memory.request.domain.clone(),
@@ -419,8 +434,8 @@ pub(super) fn capture(
             session_id: f.session_id.clone(),
             prefix_digest: digest(bytes),
             check_id: id.into(),
-            check_version: CHAT_OBSERVATION_PROTOCOL.into(),
-            evaluator_version: CHAT_RECORDER_VERSION.into(),
+            check_version: observation.into(),
+            evaluator_version: recorder.into(),
         },
         binding: ExternalBinding {
             authority: memory.authority.identity.clone(),

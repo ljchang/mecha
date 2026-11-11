@@ -92,7 +92,11 @@ pub struct ChatState {
     /// store — they did, by the hundred, through every lane's suite.
     sessions_dir: PathBuf,
     work_dir: PathBuf,
-    sessions: Mutex<HashMap<String, WebSession>>,
+    pub(super) sessions: Mutex<HashMap<String, ChatSlot>>,
+    #[cfg(feature = "memory-prototype")]
+    pub(super) memory_profile: Option<Arc<super::memory_chat::MemoryHostProfile>>,
+    #[cfg(all(test, feature = "memory-prototype"))]
+    pub(super) memory_test_hooks: super::memory_chat::TestHooks,
     /// Persona chats: their own map, agents and transcript directory, so no
     /// route of the assistant's can reach one (`persona_chat`).
     pub(super) personas: Arc<super::persona_chat::PersonaChats>,
@@ -150,7 +154,37 @@ impl Recording {
     }
 }
 
-struct WebSession {
+pub(super) enum ChatSlot {
+    Ordinary(Box<WebSession>),
+    #[cfg(feature = "memory-prototype")]
+    Memory(Box<super::memory_chat::MemorySession>),
+}
+
+impl ChatSlot {
+    fn ordinary(&self) -> Option<&WebSession> {
+        match self {
+            Self::Ordinary(session) => Some(session),
+            #[cfg(feature = "memory-prototype")]
+            Self::Memory(_) => None,
+        }
+    }
+    fn ordinary_mut(&mut self) -> Option<&mut WebSession> {
+        match self {
+            Self::Ordinary(session) => Some(session),
+            #[cfg(feature = "memory-prototype")]
+            Self::Memory(_) => None,
+        }
+    }
+    fn into_ordinary(self) -> Option<WebSession> {
+        match self {
+            Self::Ordinary(session) => Some(*session),
+            #[cfg(feature = "memory-prototype")]
+            Self::Memory(_) => None,
+        }
+    }
+}
+
+pub(super) struct WebSession {
     /// `None` while a run holds it — the move-and-return that keeps the map
     /// single-writer (the Slack connector's pattern).
     conversation: Option<Conversation>,
@@ -439,6 +473,10 @@ impl ChatState {
             sessions_dir: Session::default_dir()?,
             work_dir: producer_root()?,
             sessions: Mutex::new(HashMap::new()),
+            #[cfg(feature = "memory-prototype")]
+            memory_profile: None,
+            #[cfg(all(test, feature = "memory-prototype"))]
+            memory_test_hooks: Default::default(),
             personas: Arc::new(
                 super::persona_chat::PersonaChats::new()?
                     .with_image_steps(config.image.as_ref().map(|i| i.steps))
@@ -458,7 +496,16 @@ impl ChatState {
     pub async fn stop(&self) {
         let mut sessions = self.sessions.lock().await;
         self.stopping.cancel();
-        for (key, ws) in sessions.iter() {
+        #[cfg(feature = "memory-prototype")]
+        for slot in sessions.values() {
+            if let ChatSlot::Memory(memory) = slot {
+                memory.stop(mecha_core::agent::CancelReason::Shutdown);
+            }
+        }
+        for (key, ws) in sessions
+            .iter()
+            .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
+        {
             ws.questions.shutdown();
             if let Some(live) = &ws.live {
                 live.cancel
@@ -491,11 +538,12 @@ impl ChatState {
         // (found on review of #321 — left in the map, the late write stayed).
         let incognito: Vec<String> = sessions
             .iter()
+            .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
             .filter(|(_, ws)| ws.session.room().is_some())
             .map(|(k, _)| k.clone())
             .collect();
         for key in &incognito {
-            sessions.remove(key);
+            sessions.remove(key).and_then(ChatSlot::into_ordinary);
             if let Ok(mut routes) = self.routes.lock() {
                 routes.remove(key);
             }
@@ -535,7 +583,7 @@ impl ChatState {
         }
         sessions.insert(
             key.clone(),
-            WebSession {
+            ChatSlot::Ordinary(Box::new(WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
                 starting: Default::default(),
@@ -558,7 +606,7 @@ impl ChatState {
                 // Nothing is recorded for an incognito chat; the check that
                 // reads this finds no transcript to write to.
                 recorded_generation: bound.generation,
-            },
+            })),
         );
         Ok(key)
     }
@@ -579,14 +627,26 @@ impl ChatState {
     /// its last writes. Answers the key it was held under.
     pub(super) async fn release_recorded(&self, id: &str) -> Result<Option<String>, &'static str> {
         let mut sessions = self.sessions.lock().await;
+        #[cfg(feature = "memory-prototype")]
+        if sessions
+            .values()
+            .any(|slot| matches!(slot,ChatSlot::Memory(memory) if memory.id==id))
+        {
+            return Err("Memory conversations require explicit memory recovery/forget");
+        }
         let Some(key) = sessions
             .iter()
+            .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
             .find(|(_, ws)| ws.session.kept().is_some_and(|s| s.meta.id == id))
             .map(|(k, _)| k.clone())
         else {
             return Ok(None);
         };
-        if sessions.get(&key).is_some_and(|ws| ws.live.is_some()) {
+        if sessions
+            .get(&key)
+            .and_then(ChatSlot::ordinary)
+            .is_some_and(|ws| ws.live.is_some())
+        {
             return Err("a run is in flight in this conversation — stop it first");
         }
         // A picture still being drawn lands in this conversation's record:
@@ -595,7 +655,10 @@ impl ChatState {
         if !self.jobs.queue.pending_tools(&key).is_empty() {
             return Err("a picture or other background work is still being made in this conversation — stop it first");
         }
-        let ws = sessions.remove(&key).expect("found above");
+        let ws = sessions
+            .remove(&key)
+            .and_then(ChatSlot::into_ordinary)
+            .expect("found above");
         ws.questions.shutdown();
         if let Ok(mut routes) = self.routes.lock() {
             routes.remove(&key);
@@ -649,7 +712,11 @@ impl ChatState {
     /// Mark an open incognito chat used now; `false` when it is not open.
     pub(super) async fn room_touch(&self, key: &str) -> bool {
         let sessions = self.sessions.lock().await;
-        match sessions.get(key).and_then(|ws| ws.session.room()) {
+        match sessions
+            .get(key)
+            .and_then(ChatSlot::ordinary)
+            .and_then(|ws| ws.session.room())
+        {
             Some(room) => {
                 room.touch();
                 true
@@ -665,6 +732,7 @@ impl ChatState {
             .lock()
             .await
             .get(key)
+            .and_then(ChatSlot::ordinary)
             .and_then(|ws| ws.session.room().cloned())
     }
 
@@ -674,6 +742,7 @@ impl ChatState {
         let mut sessions = self.sessions.lock().await;
         let idle: Vec<String> = sessions
             .iter()
+            .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
             .filter(|(_, ws)| {
                 ws.live.is_none()
                     && ws
@@ -724,7 +793,7 @@ impl ChatState {
     ) -> Option<super::listen::Seat> {
         let (transcript, current) = {
             let sessions = self.sessions.lock().await;
-            let ws = sessions.get(key)?;
+            let ws = sessions.get(key).and_then(ChatSlot::ordinary)?;
             (ws.session.kept().cloned(), ws.listen.clone())
         };
         if let Some(reply) = current.filter(|r| r.continues(cue)) {
@@ -736,7 +805,12 @@ impl ChatState {
             None => None,
         };
         let reply = Arc::new(super::listen::Reply::new(cue, None, saved));
-        self.sessions.lock().await.get_mut(key)?.listen = Some(Arc::clone(&reply));
+        self.sessions
+            .lock()
+            .await
+            .get_mut(key)
+            .and_then(ChatSlot::ordinary_mut)?
+            .listen = Some(Arc::clone(&reply));
         Some(super::listen::Seat { reply, transcript })
     }
 
@@ -772,6 +846,12 @@ impl ChatState {
         Ok(dir)
     }
 
+    #[cfg(all(test, feature = "memory-prototype"))]
+    pub(super) fn set_test_memory_roots(&mut self, sessions: PathBuf, work: PathBuf) {
+        self.sessions_dir = sessions;
+        self.work_dir = work;
+    }
+
     /// Where this door's transcripts are.
     pub(super) fn sessions_dir(&self) -> &std::path::Path {
         &self.sessions_dir
@@ -793,6 +873,10 @@ pub(super) async fn attachment_workspace(
     create: bool,
 ) -> Result<PathBuf, Box<axum::response::Response>> {
     let chat = chat_state(state).map_err(Box::new)?;
+    #[cfg(feature = "memory-prototype")]
+    if super::memory_chat::is_memory(chat, key).await {
+        return Err(Box::new(super::memory_chat::unsupported()));
+    }
     let bound = if create {
         Some(chat.followed_or_current().await)
     } else {
@@ -802,6 +886,7 @@ pub(super) async fn attachment_workspace(
     if !create {
         return sessions
             .get(key)
+            .and_then(ChatSlot::ordinary)
             .map(|session| session.workspace.clone())
             .ok_or_else(|| Box::new((StatusCode::NOT_FOUND, "no such session\n").into_response()));
     }
@@ -927,6 +1012,10 @@ pub(super) fn mode_wire(mode: PermissionMode) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireEvent {
+    #[cfg(feature = "memory-prototype")]
+    Memory {
+        memory: super::memory_chat::MemorySnapshot,
+    },
     Delta {
         text: String,
     },
@@ -1272,6 +1361,63 @@ fn strip_voice_preamble(text: &str) -> &str {
             .unwrap_or(""),
         None => text,
     }
+}
+
+/// A refusal hint only; executable resume always authenticates core authority.
+/// Inspect complete bounded lines, stopping as soon as the marker is known.
+/// Unknown or unreadable input is an error, never an ordinary-session verdict.
+pub(super) fn memory_marked(path: &std::path::Path) -> Result<bool> {
+    use std::io::{BufRead, Read};
+    let file = std::fs::File::open(path)?;
+    let mut input = std::io::BufReader::new(file).take(65_536);
+    let mut line = Vec::new();
+    let mut meta_seen = false;
+    for _ in 0..8 {
+        line.clear();
+        if input.read_until(b'\n', &mut line)? == 0 {
+            anyhow::ensure!(meta_seen, "missing native metadata");
+            return Ok(false);
+        }
+        anyhow::ensure!(line.last() == Some(&b'\n'), "incomplete native prefix");
+        let record: Record = serde_json::from_slice(&line)?;
+        match record {
+            Record::Meta(_) if !meta_seen => meta_seen = true,
+            Record::ChatMemory { .. } => return Ok(true),
+            // Core rejects a memory marker after executable conversation or
+            // configuration records. Later large ordinary messages need not
+            // be read merely to prove this prefix is ordinary.
+            Record::Config(_) | Record::Message(_) if meta_seen => return Ok(false),
+            _ => anyhow::ensure!(meta_seen, "missing native metadata"),
+        }
+    }
+    anyhow::bail!("native prefix classification limit exceeded")
+}
+
+pub(super) fn ordinary_mutation_source(dir: &std::path::Path, id: &str) -> Result<bool> {
+    anyhow::ensure!(
+        !id.is_empty()
+            && id.len() <= 128
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
+        "invalid native ID"
+    );
+    // Archive/delete address an exact filename, not Session::find's prefix
+    // lookup, which can skip malformed metadata. A partial forget has the
+    // same marker policy as its original native source.
+    let mut claimed = false;
+    for suffix in [".jsonl", ".jsonl.forgetting"] {
+        let path = dir.join(format!("{id}{suffix}"));
+        if path.try_exists()? {
+            anyhow::ensure!(!claimed, "ambiguous live and partial-forget native claims");
+            claimed = true;
+            if memory_marked(&path)? {
+                return Ok(false);
+            }
+        }
+    }
+    // Preserve the ordinary handlers' not-found/idempotent behavior.
+    Ok(true)
 }
 
 /// [`transcript_entries_with`] marking nothing: what a test reads when
@@ -1626,6 +1772,7 @@ pub(super) async fn release_task_conversation(
     let mut sessions = chat.sessions.lock().await;
     let ws = sessions
         .get(&key)
+        .and_then(ChatSlot::ordinary)
         .ok_or_else(|| anyhow::anyhow!("no open conversation for {task_id}"))?;
     if ws.live.is_some() {
         // Not a race to win: the loop owns the message list right now, and a
@@ -1643,7 +1790,7 @@ pub(super) async fn release_task_conversation(
         );
     }
     let id = ws.session.id().to_string();
-    sessions.remove(&key);
+    sessions.remove(&key).and_then(ChatSlot::into_ordinary);
     if let Ok(mut routes) = chat.routes.lock() {
         routes.remove(&key);
     }
@@ -1722,7 +1869,7 @@ pub(super) struct SessionInit {
 fn ensure_session<'a>(
     chat: &Arc<ChatState>,
     bound: &crate::follow::Bound,
-    sessions: &'a mut HashMap<String, WebSession>,
+    sessions: &'a mut HashMap<String, ChatSlot>,
     key: &str,
 ) -> Result<&'a mut WebSession> {
     ensure_session_as(chat, bound, sessions, key, SessionInit::default())
@@ -1731,7 +1878,7 @@ fn ensure_session<'a>(
 fn ensure_session_as<'a>(
     chat: &Arc<ChatState>,
     bound: &crate::follow::Bound,
-    sessions: &'a mut HashMap<String, WebSession>,
+    sessions: &'a mut HashMap<String, ChatSlot>,
     key: &str,
     init: SessionInit,
 ) -> Result<&'a mut WebSession> {
@@ -1865,7 +2012,7 @@ fn ensure_session_as<'a>(
         let late = super::late::LateState::of_file(&session.path);
         sessions.insert(
             key.to_string(),
-            WebSession {
+            ChatSlot::Ordinary(Box::new(WebSession {
                 late,
                 waiting: VecDeque::new(),
                 starting: Default::default(),
@@ -1882,10 +2029,13 @@ fn ensure_session_as<'a>(
                 withheld: Arc::from(init.withheld),
                 task: init.task,
                 recorded_generation: bound.generation,
-            },
+            })),
         );
     }
-    Ok(sessions.get_mut(key).expect("just inserted"))
+    sessions
+        .get_mut(key)
+        .and_then(ChatSlot::ordinary_mut)
+        .context("this conversation requires its explicit memory route")
 }
 
 /// Incognito's gates against one binding: a local model with no remote
@@ -1926,16 +2076,20 @@ fn incognito_gates(bound: &crate::follow::Bound) -> std::result::Result<Vec<Stri
 /// Close the incognito chat under `key`, with the sessions lock held.
 fn close_incognito_locked(
     chat: &ChatState,
-    sessions: &mut HashMap<String, WebSession>,
+    sessions: &mut HashMap<String, ChatSlot>,
     key: &str,
 ) -> bool {
     if !sessions
         .get(key)
+        .and_then(ChatSlot::ordinary)
         .is_some_and(|ws| ws.session.room().is_some())
     {
         return false;
     }
-    let ws = sessions.remove(key).expect("checked above");
+    let ws = sessions
+        .remove(key)
+        .and_then(ChatSlot::into_ordinary)
+        .expect("checked above");
     ws.questions.shutdown();
     if let Some(live) = &ws.live {
         live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
@@ -2018,9 +2172,33 @@ pub async fn incognito_alive(
 pub async fn open(
     State(state): State<super::WebState>,
     axum::extract::Path(key): axum::extract::Path<String>,
+    verified: Option<axum::Extension<super::VerifiedMutation>>,
+    body: axum::body::Bytes,
 ) -> axum::response::Response {
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
+    if !body.is_empty() {
+        #[cfg(feature = "memory-prototype")]
+        {
+            let chat = match chat_state(&state) {
+                Ok(chat) => chat.clone(),
+                Err(response) => return response,
+            };
+            let Some(axum::Extension(verified)) = verified else {
+                return super::unverified();
+            };
+            return super::memory_chat::open(chat, key, &body, verified).await;
+        }
+        #[cfg(not(feature = "memory-prototype"))]
+        {
+            let _ = verified;
+            return (
+                StatusCode::BAD_REQUEST,
+                "Memory chat is unavailable in this build",
+            )
+                .into_response();
+        }
     }
     match attachment_workspace(&state, &key, true).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
@@ -2040,6 +2218,10 @@ pub async fn transcript(
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
+    #[cfg(feature = "memory-prototype")]
+    if let Some(response) = super::memory_chat::transcript(chat, &key).await {
+        return response;
+    }
     // The chip names the model the next turn will run on, so a page loaded
     // after a switch made anywhere else shows it. A rebuild that fails here
     // is the next turn's to report; the page shows what is bound meanwhile.
@@ -2051,7 +2233,7 @@ pub async fn transcript(
         }
     };
     let sessions = chat.sessions.lock().await;
-    let ws = match sessions.get(&key) {
+    let ws = match sessions.get(&key).and_then(ChatSlot::ordinary) {
         Some(ws) => ws,
         // An incognito key is minted only by its door, so one not open has
         // closed: gone, like every door that acts on it, and the page's cue
@@ -2161,7 +2343,7 @@ pub async fn todo(
     // the way the transcript read does to name the model.
     let bound = chat.follower.current();
     let sessions = chat.sessions.lock().await;
-    match sessions.get(&key) {
+    match sessions.get(&key).and_then(ChatSlot::ordinary) {
         Some(_) => {}
         None if super::incognito::is_incognito_key(&key) => {
             return (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response()
@@ -2249,7 +2431,7 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
     Box::pin(async move {
         let next = {
             let mut sessions = chat.sessions.lock().await;
-            let Some(ws) = sessions.get_mut(&key) else {
+            let Some(ws) = sessions.get_mut(&key).and_then(ChatSlot::ordinary_mut) else {
                 return;
             };
             // A run holds it already — a message sent in the moment between,
@@ -2290,7 +2472,7 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
                 return;
             }
             let mut sessions = chat.sessions.lock().await;
-            if let Some(ws) = sessions.get_mut(&key) {
+            if let Some(ws) = sessions.get_mut(&key).and_then(ChatSlot::ordinary_mut) {
                 ws.starting.remove(&next.request_id);
                 ws.waiting.push_front(next);
                 discard_waiting(ws, why.trim());
@@ -2300,14 +2482,71 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
 }
 
 /// POST /api/chat/{key}/send — start a run, or steer the one in flight.
+#[allow(clippy::result_large_err)]
+fn ordinary_json<T: serde::de::DeserializeOwned>(
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> Result<T, axum::response::Response> {
+    let json = headers
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| {
+            let mime = h.split(';').next().unwrap_or("").trim();
+            mime == "application/json"
+                || (mime.starts_with("application/") && mime.ends_with("+json"))
+        });
+    if !json {
+        return Err((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Expected application/json",
+        )
+            .into_response());
+    }
+    serde_json::from_slice(body).map_err(|error| {
+        (
+            if error.is_data() {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "Invalid JSON request",
+        )
+            .into_response()
+    })
+}
+
 pub async fn send(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
-    Json(body): Json<SendBody>,
+    headers: axum::http::HeaderMap,
+    verified: Option<axum::Extension<super::VerifiedMutation>>,
+    raw: axum::body::Bytes,
 ) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c.clone(),
         Err(resp) => return resp,
+    };
+    #[cfg(feature = "memory-prototype")]
+    if super::memory_chat::is_memory(&chat, &key).await {
+        let Some(axum::Extension(verified)) = verified else {
+            return super::unverified();
+        };
+        return super::memory_chat::send(chat, key, &raw, verified).await;
+    }
+    if serde_json::from_slice::<serde_json::Value>(&raw)
+        .is_ok_and(|body| body.get("memory_turn").is_some() || body.get("memory").is_some())
+    {
+        return (
+            StatusCode::CONFLICT,
+            "Explicit memory resume is required before sending",
+        )
+            .into_response();
+    }
+    #[cfg(not(feature = "memory-prototype"))]
+    let _ = verified;
+    let body: SendBody = match ordinary_json(&headers, &raw) {
+        Ok(body) => body,
+        Err(response) => return response,
     };
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
@@ -2380,6 +2619,13 @@ async fn send_text(
     draw: Option<HarnessDraw>,
     carried: bool,
 ) -> Sent {
+    #[cfg(feature = "memory-prototype")]
+    if super::memory_chat::is_memory(chat, key).await {
+        return Err((
+            StatusCode::CONFLICT,
+            "Memory chats require verified typed input".into(),
+        ));
+    }
     let busy = || {
         Err((
             StatusCode::CONFLICT,
@@ -2405,7 +2651,7 @@ async fn send_text(
                 "server is shutting down\n".into(),
             ));
         }
-        match sessions.get_mut(key) {
+        match sessions.get_mut(key).and_then(ChatSlot::ordinary_mut) {
             // Stopped while its turn was on its way: it does not begin.
             Some(ws) if carried && !ws.starting.contains_key(&request_id) => {
                 return Err((StatusCode::CONFLICT, format!("{STOPPED_ON_ITS_WAY}\n")))
@@ -2833,7 +3079,7 @@ fn start_delivery(chat: &Arc<ChatState>) {
                     super::late::Late::Delivered(late) => deliver(&chat, *late).await,
                     super::late::Late::Changed(key) => {
                         let sessions = chat.sessions.lock().await;
-                        if let Some(ws) = sessions.get(&key) {
+                        if let Some(ws) = sessions.get(&key).and_then(ChatSlot::ordinary) {
                             let _ = ws.events.send(WireEvent::Queue {
                                 jobs: chat.jobs.queue.list(&key),
                             });
@@ -2852,7 +3098,7 @@ fn start_delivery(chat: &Arc<ChatState>) {
 /// `Done`.
 async fn deliver(chat: &Arc<ChatState>, late: mecha_core::jobs::Delivered) {
     let mut sessions = chat.sessions.lock().await;
-    let Some(ws) = sessions.get_mut(&late.key) else {
+    let Some(ws) = sessions.get_mut(&late.key).and_then(ChatSlot::ordinary_mut) else {
         tracing::warn!(key = %late.key, "a finished job's chat is gone");
         chat.jobs.queue.landed(&late.key, &late.call_id);
         return;
@@ -2892,7 +3138,7 @@ fn begin_turn(
     // host's barge-in retry then started its run holding nothing — the switch
     // D13 exists to make wait went ahead under it (review of #350).
     held: &mut Option<mecha_core::hold::Held>,
-    sessions: &mut HashMap<String, WebSession>,
+    sessions: &mut HashMap<String, ChatSlot>,
     key: &str,
     text: &str,
     opts: TurnOpts,
@@ -2902,6 +3148,7 @@ fn begin_turn(
     }
     let ws = sessions
         .get_mut(key)
+        .and_then(ChatSlot::ordinary_mut)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
     spoken_turn_may_enter(&opts, ws.session.room().is_some()).map_err(TurnError::Failed)?;
     let dynamic_goals = bound.agent.dynamic_goals_enabled();
@@ -3690,7 +3937,10 @@ fn begin_turn(
             }
         }
         let mut next_waits = false;
-        if let Some(ws) = sessions.get_mut(&key_for_task) {
+        if let Some(ws) = sessions
+            .get_mut(&key_for_task)
+            .and_then(ChatSlot::ordinary_mut)
+        {
             // The forwarder has finished, and the admission lock prevents
             // a final send from arriving between this check and live=None.
             // A steer the run never read waits for a turn of its own, behind
@@ -3884,7 +4134,10 @@ fn begin_turn(
             // provider that is down). Three attempts per session; a miss
             // costs the name, not the budget.
             let mut sessions = state_for_task.sessions.lock().await;
-            if let Some(ws) = sessions.get_mut(&key_for_task) {
+            if let Some(ws) = sessions
+                .get_mut(&key_for_task)
+                .and_then(ChatSlot::ordinary_mut)
+            {
                 if let (Some((recorded, _)), Recording::Kept(current)) = (&recorded, &ws.session) {
                     let mut meta = current.meta.clone();
                     meta.title = Some(recorded.clone());
@@ -3947,6 +4200,10 @@ impl crate::voice::SessionHost for VoiceHost {
         tts_streams: bool,
     ) -> crate::voice::Hosted {
         use crate::voice::Hosted;
+        #[cfg(feature = "memory-prototype")]
+        if super::memory_chat::is_memory(&self.0, key).await {
+            return Hosted::Failed("Memory chats require verified typed input".into());
+        }
         // Containment stays with the side that owns the filesystem: a
         // session key becomes a directory name under the producer root, and
         // it is model-adjacent input the moment a page script can choose it.
@@ -3991,7 +4248,7 @@ impl crate::voice::SessionHost for VoiceHost {
                     // matters exactly as it does in `cancel`: a run parked
                     // on an approval card never sees the token, so the
                     // cards are dropped first.
-                    if let Some(ws) = sessions.get_mut(key) {
+                    if let Some(ws) = sessions.get_mut(key).and_then(ChatSlot::ordinary_mut) {
                         ws.questions.drain();
                         if let Some(live) = &ws.live {
                             live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
@@ -4001,13 +4258,15 @@ impl crate::voice::SessionHost for VoiceHost {
                     // Read before the run takes the conversation: the
                     // director's scene, and where its directions are kept —
                     // nowhere, for an incognito chat (`Recording::kept`).
-                    let seed = sessions.get(key).map(|ws| crate::voice::DirectorSeed {
-                        transcript: ws.session.kept().cloned(),
-                        character: None,
-                        last_reply: ws
-                            .conversation
-                            .as_ref()
-                            .and_then(|c| crate::voice::last_reply(&c.messages)),
+                    let seed = sessions.get(key).and_then(ChatSlot::ordinary).map(|ws| {
+                        crate::voice::DirectorSeed {
+                            transcript: ws.session.kept().cloned(),
+                            character: None,
+                            last_reply: ws
+                                .conversation
+                                .as_ref()
+                                .and_then(|c| crate::voice::last_reply(&c.messages)),
+                        }
                     });
                     match begin_turn(
                         &self.0,
@@ -4053,14 +4312,26 @@ impl crate::voice::SessionHost for VoiceHost {
 pub async fn cancel(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
-    body: Option<Json<CancelBody>>,
+    headers: axum::http::HeaderMap,
+    raw: axum::body::Bytes,
 ) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    #[cfg(feature = "memory-prototype")]
+    if let Some(response) = super::memory_chat::cancel(chat, &key, &raw).await {
+        return response;
+    }
+    let body: CancelBody = if raw.is_empty() || !headers.contains_key("content-type") {
+        CancelBody::default()
+    } else {
+        match ordinary_json(&headers, &raw) {
+            Ok(body) => body,
+            Err(response) => return response,
+        }
+    };
     let mut sessions = chat.sessions.lock().await;
-    let body = body.map(|Json(b)| b).unwrap_or_default();
     // One picture, from its own row: that one alone, running or waiting; the
     // rest of the line stays (review of #606).
     if let Some(call) = &body.call {
@@ -4078,12 +4349,15 @@ pub async fn cancel(
     // next one start at once would not have stopped anything.
     // A turn on its way out of the line is stopped too: it finds its mark
     // gone and does not begin.
-    let had_waiting = sessions.get_mut(&key).is_some_and(|ws| {
-        let had = !ws.waiting.is_empty() || !ws.starting.is_empty();
-        discard_waiting(ws, "stopped");
-        had
-    });
-    match sessions.get(&key) {
+    let had_waiting = sessions
+        .get_mut(&key)
+        .and_then(ChatSlot::ordinary_mut)
+        .is_some_and(|ws| {
+            let had = !ws.waiting.is_empty() || !ws.starting.is_empty();
+            discard_waiting(ws, "stopped");
+            had
+        });
+    match sessions.get(&key).and_then(ChatSlot::ordinary) {
         Some(ws) if ws.live.is_some() => {
             // Order matters: a run parked in `approve()` or `ask_user` never
             // sees the token, so the pending cards are dropped first — each
@@ -4150,9 +4424,13 @@ pub async fn events(
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
+    #[cfg(feature = "memory-prototype")]
+    if let Some(response) = super::memory_chat::events(&chat, &key).await {
+        return response;
+    }
     let rx = {
         let sessions = chat.sessions.lock().await;
-        match sessions.get(&key) {
+        match sessions.get(&key).and_then(ChatSlot::ordinary) {
             Some(ws) => ws.events.subscribe(),
             None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
         }
@@ -4235,7 +4513,7 @@ pub async fn answer(
         Err(resp) => return resp,
     };
     let sessions = chat.sessions.lock().await;
-    let Some(ws) = sessions.get(&key) else {
+    let Some(ws) = sessions.get(&key).and_then(ChatSlot::ordinary) else {
         return (StatusCode::NOT_FOUND, "no such session\n").into_response();
     };
     let answer = if body.decline == Some(true) {
@@ -4377,6 +4655,7 @@ impl ChatState {
         let sessions = self.sessions.lock().await;
         let live = sessions
             .get(key)
+            .and_then(ChatSlot::ordinary)
             .and_then(|ws| ws.live.as_ref())
             .expect("a run holds the conversation");
         keep_announced_grants(&live.grants, &WireEvent::Grants { grants });
@@ -4536,13 +4815,17 @@ fn first_user_snippet(path: &std::path::Path) -> Option<Listing> {
         // worth of them to learn they are not titles is the whole cost of
         // this scan. Two record types matter and both are a substring test.
         let could_be_title = line.contains("\"record\":\"title\"");
-        if !could_be_title && listing.snippet.is_some() {
+        let could_be_memory = line.contains("\"record\":\"chat_memory\"");
+        if !could_be_title && !could_be_memory && listing.snippet.is_some() {
             continue;
         }
         let v: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if v["record"] == "chat_memory" {
+            listing.memory = true;
+        }
         // A rename, from `mecha_core::title`. Last one within the scan wins.
         if v["record"] == "title" {
             if let Some(t) = v["title"].as_str() {
@@ -4572,6 +4855,7 @@ struct Listing {
     snippet: Option<String>,
     /// The recorded name, when the session has earned one.
     title: Option<String>,
+    memory: bool,
 }
 
 /// How far into a transcript a *listing* reads.
@@ -4622,13 +4906,21 @@ pub async fn history(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let attached: std::collections::HashMap<String, String> = {
+    #[allow(unused_mut)]
+    let mut attached: std::collections::HashMap<String, String> = {
         let sessions = chat.sessions.lock().await;
         sessions
             .iter()
+            .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
             .map(|(k, ws)| (ws.session.id().to_string(), k.clone()))
             .collect()
     };
+    #[cfg(feature = "memory-prototype")]
+    for (key, slot) in chat.sessions.lock().await.iter() {
+        if let ChatSlot::Memory(memory) = slot {
+            attached.insert(memory.id.clone(), key.clone());
+        }
+    }
     let dir = chat.sessions_dir().to_path_buf();
     let mut metas = match Session::list(&dir) {
         Ok(m) => m,
@@ -4697,6 +4989,9 @@ pub async fn history(
             "attached_key": attached.get(&meta.id),
             "archived_at": archived.get(&meta.id).copied().flatten().map(|d| d.to_rfc3339()),
         }));
+        if listing.memory {
+            rows.last_mut().expect("row inserted")["memory"] = "episodic".into();
+        }
     }
     Json(serde_json::json!({ "sessions": rows })).into_response()
 }
@@ -4728,14 +5023,51 @@ pub(super) fn resume_key(id: &str) -> String {
 /// is the live key the page should switch to; resuming a session this
 /// process already holds returns that key rather than minting a twin — one
 /// conversation must never have two writers.
-pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::response::Response {
+pub async fn resume(
+    State(state): Chat,
+    headers: axum::http::HeaderMap,
+    verified: Option<axum::Extension<super::VerifiedMutation>>,
+    raw: axum::body::Bytes,
+) -> axum::response::Response {
     let chat = match chat_state(&state) {
         Ok(c) => c.clone(),
         Err(resp) => return resp,
     };
+    let hint: serde_json::Value = match ordinary_json(&headers, &raw) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if hint.get("memory").is_some() {
+        #[cfg(feature = "memory-prototype")]
+        {
+            let Some(axum::Extension(verified)) = verified else {
+                return super::unverified();
+            };
+            return super::memory_chat::resume(chat, &raw, verified).await;
+        }
+        #[cfg(not(feature = "memory-prototype"))]
+        {
+            let _ = verified;
+            return (StatusCode::CONFLICT, "Memory resume is unavailable").into_response();
+        }
+    }
+    let body: ResumeBody = match ordinary_json(&headers, &raw) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    #[cfg(feature = "memory-prototype")]
+    if Session::find(chat.sessions_dir(), &body.id)
+        .is_ok_and(|path| !matches!(memory_marked(&path), Ok(false)))
+    {
+        return super::memory_chat::unsupported();
+    }
     let dir = chat.sessions_dir().to_path_buf();
     let mut sessions = chat.sessions.lock().await;
-    if let Some((k, _)) = sessions.iter().find(|(_, ws)| ws.session.id() == body.id) {
+    if let Some((k, _)) = sessions
+        .iter()
+        .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
+        .find(|(_, ws)| ws.session.id() == body.id)
+    {
         return Json(serde_json::json!({ "key": k })).into_response();
     }
     // **And the same question asked of the other processes.** The check above
@@ -4797,14 +5129,17 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     // `resume failed: could not mint a key for this session`). Only an
     // untouched recorded chat gives way: no message, no run in flight. One
     // holding anything is a real conversation and still refuses.
-    let squatter = sessions.get(&key).is_some_and(|ws| {
-        ws.live.is_none()
-            && ws.session.kept().is_some()
-            && ws
-                .conversation
-                .as_ref()
-                .is_some_and(|c| c.messages.is_empty())
-    });
+    let squatter = sessions
+        .get(&key)
+        .and_then(ChatSlot::ordinary)
+        .is_some_and(|ws| {
+            ws.live.is_none()
+                && ws.session.kept().is_some()
+                && ws
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|c| c.messages.is_empty())
+        });
     // Not removed here: the insert below replaces it, map entry and route
     // alike, so a failure in between (the config record) leaves the
     // placeholder standing rather than the key holding nothing.
@@ -4870,7 +5205,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     let late = super::late::LateState::of_file(&session.path);
     sessions.insert(
         key.clone(),
-        WebSession {
+        ChatSlot::Ordinary(Box::new(WebSession {
             late,
             waiting: VecDeque::new(),
             starting: Default::default(),
@@ -4894,7 +5229,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             withheld: Arc::from(withheld),
             task: None,
             recorded_generation: bound.generation,
-        },
+        })),
     );
     Json(serde_json::json!({ "key": key })).into_response()
 }
@@ -4910,6 +5245,7 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
     let sessions = chat.sessions.lock().await;
     let mut rows: Vec<serde_json::Value> = sessions
         .iter()
+        .filter_map(|(key, slot)| slot.ordinary().map(|ws| (key, ws)))
         .map(|(key, ws)| {
             serde_json::json!({
                 "key": key,
@@ -4924,6 +5260,11 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
             })
         })
         .collect();
+    #[cfg(feature = "memory-prototype")]
+    rows.extend(sessions.iter().filter_map(|(key, slot)| match slot {
+        ChatSlot::Memory(memory) => Some(memory.row(key)),
+        _ => None,
+    }));
     rows.sort_by_key(|r| {
         (
             r["key"] != DEFAULT_SESSION,
@@ -6179,6 +6520,10 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         sessions_dir: test_root.join("sessions"),
         work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),
+        #[cfg(feature = "memory-prototype")]
+        memory_profile: None,
+        #[cfg(all(test, feature = "memory-prototype"))]
+        memory_test_hooks: Default::default(),
         personas: Arc::new(super::persona_chat::PersonaChats::for_tests()),
         stopping: Default::default(),
         runs: Default::default(),
@@ -6223,7 +6568,11 @@ impl mecha_core::provider::Provider for Answers {
 /// Drop `key` from the map, as a `serve` restart or a handover leaves it.
 #[cfg(test)]
 pub(super) async fn test_forget_session(chat: &ChatState, key: &str) {
-    chat.sessions.lock().await.remove(key);
+    chat.sessions
+        .lock()
+        .await
+        .remove(key)
+        .and_then(ChatSlot::into_ordinary);
 }
 
 /// A chat whose model can see (or, `vision` false, cannot), answering "ok"
@@ -6351,6 +6700,8 @@ pub(super) fn test_job_out_as(
 pub(super) async fn test_first_result(chat: &ChatState, key: &str) -> Option<String> {
     let sessions = chat.sessions.lock().await;
     sessions[key]
+        .ordinary()
+        .expect("ordinary test session")
         .conversation
         .as_ref()?
         .messages
@@ -6366,6 +6717,8 @@ pub(super) async fn test_first_result(chat: &ChatState, key: &str) -> Option<Str
 #[cfg(test)]
 pub(super) async fn test_transcript(chat: &ChatState, key: &str) -> PathBuf {
     chat.sessions.lock().await[key]
+        .ordinary()
+        .expect("ordinary test session")
         .session
         .kept()
         .expect("a kept chat")
@@ -6376,7 +6729,11 @@ pub(super) async fn test_transcript(chat: &ChatState, key: &str) -> PathBuf {
 /// The jail `key`'s session runs in.
 #[cfg(test)]
 pub(super) async fn test_workspace(chat: &ChatState, key: &str) -> PathBuf {
-    chat.sessions.lock().await[key].workspace.clone()
+    chat.sessions.lock().await[key]
+        .ordinary()
+        .expect("ordinary test session")
+        .workspace
+        .clone()
 }
 
 /// What a switch looks like to a chat's next turn: its follower now holds a
@@ -6576,6 +6933,7 @@ pub(super) async fn test_plant_image(chat: &ChatState, key: &str) {
     let mut sessions = chat.sessions.lock().await;
     let convo = sessions
         .get_mut(key)
+        .and_then(ChatSlot::ordinary_mut)
         .and_then(|ws| ws.conversation.as_mut())
         .expect("an idle conversation");
     let mut look = Message::user("look at this");
@@ -6645,6 +7003,10 @@ pub(super) fn test_chat_built(
         sessions_dir: test_root.join("sessions"),
         work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),
+        #[cfg(feature = "memory-prototype")]
+        memory_profile: None,
+        #[cfg(all(test, feature = "memory-prototype"))]
+        memory_test_hooks: Default::default(),
         personas: Arc::new(personas),
         stopping: Default::default(),
         runs: Default::default(),
@@ -6701,7 +7063,7 @@ mod held_tests {
         let (events, _) = broadcast::channel(4);
         let mut sessions = HashMap::from([(
             "k".to_string(),
-            WebSession {
+            ChatSlot::Ordinary(Box::new(WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
                 starting: Default::default(),
@@ -6719,7 +7081,7 @@ mod held_tests {
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 1,
-            },
+            })),
         )]);
         let holds = mecha_core::hold::Holds::new(home.dir.join("holds"));
         let router = "http://127.0.0.1:8080";
@@ -6780,7 +7142,7 @@ mod held_tests {
         let (events, _) = broadcast::channel(16);
         let mut sessions = HashMap::from([(
             "k".to_string(),
-            WebSession {
+            ChatSlot::Ordinary(Box::new(WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
                 starting: Default::default(),
@@ -6797,7 +7159,7 @@ mod held_tests {
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 0,
-            },
+            })),
         )]);
         begin_turn(
             &chat,
@@ -6936,7 +7298,7 @@ mod held_tests {
         let (events, live) = broadcast::channel(64);
         let mut sessions = HashMap::from([(
             "k".to_string(),
-            WebSession {
+            ChatSlot::Ordinary(Box::new(WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
                 starting: Default::default(),
@@ -6953,7 +7315,7 @@ mod held_tests {
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 0,
-            },
+            })),
         )]);
         begin_turn(
             &chat,
@@ -7163,7 +7525,7 @@ mod held_tests {
         let (events, _) = broadcast::channel(4);
         let mut sessions = HashMap::from([(
             key.clone(),
-            WebSession {
+            ChatSlot::Ordinary(Box::new(WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
                 starting: Default::default(),
@@ -7180,7 +7542,7 @@ mod held_tests {
                 questions: Default::default(),
                 titled_at: 0,
                 recorded_generation: 1,
-            },
+            })),
         )]);
         let mut turn = |spoken: bool, unlogged: bool| {
             begin_turn(
@@ -7292,7 +7654,7 @@ mod workflow_recording_tests {
             let (events, mut emitted) = broadcast::channel(16);
             let mut sessions = HashMap::from([(
                 case.into(),
-                WebSession {
+                ChatSlot::Ordinary(Box::new(WebSession {
                     late: Default::default(),
                     waiting: VecDeque::new(),
                     starting: Default::default(),
@@ -7309,7 +7671,7 @@ mod workflow_recording_tests {
                     questions: Default::default(),
                     titled_at: 0,
                     recorded_generation: 1,
-                },
+                })),
             )]);
             let result = begin_turn(
                 &chat,
@@ -7345,7 +7707,7 @@ mod workflow_recording_tests {
                 prior_workflow,
                 "a turn that never started must not alter workflow evidence"
             );
-            let ws = &sessions[case];
+            let ws = &sessions[case].ordinary().expect("ordinary test session");
             assert!(ws.live.is_none());
             assert!(
                 matches!(
@@ -7444,6 +7806,7 @@ permission_mode = "read-only"
                     .lock()
                     .await
                     .get(key)
+                    .and_then(ChatSlot::ordinary)
                     .is_some_and(|ws| ws.live.is_none() && !ws.has_line())
                 {
                     return;

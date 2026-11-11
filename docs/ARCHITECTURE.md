@@ -13138,10 +13138,45 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   same resolved launcher and confinement arguments for preflight and execution.
   Neither stage puts environment values in argv. Synthetic PATH/HOME and explicit
   sandbox overrides remain ordered, with server posture forced last. Loader
-  controls refuse before spawn because they could act before confinement;
-  unqualified scoped resource limits also refuse. Ordinary bwrap and Landlock's
+  controls refuse before spawn because they could act before confinement. Selected
+  basename lookup rejects every relative or empty PATH component, and the
+  canonical bwrap launcher must lie outside the model workspace even when the
+  PATH entry is absolute or an outside symlink points inward. The MCP server may
+  still be an explicitly owner-chosen relative command; it is not the confinement
+  executable. Unqualified scoped resource limits also refuse. Ordinary bwrap and Landlock's
   pre-exec enforcement stay unchanged. A passing generic backend test does not
   establish this selected launch contract; its own required-backend test does.
+- **A recorded web source is not browser authentication.** Web chat uses its own
+  V3 attachment with the closed Web/AuthenticatedWeb ingress, and the paired V2
+  observation/recorder protocol. CLI V1/V2 attachments retain their exact bytes
+  and CLI-only doors; neither is upgraded by relabeling an observation. Each new
+  reserved label also blocks mixed-pair fallback into legacy capture. The HTTP
+  host must verify owner identity and mutation intent before calling the web
+  library door. Core then authenticates the native header, marker, prior source
+  chain, context sources and expected turn ordinal before a begin write. A browser
+  ordinal rejects delayed duplicates; it is never itself evidence of authority.
+  Recovery remains storage-only and does not need a new HTTP execution.
+- **A web memory conversation owns its runtime, and shutdown owns its reservation.**
+  `serve::memory_chat` keeps `Prepared`, the tracked reader, Conversation and lease
+  together in one `ChatSlot`; it never installs a conversation reader in the
+  shared ordinary Follower. Reserve under the sessions mutex and acquire a task
+  tracking token there, before publishing work outside the lock. Otherwise stop
+  can drain an empty tracker while an admitted start is about to spawn. Full
+  continuation authentication happens outside the shared mutex, before router
+  holds and begin writes. Resume restores Conversation only after acquiring and
+  authenticating the exclusive lease; a pre-lease read can miss a legitimate
+  writer's completed turn. Retention status precedes Done, and blocked runtimes
+  release the lease so storage-only recovery can run while the server stays up.
+- **Native memory mutation protection survives missing chat and feature-off builds.**
+  `guard_native_memory_mutation` runs after owner/intent authentication and uses
+  the archive handlers' session directory, including their no-ChatState fallback.
+  Its bounded complete-line classifier denies unknown or marked sources and
+  ambiguous live/partial-forget claims. Browser keys and native session IDs have
+  different grammars: native IDs contain an uppercase timestamp `T`. Reusing
+  `valid_key` broke ordinary deletion; test with `Session::new_id`. Reading an
+  arbitrary byte prefix as UTF-8 also misclassified a marker when a later string
+  crossed the limit. Neither a runtime setup failure nor a parser limit is proof
+  that a saved source is ordinary.
 - **Owner context is not a confirmed success criterion.** Chat observation
   sidecars hold sanitized versions and original owner/decision locators, mutually
   exclusive with a confirmed criterion. Repeating identical text is still a new

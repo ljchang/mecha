@@ -1995,3 +1995,392 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
             .contains(&serde_json::to_value(first.receipt.unwrap().projection).unwrap()));
     }
 }
+
+fn web_session(f: &Fixture) -> Session {
+    let mut session = f.session();
+    session.meta.kind = Some(SessionKind::Web);
+    fs::write(
+        &session.path,
+        format!(
+            "{}\n",
+            serde_json::to_string(&Record::Meta(session.meta.clone())).unwrap()
+        ),
+    )
+    .unwrap();
+    session
+}
+
+fn web_record_turn(
+    chat: &mut ChatMemory,
+    session: &Session,
+    text: &str,
+    ordinal: u64,
+    recorded_source: OwnerSource,
+) -> mecha_core::memory_session::chat::ChatMemoryTurn {
+    let owner = OwnerInput::new(OwnerSource::AuthenticatedWeb, text.into()).unwrap();
+    let turn = chat
+        .begin_authenticated_web_turn(session, &owner, ordinal)
+        .unwrap();
+    let mut history = Session::read(&session.path).unwrap().convo.messages;
+    history.push(Message::user(text));
+    session
+        .append(&Record::Message(Message::user(text)))
+        .unwrap();
+    let mut state = recorded_context(session);
+    let version = state
+        .transition(
+            CharterSnapshot::disabled(),
+            Some(OwnerInput::new(recorded_source, text.into()).unwrap()),
+        )
+        .unwrap()
+        .unwrap();
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &history,
+        Some(version.prompt_block()),
+        true,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&history)
+    .unwrap();
+    session
+        .append(&Record::GoalContextDecision {
+            binding,
+            versions: vec![version],
+        })
+        .unwrap();
+    session
+        .append(&Record::Message(Message::assistant(vec![Block::text(
+            "Authored web response.",
+        )])))
+        .unwrap();
+    session
+        .append(&Record::Outcome(RunStats {
+            stop_cause: Some(StopCause::Completed),
+            turns: 1,
+            context_overflows: Some(0),
+            ..Default::default()
+        }))
+        .unwrap();
+    session
+        .append(&Record::Taint(Taint {
+            private: true,
+            untrusted: false,
+        }))
+        .unwrap();
+    turn
+}
+
+#[test]
+fn web_ingress_retains_two_turns_and_resumes_only_through_its_host_door() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let mut chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    assert_eq!(chat.next_turn_ordinal().unwrap(), 1);
+    f.config(&s);
+    let first = web_record_turn(
+        &mut chat,
+        &s,
+        "Keep synthetic folders blue",
+        1,
+        OwnerSource::AuthenticatedWeb,
+    );
+    let report = chat.finish_turn(&first);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    assert_eq!(report.protocol, "ordinary-chat-memory-v3");
+    let before = fs::read(&s.path).unwrap();
+    let owner = OwnerInput::new(
+        OwnerSource::AuthenticatedWeb,
+        "Keep synthetic folders blue".into(),
+    )
+    .unwrap();
+    assert!(
+        chat.begin_authenticated_web_turn(&s, &owner, 1).is_err(),
+        "completed duplicate ordinal ran twice"
+    );
+    assert_eq!(fs::read(&s.path).unwrap(), before);
+    assert_eq!(chat.next_turn_ordinal().unwrap(), 2);
+    let second = web_record_turn(
+        &mut chat,
+        &s,
+        "Use synthetic green folders instead",
+        2,
+        OwnerSource::AuthenticatedWeb,
+    );
+    let second_report = chat.finish_turn(&second);
+    assert_eq!(
+        second_report.status,
+        SessionMemoryStatus::Retained,
+        "{second_report:?}"
+    );
+    let seal: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.request
+                .authority
+                .join(format!("{}.chat-seal", second.run_id())),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        seal["payload"]["identity"]["check_version"],
+        "ordinary-chat-observation-v2"
+    );
+    assert_eq!(
+        seal["payload"]["identity"]["evaluator_version"],
+        "ordinary-chat-recorder-v2"
+    );
+    assert_eq!(
+        seal["payload"]["chat_context"]["previous_turn"],
+        first.run_id()
+    );
+    assert_eq!(
+        seal["payload"]["chat_context"]["versions"][0]["owner_inputs"][0]["source"],
+        "authenticated_web"
+    );
+    assert!(seal["payload"]["criterion"].is_null());
+    drop(chat);
+    assert!(f.memory().attach_chat(&s, ChatAttachMode::Resume).is_err());
+    assert!(f
+        .memory()
+        .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+        .is_err());
+    let resumed = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Resume)
+        .unwrap();
+    assert_eq!(resumed.next_turn_ordinal().unwrap(), 3);
+    assert!(Session::load(&s.path).is_err());
+}
+
+#[test]
+fn web_ingress_rejects_wrong_kind_source_and_ordinal_before_reserving_a_turn() {
+    let f = Fixture::new();
+    let cli = f.session();
+    assert!(f
+        .memory()
+        .attach_authenticated_web_chat(&cli, ChatAttachMode::Create)
+        .is_err());
+    let s = web_session(&f);
+    assert!(f.memory().attach_chat(&s, ChatAttachMode::Create).is_err());
+    let mut chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    f.config(&s);
+    let before = fs::read(&s.path).unwrap();
+    let files_before = fs::read_dir(&f.request.authority).unwrap().count();
+    let cli_owner = OwnerInput::new(OwnerSource::CliChat, "Authored input".into()).unwrap();
+    let web_owner =
+        OwnerInput::new(OwnerSource::AuthenticatedWeb, "Authored input".into()).unwrap();
+    assert!(chat
+        .begin_authenticated_web_turn(&s, &cli_owner, 1)
+        .is_err());
+    assert!(chat.begin_turn(&s, &cli_owner).is_err());
+    assert!(chat.begin_turn(&s, &web_owner).is_err());
+    for ordinal in [0, 2, u64::MAX] {
+        assert!(chat
+            .begin_authenticated_web_turn(&s, &web_owner, ordinal)
+            .is_err());
+    }
+    assert_eq!(fs::read(&s.path).unwrap(), before);
+    assert_eq!(
+        fs::read_dir(&f.request.authority).unwrap().count(),
+        files_before
+    );
+    assert_eq!(chat.next_turn_ordinal().unwrap(), 1);
+    let _turn = chat
+        .begin_authenticated_web_turn(&s, &web_owner, 1)
+        .unwrap();
+    assert!(
+        chat.next_turn_ordinal().is_err(),
+        "unfinished turn cannot advertise another ordinal"
+    );
+}
+
+#[test]
+fn web_ingress_rejects_wrong_native_owner_even_with_matching_text() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let mut chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    f.config(&s);
+    let turn = web_record_turn(
+        &mut chat,
+        &s,
+        "Authored same words",
+        1,
+        OwnerSource::CliChat,
+    );
+    assert_eq!(
+        chat.finish_turn(&turn).status,
+        SessionMemoryStatus::Unavailable
+    );
+    assert!(chat.next_turn_ordinal().is_err());
+}
+
+#[test]
+fn web_ingress_requires_closed_private_ingress_and_excludes_graph_authority() {
+    for mutation in 0..7 {
+        let f = Fixture::new();
+        let s = web_session(&f);
+        let chat = f
+            .memory()
+            .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+            .unwrap();
+        drop(chat);
+        let path = fs::read_dir(&f.request.authority)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "chat"))
+            .unwrap();
+        let mut wire: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            wire["ingress"],
+            serde_json::json!({"session_kind":"web","owner_source":"authenticated_web"})
+        );
+        match mutation {
+            0 => {
+                wire.as_object_mut().unwrap().remove("ingress");
+            }
+            1 => wire["ingress"] = serde_json::Value::Null,
+            2 => wire["ingress"]["session_kind"] = serde_json::json!("chat"),
+            3 => wire["ingress"]["owner_source"] = serde_json::json!("cli_chat"),
+            4 => wire["ingress"]["extra"] = serde_json::json!(true),
+            5 => wire["graph_surface"] = serde_json::Value::Null,
+            6 => {}
+            _ => unreachable!(),
+        }
+        let mut changed = serde_json::to_string(&wire).unwrap();
+        if mutation == 6 {
+            changed.insert_str(1, "\"ingress\":null,");
+        }
+        fs::write(&path, changed).unwrap();
+        assert!(
+            f.memory()
+                .attach_authenticated_web_chat(&s, ChatAttachMode::Resume)
+                .is_err(),
+            "accepted {mutation}"
+        );
+    }
+}
+
+#[test]
+fn web_ingress_sealed_retry_is_storage_only_and_forget_survives_source_loss() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let mut chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    f.config(&s);
+    let turn = web_record_turn(
+        &mut chat,
+        &s,
+        "Authored retained evidence",
+        1,
+        OwnerSource::AuthenticatedWeb,
+    );
+    let receipt_path = f
+        .request
+        .authority
+        .join(format!("{}.chat-retained", turn.run_id()));
+    mecha_core::create_private_dir(&receipt_path).unwrap();
+    assert_eq!(chat.finish_turn(&turn).status, SessionMemoryStatus::Pending);
+    assert!(chat.next_turn_ordinal().is_err());
+    drop(chat);
+    fs::remove_dir(receipt_path).unwrap();
+    fs::remove_dir(&f.workspace).unwrap();
+    let recovery = SessionMemory::open_for_recovery(&f.request).unwrap();
+    let before = fs::read(&s.path).unwrap();
+    let report = recovery.retry_chat(turn.run_id());
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    assert_eq!(report.protocol, "ordinary-chat-memory-v3");
+    assert_eq!(recovery.retry_chat(turn.run_id()).receipt, report.receipt);
+    assert_eq!(fs::read(&s.path).unwrap(), before);
+    fs::remove_file(&s.path).unwrap();
+    assert_eq!(
+        recovery.retry_chat(turn.run_id()).status,
+        SessionMemoryStatus::Unavailable
+    );
+    recovery.forget_chat(turn.run_id()).unwrap();
+}
+
+#[test]
+fn web_ingress_does_not_reencode_cli_attachments_or_admit_web_metadata_into_them() {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct OriginalAttachment {
+        protocol: String,
+        request: SessionMemoryRequest,
+        authority: String,
+        session_id: String,
+        source: PathBuf,
+        workspace: PathBuf,
+        device: u64,
+        inode: u64,
+        initial_length: u64,
+        initial_digest: String,
+        nonce: String,
+    }
+    for graph in [false, true] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = if graph {
+            f.memory()
+                .attach_chat_with_graph(
+                    &s,
+                    ChatAttachMode::Create,
+                    Some(authored_graph_surface(&f)),
+                )
+                .unwrap()
+        } else {
+            f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap()
+        };
+        let web_owner =
+            OwnerInput::new(OwnerSource::AuthenticatedWeb, "Authored web input".into()).unwrap();
+        assert!(chat
+            .begin_authenticated_web_turn(&s, &web_owner, 1)
+            .is_err());
+        assert!(chat.begin_turn(&s, &web_owner).is_err());
+        drop(chat);
+        let path = fs::read_dir(&f.request.authority)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "chat"))
+            .unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut wire: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert!(wire.get("ingress").is_none());
+        let old: OriginalAttachment = serde_json::from_value(wire.clone()).unwrap();
+        let old_bytes = if graph {
+            let mut old_wire = serde_json::to_value(old).unwrap();
+            old_wire["graph_surface"] = wire["graph_surface"].clone();
+            serde_json::to_vec(&old_wire).unwrap()
+        } else {
+            serde_json::to_vec(&old).unwrap()
+        };
+        assert_eq!(original, old_bytes, "CLI attachment byte encoding changed");
+        assert!(f
+            .memory()
+            .attach_authenticated_web_chat(&s, ChatAttachMode::Resume)
+            .is_err());
+        wire["ingress"] = serde_json::Value::Null;
+        fs::write(&path, serde_json::to_vec(&wire).unwrap()).unwrap();
+        let refused = if graph {
+            f.memory()
+                .attach_chat_with_graph(&s, ChatAttachMode::Resume, None)
+                .is_err()
+        } else {
+            f.memory().attach_chat(&s, ChatAttachMode::Resume).is_err()
+        };
+        assert!(refused);
+    }
+}

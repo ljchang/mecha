@@ -152,8 +152,8 @@ and action receipt with an explicit oversized status; the memory record omits
 the argument content. This does not make omitted text factual support or prove
 the action achieved its goal. Full arguments remain in the native transcript.
 Tool results and other original passages still have a 4,096-byte limit.
-Web/TUI memory attachment and automatic learning remain
-separate work. SQLCipher does not encrypt the native transcript, terminal history
+TUI memory attachment and automatic learning remain separate work. The distinct
+authenticated web profile is described below. SQLCipher does not encrypt the native transcript, terminal history
 or private recovery files.
 
 ### Read-only owner-graph access in CLI memory chat
@@ -199,6 +199,56 @@ it does not reconnect the attachment or check today's source authority. `live`
 divergence refuses memory-marked recordings. Use authenticated chat resume for
 continued execution. Authored tests qualify this integration; a private-data
 trial and evidence of decision benefit remain separate work.
+
+### Authenticated web conversations
+
+The experimental build can expose an explicit memory chat option in the existing
+owner-authenticated web interface. Initialize the encrypted store as above, build
+the web assets, and start the server with a separate fixed memory profile:
+
+```bash
+"$MECHA_MEMORY_BIN" serve --dynamic-goals \
+  --episodic-memory "$MECHA_MEMORY_ROOT/memory.json" \
+  --memory-provider CONFIGURED_PROVIDER --memory-model CONFIGURED_MODEL \
+  --memory-tool goal_context --memory-tool fs_read \
+  --assets web/dist
+```
+
+Replace the provider/model placeholders with your configured names. Keep the
+existing web owner authentication; this adds no anonymous or loopback bypass.
+The memory-prefixed options apply only to memory chats. Ordinary chats retain
+their existing behavior and model following. Each memory conversation owns its
+runtime, workspace and memory reader, while sharing the selected encrypted store.
+
+Choose **Memory +** to start a new conversation with this profile. It does not
+convert an existing conversation. Typed input is preserved exactly, with a
+2,048-byte limit per message. The model and tool selection remain fixed; uploads,
+voice, permission changes, queued input and steering are unavailable in this
+initial profile. The configured permission policy still applies to selected tools;
+selecting a write tool does not grant approval by itself.
+
+The banner distinguishes running, retained and blocked states. Retention does
+not establish task success: evaluation remains `not_evaluated`. A refused or
+uncertain send keeps the draft and requires explicit resume before another send.
+After a server restart, use the memory-labeled saved session to resume. The server
+reauthenticates its source chain and next turn; reconnect never creates an ordinary
+replacement. A resumed connection can be ready without displaying an earlier
+retention receipt.
+
+Stop preserves the partial native record and blocks continuation. An incomplete,
+unsealed turn requires a new conversation. Complete sealed captures can use the
+existing host-only retry procedure without repeating actions; the blocked web
+runtime releases its lease so repair does not require stopping the server. Then
+explicitly resume. Archive/delete controls are unavailable for memory sessions
+until they can withdraw derived evidence consistently; host-only forgetting
+remains separate from deleting the native transcript.
+
+This first web profile supports local file tools and `goal_context`. Graph MCP
+memory remains a CLI opt-in; the separate owner-graph dashboard is unchanged.
+Todo/planning continuity, compaction, TUI memory and automatic chat learning are
+still separate work. Encryption covers the memory database, not the source JSONL
+or private recovery files. Authored integration checks are not evidence of model
+benefit or private-data deployment readiness.
 
 ### Explicit concept learning
 

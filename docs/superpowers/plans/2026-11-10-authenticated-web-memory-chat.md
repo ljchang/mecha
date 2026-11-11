@@ -1,8 +1,12 @@
 # Bounded authenticated web memory chat: next-slice contract
 
-Status: source-audited next increment; no implementation or activation. The
-ingress/wire-version contract below is the implementation boundary; qualify its
-strict source/version matrix before connecting the web runtime.
+Status: implemented and qualified as an explicit bounded prototype; no production
+activation. Core/host/frontend regressions, full workspace suites, standalone
+memory, required backends and actual HTTP/compiled-browser workflows passed.
+See `docs/HISTORY.md` for source-grounded evidence and preserved failures; current
+daily-use gaps are in `docs/HANDOFF.md`. The frozen contract remains below as the
+design record. Todos/plans, graph MCP, voice/uploads and compaction are not enabled
+in this first web-memory profile.
 Basis: current working tree after the read-only graph CLI memory increment. This
 slice is one usable owner-authenticated web conversation: opt in, send two text
 turns, revise the objective, recall retained evidence, restart the server, resume.
@@ -67,7 +71,9 @@ The memory snapshot contains `mode`, `phase`, `next_turn_ordinal`,
 starting, running and blocked; no ordinal is offered unless continuation is
 authenticated. A `type: memory` SSE event precedes execution's Done event on
 finalization. Keep receipt identity and NotEvaluated separate from task success;
-omit private paths and raw error chains. The frontend uses RAM and existing
+omit private paths and raw error chains. Authenticated resume reports a verified
+next ordinal but `last_report: null`; do not invent a historical receipt or parse
+private sidecars in the web host merely to fill that UI field. The frontend uses RAM and existing
 authenticated history/navigation, never new localStorage or sessionStorage.
 
 ## Product boundary

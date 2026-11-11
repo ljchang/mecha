@@ -13,12 +13,15 @@ use std::collections::BTreeSet;
 
 pub const CHAT_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v1";
 pub const CHAT_RECORDER_VERSION: &str = "ordinary-chat-recorder-v1";
+pub const CHAT_WEB_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v2";
+pub const CHAT_WEB_RECORDER_VERSION: &str = "ordinary-chat-recorder-v2";
 
 /// The currently supported authenticated chat ingress, independent of runtime types.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatOwnerSource {
     CliChat,
+    AuthenticatedWeb,
 }
 
 /// Reader-safe owner evidence. Field order and source spelling match the native
@@ -57,6 +60,23 @@ impl ChatContextVersion {
     /// Call only with the version validated from the native decision record.
     #[cfg(feature = "memory-prototype")]
     pub fn from_version(version: &ContextVersion) -> Result<Self> {
+        Self::from_version_for(version, OwnerSource::CliChat, ChatOwnerSource::CliChat)
+    }
+    /// Sanitizes only versions attributed by the authenticated web host.
+    #[cfg(feature = "memory-prototype")]
+    pub fn from_authenticated_web_version(version: &ContextVersion) -> Result<Self> {
+        Self::from_version_for(
+            version,
+            OwnerSource::AuthenticatedWeb,
+            ChatOwnerSource::AuthenticatedWeb,
+        )
+    }
+    #[cfg(feature = "memory-prototype")]
+    fn from_version_for(
+        version: &ContextVersion,
+        native_source: OwnerSource,
+        source: ChatOwnerSource,
+    ) -> Result<Self> {
         version.validate()?;
         Ok(Self {
             revision: version.revision(),
@@ -68,11 +88,11 @@ impl ChatContextVersion {
                 .iter()
                 .map(|input| {
                     ensure!(
-                        input.source() == OwnerSource::CliChat,
+                        input.source() == native_source,
                         "unsupported chat owner source"
                     );
                     Ok(ChatOwnerInput {
-                        source: ChatOwnerSource::CliChat,
+                        source,
                         text: input.text().into(),
                     })
                 })
@@ -152,6 +172,16 @@ fn digest(s: &str) -> bool {
 }
 impl ChatObservationContext {
     pub(crate) fn validate(&self, identity: &CaptureIdentity) -> Result<()> {
+        let source = match (
+            identity.check_version.as_str(),
+            identity.evaluator_version.as_str(),
+        ) {
+            (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION) => ChatOwnerSource::CliChat,
+            (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION) => {
+                ChatOwnerSource::AuthenticatedWeb
+            }
+            _ => anyhow::bail!("invalid chat observation protocol"),
+        };
         ensure!(
             self.conversation_id == identity.session_id
                 && !self.conversation_id.is_empty()
@@ -195,6 +225,10 @@ impl ChatObservationContext {
                 "invalid chat context version"
             );
             for input in &version.owner_inputs {
+                ensure!(
+                    input.source == source,
+                    "chat owner source does not match protocol"
+                );
                 input.validate()?;
             }
             revisions.insert(version.revision);

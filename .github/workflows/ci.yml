@@ -183,6 +183,11 @@ jobs:
         timeout-minutes: 3
         run: python3 prototypes/memory/web_dynamic_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-web-dynamic-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 
+      - name: Test authenticated encrypted web chat
+        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
+        timeout-minutes: 3
+        run: python3 prototypes/memory/web_memory_smoke.py target/debug/mecha "$RUNNER_TEMP/mecha-web-memory-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
       - name: Build authored support contract binary
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'pinned'
         run: cargo build -p mecha-core --locked --features memory-prototype --example memory_support_trial --example memory_atomic_trial

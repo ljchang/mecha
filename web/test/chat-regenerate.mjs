@@ -45,6 +45,7 @@ function page({ running = false, status = 200 } = {}) {
     `'use strict';
      const bodies = [], notes = [], urls = [];
      let grants = [], grantsOpen = false;
+     const memoryIntent = false;
      let key = 'chat-ab', draft = 'half a thought', attachments = ['inbox/notes.pdf'];
      let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
      const withAttachments = (typed, files) => [typed, ...files].join(' ');

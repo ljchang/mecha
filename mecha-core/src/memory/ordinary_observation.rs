@@ -1,6 +1,7 @@
 //! Host-recorded ordinary episodes carry observations without a task verdict.
 use super::chat_observation::{
     ChatObservationContext, CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION,
+    CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION,
 };
 use super::host_capture::ConfirmedCriterion;
 use super::host_capture::{
@@ -41,6 +42,8 @@ pub(super) fn claims_ordinary_protocol(identity: &CaptureIdentity) -> bool {
         || identity.evaluator_version == ORDINARY_RECORDER_VERSION
         || identity.check_version == CHAT_OBSERVATION_PROTOCOL
         || identity.evaluator_version == CHAT_RECORDER_VERSION
+        || identity.check_version == CHAT_WEB_OBSERVATION_PROTOCOL
+        || identity.evaluator_version == CHAT_WEB_RECORDER_VERSION
 }
 
 pub(super) fn validate_ordinary(input: &HostCapture) -> Result<()> {
@@ -48,7 +51,9 @@ pub(super) fn validate_ordinary(input: &HostCapture) -> Result<()> {
         (input.identity.check_version == ORDINARY_OBSERVATION_PROTOCOL
             && input.identity.evaluator_version == ORDINARY_RECORDER_VERSION)
             || (input.identity.check_version == CHAT_OBSERVATION_PROTOCOL
-                && input.identity.evaluator_version == CHAT_RECORDER_VERSION),
+                && input.identity.evaluator_version == CHAT_RECORDER_VERSION)
+            || (input.identity.check_version == CHAT_WEB_OBSERVATION_PROTOCOL
+                && input.identity.evaluator_version == CHAT_WEB_RECORDER_VERSION),
         "invalid ordinary observation protocol"
     );
     ensure!(
@@ -95,8 +100,10 @@ pub(super) fn validate_context(
     criterion: Option<&ConfirmedCriterion>,
     chat: Option<&ChatObservationContext>,
 ) -> Result<()> {
-    if identity.check_version == CHAT_OBSERVATION_PROTOCOL
-        && identity.evaluator_version == CHAT_RECORDER_VERSION
+    if (identity.check_version == CHAT_OBSERVATION_PROTOCOL
+        && identity.evaluator_version == CHAT_RECORDER_VERSION)
+        || (identity.check_version == CHAT_WEB_OBSERVATION_PROTOCOL
+            && identity.evaluator_version == CHAT_WEB_RECORDER_VERSION)
     {
         ensure!(
             criterion.is_none(),

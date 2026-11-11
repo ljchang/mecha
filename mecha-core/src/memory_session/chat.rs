@@ -17,6 +17,7 @@ mod capture;
 mod tracking;
 pub const CHAT_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v1";
 pub const CHAT_GRAPH_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v2";
+pub const CHAT_WEB_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v3";
 /// Error-report tag only. Never accepted as attachment or native marker authority.
 pub const CHAT_MEMORY_UNAVAILABLE_PROTOCOL: &str = "ordinary-chat-memory-unavailable";
 const MAX_TURNS: u64 = 256;
@@ -60,12 +61,38 @@ impl ChatMemoryReport {
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WebSessionKind {
+    Web,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WebOwnerSource {
+    AuthenticatedWeb,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebIngress {
+    session_kind: WebSessionKind,
+    owner_source: WebOwnerSource,
+}
+impl WebIngress {
+    fn authenticated() -> Self {
+        Self {
+            session_kind: WebSessionKind::Web,
+            owner_source: WebOwnerSource::AuthenticatedWeb,
+        }
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attachment {
     // This is the original V1 wire shape. V2 is dispatched explicitly below;
     // its required graph field is validated before normalizing this value.
     #[serde(skip)]
     graph_surface: Option<ChatGraphSurface>,
+    #[serde(skip)]
+    web_ingress: Option<WebIngress>,
     protocol: String,
     request: SessionMemoryRequest,
     authority: String,
@@ -83,6 +110,7 @@ impl Attachment {
         match self.protocol.as_str() {
             CHAT_MEMORY_PROTOCOL => CHAT_MEMORY_PROTOCOL,
             CHAT_GRAPH_MEMORY_PROTOCOL => CHAT_GRAPH_MEMORY_PROTOCOL,
+            CHAT_WEB_MEMORY_PROTOCOL => CHAT_WEB_MEMORY_PROTOCOL,
             _ => unreachable!("attachment protocol authenticated before normalization"),
         }
     }
@@ -92,16 +120,59 @@ impl Attachment {
             None => recording::surface(names),
         }
     }
+    fn owner_source(&self) -> OwnerSource {
+        if self.web_ingress.is_some() {
+            OwnerSource::AuthenticatedWeb
+        } else {
+            OwnerSource::CliChat
+        }
+    }
+    fn session_kind(&self) -> SessionKind {
+        if self.web_ingress.is_some() {
+            SessionKind::Web
+        } else {
+            SessionKind::Chat
+        }
+    }
+    fn observation_protocol(&self) -> (&'static str, &'static str) {
+        if self.web_ingress.is_some() {
+            (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION)
+        } else {
+            (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION)
+        }
+    }
     fn encoded(&self) -> Result<Vec<u8>> {
-        match &self.graph_surface {
-            None => Ok(serde_json::to_vec(self)?), // Preserve original V1 bytes.
-            Some(graph) => {
+        match self.protocol.as_str() {
+            CHAT_MEMORY_PROTOCOL => Ok(serde_json::to_vec(self)?), // Preserve original V1 bytes.
+            CHAT_GRAPH_MEMORY_PROTOCOL => {
                 let mut wire = serde_json::to_value(self)?;
-                wire.as_object_mut()
-                    .expect("attachment object")
-                    .insert("graph_surface".into(), serde_json::to_value(graph)?);
+                wire.as_object_mut().expect("attachment object").insert(
+                    "graph_surface".into(),
+                    serde_json::to_value(
+                        self.graph_surface
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("chat graph surface missing"))?,
+                    )?,
+                );
                 Ok(serde_json::to_vec(&wire)?)
             }
+            CHAT_WEB_MEMORY_PROTOCOL => {
+                ensure!(
+                    self.graph_surface.is_none(),
+                    "web graph authority unsupported"
+                );
+                let mut wire = serde_json::to_value(self)?;
+                wire.as_object_mut().expect("attachment object").insert(
+                    "ingress".into(),
+                    serde_json::to_value(
+                        self.web_ingress
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("web ingress missing"))?,
+                    )?,
+                );
+                Ok(serde_json::to_vec(&wire)?)
+            }
+            _ => anyhow::bail!("unknown chat attachment protocol"),
         }
     }
 }
@@ -215,15 +286,20 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
     // Parse and hash the same read, including duplicate-key rejection. Do not
     // reserialize historical V1 bytes to derive their authority identity.
     let mut wire: crate::memory::plan_extraction::UniqueValue = serde_json::from_slice(&bytes)?;
+    let mut web_ingress = None;
     let graph = match wire.0.get("protocol").and_then(|v| v.as_str()) {
         Some(CHAT_MEMORY_PROTOCOL) => {
             ensure!(
-                wire.0.get("graph_surface").is_none(),
-                "V1 attachment cannot contain graph authority"
+                wire.0.get("graph_surface").is_none() && wire.0.get("ingress").is_none(),
+                "V1 attachment cannot contain graph or web authority"
             );
             None
         }
         Some(CHAT_GRAPH_MEMORY_PROTOCOL) => {
+            ensure!(
+                wire.0.get("ingress").is_none(),
+                "V2 attachment cannot contain web authority"
+            );
             let graph = wire
                 .0
                 .as_object_mut()
@@ -232,6 +308,20 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
                 .ok_or_else(|| anyhow::anyhow!("chat graph surface missing"))?;
             Some(serde_json::from_value::<ChatGraphSurface>(graph)?)
         }
+        Some(CHAT_WEB_MEMORY_PROTOCOL) => {
+            ensure!(
+                wire.0.get("graph_surface").is_none(),
+                "web graph authority unsupported"
+            );
+            let ingress = wire
+                .0
+                .as_object_mut()
+                .expect("protocol-bearing object")
+                .remove("ingress")
+                .ok_or_else(|| anyhow::anyhow!("web ingress missing"))?;
+            web_ingress = Some(serde_json::from_value::<WebIngress>(ingress)?);
+            None
+        }
         _ => anyhow::bail!("unknown chat attachment protocol"),
     };
     let mut value: Attachment = serde_json::from_value(wire.0)?;
@@ -239,6 +329,7 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
         graph.validate(&value.workspace)?;
     }
     value.graph_surface = graph;
+    value.web_ingress = web_ingress;
     ensure!(
         value.session_id == session && value.authority == a.identity && value.request == a.request,
         "chat attachment authority changed"
@@ -277,7 +368,9 @@ fn frozen_metadata(a: &Authority, id: &str) -> Result<(Turn, Attachment)> {
     );
     let (attachment, digest) = attachment(a, &f.session_id)?;
     ensure!(
-        f.attachment == digest && (1..=MAX_TURNS).contains(&f.ordinal),
+        f.attachment == digest
+            && (1..=MAX_TURNS).contains(&f.ordinal)
+            && f.owner.source() == attachment.owner_source(),
         "chat turn attachment changed"
     );
     let op = ordinal_path(a, &f.session_id, f.ordinal);
@@ -288,10 +381,42 @@ fn frozen_metadata(a: &Authority, id: &str) -> Result<(Turn, Attachment)> {
     );
     Ok((f, attachment))
 }
+// Validate the immutable native header without requiring its historical workspace
+// to exist. The initial digest binds the original workspace spelling as admitted.
+fn validate_source_ingress(a: &Attachment, bytes: &[u8], attachment_digest: &str) -> Result<()> {
+    let initial = usize::try_from(a.initial_length)?;
+    ensure!(
+        initial <= bytes.len() && authority::digest(&bytes[..initial]) == a.initial_digest,
+        "chat initial source changed"
+    );
+    let header = recording::records(&bytes[..initial])?;
+    ensure!(
+        header.len() == 1
+            && matches!(&header[0], Record::Meta(m)
+        if m.id == a.session_id && m.kind == Some(a.session_kind())),
+        "chat native ingress changed"
+    );
+    let marker_end = bytes[initial..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .ok_or_else(|| anyhow::anyhow!("chat marker unavailable"))?
+        + initial
+        + 1;
+    let marker = recording::records(&bytes[initial..marker_end])?;
+    ensure!(
+        matches!(marker.as_slice(), [Record::ChatMemory { marker }]
+        if marker.protocol == a.protocol && marker.conversation_id == a.session_id
+        && marker.authority == a.authority && marker.attachment == attachment_digest),
+        "chat attachment marker missing or changed"
+    );
+    Ok(())
+}
 fn frozen(a: &Authority, id: &str) -> Result<(Turn, Attachment)> {
     let (f, attachment) = frozen_metadata(a, id)?;
+    let prefix = source_prefix(&attachment, f.start_length)?;
+    validate_source_ingress(&attachment, &prefix, &f.attachment)?;
     ensure!(
-        authority::digest(&source_prefix(&attachment, f.start_length)?) == f.start_digest,
+        authority::digest(&prefix) == f.start_digest,
         "chat starting prefix changed"
     );
     Ok((f, attachment))
@@ -318,6 +443,7 @@ fn seal(a: &Authority, id: &str) -> Result<(ChatSeal, String, Turn)> {
             && a.attempts(id)? == s.attempts,
         "chat sealed source changed"
     );
+    let (observation, recorder) = attachment.observation_protocol();
     let c = s
         .payload
         .chat_context
@@ -326,8 +452,8 @@ fn seal(a: &Authority, id: &str) -> Result<(ChatSeal, String, Turn)> {
     ensure!(
         s.payload.identity.check_id == id
             && s.payload.identity.session_id == f.session_id
-            && s.payload.identity.check_version == CHAT_OBSERVATION_PROTOCOL
-            && s.payload.identity.evaluator_version == CHAT_RECORDER_VERSION
+            && s.payload.identity.check_version == observation
+            && s.payload.identity.evaluator_version == recorder
             && s.payload.binding.authority == a.identity
             && s.payload.binding.locator == id
             && s.payload.scopes == a.request.scopes
@@ -378,6 +504,15 @@ impl SessionMemory {
     pub fn attach_chat(self, session: &Session, mode: ChatAttachMode) -> Result<ChatMemory> {
         self.attach_chat_protocol(session, mode, None, CHAT_MEMORY_PROTOCOL)
     }
+    /// Host-only door: the caller must authenticate the browser's owner intent.
+    /// A recorded AuthenticatedWeb label is not HTTP authentication.
+    pub fn attach_authenticated_web_chat(
+        self,
+        session: &Session,
+        mode: ChatAttachMode,
+    ) -> Result<ChatMemory> {
+        self.attach_chat_protocol(session, mode, None, CHAT_WEB_MEMORY_PROTOCOL)
+    }
     fn attach_chat_protocol(
         self,
         session: &Session,
@@ -386,6 +521,16 @@ impl SessionMemory {
         protocol: &str,
     ) -> Result<ChatMemory> {
         let workspace = self.execution_workspace()?.to_path_buf();
+        let web = protocol == CHAT_WEB_MEMORY_PROTOCOL;
+        let kind = if web {
+            SessionKind::Web
+        } else {
+            SessionKind::Chat
+        };
+        ensure!(
+            session.meta.kind == Some(kind),
+            "chat native ingress does not match selected profile"
+        );
         self.authority.validate()?;
         authority::exclude_path(&session.path, &workspace)?;
         let lease = Lease::acquire(&self.authority, &session.meta.id)?;
@@ -409,13 +554,14 @@ impl SessionMemory {
             let rs = recording::records(&bytes)?;
             ensure!(
                 rs.len() == 1
-                    && matches!(&rs[0],Record::Meta(m) if m.id==session.meta.id && m.kind==Some(SessionKind::Chat) && m.workspace.canonicalize().is_ok_and(|w|w==workspace)),
+                    && matches!(&rs[0],Record::Meta(m) if m.id==session.meta.id && m.kind==Some(kind) && m.workspace.canonicalize().is_ok_and(|w|w==workspace)),
                 "chat attachment requires fresh recorded chat"
             );
             let meta = open_nofollow(&session.path, false)?.metadata()?;
             ensure!(meta.nlink() == 1, "chat source aliased");
             let a = Attachment {
                 graph_surface: graph,
+                web_ingress: web.then(WebIngress::authenticated),
                 protocol: protocol.into(),
                 request: self.request.clone(),
                 authority: self.authority.identity.clone(),
@@ -666,6 +812,7 @@ impl ChatMemory {
                 && authority::digest(&bytes[..a.initial_length as usize]) == a.initial_digest,
             "chat source changed"
         );
+        validate_source_ingress(&a, &bytes, &d)?;
         let records = recording::records(&bytes)?;
         let transcript = Session::parse(&a.source, std::str::from_utf8(&bytes)?)?;
         ensure!(
@@ -728,15 +875,61 @@ impl ChatMemory {
         }
         Ok((bytes, last))
     }
+    pub fn next_turn_ordinal(&self) -> Result<u64> {
+        let (_, last) = self.continuation()?;
+        self.ordinal_after(last.as_ref())
+    }
+    fn ordinal_after(&self, last: Option<&RetainedTurnCheckpoint>) -> Result<u64> {
+        let ordinal = match last {
+            Some((id, _, _)) => frozen(&self.memory.authority, id)?.0.ordinal + 1,
+            None => 1,
+        };
+        ensure!(
+            ordinal <= MAX_TURNS,
+            "chat turn limit reached; start a fresh chat"
+        );
+        Ok(ordinal)
+    }
+    /// Authenticated web hosts reserve this ordinal before preparing any provider.
+    pub fn begin_authenticated_web_turn(
+        &mut self,
+        session: &Session,
+        owner: &OwnerInput,
+        expected_ordinal: u64,
+    ) -> Result<ChatMemoryTurn> {
+        ensure!(
+            self.attachment.protocol == CHAT_WEB_MEMORY_PROTOCOL,
+            "web turn requires web attachment"
+        );
+        self.begin_turn_for(session, owner, Some(expected_ordinal))
+    }
     pub fn begin_turn(&mut self, session: &Session, owner: &OwnerInput) -> Result<ChatMemoryTurn> {
+        ensure!(
+            self.attachment.web_ingress.is_none(),
+            "CLI turn requires CLI attachment"
+        );
+        self.begin_turn_for(session, owner, None)
+    }
+    fn begin_turn_for(
+        &mut self,
+        session: &Session,
+        owner: &OwnerInput,
+        expected_ordinal: Option<u64>,
+    ) -> Result<ChatMemoryTurn> {
         ensure!(
             session.path == self.attachment.source
                 && session.meta.id == self.attachment.session_id
-                && owner.source() == OwnerSource::CliChat
+                && session.meta.kind == Some(self.attachment.session_kind())
+                && owner.source() == self.attachment.owner_source()
                 && owner.text().len() <= 2048,
             "chat owner input unavailable (maximum 2048 bytes)"
         );
         let (bytes, last) = self.continuation()?;
+        let ordinal = self.ordinal_after(last.as_ref())?;
+        ensure!(
+            expected_ordinal.is_none_or(|expected| expected == ordinal),
+            "chat turn ordinal changed"
+        );
         let transcript = Session::parse(&session.path, std::str::from_utf8(&bytes)?)?;
         ensure!(
             !transcript.configs.is_empty(),
@@ -744,22 +937,17 @@ impl ChatMemory {
         );
         if let Some(version) = transcript.convo.goal_context.current() {
             ensure!(
-                version.owner_inputs().len() < 64,
+                version.owner_inputs().len() < 64
+                    && version
+                        .owner_inputs()
+                        .iter()
+                        .all(|input| input.source() == self.attachment.owner_source()),
                 "chat context owner limit reached; start a fresh chat"
             );
         }
         ensure!(
             bytes.len() + owner.text().len() + 4096 < authority::SOURCE_MAX,
             "chat transcript approaches 4 MiB; start a fresh chat"
-        );
-        let ordinal = last.as_ref().map_or(1, |(id, _, _)| {
-            frozen(&self.memory.authority, id)
-                .map(|(f, _)| f.ordinal + 1)
-                .unwrap_or(MAX_TURNS + 1)
-        });
-        ensure!(
-            ordinal <= MAX_TURNS,
-            "chat turn limit reached; start a fresh chat"
         );
         let f = Turn {
             attachment: self.digest.clone(),
