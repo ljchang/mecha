@@ -114,6 +114,41 @@ pub struct OriginalPassage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<bool>,
 }
+/// What a conversation has taken in so far, as a recorder walks its
+/// transcript: the one place that decides [`OriginalPassage::external`], so
+/// every recorder stamps a passage by the same rule.
+///
+/// A model's own words carry no provenance of their own. Once anything from
+/// outside the harness, or of unknown origin, has entered the conversation,
+/// what the model writes next may restate it — a paraphrase of an injection
+/// is the injection rearranged — so it is recorded as outside too.
+#[derive(Clone, Copy, Debug)]
+pub struct Intake {
+    outside: bool,
+}
+impl Intake {
+    /// A conversation that begins here. Pass what the earlier turns already
+    /// took in when the transcript is a continuation.
+    pub fn starting(outside: bool) -> Self {
+        Self { outside }
+    }
+    /// The owner's own words.
+    pub fn owner(&self) -> Option<bool> {
+        Some(false)
+    }
+    /// Anything the model wrote, or the harness read back from what the
+    /// model wrote: text, a tool call's input, an artifact it produced.
+    pub fn authored(&self) -> Option<bool> {
+        Some(self.outside)
+    }
+    /// A tool result, with what the loop recorded beside it
+    /// (`Message::tool_provenance`). An unrecorded result is unknown, and
+    /// taints what follows exactly as an outside one does.
+    pub fn result(&mut self, recorded: Option<bool>) -> Option<bool> {
+        self.outside |= recorded != Some(false);
+        recorded
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiptStatus {
     Succeeded,
@@ -390,6 +425,181 @@ pub(super) fn native_reader(
         consulted: input.consulted,
         occurred_at: input.occurred_at,
     }))
+}
+
+/// Where a recalled passage came from: the capture that admitted it, what
+/// kind of passage it was there, where it sits in the session's transcript,
+/// and whether its bytes came from outside the harness.
+///
+/// Read back from the capture's own descriptor at recall, never from the
+/// passage: the evidence row holds bytes and nothing about their origin.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub capture: RevisionRef,
+    pub kind: PassageKind,
+    pub line: u64,
+    pub pointer: String,
+    /// [`OriginalPassage::external`]. `None` is unknown, and unknown is
+    /// read as outside by [`Origin::untrusted`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<bool>,
+}
+impl Origin {
+    /// The one rule every recall path shares: a record is trusted only when
+    /// a live capture says its bytes did not come from outside. No origin,
+    /// an origin that does not say, and an origin that says outside all
+    /// read as untrusted.
+    pub fn untrusted(origin: Option<&Origin>) -> bool {
+        origin.and_then(|o| o.external) != Some(false)
+    }
+}
+/// The origin of one evidence revision, or `None` where no live capture
+/// names it — an imported transcript line, a capture since forgotten, a
+/// projection that no longer reconstructs, or two captures that disagree.
+/// Every one of those is "unknown", which the caller treats as untrusted.
+pub(super) fn origin(conn: &Connection, reference: &RevisionRef) -> Result<Option<Origin>> {
+    // A store from before captures existed has no receipts, so nothing in
+    // it has a recorded origin.
+    let captures: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='host_capture_receipt')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !captures {
+        return Ok(None);
+    }
+    let mut statement = conn.prepare(
+        "SELECT h.projection_object,h.projection_revision,h.originals FROM host_capture_receipt h
+         WHERE h.state='active' AND EXISTS(SELECT 1 FROM json_each(h.originals) j
+           WHERE json_extract(j.value,'$.revision')=?1 AND json_extract(j.value,'$.object')=?2)",
+    )?;
+    let rows = statement
+        .query_map(params![reference.revision, reference.object], |r| {
+            Ok((
+                RevisionRef {
+                    object: r.get(0)?,
+                    revision: r.get(1)?,
+                },
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut found: Option<Origin> = None;
+    for (capture, originals) in rows {
+        let Some(Record::Evidence(projection)) = lookup(conn, &capture)? else {
+            return Ok(None);
+        };
+        // The same reconstruction every other reader uses, so a descriptor
+        // is believed only where the capture still checks against its receipt.
+        let Ok(input) = projection_input(conn, &projection) else {
+            return Ok(None);
+        };
+        let Ok(originals) = serde_json::from_str::<Vec<RevisionRef>>(&originals) else {
+            return Ok(None);
+        };
+        if originals.len() != input.originals.len() {
+            return Ok(None);
+        }
+        for (original, passage) in originals.iter().zip(input.originals) {
+            if original != reference {
+                continue;
+            }
+            let next = Origin {
+                capture: capture.clone(),
+                kind: passage.kind,
+                line: passage.line,
+                pointer: passage.pointer,
+                external: passage.external,
+            };
+            if found
+                .as_ref()
+                .is_some_and(|old| old.external != next.external)
+            {
+                return Ok(None);
+            }
+            found.get_or_insert(next);
+        }
+    }
+    Ok(found)
+}
+/// Whether a capture's own record — its criterion, receipts and descriptors,
+/// which hold no passage bytes but do hold names a model chose — may be read
+/// as trusted: only when every passage it admitted was recorded as not from
+/// outside, so nothing the model wrote there followed third-party content.
+fn capture_untrusted(conn: &Connection, reference: &RevisionRef, projection: &Capture) -> bool {
+    // The reader is what a packet delivers for a live capture, so the label
+    // is decided over exactly the descriptors the reader will show. A
+    // capture with no reader — an older projection, a forgotten one, one
+    // that no longer reconstructs — is unknown.
+    match native_reader(conn, reference, projection) {
+        Ok(Some(reader)) => reader.originals.iter().any(|d| d.external != Some(false)),
+        _ => true,
+    }
+}
+fn is_projection(capture: &Capture) -> bool {
+    matches!(
+        capture.source.connector.as_str(),
+        "host-capture-projection-v1" | "host-capture-projection-v2"
+    )
+}
+impl Hit {
+    /// A candidate, before it is known to be delivered: private, and
+    /// untrusted until [`Hit::label`] says otherwise. Recall builds one for
+    /// every stored passage it may rank, so this must not read an origin —
+    /// an unlabelled hit that escapes is merely over-tainted.
+    pub(super) fn unlabelled(
+        conn: &Connection,
+        reference: RevisionRef,
+        sequence: i64,
+        record: Record,
+        possible_time: bool,
+    ) -> Result<Hit> {
+        Ok(Hit {
+            required_scopes: required_scopes(conn, &reference.revision)?,
+            reference,
+            sequence,
+            record,
+            possible_time,
+            private_data: true,
+            untrusted_input: true,
+            external: None,
+            origin: None,
+        })
+    }
+    /// Derive the labels of a record that is being delivered. Everything in
+    /// the store is private. Only a passage whose capture recorded it as
+    /// not from outside is trusted; a derived record — a relation, a
+    /// concept, an interpretation — is something a model wrote about
+    /// evidence, and stays untrusted.
+    pub(super) fn label(&mut self, conn: &Connection) -> Result<()> {
+        let (origin, untrusted_input) = match &self.record {
+            Record::Evidence(capture) if is_projection(capture) => {
+                (None, capture_untrusted(conn, &self.reference, capture))
+            }
+            Record::Evidence(_) => {
+                let origin = origin(conn, &self.reference)?;
+                let untrusted = Origin::untrusted(origin.as_ref());
+                (origin, untrusted)
+            }
+            _ => (None, true),
+        };
+        self.untrusted_input = untrusted_input;
+        self.external = origin.as_ref().and_then(|o| o.external);
+        self.origin = origin;
+        Ok(())
+    }
+    /// A delivered record with its labels derived, not asserted.
+    pub(super) fn read(
+        conn: &Connection,
+        reference: RevisionRef,
+        sequence: i64,
+        record: Record,
+        possible_time: bool,
+    ) -> Result<Hit> {
+        let mut hit = Self::unlabelled(conn, reference, sequence, record, possible_time)?;
+        hit.label(conn)?;
+        Ok(hit)
+    }
 }
 
 // Historical Record/RevisionRef decoders intentionally allow future fields.

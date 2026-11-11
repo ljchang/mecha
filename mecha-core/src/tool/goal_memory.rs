@@ -363,7 +363,11 @@ impl Tool for GoalMemory {
             return Ok(base);
         }
         let mut answer: Value = serde_json::from_str(&base.content)?;
-        let external = !packet.records.is_empty();
+        // The result is from outside when any record in it is: a passage a
+        // capture recorded as third-party, one whose origin nobody recorded,
+        // or anything a model derived. A packet of the owner's own words and
+        // local results arms private data and nothing else.
+        let external = packet.records.iter().any(|hit| hit.untrusted_input);
         answer["memory"] = serde_json::to_value(packet)?;
         let output = ToolOutput::ok(answer.to_string());
         Ok(if external {

@@ -904,19 +904,14 @@ impl Memory {
                             role: InterpretationRole::HistoricalDependency,
                         });
                 }
-                candidate.records.push(Hit {
-                    sequence: tx.query_row(
-                        "SELECT seq FROM revision WHERE id=?1",
-                        [&r.revision],
-                        |row| row.get(0),
-                    )?,
-                    required_scopes: required_scopes(&tx, &r.revision)?,
-                    reference: r,
-                    record,
-                    possible_time: false,
-                    private_data: true,
-                    untrusted_input: true,
-                });
+                let sequence = tx.query_row(
+                    "SELECT seq FROM revision WHERE id=?1",
+                    [&r.revision],
+                    |row| row.get(0),
+                )?;
+                candidate
+                    .records
+                    .push(Hit::read(&tx, r, sequence, record, false)?);
             }
             let role = candidate
                 .interpretation_roles

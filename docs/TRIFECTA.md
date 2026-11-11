@@ -165,6 +165,17 @@ Tool results that really came from outside are wrapped in
 data. The declared capability is what arms the leg; the wrapper is advisory
 armor on top, never the enforcement.
 
+**Recalled memory is a second way third-party text arrives, later.** A page
+read in March can come back in a June session that fetched nothing. The
+experimental memory store therefore records, per passage, whether its bytes
+came from outside, and recall arms this leg from that record: outside,
+unrecorded, or model-derived content arms it; the owner's own words and
+local tool results do not. What a model wrote after outside content entered
+its conversation is stored as outside. The cost of the narrower rule is that
+it rests on the record being right — a passage wrongly stored as local would
+come back unarmed — which is why unknown always reads as outside
+(`ARCHITECTURE.md` §Experimental memory prototype).
+
 ## Channel 4 — a subagent laundering the legs apart
 
 A child reads the mail and hands the parent "a summary" — is the summary

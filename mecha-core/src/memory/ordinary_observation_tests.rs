@@ -318,6 +318,78 @@ fn where_a_result_came_from_survives_admission_and_the_canonical_reader() {
     assert!(wire.contains(r#""external":true"#) && wire.contains(r#""external":false"#));
 }
 
+/// Recall labels each passage from what its capture recorded, and nothing
+/// else: local is trusted, outside and unknown are not, and the capture's
+/// own record is trusted only when every passage in it was.
+#[test]
+fn recall_derives_trust_from_the_recorded_origin_and_reads_unknown_as_outside() {
+    let mut f = Fixture::new(Memory::create_supported_situated);
+    let mut mixed = with_invocation(
+        capture("mixed", "a", "Read the fixture record"),
+        ReceiptStatus::Succeeded,
+    );
+    let mut clean = with_invocation(
+        capture("clean", "b", "Read the other fixture record"),
+        ReceiptStatus::Succeeded,
+    );
+    for p in mixed.originals.iter_mut().chain(clean.originals.iter_mut()) {
+        p.external = Some(false);
+    }
+    for (pointer, text, external) in [
+        ("/content/2/content", "quince fetched abroad", Some(true)),
+        ("/content/3/content", "quince read at home", Some(false)),
+        ("/content/4/content", "quince of no record", None),
+    ] {
+        let mut result = passage("mixed", PassageKind::ToolResult, "test-host", pointer, text);
+        result.external = external;
+        mixed.originals.push(result);
+    }
+    let mixed = admit(&mut f, mixed);
+    let clean = admit(&mut f, clean);
+    let read = |f: &Fixture, reference: &RevisionRef| {
+        let record = f.db.read(reference, &f.access).unwrap().unwrap();
+        Hit::read(&f.db.conn, reference.clone(), 0, record, false).unwrap()
+    };
+    let mut seen = Vec::new();
+    for reference in &mixed.originals {
+        let hit = read(&f, reference);
+        let Record::Evidence(e) = &hit.record else {
+            panic!("an original is evidence")
+        };
+        assert!(hit.private_data);
+        if let Some(origin) = &hit.origin {
+            assert_eq!(origin.capture, mixed.projection);
+            assert_eq!(hit.untrusted_input, origin.external != Some(false));
+        }
+        if e.text.starts_with("quince") {
+            let origin = hit
+                .origin
+                .as_ref()
+                .expect("a captured passage has an origin");
+            assert_eq!(origin.kind, PassageKind::ToolResult);
+            seen.push((e.text.clone(), origin.external, hit.untrusted_input));
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            ("quince fetched abroad".to_string(), Some(true), true),
+            ("quince read at home".to_string(), Some(false), false),
+            ("quince of no record".to_string(), None, true),
+        ]
+    );
+    // One outside passage makes the capture's own record untrusted; a
+    // capture whose every passage was local is trusted with all of them.
+    assert!(read(&f, &mixed.projection).untrusted_input);
+    assert!(!read(&f, &clean.projection).untrusted_input);
+    assert!(clean.originals.iter().all(|r| !read(&f, r).untrusted_input));
+    // And the origin travels with the record a reader is handed.
+    let wire = serde_json::to_value(read(&f, &clean.originals[0])).unwrap();
+    assert_eq!(wire["untrusted_input"], false);
+    assert_eq!(wire["external"], false);
+    assert!(wire.get("origin").is_none());
+}
+
 #[test]
 fn no_tool_run_is_an_observation_in_v8_only() {
     let mut older = Fixture::new(Memory::create_situated);

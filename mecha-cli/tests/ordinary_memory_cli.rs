@@ -449,8 +449,13 @@ fn last_tool(body: &Value, id: &str) -> String {
 }
 
 fn prior_tool_result(delivered: &str) -> Option<Value> {
-    let (_, payload) = delivered.split_once("\n---\n")?;
-    let body: Value = serde_json::from_str(payload.strip_suffix("\n</untrusted-content>")?).ok()?;
+    // A recall whose every record is local is delivered bare; one holding
+    // anything from outside, or of unknown origin, arrives wrapped.
+    let payload = match delivered.split_once("\n---\n") {
+        Some((_, wrapped)) => wrapped.strip_suffix("\n</untrusted-content>")?,
+        None => delivered,
+    };
+    let body: Value = serde_json::from_str(payload).ok()?;
     body["memory"]["records"]
         .as_array()?
         .iter()
@@ -582,9 +587,18 @@ async fn separate_ordinary_processes_recall_prior_attributed_tool_result() {
     );
     assert!(!f.root.join("work-b/observed.txt").exists());
     let (_, transcript) = f.transcript(&b);
+    // Everything the first run kept was the owner's prompt, the model's own
+    // words and local file results, and the store recorded each as such. So
+    // recalling it brings private data into the second run and nothing from
+    // outside: the interlock is not armed by memory alone.
     assert_eq!(record(&transcript, "taint")["private"], true);
-    assert_eq!(record(&transcript, "taint")["untrusted"], true);
+    assert_eq!(record(&transcript, "taint")["untrusted"], false);
     assert_eq!(record(&transcript, "outcome")["stop_cause"], "completed");
+    assert!(payload["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["external"] == false));
 
     let wire = f.wire.requests();
     assert_eq!(wire.len(), 6);
@@ -594,10 +608,16 @@ async fn separate_ordinary_processes_recall_prior_attributed_tool_result() {
     );
     assert!(!wire[3]["body"].to_string().contains(OBSERVATION));
     let delivered = last_tool(&wire[4]["body"], "recall");
-    assert!(delivered.starts_with("<untrusted-content source=\"goal_context\">"));
+    assert!(!delivered.contains("<untrusted-content"));
     assert!(delivered.contains(OBSERVATION));
     assert!(delivered.contains(a["session"].as_str().unwrap()));
     let reading = prior_tool_result(&delivered).expect("no attributed tool result on the wire");
+    let delivered: Value = serde_json::from_str(&delivered).unwrap();
+    assert!(delivered["memory"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|hit| hit["untrusted_input"] == false && hit["private_data"] == true));
     assert!(reading["source"]["id"]
         .as_str()
         .unwrap()

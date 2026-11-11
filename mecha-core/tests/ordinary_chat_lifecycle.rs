@@ -397,7 +397,9 @@ async fn per_turn_recall_uses_current_owner_context_and_retains_exact_delivery()
     let input = serde_json::json!({"memory":{"query":"coral"}});
     let output = tool.call(input.clone(), &context).await.unwrap();
     assert!(!output.is_error, "{}", output.content);
-    assert!(output.external, "{}", output.content);
+    // The first turn kept the owner's words and a reply written before
+    // anything from outside arrived, so the recall is private and local.
+    assert!(!output.external, "{}", output.content);
     let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
     assert!(packet["confirmed_goal"].is_null());
     assert_eq!(packet["goal_context_revision"], 2);
@@ -447,7 +449,7 @@ async fn per_turn_recall_uses_current_owner_context_and_retains_exact_delivery()
     .unwrap();
     s.append(&Record::Taint(Taint {
         private: true,
-        untrusted: true,
+        untrusted: false,
     }))
     .unwrap();
     let second = chat.finish_turn(&turn);
@@ -1919,7 +1921,9 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
         let input = serde_json::json!({"memory":{"query":"coral"}});
         let output = tool.call(input.clone(), &context).await.unwrap();
         assert!(!output.is_error, "{}", output.content);
-        assert!(output.external, "{}", output.content);
+        // A recall of the owner's words and a clean reply is local, so the
+        // tracked attempt is local and the native record must say the same.
+        assert!(!output.external, "{}", output.content);
         let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
         assert!(packet["confirmed_goal"].is_null());
         assert_eq!(packet["goal_context_revision"], 2);
@@ -1970,11 +1974,11 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
         .unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: true,
+            untrusted: provenance,
         }))
         .unwrap();
         let second = chat.finish_turn(&turn);
-        if !provenance {
+        if provenance {
             assert_eq!(second.status, SessionMemoryStatus::Unavailable);
             continue;
         }

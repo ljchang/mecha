@@ -639,7 +639,8 @@ async fn ordinary_learning_inventory_allows_evidence_only_recalled_closure() {
         )
         .await
         .unwrap();
-    assert!(output.external && !output.is_error);
+    // Both observations were recorded as local, so the recall is too.
+    assert!(!output.external && !output.is_error);
     let original = memory
         .learning_sources(std::slice::from_ref(&a))
         .unwrap()

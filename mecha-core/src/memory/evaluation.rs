@@ -134,6 +134,8 @@ pub fn run(path: &Path) -> Result<EvaluationReport> {
                 required_scopes: access.scopes.clone(),
                 private_data: true,
                 untrusted_input: true,
+                external: None,
+                origin: None,
             });
         }
         let complete = matched == case.expected_lines.len();

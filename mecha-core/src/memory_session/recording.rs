@@ -136,6 +136,9 @@ pub(super) fn capture(
     let mut owner = 0;
     let mut messages = 0;
     let mut taint = false;
+    // A one-shot run is a whole conversation, so it starts having taken
+    // in nothing.
+    let mut intake = Intake::starting(false);
     let mut ended = false;
     let mut final_assistant = false;
     let mut configured_tools = BTreeSet::new();
@@ -243,7 +246,7 @@ pub(super) fn capture(
                 // came from outside. Read before the blocks are consumed.
                 let provenance = std::mem::take(&mut m.tool_provenance);
                 for (index, b) in m.content.into_iter().enumerate() {
-                    let mut external = None;
+                    let external: Option<bool>;
                     let (kind, field, text) = match b {
                         // The full native transcript stays bound by the seal.
                         // Reasoning and its opaque signature are audit data.
@@ -254,6 +257,7 @@ pub(super) fn capture(
                                 // its bytes happen to equal a harness notice.
                                 if owner == 0 && messages == 1 && index == 0 && text == f.prompt {
                                     owner += 1;
+                                    external = intake.owner();
                                     (PassageKind::UserRequest, "text", text)
                                 } else {
                                     ensure!(
@@ -266,6 +270,7 @@ pub(super) fn capture(
                                     continue;
                                 }
                             } else {
+                                external = intake.authored();
                                 (PassageKind::AssistantText, "text", text)
                             }
                         }
@@ -284,6 +289,7 @@ pub(super) fn capture(
                                     ),
                                 "ordinary invocation unsupported"
                             );
+                            external = intake.authored();
                             let action = action_invocation(&call_id, &name, &input)?;
                             // Recall reconciliation needs the complete native input, even
                             // when the reader-facing invocation omits its contents.
@@ -299,7 +305,7 @@ pub(super) fn capture(
                             content,
                             is_error,
                         } => {
-                            external = provenance.get(&tool_use_id).copied();
+                            external = intake.result(provenance.get(&tool_use_id).copied());
                             ensure!(
                                 m.role == Role::User && !saw_note,
                                 "ordinary result unsupported"
