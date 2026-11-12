@@ -2209,10 +2209,20 @@ impl Tool for VideoGenerate {
                 Err(Failure::Cancelled) => {
                     ToolOutput::err(format!("not made: stopped{}", said_notes(&notes)))
                 }
-                Err(Failure::Other(e)) => ToolOutput::err(format!(
-                    "not made: {e:#}.{}",
-                    said_notes_after_failure(&notes)
-                )),
+                Err(Failure::Other(e)) => {
+                    // A reason that ends its own sentence gets no second
+                    // full stop.
+                    let why = format!("{e:#}");
+                    let stop = if why.trim_end().ends_with(['.', '!', '?']) {
+                        ""
+                    } else {
+                        "."
+                    };
+                    ToolOutput::err(format!(
+                        "not made: {why}{stop}{}",
+                        said_notes_after_failure(&notes)
+                    ))
+                }
             }
         };
         let job = crate::jobs::DeferredJob::new(job, cancel, BUSY)

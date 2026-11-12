@@ -1223,6 +1223,22 @@ here:
   client never starts a server: the private server started its unit when
   it found it down, and a model call has no business starting services on
   the owner's machine.
+- **A stopped video server is said in the turn that asked; a picture's is
+  still said by its job.** `video_generate` asks before it hands the clip
+  over (`comfy::Client::refuses`, `videogen::tool::ASKED_WAIT`): a server
+  this process has never had an answer from, with every connect refused for
+  twelve seconds, is an error in that turn, with no job and nothing
+  promised. That is shorter than §Image generation's 45 s for an unseen
+  server, on purpose: twelve covers the usual restart (4-10 s), and the
+  refusal says the server may be restarting. Everything else is the job's
+  to wait for, as there: a server that accepts and is slow, and one already
+  seen (it is restarting, 90 s). So in a `serve` that has drawn a clip, a
+  server stopped afterwards is again "being made" with the failure later.
+  The call used to promise first; with the unit down after a reboot every
+  clip answered "being made" and failed turns later (2026-11-11).
+  `image_generate` keeps the promise-first shape on the same transport: its
+  server is restarted on purpose when idle, so an unseen refused connect
+  there is usually a restart, and nothing has measured the other way.
 - **`[video]` is `[image]`'s hazard, with the owner's pictures and voices
   added.** It is stripped from project layers, sits in
   `trial_env::OPERATOR_ONLY_TABLES`, and its `url` is refused off this
