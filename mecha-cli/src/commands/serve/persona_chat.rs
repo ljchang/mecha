@@ -55,19 +55,30 @@ fn new_key() -> String {
     )
 }
 
-/// What she has said since the owner last spoke: the assistant messages at
-/// the history's tail, oldest first. Read before this turn's owner message
-/// is pushed, so it is her last reply, which `today::Ledger` reads for the
-/// lines she told.
+/// What she has said since the owner last spoke, oldest first: every
+/// assistant text back to the owner's own message. A message holding only
+/// tool results is the harness answering her call, not the owner speaking,
+/// so text she said before a call counts too (review of #867, pass 2).
+/// Read before this turn's owner message is pushed, so it is her last
+/// reply, which `today::Ledger` reads for the lines she told.
 fn replied_since_the_owner(messages: &[Message]) -> String {
-    let mut tail: Vec<String> = messages
+    use mecha_core::message::{Block, Role};
+    let only_results = |m: &Message| {
+        !m.content.is_empty()
+            && m.content
+                .iter()
+                .all(|b| matches!(b, Block::ToolResult { .. }))
+    };
+    let mut said: Vec<String> = messages
         .iter()
         .rev()
-        .take_while(|m| m.role == mecha_core::message::Role::Assistant)
+        .take_while(|m| m.role == Role::Assistant || only_results(m))
+        .filter(|m| m.role == Role::Assistant)
         .map(|m| m.text())
+        .filter(|t| !t.trim().is_empty())
         .collect();
-    tail.reverse();
-    tail.join("\n")
+    said.reverse();
+    said.join("\n")
 }
 
 /// The teller half of a today-block, drawn only when `[life] events` is on.
@@ -10131,6 +10142,23 @@ mod tests {
         assert_eq!(
             replied_since_the_owner(&history),
             "It rained all morning.\nThen it cleared."
+        );
+        // Text before a call, the call's result, then her reply: both hers.
+        let mut called = Message::assistant(vec![Block::text("Let me draw that. Still raining.")]);
+        called.content.push(Block::ToolUse {
+            id: "c1".into(),
+            name: "image_generate".into(),
+            input: serde_json::json!({}),
+        });
+        let result = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "c1".into(),
+            content: "image: a.png".into(),
+            is_error: false,
+        }]);
+        let history = [Message::user("draw it"), called, result, said("There.")];
+        assert_eq!(
+            replied_since_the_owner(&history),
+            "Let me draw that. Still raining.\nThere."
         );
     }
 

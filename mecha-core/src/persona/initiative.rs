@@ -66,16 +66,18 @@
 //! and a chat keeps the version it began with, so the record is the only
 //! honest source.
 //!
-//! **The teller's arm is the stretch's, not the turn's.** Since the chat's
+//! **The teller's arm is the chat's, not the turn's.** Since the chat's
 //! ledger (`today::Ledger`), the teller's lines ride a turn only until they
 //! are said or their offers run out, so a chat with events on shows the
 //! heading on some turns and not others. Filed per turn, such a chat would
 //! scatter across two arms and its quiet turns would land beside chats with
-//! events off. So once a stretch (one attach, from a `Config` record) has
-//! shown the teller, every later turn of it that shows her days is the
-//! events arm. The ledger lives as long as the same attach does, so its
-//! first turn carries the lines. Readings from before the ledger had the
-//! heading on every such turn, which this reads the same way.
+//! events off. So once a transcript has shown the teller, every later turn
+//! of it that shows her days is the events arm. For the whole file, not a
+//! stretch: a `Config` record is written at a router rebind too, which the
+//! ledger outlives, so a reset there would file the rest of an events-on
+//! chat as events off; and the switch is pinned with the chat, so one file
+//! is one regime. Readings from before the ledger had the heading on every
+//! such turn, which this reads the same way.
 //!
 //! **Counts, never words.** A reading holds numbers only. A name is
 //! looked for, never kept, so a reading can be pasted anywhere.
@@ -246,8 +248,8 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
     let mut out: Vec<Stretch> = Vec::new();
     let mut now = Stretch::default();
     let mut people = false;
-    // Whether this stretch has carried the teller at all (see the module
-    // doc: the arm is the chat's regime, not the turn's note).
+    // Whether this transcript has carried the teller at all (see the module
+    // doc: the arm is the chat's regime, not the turn's note). Never reset.
     let mut teller = false;
     let mut run = Turn::default();
     // The history so far, as its length and last message: appended
@@ -263,7 +265,6 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                     out.push(std::mem::take(&mut now));
                 }
                 now.at = c.clock.or(now.at);
-                teller = false;
                 people = c
                     .system_prompt
                     .as_deref()
@@ -333,7 +334,7 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                 }) {
                     teller = true;
                 }
-                // Sticky within the stretch: the teller's lines ride only
+                // Sticky for the chat: the teller's lines ride only
                 // some turns (`today::Ledger`), and every turn of a chat
                 // they ride in is that regime's.
                 if run.arm.days && teller {
@@ -978,10 +979,11 @@ mod tests {
         }
 
         /// The teller's lines ride only some turns (`today::Ledger`), and
-        /// every turn of a stretch they rode in is the events arm; a new
-        /// attach starts over (review of #867).
+        /// every later turn of a chat they rode in is the events arm, across
+        /// a `Config` record too: a router rebind writes one mid-chat and
+        /// the ledger outlives it (review of #867, passes 1 and 2).
         #[test]
-        fn a_stretch_that_showed_the_teller_stays_in_its_arm() {
+        fn a_chat_that_showed_the_teller_stays_in_its_arm() {
             let dir = std::env::temp_dir().join(format!("mecha-init-{}", uuid::Uuid::new_v4()));
             let s = scratch(&dir);
             config(&s, "# Who you are\n\nMara.", "2026-01-01T09:00:00Z");
@@ -992,19 +994,26 @@ mod tests {
             );
             let quiet = format!("{stem} you are reading.)");
             let mut convo = Conversation::default();
+            run(&s, &mut convo, "morning", "Morning.", &[&quiet]);
             run(&s, &mut convo, "hi", "Hello.", &[&told]);
             run(&s, &mut convo, "and?", "Nothing.", &[&quiet]);
             run(&s, &mut convo, "hm", "Hm.", &[]);
-            // A new attach whose days never carry the teller: events off.
-            config(&s, "# Who you are\n\nMara.", "2026-01-02T09:00:00Z");
-            run(&s, &mut convo, "morning", "Morning.", &[&quiet]);
+            // A rebind: a new `Config`, the same chat, the ledger still held.
+            config(&s, "# Who you are\n\nMara.", "2026-01-01T10:00:00Z");
+            run(&s, &mut convo, "still there?", "Yes.", &[&quiet]);
             let arms: Vec<(bool, bool)> = flat(&s.path)
                 .iter()
                 .map(|t| (t.arm.days, t.arm.events))
                 .collect();
             assert_eq!(
                 arms,
-                [(true, true), (true, true), (false, false), (true, false)]
+                [
+                    (true, false),
+                    (true, true),
+                    (true, true),
+                    (false, false),
+                    (true, true)
+                ]
             );
             std::fs::remove_dir_all(dir).ok();
         }

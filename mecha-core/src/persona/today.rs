@@ -305,11 +305,10 @@ const DAY_ASKED: &[&[&str]] = &[
     &["what", "happened"],
     &["what's", "new"],
     &["anything", "new"],
-    &["up", "to"],
     &["been", "doing"],
     &["did", "you", "do"],
-    &["how", "was"],
-    &["how", "did"],
+    &["how", "was", "your"],
+    &["how", "did", "your"],
 ];
 /// An owner's message that asks how she is, which is what the feeling line
 /// answers.
@@ -378,17 +377,38 @@ const FEELING_SAID: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// How a sky is said in a message, by the stems a word may open with.
+/// How a sky is said in a message: whole words, never stems. "mist" as a
+/// stem took in "mistake" and "haz" took in "hazard", and each false match
+/// in an owner's message re-offers the line (review of #867, pass 2).
 fn sky_words(sky: super::weather::Sky) -> &'static [&'static str] {
     use super::weather::Sky;
     match sky {
-        Sky::Clear => &["sunn", "sunsh", "sunli"],
-        Sky::Cloudy => &["cloud", "overcast"],
-        Sky::Fog => &["fog", "mist", "haz"],
-        Sky::Drizzle => &["drizzl", "rain"],
-        Sky::Rain => &["rain", "downpour"],
-        Sky::Snow => &["snow", "flurr", "blizzard"],
-        Sky::Storm => &["storm", "thunder", "lightning"],
+        Sky::Clear => &["sunny", "sunshine", "sunlit"],
+        Sky::Cloudy => &["cloud", "clouds", "cloudy", "overcast"],
+        Sky::Fog => &["fog", "foggy", "mist", "misty", "haze", "hazy"],
+        Sky::Drizzle => &[
+            "drizzle",
+            "drizzly",
+            "drizzling",
+            "rain",
+            "rainy",
+            "raining",
+            "rained",
+        ],
+        Sky::Rain => &[
+            "rain", "rains", "rainy", "raining", "rained", "downpour", "pouring",
+        ],
+        Sky::Snow => &[
+            "snow", "snows", "snowy", "snowing", "snowed", "flurries", "blizzard",
+        ],
+        Sky::Storm => &[
+            "storm",
+            "storms",
+            "stormy",
+            "thunder",
+            "thunderstorm",
+            "lightning",
+        ],
     }
 }
 
@@ -424,10 +444,6 @@ fn has_phrase(words: &[String], phrases: &[&[&str]]) -> bool {
 
 fn has_any(words: &[String], set: &[&str]) -> bool {
     words.iter().any(|w| set.contains(&w.as_str()))
-}
-
-fn has_stem(words: &[String], stems: &[&str]) -> bool {
-    words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -546,7 +562,7 @@ fn mentions(item: Item, e: &Entry, words: &[String], asking: bool) -> bool {
                 .any(|(_, set)| has_any(words, set))
         }
         Item::Weather => {
-            e.sky.is_some_and(|s| has_stem(words, sky_words(s)))
+            e.sky.is_some_and(|s| has_any(words, sky_words(s)))
                 || has_any(words, if asking { WEATHER_ASKED } else { WEATHER_SAID })
         }
     }
@@ -1055,6 +1071,30 @@ mod tests {
         let reply = lowered("Clearly a hot coffee kind of Sunday.");
         assert!(!mentions(Item::Weather, e, &reply, false));
         assert!(mentions(Item::Weather, e, &lowered("So sunny out."), false));
+        // Whole words: "mistake" is not mist, "hazard" is not haze.
+        let fog = Entry {
+            sky: Some(Sky::Fog),
+            ..e.clone()
+        };
+        assert!(!mentions(
+            Item::Weather,
+            &fog,
+            &lowered("my mistake, a hazard"),
+            true
+        ));
+        assert!(mentions(
+            Item::Weather,
+            &fog,
+            &lowered("so misty today"),
+            true
+        ));
+        // Leaving a choice to her asks nothing about her day.
+        assert!(!mentions(
+            Item::Events,
+            e,
+            &lowered("that one is up to the referee"),
+            true
+        ));
         // Asked or not, an everyday word is not the weather; a curly
         // apostrophe is the plain one.
         assert!(!mentions(
