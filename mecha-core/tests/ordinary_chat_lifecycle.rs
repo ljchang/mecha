@@ -3790,3 +3790,42 @@ fn a_web_configuration_record_may_not_name_a_jail_over_the_store_or_transcript()
         );
     }
 }
+
+/// The server's root above a web chat's workspace is accepted as where its
+/// configuration was recorded; a local chat's configuration must name its
+/// own workspace exactly.
+#[test]
+fn only_a_web_chat_s_configuration_may_name_the_root_above_its_workspace() {
+    for web in [true, false] {
+        let mut f = Fixture::new();
+        let root = f.root.join("web");
+        f.workspace = root.join("chat");
+        fs::create_dir_all(&f.workspace).unwrap();
+        let s = if web { web_session(&f) } else { f.session() };
+        let mut chat = if web {
+            f.memory()
+                .attach_open_web_chat(&s, ChatAttachMode::Create)
+                .unwrap()
+        } else {
+            f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap()
+        };
+        s.append(&Record::Config(RunConfig {
+            workspace: root.clone(),
+            tools: vec!["goal_context".into(), "shell".into()],
+            ..Default::default()
+        }))
+        .unwrap();
+        let source = if web {
+            OwnerSource::AuthenticatedWeb
+        } else {
+            OwnerSource::CliChat
+        };
+        let owner = OwnerInput::new(source, "Ask".into()).unwrap();
+        let begun = if web {
+            chat.begin_open_web_turn(&s, &owner)
+        } else {
+            chat.begin_turn(&s, &owner)
+        };
+        assert_eq!(begun.is_ok(), web, "web: {web}");
+    }
+}

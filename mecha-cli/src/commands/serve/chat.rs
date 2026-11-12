@@ -5176,9 +5176,7 @@ pub async fn history(
         // only the separate memory mode's sessions need their own.
         #[cfg(feature = "memory-prototype")]
         let own_door = listing.memory
-            && !(chat.ordinary_memory.is_some()
-                && Session::find(chat.sessions_dir(), &meta.id)
-                    .is_ok_and(|path| super::web_memory::open_marked(&path)));
+            && !(chat.ordinary_memory.is_some() && super::web_memory::open_marked(&path));
         #[cfg(not(feature = "memory-prototype"))]
         let own_door = listing.memory;
         if own_door {
@@ -5249,14 +5247,18 @@ pub async fn resume(
     };
     // A remembered ordinary chat resumes here, when this server remembers
     // chats; any other memory-marked transcript has its own door.
+    // (One lookup for both questions: finding a session walks the
+    // directory.)
+    #[cfg(feature = "memory-prototype")]
+    let found = Session::find(chat.sessions_dir(), &body.id).ok();
     #[cfg(feature = "memory-prototype")]
     let remembered = chat.ordinary_memory.is_some()
-        && Session::find(chat.sessions_dir(), &body.id)
-            .is_ok_and(|path| super::web_memory::open_marked(&path));
+        && found.as_deref().is_some_and(super::web_memory::open_marked);
     #[cfg(feature = "memory-prototype")]
     if !remembered
-        && Session::find(chat.sessions_dir(), &body.id)
-            .is_ok_and(|path| !matches!(memory_marked(&path), Ok(false)))
+        && found
+            .as_deref()
+            .is_some_and(|path| !matches!(memory_marked(path), Ok(false)))
     {
         return super::memory_chat::unsupported();
     }
