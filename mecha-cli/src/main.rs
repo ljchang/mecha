@@ -190,6 +190,12 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_grants: bool,
 
+    /// Don't register `code`, code mode's program tool, even with
+    /// `[features] code` on. `mecha eval` forces it: a scorecard does not
+    /// grade a model with programs on unless it says so.
+    #[arg(long, global = true)]
+    pub no_code_tool: bool,
+
     /// Don't run configured [[hook]] commands.
     #[arg(long, global = true)]
     pub no_hooks: bool,
@@ -302,6 +308,14 @@ pub struct GlobalOpts {
     #[arg(skip)]
     pub global_config_only: bool,
 
+    /// Not a flag: this is a driven run (`docs/DRIVER-DESIGN.md` D1b), set
+    /// only by `mecha run` on a fresh one-shot under
+    /// `MECHA_SESSION_KIND=driven`, after [`crate::setup::force_driven`] has
+    /// thrown its switches. `setup` refuses the mark on any start that did
+    /// not come through that door.
+    #[arg(skip)]
+    pub driven_run: bool,
+
     /// Not a flag: appended to the system prompt after the user's own
     /// (never replacing it), ahead of the date stamp. Set by front-ends
     /// that need a standing block inside the cached prefix — voice-serve's
@@ -377,6 +391,11 @@ pub enum Command {
     /// a trigger, a chat — writes into its own directory, which is also the
     /// path jail its runs get.
     Work(commands::work::Args),
+
+    /// The markers a driven task's setup writes under the home: one per
+    /// task clone, refusing an unmarked run inside it
+    /// (`docs/DRIVER-DESIGN.md` §2, D1b).
+    Driven(commands::driven::Args),
 
     /// Which optional parts of mecha are on, and how to turn on the rest.
     ///
@@ -667,6 +686,7 @@ impl Command {
             | Command::LearningReport(_)
             | Command::Msg(_)
             | Command::Work(_)
+            | Command::Driven(_)
             | Command::Doctor(_)
             | Command::Features(_)
             | Command::Polls(_)
@@ -729,7 +749,6 @@ impl Command {
             | Command::Harness(_)
             | Command::Exp(_)
             | Command::Frontdoor(_)
-            | Command::Mail(_)
             | Command::Tasks(_)
             | Command::Workflow(_)
             | Command::Questions(_)
@@ -749,6 +768,8 @@ impl Command {
             // `rules propose-retirements` counts the ledger rows of the model
             // in use, so it resolves the default provider as `validate` does.
             | Command::Rules(_) => true,
+            // Rule management and provider children do not use the model router.
+            Command::Mail(a) => !matches!(a.cmd, Some(commands::mail::Cmd::Rule { .. })),
             // `persona memory write` runs the memory writer on the local
             // model, so it holds and follows like `distill`; every other
             // `persona` verb reads or edits the store and runs no model.
@@ -764,6 +785,7 @@ impl Command {
             | Command::LearningReport(_)
             | Command::Msg(_)
             | Command::Work(_)
+            | Command::Driven(_)
             | Command::Doctor(_)
             | Command::Features(_)
             | Command::Polls(_)
@@ -921,7 +943,16 @@ async fn main() {
 }
 
 async fn dispatch() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // A driven run reads no project layer (D1b): a pinned historical tree's
+    // `mecha.toml` is neither the owner's nor the run's to choose, and it
+    // could attach a server or a hook, or undo the sandbox. Forced here, for
+    // every command under the mark, before anything loads a config — the
+    // router snapshot below included. Narrowing only, so a sticky export
+    // costs a read-only command nothing it should have had.
+    if mecha_core::driven::marked() {
+        cli.global.global_config_only = true;
+    }
     // D13: a command that is one run holds the router for its whole life,
     // taken before the snapshot below so it can never resolve the model a
     // pending switch is replacing. Released when the command returns, or by
@@ -953,6 +984,7 @@ async fn dispatch() -> Result<()> {
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
         Command::Msg(args) => commands::msg::execute(args).await,
         Command::Work(args) => commands::work::execute(args).await,
+        Command::Driven(args) => commands::driven::execute(args).await,
         Command::Setup(args) => commands::setup::execute(&cli.global, args).await,
         Command::Doctor(args) => commands::doctor::execute(args).await,
         Command::Features(args) => commands::features::execute(args).await,
@@ -992,6 +1024,22 @@ async fn dispatch() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mail_rule_commands_do_not_probe_or_hold_a_model() {
+        use clap::Parser;
+        for args in [
+            vec!["mecha", "mail", "rule", "list"],
+            vec!["mecha", "mail", "rule", "show", "notice"],
+            vec!["mecha", "mail", "rule", "pause-all"],
+            vec!["mecha", "mail", "rule", "test", "notice"],
+            vec!["mecha", "mail", "rule", "undo", "ledger-row"],
+        ] {
+            let cli = super::Cli::try_parse_from(args).unwrap();
+            assert!(!cli.command.runs_a_model());
+            assert!(!cli.command.is_one_run());
+        }
+    }
+
     /// An early exit releases this process's router hold: the file a real
     /// hold wrote is gone once `release_run_hold` — what `exit_with` calls
     /// before `std::process::exit` — has run. Before, the hold lived in

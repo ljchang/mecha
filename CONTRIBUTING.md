@@ -143,10 +143,18 @@ does have `~/.ssh` and can reach the network.
   `core.hooksPath` is local config and does not survive a clone, so this is
   opt-in per checkout. The pre-commit hook refuses a commit that CI's rustfmt
   job would reject; `--no-verify` skips it for a WIP commit on a branch. The
-  same hooks refuse persona chat or voice call text (`scripts/check-private.py`,
-  on a machine that holds the conversations): pre-commit over the staged diff,
+  same hooks refuse persona chat or voice call text, and persona data such as
+  the names of the people in a persona's life (`scripts/check-private.py`,
+  on a machine that holds the conversations; an ordinary word that is also
+  someone's name is allowed in `~/.mecha/check-private.allow`, never by
+  `--no-verify`): pre-commit over the staged diff,
   commit-msg over the message, and pre-push over everything being pushed, so a
-  `--no-verify` commit is still checked before it leaves. On the machine that holds
+  `--no-verify` commit is still checked before it leaves. Text merged in from
+  main is never this change's: a merge is read only where it is new against
+  every parent, and a push skips commits already on the remote's main, so
+  merging main into a branch no longer needs a squashed replacement (a
+  cherry-pick from main is not a merge, and is still read). On the machine
+  that holds
   the conversations, export `CHECK_PRIVATE_REQUIRE=1` so a missing or moved
   store refuses rather than passing; everywhere else the check passes and says
   why. It
@@ -216,6 +224,8 @@ number costs nobody anything; the first crate that depends on `mecha-core` is
 the moment it starts to.
 
 *Raised to 1.89 on 2026-08-10 for `rustyline` 18, which uses `file_lock`.*
+*Raised to 1.96 on 2026-10-31 for `monty-pool` 1.4 (code mode's interpreter,
+on by default from then): every monty crate declares `rust-version` 1.96.*
 
 ## Releases
 

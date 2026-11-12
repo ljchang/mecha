@@ -142,6 +142,15 @@ the status quo's failure mode was an operator setting `trifecta = "allow"` and
 waiving the interlock over `http_fetch`, `mail_send`, Slack and an unconfined
 `shell` at once. `docs/EGRESS-DESIGN.md` §6 has the full accounting.
 
+**Persona weather is harness-initiated egress, not a model tool.** The owner
+sets `[life] place`; the harness sends its town to Open-Meteo's geocoder and
+uses the owner-written region locally to choose the matching answer. It
+caches the resolved coordinates and sends only those coordinates to the
+forecast endpoint. The Week route, a background chat refresh, or the owner's
+`mecha persona story weather` command starts the request. No model chooses a
+query, URL or destination, and the geocoder's label is shown only to the
+owner, never folded into a prompt.
+
 ## Channel 3 — the untrusted content itself
 
 Before any send is attempted, the injected text has to be read. This channel

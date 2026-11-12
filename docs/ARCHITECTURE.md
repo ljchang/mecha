@@ -1250,6 +1250,22 @@ here:
   client never starts a server: the private server started its unit when
   it found it down, and a model call has no business starting services on
   the owner's machine.
+- **A stopped video server is said in the turn that asked; a picture's is
+  still said by its job.** `video_generate` asks before it hands the clip
+  over (`comfy::Client::refuses`, `videogen::tool::ASKED_WAIT`): a server
+  this process has never had an answer from, with every connect refused for
+  twelve seconds, is an error in that turn, with no job and nothing
+  promised. That is shorter than §Image generation's 45 s for an unseen
+  server, on purpose: twelve covers the usual restart (4-10 s), and the
+  refusal says the server may be restarting. Everything else is the job's
+  to wait for, as there: a server that accepts and is slow, and one already
+  seen (it is restarting, 90 s). So in a `serve` that has drawn a clip, a
+  server stopped afterwards is again "being made" with the failure later.
+  The call used to promise first; with the unit down after a reboot every
+  clip answered "being made" and failed turns later (2026-11-11).
+  `image_generate` keeps the promise-first shape on the same transport: its
+  server is restarted on purpose when idle, so an unseen refused connect
+  there is usually a restart, and nothing has measured the other way.
 - **`[video]` is `[image]`'s hazard, with the owner's pictures and voices
   added.** It is stripped from project layers, sits in
   `trial_env::OPERATOR_ONLY_TABLES`, and its `url` is refused off this
@@ -1779,6 +1795,204 @@ module.
   value, and a clamped threshold could loosen pruning as easily as tighten it.
   The world is `Feature::World`, `part_of = Personas` with no switch of its
   own (PL26); `enable world` names the `[life]` table instead.
+- **The routine is the owner's file, and a draft never stands in for it**
+  (`persona::routine`, §4.1 and PL1 there). `routine.toml` holds her week's
+  anchors over the closed `persona::activity::Activity` set, which the
+  sampler, typed plans and the routine share and which maps ATUS codes by
+  longest prefix. A model's draft waits in `routine.draft.toml`, beside the
+  routine and never over it; only `approve_draft_as_shown`, digest-checked
+  against what the owner read, swaps it in, keeping the old one as
+  `routine.previous.toml`. A draft is staged only from a clean run, so every
+  approved routine is clean without an origin carried past approval. Two
+  anchors that always happen may not overlap (the week is a circle, so
+  Sunday night runs into Monday), and a routine that does not parse is a
+  `Store::problems` entry, never an empty week.
+- **`persona::life` is the owner's opt-in boundary on sampled filler:**
+  `life.toml` names household relations, usual sleep and impossible
+  activities; without it the sampler's old draw stream is unchanged. A
+  model's `life.draft.toml` waits beside it and is swapped in only by
+  digest-checked owner approval, keeping the old profile as
+  `life.previous.toml`; an owner-edited waiting draft is never overwritten.
+- **The life drafter answers a typed profile, never TOML**
+  (`persona::life_drafter`). One quarantined pass sees identity, motivation,
+  routine notes and only clean People-tab names with their ties. Household
+  names are schema-constrained to that list and checked again before the
+  harness renders the file; an absent person is left out until the owner adds
+  them on the People tab. Relations and impossible activities are closed
+  sets, sleep is never impossible, and the same approved/clean provenance
+  boundary as the routine drafter is checked before a model runs.
+- **The ATUS table ships counts, and the code that reads it decides**
+  (`persona::atus`, §4.2). `scripts/atus-table.py` writes
+  `mecha-core/data/atus/table.tsv.gz` from sha256-pinned public files, and
+  pins the sha256 of the table's text (not the gzip file, whose bytes
+  depend on the zlib), refusing to overwrite it when the text would change; it is gzipped because no diff should carry a
+  megabyte of numbers, so the script and its pins are what review reads.
+  Rows are weighted counts, never probabilities, on one weight scale per day
+  type, so the pool is the exact sum of the cells. Backoff and smoothing
+  are code, where a test sees them. The script holds a copy of the activity
+  mapping and the table records what it gave every code it met, so a test
+  fails until the table is rewritten after either side changes.
+- **A sampled day is drawn once, stored, and redrawn only forward**
+  (`persona::sampler`, `persona::world`). The draw is seeded by persona and
+  date and reads no clock, so the same inputs give the same day. Only today
+  and the fourteen days before it are stored. Today's is redrawn when the
+  digest of what it was drawn from (the routine's text, the table's text
+  pin, the sampler's version) changes; a past day is kept, because what a
+  chat was told about a day must stay what the day was, and so is the
+  anchor it carried past 4am, which the next day reads rather than
+  re-deriving from a routine edited since. Bump `SAMPLER_VERSION` for any change that would draw a
+  different day from the same inputs. A row this binary cannot read makes
+  the stored day unreadable and redrawn, never shown in part, and an anchor
+  label is held on the way out to what the routine's parser lets in, since
+  it reaches a chat. A day that cannot be read when it is pruned folds as
+  a whole day of unreadable minutes, so a week always adds up to its days;
+  the fold takes the write lock before its first read, since serve and the
+  CLI both prune and a day folded from two reads would count twice.
+  No day is drawn without a `cell` in `routine.toml`, the owner's pick,
+  never a guess.
+- **The today-block is a run note of its own, with its own stem pair**
+  (`persona::today`). Both stems arm `private`; the untrusted one is
+  chosen by any folded row's source that is not clean, and an unknown
+  source never is. It is registered in `Taint::arm_for_content`,
+  `message::is_recorded_note` and `agent::is_harness_voice`, as every
+  persona fold is; joined to another note, its stem would not sit at the
+  start and would never arm on a resume.
+- **A week view never redraws a folded day** (`world::week_view`). A day
+  past `KEEP_DAYS` is shown as its week's minutes, because drawing it again
+  would show a day no chat was told. Kept days are read from the store
+  before the routine is asked for, since a past day does not need it. The
+  reasons the rest cannot be drawn (no routine, no cell) are checked once
+  before any draw, through the same `drawable` the draw itself reads its
+  routine from, so finding out draws nothing and the two cannot disagree;
+  a routine that does not load is an error naming the file, not one of
+  those states. Its route is `Feature::World`'s, and the per-persona switch
+  answers as a state, never a refusal. Asking stores the in-window days it
+  draws, so `GET /week` is a read that writes: it asks for the page's
+  header itself (`serve::request_verified`), since `owner_guard` asks it
+  only of mutations, or a page on another site could sweep the dates and
+  store days no chat was told.
+- **The owner's cell pick edits one key** (`routine::set_cell`): `cell` is
+  set in `routine.toml` through `toml_edit`, every other line and comment
+  kept, the file written from its template if there is none, and only over
+  the digest the page was shown, so an edit made in an editor meanwhile is
+  never overwritten. A stale pick is typed (`routine::StaleRoutine`, a
+  409), and a pick leaves `routine.previous.toml` alone: that is the
+  routine an approval replaced, the backup approval promises.
+- **The routine drafter answers typed anchors, never TOML**
+  (`persona::drafter`). One quarantined pass over `identity.md` and
+  `motivation.md` on the persona's own model, unseeded as her own turns
+  are (`PersonaUse::Converse`: a pinned seed would make a redraft the same
+  week), the answer constrained to a schema where the provider takes one; the harness renders the file, so a model's words reach it only
+  as an anchor's label, which `routine::parse` caps and checks. The answer
+  has no field for `cell`, and approving a draft that names none keeps the
+  routine's (`routine::kept_cell`): her kind of week is the owner's pick,
+  and approval must not quietly undo it. It drafts only for an approved
+  persona whose recorded origin is not untrusted, since an approved label
+  is clean text in her days; `stage_draft` refuses an untrusted draft
+  again at the door. Every refusal that needs no answer (the persona, a
+  waiting draft the owner edited, `routine::may_stage`) comes before the
+  model runs, and the envelope is read before the answer: a refusal or a
+  reply cut off at its cap stages nothing.
+- **The owner reviews a draft as shown** (`routine::edit_draft`,
+  `approve_draft_as_shown`, both over the draft's digest the page was
+  shown, a stale one typed `StaleRoutine` and answered 409). An owner's
+  edit must load, so a draft can always be approved as saved, and leaves
+  the staged record as the model wrote it, so the draft reads as the
+  owner's and `may_stage` refuses a redraft over it. The server's draft
+  route holds the router as a turn does and refuses before the model runs
+  whatever needs no answer, as 409s.
+- **Her network is an event log, folded** (`persona::network`, §6). `people`
+  holds who someone is; `edge_events` is append-only and an edge's state
+  (tie, layer, warm or tense, active or ended, dates) is always the fold of
+  its events, never a row rewritten, so `forget` can drop what one chat
+  added and fold again (PL22). A value no event set stays `None`, a date
+  keeps the precision it was given, an undated `met` or `formed` folds
+  first and any other undated event on the day it was recorded, and an
+  event of a kind this binary does not know is counted, never guessed at.
+  A tie between two people is stored once under its ordered pair. Only an
+  owner event is taken back one at a time; a chat's go with `forget`.
+  `network.md` is rendered after every write and never read back.
+  `world.db` migrates additively (version 2 adds the network), and a
+  read-only open of a version-1 store is an empty network, never an error.
+- **Her people reach her prompt from her version, never live** (PL32).
+  `network::prompt_section` renders only clean people and edges, within
+  `PROMPT_CHARS`, and while `[life] people` is on `version_files` adds it
+  as `people.md`, so a network change is a new version and the agent cache
+  (keyed by digest) rebuilds. `load_version` reads `people.md` only when the
+  version has one and re-digests it, so one added to an old version or
+  taken from a new one is refused. A network that cannot be read is no
+  version, never a prompt without her people. `Store::problems` names a
+  person's broken portrait link; `network::add_person` and `edit_person`
+  take the library and refuse an unapproved portrait themselves
+  (`check_character`), so no door can forget it.
+- **People proposed from `identity.md` are an owner's draft** (PL31,
+  `persona::people_draft`): one quarantined pass, every proposed person
+  checked by the network's own door before it stages, accepted only
+  against the `identity.md` digest it was read from, and added as owner
+  rows. The owner's prose is never rewritten; the lines that still name
+  someone in her network are listed for the owner to edit.
+- **The People tab's doors go through the network's own** (`PersonaChats::
+  people`, `act_on_people`): a person or event is named by its full id,
+  checked to exist (an event only through a person it is about), and every
+  write is `network::add_person` / `edit_person` / `record` /
+  `remove_event` / `remove_person`, so the portrait check and the
+  text checks cannot be skipped from the page. A store failure is the
+  server's (`network::is_store_error`), anything else is bad input. Locks
+  carry over both ways: a person's character is named, and its portrait
+  shown, only for an entry that loads and is not locked or with a live
+  unlock; on a locked page both are null, and an edit that leaves the
+  field out keeps the link. A write naming a character the viewer may not
+  see answers exactly as an absent one and writes nothing, so the answer
+  never says which locked names exist. The page's writes, and its
+  proposal doors, are refused (409) while `[life] people` is off, since
+  the tab then shows nothing they could change; a stale proposal is typed
+  (`people_draft::StaleProposal`) and answered 409, as is proposing again
+  while a current one waits (`ProposalWaiting`, checked before the model
+  runs and again before staging, so an unread choice is never replaced;
+  only a stale one is). `Network::as_of` is the
+  time slider: the same `order` the fold reads, so what "as of a day"
+  shows is what the fold would have said then.
+- **`persona::initiative` reads who brings her people up, beside what the
+  owner does with them** (PERSONA-LIFE-DESIGN.md §14), offline from
+  transcripts like `persona::echo`, through `mecha persona measures`.
+  Turns are filed by what the record shows she was given (a today-block
+  in the run's notes, `today::EVENTS_HEADING` inside it, and
+  `agent::PEOPLE_HEADING` in the recorded prompt),
+  never by settings, since a chat keeps the version it began with. Only
+  owner text (`agent::owner_text`) and her replies are searched, so a name
+  riding in a harness note is neither side naming it. Order is time: each
+  chat splits into stretches at its recorded configs (start and resumes),
+  all read by their clock, since whole chats by start date would put a
+  long-lived chat's newest turns too early. Configs are written per
+  process attach and per rebind, not per run, so a chat held open in one
+  process is still read at its start: a stated limit, not a property. An
+  introduction the owner has
+  not spoken after is unanswered, kept out of the uptake rate, and no
+  people is no reading rather than zero. Counts only, never names
+  or words.
+- **The storyteller is code over an owner deck, and the teller is its one
+  prompt fold** (`persona::story`, `persona::weather`, `persona::today`).
+  Storylets in `story.toml` are parsed whole or refused (unknown keys, a duplicate id, an
+  effect past one step, `{who}` with no `with`), and only clean, active
+  people are cast, by id. Weather is shelf A pulled ahead: one capped read of
+  one owner-written place, parsed into a closed `Sky` and whole degrees or
+  the day refused, so no string the source wrote is kept; unknown weather
+  satisfies no condition. `[life] place` is geocoded and cached from the
+  owner's town and region, with `story.toml`'s coordinates as fallback. It
+  is read live for both Week and chat refreshes, unlike the pinned `events`
+  switch; only the harness starts either request, and the geocoder's label is
+  owner-facing only. Failed resolution or fetching is recorded per place and
+  backs off for an hour; a changed place clears the previous forecast and
+  story-day weather snapshot before its first request. A day's draw is seeded
+  and stored in `world.db` v3 up to today. Whether a day has weather is a
+  draw input, never what the weather is: a changed forecast keeps today's
+  events and shows the new weather, while weather arriving on a day drawn
+  without any, or being cleared from one, redraws today once.
+  Other draw inputs still redraw today. With
+  `[life] events` on, the today-block adds event titles, non-normal levels
+  and the closed weather after its doing-now sentence; before noon it uses
+  yesterday's events and today's morning levels. A story error drops that
+  addition only, never the doing-now note.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
@@ -2063,8 +2277,17 @@ module.
     behind. `Memory::delete` is private for the same reason.
   - `Status::initial` is the one rule for a new record: `ModelUntrusted` is a
     candidate, never recalled until the owner approves; anything else is
-    active (inferred facts included, D18). Approval keeps the origin, so
-    recall can re-arm the taint.
+    active (inferred facts included, D18). Ordinary approval keeps the origin,
+    so recall can re-arm the taint. `Memory::approve_clean` (and its bulk
+    form `Memory::approve_clean_chat`, which no surface calls: the CLI's
+    `--chat --clean` lists a chat's records and vouches the ones it showed,
+    one by one) are the owner's vouch: they accept live
+    model-untrusted records, stamp `vouched_at`, and change origin to owner.
+    Repeating either operation on an existing vouch idempotently repairs any
+    shared copy left with its old origin after a cross-database failure. Only
+    the CLI and owner-authenticated memory route call them; no model, writer,
+    or tool can promote its own lane. Shared copies follow the vouch, as they
+    follow correction and invalidation.
   - Inferred facts about the owner can only go in `inferred_user_facts`, and
     only inferred ones can; the split is enforced at `Memory::add_fact`.
   - Text is append-only: `correct` invalidates and inserts an owner-origin row
@@ -2177,7 +2400,8 @@ module.
       recall opens `memory.db` writable on every turn: the step takes the
       write lock, reads the version again under it, and skips records
       already indexed — `an_upgrade_run_twice_indexes_each_record_once`.
-    - The index is schema v3 of `memory.db`, backfilled on upgrade. FTS5 is
+    - The index arrived in schema v3 of `memory.db`, backfilled on upgrade;
+      schema v4 adds the owner's nullable `vouched_at` stamp. FTS5 is
       created with `secure-delete`, and every delete takes the record out of
       `recall_fts` and `vectors` first; without `secure-delete` a forgotten
       term survives in the file — `forgetting_takes_a_record_out_of_the_index_and_its_vector_with_it`
@@ -2188,13 +2412,13 @@ module.
       has no vector after writing.
   - **The curation page** (§9.8): the editor's Memories tab, over
     `GET`/`POST /api/personas/{name}/memory` (`PersonaChats::memory`,
-    `memory_act`). Acts are a closed set (`MemoryAct`: approve, pin, unpin,
-    correct, forget, share, unshare), each the same core call the CLI's
-    owner door makes, and each answers with the page as it now stands. The
-    lock holds as for every persona route (hidden answers as missing), and
-    a page shows and unshares only copies its own persona learned, so a
-    locked persona's shared facts never surface through another's page. No
-    tool reaches the route, so no model edits memory.
+    `memory_act`). Acts are a closed set (`MemoryAct`: approve,
+    approve_clean, pin, unpin, correct, forget, share, unshare), each the same
+    core call the CLI's owner door makes, and each answers with the page as it
+    now stands. The lock holds as for every persona route: a hidden persona
+    answers as missing, and a page shows and unshares only copies its own
+    persona learned, so a locked persona's shared facts never surface through
+    another's page. No tool reaches the route, so no model edits memory.
   - **The memory tools** (`persona::memory_tools`, §9.7 "on demand"):
     `memory_search` and `memory_read`, inserted in `setup::persona_agent`
     beside the file tools, and only if they can never send.
@@ -2270,10 +2494,14 @@ module.
       An id the model names is validated (`named_id`), consumed once per
       proposal, and re-read inside the transaction, so a correction the
       owner made during the model call stands.
-      Only model-origin, active, unpinned facts can be updated or withdrawn.
-      A kind switched off in `[memory]` is turned away, and so is a duplicate.
-      If memory is entirely off, nothing is asked and the ledger still
-      advances.
+      Only model-written, active, unpinned facts can be updated or withdrawn.
+      An owner's clean vouch changes recall provenance to owner but leaves
+      `vouched_at` as the authorship distinction, so the writer can maintain
+      that fact; an owner-written fact (owner origin without a vouch) remains
+      immutable. An update's replacement takes the current stretch's origin,
+      never the vouched row's owner origin. A kind switched off in `[memory]`
+      is turned away, and so is a duplicate. If memory is entirely off,
+      nothing is asked and the ledger still advances.
     - `Memory::write_stretch` commits the records and the ledger advance in
       one IMMEDIATE transaction, after checking the ledger still stands where
       the run started. The model call happens before that, holding no lock.
@@ -2563,7 +2791,8 @@ module.
       is not counted.
     - `mecha persona show` reads chats active in the last `SHOWN_DAYS` days
       (by file modification time) and counts unreadable session files,
-      never reading them as empty. Only `show` reads it. `list --json` and
+      never reading them as empty. Only `show` and `measures` (over a
+      window the owner picks, beside initiative) read it. `list --json` and
       the approve and remove confirmations stay plain store reads, because
       reading a week of transcripts is no longer free.
     - Deleted chats drop out of the history; archived ones stay.
@@ -3506,14 +3735,23 @@ sandbox, and `mecha tools --json` prints each tool's capabilities.
 ## Code mode's interpreter
 
 `mecha-core/src/interpreter/` runs a model's program for code mode
-(`CODE-MODE-DESIGN.md`; slice 3a, the backend only, with no `code` tool yet).
+(`CODE-MODE-DESIGN.md`; slice 3a, the backend; the `code` tool below).
 The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
-(cargo feature `monty`, off by default) is the one backend. The invariants:
+(cargo feature `monty`, on by default since 2026-10-31) is the one backend. The invariants:
 
 - **A program reaches the host only through the names it was started
-  with.** They are globals; every `NameLookup` is answered `Undefined`,
-  every `OsCall` (files, environment, sleeps, imports) `NotHandled`, and a
-  `FunctionCall` under any other name is refused in the program. Monty 1.4
+  with.** They are globals. Every `NameLookup` is answered `Undefined`. An
+  unknown import (an `OsCall` named `import`) is answered `NotHandled`, so
+  it stays monty's own `ModuleNotFoundError` and `except ImportError:`
+  catches it. A program's own file calls are answered by the tools it was
+  given, never by anything the worker can see: a text read through
+  `fs_read` (R12) and a listing through `fs_list` (R13), each an ordinary
+  host call through the gate, and only for a tool that answers in the
+  shape the shim needs (`FileTools`; `CODE-MODE-DESIGN.md` §11). Every
+  other `OsCall` (environment, clock, a write, a file call without that
+  tool) is a `PermissionError` naming the functions the program was given
+  (`os_refusal`). A `FunctionCall` under any other name is refused in the
+  program. Monty 1.4
   has `eval` and `exec`, so a registered name is reachable from a built
   string: reach is the registered set, never the source's free names.
 - **The worker pool is a third process class, confined like an MCP
@@ -3562,6 +3800,18 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   CODE-MODE-DESIGN.md §5). Above it nothing caps the worker: no limit the
   kernel enforces is set, so a monty allocator bug would be uncapped there.
   A second wall is proposed in CODE-MODE-DESIGN.md §12.
+- **A Mac worker does not outlive a killed mecha.** bwrap's
+  `--die-with-parent` has no Seatbelt counterpart, and the pool's kill on
+  drop never runs after a `SIGKILL`. So a program arms
+  `interpreter::watchdog` when it checks a worker out, before the worker
+  runs a line. The watchdog is a `kill -0` loop, mecha's child, **in a
+  process group of its own**. The first shape, double-forked from the
+  launcher into mecha's group, lost CI's macOS runner, which shares that
+  group, in 5 of 18 runs. Both pids are recorded with their start times, so
+  a reused pid cannot pass for a live mecha, and the loop never kills a pid
+  the kernel has since reused. An unreadable `ps` is never an answer: while
+  the program runs, the loop asks again, and before its handshake it
+  refuses the program (CODE-MODE-DESIGN.md §7, R10).
 - **The worker is identified by its sha256** (`worker.rs`), checked every
   time a pool starts; a path or a version string never stands in for it.
 - **Backstops and the program's own exceptions are different types.**
@@ -3580,8 +3830,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
 - **Stop kills.** A cancelled program gets `cancel_grace` to reach a turn
   boundary, then its checkout is dropped, which kills the worker; it ends
   `End::Cancelled` with what it printed. A Stop while it waits for a free
-  worker ends it there, and handing a worker back is bounded by the same
-  grace, so no turn awaits a worker bare.
+  worker ends it there, and so does one during a Mac watchdog's handshake.
+  Handing a worker back is bounded by the same grace, so no turn awaits a
+  worker bare.
 - **Nothing in the trait enforces `preflight` before `start`.** The caller
   that registers code mode must run it once, at start, and refuse the
   feature when it fails.
@@ -3590,8 +3841,8 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   run a second conversation's program inside the process that held the
   first one's; a fresh worker costs about 4 ms (M1).
 
-**The `code` tool** (`tool/code.rs`, slices 3b and 3c; built and tested,
-registered nowhere until slice 3d):
+**The `code` tool** (`tool/code.rs`, slices 3b and 3c; registered by slice
+3d, below):
 
 - **Admission is the run's, checked at every program's start.**
   `Admission::over` takes a registry's plain reads (effect `Read` or
@@ -3612,13 +3863,23 @@ registered nowhere until slice 3d):
   program gets `ToolError:`. Taint arms before the reply resumes the
   program; each host call's trace entry is `in_program`, so `tool_calls`,
   `tool_errors` and `tool_denied` keep counting.
-- **Results are handles; host messages carry no bytes.** A program holds a
-  stub string (`<handle 3: 48,213 chars from mail_get_thread>`), only its
-  exact stub resolves, and text enters only through `peek`, capped and
-  counted. Patterns are Rust `regex`. A tool's error body is a handle the
-  `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
-  raises a `LimitError:` naming itself; host bytes are also drawn from one
-  process-wide `BytePool`.
+- **Results are text; the guard is the output (R11, 2026-11-02).** A tool
+  called from a program returns its result as a `str` (`fs_list`'s builtin,
+  `Tool::lists_names`, as a list of names), so string methods, slicing,
+  `in` and `len()` answer about the result itself. Until R11 a result was an
+  opaque handle that raised on all of these, and in M2 about 46 of 220
+  programs failed on one; the field's harnesses (RLM, RLMEnv, smolagents,
+  DSPy) all hand a program real strings and guard what goes back to the
+  model instead. Here that is what the program prints and its ending,
+  capped by `code::render` and again by the dispatch, which wraps it as any
+  tool result; taint arms on the host call as before, so nothing a label
+  rests on changed. The host helpers (`grep`, `count`, `find`, `lines`,
+  `split`, `chunks`, `json_get`, `peek`, `slice`, `size`) take a `str` and
+  run Rust `regex`, linear in the text. A tool's error reaches the program
+  as `ToolError:` in the tool's own words, cut at `code::ERROR_TEXT`. Every
+  per-program limit (`code::defaults`, as R4 ruled) raises a `LimitError:`
+  naming itself; host bytes, the tool results a program was handed, are
+  also drawn from one process-wide `BytePool`.
 - **Rendered once.** The program's printed output and ending are the `code`
   call's own `tool_result`, capped, spilled and wrapped by `dispatch` like
   any result, and `external` when any host call's result was. A result past
@@ -3642,8 +3903,9 @@ registered nowhere until slice 3d):
   `content` at HTTP 200 and a cut-off answer are named. Every pass is
   `max_tokens` 8,192 whatever thinking is set to, thinking off unless the
   program asks, and the thinking cap counts passes whose response carried
-  reasoning, never what they asked. `str[n]` text draws on `peek`'s cap,
-  and is never a `trusted_output` shape. A provider error is named by its
+  reasoning, never what they asked. `str[n]` text counts with `peek`'s in
+  `peeked_bytes` (uncapped since R11), and is never a `trusted_output`
+  shape. A provider error is named by its
   class (`code::pass_failure`), because a server's body can echo the
   prompt.
 - **Locality is the request's, not the loop's** (R8).
@@ -3655,6 +3917,137 @@ registered nowhere until slice 3d):
   provider that is not local refuses a `local_only` request with
   `provider::LocalOnlyRefused` (`refuse_unless_local`, called before
   sending), and `Failover` skips a fallback that is not local for it.
+
+**Registration** (slice 3d):
+
+- **A feature, a lever, and a build.** `Feature::Code` (`[features] code`)
+  is off by default and `gated`. Its row asks what registration asks:
+  `[tools]`, a worker pinned for the platform, bwrap configured on Linux
+  (`[sandbox] kind = "bwrap"`; a Mac's Seatbelt is the platform's), and the
+  worker installed (`Facts::code_worker_installed`, its pinned size; the
+  hash is the pool's to check). `Lever::CodeTool` (`--no-code-tool`, or the
+  switch off) is in `Lever::bare`, so `mecha eval` throws it, and it cannot
+  be forced on in an experiment: a trial's home has no worker, and the
+  switch is not an environment's (`switchable_from_environment`). The
+  worker is the `monty` sidecar (`sidecar::ONLY_MECHAS`: never provided,
+  since only the pinned bytes may run), installed by `features enable code`
+  through `worker::ensure`.
+- **A build without the cargo feature `monty` knows code mode and says it
+  cannot run it** (`feature::unbuilt`, `interpreter::BUILT`): the row reads
+  off (unready with the switch on) naming the cargo feature, `enable code`
+  refuses naming it, `mecha setup` asks nothing about it, and no `code` is
+  registered. **That build does not refuse to start** with the switch on:
+  one `config.toml` is read by every build on the machine, and a switch a
+  newer build wrote must not take an older one down, the reason
+  `[features]` ignores unknown keys. A run that named `--tool code` says so.
+- **In a build that has it, a worker or sandbox that cannot start stops the
+  start** (`setup::code_interpreter`). With the switch on and nothing
+  withholding `code`, `interpreter::for_runs` builds the interpreter over
+  `[sandbox]` and the installed worker and runs its `preflight`, and an
+  `Err` fails the start, never a run without `code`. With the switch off
+  nothing is probed. Only the agent-building paths ask: `prepare_tools`
+  alone, which `mecha mail` and `mecha tasks` build from, starts no worker.
+  `mecha tools` asks too, so it doubles as the worker's smoke test.
+- **One interpreter per built agent.** Every run that agent serves shares
+  it (`interpreter::RUN_WORKERS` workers at once), a worker is never reused
+  across programs, and an agent rebuilt for a config change takes the new
+  `[sandbox]` with it. The host bytes all programs hold stay one
+  process-wide pool (`code::BytePool::process`).
+- **`code` is built last, by the agent, whoever registers after it.**
+  `setup::build` inserts it after `prepare_tools` and the subagents, so the
+  learned rules, the capability block, a `--tool-profile` and the run
+  record see it, and `Agent::enable_code` keeps it. `Agent::registry_mut`
+  returns a guard that builds `code` again over the registry when it drops,
+  and `set_outbox` does too, so `recall`, `ask_user` and the TUI's tools,
+  inserted after `prepare` from half a dozen front ends, are admitted and
+  declared without any of them remembering to. A front end that took `code`
+  off (`withhold_tool`) keeps it off. A `--tool-profile` judges `code` alone
+  (`ToolProfile::keeps`, never a second narrowing of the whole registry,
+  which would judge the subagents for the first time), and judges it again
+  after every rebuild (`Agent::narrow_code_by`), so a later read cannot widen
+  it past what the profile kept.
+- **A subagent profile naming `code` gets a `code` of its own** (slice 3e,
+  §6): `setup::build_subagent` leaves `code` out of the allowlist loop and
+  the child agent builds it last (`Agent::enable_code`), over the child's
+  registry and outbox route, never the parent's `Arc` cloned in. So the
+  `analyst` profile reaches only its own reads, and `Subagent::new` derives
+  the parent-facing legs from them. With the feature off or not in the
+  build the profile fails at launch naming the feature
+  (`setup::subagent_code_refusal`), never with the typo message. With it on
+  and the run withholding `code` (`--no-code-tool`, which `mecha eval`
+  throws, a `--tool` list, `[tools]`) the subagent is skipped loudly, as one
+  `--tool` excludes; a `--tool-profile` judges the child's `code` alone, as
+  it judges the parent's.
+- **A subagent is never a program function.** It declares no effect class,
+  so it resolves `Undeclared` and is not admitted: depth above one is not in
+  this slice (§12), and an `analyst` child is a call the model makes.
+- **What a program read is recorded** (slice 3e, §7; `tool/code_record.rs`).
+  Each host call that ran becomes a `record::ProgramCall` (tool, input,
+  `external`, `is_error`, and the bytes in hand) on `ToolOutput::reads`; the
+  dispatch moves them onto `Conversation::program_calls`, beside the
+  messages as taint is, so a compaction carries them, and `Session::record_run`
+  writes the run's (`program_calls_from` on) as one `Record::Program`, after
+  the messages. **A conversation holds one run's raw reads at most**: the
+  record's `Arc` outlives the program and the byte pool that counted it, so
+  the next run's start lets an earlier run's bytes go (`Bytes::Unloaded`;
+  the store has a recorded run's) and keeps the calls for the walk. Within a
+  run, every batch's reads join through `record::extend_bounded`, which
+  holds the newest up to `record::RETAINED_BYTES` (the 256 MiB process pool's
+  own number) and lets older ones go; such a call is recorded without an
+  address, warned, and grounds nothing. That record holds each blob's sha256 and length and never a
+  byte: the bytes go once, content-addressed, to
+  `~/.mecha/programs/<session-id>/` (`record::Store`), mode 0600 in 0700.
+  Nothing that rebuilds a conversation reads it, and a build from before it
+  skips the line. A missing or altered blob loads as `Bytes::Missing` or
+  `Bytes::Mismatched`, never as an empty result. A blob that cannot be stored
+  fails no recording: its call is written with no address (missing, by
+  name) and warned, because `record_run` failing took its callers' later
+  `Record::Taint` with it.
+- **No jail reaches the store.** It is not the spill directory, which the
+  jail admits; `work::ensure_outside_mecha_home` refuses a workspace at or
+  under it (one not made yet as it would resolve, through its deepest existing
+  ancestor, so neither a `..` nor a symlink above it walks it under), and no grant names
+  the mecha home. `forget` removes the session's directory whole.
+- **The grounding walk's second source.** `grounding::calls(messages,
+  programs)` yields each program call right after the `tool_use` it ran
+  under (`Call::within`), and only under one the list holds, so a live list
+  after compaction grounds nothing of a cut program, as it grounds no cut
+  result. Its readers pass the programs: gossip's evidence, the outbox's
+  join, the attribution pack, appraisal's packet, persona citations (each
+  from `Conversation::program_calls`, or `record::ever` for a session file);
+  the diagnostician's carry-over check takes their bytes as sources too.
+- **The walk stops at a `trusted_output` child's shape.** A child writes no
+  session, so `Subagent::call` carries its child's calls up, each under the
+  subagent call (`record::Under`, stamped by the parent's dispatch) and
+  marked `trusted` for a `trusted_output` profile (unknown reads trusted).
+  `grounding::calls` yields those to no reader; for them the subagent's
+  result is the shaped answer. `grounding::calls_for_the_owner` opens them,
+  for the outbox's owner-facing join alone (R9), and
+  `outbox_source::tests::no_model_pass_reads_the_owners_join` lists its
+  readers — `outbox show` and `edit`, the TUI pane, the web review pane — and
+  fails when a new one appears.
+- **Owed:** the store's retention (reaped with its run's work directory and
+  under an owner-set size ceiling) and `doctor`'s report of its size and
+  orphans, and `replay_run` answering a replayed program's host calls from
+  the record (§7). Until then a store only grows, and a replay of a session
+  that ran a program diverges at its first host call.
+- **A program's numbers ride its output** (`code::ProgramStats` on
+  `ToolOutput::program`, copied to `ToolCallTrace::program`): counts and
+  flags only, never a byte. `RunStats` counts §7's seven from the trace
+  (`programs`, `program_errors`, `subcalls`, `subcall_tokens`,
+  `peeked_bytes`, `program_read_bytes`, `budget_stops`), each an `Option` so a row from before
+  them reads unknown. A budget stop is a backstop, or a host `LimitError:`
+  nothing caught; a program that raises the tag's text itself failed on its
+  own, and one refused at its start counts as a failed program.
+  `subcall_tokens` and `peeked_bytes` saturate at `u32::MAX` in the row,
+  where `ProgramStats` counts in `u64`. **The passes' `Usage` joins the run's** after each batch
+  (`agent::program_usage`), so their tokens are in `RunStats::usage` and draw
+  on the run's `Budget` at the next ceiling check. A program in flight is
+  bounded by its own §5 caps, not cut short by the run's.
+- **On a Mac `[sandbox] memory_mb` and `cpus` are warned about, once per
+  process, when the interpreter is built** (`interpreter::limits_not_applied`),
+  not refused: they are `shell`'s limits, which hold there, and code mode
+  never claimed them.
 
 ## The front door
 
@@ -3815,6 +4208,80 @@ the form called it will sometimes pick the advisor's. Attachments cross as
 to the bytes), or the bytes, which no model has read. It returns `None` for
 any record that is invalid or not yet extracted — a run is never handed a
 request whose prose nothing has looked at.
+
+### The Factory view
+
+`instrument.rs` and the web **Factory** view (`serve/factory.rs`,
+`Factory.svelte`) are the owner's side of the instruments themselves, as
+opposed to the requests arriving through them. A booking page's hours are
+edited there. Four decisions, each a bug if undone:
+
+- **The manifest is the one file.** The slot pipeline reads the manifest's
+  `[availability]` (`slots push --manifest`). The box never computes from it
+  but reads one field, `timezone`, to label the week grid and the
+  confirmation's times. So an hours edit needs no `type push`, and a timezone
+  edit is refused here (`instrument::rewrite`): it is a publish, by hand.
+  The file is the factory's record of what is **served** (`type push`
+  writes it after the box accepts, and the drain validates submissions
+  against it), so the editor writes only keys neither the box nor the drain
+  reads. A later `type push` replaces the file whole and prints a note when
+  the hours it replaced differ (`requests::hours_displaced`, factory side). Until 2026-11-02 the pipeline read a
+  hand-kept copy (`instruments/book-policy.toml`) under a "KEEP THE TWO IN
+  AGREEMENT" comment that nothing enforced. An editor writing two files that
+  must agree is that drift with a nicer face.
+- **The write lives in the handler, never in a verb.** Availability is what a
+  stranger may book of the owner's week. A `mecha factory set` would be a verb
+  a model's shell could run when asked by the prose a stranger typed into the
+  booking form. The charter's rule, applied to a second owner-authored file.
+- **The factory judges its own vocabulary.** A save is `type check`ed and
+  previewed (`slots preview`, over the pipeline's cached busy time) on a hidden
+  draft beside the manifest *before* the manifest is replaced. This side
+  re-decides nothing beyond what would make a write unreadable or a push
+  certain to fail (`instrument::validate`). `PIPELINE_DAYS` is the second of
+  those: it is the `--days` of every script that pushes (the timer and the
+  drain follower), and `the_pipelines_fetch_the_days_the_editor_allows`
+  holds them together.
+- **A save is not undone by what follows it.** The file stands; a failed
+  push or a failed re-read is named beside it, and the timer retries. The
+  page reads bookings as the front-door page does (reconcile, then settle)
+  and drops any booking a withdrawal names, whatever its state says. The
+  confirm sheet quotes only the preview of the draft being saved. A `base` digest refuses a save
+  over a file that changed since the page read it (409), as the charter's list
+  save does, and checks it again at the write, since judging took seconds
+  and spawned two children. Save and preview bodies are capped
+  (`MAX_HOURS_BODY`, and `MAX_WINDOWS`/`MAX_OVERRIDES` in `validate`).
+
+**Forms are edited as drafts, never in place** (`form_draft.rs`, owner's
+ruling 2026-11-02). The served copy is the drain's oracle for what a
+submission may contain, so the page writes `~/.mecha/factory/drafts/<id>.toml`
+and **Publish** is `factory-publish type push` of the draft, which rewrites the
+served copy only once the box accepts it, then removes the draft. Three rules:
+
+- **Hours stay the hours editor's.** Publishing a booking draft takes the
+  served copy's `[availability]` (all but `timezone`) over the draft's
+  (`form_draft::carry_hours`), so a draft begun before an hours save cannot
+  revert it.
+- **A field is matched by name.** `write_form` keeps every key and comment the
+  editor does not show (`show_when`, `pattern`), and a kind change drops the
+  keys the old kind took, since the factory refuses a stray `max_length` on a
+  select. A saved field's name is frozen in the UI: it keys every request
+  already received.
+- **The id is the URL.** A raw TOML save that moves `id` is refused; a new
+  form's id is chosen once, from `type new <starter> --id`.
+
+The preview is `type render`'s page with its stylesheet inlined and every
+script and link removed, in a `sandbox=""` `srcdoc` frame: no scripts and no
+submit. It is the markup without behaviour, so a `show_when` field shows
+unconditionally, and the page says so. Not a network guarantee (a `url()` in
+the owner's own stylesheet would fetch), which is fine while the manifest and
+style are the owner's. The writers are reached from the web handler only
+(`only_the_owners_page_writes_forms`). Pause and retire need a box-side state
+the factory does not have yet.
+
+It rides the `frontdoor` feature (`VIEW_FEATURE.factory`): a factory is what
+the front door is the door of, and a second switch could disagree with the
+first. Not built: host cancellation (the box has no `cancelled_by_host` path
+yet), pausing or retiring a form, and polls.
 
 ## Web search
 
@@ -4024,7 +4491,8 @@ annotations ride on the unified tools (there is a shared
 list now covers every account it could send from.
 
 **And there is one more quadrant, which is neither.** `mail_triage` — archive,
-read/unread, spam, trash — mutates the user's own mailbox and reaches nobody:
+read/unread, spam, trash, unarchive (undo archive), untrash (recover trashed
+mail) — mutates the user's own mailbox and reaches nobody:
 no third party learns anything, so it is not `external_send` and **must never
 appear in `[outbox] tools`**. Staging it would make triage circular, reviewing
 a queue in order to fill another queue. It is not `readOnlyHint` either, or a
@@ -4034,6 +4502,49 @@ interlock, and `assert_tool_surface` takes a third slice that asserts exactly
 that pair of negatives. The action set is a **closed enum** (`TriageAction`),
 on the `SLACK-ACTIONS-DESIGN.md` §1 reasoning: a free-form label argument
 would put `spam` inside a verb that reads as harmless.
+
+**Outlook triage must choose its source folder before moving messages.**
+`OutlookProvider::archive_thread` lists the conversation through
+`/me/mailFolders/inbox/messages`, paginated, to match Gmail's removal of
+`INBOX`. Listing `/me/messages` instead swept the owner's Sent Items and
+Drafts into Archive. `spam_thread` also uses Inbox as its inbound scope:
+Gmail adds `SPAM` thread-wide, but translating that into moves of every
+Graph message sweeps sent copies and drafts into Junk Email. Already-filed
+mail stays put. `trash_thread` deliberately retains whole-conversation
+scope, including drafts, like Gmail's `threads.trash`; read/unread also
+remain whole-conversation operations. Triage results carry successful and
+failed mutation counts and a completed/partial/nothing-to-do status through
+MCP, in `structuredContent` and matching JSON text for text-only clients.
+An empty Inbox listing triggers one unscoped existence probe (`$select=id`,
+`$top=1`): a missing conversation remains a 404, while a conversation with
+only filed mail is a no-op. Probe results never become move targets.
+`unified::status_of` and the CLI's `triage_status_of` independently classify
+counts; a CLI parity test uses the mail dev-dependency to keep them aligned.
+The CLI checks the server's claimed status without linking the mail library
+at runtime: mailbox access stays over MCP.
+`commands::mail::finish_triage` marks `ACTED` for confirmed completion,
+including archive's `nothing_to_do`: the existence probe has proved that the
+conversation is already out of Inbox, so its record settles even when the
+owner archived it directly in Outlook. Spam's empty Inbox result still says
+`skipped: nothing in Inbox` and stays unsettled, since no junk training was
+confirmed. Partial failures return an error with counts and leave the record
+unchanged for both verbs. Missing or inconsistent outcome data must not settle
+the queue either. CLI reports keep the action and short handle before the
+server message; restore messages name their action too. Gmail acknowledges
+thread operations without a message count (`moved: null`).
+`restore_conversation` still reads only Archive or Deleted Items, and
+`restore_destination` routes drafts to Drafts, known owner mail to Sent
+Items and inbound mail to Inbox; unknown destinations stay in place.
+Unarchive is not an exact inverse: it has no receipt of which messages a
+particular archive moved. That receipt belongs to P1's ledger, not this fix.
+
+**Mail timestamps are compared as parsed instants.** Provider stamps preserve
+fractional precision; a whole-second stamp sorts after a later fraction as text.
+Thread replies select the last message, so this affects who receives a reply,
+not just presentation. Provider threads, merged mail, triage lists and corpus
+reply evidence all compare instants. A corpus thread with an unknown arrival
+is excluded from reply evidence; one stderr notice names the skipped threads
+and their count while valid threads remain usable.
 
 **Bulk reading is an operator verb, never a tool.** `mecha-mail corpus`
 downloads a span of mail for analysis, and it is absent from the MCP surface on
@@ -4104,6 +4615,436 @@ wrong org, unrecognised tenant, the public-client-flows switch and a sent
 description kept in parentheses. Google's loopback PKCE flow sends
 `access_type=offline&prompt=consent` because Google needs both to reliably
 return a refresh token every time.
+
+## Mail rules
+
+**P3-1 supplies the page through CLI children.** The existing GET routes
+`/api/mail/rules`, `/api/mail/rules/{name}` and `/api/mail/rules/ledger`
+remain read-only. POST routes under `/api/mail/rules` are `/add`,
+`/{name}/edit`, `/{name}/mode`, `/{name}/pause`, `/pause-all`, `/undo`,
+`/wrong-match` and `/{name}/test`. Every route belongs to `MailRules`; the
+feature-off guard runs before the handler. Mutations invoke `mecha mail rule`
+through `review::self_json_input_within`; handlers never write the store.
+Names and row IDs follow `--`, except add, which passes `--name=NAME` (the
+`=` binds a value that begins with a hyphen), and test's `--account=NAME`.
+`RESERVED_RULE_NAMES` (the fixed route segments) are refused at install. Edit uses
+`edit --stdin -- NAME`, and drafts travel only on stdin. The stdin budget is
+1 MiB, and the add and edit routes refuse a larger body at the door
+(`MAX_DRAFT_BODY`). Child writing, output draining and exit share a deadline; cancellation
+kills the child's process group. Ordinary mutations have 30 seconds, undo
+120 seconds and retrospective testing 600 seconds. The last stderr line and
+any JSON failure/partial report survive a nonzero exit (HTTP 409); timeout is
+504 and spawn failure 500. The 600-second test allowance is a conservative
+budget for paginated searches followed by individual reads with 30-second
+HTTP deadlines, not a measured guarantee for every mailbox.
+
+**The page (P3-2)** is `web/src/lib/MailRules.svelte`, rendered by App for
+`#mail/rules` in place of either Mail build, with its display rules in
+`mail-rules.js` (`web/test/mail-rules.mjs`): an unnamed mode, group or outcome
+renders `unknown`, a null rate a dash, and a raise is judged against the
+effective mode as the store judges it. *Make a rule* hands the reader's row to
+the page through `mail-rules-handoff.svelte.js`; nothing installs without the
+owner's Install, and it lands in shadow.
+
+**The JSON contract for P3-2 is additive.** `list --json` remains an array;
+`show --json` remains one object. `RuleView` carries `name`, `description`,
+`approval_digest`, `groups`, `holds`, `last_activity`, `load_error`,
+`fires_7d`, `last_fired` and `failures`. Fires are completed `done`/`sent`
+actions, failures are failed ledger rows, and last-fired is null without a
+completed action. Each group carries `group`, `recorded_mode`,
+`effective_mode`, `activated_at`, `holds`, `match_digest` and `statistics`.
+The statistics array has distinct `not_applicable`, `snippet`, `full_body`
+and `unknown` buckets under that group's current match digest; there is no
+pooled rate. Each bucket contains `matched_actions`, `matching_threads`,
+`automatic_mailbox_actions`, `owner_undos`, `owner_wrong_matches`,
+`owner_corrected_actions`, `undo_rate`, `wrong_match_rate`, `correction_rate`
+and `shadow_upper_bound`. Undo rate is over automatic mailbox actions;
+wrong-match rate is over matching threads; combined correction rate is over
+matched action keys, counting an action both undone and marked wrong once.
+All rates with an empty denominator are null. Counts deduplicate immutable
+account/message/action keys or account/thread keys, respectively. Only
+corrections recorded with `actor: owner` enter owner numerators; historical
+rows without attribution remain unknown. Safety brakes retain their existing
+conservative evidence rules, including corrections from non-owner actors.
+Unknown recorded modes and ledger outcomes stay `unknown` in JSON.
+
+Show additionally carries `inputs: {digest, files}` and `rule_toml`. Files
+retain the existing `rule/…`, `skill/…` and global-input keys. `rule_toml`
+is also read through containment checks when parsing fails, so broken text
+can be repaired; an unreadable file is null. The approval digest is the full
+object, including future skill/alias/limit/version components, passed as JSON
+to `mode --digest`. The mode POST body is `{group, mode, digest?}`; every
+raise requires the supplied digest and auto passes `--yes`. The store checks
+both requirements under its writer lock. CLI mode JSON reports `ok`, `name`,
+`group`, `requested_mode`, `recorded_mode`, `effective_mode`, `clamped`,
+`holds`, `actor` and `actor_reason`; failures are
+`{ok:false,error:{code,message}}`, with `stale_digest`, `digest_required`,
+`owner_required`, `confirmation_required`, `mode_ceiling` or
+`invalid_request`. A supplied stale digest refuses even a lowering; without
+one, revocation remains available.
+
+Ledger JSON preserves the flattened wire fields (`account`, `thread_id`,
+`provider_message_id`, RFC `message_id`, `sender`, `subject`, `action`,
+`group`, `mode`, `match_digest`, `verdict_input`, `outcome`, `closes`,
+`correction_of`, `settlement`, `matched_because`, `reason`, timestamps),
+adding `undoable` and `wrong_match_allowed`. Empty historical sender/subject
+become null; P1 ledger rows already hold both, so this view never fetches mail
+or bodies. `actor` is optional on correction rows. Retrospective rows also
+carry `received_at` (provider arrival) and fresh `in_inbox`.
+
+Add's body is `{name,rule_toml}`, edit's `{rule_toml}`, undo/wrong-match's
+`{row_id}`, test's `{account?}`, and pause/pause-all accept `{}`. Add JSON
+reports `ok`, `name`, `mode: shadow`, `approval_digest`; edit reports `name`,
+`changed_files`, `approval_digest`, `lapsed_groups`, `notices`. Pause reports
+`ok`, `groups` (changed count), `notices`, `actor`, `actor_reason`.
+Wrong-match reports `changed`, `row` (null on a duplicate), `message`.
+`test --json` still launches `mecha-mail rules test NAME`, never apply. Its
+JSON contains `dry_run`, `window_days:30`, `all_folders:true`, the existing
+aggregate `report`, and `accounts`. Each account carries `account`, `status`
+(`complete`, `held`, `failed`), `matched_rows` (null if incomplete/held),
+`would_have_rows`, `read_failures`, `candidate_failures`,
+`unknown_header_messages`, `holds` and `rows`. `unknown_header_messages` counts
+messages a non-outbound header rule could not be checked against because the
+reader cannot prove absence and did not surface the header (the 2026-11-06
+ruling's Unknown); it is never folded into `matched_rows`, so "matched
+nothing" and "could not see the header" read differently.
+Partial would-have rows remain visible alongside a failed account.
+A reply action meets §5.4's message-only refusals here as in the live pass
+(`engine::message_reply_refusal`, one function for both): a refused reply is
+a `skipped` row reading `test: skipped: <guard>`, counted in `refused_rows`
+and never in `would_have_rows`, so the preview the owner reads before raising
+template replies out of shadow is the rate the live pass would reply at. The
+per-sender week alone is not applied, because it reads the ledger and the
+test writes none. "A conversation you have joined" needs the thread, which
+one message cannot show, so a reply rule's match reads its thread
+(`preview_reads_thread`) and the owner's own messages in it decide the
+guard as they do live; every other message is previewed from itself.
+
+**Edits and corrections cannot restore permission.** `RuleStore::edit`
+parses first, validates a private candidate snapshot with existing bundled
+files, and appends every necessary lapse before atomically replacing only
+`rule.toml`. If publishing fails, permissions can remain lower; they cannot
+revive. Already-off groups are excluded, shadow stays shadow, and existing
+brakes bound lapses. Before publishing, edit also persists any lapse in the
+old files, including unreadable ones, so restoring previously approved bytes
+cannot recover auto after an external edit. Per-rule pause uses the same lower
+path as pause-all; resume is a mode raise, never an unpause. `wrong_match` is a new ledger
+outcome with `closes:true`, copying the original action key and naming its
+row in `correction_of`, never `settlement`. Older readers see unknown and
+close it too. It performs no triage correction or provider restore, refuses
+description rules until P4, and remains idempotent even after undo. Undo
+ignores this known independent correction when checking its own intent
+history. Both operations use the engine lease, and retrying a correction
+also retries a failed safety lowering without appending a duplicate row.
+
+**Unattended passes share the owner's gates.** P1c-2's `mail_rules` switch
+is global, off by default and requires `mail`; both the header timer and the
+post-classify child check it before opening stores or providers. `mecha mail rule`
+`list`, `show`, `ledger`, `pause-all` and lowering modes deliberately work with
+`mail` or `mail_rules` off: inspection and revocation must not depend on the
+switch. `mail_rules::child_path` is the
+canonical executable sibling used by the launcher and feature facts, never PATH.
+The header service has no model-idle gate. Its copies in `scripts/` and
+`mecha-core/units/` are byte-equal; installation follows the existing mail timers'
+manual procedure. `ApplyRunning` is typed lease contention and skips successfully;
+other lock errors and typed candidate/read/action/handled failures fail the pass.
+A held pass is not a failure. A fresh service reads global switches each tick.
+Direct mail-binary undo and retrospective test also check both switches before
+opening stores or providers, refusing unreadable configuration. Test requires
+the switch despite being read-only because it still contacts the mailbox.
+
+**Classification is already durable when its hook runs.** The same account
+selection goes to `rules apply --after-classify`, including an empty successful
+pass that may owe deferred work. A dry run or failed verdict write does not run
+the hook. Its output and attempted/failed counts go to stderr, and its errors
+never change classify's own stdout or exit decision. The launcher returns its
+status to the caller; only the explicit owner command propagates a child exit.
+The hook has a fixed ten-minute total allowance, including output draining,
+a ten-second SIGTERM grace and two seconds to reap after SIGKILL if needed.
+The running deadline reserves those last twelve seconds for termination;
+timeouts are reported and counted even if the child exits cleanly on SIGTERM.
+The shipped classify services reserve ten minutes beyond the original sweep
+budgets (40 minutes daytime, 55 nightly), so a successful sweep cannot lose its
+old allowance to a hung hook. Their packaged copies are byte-equal; deployment
+must re-copy both classify services and daemon-reload, not merely replace the
+binaries.
+
+**Doctor and backlog observe; they never persist a lapse.** Pending recovery
+findings distinguish unsettled attempts from exact interrupted settlements;
+normal completed attempts are healthy. Corrupt approvals cannot be skipped to
+write `off`. Unknown ledger outcomes keep their closing keys. An account without
+a stored address holds all rules, and Outlook's header limitations are standing
+findings only for the rules still held there: raw-header rules with an outbound
+action, and description rules. A non-outbound header rule acts on Outlook on a
+visible positive match (`headers_partial: true` on its rows) and is absent for a
+message whose header is not visible (owner ruling 2026-11-06; MAIL-RULES-DESIGN
+§4.1). Every recorded automatic group under unconfined shell, or a sandbox
+with a writable mount reaching the rules store, gets attention, including
+Mailbox and Board: the actor reading is advisory without an effective sandbox,
+and Board tasks reach a task prompt. The rules store is also in the general
+confinement check's protected directories. Both the protected path and mount
+path resolve existing aliases before comparing ancestors or descendants.
+Doctor reads global confinement only and does not probe backend readiness.
+A failed configured sandbox is stopped by `Sandbox::preflight` before shell
+executes; the residual includes unconfined writes, writable mounts and network access.
+The orchestrating session retained the web loopback route under the existing
+closure residual: a serve child can read as owner even with an ordinary chat
+live in serve, and doctor now reports every automatic group when registered
+shell can reach that port (`Sandbox::can_reach_network`), naming a sandbox
+with network off as the remedy alongside every applicable write exposure.
+Timer checks skip when systemd cannot be queried (including no binary or user
+bus); a returned missing-unit or failed-unit state is a finding.
+The sixth backlog store counts pending proposal directories and lapsed group
+approvals. An unreadable or deleted definition falls back to its approval rows,
+so its persisted lapse cannot hide the other rules or proposals; unreadable
+shared history still makes the count unknown. P7 owns proposal creation/lifecycle;
+for now proposal age is the definition's file modification time. P3's read API
+is feature-owned and its pane mapping is reserved, while the Mail view keeps
+its existing `mail` feature.
+
+**The engine belongs to core; mailbox clients and OAuth stay in the mail
+binary.** `mail_rules::engine::apply` takes `Mailbox` and `TaskSink` interfaces;
+`mecha-mail rules apply` supplies them. The `mecha` CLI keeps mail as a
+**dev-dependency only**. `mecha mail rule` manages the core store and invokes
+`mecha-mail rules test` / `undo` as argv-only children from the canonical current
+executable directory, preserving output and exit status (`MAIL-RULES-DESIGN.md`
+R10). PATH is never searched: a workspace or `.` entry could execute a
+model-planted binary with the owner's mail access. Mode changes use the same shared actor reading as outbox; store gates
+remain authoritative. Approval binds the exact displayed input snapshot, and
+an intervening edit refuses the raise. Read-only views never persist lapses or
+brakes; pause-all can revoke unreadable definitions using their approval history.
+Its emergency enumeration skips invalid directory entries with named notices,
+so a copied backup cannot prevent revocation of valid rules; ordinary listing
+and installation stay strict. The CLI asks the store for the permanent mode
+ceiling before displaying an automatic approval screen, and the store rechecks
+that same ceiling under its writer lock. Mail registry views use
+`onboarding::mail_store_dir`, including its non-UTF-8 override fallback.
+Every engine Outlook read and mutation uses
+`with_immutable_ids`; a folder move must not manufacture a new ledger key.
+Candidate pagination validates Graph origins and repeated links before any
+credential-bearing fetch; malformed pages or continuation tokens fail the pass.
+Gmail tokens are encoded as query values and repetitions are errors, never an
+apparently complete result. Mailbox effects address the authorized provider message ID. A thread-wide
+mutation would also touch pre-activation or newly arrived, unmatched messages.
+Gmail's rule sender evidence is parsed as a mailbox, never by selecting
+angle-bracket text: a quoted display name may contain a different address.
+Display and reply fields retain the legacy fallback for unsupported addresses;
+that fallback is not sender or recipient evidence. Ambiguous senders hold.
+Inbound selection uses provider direction evidence and all configured account
+addresses plus the rule store's aliases. SENT/DRAFT labels and Graph draft/sent
+facts cannot be overridden by a different sender address; missing direction
+holds instead of promoting an alias reply to the newest inbound message.
+Every configured account must have an address before the owner set is used;
+unknown ownership holds the read and leaves deferred Board occasions open.
+The same held-read path handles uncertain sender, direction, newest-message
+identity and unreadable annotations or malformed message facts. These are
+observations, not closing action failures; seven-day expiry still closes them.
+Every dispatch rechecks the fresh mode's activation against provider arrival;
+an owner can pause and reactivate while an earlier sibling awaits I/O. Unknown
+activation holds the group before enqueue and dispatch, with one standing notice,
+never a per-message skipped row that hides the missing activation evidence.
+
+**Retrospective testing cannot become a timer pass.** The separate `rules test`
+command searches 30 days across all folders with cached tokens only. It tests
+header matches independently of activation and prior ledger closures, records
+fresh inbox membership in its report, and writes nothing. Description matchers
+refuse until P4. Test and live listing share origin/token validation and the
+100-page ceiling, so distinct empty pages cannot retain an engine lease forever;
+hitting the ceiling increments candidate failures. Live windows use the clock
+reading passed by the engine, including Gmail's absolute search cutoff.
+`apply --rule` requires `--dry-run` in both argument parsing and the core engine.
+A live subset would omit sibling digest/task obligations when deciding whether
+to remove a message or mark it handled; every live pass considers all rules.
+
+**Undo keeps the action closed.** Core validates a completed Mailbox row before
+the adapter restores its exact provider message; Graph restore requests retain
+immutable IDs. A durable `undo_pending` correction references the completed row
+before provider I/O, closes its undo key and counts toward the undo-rate brake
+immediately. The engine lease serializes undo with apply and other undos. A retry
+resumes the same unsettled intent; it cannot create a second intent. Exact-message
+restores treat a message already restored as a nothing-to-do success. An appended
+`undone` or `failed` settlement names the intent; a failed restore no longer counts
+toward the undo rate and cannot be retried as a fresh undo. A safety brake already
+recorded remains until owner re-approval. An unreadable definition still goes
+through `lower_modes`, whose `lapse_unreadable_locked` clamps every historical
+group before restore; merely
+skipping the brake on a failed load would leave auto permission recoverable by
+restoring the old files. A failed clamp stops provider I/O. Ordinary action
+sweeps never settle undo intents, and older readers degrade their new outcome
+to `unknown`. Read/unread
+undo reverses the verb, since old rows have no previous-state snapshot. Spam,
+sends, tasks and private records have no restore here and refuse.
+
+**Claims and caps need different locks.** `RuleStore::claim_actions` remains
+the atomic per-action decision, including partial successes and once-per-thread
+Board occasions. The separate engine lease spans effects across all selected
+accounts, so two runs cannot independently spend the last global cap slot.
+Sibling reservations share capacity; explicit defaults cannot disguise duplicate
+actions at load. Each reservation and dispatch reads the injected clock. Attempt
+dates, including failures, drive cap accounting; an unsettled attempt reserves
+capacity across midnight until its fate is known. Network I/O never holds the
+short store writer lock. Lock guards explicitly unlock before closing: a
+parallel fork can inherit the same open file description and retain its flock
+until exec, even though the original run has finished and every test uses a
+unique store root. Closing the parent's descriptor alone is not release.
+Mode resolution is cached within a pass; ordinary threads and actions do not
+repeat whole-store lapse/brake transactions. Dispatch still rereads approvals,
+and an append-only ledger cursor picks up concurrent owner corrections. Actual
+input changes persist a fresh lapse, and new adverse evidence can lower a mode
+immediately. Ledger replacement, truncation or a same-length rewrite refuses
+the pass rather than discarding closure evidence.
+Pending sweeps name the
+exact attempt; uncertain task creation stays held, while an interrupted
+mailbox/record action reopens. Unknown action failure kinds count toward the
+brake; positively identified outages and interruptions do not.
+
+**An observation is recorded once.** A `would_have` or unsettled `skipped`
+row closes no key, and the timer sees the same inbox message every five
+minutes for a week, so `Run::write` drops a repeat that matches a row already
+in the ledger on key, outcome, mode, match digest, `verdict_input`, reason and
+`headers_partial`. Any of those changing is a new fact and is written. Rates
+were never affected, since they count distinct keys; before this, one shadow
+match wrote about two thousand rows and filled the page's ledger window.
+Settlements and corrections are never observations and are always written.
+A repeat is still *reported*, as the row the ledger already holds: the
+after-classify settlement of a deferred snapshot finds its outcome in the
+run's report and appends any outcome whose id the ledger lacks, so a fresh id
+there would bring the growth back under a false "no longer matches" reason,
+and a dry run must show what a live pass would.
+
+**Description rules are answered by the classifier and acted on by the
+engine (P4a).** `mail_rules::describe::ClassifierRules` reads the store once
+per classify sweep: the admitted description rules, in an active list (a
+group in `propose`/`auto` with readable activation) and a shadow list,
+priority then name, capped at `LIST_CAP` (12) entries. It judges each
+message's eligibility with the engine's own `header_match` over the sweep's
+envelope (sender, account, subject, attachment flag), Unknown ineligible. A
+rule whose preconditions use `to`, `list_id` or raw headers is held instead
+(`PRECONDITION_HOLD`), in the frame, the engine, the views and doctor alike.
+`mail_triage::classify_asking` adds the frame only when some rule is eligible,
+so a prompt with nothing to ask is byte-identical to one without rules; the
+constrained enums carry only eligible names, and `rule_frame::read_answer`
+grounds every quote against the text the model was shown (8–300 characters),
+refusing an ineligible name. The triage record's `rules` field stores the
+grounded hits, the refusals, what the verdict read (`snippet`/`full_body`),
+and every rule asked about with its matcher digest. The engine, after
+classify only, treats a description rule as matched when that record names
+it under its *current* matcher and its header preconditions are not
+disproved on the full message; only an active-list name authorises an active
+group, and a shadow-list name writes would-have rows alone. Rows are written
+by `LedgerRow::described`, never `header`, carrying the record's input and the
+quote in `matched_because`. A bulk thread the pre-filter took is asked about
+for the rules alone when a rule is eligible (owner ruling 2026-11-07), keeping
+its `ignore`. Admission (`RuleStore::admit_locked`) refuses an install, edit
+or raise that would add entries past the cap; lowerings are never checked.
+A description rule's Mailbox group is capped at `propose` when it contains
+`trash`. Outbound groups are no longer held by rule kind: Fixed words is
+capped at `propose` for every rule, and the other outbound groups stay at
+`shadow` because they are not yet `supported()`.
+
+**A rule's template reply is staged, never sent, in P4b-2a.** The Fixed words
+group is supported up to `propose`. `mail_rules::send` fills the closed
+slots and applies §5.4's refusals in every non-off mode, shadow included;
+the per-sender week reads the ledger. At dispatch the engine renders the
+template and calls `Mailbox::stage_reply`, which the mail binary implements
+as `OutboxStore::stage_by_harness_quoting_mail` of the routed `mail_reply`
+tool with `from_only: true` — armed, because the slots carry the sender's
+words and a harness-authored draft is otherwise stamped clean; the `staged` row keeps `outbox_item`, and every pass
+begins with `Run::settle_staged`, writing `released unchanged`, `edited` or
+`rejected` from the item's status. `mail_reply`'s `from_only` is a narrowing
+a model may also set: the message's `From` alone, never reply-all. On
+Graph it is not `/reply` with `toRecipients`, which Microsoft documents as
+*adding* a recipient beside the `replyTo` the endpoint follows: it is a
+`createReply` draft, its To replaced and Cc/Bcc cleared by `PATCH`, the
+recipients read back and the draft sent only when they are exactly that one
+address (deleted otherwise) — the artifact asked, not the request we wrote.
+The staged call pins `expect_from` to the address its review shows, and
+`mail_reply` refuses when the message its `message_id` resolves to is from
+anyone else: the selector is the sender-written Message-ID, so the approval
+is checked against the recipient, never the selector. A staged reply carries `OutboxItem::answering` (the address and subject),
+because no drafting session exists for the review's source join to read.
+
+**A description rule's task is decided by a pass with no learned rules in
+it (P4b-1).** `mail_triage::confirm` asks the candidates' descriptions alone,
+with an instruction compiled into the binary; the sweep stores its answer on
+`rules.confirmation` with `CONFIRMATION_VERSION`. The engine demotes an
+automatic task to an offer, at planning and again at dispatch, unless that
+answer chose the same rule under this build, and reserves no cap for the
+demoted one. The version is in the match digest of only the groups it decides
+and the approval digest of only the rules it decides for. This is the
+argument `Reflexion::learnable` now cites for the triage exemption: a learned
+line can nominate a task or send, never decide one.
+
+**An inbox removal cannot hide work owed to classify.** Enabled description
+rules, even shadow ones, and any matching non-off header digest/task/outbound
+action defer removals regardless of priority. Owed actions enter the store's
+deferred queue before the pass finishes. Provider/transport read failures keep
+the queue and consume no keys or capacity: nothing was dispatched. They emit
+non-closing report holds and increment `ApplyReport::read_failures`, which the
+mail binary uses for a non-zero exit without parsing downstream prose. Unknown
+facts also hold the read; seven-day expiry remains terminal for both paths.
+Account listing failures increment `ApplyReport::candidate_failures`, name the
+account in a notice and leave other accounts' effects in the report. They also
+produce a non-zero exit without interpreting prose. Deferred work for that
+account is neither expired nor settled, including in a dry-run plan; expiry
+resumes after a successful listing, even one returning no threads.
+A stale verdict keeps its queue entry.
+Verdict freshness compares envelope timestamps at whole-second precision for
+both providers: deployed classifiers discarded fractions. A prior-second
+verdict remains stale; activation eligibility keeps precise provider arrival.
+Unknown header completeness, attachment presence and provider arrival remain
+unknown through the adapter. Dedicated
+Graph subject and To/Cc/Bcc fields carry their own completeness: raw-header
+uncertainty must not turn a known envelope negative into an indefinite hold.
+`Mailbox::proves_header_absence` distinguishes a standing provider limitation
+from incomplete data in one message. Graph cannot prove absence: rules with
+`list_id` or `header.<Name>` matchers are excluded for that account even on
+positive matches, with one notice per rule/account/pass and no per-message
+rows. They do not defer other rules, suppress handled markers, or consume keys
+or caps; old pending/deferred snapshots remain untouched while held. Gmail's
+full reader opts in, while individual incomplete messages still hold normally.
+Semantic comparisons unfold raw headers and strictly decode RFC 2047 words;
+Graph subjects are already decoded. Malformed words and List-Id syntax remain
+unknown. Display and ledger fields retain the original strings.
+After-classify reads outstanding deferred entries and verdicts recorded within
+the headers path's seven-day window. Live expiry rows appear in the returned report
+just as they do in the dry-run plan. Expiry closes an occasion even though it
+is not a failure: historical verdicts must not recreate an expired queue entry
+with a fresh timestamp. Both claims and enqueue enforce that closure.
+Possible
+matches hold removals and classification skips; observation holds consume no
+action key and leave deferred snapshots queued. Sender Date never establishes
+activation eligibility. Timer-only handling writes a marker for
+the provider message, never a fabricated classification. A failed marker write
+leaves the thread out of the handled list and increments the report's typed
+`handled_failures` count for a non-zero exit; completed effects and later
+accounts remain in the report. Rule annotations live
+beside triage and overlay its read: rewriting a classifier verdict must not
+erase a rule's tag or digest flag. The derived overlay keys are stripped before
+reading a sidecar and before writing a base verdict, so a broken sidecar cannot
+resurrect annotations cached by an older writer. Broken overlays warn once per
+list pass while every healthy overlay and base record remains available.
+
+**Automatic task names contain no mail prose.** The owner's rule description
+plus a validated address, arrival date and typed deadline supply the name;
+context is a thread pointer. Disabled graph entries count as unconfigured in
+both live and dry runs. Missing graph configuration or a failed connection
+holds tasks without consuming action keys, once-per-thread occasions or cap
+capacity; the next pass retries once the sink is available. Sink availability
+is checked before caps, since a local midnight can free capacity before dispatch.
+Cap holds still close their occasions, and an uncertain dispatched task remains
+closed. Graph task tools that advertise background execution are refused at
+connection. A defensive deferred result is cancelled without starting its job;
+its unused claim settles as skipped and its report shows a non-closing hold.
+Only a typed guarantee of no dispatch releases a claim, never an outage alone.
+This includes MCP's `not_dispatched` result, which is accepted only from an
+operator-trusted server: it retries without consuming the Board occasion,
+capacity or brake budget.
+Graph shutdown errors become report notices; they cannot discard completed
+effects or override the typed apply exit status.
+Description matching and all sends remain unsupported in P1b;
+`resolve_mode` supplies their permanent ceilings, including spam's propose-only
+ceiling and the Board origin gate.
 
 ## Documents
 
@@ -4704,7 +5645,7 @@ the invariant is checkable by reading `Cargo.toml` instead of by reviewing
 diffs. The front-end that knows both sides belongs in `mecha-cli/src/slack/`,
 which is where `tui/` lives, for the same reason.
 
-Four things in it that cost something to get right, or would have:
+Five things in it that cost something to get right, or would have:
 
 - **A Slack refusal arrives as HTTP 200.** `{"ok": false, "error": "..."}` with
   a success status, so a client that checks the status and then reads the body
@@ -4734,6 +5675,15 @@ Four things in it that cost something to get right, or would have:
   discards blocks past its cap and silently removes oversized images, which
   leaves a human reading a complete-looking message that is missing the part
   that mattered. Where something is cut, the cut says so.
+- **A TLS client here names its crypto provider; the socket's is ring**
+  (`socket::tls_config`, used by `socket::dial`). A mecha built with code
+  mode links rustls's aws-lc-rs provider through `monty-pool` beside the
+  ring one everything else uses, and rustls then refuses to pick a process
+  default, so a client that asks for one panics. `connect_async` asked for
+  one, so the first deploy with code mode built in (2026-11-01) crash-looped
+  the connector, while CI stayed green, because every socket fixture is
+  `ws://` and never builds a TLS connector. `mecha-cli/tests/slack_tls.rs`
+  dials `wss://` in the build that links both.
 
 **The front-end lives in `mecha-cli/src/slack/`**, beside `tui/`, and is the
 only part that knows about both sides. Three decisions there:
@@ -4912,6 +5862,33 @@ backpressure. Images alone may render inline; other content stays inert.
 **Apply read limits before accumulating file contents.** `FsRead` selects
 lines and caps bytes in `read_text_window`; truncating a completed
 `read_to_string` caps the answer but leaves allocation and decoding unbounded.
+
+**A cut read says so first.** `fs_read`'s notice of a cut opens its result,
+with the file's size and the line to read on from, because the dispatch's
+result cap keeps the head: a note after the text landed in the spill file's
+tail, the cap marker named the 200 KB read as the whole output, and a model
+reported a 1.5 MB log as two days long with no failures in it (2026-11-01).
+A program's read is capped at what the program can still hold
+(`ToolCtx::program_room`, at most code mode's 64 MB host-byte limit), less
+room for the notice, so a cut read is still text the program can hold: it
+goes to the program, not the context window the turn cap protects, and
+reading past the room would be refused anyway. A turn's cut read in a run
+that offers `code` (`ToolCtx::code_offered`, stamped by `Agent::stamped`)
+also names a program as the way to search all of it, with the path as the
+model wrote it: in M2 a model paged a 1.5 MB log in 200 KB windows, stopped
+partway, and called it a thorough review. `call_ctx` sets
+the mark on every call, as it does `host_calls`, so a subagent's run, which
+is based on a call's context, never inherits it (review of #796).
+
+`shell` and `http_fetch` follow the same rule: every builtin's cut note
+opens its result (`lossy_prefix` appends nothing), and gives the size that
+is known, never the bytes held, in the source's bytes rather than the
+decoded text's: an invalid byte decodes to a three-byte U+FFFD. `shell`
+counts each stream as it drains, and names stderr apart, because stderr
+comes second and a full stdout leaves none of it shown; `http_fetch` stops reading one byte past the cap, so it
+knows only the server's Content-Length, or that there was more. The notice's
+room is the path as `display` writes it, three bytes per non-UTF-8 byte, and
+a program with less room than the notice is refused before anything is read.
 
 **An MCP client's lifetime owns its child and readers.** `McpClient` enables
 `kill_on_drop` before spawning and aborts its reader task handles on drop.
@@ -5582,7 +6559,11 @@ silent failure before it was a rule:
 - **A transport failure is `ToolOutput::err`** (`MCP call failed: ...`), never
   an `Err` that ends the run; `connect_all` reports and skips a server that
   fails to start, except under `mecha eval --mcp-file`, where a partial surface
-  would grade nothing and a failure is fatal.
+  would grade nothing and a failure is fatal. Local I/O, EOF and timeout
+  evidence survives as `ToolFailureKind::Transport`; server error text and
+  metadata cannot set it. Mail-rule Board actions hold unknown task fate on
+  transport loss without counting an action failure. A tool refusal still
+  counts toward the brake.
 - **`Registry::insert` replaces by name, but config cannot reach that.**
   Prefixed MCP names cannot collide with a built-in, and an unprefixed
   (`prefix_tools = false`) collision fails startup in `setup`. The
@@ -5986,7 +6967,9 @@ X3 unparked).
 - **History is what the ledger forecast as real.** A smoke run's draft
   (`MECHA_SESSION_KIND=test`) is recorded `test`, predicts nothing, never
   counts as history, and the readout sets it aside. The instrument must not
-  measure its own tests. Drafts from before forecasting began are not
+  measure its own tests. A driven run's draft (`driven`) is set aside the
+  same way, under the same field, because another agent staged it and it
+  says nothing about how the owner acts. Drafts from before forecasting began are not
   history either.
 - **Scored only at read time**, by `sessions appraise` (`forecast::summarize`),
   under the patience window recorded on the forecast when it was made
@@ -6980,8 +7963,10 @@ was ever deployed.
   a model regression. The system prompt is stored as text, not a hash — a hash
   says only *that* something differed. The sampler is recorded only as far as
   it was pinned: `temperature`/`seed` of `None` means the server chose, and
-  replay against such a run is pass@k-shaped, not exact-match. `clock` is per
-  run, because one `mecha serve` session held runs on both sides of midnight.
+  replay against such a run is pass@k-shaped, not exact-match. `clock` is
+  per `Config` record, which is per attach and per rebind, and so per run
+  only when the process is: one `mecha serve` session held runs on both
+  sides of midnight. The per-run time is `RunStats::ended_at`.
 - **A `spoken_direction` record is for the corpus, not the conversation**
   (`voice_direction::SpokenDirection`): written by the voice facade while
   its sentence plays, so it is joined by `turn` and `sentence`, never by
@@ -7233,6 +8218,14 @@ The design decisions, each of which is a bug if undone:
   file would be faster and would be a second source of truth that can disagree
   with the first — the same reasoning that has the TUI read a trigger's last
   answer back from the session record instead of caching it.
+- **The outcome row is the one per-run clock** (`RunStats::ended_at`),
+  stamped by `Session::record_outcome` as the row is written and never by
+  `RunStats::of_run`, so a replayed or folded row invents no time; a fold
+  keeps the last run's, `None` included. It is the machine's wall clock,
+  not the run's `Clock`: under an experiment's fixture clock `Config.clock`
+  is the designed day and `ended_at` the operator's. A `Config`'s clock is per process
+  attach and per router rebind, so before this a chat held open for days
+  had no time on its later turns (`persona::initiative`'s ordering).
 - **Every front-end writes the outcome record** — `run`, `chat`, the TUI, web,
   Slack, triggers. Before `Record::Outcome` existed the transcript kept two of
   `RunOutcome`'s fields while a trigger's ledger kept the rest, so a run a
@@ -7242,7 +8235,7 @@ The design decisions, each of which is a bug if undone:
   runs. Doctor's constraint — one pass, no network, no model — is the bar.
 - **A session has a kind, written by the front-end and never inferred**
   (`SessionKind` on `SessionMeta`: run, chat, tui, web, voice, task,
-  trigger, frontdoor, mail, slack, test). `Test` is excluded
+  trigger, frontdoor, mail, slack, test, experiment, driven). `Test` is excluded
   from every corpus readout by default, `--kind test` implies inclusion, a
   row with no kind matches no `--kind` filter, and the hidden rows are
   *counted* at every reader (`Corpus::hidden_tests`, and the same number on
@@ -7252,6 +8245,51 @@ The design decisions, each of which is a bug if undone:
   a chat into a test, never a test into anything else. The incident: 46 of
   143 appraised sessions were development runs before the mark existed, and
   the instrument measured its own tests.
+- **A driven session is another agent's run on real work**
+  (`SessionKind::Driven`, `MECHA_SESSION_KIND=driven`, `DRIVER-DESIGN.md`
+  D1), and it lives in the owner's own store. Every reader hides it by
+  default and counts what it hid (`Corpus::hidden_driven`, `driven_hidden`
+  on `list`, `health` and `appraise`); `--kind driven` admits it. Unlike an
+  experiment, no home admits it by default, and admitting the other marks
+  never admits it. The rule is fitness: fitness is the owner's usage, and a
+  driver pushing the harness to fail is not usage. Nothing is learned from
+  a driven session: `reflect`'s transcript pass, `distill`, the contrast
+  pool and the persona writer all admit through `Scan::admits`, and
+  `reflect`'s outbox pass, which selects by the owner's verdict on a draft
+  rather than by session, passes over a draft whose staging session the
+  admission refuses or the store cannot resolve (`staged_by_refused`: a torn
+  header drops a transcript from the listing, and unknown is never clean). That second half was found on
+  review: a draft a driven run staged and the owner then edited would have
+  been mined into the owner's store. `DRIVER-DESIGN.md` D2 gives driven runs
+  a learning store of their own (R6), never a scope, so `Driven` stays in
+  `Situation::MARK_KINDS`.
+- **The driven mark is honoured through one door, and only narrows**
+  (`mecha_core::driven`, `DRIVER-DESIGN.md` D1b). The door is a fresh,
+  recorded `mecha run`. The mark is read from the environment, which every
+  verb inherits, so `setup::prepare_tools` refuses it on any start that did
+  not come through `setup::force_driven`. What it does:
+  - **Forces off.** No project layer (`main` forces `global_config_only`
+    for every command under the mark); MCP, hooks, grants, the mailbox,
+    `system_read` and fallbacks off as levers (`setup::DRIVEN_OFF`); and no
+    subagent.
+  - **Narrows the tools** to `driven::TOOLS` through `--tool`'s own
+    narrowing. Not a sweep over levers, because a tool with no `Lever`
+    (`persona_propose`) would slip past one.
+  - **Forces approvals and sends.** `block_sends_after_private`,
+    `trifecta = "block"`, `private` armed at start, `permission_mode =
+    "allow"`, and every question for a person refused (`DrivenApprover`).
+    Each door has its own stem: `driven::PROMPT_REFUSED` for an approval
+    rule's `prompt` (the one D4 counts as approval-floor), and
+    `ESCALATION_REFUSED` and `ACCESS_REFUSED` for the interlock and the jail.
+  - **Refuses to start** in both directions: a driven run whose sandbox can
+    reach the network, whose binds overlap the home, or whose `[outbox]
+    tools` routes an allowlisted tool (its drafts would reach the owner's
+    queue unmarked, and the marking is not built); and an unmarked run
+    whose workspace a home-side marker covers, expired or not.
+  - **Is checked twice.** Before anything spawns (the switches thrown) and
+    after the build (nothing attached).
+  - **Records** the non-lever half on `RunConfig::driven`, because
+    `levers_off` cannot say it.
 - **The owner can mark a session an experiment after the fact**
   (`mecha sessions mark <id> experiment`, ruling 4D). A model probe run as
   ordinary chat is not the owner's work, and the appraiser read two such
@@ -7593,6 +8631,13 @@ deciding a class.
 
 The decisions that carry it, each a bug if undone:
 
+- **A program's reads are a second source** (`CODE-MODE-DESIGN.md` §7):
+  `calls` takes `Conversation::program_calls` (or `tool::code::record::ever`
+  for a file) beside the messages, and yields each host call under the
+  `tool_use` that ran it, only where the list holds that call. A
+  `trusted_output` child's calls are yielded to no reader; only
+  `calls_for_the_owner`, the outbox's owner-facing join, opens them (R9).
+  §Code mode's interpreter has the rest.
 - **First seen wins, and a stale marker never occupies the slot.**
   `evict_superseded_results` rewrites a result in place under its own
   `tool_use_id`, so one id names two contents. `messages_ever` carries both
@@ -9551,8 +10596,25 @@ the record already holds does not.
 **Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
 measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
-call *and* its result via `compact::target_of` — identical arguments with a
-changing result is polling, which must never grade as stuck.
+call *and* its result — identical arguments with a changing result is polling,
+which must never grade as stuck.
+
+**Boredom serves exploration and must never hinder work** (the owner's rule,
+2026-11-08). So only a declared read (`Effect::Read`, `ReadThatRecords`) is
+keyed by `compact::target_of`, where the same bytes reached twice really are
+one thing learned twice; every other call is keyed on its whole canonical
+input (`Boredom::key`'s `reads`). Keyed by path, a write's receipt —
+`fs_edit`'s `edited <path>`, the same for every edit — made six different
+edits to one file one edit repeated six times: in the driven pilot 15 of 16
+trials were told they were stuck mid-refactor, and Claude obeyed the second
+rung and stopped with ten edits left. An undeclared tool is keyed whole,
+because the costly error here is interrupting work, and keying whole can only
+make two calls less alike. The identical edit repeated is still one key. **A
+call that errored is keyed by target whatever it declares**: it changed
+nothing, so its arguments are guesses rather than work — `fs_edit` missing
+with a new `old` each turn is one unchanging error on one file, the guessing
+loop this exists to name, and the shape key sees a single target there
+(review of #857).
 
 **A second key counts the same failure on new targets** (`boredom::error_shape`:
 the error with quoted spans, paths and numbers masked, per tool). The first
@@ -10447,8 +11509,8 @@ comparison over a chosen set**, with the design written before the run.
   its own hash term, and `identical_arms` takes the per-arm digests, or two
   arms differing only in environment would be named identical.
 - **A session in a trial home is `SessionKind::Experiment`** (D13), set by
-  the runner through `MECHA_SESSION_KIND` — the second and last kind an
-  environment may set, beside `test`. `runlog::Scan` hides it in the real
+  the runner through `MECHA_SESSION_KIND`, one of the three marks an
+  environment may set, beside `test` and `driven`. `runlog::Scan` hides it in the real
   store like a test session — and counts what it hid
   (`Corpus::hidden_experiments`, `hides_experiment`), on the incident
   behind `hidden_tests`: the failure was never that test runs were
@@ -11281,6 +12343,9 @@ exhaustive `match`, so the build asks; the ones that are not say so.
    unit, a binary on `PATH`, a directory, a Docker image — checks that open
    no socket, so an idle-stopped server reads provided, never missing), the
    step whose installer brings it, and whether its models live in the hub.
+   A sidecar only mecha can supply (a pinned binary identified by its
+   hash, as code mode's worker is) has no evidence and is named in
+   `sidecar::ONLY_MECHAS`, which the registry's test holds it to.
    `mecha features plan <id>` is the read-only answer to what enabling it
    would install. Its installer, when it has one, goes in `install.rs`: the
    manifest entry before the first byte (`Manifest::begin`), every path
@@ -11483,9 +12548,11 @@ been the same bug with a smaller window.
 
 Two consequences visible from outside the subsystem. `RunConfig::clock`
 records the reading, because it is no longer recoverable from `system_prompt`,
-and `clock::for_replay` pins a replay and both probes to it — per *run* rather
-than per session, since one `mecha serve` session held runs on either side of
-midnight. And the fold edits a message the session already wrote, so the first run of a
+and `clock::for_replay` pins a replay and both probes to it — per `Config`
+record rather than once per session, since one `mecha serve` session held runs
+on either side of midnight. A `Config` is written per attach and per rebind, so
+the reading is per run only where the process is; each run's own end is
+`RunStats::ended_at`, the machine's wall clock. And the fold edits a message the session already wrote, so the first run of a
 conversation — and the first run of every new local day in a long-lived one —
 used to record a `Record::Rewrite` instead of an append; `record_transition`
 compares before to after rather than trusting a flag from the loop, so this
@@ -11685,7 +12752,18 @@ The things that decide the design:
   recovered on the next turn, after boredom's first notice named the
   repeat. So both of boredom's notices reach the model before the stop, and
   persona chats now carry boredom from the base config rather than
-  switching it off. For **both** triggers, a call the harness refused this
+  switching it off. **The persona door ends it at three**
+  (`Agent::with_refused_repeats`, held to `LoopGuard::FEWEST_REPEATS`): the
+  notices did not turn its runs around. On 2026-11-10 one refused picture
+  call was resent 31 times across three runs, each stopped at the seventh
+  with both notices read, 25 of the calls byte-identical to the one before.
+  At three the stop arrives with boredom's first notice and before its
+  second; one retry is still allowed, since a second identical failure is
+  what a server mid-restart looks like. The count keys on the error's text,
+  which an outage repeats as exactly as a deterministic refusal does, so
+  **a persona's `Loop` can mean the image server was down for three tries,
+  not that the model was stuck**; nothing in the result separates the two
+  yet. Every other door keeps seven. For **both** triggers, a call the harness refused this
   turn (the approver, a hook, a policy, the interlock: `denied` in the
   trace) never counts, because appraisal scores `Loop` against the run and
   a well-defended run must not read as a stuck one. A call refused once and

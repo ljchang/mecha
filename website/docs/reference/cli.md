@@ -44,6 +44,7 @@ never build an agent (where they are simply ignored).
 | `--no-messages` | No inter-agent messaging: no `message_send` tool, and nothing from the mailbox is delivered into this run. |
 | `--no-fallback` | Never fall back to another provider. A transient failure that survives its retries fails the run. |
 | `--no-compact-tool` | Withhold the model's `compact` tool; automatic compaction remains available. |
+| `--no-code-tool` | Withhold `code`, code mode's program tool, even with `[features] code` on. `mecha eval` forces it. |
 | `--no-step-escalation` | Disable quarantined checks of ambiguous completed plan steps. |
 | `--no-step-checks` | Do not execute declared plan checks. |
 | `--no-goal-guidance` | Disable goal and charter planning guidance. |
@@ -95,6 +96,25 @@ ceiling for callers that care which one it was.
 
 Approval prompts are only offered when stdin is a terminal and `--json` was not
 passed; otherwise the configured `permission_mode` decides.
+
+**A driven run** is a `mecha run` under `MECHA_SESSION_KIND=driven`: another
+agent running mecha on real work, recorded apart from yours. The mark only
+narrows:
+- **Config.** It reads your global config and no `mecha.toml`.
+- **Off.** MCP servers, hooks, grants, the mailbox, `system_read`, fallbacks
+  and subagents are dropped. The tools are a fixed list: the file tools,
+  `shell`, `code`, `skill`, `compact`, `todo` and `goal_context`.
+- **No sends.** Every send is refused for the whole run.
+- **Approvals.** The run's own calls are approved inside the sandbox. A
+  `prompt` rule is refused, never asked, and a `forbid` rule still applies.
+
+It refuses to start without a sandbox that cannot reach the network (`bwrap`
+or `docker` with `network = false`), or with a `[sandbox] readable` or
+`writable` path that overlaps the mecha home. It also refuses `--resume`,
+`--no-session` and `--read-only`. Every other command that starts an agent
+refuses the mark. Commands that only read or manage stores (`sessions
+list`, `driven`, `doctor`) run as usual and skip the project layer.
+What it forced is recorded on the session. See [`driven`](#driven).
 
 ```bash
 mecha run "summarize what changed in this repo today"
@@ -484,7 +504,7 @@ mecha sessions <list|show|path|stats|health|appraise|compare> [OPTIONS]
 | `appraise` | `--days <N>` | Only sessions started in the last N days. |
 | `appraise` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
 | `appraise` | `--json` | Emit JSON instead of a table. |
-| `list`, `appraise`, `health` | `--kind <KIND>` | Only sessions opened through this surface: `run`, `chat`, `tui`, `web`, `voice`, `task`, `trigger`, `frontdoor`, `mail`, `slack` or `test`. A transcript from before kinds were recorded matches no filter. |
+| `list`, `appraise`, `health` | `--kind <KIND>` | Only sessions opened through this surface: `run`, `chat`, `tui`, `web`, `voice`, `task`, `trigger`, `frontdoor`, `mail`, `slack`, `test`, `experiment` or `driven`. A transcript from before kinds were recorded matches no filter. Driven sessions (`MECHA_SESSION_KIND=driven`, another agent's runs on real work) are hidden unless asked for this way. |
 | `list`, `appraise`, `health` | `--include-tests` | Include smoke-test sessions (`MECHA_SESSION_KIND=test`); `--kind test` implies this. |
 | `appraise` | `--probe` | Resolve each intervention's agency by counterfactual replay. **Paid** — a model run per intervention. |
 | `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |
@@ -762,6 +782,32 @@ mecha work clean --producer briefing --keep 3
 
 See [The work directory](/docs/features/automation/work).
 
+## `driven`
+
+The markers a driven task's setup writes under the mecha home, one per task
+clone. While a marker exists, a run *not* marked driven whose workspace is
+inside that clone is refused, even after the marker's deadline. That is a
+driven task whose mark was lost, and it would otherwise run with your
+servers, hooks, grants and mailbox attached. `list` is the default
+subcommand.
+
+```
+mecha driven [list|mark|unmark] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | | Each marker, its clone, and whether it is live. |
+| `mark` | `<TASK> --clone <PATH>` | Write the task's marker covering that clone. The clone must exist and must not overlap the mecha home. |
+| `mark` | `--for <DURATION>` | How long the marker is live: `90s`, `30m`, `2h`, `1d`. Default `4h`. |
+| `unmark` | `<TASK>` | Remove the task's marker, at teardown. |
+
+```bash
+mecha driven mark pr-466 --clone ~/driven/pr-466 --for 2h
+mecha driven
+mecha driven unmark pr-466
+```
+
 ## `document`
 
 Extract a PDF from the terminal: each page's own text layer and, for pages
@@ -859,6 +905,49 @@ mecha-mail corpus --since 2026-07-01 --account campus && mecha mail score --acco
 ```
 
 See [Mail and calendar](/docs/features/tools/mail#triage-the-queue-over-the-mailbox).
+
+## `mail rule`
+
+Owner-managed mail rules: `add`, `list`, `show`, `mode`, `test`, `ledger`,
+`undo`, and `pause-all`. New rules install in shadow. Mode changes name an
+action group; automatic permission requires owner approval of the current
+files. File changes lapse that permission. `list`, `show`, and `ledger` accept
+`--json` and remain readable with the feature off, as do revocation and pause-all.
+`test` reads 30 days of mail without writing; `undo` restores an exact mailbox
+message and records the correction.
+
+Enable unattended execution explicitly, then install the systemd user units
+as with the classify timers:
+
+```bash
+cargo install --path mecha-mail
+mecha features enable mail mail_rules
+mkdir -p ~/.config/systemd/user
+cp scripts/mecha-mail-rules.{service,timer} ~/.config/systemd/user/
+cp scripts/mecha-mail-classify.service scripts/mecha-mail-classify-day.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now mecha-mail-rules.timer
+```
+
+The timer runs `mecha-mail rules apply --headers` every five minutes without a
+model. At the end of non-dry classification, `--after-classify` processes
+verdict-dependent and deferred work for the same accounts. Hook errors are
+reported and counted on stderr without changing classify's result. A hung
+hook has a ten-minute total allowance, reserving its last twelve seconds for
+SIGTERM, a ten-second grace, then SIGKILL and bounded reaping if needed.
+Re-copy both classify services when upgrading: their timeouts reserve ten
+minutes for the hook (40 minutes daytime, 55 nightly); replacing the binary
+alone is insufficient.
+An existing apply lease skips successfully; typed apply failures return non-zero, while
+held work does not. Install `mecha-mail` beside `mecha`: the child launcher does
+not search PATH. These timers currently have no launchd twin.
+
+`mecha doctor` reports unreadable stores, lapsed or corrupt approvals, unknown
+outcomes, stranded/recovered pending actions, missing account addresses,
+standing provider holds and enabled timer problems. Every automatic group
+under unconfined shell gets attention: configure the sandbox to protect the
+store. `mecha review` and `/queues` count rule proposals awaiting install and
+lapsed group approvals; proposal age currently uses file modification time.
 
 ## `tasks`
 
@@ -1825,6 +1914,10 @@ mecha features disable <id>...
 | `--json` | Machine output: one object per feature, with `state` one of `on`, `off`, `blocked`, `unready`, `unknown`, its `switch` (`on`, `off`, `absent`, or null for a part), `in_use`, `shown` (whether the web app shows it) and `next` (the command or config change that brings it on, or null). |
 | `--probe` | Add up the memory of every model the shown features need — any not off or blocked, so one switched on but not yet set up counts too — against this machine: one pool on unified memory (a GB10, a Mac), or the card and system memory separately with a separate GPU. Each model is listed with what it holds and on what evidence — *measured* (machine and date), *arithmetic*, or *unmeasured*; a sum with an unmeasured figure in it is unknown, never zero, and what the figures leave out is named beneath. Reads `/proc/meminfo` (or `sysctl` on macOS) and runs `nvidia-smi`; asks no server, so nothing on demand is woken. With `--json`, the same as one object. The figures are the [hardware page's](/docs/getting-started/hardware#beside-the-chat-model). |
 
+| Feature | Requirement and next step |
+|---|---|
+| `mail_rules` | Requires `mail`; `mecha features enable mail mail_rules`. Install the sibling mail binary and [five-minute timer](#mail-rule). Defaults off. |
+
 Every optional feature has a switch in the global `config.toml`'s `[features]`
 table (see [Configuration](/docs/reference/configuration#features)), and the
 switch comes first: a feature whose switch is absent or `false` reads **off**,
@@ -1910,6 +2003,16 @@ switch only after every install has passed its check. What it can install:
   `mecha-voice-worker.service` on `:7860`, under
   `~/.mecha/sidecars/voice-worker/`, reachable only through `mecha serve`'s
   relay.
+- **Code mode's interpreter** (`code`) — the `monty` worker from PyPI's
+  pinned `pydantic-monty-runtime` wheel, checked by sha256 against the pin
+  for this platform, under `~/.mecha/sidecars/monty/<version>/`. Nothing on
+  `PATH` stands in for it. Only in a mecha built with the cargo feature
+  `monty`; a build without it reads `code` as not in this build, and
+  `enable code` refuses, naming the feature. With `code = true`, every run
+  that would register `code` first runs a program in the worker under the
+  sandbox (bwrap on Linux, so `[sandbox] kind = "bwrap"`; macOS's own
+  Seatbelt profile on a Mac), and **refuses to start** if that fails rather
+  than running without it.
 
 On macOS the servers install as launchd agents in `~/Library/LaunchAgents/`
 instead of systemd units — the chat router (`mecha setup chat`) and the

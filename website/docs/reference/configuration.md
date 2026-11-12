@@ -462,6 +462,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # web = false        # the web app (`mecha serve`)
 # slack = false      # Slack remote control
 # mail = false       # mail and calendar
+# mail_rules = false # owner-approved automatic mail rules (requires mail)
 # docs = false       # Google Docs, Sheets and Slides
 # graph = false      # the knowledge graph and the task board
 # search = false     # web search and open
@@ -472,7 +473,15 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # voice = false      # dictation and voice calls
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
+# system = false     # the assistant reads this machine's state (system_read)
+# code = false       # programs over tool results (code)
 ```
+
+`mail_rules` requires `mail` and defaults off. With either switch off, the
+five-minute timer and post-classify hook skip once with an explanation; rules
+cannot act. Install the sibling `mecha-mail` binary and the timer units as
+shown in the [CLI reference](/docs/reference/cli#mail-rule). Rule list, show,
+ledger and revocation remain available while disabled.
 
 The switch is the only switch; a settings table such as `[image]` or
 `[documents]` is only settings. What a switch that is not `true` turns off
@@ -501,7 +510,12 @@ machine: their web pages answer `feature_off`, and `mecha slack`, `persona`,
 `threads`, `remote` (without `--sweep`) and `unlink`, and `persona list`, `show`
 and `group list` — reading what is there, setting Slack up, and deleting a
 binding. Changing an entry is refused, even a `remove` that only moves it
-aside. An
+aside. `code`
+(code mode) is registered only with its switch on, and only in a mecha built
+with the cargo feature `monty`; there each run that registers it first proves
+the worker starts under the sandbox and refuses to start when it does not. A
+build without `monty` reads the row as not in this build and registers no
+`code`, so one `config.toml` shared with such a build never stops it. An
 `[[mcp]]` server that belongs to no feature starts as it always has. A feature switched on without the settings it
 needs reads **unready** in `mecha features`, with what is missing; one switched
 off keeps its settings for later. A key that is absent is unanswered, and reads

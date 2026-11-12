@@ -1,0 +1,41 @@
+# Retired.
+
+[[storylet]]
+id = "garden_good"
+title = "the garden came along nicely"
+size = "minor"
+doing = ["hobbies", "housework"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "volunteer_day"
+title = "a good shift volunteering"
+size = "minor"
+doing = ["volunteering"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "stiff_joints"
+title = "stiff and sore all day"
+size = "minor"
+effect = { energy = -1 }
+
+[[storylet]]
+id = "grandkids_visit"
+title = "a visit from {who}"
+size = "major"
+with = ["kin"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "good_checkup"
+title = "good news from a medical checkup"
+size = "major"
+effect = { mood = 1, stress = -1 }
+
+[[storylet]]
+id = "doctor_visit"
+title = "a doctor's appointment that ran long"
+size = "minor"
+doing = ["errands"]
+effect = { stress = 1 }

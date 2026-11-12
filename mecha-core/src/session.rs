@@ -179,6 +179,14 @@ where
     }))
 }
 
+// The two run-describing rows, `Outcome(RunStats)` and `Config(RunConfig)`,
+// are each a few hundred bytes larger than a message, and they trade places
+// as the largest whenever either grows a field: boxing one makes the other
+// the outlier. A transcript is read one record at a time and the rare
+// collected `Vec<Record>` is short, so the size is accepted rather than every
+// construction site boxed (tripped when `ended_at` and `program_read_bytes`
+// landed together).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
@@ -388,6 +396,22 @@ pub enum Record {
     PendingNote {
         note: String,
     },
+    /// What a run's programs read (`CODE-MODE-DESIGN.md` §7): every host call
+    /// that ran, each under the `code` call — or the subagent call — that
+    /// made it, with a pointer into the session's blob store
+    /// (`tool::code::record`) and never the bytes. Written by
+    /// [`Session::record_run`] after the run's messages; read back by
+    /// [`Session::programs_ever`] for the grounding walk's second source.
+    ///
+    /// **Nothing that rebuilds a conversation reads it**, so it never enters
+    /// a model's context. A struct variant, for `Title`'s reason: a newtype of
+    /// a list has no fields for the internally tagged enum to merge, and
+    /// would fail to serialise at runtime. A build from before this record
+    /// skips the line as one it cannot parse, as with [`Record::Extend`], and
+    /// loses nothing it can use.
+    Program {
+        calls: Vec<crate::tool::code::record::ProgramCall>,
+    },
 }
 
 /// A late failure's extra tool error, in the one place every outcome reader
@@ -450,9 +474,11 @@ pub struct RunConfig {
     /// a prompt built once per process gives a daily value a daemon's
     /// lifetime; the loop now folds a calendar reference per turn from
     /// [`crate::clock`], so the prompt no longer names a day and a replay has
-    /// to be told which one to stand in. Per *run* rather than per session on
-    /// purpose: one `mecha serve` session held runs on either side of
-    /// midnight, which is the whole shape of the bug.
+    /// to be told which one to stand in. Written with each `Config` record
+    /// rather than once per session on purpose: one `mecha serve` session
+    /// held runs on either side of midnight, which is the whole shape of the
+    /// bug. A `Config` is per attach and per rebind, so this is per run only
+    /// when the process is; the per-run time is [`RunStats::ended_at`].
     ///
     /// `None` on anything recorded before this field, and those replay at
     /// today's date rather than their own — a bounded fidelity limit on old
@@ -646,6 +672,27 @@ pub struct RunConfig {
         deserialize_with = "lenient_experiment"
     )]
     pub experiment: Option<crate::experiment::ExperimentRef>,
+    /// What a driven run forced (`docs/DRIVER-DESIGN.md` D1b): the leak
+    /// guard, `private` at start, `trifecta = "block"`,
+    /// `permission_mode = "allow"`, `prompt` as `forbid`, and what was
+    /// suppressed. None of these is a [`crate::harness::Lever`], so
+    /// `levers_off` cannot say they were in force. `None` on every run that
+    /// is not driven, and on a record this build cannot read.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_driven"
+    )]
+    pub driven: Option<crate::driven::Forced>,
+}
+
+/// Wire-format rule, as for `experiment`.
+fn lenient_driven<'de, D>(d: D) -> std::result::Result<Option<crate::driven::Forced>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 /// Wire-format rule, as for `levers_off`: a reference this build cannot
@@ -726,6 +773,7 @@ impl Default for RunConfig {
             levers_off: None,
             features_on: None,
             experiment: None,
+            driven: None,
             rules_hash: None,
             rule_ids: Vec::new(),
             rules_skipped: Vec::new(),
@@ -811,6 +859,9 @@ impl RunConfig {
             // file's (stripped from project layers) or a trial home's own.
             features_on: Some(crate::feature::switches_on(config)),
             experiment: crate::experiment::ExperimentRef::from_env(),
+            // Set by the one front-end that forces it (`mecha run`), as
+            // `mismatch_case` is: the agent cannot answer for it.
+            driven: None,
             // A block rendered past a skipped file is not a measurement of
             // the rule set: unknown, never the hash of what was left.
             rules_hash: known.map(|r| r.hash.clone()),
@@ -989,6 +1040,36 @@ pub struct RunStats {
     pub checks_declared: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checks_passed: Option<u32>,
+    /// Code mode's counters (`CODE-MODE-DESIGN.md` §7, "Counters"), each
+    /// counted from the `code` calls' `ToolCallTrace::program`: programs
+    /// run, those that did not run to their end for a reason other than a
+    /// Stop, their sub-call passes, the input tokens those passes read, the
+    /// `peek` and `str[n]` bytes handed to programs, and the programs a
+    /// budget ended (a backstop, or an uncaught host `LimitError:`). The
+    /// passes' whole usage is in `usage` beside the run's own turns. `Option`
+    /// on `context_overflows`' rule: a row from before the sensor knows
+    /// nothing, and must never read as a run that ran no program.
+    ///
+    /// **`subcall_tokens` and `peeked_bytes` saturate at `u32::MAX`** here,
+    /// where `ProgramStats` counts them in `u64`: a row that reads the
+    /// maximum is "at least that many", never the exact figure, and the
+    /// trace entry's own count is the one to ask (review of #774).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub programs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_errors: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subcalls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subcall_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peeked_bytes: Option<u32>,
+    /// Bytes of tool results the run's programs were handed
+    /// (`ProgramStats::read_bytes`), saturating as `peeked_bytes` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_read_bytes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_stops: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -1034,6 +1115,24 @@ pub struct RunStats {
     /// and would read as a shorter run rather than an unknown one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<f64>,
+    /// When the outcome was recorded: the one per-run clock a transcript
+    /// carries. A `Config`'s clock is written per process attach and per
+    /// router rebind, so a chat held open for days had no time on its later
+    /// turns, and a reading that orders turns across chats
+    /// (`persona::initiative`) could only place them at the chat's start.
+    /// Set by [`Session::record_outcome`], never by `of_run`, so a fold or
+    /// a replay does not invent one. `None` on a row from before it.
+    ///
+    /// **The machine's wall clock, on purpose, not the run's
+    /// [`crate::clock::Clock`]**: it records when the row was written, as
+    /// `SessionMeta::created_at` does. A fixture clock replaces the world the
+    /// model is told about (`setup::run_clock`), so under an experiment arm
+    /// `Config.clock` holds the fixture's day while this holds the operator's;
+    /// a reader ordering an arm's runs in its designed world reads
+    /// `Config.clock`, and one ordering what happened on this machine reads
+    /// this (review of #812).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 impl RunStats {
@@ -1140,6 +1239,9 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             _ => None,
         };
+        // Last wins, `None` included, as `stop_cause`: an episode ended when
+        // its last run did, and a last run with no clock leaves it unknown.
+        self.ended_at = other.ended_at;
         self.exhausted = other.exhausted;
         self.ended_on_failed_call = other.ended_on_failed_call;
         self.tool_calls += other.tool_calls;
@@ -1176,6 +1278,18 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        // Code mode's counters, on the same shape and for the same reason.
+        let sum = |a: Option<u32>, b: Option<u32>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+            (a, b) => a.or(b),
+        };
+        self.programs = sum(self.programs, other.programs);
+        self.program_errors = sum(self.program_errors, other.program_errors);
+        self.subcalls = sum(self.subcalls, other.subcalls);
+        self.subcall_tokens = sum(self.subcall_tokens, other.subcall_tokens);
+        self.peeked_bytes = sum(self.peeked_bytes, other.peeked_bytes);
+        self.program_read_bytes = sum(self.program_read_bytes, other.program_read_bytes);
+        self.budget_stops = sum(self.budget_stops, other.budget_stops);
         self.step_escalations_attempted = match (
             self.step_escalations_attempted,
             other.step_escalations_attempted,
@@ -1251,6 +1365,9 @@ impl RunStats {
 
     /// One run's outcome as a row, before any folding.
     fn of_run(o: &crate::agent::RunOutcome) -> RunStats {
+        // Every `code` call's program, a declared check's included: a
+        // program's passes and bytes were spent whichever asked for it.
+        let programs = o.tool_calls.iter().filter_map(|c| c.program.as_ref());
         RunStats {
             turns: o.turns,
             usage: o.usage.clone(),
@@ -1260,6 +1377,8 @@ impl RunStats {
             exhausted: o.exhausted,
             ended_on_failed_call: o.ended_on_failed_call,
             duration_secs: o.duration_secs,
+            // Stamped where the row is recorded, never here.
+            ended_at: None,
             tool_calls: o
                 .tool_calls
                 .iter()
@@ -1326,6 +1445,33 @@ impl RunStats {
                     })
                     .count() as u32,
             ),
+            programs: Some(programs.clone().count() as u32),
+            program_errors: Some(programs.clone().filter(|p| p.failed()).count() as u32),
+            subcalls: Some(
+                programs
+                    .clone()
+                    .map(|p| p.subcalls)
+                    .fold(0, u32::saturating_add),
+            ),
+            subcall_tokens: Some(
+                programs
+                    .clone()
+                    .map(|p| u32::try_from(p.subcall_tokens).unwrap_or(u32::MAX))
+                    .fold(0, u32::saturating_add),
+            ),
+            peeked_bytes: Some(
+                programs
+                    .clone()
+                    .map(|p| u32::try_from(p.peeked_bytes).unwrap_or(u32::MAX))
+                    .fold(0, u32::saturating_add),
+            ),
+            program_read_bytes: Some(
+                programs
+                    .clone()
+                    .map(|p| u32::try_from(p.read_bytes).unwrap_or(u32::MAX))
+                    .fold(0, u32::saturating_add),
+            ),
+            budget_stops: Some(programs.filter(|p| p.budget_stop).count() as u32),
             homeostat: o.homeostat.clone(),
             brief: o.brief.clone().map(Box::new),
             resume_cache: o.resume_cache.clone(),
@@ -1390,12 +1536,21 @@ pub enum SessionKind {
     /// the real store's readers like `Test`; admitted by default only in a
     /// home carrying `experiment::HOME_MARKER`.
     Experiment,
+    /// A run whose principal is another agent rather than the owner: a
+    /// stronger model driving mecha on real work, in the real home
+    /// (`docs/DRIVER-DESIGN.md`, D1). Worth studying, and not the owner's
+    /// usage, so every corpus reader hides it by default, as it hides
+    /// `Test`, and admits it only when asked by name. Unlike `Experiment`,
+    /// no home admits it by default: a driven run lives in the owner's
+    /// store, beside the sessions it must not be mistaken for.
+    Driven,
 }
 
-/// Environment variable that marks every session a process opens as
-/// [`SessionKind::Test`]. Any other value is ignored with a warning: the
-/// override exists so a test harness can label its own runs, not so a
-/// caller can claim a surface it is not.
+/// Environment variable that marks every session a process opens as one of
+/// the corpus marks: [`SessionKind::Test`], [`SessionKind::Experiment`] or
+/// [`SessionKind::Driven`]. Any other value is ignored with a warning: the
+/// override exists so a harness can label its own runs, not so a caller can
+/// claim a surface it is not.
 pub const SESSION_KIND_ENV: &str = "MECHA_SESSION_KIND";
 
 static KIND_ENV_IGNORED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1417,7 +1572,7 @@ pub fn ignore_kind_env_for_tests() {
 }
 
 impl SessionKind {
-    pub const ALL: [SessionKind; 12] = [
+    pub const ALL: [SessionKind; 13] = [
         SessionKind::Run,
         SessionKind::Chat,
         SessionKind::Tui,
@@ -1430,6 +1585,7 @@ impl SessionKind {
         SessionKind::Slack,
         SessionKind::Test,
         SessionKind::Experiment,
+        SessionKind::Driven,
     ];
 
     /// The wire form — `serde`'s own `snake_case`, spelled out for callers
@@ -1448,6 +1604,7 @@ impl SessionKind {
             SessionKind::Slack => "slack",
             SessionKind::Test => "test",
             SessionKind::Experiment => "experiment",
+            SessionKind::Driven => "driven",
         }
     }
 
@@ -1457,9 +1614,10 @@ impl SessionKind {
         SessionKind::ALL.into_iter().find(|k| k.as_str() == s)
     }
 
-    /// [`SESSION_KIND_ENV`], read. `Some(Test)` when the variable says so,
-    /// `None` otherwise — the override only ever narrows toward `Test`, so
-    /// there is nothing else it could return.
+    /// [`SESSION_KIND_ENV`], read: one of the three corpus marks when the
+    /// variable names one, `None` otherwise. The override only ever narrows
+    /// toward a mark that every reader hides by default, so there is nothing
+    /// else it could return.
     pub fn test_override() -> Option<SessionKind> {
         // Unit tests are hermetic to a smoke-test mark exported in the shell
         // running them: a developer who set `MECHA_SESSION_KIND=test` for a
@@ -1472,14 +1630,18 @@ impl SessionKind {
         }
         match std::env::var(SESSION_KIND_ENV) {
             Ok(v) if v == SessionKind::Test.as_str() => Some(SessionKind::Test),
-            // The one other kind an environment may set: `mecha exp` marks
-            // the child runs it spawns into a trial home (D13). Both are
-            // marks a *process* puts on a session, not surfaces a person
-            // opened, which is why the list is these two and no more.
+            // `mecha exp` marks the child runs it spawns into a trial home
+            // (D13), and a driver marks the runs it opens on real work
+            // (`DRIVER-DESIGN.md` D1). All three are marks a *process* puts
+            // on a session, not surfaces a person opened, and each is hidden
+            // from every reader by default, which is why the list is these
+            // three and no more: a mark that a reader admitted by default
+            // would let the variable widen a population, not narrow it.
             Ok(v) if v == SessionKind::Experiment.as_str() => Some(SessionKind::Experiment),
+            Ok(v) if v == SessionKind::Driven.as_str() => Some(SessionKind::Driven),
             Ok(v) if !v.is_empty() => {
                 tracing::warn!(
-                    "{SESSION_KIND_ENV}={v:?} ignored: only `test` and `experiment` may override a session's kind"
+                    "{SESSION_KIND_ENV}={v:?} ignored: only `test`, `experiment` and `driven` may override a session's kind"
                 );
                 None
             }
@@ -1842,7 +2004,64 @@ impl Session {
         })?;
         self.append(&Record::GoalAnchor {
             goal: convo.goal_anchor.clone(),
-        })
+        })?;
+        self.record_programs(convo)
+    }
+
+    /// What this run's programs read (`Record::Program`): each call's bytes
+    /// stored once in the session's blob directory, then one record of the
+    /// calls pointing into it. Nothing when the run ran no program.
+    ///
+    /// **A blob that cannot be stored fails no recording.** Its call is
+    /// written with no address, which loads as `Bytes::Missing` — ungrounded
+    /// by name, never an empty result — and the failure is warned. Failing
+    /// `record_run` instead took the records its callers write after it with
+    /// it: `Record::Taint`, whose absence resumes a run that read a
+    /// stranger's text with both interlock legs clear, and the run's outcome
+    /// (review of #784). Only a failure of the session file itself fails here.
+    fn record_programs(&self, convo: &Conversation) -> Result<()> {
+        let fresh = convo
+            .program_calls
+            .get(convo.program_calls_from..)
+            .unwrap_or_default();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let store = crate::tool::code::record::Store::default_root();
+        let mut unstored = (0usize, None);
+        let mut calls = Vec::with_capacity(fresh.len());
+        for call in fresh {
+            let mut call = call.clone();
+            if let Some(text) = call.text() {
+                let put = match &store {
+                    Ok(s) => s.put(&self.meta.id, text),
+                    Err(e) => Err(anyhow::anyhow!("the program store cannot be found: {e:#}")),
+                };
+                match put {
+                    Ok(blob) => call.blob = Some(blob),
+                    Err(e) => {
+                        unstored.0 += 1;
+                        unstored.1.get_or_insert_with(|| format!("{e:#}"));
+                    }
+                }
+            } else {
+                // Let go in the run, past `record::RETAINED_BYTES`.
+                unstored.0 += 1;
+                unstored.1.get_or_insert_with(|| {
+                    "its bytes were let go past the conversation's retained ceiling".into()
+                });
+            }
+            calls.push(call);
+        }
+        if let (n @ 1.., Some(error)) = unstored {
+            tracing::warn!(
+                session = %self.meta.id,
+                unstored = n,
+                %error,
+                "program reads recorded without their bytes: they ground nothing"
+            );
+        }
+        self.append(&Record::Program { calls })
     }
 
     /// Record the conversation's grants now, between runs — an owner's
@@ -1867,7 +2086,9 @@ impl Session {
     ///
     /// [`record_run`]: Session::record_run
     pub fn record_outcome(&self, outcome: &crate::agent::RunOutcome) -> Result<()> {
-        self.append(&Record::Outcome(RunStats::from(outcome)))
+        let mut row = RunStats::from(outcome);
+        row.ended_at = Some(Utc::now());
+        self.append(&Record::Outcome(row))
     }
 
     /// Every outcome recorded in a transcript, in order, with the model and
@@ -2268,6 +2489,10 @@ impl Session {
                 }
                 Ok(Record::LateFailure { run, .. }) => late_failures.push(run),
                 Ok(Record::PendingNote { note }) => pending_notes.push(note),
+                // What a run's programs read: never part of the conversation
+                // this rebuilds, so never in a model's context. Its reader is
+                // `Session::programs_ever`.
+                Ok(Record::Program { .. }) => {}
                 Ok(Record::GoalAnchor { goal }) => {
                     anchors.push((Some(messages.len()), goal.clone()));
                     anchored_since_outcome = true;
@@ -2416,6 +2641,35 @@ impl Session {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::debug!(error = %e, "skipping malformed transcript line"),
+            }
+        }
+        all
+    }
+
+    /// Every program call the transcript recorded (`Record::Program`), in
+    /// record order, once each — [`Session::messages_ever`]'s sibling for the
+    /// grounding walk's second source (`CODE-MODE-DESIGN.md` §7). The bytes
+    /// are not loaded: `tool::code::record::ever` loads them from the
+    /// session's store. Once each by the subagent call it came up through and
+    /// its own id, since a child's ids are minted by the child's run and only
+    /// the pair is unique. Malformed lines are skipped as `messages_ever`
+    /// skips them.
+    pub fn programs_ever(transcript: &str) -> Vec<crate::tool::code::record::ProgramCall> {
+        let mut seen = HashSet::new();
+        let mut all = Vec::new();
+        for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
+            // Only a line that names the record is parsed whole: a long
+            // session's messages are most of its bytes.
+            if !line.contains(r#""record":"program""#) {
+                continue;
+            }
+            if let Ok(Record::Program { calls }) = serde_json::from_str::<Record>(line) {
+                for call in calls {
+                    let key = (call.under.as_ref().map(|u| u.call.clone()), call.id.clone());
+                    if seen.insert(key) {
+                        all.push(call);
+                    }
+                }
             }
         }
         all
@@ -3068,13 +3322,16 @@ mod tests {
             (meta("legacy", None), ()),
             (meta("test", Some(SessionKind::Test)), ()),
             (meta("exp", Some(SessionKind::Experiment)), ()),
+            (meta("driven", Some(SessionKind::Driven)), ()),
         ];
         let (admitted, skipped) = split_admitted(listing);
         let ids: Vec<_> = admitted.iter().map(|(m, _)| m.id.as_str()).collect();
         // Outside an experiment home (this test's), an experiment session is
         // contamination like a test one; an unmarked legacy session is work.
+        // A driven session is never mined or distilled by default, in any
+        // home: another agent was its principal (`DRIVER-DESIGN.md` D1).
         assert_eq!(ids, ["web", "legacy"]);
-        assert_eq!(skipped, 2);
+        assert_eq!(skipped, 3);
     }
 
     /// A rename is a record, and it has to survive the file it is written to.
@@ -4462,6 +4719,7 @@ mod tests {
             unknown,
             staged,
             in_program: false,
+            program: None,
         };
         let outcome = RunOutcome {
             duration_secs: None,
@@ -4508,6 +4766,7 @@ mod tests {
             cost_usd: Some(0.5),
             usage_complete: true,
         };
+        let before = Utc::now();
         session.record_outcome(&outcome).unwrap();
 
         let stats = Session::outcomes(&session.path).unwrap();
@@ -4516,6 +4775,26 @@ mod tests {
         assert_eq!(got.turns, 3);
         assert_eq!(got.stop_cause, Some(StopCause::Completed));
         assert!(got.ended_on_failed_call);
+        // The run's own clock, stamped as it is recorded and never by the
+        // row's constructor, so a replay's fold invents none.
+        let at = got.ended_at.expect("record_outcome stamps the time");
+        assert!(at >= before && at <= Utc::now(), "{at}");
+        assert_eq!(RunStats::from(&outcome).ended_at, None);
+        let mut early = got.clone();
+        early.ended_at = Some(before - chrono::Duration::hours(1));
+        assert_eq!(
+            RunStats::fold([early.clone(), got.clone()])
+                .unwrap()
+                .ended_at,
+            Some(at)
+        );
+        assert_eq!(
+            RunStats::fold([got.clone(), RunStats::default()])
+                .unwrap()
+                .ended_at,
+            None,
+            "a last run with no clock leaves the episode's end unknown"
+        );
         assert_eq!(got.tool_calls, 4);
         // The environment refusing: the error and the unknown tool. A denial
         // is the harness working and must never be averaged in with failure.
@@ -4579,6 +4858,7 @@ mod tests {
                         unknown: false,
                         staged: false,
                         in_program: false,
+                        program: None,
                     })
                     .collect(),
                 malformed_tool_args: 1,
@@ -5027,6 +5307,7 @@ mod tests {
                 SessionKind::Slack => 9,
                 SessionKind::Test => 10,
                 SessionKind::Experiment => 11,
+                SessionKind::Driven => 12,
             }
         }
         assert!(
@@ -5061,13 +5342,17 @@ mod tests {
     /// the (ignored) probe below through the test binary itself with the
     /// variable set, and grades the exit status.
     #[test]
-    fn the_env_override_narrows_to_test_or_experiment_and_never_widens_to_anything_else() {
+    fn the_env_override_narrows_to_a_corpus_mark_and_never_widens_to_anything_else() {
         let exe = std::env::current_exe().unwrap();
         for (value, expect) in [
             ("test", "test"),
-            // The second and last value an environment may set: what
-            // `mecha exp` marks its child runs with (D13).
+            // What `mecha exp` marks its child runs with (D13).
             ("experiment", "experiment"),
+            // The third and last: a driver's runs on real work
+            // (`DRIVER-DESIGN.md` D1).
+            ("driven", "driven"),
+            // A near miss is a surface claimed, not a mark: ignored.
+            ("drive", "run"),
             ("web", "run"),
             ("", "run"),
         ] {
@@ -5169,8 +5454,11 @@ mod tests {
         // the override's kind. `experiment` was added to the override (D13)
         // while this probe matched nothing, so its expectation still said
         // only `test` did — found when the probe first actually ran.
-        let expect_none =
-            matches!(expect, SessionKind::Test | SessionKind::Experiment).then_some(expect);
+        let expect_none = matches!(
+            expect,
+            SessionKind::Test | SessionKind::Experiment | SessionKind::Driven
+        )
+        .then_some(expect);
         assert_eq!(
             kind_of(&none.path),
             expect_none,
@@ -5192,6 +5480,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         };
         let o = crate::agent::RunOutcome {
             duration_secs: None,

@@ -36,6 +36,9 @@ pub struct ToolOutput {
     /// Returned to the model as `is_error: true` so it can recover rather than
     /// treating the failure as a result.
     pub is_error: bool,
+    /// Trusted local failure classification. Never populated from an MCP
+    /// server's content or metadata; a transport loss leaves effect fate unknown.
+    pub failure_kind: Option<ToolFailureKind>,
     /// True when this content actually came from outside the machine.
     ///
     /// Distinct from the tool's declared `untrusted_input` capability, which
@@ -83,6 +86,22 @@ pub struct ToolOutput {
     /// ends — late, on a chat host's queue, or inline where the run has none
     /// (`docs/BACKGROUND-JOBS-DESIGN.md`).
     pub deferred: Option<Arc<crate::jobs::DeferredJob>>,
+    /// What a program did, when this is a `code` call's result
+    /// (`code::ProgramStats`): counts only, read into the call's trace entry
+    /// and from there into `RunStats` and the run's usage. Never rendered.
+    pub program: Option<Box<code::ProgramStats>>,
+    /// What a program read (`code::record`, `CODE-MODE-DESIGN.md` §7): each
+    /// host call that ran, in issue order — a `code` call's own, or a
+    /// child's carried up by a subagent. The dispatch moves them onto the
+    /// conversation, which the session records; never rendered, and never
+    /// part of the model's context.
+    pub reads: Vec<code::record::ProgramCall>,
+}
+
+/// Failure evidence produced by an in-process tool adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolFailureKind {
+    Transport,
 }
 
 impl ToolOutput {
@@ -90,11 +109,14 @@ impl ToolOutput {
         ToolOutput {
             content: content.into(),
             is_error: false,
+            failure_kind: None,
             external: false,
             refusal: false,
             not_dispatched: false,
             image: None,
             deferred: None,
+            program: None,
+            reads: Vec::new(),
         }
     }
 
@@ -102,11 +124,14 @@ impl ToolOutput {
         ToolOutput {
             content: content.into(),
             is_error: true,
+            failure_kind: None,
             external: false,
             refusal: false,
             not_dispatched: false,
             image: None,
             deferred: None,
+            program: None,
+            reads: Vec::new(),
         }
     }
 
@@ -116,11 +141,14 @@ impl ToolOutput {
         ToolOutput {
             content: content.into(),
             is_error: true,
+            failure_kind: None,
             external: false,
             refusal: true,
             not_dispatched: false,
             image: None,
             deferred: None,
+            program: None,
+            reads: Vec::new(),
         }
     }
 
@@ -590,6 +618,18 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Is this tool's result a directory's names, one per line, that a
+    /// program may take as a list of `str` rather than a handle
+    /// (`CODE-MODE-DESIGN.md` §3)? Only the builtin `fs_list` answers `true`.
+    /// It is a method rather than a name because a server may register a
+    /// tool by that name too, and the one exception to "text enters a
+    /// program through `peek`" must not be claimable by config (review of
+    /// #793). A wrapper forwards it; one that does not leaves the tool
+    /// handing out handles, which is the safe direction.
+    fn lists_names(&self) -> bool {
+        false
+    }
+
     /// Drop state that belonged to the conversation that just ended.
     ///
     /// Most tools are stateless and the default no-op is honest for them. A
@@ -972,6 +1012,23 @@ pub struct ToolCtx {
     /// other call's context is built with `None`, so a child run never
     /// inherits a parent's channel. Never the model's.
     pub host_calls: Option<code::HostCalls>,
+    /// `Some(room)` when this call is a program's host call
+    /// (`CODE-MODE-DESIGN.md` §7): its result becomes a handle the program
+    /// holds rather than text in the model's context, and the program can
+    /// hold at most `room` more bytes. A tool may then return more than it
+    /// would to a turn, as `fs_read` does (up to `room`): its turn cap
+    /// protects the context window, which a handle never enters, and reading
+    /// past `room` would be refused anyway, so it is not worth reading.
+    /// Stamped per call by `Agent::call_ctx`, as `host_calls` is, so no run
+    /// inherits it from the call that started it; never the model's.
+    pub program_room: Option<usize>,
+    /// The run this call belongs to offers `code`: registered and not
+    /// withheld. A read that has to cut a long text says so, and points at a
+    /// program as the way to search all of it (`CODE-MODE-DESIGN.md` §13,
+    /// "offer it at the moment of need"): in M2 a model paged a 1.5 MB log in
+    /// 200 KB windows, stopped partway and called it a thorough review.
+    /// Stamped once per run by `Agent::stamped`; never the model's.
+    pub code_offered: bool,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1171,6 +1228,8 @@ impl Default for ToolCtx {
             image_loras: crate::loras::Layer::Inherit,
             build_on: None,
             host_calls: None,
+            program_room: None,
+            code_offered: false,
         }
     }
 }

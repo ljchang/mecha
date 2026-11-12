@@ -157,6 +157,10 @@ quarantine.rs a one-shot with no tools and no history: the property in the type
 mail_triage.rs the front door's shape one directory over: a typed verdict per
              thread, out of a quarantined pass the privileged run never reads
 tool/        Tool trait, Registry, Approver, builtin.rs
+tool/code.rs `code`: a model's program over read-only tool results, as text it may print and
+             typed local passes; built last, its reach the run's registry ∩ read effects
+interpreter/ the monty worker a program runs in: a process per program under bwrap or
+             Seatbelt, a watchdog over it on a Mac; one that cannot start stops the start
 jobs.rs      a tool's slow half past its turn: one per chat, delivered late by
              appended records, stopped by Stop and never by speech
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
@@ -199,6 +203,9 @@ permit.rs    how many background runs may hold the model at once — seats on
 hold.rs      which runs hold a router's model, and a switch waiting on them —
              files, a write-then-check handshake, and the run always yields
 frontdoor.rs inbound requests from strangers, and the quarantine over them
+instrument.rs a factory manifest's home half: a booking's hours read and set in place,
+             by the owner's page only — no verb, no tool
+form_draft.rs a form's draft beside what is served; Publish is a push, never a write in place
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
 charter.rs   the owner's standing priorities, ranked by file order — the owner
              edits from anywhere, no model ever authors a line
@@ -226,8 +233,10 @@ homeostat.rs the conditions a run happened under, recorded beside what it did
 system.rs    the machine's state, read in one place: a per-minute series of numbers
              and closed categories, plus a model's name (R6) and never a unit's;
              unknown is refused, never zero; a model reads it through `system_read`
-backlog.rs   what waits on the owner across five stores; one walk, three readers
+backlog.rs   what waits on the owner across six stores; one walk, three readers
 doctor.rs    every store's distress, read in one pass — no network, no model
+driven.rs    another agent's runs on real work: what the mark forces, refuses and
+             records, and the home-side marker naming each task clone
 candidate.rs a proposed harness change, its falsifiable prediction, and the gate
 sample.rs    seeded uniform draws: the holdout that prioritised replay cannot bias
 diagnose.rs  the one place a model authors a change: counters in, a typed candidate out
@@ -486,10 +495,12 @@ re-deriving the rule. Each has at least one named incident in
   `rows.clamp(1, terminal_height.saturating_sub(4))` is a *panic* on a
   four-row terminal, and eight sites had their own copy; grep for `.clamp(`
   near `saturating_sub(4)`, never either literal.
-- **No persona chat or voice call text anywhere in this repository** — not
-  in tests, docs, comments or commit messages; fixtures and examples are
-  made up, and a measurement keeps its numbers, never the words. Real chat
-  lines once became test fixtures and a call's transcript a research doc.
+- **No persona chat or voice call text, and no persona data, anywhere in this
+  repository** — not in tests, docs, comments or commit messages: no persona's
+  name, and no name from a persona's People tab or household; fixtures and
+  examples are made up, and a measurement keeps its numbers, never the words.
+  Real chat lines once became test fixtures, a call's transcript a research
+  doc, and a persona's child's name a fixture (2026-11-03).
   `scripts/check-private.py` (pre-commit, commit-msg and pre-push) compares
   added text against the conversations in `~/.mecha` and refuses a match;
   `CHECK_PRIVATE_REQUIRE=1` makes a missing store a refusal.
@@ -510,7 +521,8 @@ it has one — and where a section above condensed something (provider notes,
 the model server, the security model), the full text with its measurements is
 there: interruption and steering · provider notes · the local model server ·
 the chat model catalog · images ·
-the security model in full · the front door · web search · mecha-mail ·
+the security model in full · code mode's interpreter · the front door ·
+web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
 triggers · the HUD · system state · the run-quality corpus (the gate, diagnosis, harness rumination) ·
@@ -536,6 +548,13 @@ trip over from *outside* the subsystem:
   (`RunConfig::levers_off`) — and lifts the approval rules by its own
   explicit line, the one lever `Lever::bare` never throws; a scorecard
   grades the model it names, not the machine.
+- **Code mode**: with `[features] code` on, a worker or sandbox that cannot
+  start **refuses the start** of `run`, `chat`, `tui` and the other commands
+  that build an agent, and never drops the tool; `mecha serve` instead comes up
+  dashboard-only, without chat. `--no-code-tool` clears one start, and
+  `mecha features disable code` is the durable way back. Its reach is
+  admitted, not configured: read effects only, no egress, and a host call that
+  would prompt raises instead.
 - **Compaction**: the cut must land on an assistant message (an orphaned
   `tool_result` is a 400), taint and carried tool state survive it, and the
   session file records a `rewrite` when history is edited.

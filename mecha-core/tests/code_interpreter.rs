@@ -26,7 +26,8 @@ mod support;
 use mecha_core::interpreter::monty::{Confinement, Monty};
 use mecha_core::interpreter::worker::{self, VerifiedWorker};
 use mecha_core::interpreter::{
-    Backstop, Backstops, End, ExternalCall, Finished, HostRaise, Interpreter, Step, Tag, Value,
+    Backstop, Backstops, End, ExternalCall, FileTools, Finished, HostRaise, Interpreter, Step, Tag,
+    Value,
 };
 use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
 use std::path::PathBuf;
@@ -331,6 +332,396 @@ async fn a_program_cannot_open_a_file_read_the_environment_or_reach_the_network(
         f.printed
     );
     assert!(!std::path::Path::new("/tmp/mecha-code-mode-probe").exists());
+}
+
+/// A program given `fs_read` may open a file to read its text: every form of
+/// reading one arrives as the whole file from that same function, so the
+/// answer is the guard's, never a file's. Without `fs_read`, or to write or
+/// read bytes, `open` is refused as before (the first wall, above).
+#[tokio::test]
+async fn open_reads_text_through_fs_read_and_nothing_else() {
+    let Some(interp) = interpreter(Backstops::default()).await else {
+        return;
+    };
+    let text = "h,i\n1,2\n3,4\n";
+    for (src, want) in [
+        ("print(len(open('a.csv').read()))", "12"),
+        (
+            "with open('a.csv') as f:\n    print(len(f.readlines()))",
+            "3",
+        ),
+        (
+            "n = 0\nfor line in open('a.csv', 'r'):\n    n += 1\nprint(n)",
+            "3",
+        ),
+        ("print(repr(open('sub/b.txt').readline()))", "'h,i\\n'"),
+        (
+            "import pathlib\nprint(len(pathlib.Path('a.csv').read_text()))",
+            "12",
+        ),
+        (
+            "import csv\nprint(len(list(csv.DictReader(open('a.csv')))))",
+            "2",
+        ),
+        ("print(len(open('a.csv', encoding='utf-8').read()))", "12"),
+        (
+            "import csv\nprint(len(list(csv.reader(open('a.csv', newline='')))))",
+            "3",
+        ),
+    ] {
+        let mut asked = Vec::new();
+        let (f, calls) = run_with(&interp, src, &["fs_read"], |c| {
+            asked.push(c.kwargs.clone());
+            Ok(Value::from(text))
+        })
+        .await;
+        assert!(matches!(f.end, End::Complete { .. }), "{src}: {:?}", f.end);
+        assert_eq!(f.printed.trim(), want, "{src}");
+        assert_eq!(calls.len(), 1, "{src}");
+        assert_eq!(calls[0].name, "fs_read");
+        // a relative path arrives under the program's directory; the call gets
+        // it relative again
+        let path = asked[0][0].1.as_str().unwrap().to_string();
+        assert!(
+            !path.starts_with('/') && (path == "a.csv" || path == "sub/b.txt"),
+            "{path}"
+        );
+    }
+    // the path reaches `fs_read` as written, a quote included: relative to the
+    // workspace when it was relative, absolute when it was absolute (a spill
+    // file, a grant), for `fs_read`'s own jail to decide
+    for (src, want) in [
+        ("open(\"it's.md\").read()", "it's.md"),
+        ("open('./sub/../a.csv').read()", "a.csv"),
+        ("open('/etc/hosts').read()", "/etc/hosts"),
+        (
+            "open('/tmp/mecha-spill-1/x.txt').read()",
+            "/tmp/mecha-spill-1/x.txt",
+        ),
+        ("open('../up.txt').read()", "/up.txt"),
+    ] {
+        let mut asked = Vec::new();
+        run_with(&interp, src, &["fs_read"], |c| {
+            asked.push(c.kwargs[0].1.as_str().unwrap().to_string());
+            Ok(Value::from(text))
+        })
+        .await;
+        assert_eq!(asked, vec![want.to_string()], "{src}");
+    }
+    // `mode` as a keyword is read as the positional is
+    let (f, _) = run_with(
+        &interp,
+        "print(len(open('a.csv', mode='r').read()))",
+        &["fs_read"],
+        |_| Ok(Value::from(text)),
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "12", "{}", f.printed);
+    // a handle holds its text after the first read: a `readline()` loop is one
+    // `fs_read`, not one per line (measured, R12)
+    let (f, calls) = run_with(
+        &interp,
+        "f = open('a.csv')\nn = 0\nwhile f.readline():\n    n += 1\nprint(n)",
+        &["fs_read"],
+        |_| Ok(Value::from(text)),
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "3", "{}", f.printed);
+    assert_eq!(calls.len(), 1);
+    // the description's claims, held against the worker
+    let (f, _) = run_with(
+        &interp,
+        "import re, json, csv, collections, itertools, math, datetime, decimal, pathlib\n\
+         d = {'a': 1}\nprint(d.get('a'))\n\
+         try:\n    max(d, key=d.get)\n    print('METHOD-AS-VALUE-WORKS')\n\
+         except BaseException:\n    print('method as value raises')",
+        &[],
+        |_| Ok(Value::Null),
+    )
+    .await;
+    assert!(
+        f.printed.starts_with("1\n"),
+        "d.get(k) works: {}",
+        f.printed
+    );
+    assert!(
+        f.printed.contains("method as value raises"),
+        "{}",
+        f.printed
+    );
+    // `open(..., errors=...)` raises in monty 1.4 before any host call, so
+    // the description says so (M6: a bare `except` swallowed it, and a
+    // program that read nothing answered that no file matched)
+    let (f, calls) = run_with(
+        &interp,
+        "try:\n    open('a.csv', 'r', errors='ignore')\nexcept TypeError as e:\n    print(e)",
+        &["fs_read"],
+        |_| Ok(Value::from("t")),
+    )
+    .await;
+    assert!(
+        f.printed.contains("'errors' argument is not yet supported"),
+        "{}",
+        f.printed
+    );
+    assert!(calls.is_empty());
+    for m in ["io", "statistics"] {
+        let (f, _) = run_with(
+            &interp,
+            &format!(
+                "try:\n    import {m}\n    print('HAS')\nexcept ImportError:\n    print('lacks')"
+            ),
+            &[],
+            |_| Ok(Value::Null),
+        )
+        .await;
+        assert_eq!(f.printed.trim(), "lacks", "{m}: {}", f.printed);
+    }
+    // a failure from the tool reaches the program where it reads
+    let (f, _) = run_with(
+        &interp,
+        "try:\n    open('gone.txt').read()\nexcept BaseException as e:\n    print(type(e).__name__, e)",
+        &["fs_read"],
+        |_| Err(HostRaise::tagged(Tag::ToolError, "`fs_read` returned an error: not found")),
+    )
+    .await;
+    assert!(f.printed.contains("not found"), "{}", f.printed);
+    // writing, binary and an unrelated OS call are refused, with fs_read given
+    for src in [
+        "open('x.txt', 'w').write('x')",
+        "open('x.txt', 'a')",
+        "open('x.txt', 'rb').read()",
+        "open('x.txt', mode='w').write('x')",
+        "open('x.txt', mode='rb').read()",
+        "import os\nos.getenv('HOME')",
+    ] {
+        let (f, calls) = run_with(&interp, src, &["fs_read"], |_| Ok(Value::from("t"))).await;
+        assert!(calls.is_empty(), "{src}");
+        match f.end {
+            End::Raised(r) => assert_eq!(r.exc_type, "PermissionError", "{src}"),
+            e => panic!("{src}: {e:?}"),
+        }
+    }
+}
+
+/// A program given `fs_list` walks the workspace the way Python does, and
+/// every listing is that tool's: `os.listdir`, `Path.iterdir`, `os.walk`,
+/// `glob` and `rglob`, and `os.path.exists`, `isfile` and `isdir`. A path
+/// a walk hands back opens again. Without `fs_list` they are refused.
+#[tokio::test]
+async fn a_walk_lists_through_fs_list_and_nothing_else() {
+    let Some(interp) = interpreter(Backstops::default()).await else {
+        return;
+    };
+    let tree = |c: &ExternalCall| -> Result<Value, HostRaise> {
+        let path = c.kwargs[0].1.as_str().unwrap_or("");
+        if c.name == "fs_read" {
+            return Ok(Value::from(format!("text of {path}")));
+        }
+        let names: &[&str] = match path {
+            "." => &["src/", "README.md"],
+            "src" => &["a.py", "b.txt", "sub/"],
+            "src/sub" => &["c.py"],
+            _ => {
+                return Err(HostRaise::tagged(
+                    Tag::ToolError,
+                    "`fs_list` returned an error: not found",
+                ))
+            }
+        };
+        Ok(Value::from(
+            names.iter().map(|n| Value::from(*n)).collect::<Vec<_>>(),
+        ))
+    };
+    for (src, want, lists) in [
+        ("print(sorted(os.listdir('src')))", "['a.py', 'b.txt', 'sub']", 1),
+        ("print(sorted(os.listdir()))", "['README.md', 'src']", 1),
+        (
+            "print(sorted(str(p) for p in pathlib.Path('src').iterdir()))",
+            "['src/a.py', 'src/b.txt', 'src/sub']",
+            1,
+        ),
+        (
+            "print(sorted(str(p) for p in pathlib.Path('.').iterdir()))",
+            "['README.md', 'src']",
+            1,
+        ),
+        (
+            "n = 0\nfor root, dirs, files in os.walk('.'):\n    n += len(files)\nprint(n)",
+            "4",
+            3,
+        ),
+        (
+            "print(sorted(str(p) for p in pathlib.Path('.').rglob('*.py')))",
+            "['src/a.py', 'src/sub/c.py']",
+            3,
+        ),
+        (
+            "print(sorted(p.name for p in pathlib.Path('src').glob('*.py')))",
+            "['a.py']",
+            1,
+        ),
+        (
+            // `/etc/x`: the fake answers as a listing that ran and failed, as
+            // the jail does in a run without `request_access`; with it, the
+            // gate refuses and the probe raises (R13, §11), tested below.
+            "print(os.path.exists('src/a.py'), os.path.isfile('src/sub'), os.path.isdir('src/sub'), os.path.exists('nope'), os.path.exists('/etc/x'))",
+            "True False True False False",
+            // `src` is listed once; `.` and `/etc` once each
+            3,
+        ),
+        (
+            "for root, dirs, files in os.walk('src'):\n    for f in files:\n        if f == 'c.py':\n            print(open(os.path.join(root, f)).read())",
+            "text of src/sub/c.py",
+            2,
+        ),
+    ] {
+        let src = format!("import os, pathlib\n{src}");
+        let (f, calls) = run_with(&interp, &src, &["fs_list", "fs_read"], tree).await;
+        assert!(matches!(f.end, End::Complete { .. }), "{src}: {:?} {}", f.end, f.printed);
+        assert_eq!(f.printed.trim(), want, "{src}");
+        let listed = calls.iter().filter(|c| c.name == "fs_list").count();
+        assert_eq!(listed, lists, "{src}: {calls:?}");
+    }
+    // a probe in a directory already listed answers from that listing:
+    // `isfile` per file in an `os.walk` costs the walk's own listings
+    let (f, calls) = run_with(
+        &interp,
+        "import os\nn = 0\nfor root, dirs, files in os.walk('src'):\n    for f in files:\n        n += os.path.isfile(os.path.join(root, f))\nprint(n)",
+        &["fs_list"],
+        tree,
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "3", "{:?}", f.end);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    // a directory listed again replaces its names in the cache rather than
+    // adding to them, so a later directory still fits (review of #817): two
+    // listings of a 40,000-name `a` and one of a 60,000-name `b` hold 100,000,
+    // under the cap, and a probe in `b` answers without a fourth listing
+    let sized = |c: &ExternalCall| -> Result<Value, HostRaise> {
+        let n = match c.kwargs[0].1.as_str().unwrap_or("") {
+            "a" => 40_000,
+            _ => 60_000,
+        };
+        Ok(Value::from(
+            (0..n)
+                .map(|i| Value::from(format!("f{i}")))
+                .collect::<Vec<_>>(),
+        ))
+    };
+    let (f, calls) = run_with(
+        &interp,
+        "import os\nos.listdir('a')\nos.listdir('a')\nos.listdir('b')\nprint(os.path.exists('b/f1'))",
+        &["fs_list"],
+        sized,
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "True", "{:?}", f.end);
+    assert_eq!(
+        calls.len(),
+        3,
+        "{:?}",
+        calls.iter().map(|c| &c.kwargs).collect::<Vec<_>>()
+    );
+    // a scan past the host helpers' piece count raises a limit, catchably
+    let wide = |c: &ExternalCall| -> Result<Value, HostRaise> {
+        let names: Vec<Value> = match c.kwargs[0].1.as_str().unwrap_or("") {
+            "." => vec![Value::from("a/"), Value::from("b/")],
+            _ => (0..70_000).map(|i| Value::from(format!("f{i}"))).collect(),
+        };
+        Ok(Value::from(names))
+    };
+    let (f, _) = run_with(
+        &interp,
+        "import os\ntry:\n    list(os.walk('.'))\nexcept BaseException as e:\n    print(e)",
+        &["fs_list"],
+        wide,
+    )
+    .await;
+    assert!(
+        f.printed.contains("LimitError: pieces: a scan of `.`"),
+        "{}",
+        f.printed
+    );
+    // the path a walk was asked for reaches `fs_list` as `open` paths do
+    let (_, calls) = run_with(
+        &interp,
+        "import os\ntry:\n    os.listdir('/tmp/mecha-spill-1')\nexcept BaseException:\n    pass",
+        &["fs_list"],
+        tree,
+    )
+    .await;
+    assert_eq!(calls[0].kwargs[0].1, Value::from("/tmp/mecha-spill-1"));
+    // a probe is `False` only for the tool's own failure: a spent limit raises
+    let (f, _) = run_with(
+        &interp,
+        "import os\nprint(os.path.exists('src/a.py'))",
+        &["fs_list"],
+        |_| {
+            Err(HostRaise::tagged(
+                Tag::LimitError,
+                "tool reads: this program has spent all 2048",
+            ))
+        },
+    )
+    .await;
+    match f.end {
+        End::Raised(r) => assert!(
+            r.message.unwrap_or_default().contains("LimitError"),
+            "{}",
+            f.printed
+        ),
+        e => panic!("a spent limit read as a missing file: {e:?} {}", f.printed),
+    }
+    // and a refusal by the gate raises too: a denied probe is not a missing file
+    let (f, _) = run_with(
+        &interp,
+        "import os\nprint(os.path.exists('src/a.py'))",
+        &["fs_list"],
+        |_| {
+            Err(HostRaise::tagged(
+                Tag::ToolError,
+                "Blocked by a hook: no listing today",
+            ))
+        },
+    )
+    .await;
+    match f.end {
+        End::Raised(r) => assert!(
+            r.message.unwrap_or_default().contains("Blocked by a hook"),
+            "{}",
+            f.printed
+        ),
+        e => panic!("a refusal read as a missing file: {e:?} {}", f.printed),
+    }
+    // an `fs_list` that does not hand out names (a server's) is not walked:
+    // the caller says so, and the walk is refused without a call
+    let (_program, step) = interp
+        .start_with(
+            "import os\nos.listdir('src')",
+            &["fs_list".to_string()],
+            FileTools {
+                read: false,
+                list: false,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    match step {
+        Step::Done(f) => match f.end {
+            End::Raised(r) => assert_eq!(r.exc_type, "PermissionError"),
+            e => panic!("{e:?}"),
+        },
+        Step::Call(c) => panic!("a server's fs_list was walked: {c:?}"),
+    }
+    // without `fs_list`, a walk is refused as before
+    let (f, calls) = run_with(&interp, "import os\nos.listdir('src')", &["fs_read"], tree).await;
+    assert!(calls.is_empty());
+    match f.end {
+        End::Raised(r) => assert_eq!(r.exc_type, "PermissionError"),
+        e => panic!("{e:?}"),
+    }
 }
 
 /// The second wall, measured on the live worker rather than read off an

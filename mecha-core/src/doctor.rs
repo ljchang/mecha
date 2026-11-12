@@ -28,6 +28,9 @@
 //! `now`, which is what makes "a 49-hour-old pending draft" a unit test
 //! instead of a two-day wait.
 
+mod mail_rules;
+pub use mail_rules::{check_mail_rule_shell, check_mail_rules, check_mail_rules_timer};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -395,8 +398,14 @@ fn resolve_existing_prefix(path: &Path) -> PathBuf {
 
 /// The directories under the mecha home the closure guard reads or writes:
 /// the shell registry (`runs/shells`), the closure store, and the task-run
-/// and trigger-run markers.
-const GUARD_DIRS: [&str; 4] = ["runs", "closures", "taskruns", "triggers"];
+/// and trigger-run markers, and mail-rule permissions and action records.
+const GUARD_DIRS: [&str; 5] = ["runs", "closures", "taskruns", "triggers", "mail-rules"];
+
+fn mount_reaches(path: &Path, protected: &Path) -> bool {
+    let path = resolve_existing_prefix(path);
+    let protected = resolve_existing_prefix(protected);
+    protected.starts_with(&path) || path.starts_with(&protected)
+}
 
 /// Whether a confined `shell` is confined away from the mecha home. Not a
 /// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
@@ -423,7 +432,7 @@ pub fn check_shell_confinement(
         .chain(sandbox.readable.iter().map(|p| ("readable", p)))
     {
         let path = resolve_existing_prefix(path);
-        // Only what the closure guard reads counts: a mount that contains,
+        // Protect actor attribution and rule permissions: a mount that contains,
         // or sits inside, one of those directories. `work/` (the run
         // workspace root, which every backend mounts anyway) and `bundles/`
         // (published artifacts) are part of the home and meant to be handed
@@ -432,7 +441,7 @@ pub fn check_shell_confinement(
         let reaches = GUARD_DIRS
             .iter()
             .map(|d| home.join(d))
-            .any(|guarded| guarded.starts_with(&path) || path.starts_with(&guarded));
+            .any(|guarded| mount_reaches(&path, &guarded));
         if reaches {
             out.push(Finding {
                 component: "sandbox".to_string(),
@@ -446,10 +455,10 @@ pub fn check_shell_confinement(
                 summary: format!("the sandbox mounts the mecha home ({how})"),
                 detail: format!(
                     "`{}` in `[sandbox] {how}` contains or sits inside {}, so a confined \
-                     command can reach the shell registry and the closure store the \
-                     closure guard reads — and inside the sandbox's pid namespace the \
-                     guard cannot see the harness's registration, so such a command can \
-                     be recorded as the owner. Mount something narrower.",
+                     command can reach protected actor or mail-rule state. Inside the \
+                     sandbox's pid namespace the actor guard cannot see the harness's \
+                     registration, so exposing these stores weakens owner attribution. \
+                     Mount something narrower.",
                     path.display(),
                     home.display()
                 ),
@@ -537,6 +546,7 @@ pub fn examine_with(home: &Path, mail: &MailStores, now: DateTime<Utc>) -> Vec<F
         )),
     }
     findings.extend(check_legacy_mail(&mail.legacy));
+    findings.extend(check_mail_rules(home, mail, now));
     findings.extend(check_outbox(&home.join("outbox"), now, charter));
     findings.extend(check_questions(&home.join("questions"), now, charter));
     findings.extend(check_frontdoor(&home.join("requests"), now, charter));
@@ -2109,6 +2119,10 @@ fn check_runs(sessions: &Path, charter: Option<&crate::charter::Charter>) -> Vec
             include_tests: false,
             // As the other readers: admitted in a trial home, hidden elsewhere.
             include_experiments: crate::experiment::in_experiment_home(),
+            // A driven run is another agent pushing the harness to fail on
+            // purpose: its failures are the driver's ledger, not the
+            // machine's distress (`DRIVER-DESIGN.md` D1).
+            include_driven: false,
         },
     ) {
         Ok(c) => c,
@@ -2172,6 +2186,36 @@ fn check_runs(sessions: &Path, charter: Option<&crate::charter::Charter>) -> Vec
                     "sessions".into(),
                     "health".into(),
                     "--include-tests".into(),
+                ],
+                needs_terminal: false,
+            }),
+        });
+    }
+    // The same guard for driven runs (`DRIVER-DESIGN.md` D1), its own
+    // finding because its remedy differs: `--include-tests` does not show a
+    // driven row, and `--kind driven` is the only way in (review of #848).
+    if corpus.hidden_driven > corpus.sessions_read {
+        out.push(Finding {
+            component: "runs".into(),
+            severity: Severity::Attention,
+            summary: format!(
+                "the run check is reading {} real session(s) beside {} driven session(s) it hid",
+                corpus.sessions_read, corpus.hidden_driven
+            ),
+            detail: format!(
+                "{}: sessions recorded with MECHA_SESSION_KIND=driven are another agent's runs \
+                 on real work, excluded from every corpus readout by default, so the rates \
+                 below describe the few owner runs, not the store; `--kind driven` reads the rest",
+                sessions.display()
+            ),
+            remedy: Some(Remedy {
+                description: "read the run-quality summary of the driven runs".into(),
+                argv: vec![
+                    "mecha".into(),
+                    "sessions".into(),
+                    "health".into(),
+                    "--kind".into(),
+                    "driven".into(),
                 ],
                 needs_terminal: false,
             }),
@@ -3760,6 +3804,7 @@ mod tests {
 
     fn pending_item(home: &Path, id: &str, created_at: &str, error: Option<&str>) {
         let item = OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

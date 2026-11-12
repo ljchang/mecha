@@ -9,6 +9,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mail rules can draft template replies.** A rule's `reply` action with a
+  `template` file is rendered (the sender's first name, the subject and the
+  date are the only slots) and staged in your outbox to release, edit or
+  reject; nothing is sent unattended yet. Replies are refused to automated
+  senders, mailing lists, your own addresses, conversations you have joined,
+  and anyone the rule answered in the last week, and the ledger says which.
+  `mail_reply` gains `from_only`, which answers only the message's From.
+
+- **Mail rules can match on what a message says.** A rule with
+  `match.describe` (or *Description* in the new-rule form) is checked by the
+  classifier at each classify pass, which must quote the words in the message
+  that show a match; quotes not in the message are dropped. Such a rule starts
+  in shadow and, once approved, can archive, mark read or unread, tag and add
+  to the digest automatically; trash and spam always ask first. It can also
+  make a task automatically, but only when a second check — one that sees
+  only your descriptions, never what the classifier has learned — agrees;
+  otherwise the task is offered. When that second check's instructions change
+  in an update, a description rule with a task asks to be approved again,
+  every group of it, as an edit to its files does. Its replies are staged
+  like any rule's (above). Newsletters and list mail are read for a
+  description rule only when the rule could apply. Wrong match on such a row
+  also corrects the classifier. At most 12 description list entries are
+  admitted.
+
+- **The mail rules page.** *Mail → Rules* (`#mail/rules`) lists each rule's
+  modes, activity and holds; a rule's page raises a group to automatic only
+  through an approval screen showing its files, tests it against 30 days of
+  mail, shows the ledger with Undo and Wrong match, and edits rule.toml. A
+  thread's *Make a rule…* starts a rule from its sender, in shadow.
+
+- **Mail-rule web backend.** CLI children support stdin rule creation, atomic
+  edits with immediate approval lapse, digest-bound mode changes, per-rule
+  pause and idempotent wrong-match corrections. List, show, ledger and
+  retrospective-test JSON expose modes, holds, correction rates and action
+  controls through feature-owned API routes. Doctor also reports automatic
+  rules exposed through a shell's network access to serve's loopback port.
+  The browser page follows separately.
+
+- **Outlook header rules act on a visible match.** A header rule matching on
+  `list_id` or `header.<Name>` with only non-outbound actions now acts on an
+  Outlook account when the header is visible and matches; a message whose
+  header is not visible is skipped without a ledger row. Ledger rows record
+  `headers_partial`. Rules with an outbound action, and description rules,
+  remain held on Outlook.
+
+- **Automatic mail-rule passes, opt-in.** Enable `mail_rules` with `mail` for
+  five-minute header passes and an isolated post-classify hook. Timer overlap
+  skips safely; typed failures fail the timer, and hook failures never fail
+  classification. Doctor reports approval/store/provider/address and pending
+  action problems, every automatic group under unconfined shell, and timer
+  health. Pending rule proposals and lapsed approvals appear in review queues.
+
+- **Owner mail-rule CLI.** `mecha mail rule add | list | show | mode | test |
+  ledger | undo | pause-all` installs in shadow, requires owner approval for
+  per-group raises, and exposes read-only JSON. Testing searches 30 days across
+  folders without writing; undo restores the exact mailbox message and records
+  a correction for the automatic brakes. Provider commands run through the
+  sibling `mecha-mail` binary without searching PATH. Filtered apply requires a
+  dry run so live passes retain sibling rules' safeguards. Undo records a durable
+  intent before restoring mail and recovers interrupted corrections on retry.
+  Timer and classify integration ship behind the separate `mail_rules` switch.
+
+- **Mail-rule pre-timer safeguards.** Bounded pagination, injected-clock windows,
+  visible expiry rows, unknown-activation holds, complete failure counts, one
+  triage-overlay warning per pass, and shared mailbox-address validation.
+
+- **Mail rule execution.** `mecha-mail rules apply` runs header rules in shadow,
+  propose or approved automatic mode, with `--headers`, `--after-classify`,
+  account selection and a dry run. The engine records per-action outcomes,
+  defers classification-dependent work, recovers interrupted attempts, and
+  applies failure brakes and task caps. Tasks use the configured graph MCP
+  server and stay held when it is unavailable. Automatic scheduling is opt-in
+  through `mail_rules`.
+
+- **Approve persona memories as clean.** `mecha persona memory approve` and
+  the Memories tab can now record the owner's vouch for a memory that came
+  from outside content. It becomes active with owner origin, so recalling it
+  no longer marks the new chat untrusted; memories approved the old way can
+  be vouched later, and `--chat <id> --clean` handles a whole source chat.
+
+- **A persona's life profile, and a draft of it from what you wrote.**
+  `life.toml` says who a persona lives with (people on their People tab),
+  their usual night and what their days never hold, and their sampled days
+  obey it: no household member the profile lacks, sleep near their usual
+  times, no forbidden activity. Their own model can draft it from identity,
+  motivation, routine notes and People-tab names into a waiting
+  `life.draft.toml`, which the Week tab and `mecha persona life` let you
+  review, edit, approve or discard; nobody absent from the People tab is
+  invented into the household.
+
+- **Persona day notes can tell their story.** Per persona, **Their events**
+  brings the day's drawn events, non-normal energy/stress/mood and closed
+  weather into chats; it is off by default and needs **Their days**. **Where
+  they live** resolves an owner-written town and region for weather, refreshed
+  on the Week tab and in the background during eligible chats. Failed weather
+  refreshes pause for an hour, and a later forecast updates the weather shown
+  without changing events the day already drew. Place edits take effect in
+  open chats, clear the previous place's weather before lookup, and town,
+  region, country forms resolve each named part.
+
 - **More chat models, one approval away.** `mecha model catalog` lists the
   chat models mecha knows how to serve — Qwen3.6-35B-A3B uncensored, Qwen3.8-27B
   and its uncensored and abliterated builds, and Gemma 4 26B-A4B — with what
@@ -216,6 +316,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Building mecha needs Rust 1.96 or newer** (it was 1.89). Code mode's
+  interpreter (`monty-pool` 1.4) is now built in by default, and every one
+  of its crates needs 1.96. A build adds about 50 crates, including a C
+  build (aws-lc). `cargo build --no-default-features` still builds a mecha
+  without code mode, and `mecha features` says so by name.
 - **Continue on a picture is the only way to build on it.** Every picture in
   a persona chat has a Continue button beside Edit and Regenerate: press it,
   say what changes, and the next picture builds on that one. Typing without
@@ -247,6 +352,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- **A mail rule's ledger records each observation once.** A rule in shadow,
+  or a message that arrived before a rule was active, wrote a new ledger row
+  on every five-minute pass for as long as the message stayed in the inbox
+  window. Rates were unaffected; the ledger and its page are no longer
+  buried in repeats.
+- **Mail-rule review queues and timer diagnostics.** A broken or deleted rule
+  definition no longer hides other lapses or proposal counts. Doctor skips
+  unavailable systemd queries while still reporting missing or failed units.
+  The mail-rules queue follows the existing queues, preserving their order.
+
+- **Mail-rule entrypoints and deadlines.** Direct mail-binary undo and
+  retrospective testing require both global feature switches before opening
+  stores or providers. Doctor detects writable sandbox mounts reaching the
+  rules store through ancestors or aliases without probing backend readiness:
+  failed sandbox preflight prevents shell from running. Classify gives its rule
+  hook ten minutes including SIGTERM grace and forced reaping, reports timeouts,
+  and keeps its own result; daytime/nightly service budgets are 40/55 minutes.
+  Re-copy both classify services and reload systemd when deploying.
+
+- **Mail-rule review fixes.** Emergency pause skips stray rule entries with a
+  named notice while revoking valid rules. Unsupported automatic modes refuse
+  before showing an approval screen. Undo of an unreadable definition durably
+  lowers its historical groups before restoring mail. Rule views use the shared
+  mail-directory resolver, and empty text lists and ledgers say they are empty.
+
+- **Outlook archive and spam leave Sent Items and Drafts alone.** Both now
+  move only the conversation's Inbox messages, following every page of that
+  folder's results. Empty Inbox matches say there is nothing to archive or
+  mark as spam. Trash still moves the whole conversation, as Gmail does;
+  unarchive and untrash retain their source-folder and destination rules.
+  Triage results now carry completion status and successful/failed counts
+  through MCP. Partial operations leave the CLI's triage record unchanged
+  and in its queue. An archive already out of Inbox settles the record;
+  empty spam results stay skipped because no junk training was confirmed.
+  Missing Outlook conversations still return an error. CLI results retain
+  the action and short handle, and restore messages name their action.
 
 - **Pictures and clips no longer disappear from older chats.** The nightly
   `mecha work clean` counted a chat's workspace like a morning brief and kept

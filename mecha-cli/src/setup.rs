@@ -59,6 +59,9 @@ pub struct Prepared {
     /// when the lever is off or there is no store: recorded and empty, not
     /// unknown.
     pub rules: mecha_core::learning::RulesCarried,
+    /// What a driven run forced and found (D1b), for the run record;
+    /// `None` on every run that is not driven.
+    pub driven: Option<mecha_core::driven::Forced>,
 }
 
 /// Everything except the model connection. Split out so `mecha tools` can list
@@ -106,6 +109,8 @@ pub struct PreparedTools {
     /// closing its own task. See [`posture_for`].
     pub posture: mecha_core::closure::RunPosture,
     pub _mcp: Vec<Arc<McpClient>>,
+    /// What a driven run forced (D1b); `build` completes it.
+    pub driven: Option<mecha_core::driven::Forced>,
 }
 
 /// The posture a front-end's run gets, unless it names one
@@ -223,7 +228,87 @@ pub async fn prepare_carrying(
 ) -> Result<Prepared> {
     let tools = prepare_tools_carrying(opts, interactive, todo).await?;
     preflight_provider(&tools.config, opts).await;
-    build(tools, opts)
+    let code = code_interpreter(&tools, opts).await?;
+    build(tools, code, opts)
+}
+
+/// Take `code` off `registry` where `profile` would not keep it, judging
+/// `code` alone: narrowing the registry again would judge the subagents,
+/// inserted since `prepare_tools` narrowed it, for the first time, and drop
+/// them silently with code mode on and keep them with it off (review of
+/// #774).
+pub(crate) fn narrow_code(
+    registry: &mut Registry,
+    profile: mecha_core::tool::profile::ToolProfile,
+    routed: &[String],
+) {
+    let kept = registry
+        .get(mecha_core::tool::code::NAME)
+        .is_some_and(|code| profile.keeps(code.as_ref(), routed));
+    if !kept {
+        registry.remove(mecha_core::tool::code::NAME);
+    }
+}
+
+/// Code mode's interpreter for an agent built from `tools`, or `None` when
+/// the run serves no `code` (`CODE-MODE-DESIGN.md` §7): the switch, then
+/// `--no-code-tool` (`Lever::CodeTool`, which `mecha eval` throws), `--tool`
+/// and `[tools]`, the same order every registration in `prepare_tools`
+/// asks. Nothing is probed unless all of those say yes.
+///
+/// **A worker or sandbox that cannot start stops the start**: with the
+/// switch on, an `Err` from [`mecha_core::interpreter::for_runs`] is
+/// returned, never turned into a run without `code` — the preflight rule
+/// `shell`'s sandbox follows, because a tool list that moves with a broken
+/// install is how a guard degrades silently. The one exception is a binary
+/// built without the interpreter (the cargo feature `monty`): one
+/// `config.toml` is read by every build on the machine, and a switch a newer
+/// build wrote must not take an older one down — the reasoning behind
+/// `[features]` ignoring unknown keys. There `code` is not registered, the
+/// row reads unready with why, and a run that named `code` says so.
+///
+/// Only the agent-building paths ask this — `prepare_tools` alone, which
+/// `mecha mail` and `mecha tasks` build from, starts no worker.
+pub async fn code_interpreter(
+    tools: &PreparedTools,
+    opts: &GlobalOpts,
+) -> Result<Option<Arc<dyn mecha_core::interpreter::Interpreter>>> {
+    use mecha_core::feature::{self, Feature};
+    use mecha_core::tool::code::NAME;
+    let cfg = &tools.config;
+    let named = opts.tools.iter().any(|t| t == NAME);
+    if let Some(why) = feature::unbuilt(Feature::Code) {
+        if named {
+            eprintln!(
+                "mecha: {NAME} not registered — {why} ({})",
+                feature::BUILD_WITH_MONTY
+            );
+        }
+        return Ok(None);
+    }
+    if !feature::switched_on(cfg, Feature::Code) {
+        if named {
+            eprintln!(
+                "mecha: {NAME} not registered — `code` is not switched on in [features] (`{}`)",
+                feature::enable_command(cfg, Feature::Code)
+            );
+        }
+        return Ok(None);
+    }
+    if named && !cfg.tools.registers(NAME) {
+        eprintln!("mecha: {NAME} not registered — it is turned off in [tools]");
+    }
+    if opts.no_code_tool || !(opts.tools.is_empty() || named) || !cfg.tools.registers(NAME) {
+        return Ok(None);
+    }
+    let home = mecha_core::work::mecha_home()?;
+    mecha_core::interpreter::for_runs(&cfg.sandbox, &home)
+        .await
+        .map(Some)
+        .context(
+            "`[features] code` is on and code mode's interpreter cannot start, so nothing \
+             starts without it (`mecha features disable code` runs without programs)",
+        )
 }
 
 /// Ask a local server whether it is serving what config says it is.
@@ -332,7 +417,8 @@ pub async fn prepare_with_approver(
         tools.approver = scripted_refusals(approver)?.0;
     }
     preflight_provider(&tools.config, opts).await;
-    build(tools, opts)
+    let code = code_interpreter(&tools, opts).await?;
+    build(tools, code, opts)
 }
 
 /// The clock every agent this process builds runs against.
@@ -380,9 +466,14 @@ fn routed_server_is_down(
         })
 }
 
-fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
+fn build(
+    tools: PreparedTools,
+    code: Option<Arc<dyn mecha_core::interpreter::Interpreter>>,
+    opts: &GlobalOpts,
+) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
+    let mut driven = tools.driven;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
     let mut provider = mecha_core::provider::build(provider_cfg)?;
@@ -415,6 +506,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     for line in refused {
         eprintln!("mecha: {line} — not granted");
     }
+    let grants_off = grants.is_off();
     let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
         grants,
@@ -444,6 +536,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // event name should fail on every start, not only on the runs that use it.
     let hooks = mecha_core::hooks::HookSet::from_config(&cfg.hooks)?;
     let hooks = (!opts.no_hooks && !hooks.is_empty()).then(|| Arc::new(hooks));
+    let hooks_attached = hooks.is_some();
     // Approval rules: validated again here (config load already did) so a
     // rule set built any other way fails on every start too. Installed on the
     // parent and on every child below, like hooks and for the same reason —
@@ -553,10 +646,13 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
         if opts.tool_profile.is_some() {
+            // `code` is not in the pool yet (it is built after every other
+            // tool, below), and `build_subagent` builds the child's own over
+            // the child's registry; it is judged once that is built.
             let excluded: Vec<&str> = profile
                 .tools
                 .iter()
-                .filter(|t| registry.get(t).is_none())
+                .filter(|t| registry.get(t).is_none() && *t != mecha_core::tool::code::NAME)
                 .map(String::as_str)
                 .collect();
             if !excluded.is_empty() {
@@ -596,6 +692,29 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 continue;
             }
         }
+        // A profile naming `code` in a run that withholds code mode — the
+        // switch on and the build able, but `--no-code-tool` (which `mecha
+        // eval` throws), a `--tool` list without it, or `[tools]` — is a
+        // subagent this run has said it does not want, as above: skipped,
+        // loudly. Off or not built is still fatal, by name
+        // (`subagent_code_refusal`): that is configuration, not this run.
+        let names_code = profile
+            .tools
+            .iter()
+            .any(|t| t == mecha_core::tool::code::NAME);
+        if names_code
+            && code.is_none()
+            && mecha_core::feature::unbuilt(mecha_core::feature::Feature::Code).is_none()
+            && mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::Code)
+        {
+            if !opts.tools_from_trigger {
+                eprintln!(
+                    "mecha: subagent `{}` not registered — this run withholds `code`",
+                    profile.name
+                );
+            }
+            continue;
+        }
         // A profile may point at a different provider entry entirely.
         let (_, child_provider_cfg) = cfg.provider(profile.provider.as_deref())?;
         let child = build_subagent(
@@ -607,7 +726,28 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             hooks.as_ref(),
             &policy,
             outbox.as_ref(),
+            code.as_ref(),
         )?;
+        // A `--tool-profile` judges the child's own `code` as it judges the
+        // parent's (`narrow_code`): by what it declares, alone. One the
+        // profile would not keep takes the subagent with it, loudly, rather
+        // than handing the parent a program reach the profile refused.
+        if let Some(tool_profile) = opts.tool_profile {
+            let kept = child
+                .agent()
+                .registry()
+                .get(mecha_core::tool::code::NAME)
+                .is_none_or(|c| tool_profile.keeps(c.as_ref(), &cfg.outbox.tools));
+            if !kept {
+                if !opts.tools_from_trigger {
+                    eprintln!(
+                        "mecha: subagent `{}` not registered — `--tool-profile` excludes its `code`",
+                        profile.name
+                    );
+                }
+                continue;
+            }
+        }
         registry.insert(Arc::new(child));
     }
 
@@ -616,6 +756,23 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // that loses it must fail every start rather than ship a surface where
     // the model can close tasks around `mecha tasks set`.
     crate::closure_guard::verify(&registry)?;
+
+    // `code`, built after every tool `prepare_tools` and the subagents put
+    // here (`CODE-MODE-DESIGN.md` §7), so the learned rules, the capability
+    // block and the run record all see it; the agent builds it again after
+    // each later registration (`Agent::enable_code`). A `--tool-profile`
+    // narrows it as it narrowed the rest, by what it declares.
+    if let Some(interpreter) = &code {
+        let route = outbox.clone();
+        registry.insert(Arc::new(mecha_core::tool::code::CodeTool::over(
+            &registry,
+            |n| route.as_ref().is_some_and(|o| o.routes(n)),
+            Arc::clone(interpreter),
+        )));
+        if let Some(profile) = opts.tool_profile {
+            narrow_code(&mut registry, profile, &cfg.outbox.tools);
+        }
+    }
 
     // A scripted refusal that can never fire is measured as an owner who
     // refused: said here, against the registry the subagent profiles have
@@ -925,6 +1082,59 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     if let Some(mb) = &tools.mailbox {
         agent.set_mailbox(Arc::clone(mb));
     }
+    // From here the agent keeps `code` built last, over whatever the front
+    // end inserts after `prepare` returns (`recall`, `ask_user`, the TUI's).
+    // A profile that narrowed it away keeps it away.
+    if let Some(interpreter) = code {
+        if agent.registry().get(mecha_core::tool::code::NAME).is_some() {
+            agent.enable_code(interpreter);
+            // And held to the profile after each rebuild, not only this once.
+            if let Some(profile) = opts.tool_profile {
+                agent.narrow_code_by(profile, cfg.outbox.tools.clone());
+            }
+        }
+    }
+
+    // D1b's other direction: a driven run is refused if any surface it
+    // forced off is still attached. The switches were thrown on `opts` and
+    // the config forced in `prepare_tools`, so this should never fire; it is
+    // the check that a future path around them stops the start rather than
+    // running with the owner's servers, hooks, grants or mailbox, or a tool
+    // nobody named (§7: an allowlist, never a sweep).
+    if let Some(forced) = driven.as_mut() {
+        forced.shell_rule_loaded = policy.rules_for("shell").next().is_some();
+        let mut attached = Vec::new();
+        if !tools._mcp.is_empty() {
+            attached.push(format!("{} MCP server(s)", tools._mcp.len()));
+        }
+        if hooks_attached {
+            attached.push("hooks".to_string());
+        }
+        if !grants_off {
+            attached.push("grants".to_string());
+        }
+        if tools.mailbox.is_some() {
+            attached.push("the mailbox".to_string());
+        }
+        let names: Vec<String> = agent
+            .registry()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        let unlisted = mecha_core::driven::unlisted(names.iter().map(String::as_str));
+        if !unlisted.is_empty() {
+            attached.push(format!(
+                "tools outside the allowlist: {}",
+                unlisted.join(", ")
+            ));
+        }
+        if !attached.is_empty() {
+            anyhow::bail!(
+                "refusing a driven run: still attached — {}",
+                attached.join("; ")
+            );
+        }
+    }
 
     let levers_off = levers_off(opts, &cfg);
     Ok(Prepared {
@@ -940,6 +1150,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         skill: tools.skill,
         mailbox: tools.mailbox,
         _mcp: tools._mcp,
+        driven,
     })
 }
 
@@ -999,6 +1210,16 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
                     || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
             }
             Lever::Grants => opts.no_grants,
+            // Off wherever `code_interpreter` registers nothing for the
+            // switch's sake: thrown, switched off, or not in this build. A run
+            // record must not say programs were on in a build that cannot run
+            // them (review of #774). `[tools]` and `--tool` are `tools`' to
+            // say, as `Lever::CodeTool`'s doc has it.
+            Lever::CodeTool => {
+                opts.no_code_tool
+                    || mecha_core::feature::unbuilt(mecha_core::feature::Feature::Code).is_some()
+                    || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Code)
+            }
         })
         .collect()
 }
@@ -1021,6 +1242,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::CompactTool => opts.no_compact_tool = true,
         Lever::SystemRead => opts.no_system_read = true,
         Lever::Grants => opts.no_grants = true,
+        Lever::CodeTool => opts.no_code_tool = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
         Lever::StepChecks => opts.no_step_checks = true,
         Lever::GoalGuidance => opts.no_goal_guidance = true,
@@ -1033,6 +1255,54 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::PastAppraisals => opts.no_past_appraisals = true,
         Lever::SuccessExamples => opts.no_success_examples = true,
     }
+}
+
+/// The surfaces a driven run drops (`docs/DRIVER-DESIGN.md` D1b), as levers:
+/// thrown through [`switch_off`], so the run record's `levers_off` names
+/// them by the same definitions `mecha eval`'s bare arm uses.
+///
+/// `Fallback` is not in the design's list and is here on the subagent
+/// argument (§7): a fallback answers a turn on a model that is not the
+/// arm's, which is both an egress nobody priced and a confound for D4's
+/// split between harness and model.
+pub const DRIVEN_OFF: [Lever; 6] = [
+    Lever::Mcp,
+    Lever::Hooks,
+    Lever::Grants,
+    Lever::Messages,
+    Lever::SystemRead,
+    Lever::Fallback,
+];
+
+/// Make `opts` a driven run's: no project layer, the [`DRIVEN_OFF`] levers
+/// thrown, and the tool surface narrowed to [`mecha_core::driven::TOOLS`]
+/// through `--tool`'s own narrowing. That narrowing, and no other mechanism,
+/// because the startup check that warns about an `[outbox] tools` name with
+/// no registered tool stays quiet for a name narrowed out this way, and
+/// every routed name in the owner's global file would otherwise warn on
+/// every driven start for a reason that is not a typo.
+///
+/// A caller's own `--tool` list narrows further, never wider. An
+/// intersection that leaves nothing is refused: an empty list means *every*
+/// tool to `--tool`, which is the opposite of what was asked.
+pub fn force_driven(opts: &mut GlobalOpts) -> Result<()> {
+    opts.global_config_only = true;
+    for lever in DRIVEN_OFF {
+        switch_off(opts, lever);
+    }
+    let tools: Vec<String> = mecha_core::driven::TOOLS
+        .iter()
+        .filter(|t| opts.tools.is_empty() || opts.tools.iter().any(|k| k == *t))
+        .map(|t| t.to_string())
+        .collect();
+    anyhow::ensure!(
+        !tools.is_empty(),
+        "a driven run's tools are {}, and `--tool` named none of them",
+        mecha_core::driven::TOOLS.join(", ")
+    );
+    opts.tools = tools;
+    opts.driven_run = true;
+    Ok(())
 }
 
 /// Which of `wanted` an active `--tool` allowlist leaves out.
@@ -1260,7 +1530,50 @@ async fn prepare_tools_carrying(
     carried_todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
 ) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    // A driven run is honoured through one door: a fresh one-shot `mecha
+    // run`, which forces its switches (`force_driven`) before it gets here
+    // (`docs/DRIVER-DESIGN.md` §6, D1b). Every other start under the mark is
+    // refused, so a verb nobody thought about cannot build an agent with
+    // the owner's surfaces attached and a driven label on its session.
+    let marked = mecha_core::driven::marked();
+    anyhow::ensure!(
+        marked || !opts.driven_run,
+        "a driven run needs `{}=driven` in its environment",
+        mecha_core::session::SESSION_KIND_ENV
+    );
+    anyhow::ensure!(
+        !marked || opts.driven_run,
+        "`{}=driven` is a driven run, and a driven run is a fresh one-shot `mecha run`; \
+         this command does not take it",
+        mecha_core::session::SESSION_KIND_ENV
+    );
     let mut cfg = load_config(opts)?;
+    // And its switches thrown *before* anything below can spawn a server or
+    // open a store: `build`'s audit of what ended up attached is the second
+    // check, and by then an owner's MCP server would already have started.
+    if opts.driven_run {
+        let off = levers_off(opts, &cfg);
+        let on: Vec<String> = DRIVEN_OFF
+            .iter()
+            .filter(|l| !off.contains(l))
+            .map(|l| format!("{l:?}"))
+            .collect();
+        anyhow::ensure!(
+            on.is_empty() && opts.global_config_only && !opts.tools.is_empty(),
+            "refusing a driven run: its switches are not thrown ({}{}{})",
+            on.join(", "),
+            if opts.global_config_only {
+                ""
+            } else {
+                " project layer;"
+            },
+            if opts.tools.is_empty() {
+                " no tool allowlist"
+            } else {
+                ""
+            }
+        );
+    }
 
     // --- flags override config ---
     if let Some(effort) = opts.effort {
@@ -1494,12 +1807,21 @@ async fn prepare_tools_carrying(
     if opts.read_only {
         cfg.tools.permission_mode = PermissionMode::ReadOnly;
     }
+    // The half of a driven run's forcing that is not a lever: the leak
+    // guard, `trifecta = "block"`, `permission_mode = "allow"`, and no
+    // subagent. After every flag is folded, so nothing later undoes it.
+    anyhow::ensure!(
+        !(opts.driven_run && opts.read_only),
+        "a driven run's approvals are `allow` inside its sandbox; `--read-only` would refuse \
+         every edit as a harness refusal"
+    );
+    let mut driven = opts.driven_run.then(|| mecha_core::driven::force(&mut cfg));
 
     let workspace = opts
         .workspace
         .clone()
         .or_else(|| cfg.tools.workspace.clone())
-        .unwrap_or(cwd);
+        .unwrap_or_else(|| cwd.clone());
     let workspace = workspace
         .canonicalize()
         .with_context(|| format!("workspace {} does not exist", workspace.display()))?;
@@ -1512,6 +1834,27 @@ async fn prepare_tools_carrying(
 
     // --- tools ---
     let sandbox = Arc::new(mecha_core::sandbox::Sandbox::new(cfg.sandbox.clone()));
+    // Both directions of the driven mark are refused at start (D1b). A
+    // driven run whose sandbox can reach the network, or whose binds overlap
+    // the home, stops here; a run *not* marked driven whose workspace a
+    // driven marker covers stops too, expired marker or not, because every
+    // surface the mark removes is gated on the mark alone.
+    {
+        let home = mecha_core::work::mecha_home()?;
+        match driven.as_mut() {
+            Some(forced) => {
+                let why = mecha_core::driven::refusals(&cfg, &sandbox, &workspace, &home);
+                if !why.is_empty() {
+                    anyhow::bail!("refusing a driven run:\n  - {}", why.join("\n  - "));
+                }
+                (forced.project_configs, forced.project_configs_truncated) =
+                    mecha_core::driven::project_configs(&cwd, &workspace);
+                forced.marker =
+                    mecha_core::driven::live_task(&home, &workspace, chrono::Utc::now())?;
+            }
+            None => mecha_core::driven::refuse_unmarked(&home, &workspace)?,
+        }
+    }
     let mut registry = Registry::new().with_builtins(&cfg.tools, Arc::clone(&sandbox));
 
     // A concrete handle onto the todo tool, for a UI that renders the list
@@ -2072,14 +2415,17 @@ async fn prepare_tools_carrying(
         registry.insert(Arc::new(mecha_core::tool::request_access::RequestAccess));
     }
 
-    let approver: Arc<dyn Approver> =
-        if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
-            Arc::new(TerminalApprover::default())
-        } else {
-            Arc::new(ModeApprover {
-                mode: cfg.tools.permission_mode,
-            })
-        };
+    // A driven run's approver answers its own calls `allow` and refuses
+    // every question for a person: the only one there is the driver.
+    let approver: Arc<dyn Approver> = if driven.is_some() {
+        Arc::new(mecha_core::driven::DrivenApprover)
+    } else if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
+        Arc::new(TerminalApprover::default())
+    } else {
+        Arc::new(ModeApprover {
+            mode: cfg.tools.permission_mode,
+        })
+    };
     let (approver, denials) = scripted_refusals(approver)?;
 
     if let Some(profile) = opts.tool_profile {
@@ -2125,6 +2471,7 @@ async fn prepare_tools_carrying(
         compact_requested,
         posture,
         _mcp: clients,
+        driven,
     })
 }
 
@@ -2193,8 +2540,45 @@ fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<Stri
     (SearchChain::with_entries(backends), errors)
 }
 
+/// Why a subagent profile naming `code` does not start (`CODE-MODE-DESIGN.md`
+/// §8): the feature, by name, when code mode is off or not in this build —
+/// never the typo message, since `code` is no tool of the pool a child is
+/// built from — and otherwise that this run serves no code mode, so there
+/// is no interpreter to build the child's own `code` over (`build` skips
+/// such a subagent before asking, as it skips one `--tool` excludes).
+fn subagent_code_refusal(name: &str, cfg: &Config) -> String {
+    use mecha_core::feature::{self, Feature};
+    if let Some(why) = feature::unbuilt(Feature::Code) {
+        return format!(
+            "subagent `{name}` asks for `code`, and code mode is not in this build: {why} — {}",
+            feature::BUILD_WITH_MONTY
+        );
+    }
+    if !feature::switched_on(cfg, Feature::Code) {
+        return format!(
+            "subagent `{name}` asks for `code`, and code mode is off: `[features] code` is not \
+             switched on — `{}`",
+            feature::enable_command(cfg, Feature::Code)
+        );
+    }
+    format!(
+        "subagent `{name}` asks for `code`, and this run serves no code mode (`--no-code-tool`, \
+         a `--tool` list without it, or `[tools]`), so there is no interpreter to build its \
+         `code` over"
+    )
+}
+
 /// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as
 /// a tool the parent can call.
+///
+/// **A profile naming `code` gets a `code` of its own** (`CODE-MODE-DESIGN.md`
+/// §6), built over the child's registry, after every other tool and the
+/// outbox route are in, by the child agent itself (`Agent::enable_code`) —
+/// never the parent's `Arc` cloned in, which would carry the parent's
+/// admitted set and its declaration. So a profile granting `code` but not
+/// `mail_search` reaches no `mail_search` from a program, though its effect
+/// class would admit it. `interpreter` is the run's (`code_interpreter`);
+/// without one the profile is refused, naming why.
 #[allow(clippy::too_many_arguments)]
 fn build_subagent(
     profile: &SubagentProfile,
@@ -2205,8 +2589,10 @@ fn build_subagent(
     hooks: Option<&Arc<mecha_core::hooks::HookSet>>,
     policy: &Arc<mecha_core::policy::ExecPolicy>,
     outbox: Option<&Arc<mecha_core::outbox::OutboxRoute>>,
+    interpreter: Option<&Arc<dyn mecha_core::interpreter::Interpreter>>,
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
+    let mut child_code = None;
     for wanted in &profile.tools {
         // A subagent cannot safely send inter-agent mail: its message_send
         // would stamp the taint of its *own* fresh conversation (or, unwatched,
@@ -2224,6 +2610,17 @@ fn build_subagent(
                  based on the child's returned answer.",
                 profile.name
             );
+        }
+        // Built last, below, over the child's own registry: never taken from
+        // the pool, where it is not yet and where it would be the parent's.
+        if wanted == mecha_core::tool::code::NAME {
+            match interpreter {
+                Some(i) => {
+                    child_code = Some(Arc::clone(i));
+                    continue;
+                }
+                None => anyhow::bail!("{}", subagent_code_refusal(&profile.name, cfg)),
+            }
         }
         match pool.get(wanted) {
             // The closure guard again, at the clone: `build` wraps the pool's
@@ -2323,6 +2720,13 @@ fn build_subagent(
     // delegating becomes the way to send unstaged.
     if let Some(outbox) = outbox {
         child.set_outbox(Arc::clone(outbox));
+    }
+    // The child's own `code`, last: over its registry as it now stands, with
+    // its outbox route, so a routed read stays out of its programs. Built
+    // before `Subagent::new`, which derives what the parent sees from the
+    // child's registry, `code` included.
+    if let Some(interpreter) = child_code {
+        child.enable_code(interpreter);
     }
 
     Subagent::new(profile.clone(), Arc::new(child))
@@ -2446,6 +2850,11 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
         .ok()
 }
 
+/// How many consecutive turns a persona's run may get one identical failure
+/// to one identical call before it ends (`Agent::with_refused_repeats`):
+/// the guard's floor, which leaves room for one retry.
+const PERSONA_REFUSED_REPEATS: u32 = 3;
+
 /// The embeddings client `file_search` and the persona file index use:
 /// `[documents] embed_url` (default `:8081`), where a `[documents]` table
 /// is configured. Without one, or with a URL refused, search works by words
@@ -2549,6 +2958,11 @@ pub fn persona_agent(
     // A persona answers the turn in front of it from what was said, not
     // from its own earlier plans, which it otherwise re-reads and re-sends.
     .with_prior_thinking(mecha_core::message::PriorThinking::Drop)
+    // A persona that keeps sending one failed call, unchanged, does not
+    // find its way out: after one retry the third identical failure ends
+    // the run, so the owner hears of it instead of waiting through four
+    // more (`Agent::with_refused_repeats`).
+    .with_refused_repeats(PERSONA_REFUSED_REPEATS)
     // Nor from earlier replies cut off mid-sentence, which it otherwise
     // learns to write: "…\n\nI", spoken as a dangling word.
     .with_prior_tails(mecha_core::message::PriorTails::Trim)
@@ -3099,6 +3513,29 @@ mod tests {
         );
     }
 
+    /// The persona door is where a run of identical failures ends sooner
+    /// (`Agent::with_refused_repeats`), and that one line is the whole
+    /// behaviour: the guard and the builder are tested in `agent.rs`, which
+    /// builds its own agent, so deleting the line here left every test
+    /// green (review of #869). Read from the source, as the admit check
+    /// above is.
+    #[test]
+    fn persona_agent_ends_a_refused_repeat_sooner() {
+        let src = include_str!("setup.rs");
+        let start = src
+            .find("pub fn persona_agent(")
+            .expect("persona_agent is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("persona_agent ends")];
+        assert!(
+            body.contains(".with_refused_repeats(PERSONA_REFUSED_REPEATS)"),
+            "persona_agent no longer sets its own count of identical failures"
+        );
+        // Three: one retry, then the stop. Fewer is held to the guard's
+        // floor anyway; more gives back the resends this was added to end.
+        assert_eq!(super::PERSONA_REFUSED_REPEATS, 3);
+    }
+
     /// A routed name under a server that did not start is that server
     /// down, not a typo; a typo under a live server, or a name under no
     /// server, still warns (the owner's fresh Mac, 2026-10-14).
@@ -3602,6 +4039,7 @@ mod tests {
             None,
             &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
             None,
+            None,
         );
         let child = match child {
             Ok(c) => c,
@@ -3615,6 +4053,391 @@ mod tests {
             "without the window the child's compaction threshold is None, and \
              `compact` becomes a tool that reports success and does nothing"
         );
+    }
+
+    /// §8: "With the feature off, a profile naming `code` fails at launch
+    /// with the message that names the feature, not the typo message." `code`
+    /// is never in the pool a child is built from (the agent builds it last),
+    /// so without the check a profile naming it read as a misspelt tool. With
+    /// the feature on and no interpreter for the run it fails too, naming
+    /// that, since the child's own `code` has nothing to be built over and
+    /// the parent's is never cloned in.
+    #[test]
+    fn a_profile_naming_code_names_the_feature_not_the_typo() {
+        let provider_cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
+        let profile = mecha_core::subagent::SubagentProfile {
+            name: "analyst".into(),
+            description: "a child".into(),
+            tools: vec!["code".into()],
+            ..Default::default()
+        };
+        let launch = |cfg: &Config| match build_subagent(
+            &profile,
+            &mecha_core::tool::Registry::new(),
+            cfg,
+            &provider_cfg,
+            &mecha_core::tool::ToolCtx::default(),
+            None,
+            &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
+            None,
+        ) {
+            Ok(_) => panic!("a child naming `code` launched"),
+            Err(e) => format!("{e:#}"),
+        };
+        let mut cfg = Config::default();
+        let off = launch(&cfg);
+        assert!(
+            !off.contains("which is not available"),
+            "the typo message: {off}"
+        );
+        if mecha_core::interpreter::BUILT {
+            assert!(
+                off.contains("code mode is off") && off.contains("mecha features enable code"),
+                "{off}"
+            );
+        } else {
+            assert!(off.contains("cargo feature `monty`"), "{off}");
+        }
+        mecha_core::feature::set_switch(&mut cfg, mecha_core::feature::Feature::Code, true);
+        let on = launch(&cfg);
+        assert!(
+            !on.contains("which is not available"),
+            "the typo message: {on}"
+        );
+        if mecha_core::interpreter::BUILT {
+            assert!(on.contains("serves no code mode"), "{on}");
+        }
+    }
+
+    /// An interpreter that is never asked to run anything: what
+    /// `build_subagent` builds a child's `code` over, in a test about what it
+    /// is built over.
+    struct Unused;
+
+    #[async_trait::async_trait]
+    impl mecha_core::interpreter::Interpreter for Unused {
+        fn name(&self) -> &'static str {
+            "unused"
+        }
+        async fn preflight(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn start(
+            &self,
+            _source: &str,
+            _externals: &[String],
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<(
+            Box<dyn mecha_core::interpreter::Program>,
+            mecha_core::interpreter::Step,
+        )> {
+            anyhow::bail!("not in this test")
+        }
+    }
+
+    /// §8: "A subagent whose profile grants `code` but not `mail_search`
+    /// cannot reach `mail_search` from a program, though its effect class
+    /// would admit it." The `analyst` profile of §6 over a pool that holds
+    /// `mail_search` — and the parent's own `code`, which can reach it:
+    /// `build_subagent` gives the child a `code` of its own, built over the
+    /// child's registry, whose program functions and declaration are the
+    /// child's reads alone. Cloning the parent's `code` in — the naive build
+    /// — hands the child `mail_search` and the parent's whole declaration.
+    #[test]
+    fn a_profile_granting_code_gets_its_own_over_its_registry() {
+        use mecha_core::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
+        use std::sync::Arc;
+        struct Read(&'static str, Capabilities);
+        #[async_trait::async_trait]
+        impl Tool for Read {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "a read"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn capabilities(&self) -> Capabilities {
+                self.1
+            }
+            fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+                Some(mecha_core::tool::effect::Effect::Read)
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ToolCtx,
+            ) -> anyhow::Result<ToolOutput> {
+                Ok(ToolOutput::ok("read"))
+            }
+        }
+        let interpreter: Arc<dyn mecha_core::interpreter::Interpreter> = Arc::new(Unused);
+        let mut pool = mecha_core::tool::Registry::new();
+        pool.insert(Arc::new(Read(
+            "mail__mail_search",
+            Capabilities::default().private().untrusted(),
+        )));
+        pool.insert(Arc::new(Read("document_read", Capabilities::default())));
+        let parents = Arc::new(mecha_core::tool::code::CodeTool::over(
+            &pool,
+            |_| false,
+            Arc::clone(&interpreter),
+        ));
+        assert!(parents.admission().contains("mail__mail_search"));
+        pool.insert(parents.clone());
+
+        let provider_cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
+        let profile = mecha_core::subagent::SubagentProfile {
+            name: "analyst".into(),
+            description: "Answers one question by writing a program.".into(),
+            tools: vec!["code".into(), "document_read".into()],
+            trusted_output: true,
+            answer_shape: Some(mecha_core::subagent::AnswerShape::OneOf(vec![
+                "yes".into(),
+                "no".into(),
+                "unclear".into(),
+            ])),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        mecha_core::feature::set_switch(&mut cfg, mecha_core::feature::Feature::Code, true);
+        let child = build_subagent(
+            &profile,
+            &pool,
+            &cfg,
+            &provider_cfg,
+            &ToolCtx::default(),
+            None,
+            &Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
+            Some(&interpreter),
+        )
+        .expect("a profile naming `code` launches with an interpreter for the run");
+        let code = child
+            .agent()
+            .registry()
+            .get("code")
+            .expect("the child has a `code` of its own");
+        assert!(
+            !std::ptr::eq(
+                Arc::as_ptr(code) as *const (),
+                Arc::as_ptr(&parents) as *const ()
+            ),
+            "the parent's `code` was cloned into the child"
+        );
+        assert!(
+            code.description()
+                .ends_with("Tools a program may call: document_read."),
+            "{}",
+            code.description()
+        );
+        let caps = code.capabilities();
+        assert!(
+            !caps.private_data && !caps.untrusted_input,
+            "the child's `code` declares the parent's reads: {caps:?}"
+        );
+        assert!(child.agent().registry().get("mail__mail_search").is_none());
+        assert!(
+            !child.capabilities().private_data,
+            "the parent sees a child that reads nothing private"
+        );
+    }
+
+    /// Code mode's interpreter is asked for only with the switch on and
+    /// nothing withholding `code`, so a run with it off probes nothing; and
+    /// with it on, a worker that cannot start stops the start rather than
+    /// becoming a run without `code`. A build without the interpreter is the
+    /// one exception, by design: it registers nothing and starts.
+    #[tokio::test]
+    async fn code_mode_starts_no_worker_off_and_a_broken_one_stops_the_start() {
+        use super::{code_interpreter, PreparedTools};
+        use mecha_core::config::PermissionMode;
+        use mecha_core::harness::Lever;
+        use mecha_core::tool::{ModeApprover, Registry};
+        use std::sync::Arc;
+        let home = crate::testenv::HomeGuard::new("code-interpreter");
+        let tools = |code: bool| {
+            let mut config = Config::default();
+            if code {
+                mecha_core::feature::set_switch(
+                    &mut config,
+                    mecha_core::feature::Feature::Code,
+                    true,
+                );
+            }
+            PreparedTools {
+                registry: Registry::new(),
+                denials: Vec::new(),
+                sandbox: Arc::new(mecha_core::sandbox::Sandbox::new(Default::default())),
+                workspace: home.dir.clone(),
+                config,
+                approver: Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+                todo: None,
+                skill: None,
+                mailbox: None,
+                compact_requested: None,
+                posture: mecha_core::closure::RunPosture::Unattended,
+                _mcp: Vec::new(),
+                driven: None,
+            }
+        };
+        let plain = GlobalOpts::default();
+        assert!(code_interpreter(&tools(false), &plain)
+            .await
+            .unwrap()
+            .is_none());
+        let thrown = GlobalOpts {
+            no_code_tool: true,
+            ..GlobalOpts::default()
+        };
+        assert!(code_interpreter(&tools(true), &thrown)
+            .await
+            .unwrap()
+            .is_none());
+        let narrowed = GlobalOpts {
+            tools: vec!["fs_read".into()],
+            ..GlobalOpts::default()
+        };
+        assert!(code_interpreter(&tools(true), &narrowed)
+            .await
+            .unwrap()
+            .is_none());
+        // The record agrees: wherever the switch's side registers nothing
+        // (off, thrown, or not in this build) the lever reads off, so a run
+        // record never says programs were on that could not be (review of
+        // #774). `--tool` and `[tools]` are `tools`' to say.
+        let lever_off = |opts: &GlobalOpts, code: bool| {
+            super::levers_off(opts, &tools(code).config).contains(&Lever::CodeTool)
+        };
+        assert!(lever_off(&plain, false));
+        assert!(lever_off(&thrown, true));
+        assert_eq!(
+            lever_off(&plain, true),
+            !mecha_core::interpreter::BUILT,
+            "a build without the interpreter records the lever off"
+        );
+        // No worker in this scratch home, and no `[sandbox]` on Linux.
+        let started = code_interpreter(&tools(true), &plain).await;
+        if mecha_core::interpreter::BUILT {
+            let e = format!("{:#}", started.err().expect("a run without `code` started"));
+            assert!(e.contains("cannot start"), "{e}");
+        } else {
+            assert!(started.unwrap().is_none());
+        }
+    }
+
+    /// `--tool-profile` judges `code` alone, after it is built: a second
+    /// narrowing of the whole registry judged the subagents for the first
+    /// time and dropped a child holding a private read under `coding`, with
+    /// no line said, only when code mode was on (review of #774).
+    #[test]
+    fn a_tool_profile_narrows_code_and_leaves_the_subagents_alone() {
+        use mecha_core::tool::profile::ToolProfile;
+        use mecha_core::tool::Registry;
+        struct Read(&'static str, bool);
+        #[async_trait::async_trait]
+        impl mecha_core::tool::Tool for Read {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "a read"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+                Some(mecha_core::tool::effect::Effect::Read)
+            }
+            fn capabilities(&self) -> mecha_core::tool::Capabilities {
+                if self.1 {
+                    mecha_core::tool::Capabilities::default().private()
+                } else {
+                    mecha_core::tool::Capabilities::default()
+                }
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &mecha_core::tool::ToolCtx,
+            ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+                Ok(mecha_core::tool::ToolOutput::ok(""))
+            }
+        }
+        // A subagent whose child holds a private read: `coding` keeps it by
+        // nothing it would ask again, and `prepare_tools` never judged it.
+        let mut registry = Registry::new();
+        registry.insert(std::sync::Arc::new(Read("fs_read", true)));
+        registry.insert(std::sync::Arc::new(Read("researcher", true)));
+        let code = mecha_core::tool::code::CodeTool::over(
+            &registry,
+            |_| false,
+            std::sync::Arc::new(NoInterpreter),
+        );
+        registry.insert(std::sync::Arc::new(code));
+        super::narrow_code(&mut registry, ToolProfile::Coding, &[]);
+        assert!(
+            registry.get("researcher").is_some(),
+            "a subagent was dropped"
+        );
+        assert!(registry.get("fs_read").is_some());
+        assert!(
+            registry.get("code").is_none(),
+            "`coding` keeps no private read it does not name, `code` included"
+        );
+        let mut public = Registry::new();
+        public.insert(std::sync::Arc::new(Read("page", false)));
+        let code = mecha_core::tool::code::CodeTool::over(
+            &public,
+            |_| false,
+            std::sync::Arc::new(NoInterpreter),
+        );
+        public.insert(std::sync::Arc::new(code));
+        super::narrow_code(&mut public, ToolProfile::Research, &[]);
+        assert!(public.get("code").is_some(), "a public `code` stays");
+    }
+
+    /// An interpreter for the tests that build `code` and never run it.
+    struct NoInterpreter;
+
+    #[async_trait::async_trait]
+    impl mecha_core::interpreter::Interpreter for NoInterpreter {
+        fn name(&self) -> &'static str {
+            "none"
+        }
+        async fn preflight(&self) -> anyhow::Result<()> {
+            anyhow::bail!("none")
+        }
+        async fn start(
+            &self,
+            _source: &str,
+            _externals: &[String],
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<(
+            Box<dyn mecha_core::interpreter::Program>,
+            mecha_core::interpreter::Step,
+        )> {
+            anyhow::bail!("none")
+        }
     }
 
     /// The review's note on the closure guard: the security argument rested
@@ -3675,6 +4498,7 @@ mod tests {
             &mecha_core::tool::ToolCtx::default(),
             None,
             &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
             None,
         )
         .expect("a local provider needs no credential, so the child must build");

@@ -55,6 +55,169 @@ fn new_key() -> String {
     )
 }
 
+/// What she has said since the owner last spoke, oldest first: every
+/// assistant text back to the owner's own message. A message holding only
+/// tool results is the harness answering her call, not the owner speaking,
+/// so text she said before a call counts too (review of #867, pass 2).
+/// Read before this turn's owner message is pushed, so it is her last
+/// reply, which `today::Ledger` reads for the lines she told.
+fn replied_since_the_owner(messages: &[Message]) -> String {
+    use mecha_core::message::{Block, Role};
+    let only_results = |m: &Message| {
+        !m.content.is_empty()
+            && m.content
+                .iter()
+                .all(|b| matches!(b, Block::ToolResult { .. }))
+    };
+    let mut said: Vec<String> = messages
+        .iter()
+        .rev()
+        .take_while(|m| m.role == Role::Assistant || only_results(m))
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| m.text())
+        .filter(|t| !t.trim().is_empty())
+        .collect();
+    said.reverse();
+    said.join("\n")
+}
+
+/// The teller half of a today-block, drawn only when `[life] events` is on.
+/// Before noon its event day is yesterday, while levels and weather are
+/// still today's (PERSONA-LIFE-DESIGN.md §4.5).
+fn teller(
+    store: &Path,
+    name: &str,
+    people: bool,
+    at: chrono::NaiveDateTime,
+) -> Result<mecha_core::persona::today::Teller> {
+    use mecha_core::persona::{story, today};
+    // The diary day, which runs 4am to 4am, as `world::now` reads it; the
+    // calendar day is what the story's keep window counts from.
+    let today_date = today::diary_date(at);
+    let calendar = at.date();
+    let one = |date| -> Result<story::StoryDay> {
+        let story::Story { days, why } = story::story(store, name, date, date, calendar)?;
+        days.into_iter()
+            .find(|day| day.date == date)
+            .with_context(|| {
+                why.unwrap_or_else(|| format!("{name}'s story returned no day for {date}"))
+            })
+    };
+    let today_day = one(today_date)?;
+    let yesterday = if today::before_noon(at) {
+        let date = today_date
+            .pred_opt()
+            .context("the day before this date cannot be represented")?;
+        Some(one(date)?)
+    } else {
+        None
+    };
+    let names = story::names(&store.join(name), people)?;
+    today::teller(at, &today_day, yesterday.as_ref(), &names)
+}
+
+/// The owner-written weather place as it stands now. Unlike the `events`
+/// switch, this is not part of a chat's pinned tool/block shape. `None`
+/// when the persona could not be read now: unknown, never "no place", or a
+/// mid-save `persona.toml` would read as a removed place and clear the
+/// weather (review of #836).
+fn live_weather_place(store: &Path, name: &str) -> Option<Option<String>> {
+    Store::load(store)
+        .get(name)
+        .map(|p| p.settings.life.place.clone())
+}
+
+/// Run one refresh from a blocking-pool thread. The runtime handle still
+/// drives its async HTTP, while place-cache and SQLite work never run on an
+/// async worker. A failure is recorded before it comes back.
+fn refresh_weather_on_blocking_thread(
+    handle: &tokio::runtime::Handle,
+    pdir: &Path,
+    place: Option<&str>,
+    today: chrono::NaiveDate,
+) -> Option<String> {
+    use mecha_core::persona::weather;
+    let Err(e) = handle.block_on(weather::refresh(pdir, place, today)) else {
+        return None;
+    };
+    let why = format!("{e:#}");
+    let key = place.unwrap_or(weather::FALLBACK_KEY);
+    Some(
+        match weather::record_failure(pdir, key, chrono::Utc::now(), &why) {
+            Ok(()) => why,
+            Err(record) => format!("{why}; recording it failed: {record:#}"),
+        },
+    )
+}
+
+/// Start a due weather refresh without making the chat turn wait for its
+/// network request. The blocking-pool due check is awaited so a changed
+/// place clears old weather before this turn's teller reads it; the refresh
+/// itself, its bookkeeping and failure stamp stay detached on that pool.
+async fn refresh_weather_in_background(
+    store: &Path,
+    name: &str,
+    place: Option<&str>,
+    today: chrono::NaiveDate,
+) {
+    use mecha_core::persona::weather;
+    let place = place
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+    let pdir = store.join(name);
+    let name = name.to_string();
+    let check_pdir = pdir.clone();
+    let check_place = place.clone();
+    let due = tokio::task::spawn_blocking(move || {
+        // A removed [life] place takes its weather with it before this
+        // turn's teller reads any; story.toml's [place], if any, then
+        // stands in and is refreshed like it (review of #836).
+        if check_place.is_none() {
+            weather::forget_removed_place(&check_pdir)
+                .map_err(|e| format!("a removed place's weather was not cleared: {e:#}"))?;
+        }
+        match weather::due(&check_pdir, check_place.as_deref(), chrono::Utc::now()) {
+            Ok(due) => Ok(due),
+            Err(e) => {
+                let why = format!("weather could not be checked: {e:#}");
+                Err(
+                    match weather::record_failure(
+                        &check_pdir,
+                        check_place.as_deref().unwrap_or(weather::FALLBACK_KEY),
+                        chrono::Utc::now(),
+                        &why,
+                    ) {
+                        Ok(()) => why,
+                        Err(record) => format!("{why}; recording it failed: {record:#}"),
+                    },
+                )
+            }
+        }
+    })
+    .await;
+    match due {
+        Ok(Ok(false)) => return,
+        Ok(Ok(true)) => {}
+        Ok(Err(why)) => {
+            tracing::warn!("persona {name}: {why}");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("persona {name}: weather due task failed: {e}");
+            return;
+        }
+    }
+    let handle = tokio::runtime::Handle::current();
+    let _refresh = tokio::task::spawn_blocking(move || {
+        if let Some(why) =
+            refresh_weather_on_blocking_thread(&handle, &pdir, place.as_deref(), today)
+        {
+            tracing::warn!("persona {name}: weather refresh failed: {why}");
+        }
+    });
+}
+
 /// A transcript id as `Session::new_id` mints one — letters, digits and `-`,
 /// never a separator or a dot — checked before it becomes a file name.
 fn valid_session_id(id: &str) -> bool {
@@ -183,6 +346,9 @@ struct PersonaSession {
     last_usage: Arc<StdMutex<Option<Usage>>>,
     /// The session goal (§6), folded into the first turn and then spent.
     goal: Option<String>,
+    /// Which of her day's teller lines this chat has already been told
+    /// (`today::Ledger`): held here for the chat's life in this process.
+    told: mecha_core::persona::today::Ledger,
     /// Owner turns since the Core was last handed back (§12.5).
     turns_since_anchor: u32,
     /// The next turn re-anchors whatever the count: after a compaction, and
@@ -794,9 +960,15 @@ fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
 /// that almost never ran).
 async fn citations(session: &Session) -> Vec<mecha_core::persona::cite::Checked> {
     let path = session.path.clone();
+    let id = session.meta.id.clone();
     tokio::task::spawn_blocking(move || {
         std::fs::read_to_string(&path)
-            .map(|t| mecha_core::persona::cite::check_conversation(&Session::messages_ever(&t)))
+            .map(|t| {
+                mecha_core::persona::cite::check_conversation(
+                    &Session::messages_ever(&t),
+                    &mecha_core::tool::code::record::ever(&t, &id),
+                )
+            })
             .unwrap_or_default()
     })
     .await
@@ -1733,6 +1905,28 @@ impl PersonaChats {
                         && p.state.proposed.is_some(),
                     "origin": p.state.origin,
                     "locked": p.state.locked,
+                    // Which of its parts are on, so the page offers a tab
+                    // only for one that is (owner, 2026-11-02): memories
+                    // while any kind is on, or while anything is stored,
+                    // since that tab is the page's door to forgetting and
+                    // unsharing (reviews of #477, #519 and #818); the week
+                    // with `[life] world`, the people with `[life] people`
+                    // too.
+                    "shows": {
+                        "memories": p.settings.memory.episodic
+                            || p.settings.memory.semantic
+                            || p.settings.memory.user_facts != mecha_core::persona::UserFacts::Off
+                            // A stat that errs is unknown, so the door
+                            // stays: never read as "nothing stored".
+                            || self
+                                .store
+                                .join(&p.name)
+                                .join(mecha_core::persona::memory::MEMORY_DB)
+                                .try_exists()
+                                .unwrap_or(true),
+                        "week": p.settings.life.world,
+                        "people": p.settings.life.people,
+                    },
                     "problems": unnamed(store.problems(p, &lib), hidden),
                     "safety": safety_json(&p.settings.safety, None),
                     // The meters are shown to the owner, never to the model.
@@ -1844,6 +2038,7 @@ impl PersonaChats {
                 events,
                 last_usage: Arc::default(),
                 goal,
+                told: Default::default(),
                 turns_since_anchor: 0,
                 anchor_due: false,
                 crisis_paused_at: None,
@@ -1865,6 +2060,831 @@ impl PersonaChats {
             "version": version,
             "refused": refused_json(&refused),
         }))
+    }
+
+    /// Her week for the persona page (PERSONA-LIFE-DESIGN.md §15): the
+    /// week holding `date` (this week when `None`) on the owner's calendar,
+    /// or why she has no days. A persona with `[life] world` off answers
+    /// with that, never a route error, so the pane can say so (§17).
+    pub fn week(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+        date: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        self.week_for(&p, date, tz, None)
+    }
+
+    /// Build [`PersonaChats::week`] from the persona the caller already
+    /// loaded, with the result of the route's asynchronous weather refresh.
+    fn week_for(
+        &self,
+        p: &Persona,
+        date: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+        weather_error: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let today = match tz {
+            Some(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
+            None => chrono::Local::now().date_naive(),
+        };
+        let date = match date {
+            None => today,
+            Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .map_err(|_| Refusal::Bad(format!("`{d}` is not a date (YYYY-MM-DD)")))?,
+        };
+        // Her routine as the cell picker needs it: what it names, and the
+        // digest a change sends back so an editor's edit is never
+        // overwritten. A routine that does not load names no cell here;
+        // the week below says why.
+        use mecha_core::persona::{drafter, life, life_drafter, routine};
+        let texts = routine::read(&self.store, &p.name).map_err(failed)?;
+        let text = texts.routine;
+        let cell = text
+            .as_deref()
+            .and_then(|t| routine::parse(t).ok())
+            .and_then(|r| r.cell)
+            .map(|c| c.id());
+        // A waiting draft as the owner reviews it: the text itself, the
+        // anchors it would give her (or why it does not load), the digest an
+        // approval or an edit sends back, the kind of week approving keeps,
+        // and whether it is now the owner's, which a redraft may not replace.
+        let draft = texts.draft.as_deref().map(|d| {
+            let parsed = routine::parse(d);
+            serde_json::json!({
+                "text": d,
+                "digest": mecha_core::persona::text_digest(d),
+                "anchors": parsed.as_ref().ok().map(|r| r.anchors.iter().map(|a| a.to_json()).collect::<Vec<_>>()),
+                "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                "kept_cell": routine::kept_cell(d, text.as_deref()).map(|c| c.id()),
+                "edited": routine::may_stage(&self.store, &p.name).is_err(),
+            })
+        });
+        // `life` is always an object, even before life.toml exists: a waiting
+        // draft and a refusal reason must still reach the Week tab then.
+        let life_text = life::read(&self.store, &p.name).map_err(failed)?;
+        let mut life_value = match life_text.as_deref().map(life::parse) {
+            None => serde_json::json!({
+                "household": null,
+                "alone": null,
+                "sleep": null,
+                "never": null,
+                "error": null,
+            }),
+            Some(Ok(profile)) => {
+                let mut value = profile.to_json();
+                value["error"] = serde_json::Value::Null;
+                value
+            }
+            Some(Err(e)) => serde_json::json!({
+                "household": [],
+                "alone": null,
+                "sleep": null,
+                "never": [],
+                "error": format!("{e:#}"),
+            }),
+        };
+        let life_draft = life::read_draft(&self.store, &p.name)
+            .map_err(failed)?
+            .map(|text| {
+                let parsed = life::parse(&text);
+                let digest = mecha_core::persona::text_digest(&text);
+                serde_json::json!({
+                    "text": text,
+                    "digest": digest,
+                    "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                    "edited": life::may_stage(&self.store, &p.name).is_err(),
+                    "parsed": parsed.as_ref().ok().map(|profile| profile.to_json()),
+                })
+            });
+        life_value["draft"] = serde_json::json!(life_draft);
+        life_value["undraftable"] =
+            serde_json::json!(life_drafter::check(p).err().map(|e| format!("{e:#}")));
+        let mut out = serde_json::json!({
+            "today": today.to_string(),
+            "life": life_value,
+            "place": p.settings.life.place.as_deref().and_then(|query| {
+                mecha_core::persona::weather::cached(&self.store.join(&p.name), query)
+            }).map(|place| serde_json::json!({
+                "query": place.query,
+                "label": place.label,
+            })),
+            "weather_error": weather_error,
+            "routine": {
+                "digest": routine::digest_of(text.as_deref()),
+                "cell": cell,
+                "draft": draft,
+                // The owner's notes for the drafter, as saved; null for none.
+                "notes": texts.notes,
+                // Why no draft can be asked for her, or null when one can.
+                "undraftable": drafter::check(p).err().map(|e| format!("{e:#}")),
+            },
+        });
+        match mecha_core::persona::world::week_view(&self.store, &p.name, date, today)
+            .map_err(failed)?
+        {
+            Ok(week) => {
+                out["week"] = week.to_json();
+                // Her story over the same week (§4.3): the owner always sees
+                // it here; the teller folds it into chats only when
+                // `[life] events` is on. Why it is missing rides beside,
+                // never a route error.
+                use chrono::Datelike;
+                use mecha_core::persona::story;
+                let monday =
+                    date - chrono::Days::new(u64::from(date.weekday().num_days_from_monday()));
+                match story::story(
+                    &self.store,
+                    &p.name,
+                    monday,
+                    monday + chrono::Days::new(6),
+                    today,
+                ) {
+                    Ok(story::Story { days, why }) => {
+                        if let Some(why) = why {
+                            out["story_error"] = serde_json::json!(why);
+                        }
+                        // Their people unreadable: titles read "someone", and
+                        // the page says why rather than looking right. Its
+                        // own field: it is not why the story stops.
+                        let names = match story::names(
+                            &self.store.join(&p.name),
+                            p.settings.life.people,
+                        ) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                out["story_names_error"] = serde_json::json!(format!(
+                                    "their people could not be read, so who was there is not shown: {e:#}"
+                                ));
+                                Default::default()
+                            }
+                        };
+                        out["story"] = story::to_json(&days, &names);
+                    }
+                    Err(e) => out["story_error"] = serde_json::json!(format!("{e:#}")),
+                }
+            }
+            Err(why) => {
+                out["absent"] = serde_json::json!(why);
+                out["why"] = serde_json::json!(why.why(&p.name));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The owner picks her kind of week from the Week tab: `cell` set in
+    /// `routine.toml` (written from its template if she has none), only if
+    /// the file is still what the page was shown. Answers with the week as
+    /// it now stands, on the owner's calendar.
+    pub fn set_cell(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        body: &CellBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{atus::Cell, routine};
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let Some(cell) = Cell::from_id(&body.cell) else {
+            return Err(Refusal::Bad(format!(
+                "`{}` is not a kind of week",
+                body.cell
+            )));
+        };
+        routine::set_cell(&self.store, &p.name, cell, &body.base).map_err(routine_refusal)?;
+        self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )
+    }
+
+    /// Her own model drafts her week from what the owner wrote of her, held
+    /// on the router as a turn is, and staged beside her routine to wait on
+    /// the owner (`persona::drafter`). Notes sent with the request are the
+    /// owner's, saved for the drafter first, so a refused draft keeps them. What can be refused without the
+    /// answer is refused before the model runs, as a 409: she cannot be
+    /// drafted for as she stands. Answers with the week, and how many
+    /// anchors were drafted: 0 is the model finding no fixed point, a
+    /// finding with nothing staged.
+    pub async fn draft_routine(
+        self: &Arc<Self>,
+        follower: &crate::follow::Follower,
+        library: &Arc<LibraryState>,
+        name: &str,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{drafter, routine};
+        let conflict = |e: anyhow::Error| Refusal::Conflict(format!("{e:#}"));
+        // The store is read off the executor, as every other route here
+        // reads it (review of #800).
+        let (me, lib, who, unlock, notes) = (
+            Arc::clone(self),
+            Arc::clone(library),
+            name.to_string(),
+            body.unlock.clone(),
+            body.notes.clone(),
+        );
+        let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
+            let p = me
+                .visible(&lib, &who, unlock.as_deref())
+                .ok_or(Refusal::NotFound)?;
+            if let Some(notes) = notes {
+                routine::write_notes(&me.store, &p.name, &notes).map_err(routine_refusal)?;
+            }
+            drafter::check(&p).map_err(conflict)?;
+            routine::may_stage(&me.store, &p.name).map_err(conflict)?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their routine: {e}")))??;
+        let (_held, bound) = follower
+            .enter("routine draft", |_| {})
+            .await
+            .map_err(failed)?;
+        // Unseeded, as her own turns are: a pinned seed would make a
+        // redraft after a discard the same week again.
+        let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        // An edit that landed while the model ran is the conflict it is,
+        // not the run failing (review of #800).
+        let drafted = drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
+            .await
+            .map_err(|e| {
+                if e.chain().any(|c| c.is::<routine::EditedDraft>()) {
+                    conflict(e)
+                } else {
+                    failed(e)
+                }
+            })?;
+        let (me, lib, body) = (Arc::clone(self), Arc::clone(library), body.clone());
+        let mut out = tokio::task::spawn_blocking(move || {
+            me.week(
+                &lib,
+                &p.name,
+                body.unlock.as_deref(),
+                body.date.as_deref(),
+                tz,
+            )
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their week: {e}")))??;
+        out["drafted"] = serde_json::json!(drafted.map_or(0, |r| r.anchors.len()));
+        Ok(out)
+    }
+
+    /// Her own model drafts a typed life profile and stages it beside
+    /// life.toml. Every refusal independent of the answer happens before the
+    /// router is held and before a model request is made.
+    pub async fn draft_life(
+        self: &Arc<Self>,
+        follower: &crate::follow::Follower,
+        library: &Arc<LibraryState>,
+        name: &str,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{life, life_drafter};
+        let conflict = |e: anyhow::Error| Refusal::Conflict(format!("{e:#}"));
+        let (me, lib, who, unlock) = (
+            Arc::clone(self),
+            Arc::clone(library),
+            name.to_string(),
+            body.unlock.clone(),
+        );
+        let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
+            let p = me
+                .visible(&lib, &who, unlock.as_deref())
+                .ok_or(Refusal::NotFound)?;
+            life_drafter::check(&p).map_err(conflict)?;
+            life::may_stage(&me.store, &p.name).map_err(conflict)?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their life profile: {e}")))??;
+        let (_held, bound) = follower.enter("life draft", |_| {}).await.map_err(failed)?;
+        let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        let drafted = life_drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
+            .await
+            .map_err(|e| {
+                if e.chain().any(|c| c.is::<life::EditedDraft>()) {
+                    conflict(e)
+                } else {
+                    failed(e)
+                }
+            })?;
+        let (me, lib, body) = (Arc::clone(self), Arc::clone(library), body.clone());
+        let mut out = tokio::task::spawn_blocking(move || {
+            me.week(
+                &lib,
+                &p.name,
+                body.unlock.as_deref(),
+                body.date.as_deref(),
+                tz,
+            )
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their week: {e}")))??;
+        out["life_drafted"] = serde_json::json!(drafted.is_some());
+        Ok(out)
+    }
+
+    /// The owner approves the waiting draft as shown (`digest`), keeping her
+    /// kind of week when the draft names none (`routine::kept_cell`), or
+    /// edits it (`text`, over the draft as shown), or discards it. Each
+    /// answers with the week as it now stands.
+    pub fn act_on_draft(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: DraftAct,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::routine;
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        match act {
+            DraftAct::Approve => {
+                routine::approve_draft_as_shown(&self.store, &p.name, &body.digest)
+                    .map_err(routine_refusal)?;
+            }
+            DraftAct::Edit => {
+                let Some(text) = body.text.as_deref() else {
+                    return Err(Refusal::Bad("an edit carries the draft's `text`".into()));
+                };
+                routine::edit_draft(&self.store, &p.name, text, &body.digest)
+                    .map_err(routine_refusal)?;
+            }
+            DraftAct::Discard => {
+                routine::discard_draft(&self.store, &p.name).map_err(routine_refusal)?;
+            }
+        }
+        self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )
+    }
+
+    /// Approve, edit or discard the waiting life draft as shown, then answer
+    /// with the same week payload the page normally reads.
+    pub fn act_on_life_draft(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: DraftAct,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::life;
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        match act {
+            DraftAct::Approve => {
+                life::approve_draft_as_shown(&self.store, &p.name, &body.digest)
+                    .map_err(life_refusal)?;
+            }
+            DraftAct::Edit => {
+                let Some(text) = body.text.as_deref() else {
+                    return Err(Refusal::Bad("an edit carries the draft's `text`".into()));
+                };
+                life::edit_draft_as_shown(&self.store, &p.name, text, &body.digest)
+                    .map_err(life_refusal)?;
+            }
+            DraftAct::Discard => {
+                life::discard_draft(&self.store, &p.name).map_err(life_refusal)?;
+            }
+        }
+        self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )
+    }
+
+    /// Her network for the People tab (PERSONA-LIFE-DESIGN §15): everyone
+    /// with her tie folded and its events, the ties between people, what
+    /// does not load or links a broken portrait, the identity.md lines that
+    /// still name someone (PL31), and a waiting proposal. A persona with
+    /// `[life] people` off answers so, as the Week tab's states do, never a
+    /// refusal. Read only, and never creates a store.
+    ///
+    /// **Locks carry over** (§6.5): a person's library character is named,
+    /// and its portrait shown, only for an entry that loads and is not
+    /// locked, or with a live unlock. Otherwise both are null and the link
+    /// itself is untouched: hidden, never cut.
+    pub fn people(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        self.people_on(library, name, token, None)
+    }
+
+    /// [`Self::people`] as her network stood at the end of `as_of`
+    /// (`YYYY-MM-DD`, §15's time slider): the people and ties folded from the
+    /// events by then. What is about now (problems, the identity.md overlap,
+    /// a waiting proposal) is answered as it stands now.
+    pub fn people_on(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+        as_of: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::imagelib::Kind;
+        use mecha_core::persona::{network, people_draft};
+        // Who first, then the date: a persona the page cannot see is a 404
+        // whatever was asked of it, as on every other door (review of #804).
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let as_of = as_of
+            .map(|d| {
+                chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                    .map_err(|_| Refusal::Bad(format!("`{d}` is not a date (YYYY-MM-DD)")))
+            })
+            .transpose()?;
+        if !p.settings.life.people {
+            return Ok(serde_json::json!({
+                "absent": "off",
+                "why": format!("[life] people is off for `{}`", p.name),
+            }));
+        }
+        let pdir = self.store.join(&p.name);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let unlocked = library.unlocked(token);
+        let now = network::Network::read(&pdir).map_err(failed)?;
+        // Borrowed for now, folded anew only to look back: the common read
+        // clones nothing (review of #804).
+        let past;
+        let n = match as_of {
+            Some(d) => {
+                past = now.as_of(d);
+                &past
+            }
+            None => &now,
+        };
+        let shown = |c: Option<&str>| -> (Option<String>, Option<String>) {
+            let Some(c) = c else {
+                return (None, None);
+            };
+            match lib.get(Kind::Character, c) {
+                Some(e) if !e.locked || unlocked => {
+                    let portrait = (e.status == mecha_core::persona::Status::Approved)
+                        .then(|| super::library::portrait_url(e, token.filter(|_| unlocked)))
+                        .flatten();
+                    (Some(c.to_string()), portrait)
+                }
+                // Locked, or an entry that does not load, on a locked page:
+                // unknown is never "not locked".
+                _ if !unlocked => (None, None),
+                // The owner, unlocked, sees a link that broke by its name.
+                _ => (Some(c.to_string()), None),
+            }
+        };
+        let events_of = |person: &str, other: Option<&str>| -> Vec<serde_json::Value> {
+            n.events
+                .iter()
+                .filter(|e| e.person == person && e.other.as_deref() == other)
+                .map(|e| e.to_json())
+                .collect()
+        };
+        let people: Vec<serde_json::Value> = n
+            .people
+            .iter()
+            .map(|q| {
+                let mut v = q.to_json();
+                let (character, portrait) = shown(q.character.as_deref());
+                v["character"] = serde_json::json!(character);
+                v["portrait"] = serde_json::json!(portrait);
+                v["edge"] = n.her_edge(&q.uid).to_json();
+                v["events"] = events_of(&q.uid, None).into();
+                v
+            })
+            .collect();
+        let ties: Vec<serde_json::Value> = n
+            .ties()
+            .into_iter()
+            .map(|((a, b), e)| {
+                serde_json::json!({
+                    "a": a,
+                    "b": b,
+                    "edge": e.to_json(),
+                    "events": events_of(&a, Some(&b)),
+                })
+            })
+            .collect();
+        let mut problems = now.broken_links(&lib);
+        problems.extend(now.unreadable_edges());
+        let overlap: Vec<serde_json::Value> = people_draft::identity_overlap(&self.store, &p)
+            .map_err(failed)?
+            .into_iter()
+            .map(|(line, text)| serde_json::json!({ "line": line, "text": text }))
+            .collect();
+        let proposal = people_draft::read(&pdir).map_err(failed)?.map(|d| {
+            serde_json::json!({
+                "people": d.people,
+                "stale": d.identity != mecha_core::persona::text_digest(&p.identity),
+            })
+        });
+        // The portraits a person may link: approved characters this viewer
+        // may see.
+        let characters = visible_characters(&lib, unlocked);
+        Ok(serde_json::json!({
+            "people": people,
+            "ties": ties,
+            "problems": problems,
+            "overlap": overlap,
+            "proposal": proposal,
+            "characters": characters,
+            "as_of": as_of.map(|d| d.to_string()),
+        }))
+    }
+
+    /// The owner's doors to her network from the People tab: add someone,
+    /// change who they are, record an event on her tie or a tie between two,
+    /// retract an owner event, take someone out. Each answers with the
+    /// network as it now stands. A portrait is checked by the store's own
+    /// door (`network::add_person`, `edit_person`).
+    pub fn act_on_people(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: PeopleAct,
+        body: &PersonBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::network::{
+            self, EventKind, Layer, NewEvent, NewPerson, PersonEdit, Tie, When,
+        };
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        // The page answers "off" while her people are off, so a write it
+        // could not show is refused rather than landing out of sight
+        // (review of #803). The CLI is the owner's door either way.
+        if !p.settings.life.people {
+            return Err(Refusal::Conflict(format!(
+                "[life] people is off for `{}`; turn on Their people first",
+                p.name
+            )));
+        }
+        let pdir = self.store.join(&p.name);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let bad = |e: anyhow::Error| network_refusal(e);
+        // Writes honour the lock as reads do (`library.rs`): a portrait this
+        // viewer may not see answers exactly as one that does not exist, and
+        // nothing is written, so the answer never says which locked names
+        // there are (review of #803).
+        let unlocked = library.unlocked(body.unlock.as_deref());
+        let visible = |c: &Option<String>| -> Result<(), Refusal> {
+            let Some(c) = c.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+                return Ok(());
+            };
+            match lib.get(mecha_core::imagelib::Kind::Character, c) {
+                Some(e) if !e.locked || unlocked => Ok(()),
+                _ => Err(Refusal::Bad(format!(
+                    "there is no character `{c}` in the image library"
+                ))),
+            }
+        };
+        visible(&body.character)?;
+        let tie = |t: &Option<String>| -> Result<Option<Tie>, Refusal> {
+            match t.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                None => Ok(None),
+                Some(w) => Tie::from_id(w)
+                    .map(Some)
+                    .ok_or_else(|| Refusal::Bad(format!("`{w}` is not a tie"))),
+            }
+        };
+        let layer = |l: Option<u32>| -> Result<Option<Layer>, Refusal> {
+            l.map(|n| Layer::of_size(n).ok_or_else(|| Refusal::Bad(format!("{n} is not a layer"))))
+                .transpose()
+        };
+        let when = |w: &Option<String>| -> Result<When, Refusal> {
+            When::parse(w.as_deref().unwrap_or("")).map_err(|e| Refusal::Bad(format!("{e:#}")))
+        };
+        // A person or an event is named by its full id, which the page holds.
+        let known = |id: &str| -> Result<network::Person, Refusal> {
+            let n = network::Network::read(&pdir).map_err(failed)?;
+            n.person(id).cloned().ok_or(Refusal::NotFound)
+        };
+        match act {
+            PeopleAct::Add => {
+                let Some(person) = body.name.clone() else {
+                    return Err(Refusal::Bad("a person needs a `name`".into()));
+                };
+                network::add_person(
+                    &pdir,
+                    &lib,
+                    &NewPerson {
+                        name: person,
+                        aliases: body.aliases.clone().unwrap_or_default(),
+                        role: body.role.clone(),
+                        description: body.description.clone(),
+                        character: body.character.clone().filter(|c| !c.trim().is_empty()),
+                        tie: tie(&body.tie)?,
+                        label: body.label.clone(),
+                        layer: layer(body.layer)?,
+                        since: when(&body.since)?,
+                    },
+                )
+                .map_err(bad)?;
+            }
+            PeopleAct::Edit(id) => {
+                let person = known(&id)?;
+                let id = person.uid.clone();
+                // An empty value clears a field; one left out is unchanged,
+                // so a portrait this page was not shown (locked) stays.
+                let clear = |v: &Option<String>| {
+                    v.clone().map(|v| Some(v).filter(|v| !v.trim().is_empty()))
+                };
+                // Hidden, never cut: a clear of a portrait this viewer may
+                // not see is no choice to remove it, since the page was
+                // shown none (review of #803; the persona settings door's
+                // rule).
+                // From the one read `known` made (review of #803).
+                let existing = person.character.clone();
+                let clears = body
+                    .character
+                    .as_deref()
+                    .is_some_and(|c| c.trim().is_empty());
+                // Unlocked, the owner was shown every link, broken ones by
+                // name, so a clear always counts (as `hidden_character`).
+                let hidden = !unlocked && visible(&existing).is_err();
+                let character = if clears && hidden {
+                    None
+                } else {
+                    clear(&body.character)
+                };
+                network::edit_person(
+                    &pdir,
+                    &lib,
+                    &id,
+                    &PersonEdit {
+                        name: body.name.clone(),
+                        aliases: body.aliases.clone(),
+                        role: clear(&body.role),
+                        description: clear(&body.description),
+                        character,
+                    },
+                )
+                .map_err(bad)?;
+            }
+            PeopleAct::Event(id) => {
+                let id = known(&id)?.uid;
+                let other = body.with.as_deref().map(known).transpose()?.map(|q| q.uid);
+                let Some(kind) = body.kind.as_deref() else {
+                    return Err(Refusal::Bad("an event needs a `kind`".into()));
+                };
+                let kind = EventKind::from_id(kind)
+                    .ok_or_else(|| Refusal::Bad(format!("`{kind}` is not a kind of event")))?;
+                network::record(
+                    &pdir,
+                    &id,
+                    other.as_deref(),
+                    &NewEvent {
+                        kind,
+                        tie: tie(&body.tie)?,
+                        label: body.label.clone(),
+                        layer: layer(body.layer)?,
+                        when: when(&body.on)?,
+                        context: body.context.clone(),
+                    },
+                )
+                .map_err(bad)?;
+            }
+            PeopleAct::Retract(id, event) => {
+                let id = known(&id)?.uid;
+                // Only an event on an edge this person is part of.
+                let n = network::Network::read(&pdir).map_err(failed)?;
+                if !n.events.iter().any(|e| {
+                    e.uid == event && (e.person == id || e.other.as_deref() == Some(id.as_str()))
+                }) {
+                    return Err(Refusal::NotFound);
+                }
+                network::remove_event(&pdir, &event).map_err(bad)?;
+            }
+            PeopleAct::Remove(id) => {
+                let id = known(&id)?.uid;
+                network::remove_person(&pdir, &id).map_err(bad)?;
+            }
+        }
+        self.people(library, &p.name, body.unlock.as_deref())
+    }
+
+    /// Her own model reads her identity.md for the people it names (PL31,
+    /// `persona::people_draft`), held on the router as a turn is, unseeded,
+    /// and the proposal staged for the owner. What can be refused without
+    /// the answer is refused before the model runs, as a 409. Answers with
+    /// her network and how many were proposed: 0 is the model finding no one,
+    /// a finding with nothing staged.
+    pub async fn propose_people(
+        self: &Arc<Self>,
+        follower: &crate::follow::Follower,
+        library: &Arc<LibraryState>,
+        name: &str,
+        body: &ProposalBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{drafter, people_draft};
+        let (me, lib, who, unlock) = (
+            Arc::clone(self),
+            Arc::clone(library),
+            name.to_string(),
+            body.unlock.clone(),
+        );
+        let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
+            let p = me
+                .visible(&lib, &who, unlock.as_deref())
+                .ok_or(Refusal::NotFound)?;
+            if !p.settings.life.people {
+                return Err(Refusal::Conflict(format!(
+                    "[life] people is off for `{}`; turn on Their people first",
+                    p.name
+                )));
+            }
+            drafter::check(&p).map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+            people_draft::may_propose(&me.store, &p).map_err(proposal_refusal)?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading their identity: {e}")))??;
+        let (_held, bound) = follower
+            .enter("people proposal", |_| {})
+            .await
+            .map_err(failed)?;
+        let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        let proposed = people_draft::propose(provider.as_ref(), &bound.model, &self.store, &p)
+            .await
+            .map_err(proposal_refusal)?;
+        let (me, lib, unlock) = (Arc::clone(self), Arc::clone(library), body.unlock.clone());
+        let mut out =
+            tokio::task::spawn_blocking(move || me.people(&lib, &p.name, unlock.as_deref()))
+                .await
+                .map_err(|e| Refusal::Failed(format!("reading their people: {e}")))??;
+        out["proposed"] = serde_json::json!(proposed.map_or(0, |d| d.people.len()));
+        Ok(out)
+    }
+
+    /// The owner accepts the waiting proposal, or only some of it (`only`,
+    /// numbered from 1 as the page lists it), or dismisses it. Accepting
+    /// answers with her network and what it did; one read from an
+    /// identity.md that has changed since is a 409.
+    pub fn act_on_proposal(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        accept: bool,
+        body: &ProposalBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::people_draft;
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        if !p.settings.life.people {
+            return Err(Refusal::Conflict(format!(
+                "[life] people is off for `{}`; turn on Their people first",
+                p.name
+            )));
+        }
+        let pdir = self.store.join(&p.name);
+        if !accept {
+            people_draft::dismiss(&pdir).map_err(network_refusal)?;
+            return self.people(library, &p.name, body.unlock.as_deref());
+        }
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let done =
+            people_draft::accept(&self.store, &lib, &p, body.only.as_deref()).map_err(|e| {
+                if is_proposal_conflict(&e) {
+                    Refusal::Conflict(format!("{e:#}"))
+                } else {
+                    network_refusal(e)
+                }
+            })?;
+        let mut out = self.people(library, &p.name, body.unlock.as_deref())?;
+        out["accepted"] = serde_json::json!({
+            "added": done.added.iter().map(|(_, n)| n).collect::<Vec<_>>(),
+            "already": done.already,
+            "waiting": done.waiting,
+        });
+        Ok(out)
     }
 
     /// What `name` remembers, for the owner's curation page (§9.8): every
@@ -1943,6 +2963,7 @@ impl PersonaChats {
                     "summary": e.summary, "open_threads": e.open_threads,
                     "chat": e.source.chat, "origin": e.origin,
                     "status": e.status, "pinned": e.pinned,
+                    "vouched_at": e.vouched_at,
                 })
             })
             .collect();
@@ -1963,6 +2984,7 @@ impl PersonaChats {
                         "uid": f.uid, "day": day(&said), "said_at": said,
                         "text": f.text, "kind": f.kind, "origin": f.origin,
                         "status": f.status, "pinned": f.pinned,
+                        "vouched_at": f.vouched_at,
                         "shared": shared.remove(&f.uid).unwrap_or_default(),
                     })
                 })
@@ -1994,6 +3016,9 @@ impl PersonaChats {
         let m = Memory::open_to_edit(&self.store, &p.name).map_err(bad)?;
         match act {
             MemoryAct::Approve { id } => m.approve(&m.resolve(&id).map_err(bad)?).map_err(bad)?,
+            MemoryAct::ApproveClean { id } => m
+                .approve_clean(&m.resolve(&id).map_err(bad)?)
+                .map_err(bad)?,
             MemoryAct::Pin { id } => m.pin(&m.resolve(&id).map_err(bad)?, true).map_err(bad)?,
             MemoryAct::Unpin { id } => m.pin(&m.resolve(&id).map_err(bad)?, false).map_err(bad)?,
             MemoryAct::Correct { id, text } => {
@@ -2228,6 +3253,7 @@ impl PersonaChats {
                 events,
                 last_usage: Arc::default(),
                 goal,
+                told: Default::default(),
                 turns_since_anchor: 0,
                 anchor_due,
                 crisis_paused_at: None,
@@ -2825,14 +3851,17 @@ impl PersonaChats {
         };
         let (file, quote) = (file.to_string(), quote.to_string());
         tokio::task::spawn_blocking(move || {
-            let messages = std::fs::read_to_string(&session.path)
-                .map(|t| Session::messages_ever(&t))
+            let text = std::fs::read_to_string(&session.path)
                 .map_err(|e| Refusal::Failed(format!("reading the chat: {e}")))?;
+            // The same two sources the verdicts were checked against
+            // (`citations`), so what a badge opens is what it was checked on.
+            let messages = Session::messages_ever(&text);
+            let programs = mecha_core::tool::code::record::ever(&text, &session.meta.id);
             let mecha_core::persona::cite::Passage {
                 text,
                 span,
                 through,
-            } = mecha_core::persona::cite::passage(&messages, &file, page, &quote)
+            } = mecha_core::persona::cite::passage(&messages, &programs, &file, page, &quote)
                 .ok_or(Refusal::NotFound)?;
             let (before, marked, after) = match span {
                 Some((a, b)) => (&text[..a], &text[a..b], &text[b..]),
@@ -3997,11 +5026,96 @@ impl PersonaChats {
                     build_on.is_some(),
                 )
             });
+        // The ledger as it stood, put back if the turn is rolled back: an
+        // offer she never read is not an offer spent, or two failed turns
+        // would silence the day's lines unseen (review of #867).
+        let told_before = ps.told.clone();
+        // What her day has her doing now (PERSONA-LIFE-DESIGN.md §4.5), on
+        // the owner's clock: its own note, arming taint by the stem its
+        // rows' sources pick (`persona::today::stem_of`). Nothing when `[life]
+        // world` is off or she has no routine with a cell; a day that cannot
+        // be read is logged and left out, since a missing note arms nothing.
+        let today_note = if pause {
+            None
+        } else {
+            let tz = chat.follower.current().config.agent.timezone();
+            let at = match tz {
+                Some(tz) => chrono::Utc::now().with_timezone(&tz).naive_local(),
+                None => chrono::Local::now().naive_local(),
+            };
+            let events = ps.pinned.settings.life.events;
+            let people = ps.pinned.settings.life.people;
+            if events {
+                // A whole-store load: off the reactor, as the rest is.
+                let (store, who) = (self.store.clone(), name.clone());
+                let place = tokio::task::spawn_blocking(move || live_weather_place(&store, &who))
+                    .await
+                    .ok()
+                    .flatten();
+                match place {
+                    Some(place) => {
+                        refresh_weather_in_background(
+                            &self.store,
+                            &name,
+                            place.as_deref(),
+                            at.date(),
+                        )
+                        .await
+                    }
+                    None => tracing::warn!(
+                        "persona {name}: their settings did not read now; weather left as it is"
+                    ),
+                }
+            }
+            // The day and the teller read the store and draw days (up to a
+            // month of sampler draws and SQLite writes on a first walk), so
+            // they run on the blocking pool (review of #836).
+            let (store, who) = (self.store.clone(), name.clone());
+            let read = tokio::task::spawn_blocking(move || {
+                match mecha_core::persona::world::now(&store, &who, at) {
+                    Ok(now) => now.map(|n| {
+                        if !events {
+                            return (n, None);
+                        }
+                        let teller = teller(&store, &who, people, at);
+                        if let Err(e) = &teller {
+                            tracing::warn!("persona {who}: no teller lines this turn: {e:#}");
+                        }
+                        (n, teller.ok())
+                    }),
+                    Err(e) => {
+                        tracing::warn!("persona {who}: no today-block this turn: {e:#}");
+                        None
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("persona {name}: the today-block task failed: {e}");
+                None
+            });
+            // What she is doing rides every turn; what happened, how she
+            // feels and the weather ride until she has said them or the
+            // owner asks (`today::Ledger`), never turn after turn.
+            read.map(|(now, teller)| {
+                let lines = teller.and_then(|t| {
+                    let last_reply = replied_since_the_owner(&conversation.messages);
+                    ps.told.offer(
+                        mecha_core::persona::today::diary_date(at),
+                        &t,
+                        &said,
+                        &last_reply,
+                    )
+                });
+                mecha_core::persona::today::note_with_events(&now, lines.as_deref())
+            })
+        };
         let notes: Vec<String> = [
             memory_note,
             recall_block,
             anchor,
             call_note,
+            today_note,
             variety_note,
             scene_note,
         ]
@@ -4087,6 +5201,7 @@ impl PersonaChats {
             }
             ps.conversation = Some(conversation);
             ps.goal = goal;
+            ps.told = told_before;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
         let said_for_judge = said.clone();
@@ -4157,6 +5272,7 @@ impl PersonaChats {
         let Some((bound, agent)) = ready else {
             // Unreachable: an early pause always pauses above.
             ps.conversation = Some(conversation);
+            ps.told = told_before;
             return Err(Refusal::Failed("a paused turn reached the model".into()));
         };
         // The crisis judge, alongside the turn, on words the keywords passed
@@ -4531,6 +5647,7 @@ impl PersonaChats {
                 ps.late.ended(turn, run_ok, outcome_recorded);
                 if !run_ok {
                     ps.late.owe(arrived_back);
+                    ps.told = told_before;
                     chats.jobs.queue.cancel_run(&key, turn);
                 }
                 // Pictures that finished while this run held the chat: into
@@ -5711,6 +6828,9 @@ pub enum MemoryAct {
     Approve {
         id: String,
     },
+    ApproveClean {
+        id: String,
+    },
     Pin {
         id: String,
     },
@@ -5763,6 +6883,600 @@ pub async fn memory(
     {
         Ok(result) => respond(result),
         Err(e) => Refusal::Failed(format!("reading a persona's memory: {e}")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct CellBody {
+    cell: String,
+    /// `routine::digest_of` the routine as the page was shown it.
+    #[serde(default)]
+    base: String,
+    /// The week the page is showing, answered back after the change.
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// A refusal from `routine`'s owner doors: stale is an edit made elsewhere
+/// (409), a disk that would not take the write is the server's failure,
+/// and the rest is the file as it stands refusing the change.
+fn routine_refusal(e: anyhow::Error) -> Refusal {
+    if e.downcast_ref::<mecha_core::persona::routine::StaleRoutine>()
+        .is_some()
+    {
+        Refusal::Conflict(format!("{e:#}"))
+    } else if e.chain().any(|c| c.is::<std::io::Error>()) {
+        Refusal::Failed(format!("{e:#}"))
+    } else {
+        Refusal::Bad(format!("{e:#}"))
+    }
+}
+
+fn life_refusal(e: anyhow::Error) -> Refusal {
+    if e.downcast_ref::<mecha_core::persona::life::StaleLife>()
+        .is_some()
+    {
+        Refusal::Conflict(format!("{e:#}"))
+    } else if e.chain().any(|c| c.is::<std::io::Error>()) {
+        Refusal::Failed(format!("{e:#}"))
+    } else {
+        Refusal::Bad(format!("{e:#}"))
+    }
+}
+
+#[derive(serde::Deserialize, Default, Clone)]
+pub struct DraftBody {
+    /// The draft's digest as the page was shown it (approve, edit).
+    #[serde(default)]
+    digest: String,
+    /// The owner's text for the draft (edit).
+    #[serde(default)]
+    text: Option<String>,
+    /// The owner's notes for the drafter, saved before it runs (draft);
+    /// absent leaves the saved ones as they are, blank removes them.
+    #[serde(default)]
+    notes: Option<String>,
+    /// The week the page is showing, answered back after the change.
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// A proposal the owner has to act on first: one still waiting, or one
+/// read from an `identity.md` that has changed since.
+fn is_proposal_conflict(e: &anyhow::Error) -> bool {
+    use mecha_core::persona::people_draft::{ProposalWaiting, StaleProposal};
+    e.downcast_ref::<ProposalWaiting>().is_some() || e.downcast_ref::<StaleProposal>().is_some()
+}
+
+/// A proposal's refusal: a conflict the owner resolves on the page is a
+/// 409, anything else a failure (review of #804).
+fn proposal_refusal(e: anyhow::Error) -> Refusal {
+    if is_proposal_conflict(&e) {
+        Refusal::Conflict(format!("{e:#}"))
+    } else {
+        failed(e)
+    }
+}
+
+/// A refusal from her network's owner doors: a disk that would not take
+/// the write is the server's failure; the rest is what was sent refused.
+fn network_refusal(e: anyhow::Error) -> Refusal {
+    if mecha_core::persona::network::is_store_error(&e) {
+        Refusal::Failed(format!("{e:#}"))
+    } else {
+        Refusal::Bad(format!("{e:#}"))
+    }
+}
+
+/// What the People tab sends; each door reads the fields it needs.
+#[derive(serde::Deserialize, Default, Clone)]
+pub struct PersonBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    character: Option<String>,
+    #[serde(default)]
+    tie: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    layer: Option<u32>,
+    /// When the tie began (add).
+    #[serde(default)]
+    since: Option<String>,
+    /// An event's kind, when, what it was about, and the other person on a
+    /// tie between two (event).
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    on: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    with: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// What the People tab sends about a proposal.
+#[derive(serde::Deserialize, Default, Clone)]
+pub struct ProposalBody {
+    /// Accept only these, numbered from 1 as the proposal lists them.
+    #[serde(default)]
+    only: Option<Vec<usize>>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// The People tab's read: the unlock, and a day to see her network as it was.
+#[derive(serde::Deserialize)]
+pub struct PeopleQuery {
+    #[serde(default)]
+    unlock: Option<String>,
+    #[serde(default)]
+    as_of: Option<String>,
+}
+
+/// What the owner does to her network.
+#[derive(Debug, Clone)]
+pub enum PeopleAct {
+    Add,
+    Edit(String),
+    Event(String),
+    Retract(String, String),
+    Remove(String),
+}
+
+/// What the owner does to a waiting draft.
+#[derive(Debug, Clone, Copy)]
+pub enum DraftAct {
+    Approve,
+    Edit,
+    Discard,
+}
+
+/// POST /api/personas/{name}/routine/cell
+pub async fn set_cell(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<CellBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || personas.set_cell(&library, &name, &body, tz)).await {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("setting a persona's week: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/routine/draft: her model drafts her week.
+pub async fn draft_routine(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let tz = chat.follower.current().config.agent.timezone();
+    respond(
+        chat.personas
+            .draft_routine(&chat.follower, &state.library, &name, &body, tz)
+            .await,
+    )
+}
+
+/// POST /api/personas/{name}/life/draft
+pub async fn draft_life(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let tz = chat.follower.current().config.agent.timezone();
+    respond(
+        chat.personas
+            .draft_life(&chat.follower, &state.library, &name, &body, tz)
+            .await,
+    )
+}
+
+/// The owner's doors to a waiting draft: PUT edits it, DELETE discards it,
+/// POST `/approve` makes it her routine.
+async fn act_on_draft(
+    state: super::WebState,
+    name: String,
+    act: DraftAct,
+    body: DraftBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.act_on_draft(&library, &name, act, &body, tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => {
+            Refusal::Failed(format!("changing a persona's routine draft: {e}")).into_response()
+        }
+    }
+}
+
+async fn act_on_life_draft(
+    state: super::WebState,
+    name: String,
+    act: DraftAct,
+    body: DraftBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.act_on_life_draft(&library, &name, act, &body, tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's life draft: {e}")).into_response(),
+    }
+}
+
+/// PUT /api/personas/{name}/routine/draft
+pub async fn edit_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_draft(state, name, DraftAct::Edit, body).await
+}
+
+/// DELETE /api/personas/{name}/routine/draft
+pub async fn discard_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_draft(state, name, DraftAct::Discard, body).await
+}
+
+/// PUT /api/personas/{name}/life/draft
+pub async fn edit_life_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_life_draft(state, name, DraftAct::Edit, body).await
+}
+
+/// DELETE /api/personas/{name}/life/draft
+pub async fn discard_life_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_life_draft(state, name, DraftAct::Discard, body).await
+}
+
+/// GET /api/personas/{name}/people
+pub async fn people(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<PeopleQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.people_on(&library, &name, q.unlock.as_deref(), q.as_of.as_deref())
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("reading a persona's people: {e}")).into_response(),
+    }
+}
+
+async fn act_on_people(
+    state: super::WebState,
+    name: String,
+    act: PeopleAct,
+    body: PersonBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || personas.act_on_people(&library, &name, act, &body))
+        .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's people: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/people/proposal: her model reads identity.md.
+pub async fn propose_people(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProposalBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .propose_people(&chat.follower, &state.library, &name, &body)
+            .await,
+    )
+}
+
+async fn act_on_proposal(
+    state: super::WebState,
+    name: String,
+    accept: bool,
+    body: ProposalBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.act_on_proposal(&library, &name, accept, &body)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's proposal: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/people/proposal/accept
+pub async fn accept_proposal(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProposalBody>,
+) -> axum::response::Response {
+    act_on_proposal(state, name, true, body).await
+}
+
+/// DELETE /api/personas/{name}/people/proposal
+pub async fn dismiss_proposal(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProposalBody>,
+) -> axum::response::Response {
+    act_on_proposal(state, name, false, body).await
+}
+
+/// POST /api/personas/{name}/people
+pub async fn add_person(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Add, body).await
+}
+
+/// PUT /api/personas/{name}/people/{id}
+pub async fn edit_person(
+    State(state): Web,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Edit(id), body).await
+}
+
+/// DELETE /api/personas/{name}/people/{id}
+pub async fn remove_person(
+    State(state): Web,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Remove(id), body).await
+}
+
+/// POST /api/personas/{name}/people/{id}/events
+pub async fn record_event(
+    State(state): Web,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Event(id), body).await
+}
+
+/// DELETE /api/personas/{name}/people/{id}/events/{event}
+pub async fn retract_event(
+    State(state): Web,
+    axum::extract::Path((name, id, event)): axum::extract::Path<(String, String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Retract(id, event), body).await
+}
+
+/// POST /api/personas/{name}/routine/draft/approve
+pub async fn approve_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_draft(state, name, DraftAct::Approve, body).await
+}
+
+/// POST /api/personas/{name}/life/draft/approve
+pub async fn approve_life_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_life_draft(state, name, DraftAct::Approve, body).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct WeekQuery {
+    #[serde(default)]
+    unlock: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+}
+
+/// GET /api/personas/{name}/week
+///
+/// A read that writes: the days it draws inside the keep window are stored
+/// (PERSONA-LIFE-DESIGN.md §15). `owner_guard` lets a `GET` through without
+/// the page's header, so this asks for it itself, or a page on another site
+/// could sweep the dates and store days no chat was told.
+pub async fn week(
+    State(state): Web,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<WeekQuery>,
+) -> axum::response::Response {
+    if !super::request_verified(&headers) {
+        return super::unverified();
+    }
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    let unlock = q.unlock;
+    let date = q.date;
+    let loading = Arc::clone(&personas);
+    let weather_tz = tz;
+    // The persona load and due check are blocking file/SQLite work. Keep
+    // them off the reactor and return the same loaded persona the payload
+    // builder will use after the one async network step.
+    let prepared = tokio::task::spawn_blocking(move || {
+        use mecha_core::persona::weather;
+        let p = loading
+            .visible(&library, &name, unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let mut refresh = None;
+        let mut weather_error = None;
+        if p.settings.life.world {
+            let place = p
+                .settings
+                .life
+                .place
+                .as_deref()
+                .map(str::trim)
+                .filter(|place| !place.is_empty());
+            let pdir = loading.store.join(&p.name);
+            if place.is_none() {
+                // A removed place takes its weather with it; story.toml's
+                // [place], if any, then stands in (review of #836).
+                if let Err(e) = weather::forget_removed_place(&pdir) {
+                    weather_error =
+                        Some(format!("a removed place's weather was not cleared: {e:#}"));
+                }
+            }
+            let key = place.unwrap_or(weather::FALLBACK_KEY);
+            let now = chrono::Utc::now();
+            match weather::due(&pdir, place, now) {
+                Ok(true) => {
+                    let today = match weather_tz {
+                        Some(tz) => now.with_timezone(&tz).date_naive(),
+                        None => chrono::Local::now().date_naive(),
+                    };
+                    refresh = Some((pdir, place.map(str::to_string), today));
+                }
+                Ok(false) => {
+                    if weather_error.is_none() {
+                        weather_error =
+                            weather::backoff_error(&pdir, key, now).unwrap_or_else(|e| {
+                                Some(format!("weather failure does not load: {e:#}"))
+                            });
+                    }
+                }
+                Err(e) => {
+                    let why = format!("weather could not be checked: {e:#}");
+                    weather_error = Some(match weather::record_failure(&pdir, key, now, &why) {
+                        Ok(()) => why,
+                        Err(record) => {
+                            format!("{why}; recording that failure also failed: {record:#}")
+                        }
+                    });
+                }
+            }
+        }
+        Ok::<_, Refusal>((p, refresh, weather_error))
+    })
+    .await;
+    let (p, refresh, mut weather_error) = match prepared {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(refusal)) => return refusal.into_response(),
+        Err(e) => {
+            return Refusal::Failed(format!("preparing a persona's week: {e}")).into_response()
+        }
+    };
+
+    // Weather is the one network half of this route. It is harness-started
+    // from the owner's `[life] place`; an error is page data, never a failed
+    // Week route. The whole refresh is polled from the blocking pool so its
+    // cache and SQLite work never land on an async worker; success clears a
+    // previous failure.
+    if let Some((pdir, place, today)) = refresh {
+        let handle = tokio::runtime::Handle::current();
+        match tokio::task::spawn_blocking(move || {
+            refresh_weather_on_blocking_thread(&handle, &pdir, place.as_deref(), today)
+        })
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some(why)) => {
+                weather_error = Some(format!("weather could not be refreshed: {why}"));
+            }
+            Err(e) => {
+                weather_error = Some(format!("weather refresh task failed: {e}"));
+            }
+        }
+    }
+    match tokio::task::spawn_blocking(move || {
+        personas.week_for(&p, date.as_deref(), tz, weather_error.as_deref())
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("reading a persona's week: {e}")).into_response(),
     }
 }
 
@@ -8291,6 +10005,1228 @@ mod tests {
         assert!(!newest.contains("Continue on a picture"), "{newest}");
     }
 
+    /// PERSONA-LIFE-DESIGN.md §4.5: with `[life] world` on and a routine
+    /// naming her cell, every request's newest message carries what she is
+    /// doing now, once, as a run note never stored in a message; with the
+    /// switch off, none does. The pinned `events` switch changes that same
+    /// live fold, so this also measures the `note_with_events` call site.
+    #[tokio::test]
+    async fn her_day_rides_as_a_note_only_with_the_world_switched_on() {
+        use mecha_core::persona::today::{EVENTS_HEADING, TODAY_STEM, UNTRUSTED_TODAY_STEM};
+        let w = world();
+        let key = |opened: serde_json::Value| opened["key"].as_str().unwrap().to_string();
+        // Her routine names a cell from the start, so with the switch off
+        // the switch is the only thing keeping the note out.
+        let dir = w.store().join("mara");
+        std::fs::write(
+            dir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
+        )
+        .unwrap();
+        let off = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &off, "Hello there.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert!(!seen[0].messages.last().unwrap().text().contains(TODAY_STEM));
+
+        let toml = dir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(text.contains("world     = false"));
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        let on = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &on, "Hello again.").await;
+        turn(&w, &on, "And then?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        for req in &seen[1..] {
+            let newest = req.messages.last().unwrap().text();
+            assert!(newest.contains(TODAY_STEM), "{newest}");
+            assert!(!newest.contains(UNTRUSTED_TODAY_STEM), "{newest}");
+            assert!(!newest.contains(EVENTS_HEADING), "{newest}");
+            let copies: usize = req
+                .messages
+                .iter()
+                .map(|m| m.text().matches(TODAY_STEM).count())
+                .sum();
+            assert_eq!(copies, 1, "a note, never stored in a message");
+        }
+        // Her day was drawn and kept, so the next turn reads it back.
+        assert!(dir.join(mecha_core::persona::world::WORLD_DB).exists());
+
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(text.contains("events    = false"));
+        std::fs::write(&toml, text.replace("events    = false", "events    = true")).unwrap();
+        let events = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &events, "One more turn.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 4);
+        let newest = seen.last().unwrap().messages.last().unwrap().text();
+        assert!(newest.contains(TODAY_STEM), "{newest}");
+        assert!(newest.contains(EVENTS_HEADING), "{newest}");
+
+        // What happened is told, not repeated (`today::Ledger`; the owner,
+        // 2026-11-12): it rides its offers, then only what she is doing
+        // does, until the owner asks after her day.
+        let newest = |w: &World| {
+            let seen = w.seen.lock().unwrap().clone();
+            seen.last().unwrap().messages.last().unwrap().text()
+        };
+        for _ in 1..mecha_core::persona::today::OFFERS {
+            turn(&w, &events, "Go on.").await;
+            assert!(newest(&w).contains(EVENTS_HEADING), "{}", newest(&w));
+        }
+        turn(&w, &events, "Go on.").await;
+        let quiet = newest(&w);
+        assert!(quiet.contains(TODAY_STEM), "{quiet}");
+        assert!(!quiet.contains(EVENTS_HEADING), "{quiet}");
+        turn(&w, &events, "And your day, did it go to plan?").await;
+        assert!(newest(&w).contains(EVENTS_HEADING), "{}", newest(&w));
+    }
+
+    /// A chat of `w`'s persona with her days and the teller on, and one
+    /// storylet to tell.
+    async fn chat_with_her_day(w: &World) -> String {
+        let dir = w.store().join("mara");
+        std::fs::write(
+            dir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
+        )
+        .unwrap();
+        let toml = dir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        let text = text
+            .replace("world     = false", "world     = true")
+            .replace("events    = false", "events    = true");
+        assert!(text.contains("events    = true"), "{text}");
+        std::fs::write(&toml, text).unwrap();
+        w.personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap()["key"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The glue the ledger's headline rests on: her last reply is what is
+    /// read for what she said. Empty, every line would ride its offers out
+    /// whatever she told (review of #867).
+    #[test]
+    fn her_last_reply_is_what_the_ledger_reads() {
+        use mecha_core::message::Block;
+        let said = |t: &str| Message::assistant(vec![Block::text(t)]);
+        assert_eq!(replied_since_the_owner(&[]), "");
+        assert_eq!(replied_since_the_owner(&[Message::user("hi")]), "");
+        let history = [
+            said("An older reply."),
+            Message::user("hi"),
+            said("It rained all morning."),
+            said("Then it cleared."),
+        ];
+        assert_eq!(
+            replied_since_the_owner(&history),
+            "It rained all morning.\nThen it cleared."
+        );
+        // Text before a call, the call's result, then her reply: both hers.
+        let mut called = Message::assistant(vec![Block::text("Let me draw that. Still raining.")]);
+        called.content.push(Block::ToolUse {
+            id: "c1".into(),
+            name: "image_generate".into(),
+            input: serde_json::json!({}),
+        });
+        let result = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "c1".into(),
+            content: "image: a.png".into(),
+            is_error: false,
+        }]);
+        let history = [Message::user("draw it"), called, result, said("There.")];
+        assert_eq!(
+            replied_since_the_owner(&history),
+            "Let me draw that. Still raining.\nThere."
+        );
+    }
+
+    /// An offer she never read is not an offer spent: a turn that fails is
+    /// rolled back, the ledger with it, so the day's lines are still there
+    /// for the turn that works (review of #867).
+    #[tokio::test]
+    async fn a_failed_turn_gives_its_offer_back() {
+        use mecha_core::persona::today::{EVENTS_HEADING, OFFERS};
+        let w = world_with(Mode::Fail);
+        let key = chat_with_her_day(&w).await;
+        for n in 0..=OFFERS {
+            // `turn` insists on a run that worked; this one waits for the
+            // failure to be said.
+            let (mut rx, _) = w
+                .personas()
+                .subscribe(&w.library, &key, None)
+                .await
+                .unwrap();
+            w.personas()
+                .send_with(
+                    &w.chat,
+                    &w.library,
+                    &key,
+                    "Hello there.",
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                )
+                .await
+                .unwrap();
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+                    Ok(Ok(WireEvent::Done { ok, .. })) => {
+                        assert!(!ok, "the model was to fail");
+                        break;
+                    }
+                    Ok(Ok(_)) => {}
+                    other => panic!("no Done event: {other:?}"),
+                }
+            }
+            let seen = w.seen.lock().unwrap().clone();
+            assert_eq!(
+                seen.len(),
+                usize::from(n) + 1,
+                "each turn reached the model"
+            );
+            let newest = seen.last().unwrap().messages.last().unwrap().text();
+            assert!(newest.contains(EVENTS_HEADING), "turn {n}: {newest}");
+        }
+    }
+
+    #[test]
+    fn a_chat_weather_refresh_reads_the_owner_place_live() {
+        let w = world();
+        let store = w.store();
+        let stale = Store::load(&store).get("mara").unwrap().clone();
+        assert!(stale.settings.life.place.is_none());
+        let path = store.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace(
+                "world     = false",
+                "world     = false\nplace     = \"Springfield, Illinois\"",
+            ),
+        )
+        .unwrap();
+        assert!(
+            stale.settings.life.place.is_none(),
+            "the snapshot stays old"
+        );
+        assert_eq!(
+            live_weather_place(&store, "mara"),
+            Some(Some("Springfield, Illinois".to_string()))
+        );
+        // A persona.toml that does not read now is unknown, never no place.
+        std::fs::write(store.join("mara").join("persona.toml"), "not = [toml").unwrap();
+        assert_eq!(live_weather_place(&store, "mara"), None);
+    }
+
+    /// The CLI teller wrapper asks story::story for today and, before noon,
+    /// yesterday. A real temporary persona store exercises both calls while
+    /// keeping network and the model out of the test.
+    #[test]
+    fn the_teller_wrapper_draws_today_and_yesterday_before_noon() {
+        let w = world();
+        let store = w.store();
+        let pdir = store.join("mara");
+        let path = pdir.join("persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("world     = false", "world     = true")).unwrap();
+        std::fs::write(
+            pdir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pdir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
+        )
+        .unwrap();
+        let at: chrono::NaiveDateTime = "2026-11-03T09:00:00".parse().unwrap();
+        let lines = teller(&store, "mara", false, at).unwrap().lines();
+        assert!(lines.contains("What happened yesterday:"), "{lines}");
+        assert!(!lines.contains("What happened today:"), "{lines}");
+        let world = mecha_core::persona::world::World::open(&pdir).unwrap();
+        assert!(world.story_day(at.date()).unwrap().is_some());
+        assert!(world
+            .story_day(at.date().pred_opt().unwrap())
+            .unwrap()
+            .is_some());
+        // 1am is the evening of the day before (a day runs 4am to 4am): its
+        // events are today's, not yesterday's, and nothing of the coming
+        // calendar day is drawn (review of #836).
+        let late: chrono::NaiveDateTime = "2026-11-04T01:00:00".parse().unwrap();
+        let lines = teller(&store, "mara", false, late).unwrap().lines();
+        assert!(lines.contains("What happened today:"), "{lines}");
+        assert!(world.story_day(late.date()).unwrap().is_none());
+    }
+
+    /// §17: a persona with no days answers the week as a 200 saying which,
+    /// never a route error; a locked one is missing without its token; and
+    /// the owner's cell pick writes routine.toml only over what was shown.
+    #[tokio::test]
+    async fn the_week_says_why_it_is_empty_and_the_owner_picks_her_week() {
+        let w = world();
+        let week = |date: Option<&str>| w.personas().week(&w.library, "mara", None, date, None);
+        let off = week(None).unwrap();
+        assert_eq!(off["absent"], "off");
+        assert_eq!(off["life"]["alone"], serde_json::Value::Null);
+        assert_eq!(off["life"]["draft"], serde_json::Value::Null);
+        assert_eq!(off["life"]["undraftable"], serde_json::Value::Null);
+        assert_eq!(off["place"], serde_json::Value::Null);
+        assert_eq!(off["weather_error"], serde_json::Value::Null);
+        assert!(off["why"].as_str().unwrap().contains("[life] world is off"));
+        assert!(off.get("week").is_none());
+        let dir = w.store().join("mara");
+        let toml = dir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace(
+                "world     = false",
+                "world     = true\nplace     = \"Springfield, Illinois\"",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::weather::PLACE_FILE),
+            serde_json::to_vec(&mecha_core::persona::weather::Resolved {
+                query: "Springfield, Illinois".into(),
+                label: "Springfield, Illinois, US".into(),
+                lat: 39.8,
+                lon: -89.6,
+                weather_for: Some("Springfield, Illinois".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let none = week(None).unwrap();
+        assert_eq!(none["absent"], "no_routine");
+        assert_eq!(none["place"]["query"], "Springfield, Illinois");
+        assert_eq!(none["place"]["label"], "Springfield, Illinois, US");
+        assert_eq!(none["routine"]["digest"], "");
+        assert_eq!(none["routine"]["cell"], serde_json::Value::Null);
+        assert!(matches!(week(Some("someday")), Err(Refusal::Bad(_))));
+        let now = chrono::Utc::now();
+        mecha_core::persona::weather::record_failure(
+            &dir,
+            "Springfield, Illinois",
+            now,
+            "weather unavailable",
+        )
+        .unwrap();
+        let backoff =
+            mecha_core::persona::weather::backoff_error(&dir, "Springfield, Illinois", now)
+                .unwrap();
+        let p = w.personas().visible(&w.library, "mara", None).unwrap();
+        let weather_error = w
+            .personas()
+            .week_for(&p, None, None, backoff.as_deref())
+            .unwrap();
+        assert_eq!(weather_error["weather_error"], "weather unavailable");
+
+        std::fs::write(
+            dir.join(mecha_core::persona::life::FILE),
+            "never = [\"caring\"]\n\
+             [[household]]\nperson = \"Theo\"\nrelation = \"housemate\"\n\
+             [sleep]\nbed = \"23:30\"\nwake = \"07:30\"\n",
+        )
+        .unwrap();
+        let profiled = week(None).unwrap();
+        assert_eq!(profiled["life"]["alone"], false);
+        assert_eq!(profiled["life"]["household"][0]["person"], "Theo");
+        assert_eq!(profiled["life"]["household"][0]["relation"], "housemate");
+        assert_eq!(profiled["life"]["sleep"]["bed"], "23:30");
+        assert_eq!(profiled["life"]["sleep"]["wake"], "07:30");
+        assert_eq!(profiled["life"]["never"][0], "caring");
+        assert_eq!(profiled["life"]["error"], serde_json::Value::Null);
+
+        let body = |cell: &str, base: &str| CellBody {
+            cell: cell.into(),
+            base: base.into(),
+            date: None,
+            unlock: None,
+        };
+        let picked = w
+            .personas()
+            .set_cell(&w.library, "mara", &body("part_time", ""), None)
+            .unwrap();
+        assert_eq!(picked["routine"]["cell"], "part_time");
+        assert_eq!(picked["week"]["days"].as_array().unwrap().len(), 7);
+        // Sent with the digest of no file, over a file that is now there:
+        // an edit made elsewhere, so a 409 the page answers by re-reading.
+        assert!(matches!(
+            w.personas().set_cell(&w.library, "mara", &body("retired", ""), None),
+            Err(Refusal::Conflict(why)) if why.contains("changed since it was shown")
+        ));
+        assert!(matches!(
+            w.personas()
+                .set_cell(&w.library, "mara", &body("astronaut", ""), None),
+            Err(Refusal::Bad(_))
+        ));
+        let base = picked["routine"]["digest"].as_str().unwrap().to_string();
+        let again = w
+            .personas()
+            .set_cell(&w.library, "mara", &body("retired", &base), None)
+            .unwrap();
+        assert_eq!(again["routine"]["cell"], "retired");
+
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(week(None), Err(Refusal::NotFound)));
+        assert!(matches!(
+            w.personas()
+                .set_cell(&w.library, "mara", &body("student", &base), None),
+            Err(Refusal::NotFound)
+        ));
+    }
+
+    /// The web app's words and colours are keyed by the Rust enums' ids: a
+    /// reason she has no days, an activity, or a kind of week the page does
+    /// not know would fall back silently (to the CLI's prose, to "not named
+    /// here", or to no label), so each list is held to its enum here.
+    /// `mara` with her days switched on, in a world whose model answers
+    /// every persona request with `answer`.
+    fn world_drafting(answer: &str) -> World {
+        let w = world_with(Mode::Say(answer.into()));
+        let toml = w.store().join("mara").join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        w
+    }
+
+    const DRAFTED: &str = r#"{"anchors": [
+        {"what": "pottery class", "activity": "class", "days": ["tue"],
+         "at": "18:30", "minutes": 120, "chance": 1},
+        {"what": "early swim", "activity": "exercise", "days": ["weekdays"],
+         "at": "06:30", "minutes": 45, "chance": 0.6}
+    ]}"#;
+
+    const LIFE_DRAFTED: &str = r#"{"alone":true,"household":[],"sleep":{"bed":"23:00","wake":"07:00"},"never":["work","caring"]}"#;
+
+    #[tokio::test]
+    async fn the_owner_reviews_and_approves_a_drafted_life_profile() {
+        let w = world_drafting(LIFE_DRAFTED);
+        let ps = w.personas();
+        let before = ps.week(&w.library, "mara", None, None, None).unwrap();
+        assert_eq!(before["life"]["alone"], serde_json::Value::Null);
+        assert_eq!(before["life"]["draft"], serde_json::Value::Null);
+        let drafted = ps
+            .draft_life(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &DraftBody::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(drafted["life_drafted"], true);
+        let shown_week = ps.week(&w.library, "mara", None, None, None).unwrap();
+        let waiting = &shown_week["life"]["draft"];
+        assert_eq!(waiting["parsed"]["alone"], true);
+        assert_eq!(waiting["parsed"]["sleep"]["bed"], "23:00");
+        assert_eq!(waiting["edited"], false);
+        let shown = waiting["digest"].as_str().unwrap().to_string();
+        let stale = DraftBody {
+            digest: "0".into(),
+            ..DraftBody::default()
+        };
+        assert!(matches!(
+            ps.act_on_life_draft(&w.library, "mara", DraftAct::Approve, &stale, None),
+            Err(Refusal::Conflict(_))
+        ));
+        let approve = DraftBody {
+            digest: shown,
+            ..DraftBody::default()
+        };
+        let approved = ps
+            .act_on_life_draft(&w.library, "mara", DraftAct::Approve, &approve, None)
+            .unwrap();
+        assert_eq!(approved["life"]["alone"], true);
+        assert_eq!(approved["life"]["draft"], serde_json::Value::Null);
+        assert!(w
+            .store()
+            .join("mara")
+            .join(mecha_core::persona::life::FILE)
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn the_owner_reviews_a_drafted_week_and_her_pick_survives_approval() {
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        let body = |digest: &str, text: Option<&str>| DraftBody {
+            digest: digest.into(),
+            text: text.map(Into::into),
+            ..DraftBody::default()
+        };
+        let cell = CellBody {
+            cell: "part_time".into(),
+            base: String::new(),
+            date: None,
+            unlock: None,
+        };
+        ps.set_cell(&w.library, "mara", &cell, None).unwrap();
+
+        let before = ps.week(&w.library, "mara", None, None, None).unwrap();
+        assert_eq!(before["routine"]["draft"], serde_json::Value::Null);
+        assert_eq!(before["routine"]["undraftable"], serde_json::Value::Null);
+        let drafted = ps
+            .draft_routine(&w.chat.follower, &w.library, "mara", &body("", None), None)
+            .await
+            .unwrap();
+        assert_eq!(drafted["drafted"], 2);
+        let draft = &drafted["routine"]["draft"];
+        assert_eq!(draft["anchors"].as_array().unwrap().len(), 2);
+        assert_eq!(draft["anchors"][0]["start_minute"], 18 * 60 + 30);
+        assert_eq!(draft["kept_cell"], "part_time");
+        assert_eq!(draft["edited"], false);
+        // One quarantined question: no tools went with it.
+        let asked = w.seen.lock().unwrap().last().cloned().unwrap();
+        assert!(asked.tools.is_empty());
+        assert!(asked.system.unwrap().contains("weekly routine"));
+
+        // The owner edits it as shown; a stale edit is a 409.
+        let shown = draft["digest"].as_str().unwrap().to_string();
+        let text = draft["text"].as_str().unwrap().replace("18:30", "19:00");
+        assert!(matches!(
+            ps.act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Edit,
+                &body("0", Some(&text)),
+                None
+            ),
+            Err(Refusal::Conflict(_))
+        ));
+        let edited = ps
+            .act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Edit,
+                &body(&shown, Some(&text)),
+                None,
+            )
+            .unwrap();
+        let draft = &edited["routine"]["draft"];
+        assert_eq!(draft["anchors"][0]["start_minute"], 19 * 60);
+        assert_eq!(draft["edited"], true);
+        // Now hers: a redraft is refused before the model runs.
+        let asked_before = w.seen.lock().unwrap().len();
+        assert!(matches!(
+            ps.draft_routine(&w.chat.follower, &w.library, "mara", &body("", None), None)
+                .await,
+            Err(Refusal::Conflict(why)) if why.contains("edited")
+        ));
+        assert_eq!(w.seen.lock().unwrap().len(), asked_before);
+
+        // Approved over the digest shown, her kind of week kept; a stale
+        // approval is a 409.
+        assert!(matches!(
+            ps.act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Approve,
+                &body(&shown, None),
+                None
+            ),
+            Err(Refusal::Conflict(_))
+        ));
+        let now = draft["digest"].as_str().unwrap().to_string();
+        let approved = ps
+            .act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Approve,
+                &body(&now, None),
+                None,
+            )
+            .unwrap();
+        assert_eq!(approved["routine"]["cell"], "part_time");
+        assert_eq!(approved["routine"]["draft"], serde_json::Value::Null);
+        assert_eq!(approved["week"]["days"].as_array().unwrap().len(), 7);
+        // Nothing waits, so nothing to discard.
+        assert!(matches!(
+            ps.act_on_draft(&w.library, "mara", DraftAct::Discard, &body("", None), None),
+            Err(Refusal::Bad(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn notes_sent_with_a_draft_are_saved_and_reach_the_drafter() {
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        let notes = "- pottery Tuesday 18:30 to 20:30\n- early swims most weekdays";
+        let body = |notes: Option<&str>| DraftBody {
+            notes: notes.map(Into::into),
+            ..DraftBody::default()
+        };
+        let out = ps
+            .draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &body(Some(notes)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["routine"]["notes"], format!("{notes}\n"));
+        let asked = w.seen.lock().unwrap().last().cloned().unwrap();
+        let user: serde_json::Value = serde_json::from_str(&asked.messages[0].text()).unwrap();
+        assert_eq!(user["notes"], notes);
+        // Absent keeps them; too long is refused as bad input, nothing run.
+        ps.act_on_draft(
+            &w.library,
+            "mara",
+            DraftAct::Discard,
+            &DraftBody::default(),
+            None,
+        )
+        .unwrap();
+        let again = ps
+            .draft_routine(&w.chat.follower, &w.library, "mara", &body(None), None)
+            .await
+            .unwrap();
+        assert_eq!(again["routine"]["notes"], format!("{notes}\n"));
+        let asked = w.seen.lock().unwrap().len();
+        let long = "x".repeat(mecha_core::persona::routine::MAX_NOTES + 1);
+        assert!(matches!(
+            ps.draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &body(Some(&long)),
+                None
+            )
+            .await,
+            Err(Refusal::Bad(_))
+        ));
+        assert_eq!(
+            w.seen.lock().unwrap().len(),
+            asked,
+            "no model run for refused notes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_week_with_no_fixed_point_is_a_finding_and_a_candidate_is_not_drafted() {
+        let w = world_drafting(r#"{"anchors": []}"#);
+        let ps = w.personas();
+        let none = ps
+            .draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &DraftBody::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(none["drafted"], 0);
+        assert_eq!(none["routine"]["draft"], serde_json::Value::Null);
+        // A model answer with a draft, discarded: the routine untouched.
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        ps.draft_routine(
+            &w.chat.follower,
+            &w.library,
+            "mara",
+            &DraftBody::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        let gone = ps
+            .act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Discard,
+                &DraftBody::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(gone["routine"]["draft"], serde_json::Value::Null);
+        assert_eq!(gone["routine"]["digest"], "");
+        // A candidate persona says why on the week, and the route refuses.
+        let state = w.store().join("mara").join("state.toml");
+        let text = std::fs::read_to_string(&state).unwrap();
+        std::fs::write(
+            &state,
+            text.replace("status = \"approved\"", "status = \"candidate\""),
+        )
+        .unwrap();
+        let week = ps.week(&w.library, "mara", None, None, None).unwrap();
+        assert!(week["routine"]["undraftable"]
+            .as_str()
+            .unwrap()
+            .contains("candidate"));
+        assert!(matches!(
+            ps.draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &DraftBody::default(),
+                None
+            )
+            .await,
+            Err(Refusal::Conflict(_))
+        ));
+    }
+
+    /// The People tab's doors over her network, with locks carried over:
+    /// a locked portrait is never named to a locked page, and never cut.
+    #[tokio::test]
+    async fn the_owner_builds_her_network_on_the_people_tab_and_locks_carry_over() {
+        let w = world();
+        let ps = w.personas();
+        // Off for her: said, never refused.
+        let off = ps.people(&w.library, "mara", None).unwrap();
+        assert_eq!(off["absent"], "off");
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("world     = false", "world     = true")
+                .replace("people    = false", "people    = true"),
+        )
+        .unwrap();
+        let png = || {
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 10, 10]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        for (name, locked) in [("flourhand", false), ("veiledone", true)] {
+            mecha_core::imagelib::create(
+                &w.library.dir,
+                mecha_core::imagelib::NewEntry {
+                    kind: mecha_core::imagelib::Kind::Character,
+                    name: name.into(),
+                    text: "A tall woman in an apron.".into(),
+                    portrait: Some(png()),
+                    source_seed: None,
+                    origin: mecha_core::imagelib::Origin::Owner,
+                    locked,
+                },
+            )
+            .unwrap();
+        }
+        let body = |f: &dyn Fn(&mut PersonBody)| {
+            let mut b = PersonBody::default();
+            f(&mut b);
+            b
+        };
+        let token = w.library.grant_for_tests();
+        let add = |name: &str, character: Option<&str>, unlock: Option<&str>| {
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Add,
+                &body(&|b| {
+                    b.name = Some(name.into());
+                    b.tie = Some("kin".into());
+                    b.layer = Some(5);
+                    b.character = character.map(Into::into);
+                    b.unlock = unlock.map(Into::into);
+                }),
+            )
+        };
+        add("Ines", Some("flourhand"), None).unwrap();
+        let got = add("Theo", Some("veiledone"), Some(&token)).unwrap();
+        assert_eq!(got["people"].as_array().unwrap().len(), 2);
+        // From a locked page, a locked portrait answers exactly as a name
+        // that does not exist, and nothing is written: the answer never
+        // says which locked names there are (review of #803).
+        let refused = |r: Result<serde_json::Value, Refusal>| match r {
+            Err(Refusal::Bad(m)) => m,
+            other => panic!("not refused as bad input: {:?}", other.map(|_| ())),
+        };
+        let locked_one = refused(add("Zed", Some("veiledone"), None));
+        let absent_one = refused(add("Zed", Some("nosuchone"), None));
+        assert_eq!(
+            locked_one.replace("veiledone", "X"),
+            absent_one.replace("nosuchone", "X")
+        );
+        let ines_id = ps.people(&w.library, "mara", None).unwrap()["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Ines")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let edited = refused(ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(ines_id.clone()),
+            &body(&|b| b.character = Some("veiledone".into())),
+        ));
+        assert!(edited.contains("no character"), "{edited}");
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(n.people.len(), 2, "a refused add wrote someone");
+        assert_eq!(
+            n.person(&ines_id).unwrap().character.as_deref(),
+            Some("flourhand")
+        );
+        // A word outside a closed set, or a portrait the library will not
+        // give, is refused as bad input.
+        assert!(matches!(
+            ps.act_on_people(&w.library, "mara", PeopleAct::Add, &body(&|b| { b.name = Some("Bo".into()); b.tie = Some("cousin".into()); })),
+            Err(Refusal::Bad(m)) if m.contains("not a tie")
+        ));
+        assert!(matches!(
+            add("Bo", Some("nobody"), None),
+            Err(Refusal::Bad(_))
+        ));
+
+        // A locked page: the locked portrait is neither named nor shown;
+        // the open one is both.
+        let locked = ps.people(&w.library, "mara", None).unwrap();
+        assert!(!locked.to_string().contains("veiledone"), "{locked}");
+        let theo = locked["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Theo")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (theo["character"].clone(), theo["portrait"].clone()),
+            (serde_json::Value::Null, serde_json::Value::Null)
+        );
+        let ines = locked["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Ines")
+            .unwrap()
+            .clone();
+        assert_eq!(ines["character"], "flourhand");
+        assert!(ines["portrait"]
+            .as_str()
+            .unwrap()
+            .starts_with("/api/library/portrait/"));
+        assert!(!locked["characters"].to_string().contains("veiledone"));
+        // Unlocked, the owner sees both.
+        let open = ps.people(&w.library, "mara", Some(&token)).unwrap();
+        assert!(open.to_string().contains("veiledone"));
+
+        // An edit from the locked page that leaves the portrait out keeps
+        // it: hidden, never cut.
+        let theo_id = theo["id"].as_str().unwrap().to_string();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| b.role = Some("cousin".into())),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character.as_deref(),
+            Some("veiledone")
+        );
+        assert_eq!(n.person(&theo_id).unwrap().role.as_deref(), Some("cousin"));
+        // Nor does a clear from it cut the link it was never shown.
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| b.character = Some(String::new())),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character.as_deref(),
+            Some("veiledone")
+        );
+        // Unlocked, the owner may clear it.
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some(String::new());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(n.person(&theo_id).unwrap().character, None);
+        // A link whose library entry is gone, which the page warns about:
+        // unlocked, the owner can clear it (review of #803).
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some("flourhand".into());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        mecha_core::imagelib::remove(
+            &w.library.dir,
+            mecha_core::imagelib::Kind::Character,
+            "flourhand",
+        )
+        .unwrap();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some(String::new());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character,
+            None,
+            "an unlocked clear of a broken link was swallowed"
+        );
+
+        // An event on the tie between two, then retracted; a person removed.
+        let ines_id = ines["id"].as_str().unwrap().to_string();
+        let tied = ps
+            .act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Event(ines_id.clone()),
+                &body(&|b| {
+                    b.kind = Some("conflict".into());
+                    b.with = Some(theo_id.clone());
+                    b.on = Some("2025-03".into());
+                }),
+            )
+            .unwrap();
+        let tie = &tied["ties"][0];
+        assert_eq!(tie["edge"]["valence"], "tense");
+        let event = tie["events"][0]["id"].as_str().unwrap().to_string();
+        assert!(matches!(
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Event(ines_id.clone()),
+                &body(&|b| b.kind = Some("eloped".into()))
+            ),
+            Err(Refusal::Bad(_))
+        ));
+        // Retracting an event through someone it is not about is refused.
+        let other = add("Cal", None, None).unwrap();
+        let cal = other["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Cal")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(matches!(
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Retract(cal.clone(), event.clone()),
+                &PersonBody::default()
+            ),
+            Err(Refusal::NotFound)
+        ));
+        let back = ps
+            .act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Retract(ines_id.clone(), event),
+                &PersonBody::default(),
+            )
+            .unwrap();
+        assert!(back["ties"].as_array().unwrap().is_empty());
+        let gone = ps
+            .act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Remove(cal),
+                &PersonBody::default(),
+            )
+            .unwrap();
+        assert_eq!(gone["people"].as_array().unwrap().len(), 2);
+        assert!(matches!(
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Remove("0".repeat(32)),
+                &PersonBody::default()
+            ),
+            Err(Refusal::NotFound)
+        ));
+    }
+
+    /// The People tab's proposal and time doors (PL31, §15), and writes
+    /// refused while her people are off.
+    #[tokio::test]
+    async fn the_owner_reviews_proposed_people_and_looks_back_at_her_network() {
+        let w = world_with(Mode::Say(
+            r#"{"people": [
+                {"name": "Ines", "aliases": [], "role": "older sister", "description": "Runs a bakery.",
+                 "tie": "kin", "label": "sister", "layer": 5},
+                {"name": "Theo", "aliases": [], "role": "lab partner", "description": null,
+                 "tie": "colleague", "label": null, "layer": null}
+            ]}"#
+                .into(),
+        ));
+        let ps = w.personas();
+        // Off: the page's doors refuse rather than write out of sight.
+        let add = PersonBody {
+            name: Some("Bo".into()),
+            ..PersonBody::default()
+        };
+        assert!(matches!(
+            ps.act_on_people(&w.library, "mara", PeopleAct::Add, &add),
+            Err(Refusal::Conflict(m)) if m.contains("[life] people is off")
+        ));
+        assert!(matches!(
+            ps.propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default()
+            )
+            .await,
+            Err(Refusal::Conflict(_))
+        ));
+        assert!(
+            !w.store().join("mara").join("world.db").exists(),
+            "an off persona's store was created"
+        );
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("world     = false", "world     = true")
+                .replace("people    = false", "people    = true"),
+        )
+        .unwrap();
+
+        // Proposed by her model: two people waiting, none added yet.
+        let proposed = ps
+            .propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proposed["proposed"], 2);
+        assert_eq!(proposed["proposal"]["people"].as_array().unwrap().len(), 2);
+        assert_eq!(proposed["proposal"]["stale"], false);
+        assert!(proposed["people"].as_array().unwrap().is_empty());
+        // Accept only the second: Theo added, Ines still waiting.
+        let only = ProposalBody {
+            only: Some(vec![2]),
+            ..ProposalBody::default()
+        };
+        let got = ps.act_on_proposal(&w.library, "mara", true, &only).unwrap();
+        assert_eq!(got["accepted"]["added"], serde_json::json!(["Theo"]));
+        assert_eq!(got["accepted"]["waiting"], 1);
+        assert_eq!(got["proposal"]["people"][0]["name"], "Ines");
+        assert_eq!(got["people"][0]["name"], "Theo");
+        // Ines still waits on the owner: proposing again is a 409 before
+        // the model runs, never a replacement (review of #804).
+        assert!(matches!(
+            ps.propose_people(&w.chat.follower, &w.library, "mara", &ProposalBody::default())
+                .await,
+            Err(Refusal::Conflict(m)) if m.contains("accept or dismiss it first")
+        ));
+        // identity.md changed since: accepting the rest is a 409.
+        let id = w.store().join("mara/identity.md");
+        let text = std::fs::read_to_string(&id).unwrap();
+        std::fs::write(&id, format!("{text}\nShe keeps bees.\n")).unwrap();
+        let stale = ps.people(&w.library, "mara", None).unwrap();
+        assert_eq!(stale["proposal"]["stale"], true);
+        assert!(matches!(
+            ps.act_on_proposal(&w.library, "mara", true, &ProposalBody::default()),
+            Err(Refusal::Conflict(m)) if m.contains("changed since")
+        ));
+        // Stale, it is the one proposal a new reading replaces: the page's
+        // "Propose again".
+        let again = ps
+            .propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again["proposal"]["stale"], false);
+        assert_eq!(again["proposal"]["people"].as_array().unwrap().len(), 2);
+        // Dismissed, nothing waits.
+        let gone = ps
+            .act_on_proposal(&w.library, "mara", false, &ProposalBody::default())
+            .unwrap();
+        assert_eq!(gone["proposal"], serde_json::Value::Null);
+
+        // As it was: a person whose tie began after the day is not there.
+        let theo = got["people"][0]["id"].as_str().unwrap().to_string();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Event(theo.clone()),
+            &PersonBody {
+                kind: Some("conflict".into()),
+                on: Some("2025-03".into()),
+                ..PersonBody::default()
+            },
+        )
+        .unwrap();
+        let then = ps
+            .people_on(&w.library, "mara", None, Some("2025-01-01"))
+            .unwrap();
+        assert_eq!(then["as_of"], "2025-01-01");
+        // Theo's start is undated, so he was there from the beginning, but the
+        // conflict had not happened yet.
+        // Held by name: out-of-range indexing is also null (review of #804).
+        assert_eq!(then["people"].as_array().unwrap().len(), 1);
+        assert_eq!(then["people"][0]["name"], "Theo");
+        assert_eq!(
+            then["people"][0]["edge"]["valence"],
+            serde_json::Value::Null
+        );
+        let now = ps.people(&w.library, "mara", None).unwrap();
+        assert_eq!(now["people"][0]["edge"]["valence"], "tense");
+        assert!(matches!(
+            ps.people_on(&w.library, "mara", None, Some("someday")),
+            Err(Refusal::Bad(_))
+        ));
+        // Hidden, she is missing whatever date was asked: who is read
+        // before the date (review of #804).
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        for day in [Some("someday"), Some("2025-01-01"), None] {
+            assert!(
+                matches!(
+                    ps.people_on(&w.library, "mara", None, day),
+                    Err(Refusal::NotFound)
+                ),
+                "{day:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_week_views_keys_are_the_enums_ids() {
+        use mecha_core::persona::{activity::Activity, atus::Cell, world::Absent};
+        let js = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/lib/persona.js"),
+        )
+        .unwrap();
+        // The keys of `export const NAME = { … };`, or the first strings of
+        // `export const NAME = [ [...], … ];`.
+        let block = |name: &str| -> Vec<String> {
+            let start = js
+                .find(&format!("export const {name} = "))
+                .unwrap_or_else(|| panic!("{name}"));
+            let rest = &js[start..];
+            let close = if rest.lines().next().unwrap().trim_end().ends_with('[') {
+                "\n];"
+            } else {
+                "\n};"
+            };
+            let end = rest.find(close).unwrap();
+            let body = &rest[..end];
+            let mut keys = Vec::new();
+            for line in body.lines().skip(1) {
+                let line = line.trim();
+                if line.starts_with("//") {
+                    continue;
+                }
+                if let Some(inner) = line.strip_prefix("['") {
+                    keys.push(inner.split('\'').next().unwrap().to_string());
+                    continue;
+                }
+                // Quoted values cleared first, so a comma or a colon inside
+                // one is never read as a key (review of #797).
+                let mut bare = String::new();
+                let mut quoted = false;
+                for c in line.chars() {
+                    if c == '\'' {
+                        quoted = !quoted;
+                    } else if !quoted {
+                        bare.push(c);
+                    }
+                }
+                for pair in bare.split(',') {
+                    if let Some((k, _)) = pair.split_once(':') {
+                        let k = k.trim();
+                        if !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                            keys.push(k.to_string());
+                        }
+                    }
+                }
+            }
+            keys.sort();
+            keys
+        };
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        let wire = |v: serde_json::Value| v.as_str().unwrap().to_string();
+        assert_eq!(
+            block("WEEK_ABSENT"),
+            sorted(Absent::ALL.map(|a| wire(serde_json::json!(a))).to_vec())
+        );
+        assert_eq!(
+            block("ACTIVITY_GROUP"),
+            sorted(Activity::ALL.iter().map(|a| a.id().to_string()).collect())
+        );
+        assert_eq!(
+            block("WEEK_CELLS"),
+            sorted(Cell::ALL.iter().map(|c| c.id().to_string()).collect())
+        );
+        // The People tab's closed sets are the network's.
+        use mecha_core::persona::network::{EventKind, Tie};
+        assert_eq!(
+            block("PEOPLE_TIES"),
+            sorted(Tie::ALL.map(|t| wire(serde_json::json!(t))).to_vec())
+        );
+        assert_eq!(
+            block("PEOPLE_EVENTS"),
+            sorted(EventKind::ALL.map(|k| wire(serde_json::json!(k))).to_vec())
+        );
+        // `people()` answers one absent reason, "off" (review of #803).
+        assert_eq!(block("PEOPLE_ABSENT"), vec!["off".to_string()]);
+    }
+
     /// §9.7, on every turn: past the first reply, an owner message that
     /// names something remembered carries it, in the harness's voice; a
     /// message too short to name anything carries nothing.
@@ -8771,6 +11707,13 @@ mod tests {
             "Read about kelp.",
             Origin::ModelUntrusted,
         );
+        let clean_cand = remember(
+            &w,
+            "mara",
+            Table::User,
+            "A field guide called the inlet silver.",
+            Origin::ModelUntrusted,
+        );
         let short = |u: &str| u[..8].to_string();
         // Unsharing before anything was ever shared makes no shared store.
         assert!(matches!(
@@ -8786,7 +11729,23 @@ mod tests {
         assert!(!mecha_core::persona::memory::Shared::path(&w.store()).exists());
 
         let v = act(&w, MemoryAct::Approve { id: short(&cand) }, None).unwrap();
-        assert!(user(&v).iter().all(|f| f["status"] == "active"), "{v}");
+        let approved = user(&v).into_iter().find(|f| f["uid"] == cand).unwrap();
+        assert_eq!(approved["status"], "active", "{approved}");
+        assert_eq!(approved["origin"], "model_untrusted", "{approved}");
+        let v = act(
+            &w,
+            MemoryAct::ApproveClean {
+                id: short(&clean_cand),
+            },
+            None,
+        )
+        .unwrap();
+        let vouched = user(&v)
+            .into_iter()
+            .find(|f| f["uid"] == clean_cand)
+            .unwrap();
+        assert_eq!(vouched["origin"], "owner", "{vouched}");
+        assert!(vouched["vouched_at"].is_string(), "{vouched}");
         let v = act(&w, MemoryAct::Pin { id: short(&uid) }, None).unwrap();
         assert!(
             user(&v)
@@ -8889,7 +11848,13 @@ mod tests {
             },
         )
         .unwrap();
-        let theirs = remember(&w, "wren", Table::User, "Swims at dawn.", Origin::ModelClean);
+        let theirs = remember(
+            &w,
+            "wren",
+            Table::User,
+            "Swims at dawn.",
+            Origin::ModelClean,
+        );
         let fact = Memory::open(&w.store(), "wren")
             .unwrap()
             .fact(&theirs)
@@ -9088,6 +12053,66 @@ mod tests {
         // Another model: that model's numbers.
         assert_eq!(turbo["steps"], mecha_core::sampling::TURBO_STEPS);
         assert_eq!(turbo["cfg"], 1.0);
+    }
+
+    /// Which tabs the page offers follows the persona's settings (owner,
+    /// 2026-11-02): the week with `[life] world`, the people with `[life]
+    /// people` alone (2026-11-03), and memories while any kind is on or anything is stored.
+    #[test]
+    fn the_list_says_which_parts_are_on() {
+        let w = world();
+        let shows = || {
+            w.personas().list(&w.library, None, Some(chrono_tz::UTC))["personas"][0]["shows"]
+                .clone()
+        };
+        assert_eq!(
+            shows(),
+            serde_json::json!({ "memories": true, "week": false, "people": false })
+        );
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        assert_eq!(
+            (shows()["week"].clone(), shows()["people"].clone()),
+            (true.into(), false.into()),
+            "the week alone"
+        );
+        // Their people without their days: the People tab, not the Week.
+        let people_only = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("world     = true", "world     = false")
+            .replace("people    = false", "people    = true");
+        std::fs::write(&toml, people_only).unwrap();
+        assert_eq!(
+            (shows()["week"].clone(), shows()["people"].clone()),
+            (false.into(), true.into()),
+            "the people alone"
+        );
+        // Every kind of memory off: no tab, until something is stored.
+        let off = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("episodic    = true", "episodic    = false")
+            .replace("semantic    = true", "semantic    = false")
+            .replace("user_facts  = \"shared\"", "user_facts  = \"off\"");
+        std::fs::write(&toml, off).unwrap();
+        assert_eq!(
+            shows()["memories"],
+            false,
+            "{}",
+            std::fs::read_to_string(&toml).unwrap()
+        );
+        std::fs::write(
+            w.store()
+                .join("mara")
+                .join(mecha_core::persona::memory::MEMORY_DB),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(
+            shows()["memories"],
+            true,
+            "kept records keep the door to them"
+        );
     }
 
     /// The picture settings: set from the page and carried by the list with
@@ -11473,7 +14498,14 @@ mod tests {
         assert!(b.unlock.is_none());
         let b: MemoryBody = body(serde_json::json!({ "action": "share", "id": "u1" }));
         assert!(matches!(&b.act, MemoryAct::Share { group: None, .. }));
-        for a in ["approve", "pin", "unpin", "forget", "unshare"] {
+        for a in [
+            "approve",
+            "approve_clean",
+            "pin",
+            "unpin",
+            "forget",
+            "unshare",
+        ] {
             let _: MemoryBody = body(serde_json::json!({ "action": a, "id": "u1" }));
         }
         for bad in [

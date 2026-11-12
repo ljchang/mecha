@@ -35,9 +35,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct RunRow {
     pub session_id: String,
-    /// When the *session* started. A resumed session's later runs share it;
-    /// the transcript records no per-run stamp, and inventing one from file
-    /// mtime would be a guess dressed as a measurement.
+    /// When the *session* started. A resumed session's later runs share it.
+    /// The run's own time is `stats.ended_at`, recorded on rows written since
+    /// it existed and `None` before; an older row is never given one from
+    /// file mtime, which would be a guess dressed as a measurement.
     pub started_at: DateTime<Utc>,
     pub provider: String,
     pub model: String,
@@ -94,6 +95,12 @@ pub struct Corpus {
     /// store must be counted where it was excluded, or "nothing went
     /// wrong" reads identically to "nothing happened".
     pub hidden_experiments: usize,
+    /// Driven sessions the scan hid (`DRIVER-DESIGN.md` D1): another
+    /// agent's runs on real work, in the owner's own store. Counted for the
+    /// same reason as the other two, and more sharply: these sit beside the
+    /// owner's sessions, so a readout that hid them without saying so would
+    /// read a busy week of driving as a quiet one.
+    pub hidden_driven: usize,
 }
 
 /// How to bound a scan. Both limits are honest about cost rather than about
@@ -125,6 +132,11 @@ pub struct Scan {
     /// every reader — `reflect`, `learn`, the corpus — admits it without
     /// remembering a flag, which is how counters go unread.
     pub include_experiments: bool,
+    /// Read `SessionKind::Driven` sessions too. Off by default everywhere,
+    /// with no home that turns it on: a driven run is not the owner's usage,
+    /// and fitness is the owner's usage (`SELF-IMPROVEMENT-RESEARCH.md`
+    /// §14.7). Asking for `kind: Some(Driven)` implies it.
+    pub include_driven: bool,
 }
 
 impl Default for Scan {
@@ -136,6 +148,7 @@ impl Default for Scan {
             kind: None,
             include_tests: false,
             include_experiments: crate::experiment::in_experiment_home(),
+            include_driven: false,
         }
     }
 }
@@ -170,6 +183,14 @@ impl Scan {
             && meta.kind == Some(SessionKind::Experiment)
     }
 
+    /// [`Self::hides_test`]'s twin for `SessionKind::Driven`.
+    pub fn hides_driven(&self, meta: &SessionMeta) -> bool {
+        self.in_window(meta)
+            && self.kind.is_none()
+            && !self.include_driven
+            && meta.kind == Some(SessionKind::Driven)
+    }
+
     /// The date and workspace filters, without the kind rule.
     fn in_window(&self, meta: &SessionMeta) -> bool {
         if self.since.is_some_and(|t| meta.created_at < t) {
@@ -196,6 +217,9 @@ impl Scan {
             return false;
         }
         if meta.kind == Some(SessionKind::Experiment) && !self.include_experiments {
+            return false;
+        }
+        if meta.kind == Some(SessionKind::Driven) && !self.include_driven {
             return false;
         }
         true
@@ -228,6 +252,9 @@ impl Corpus {
                 }
                 if scan.hides_experiment(&meta) {
                     out.hidden_experiments += 1;
+                }
+                if scan.hides_driven(&meta) {
+                    out.hidden_driven += 1;
                 }
                 continue;
             }
@@ -281,6 +308,7 @@ impl Corpus {
             unreadable: self.unreadable,
             hidden_tests: self.hidden_tests,
             hidden_experiments: self.hidden_experiments,
+            hidden_driven: self.hidden_driven,
         }
     }
 
@@ -424,6 +452,17 @@ impl Corpus {
     /// `None` over no sensed rows, like every rate here — a corpus written
     /// before the detector existed and one where nothing ever got stuck are
     /// opposite findings.
+    ///
+    /// **The counter's definition changed with #857 (2026-11-08)**, and no
+    /// row says which one it was written under: before it, successful edits
+    /// to one file shared a key and a refactor read as a loop (15 of 16
+    /// driven-pilot trials were told they were stuck); after it, a write is
+    /// keyed whole. So this rate falls at that binary's install for a reason
+    /// that is not runs getting less stuck. Compare it only within one side,
+    /// split on `started_at` at the first install of a binary built from
+    /// #857's merge — `docs/HISTORY.md` records that install when the deploy
+    /// lands, and the merge commit's own date is a lower bound before then.
+    /// `appraisal`'s `boredom_notices` error moves the same way.
     pub fn boredom_rate(&self) -> Option<f64> {
         Self::share_positive(self.rows.iter().filter_map(|r| r.stats.boredom_notices))
     }
@@ -862,6 +901,7 @@ fn exhaustive(record: &Record) {
         | Record::Outcome(_)
         | Record::LateResult { .. }
         | Record::PendingNote { .. }
+        | Record::Program { .. }
         | Record::GoalAnchor { .. }
         | Record::Grants { .. } => {}
         // Not ignored: `Session::outcomes_attributed`, which the scan reads,
@@ -1366,6 +1406,7 @@ mod tests {
     fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
         RunStats {
             duration_secs: None,
+            ended_at: None,
             homeostat: None,
             brief: None,
             resume_cache: None,
@@ -1383,6 +1424,13 @@ mod tests {
             goal_unnamed_writes: None,
             checks_declared: None,
             checks_passed: None,
+            programs: None,
+            program_errors: None,
+            subcalls: None,
+            subcall_tokens: None,
+            peeked_bytes: None,
+            program_read_bytes: None,
+            budget_stops: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),
@@ -1990,6 +2038,7 @@ mod tests {
                 kind: None,
                 include_tests: false,
                 include_experiments: false,
+                include_driven: false,
             },
         )
         .unwrap();
@@ -2011,6 +2060,7 @@ mod tests {
                 kind: None,
                 include_tests: false,
                 include_experiments: false,
+                include_driven: false,
             },
         )
         .unwrap();
@@ -2161,6 +2211,69 @@ mod tests {
             vec!["20260801T000000-web"],
             "a row with no kind matches no filter: asking for one surface must not hand back rows that could be any"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A driven run is hidden from the default scan and counted where it
+    /// was hidden, never silently dropped; `--kind driven` and the explicit
+    /// opt-in both admit it; and no other mark's switch admits it
+    /// (`DRIVER-DESIGN.md` D1). Fails on a build without the rule: the
+    /// driven row is admitted by the default scan.
+    #[test]
+    fn a_driven_session_is_hidden_by_default_and_counted() {
+        let dir = tmpdir();
+        session_kinded(&dir, "20260801T000000-web", Some(SessionKind::Web));
+        session_kinded(&dir, "20260801T000001-driven", Some(SessionKind::Driven));
+
+        let default = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(ids(&default), vec!["20260801T000000-web"]);
+        assert_eq!(default.hidden_driven, 1, "hidden, and said so");
+        assert_eq!(default.hidden_tests, 0, "not miscounted as a test");
+        assert_eq!(default.hidden_experiments, 0);
+
+        let other_marks = Corpus::scan(
+            &dir,
+            &Scan {
+                include_tests: true,
+                include_experiments: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&other_marks),
+            vec!["20260801T000000-web"],
+            "admitting the other marks never admits a driven run"
+        );
+
+        let named = Corpus::scan(
+            &dir,
+            &Scan {
+                kind: Some(SessionKind::Driven),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&named),
+            vec!["20260801T000001-driven"],
+            "`--kind driven` implies inclusion"
+        );
+        assert_eq!(
+            named.hidden_driven, 0,
+            "nothing hidden for being driven when asked for by name"
+        );
+
+        let opted = Corpus::scan(
+            &dir,
+            &Scan {
+                include_driven: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(opted.len(), 2);
+        assert_eq!(opted.hidden_driven, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

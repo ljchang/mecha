@@ -1,7 +1,7 @@
 //! The `code` tool (`docs/CODE-MODE-DESIGN.md`, slice 3b): a short Python
 //! program run in the interpreter ([`crate::interpreter`]), whose calls to
-//! tools come back through the run's own gate, and whose results stay in the
-//! host as opaque handles.
+//! tools come back through the run's own gate as `str`, and of which only
+//! what it prints reaches the model.
 //!
 //! The invariants, each a section of the design:
 //! - **Admission is per run** (§2). A tool is a program function only if it
@@ -18,14 +18,17 @@
 //!   program and prompts nobody. Taint is armed from the raw result before
 //!   the program resumes, and each host call pushes a trace entry tagged
 //!   `in_program`.
-//! - **Results are handles** (§3): the bytes stay here, and the program holds
-//!   a stub (`<handle 3: 48,213 chars from mail_get_thread>`), which is also
-//!   what `print` shows. Text reaches the program only through `peek`,
-//!   capped and counted. Patterns run here, with Rust's linear-time `regex`.
-//! - **Host messages carry no bytes** (§3, §4): every raise names a handle,
-//!   an offset, a tool or a limit, under one of `QueryError:`, `ToolError:`,
-//!   `HandleError:` and `LimitError:`. A tool's error body is a handle like
-//!   any result, and a failed pass is named by what failed to parse.
+//! - **Results are text** (§3, R11): a tool's result reaches the program as
+//!   a `str`, so string methods, slicing and `in` work as the model expects.
+//!   The guard is on what leaves the program: its printed output and ending,
+//!   capped by [`render`] and again by the dispatch, which wraps it as any
+//!   tool result. The opaque handles that came before cost about a quarter of
+//!   every program written in M2 (2026-11-02). The host's helpers (`grep`,
+//!   `count`, `find`) run Rust's linear-time `regex` over a text argument.
+//! - **Host messages are tagged** (§3, §4): every raise opens with one of
+//!   `QueryError:`, `ToolError:`, `HandleError:` and `LimitError:`. A failed
+//!   pass is named by what failed to parse, never its raw output, and a
+//!   provider failure by its class, never a server's body.
 //! - **A sub-call is one quarantined pass** (§4): `llm_query` and `llm_map`
 //!   hand handles to a [`QuarantinedPass`] — a fixed frame, the program's
 //!   instruction, the sources delimited, the schema — with no tools and one
@@ -54,9 +57,19 @@
 //! `None` (§6), which is what `dispatch`'s precomputed turn taint reads
 //! before a program runs.
 //!
-//! Not in this slice: the `program` record, its blobs and the grounding
-//! walk's second source (3d), registration (3d), and the `RunStats`
-//! counters (`subcalls`, `subcall_tokens`, `peeked_bytes`, …).
+//! **Registered by the agent, last** (slice 3d): [`crate::agent::Agent::enable_code`]
+//! builds `code` over the agent's registry and builds it again after every
+//! later change to it (`Agent::registry_mut`'s guard), so the front end's own
+//! tools (`recall`, `ask_user`) are admitted and declared however late they
+//! are inserted. Each program's numbers ride its output ([`ProgramStats`])
+//! into the run's trace, where `RunStats` counts them and the run's usage —
+//! and so its budget — takes its passes' tokens.
+//!
+//! **What a program read is recorded** (slice 3e, §7): each host call that
+//! ran rides the `code` call's output as a [`record::ProgramCall`]
+//! ([`ToolOutput::reads`]), which the loop carries on the conversation and
+//! the session stores, its bytes content-addressed outside every jail, so
+//! the grounding walk's readers find what a program read.
 
 use super::effect::{self, Effect, EffectClass};
 use super::{Capabilities, Egress, Registry, Tool, ToolCtx, ToolOutput};
@@ -76,11 +89,15 @@ use tokio::sync::{mpsc, oneshot};
 #[path = "code_shape.rs"]
 pub mod shape;
 
+#[path = "code_record.rs"]
+pub mod record;
+
 /// The tool's registered name.
 pub const NAME: &str = "code";
 
 /// §5's host limits, as R4 ruled them on 2026-10-31 (`CODE-MODE-DESIGN.md`
-/// §11: §5's proposals, unchanged, after M0 and M1). They live here, in one
+/// §11: §5's proposals, unchanged, after M0 and M1), with the owner's two
+/// raises of 2026-11-01: the peek cap (#791) and tool reads (#793). They live here, in one
 /// place, and
 /// [`crate::interpreter::COUNTED_HOST_LIMITS`] sizes the suspension backstop
 /// from the same counts (a test holds the two together).
@@ -99,30 +116,31 @@ pub mod defaults {
     /// server's 4,096 reasoning budget, so a pass that thinks anyway (a
     /// preset that lost `--jinja`) still has room to answer. Not a §5 row.
     pub const PASS_MAX_TOKENS: u32 = 8192;
-    /// Tool reads per program.
-    pub const TOOL_READS: u32 = 256;
+    /// Tool reads per program. Was 256, under a 300-file sweep: each `code`
+    /// call starts with nothing from the last, so a job past the limit had no
+    /// way to finish (owner, 2026-11-01).
+    pub const TOOL_READS: u32 = 2048;
     /// Handle operations per program, `budget()` included.
     pub const HANDLE_OPERATIONS: u32 = 2048;
-    /// Bytes the program's handles may hold: every tool read's raw result,
-    /// and every new string a `json_get` leaf decodes.
+    /// Bytes of tool results one program may be handed, summed over its
+    /// reads.
     pub const HOST_BYTES: usize = 64 * 1024 * 1024;
     /// The same, for every program in the process at once.
     pub const PROCESS_HOST_BYTES: usize = 256 * 1024 * 1024;
-    /// Handles one program may hold.
-    pub const LIVE_HANDLES: usize = 4096;
-    /// Text `peek` may hand the program, in bytes: one count with `str[n]`
-    /// sub-call results (`peeked_bytes`).
-    pub const PEEK_BYTES: usize = 16 * 1024;
     /// `peek`'s `n` when the program names none.
     pub const PEEK_DEFAULT: usize = 2000;
-    /// The least `n` `chunks` accepts, so one counted operation cannot mint
-    /// a handle per character.
-    pub const CHUNK_FLOOR: usize = 256;
     /// Not a §5 row: the most `(start, end)` pairs one `find` returns. A
-    /// pattern matching every character of a 64 MB handle would otherwise
+    /// pattern matching every character of a 64 MB text would otherwise
     /// build a value of billions of pairs in the host before any limit saw
     /// it, so a sweep that wants more narrows the pattern or slices first.
     pub const FIND_MATCHES: usize = 4096;
+    /// Not a §5 row: the most pieces one `lines`, `split` or `chunks`
+    /// returns, counted before any is built. The live-handle cap bounded
+    /// these until R11; without one, `chunks(text, 1)` over a 64 MB read
+    /// would build 64 million strings in the host, which the byte pool,
+    /// counting reads, never sees (review of #805). A 1.5 MB log is about
+    /// 23,000 lines.
+    pub const PIECES: usize = 1 << 17;
 }
 
 /// The per-program host limits (§5), each raising a catchable `LimitError:`
@@ -135,8 +153,6 @@ pub struct HostLimits {
     pub tool_reads: u32,
     pub handle_operations: u32,
     pub host_bytes: usize,
-    pub live_handles: usize,
-    pub peek_bytes: usize,
 }
 
 impl Default for HostLimits {
@@ -148,14 +164,12 @@ impl Default for HostLimits {
             tool_reads: defaults::TOOL_READS,
             handle_operations: defaults::HANDLE_OPERATIONS,
             host_bytes: defaults::HOST_BYTES,
-            live_handles: defaults::LIVE_HANDLES,
-            peek_bytes: defaults::PEEK_BYTES,
         }
     }
 }
 
-/// The bytes every program in the process holds in handles, against one
-/// ceiling (§5): two `code` calls in one turn, a parent's beside a child's,
+/// The bytes of tool results every program in the process holds, against
+/// one ceiling (§5): two `code` calls in one turn, a parent's beside a child's,
 /// and `mecha batch` all run at once, and per-program limits alone would
 /// not bound N × 64 MB. Never shown to a program: it moves with other
 /// programs, and reading it would be a cross-program observable.
@@ -208,11 +222,12 @@ impl BytePool {
 
 /// The host functions every program has (§3, §4), beside its admitted
 /// tools. A tool whose name collides with one of these is not admitted.
-pub const HOST_FUNCTIONS: [&str; 12] = [
+pub const HOST_FUNCTIONS: [&str; 13] = [
     "budget",
     "chunks",
     "count",
     "find",
+    "grep",
     "json_get",
     "lines",
     "llm_map",
@@ -226,11 +241,75 @@ pub const HOST_FUNCTIONS: [&str; 12] = [
 /// The two of [`HOST_FUNCTIONS`] that make sub-calls.
 const SUBCALL_FUNCTIONS: [&str; 2] = ["llm_map", "llm_query"];
 
+/// What one program did, in numbers (`CODE-MODE-DESIGN.md` §7, "Counters"):
+/// carried on the `code` call's [`ToolOutput::program`] into its
+/// `ToolCallTrace`, where `RunStats` counts programs, their failures, their
+/// sub-calls and peeked bytes, and the loop adds `usage` to the run's own —
+/// so every pass's tokens reach the run's total and draw on its
+/// [`crate::agent::Budget`] (§5's last line).
+///
+/// Counts and flags only, never a byte of a program, a handle or a pass: a
+/// trace entry is a record a corpus reads, and this is the property that
+/// lets it be. Every field defaults on load, so a record a later build
+/// extends still reads here.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProgramStats {
+    /// Passes sent, schema retries included (§5's sub-call count).
+    #[serde(default)]
+    pub subcalls: u32,
+    /// Input tokens the passes read, as §5's cap counts them.
+    #[serde(default)]
+    pub subcall_tokens: u64,
+    /// Every pass's `Usage`, summed: what the run's own total takes.
+    #[serde(default)]
+    pub usage: crate::message::Usage,
+    /// Bytes `peek` and `str[n]` answers handed the program (§5). A count
+    /// with no cap since R11 (2026-11-02), and still only those two: a
+    /// stored counter keeps its meaning, so a read's text is not added,
+    /// though a read now reaches the program as text too.
+    #[serde(default)]
+    pub peeked_bytes: u64,
+    /// Bytes of tool results the program was handed, as text since R11:
+    /// what the host-byte limit charges. The quantity R11 made the one to
+    /// watch, which `peeked_bytes` deliberately does not count (review of
+    /// #805).
+    #[serde(default)]
+    pub read_bytes: u64,
+    /// The program ran to its end.
+    #[serde(default)]
+    pub completed: bool,
+    /// It ended at a budget: a backstop fired, or a host limit's
+    /// `LimitError:` went uncaught.
+    #[serde(default)]
+    pub budget_stop: bool,
+    /// The run's Stop ended it.
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
+impl ProgramStats {
+    /// Did not run to its end, for a reason that was not a Stop: raised,
+    /// stopped by a backstop or a limit, or the interpreter failed.
+    pub fn failed(&self) -> bool {
+        !self.completed && !self.cancelled
+    }
+}
+
 /// Which tools a program may call, by name, with what each declares (§2):
 /// computed over one registry, so two runs' sets can be compared.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Admission {
     tools: BTreeMap<String, (Capabilities, EffectClass)>,
+    /// The admitted tools whose result a program gets as a list of `str`
+    /// names rather than one `str` (`Tool::lists_names`, §3). Every live run opened with
+    /// `name.startswith(...)` on `fs_list`'s entries and spent its first
+    /// programs on the error (2026-11-01).
+    ///
+    /// Part of the derived `PartialEq` on purpose: `program_reach` compares a
+    /// program's admission with the live registry's and refuses a mismatch,
+    /// so a registry whose `fs_list` stopped answering `lists_names` cannot
+    /// leave a program, or the description it was built with, expecting names.
+    listings: std::collections::BTreeSet<String>,
 }
 
 impl Admission {
@@ -238,15 +317,19 @@ impl Admission {
     /// routing for the run (`[outbox] tools`): a routed read resolves
     /// `Staged` and is not admitted, so nothing in a program can stage.
     pub fn over(registry: &Registry, routed: impl Fn(&str) -> bool) -> Self {
+        let mut listings = std::collections::BTreeSet::new();
         let tools = registry
             .iter()
             .filter_map(|t| {
                 let class = effect::class_of(t.as_ref(), routed(t.name()));
-                Self::admits(t.as_ref(), class)
-                    .then(|| (t.name().to_string(), (t.capabilities(), class)))
+                let admitted = Self::admits(t.as_ref(), class);
+                if admitted && t.lists_names() {
+                    listings.insert(t.name().to_string());
+                }
+                admitted.then(|| (t.name().to_string(), (t.capabilities(), class)))
             })
             .collect();
-        Admission { tools }
+        Admission { tools, listings }
     }
 
     /// §2's rule for one tool whose effect class is `class`: a plain read
@@ -274,6 +357,11 @@ impl Admission {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tools.keys().map(String::as_str)
+    }
+
+    /// The admitted tools that answer a program with names (`listings`).
+    pub fn listings(&self) -> impl Iterator<Item = &str> {
+        self.listings.iter().map(String::as_str)
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -347,6 +435,11 @@ pub(crate) enum HostRequest {
         call_id: String,
         name: String,
         input: Value,
+        /// Bytes the program may still hold (its host-byte limit's rest), so
+        /// a tool that can stop early does, rather than read what the charge
+        /// would refuse (`ToolCtx::program_room`). The process pool is left
+        /// out: it moves with other programs.
+        room: usize,
         reply: oneshot::Sender<HostAnswer>,
     },
     /// One sub-call pass (§4), to the model the run already holds.
@@ -389,7 +482,7 @@ impl Pass {
 
 /// A provider's failure of a pass, by its class: never the error's text,
 /// which can carry a server's body, and a server's body can echo the prompt
-/// it was sent, which holds a handle's bytes (§3).
+/// it was sent, which holds a program's text (§3).
 pub(crate) fn pass_failure(e: &anyhow::Error) -> String {
     use crate::provider::retry::ProviderError;
     if let Some(r) = e.downcast_ref::<crate::provider::LocalOnlyRefused>() {
@@ -425,8 +518,9 @@ pub(crate) enum HostAnswer {
     /// refusal in the program too.
     Staged(String),
     /// Ran: the raw output, uncapped and unwrapped, with the conversation's
-    /// taint already armed from it.
-    Ran(ToolOutput),
+    /// taint already armed from it, and the id the dispatch gave the call,
+    /// which the program record names it by.
+    Ran { id: String, output: ToolOutput },
 }
 
 impl HostCalls {
@@ -471,7 +565,7 @@ impl HostCalls {
         answer.await.unwrap_or_else(|_| gone())
     }
 
-    async fn call(&self, name: &str, input: Value) -> HostAnswer {
+    async fn call(&self, name: &str, input: Value, room: usize) -> HostAnswer {
         let (reply, answer) = oneshot::channel();
         let gone = || HostAnswer::Refused("the run that started this program has ended".into());
         if self
@@ -480,6 +574,7 @@ impl HostCalls {
                 call_id: self.call_id.clone(),
                 name: name.to_string(),
                 input,
+                room,
                 reply,
             })
             .is_err()
@@ -548,22 +643,42 @@ impl CodeTool {
     }
 
     async fn run(&self, program: &str, host: &HostCalls, ctx: &ToolCtx) -> ToolOutput {
+        let source = program;
         let reach = match host.reach(&self.admission).await {
             Ok(r) => r,
-            Err(why) => return ToolOutput::refusal(why),
+            // A program refused at its start is still a program, and a
+            // failed one: without its numbers it counted in neither
+            // `programs` nor `program_errors` (review of #774).
+            Err(why) => {
+                let mut out = ToolOutput::refusal(why);
+                out.program = Some(Box::new(ProgramStats::default()));
+                return out;
+            }
         };
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
         externals.extend(reach.iter().cloned());
         let cancel = ctx.cancel.clone().unwrap_or_default();
-        let mut state = Run::new(self.limits, Arc::clone(&self.pool)).reaching(reach);
+        // The shims answer only what a tool answers in their shape: a
+        // server's `fs_list` returns one string, so it is not walked.
+        let files = crate::interpreter::FileTools {
+            read: reach.iter().any(|n| n == "fs_read"),
+            list: self.admission.listings().any(|n| n == "fs_list")
+                && reach.iter().any(|n| n == "fs_list"),
+        };
+        let mut state = Run::new(self.limits, Arc::clone(&self.pool))
+            .reaching(reach)
+            .listing(self.admission.listings().map(str::to_string));
         let (mut program, mut step) = match self
             .interpreter
-            .start(program, &externals, cancel.clone())
+            .start_with(program, &externals, files, cancel.clone())
             .await
         {
             Ok(started) => started,
             Err(e) => {
-                return ToolOutput::err(format!("the interpreter could not run the program: {e:#}"))
+                let mut out =
+                    ToolOutput::err(format!("the interpreter could not run the program: {e:#}"));
+                out.program = Some(Box::new(state.stats(None)));
+                return out;
             }
         };
         let finished = loop {
@@ -580,7 +695,10 @@ impl CodeTool {
             };
             let next = match answer {
                 Ok(v) => program.resume(v).await,
-                Err(raise) => program.raise(raise).await,
+                Err(raise) => {
+                    state.limit_raised |= raise.message.starts_with(Tag::LimitError.prefix());
+                    program.raise(raise).await
+                }
             };
             step = match next {
                 Ok(s) => s,
@@ -588,47 +706,160 @@ impl CodeTool {
                     let mut out =
                         ToolOutput::err(format!("the interpreter failed mid-program: {e:#}"));
                     out.external = state.external;
+                    out.program = Some(Box::new(state.stats(None)));
+                    out.reads = std::mem::take(&mut state.recorded);
                     return out;
                 }
             };
         };
-        let (content, is_error) = render(finished, host.result_cap);
+        let stats = state.stats(Some(&finished.end));
+        let mut names: Vec<&str> = HOST_FUNCTIONS.to_vec();
+        names.extend(state.reach.iter().map(String::as_str));
+        let (content, is_error) = render(finished, host.result_cap, &shadowed(source, &names));
         ToolOutput {
             content,
             is_error,
             external: state.external,
+            program: Some(Box::new(stats)),
+            reads: std::mem::take(&mut state.recorded),
             ..ToolOutput::ok("")
         }
     }
 }
 
+/// The description's worked example. A model copies it nearly verbatim
+/// (§13), so `the_descriptions_example_runs_as_written` runs this text, not
+/// a tidier copy: a subdirectory in the listing once would have ended the
+/// program on `fs_read`, with the test's own guard hiding it (review of #793).
+/// It matches the field, a line that starts `Attendees:`, because three of
+/// the four failed 300-note programs in M2 matched a name anywhere in the
+/// note and reported every meeting Marco attended as one he presented.
+const EXAMPLE: &str = "hits = []\n\
+    for name in fs_list(path=\"notes\"):\n    if name.endswith(\"/\"):\n        continue\n    \
+    text = fs_read(path=\"notes/\" + name)\n    for line in text.splitlines():\n        \
+    if line.startswith(\"Attendees:\") and \"Priya\" in line:\n            \
+    hits.append(name)\n            \
+    break\n\
+    print(len(hits), hits)\n";
+
+/// The description's second example: a question about meaning, asked of each
+/// item's relevant part. Given the first example alone, a model asked which
+/// meetings ended without agreement searched for the word "inconclusive" and
+/// made no sub-call, and 9 of the 14 meetings it listed were wrong
+/// (2026-11-01). A different domain from any fixture, so it teaches the
+/// shape rather than an answer; `the_judgement_example_runs_as_written` runs
+/// this text.
+const JUDGE_EXAMPLE: &str = "names = []\n\
+    parts = []\n\
+    for name in fs_list(path=\"tickets\"):\n    if name.endswith(\"/\"):\n        continue\n    \
+    text = fs_read(path=\"tickets/\" + name)\n    i = text.lower().rfind(\"resolution\")\n    \
+    names.append(name)\n    \
+    parts.append(text[i:] if i >= 0 else text)\n\
+    happy = llm_map(\"Was the customer satisfied at the end?\", parts, \"bool\")\n\
+    print([n for n, ok in zip(names, happy) if not ok])\n";
+
 /// The tool's description: what a program can do, and the tools it may call
 /// as built. Fixed at construction, so it never changes a cached prefix
 /// between turns.
 fn describe(admission: &Admission) -> String {
-    let mut d = String::from(
-        "Run a short Python program (monty, a subset of Python 3) over tool results \
-         without reading them into your context. A tool called from the program returns a \
-         handle, not text: print(h) shows only a stub. Work on handles with size(h), \
-         slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
-         characters each, at least 256), find(h, pattern) (a list of [start, end] character \
-         offsets), count(h, pattern) and json_get(h, path) (a string, object or array leaf \
-         stays a handle; a number, bool or null comes back as itself). peek(h, n=2000) is \
-         the only way to see a handle's text, and is capped per program; budget() says what \
-         is left of each limit. Patterns are Rust regular expressions. Call a tool with \
-         keyword arguments, as in fs_read(path=\"notes.txt\"). \
-         llm_query(instruction, source, shape) asks the model one question about a handle \
-         (or a list of them) and returns an answer of that shape: \"bool\", \"int\", \
+    // `os` and `pathlib` are offered only where a file tool answers them
+    // (R12, R13); elsewhere every file call is refused (review of #811).
+    // A server's `fs_list` answers in one string, which a walk cannot use.
+    let walks = admission.listings().any(|l| l == "fs_list");
+    let modules = if walks {
+        "decimal, os and pathlib, but no third-party packages, io or statistics, and os and \
+         pathlib reach only the files the tools below do"
+    } else if admission.contains("fs_read") {
+        "decimal and pathlib, but no third-party packages, os, io or statistics, and pathlib \
+         reads only the files the tools below do"
+    } else {
+        "and decimal, but no third-party packages, os, io or statistics"
+    };
+    let mut d = format!(
+        "Use this when a question needs many tool results combined, or one result too long \
+         to read: more than a handful of files, threads or items to count, filter, compare or \
+         join, or a long file or log to search. One program reads them all in one step, and \
+         only what it prints comes back to you. It runs a short Python program (monty, a \
+         subset of Python 3, with re, json, csv, collections, itertools, math, datetime, \
+         {modules}; a method is called, not passed as a value, so write \
+         `key=lambda k: d[k]`, not `key=d.get`). It reaches data by calling the tools listed \
+         at the end, with keyword arguments, and ",
+    );
+    // Said only of the tools that do it: a server's `fs_list` returns one
+    // string, and telling the model otherwise is the `.startswith` error
+    // again, from the description's side (review of #793).
+    let listings: Vec<&str> = admission.listings().collect();
+    if admission.contains("fs_read") {
+        d.push_str(
+            "each returns its result as a str (fs_read(path=...) returns the file's text, and \
+             open(path) reads a file's text the same way, but cannot write and takes no errors= \
+             argument; a read that fails \
+             raises a RuntimeError, not a FileNotFoundError)",
+        );
+    } else {
+        d.push_str("each returns its result as a str (there is no open(): a program has no files)");
+    }
+    if !listings.is_empty() {
+        d.push_str(&format!(
+            ", except that {} returns a list of names (a directory's ends in /)",
+            listings.join(" and ")
+        ));
+    }
+    // The walk is answered by `fs_list`'s names, so it is offered only where
+    // that tool hands them out.
+    if listings.contains(&"fs_list") {
+        d.push_str(
+            "; os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
+             isfile and isdir list through fs_list the same way",
+        );
+    }
+    d.push_str(
+        ". Work on that text with string methods, slicing, `in`, len() and re. Nothing a \
+         program holds survives to the next `code` call, so do the whole job in one program, \
+         and print only what the answer needs: a long result is cut. Before a sweep, print a \
+         short part of one item to learn its format, and match the field the question is \
+         about (an attendee list, a presenter line), not the name anywhere in the text.",
+    );
+    // The example walks `fs_list`'s names and reads with `fs_read`, so it is
+    // shown only where both are what it assumes.
+    if listings.contains(&"fs_list") && admission.contains("fs_read") {
+        d.push_str(" For example, which notes list someone as attending:\n");
+        d.push_str(EXAMPLE);
+    } else {
+        d.push('\n');
+    }
+    d.push_str(
+        "Host helpers, faster than Python on a long text and free of sub-calls: grep(text, \
+         pattern) (the matching lines, a list of str), count(text, pattern), find(text, \
+         pattern) (a list of [start, end] character offsets), lines(text), split(text, \
+         pattern), chunks(text, n, overlap=0) (pieces of n characters) and json_get(text, \
+         path). Patterns are Rust regular expressions. budget() says what is left of each \
+         limit. llm_query(instruction, source, shape) asks the model one question about a \
+         text (or a list of them) and returns an answer of that shape: \"bool\", \"int\", \
          \"float\", \"int[0,100]\", a list of labels such as [\"urgent\", \"fyi\", \"none\"], \
          [shape] for a list, {\"field\": shape} for a record, or \"str[n]\" for text of at \
-         most n characters (counted with peek). llm_map(instruction, sources, shape) asks \
-         once per handle, one at a time, and returns a list; it raises at the first failed \
-         item. Pass thinking=True only when a question needs reasoning: it is far slower. \
-         Sub-calls are few (budget()[\"sub_calls\"]), so find or slice first and ask about \
-         what matters. To keep going past one bad source, loop instead, checking the budget \
+         most n characters. llm_map(instruction, sources, shape) asks once per text, one at \
+         a time, and returns a list; it raises at the first failed item. Pass thinking=True \
+         only when a question needs reasoning: it is far slower. Sub-calls are few \
+         (budget()[\"sub_calls\"]) and slow, so never spend one per line or per short item: \
+         use a pattern for anything a pattern can match (a name in a list, a date, a status \
+         field), and give each sub-call a whole item or a few thousand characters of a long \
+         text. A question about meaning (whether people agreed, a tone, a reason) is \
+         judgement: a keyword search there is a guess. Ask each item's relevant part \
+         instead, or print those parts and judge them yourself.",
+    );
+    // Shown only beside the tools it uses, as the first example is.
+    if listings.contains(&"fs_list") && admission.contains("fs_read") {
+        d.push_str(" For example, which tickets ended unhappily:\n");
+        d.push_str(JUDGE_EXAMPLE);
+    } else {
+        d.push(' ');
+    }
+    d.push_str(
+        "To keep going past one bad source, loop instead, checking the budget \
          first:\n\
-         for h in hs:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
-         out.append(llm_query(q, h, \"bool\"))\n    except RuntimeError as e:\n        \
+         for text in texts:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
+         out.append(llm_query(q, text, \"bool\"))\n    except RuntimeError as e:\n        \
          failed.append(str(e))\n\
          A failure raises RuntimeError whose message starts QueryError:, ToolError:, \
          HandleError: or LimitError:. The result is what the program printed, then its \
@@ -708,39 +939,36 @@ fn raise(tag: Tag, message: impl AsRef<str>) -> HostRaise {
     HostRaise::tagged(tag, message.as_ref())
 }
 
-/// One buffer of bytes a handle points into: a tool's raw result, or a
-/// string a `json_get` decoded.
-struct Buffer {
-    text: Box<str>,
+/// A text argument a host function was given: a `str` the program holds,
+/// viewed with its length in characters, because offsets are characters
+/// (`find`, `slice`, `chunks`), as Python's are.
+struct Text<'a> {
+    text: &'a str,
     ascii: bool,
-    tool: String,
-    /// The read it came from returned external content: the label a
-    /// sub-call's answer over it carries (§4).
-    external: bool,
-}
-
-/// A view of a buffer: byte offsets into it, and its length in characters.
-#[derive(Clone)]
-struct Handle {
-    buf: Arc<Buffer>,
-    start: usize,
-    end: usize,
     chars: usize,
 }
 
-impl Handle {
-    fn text(&self) -> &str {
-        &self.buf.text[self.start..self.end]
+impl<'a> Text<'a> {
+    fn of(text: &'a str) -> Self {
+        let ascii = text.is_ascii();
+        Text {
+            text,
+            ascii,
+            chars: if ascii {
+                text.len()
+            } else {
+                text.chars().count()
+            },
+        }
     }
 
-    /// Byte offsets, relative to this handle, of the character offsets
-    /// `chars` (ascending, each at most `self.chars`).
+    /// Byte offsets of the character offsets `chars` (ascending, each at
+    /// most `self.chars`).
     fn bytes_at(&self, chars: &[usize]) -> Vec<usize> {
-        if self.buf.ascii {
+        if self.ascii {
             return chars.to_vec();
         }
-        let text = self.text();
-        let mut it = text.char_indices();
+        let mut it = self.text.char_indices();
         let (mut ci, mut bi) = (0usize, 0usize);
         chars
             .iter()
@@ -760,70 +988,94 @@ impl Handle {
     }
 
     /// Character offsets of the byte offsets `bytes` (ascending, each on a
-    /// character boundary of this handle's text).
+    /// character boundary).
     fn chars_at(&self, bytes: &[usize]) -> Vec<usize> {
-        if self.buf.ascii {
+        if self.ascii {
             return bytes.to_vec();
         }
-        let text = self.text();
         let (mut lb, mut lc) = (0usize, 0usize);
         bytes
             .iter()
             .map(|&b| {
-                lc += text[lb..b].chars().count();
+                lc += self.text[lb..b].chars().count();
                 lb = b;
                 lc
             })
             .collect()
     }
-
-    /// The sub-view `[from, to)` in bytes relative to this handle.
-    fn sub(&self, from: usize, to: usize) -> Handle {
-        let text = &self.text()[from..to];
-        Handle {
-            buf: Arc::clone(&self.buf),
-            start: self.start + from,
-            end: self.start + to,
-            chars: if self.buf.ascii {
-                to - from
-            } else {
-                text.chars().count()
-            },
-        }
-    }
 }
 
-/// `n` with thousands separators, as a stub prints it.
-fn grouped(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, d) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(d);
-    }
-    out
-}
-
-fn stub(id: u64, h: &Handle) -> String {
-    format!(
-        "<handle {id}: {} chars from {}>",
-        grouped(h.chars),
-        h.buf.tool
+/// Strings, as the program receives a list of them.
+fn strings<'s>(parts: impl IntoIterator<Item = &'s str>) -> Value {
+    Value::Array(
+        parts
+            .into_iter()
+            .map(|p| Value::String(p.to_string()))
+            .collect(),
     )
 }
 
-/// One program's handles and counts.
+/// How many values `v` holds, itself included.
+fn nodes(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => 1 + a.iter().map(nodes).sum::<usize>(),
+        Value::Object(m) => 1 + m.values().map(nodes).sum::<usize>(),
+        _ => 1,
+    }
+}
+
+/// How deeply `v` nests: 0 for a scalar, 1 for a flat list or object.
+fn depth(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => 1 + a.iter().map(depth).max().unwrap_or(0),
+        Value::Object(m) => 1 + m.values().map(depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Refuse a result of `n` pieces past [`defaults::PIECES`], before any is
+/// built.
+fn pieces(f: &str, n: usize) -> Result<(), HostRaise> {
+    if n > defaults::PIECES {
+        return Err(raise(
+            Tag::LimitError,
+            format!(
+                "pieces: `{f}` would return {n}, more than the {} one call may; use grep, a \
+                 larger chunk, or slice the text first",
+                defaults::PIECES
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// How much of a tool's error text a raise carries, so a failed read says
+/// why without a large error body crowding the traceback.
+const ERROR_TEXT: usize = 2000;
+
+/// `text` cut to at most `n` bytes, on a character boundary.
+fn cut(text: &str, n: usize) -> &str {
+    if text.len() <= n {
+        return text;
+    }
+    let mut end = n;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// One program's counts.
 struct Run {
     limits: HostLimits,
     pool: Arc<BytePool>,
-    handles: BTreeMap<u64, Handle>,
-    next: u64,
     reads: u32,
     ops: u32,
-    /// Bytes this program's buffers hold, all drawn from `pool` too.
+    /// Bytes of tool results this program was handed, all drawn from `pool`
+    /// too.
     bytes: usize,
+    /// `peek` and `str[n]` bytes handed to the program
+    /// (`ProgramStats::peeked_bytes`).
     peeked: usize,
     /// Sub-call passes sent, retries included.
     subcalls: u32,
@@ -831,13 +1083,30 @@ struct Run {
     thought: u32,
     /// Input tokens the passes spent, from their `Usage`.
     subcall_tokens: u64,
-    /// Any host call returned external content.
+    /// Every answered pass's `Usage`, summed, for the run's own total.
+    usage: crate::message::Usage,
+    /// A host limit raised `LimitError:` into the program at least once.
+    limit_raised: bool,
+    /// Any host call returned external content. A text the program passes
+    /// back carries no label of its own, so a sub-call's answer takes this
+    /// one: every external read so far (§4), never less.
     external: bool,
     /// The tools this program may call, as its start resolved them: checked
     /// again here on every read, so §2 does not rest on the interpreter
     /// alone refusing an unregistered name (review of #768). `ask_user` and
     /// `message_send` would clear the gate if one reached it.
     reach: std::collections::BTreeSet<String>,
+    /// The reachable tools whose names come back as a list ([`Admission`]).
+    listings: std::collections::BTreeSet<String>,
+    /// Every host call that ran, in issue order: the program record (§7).
+    recorded: Vec<record::ProgramCall>,
+    /// The most of `recorded`'s bytes held while the program runs
+    /// ([`record::RETAINED_BYTES`], the ceiling the conversation keeps them
+    /// under afterwards). A read is recorded before the host-byte limit can
+    /// refuse it, and a program can catch that `LimitError:` and read again,
+    /// so without this a loop over a large file held one whole result per
+    /// read: 2,048 of up to 64 MB each (review of #793).
+    retain: usize,
 }
 
 impl Drop for Run {
@@ -909,8 +1178,6 @@ impl Run {
         Run {
             limits,
             pool,
-            handles: BTreeMap::new(),
-            next: 1,
             reads: 0,
             ops: 0,
             bytes: 0,
@@ -918,8 +1185,40 @@ impl Run {
             subcalls: 0,
             thought: 0,
             subcall_tokens: 0,
+            usage: Default::default(),
+            limit_raised: false,
             external: false,
             reach: Default::default(),
+            listings: Default::default(),
+            retain: record::RETAINED_BYTES,
+            recorded: Vec::new(),
+        }
+    }
+
+    /// This program's numbers, as it ended: `end` is `None` when the
+    /// interpreter failed under it, which is a failure and no budget's.
+    fn stats(&self, end: Option<&End>) -> ProgramStats {
+        let budget_stop = match end {
+            Some(End::Backstop(_)) => true,
+            // Uncaught, and the host raised one: a program that raises the
+            // tag's text itself, with no limit crossed, is its own failure.
+            Some(End::Raised(r)) => {
+                self.limit_raised
+                    && r.message
+                        .as_deref()
+                        .is_some_and(|m| m.starts_with(Tag::LimitError.prefix()))
+            }
+            _ => false,
+        };
+        ProgramStats {
+            subcalls: self.subcalls,
+            subcall_tokens: self.subcall_tokens,
+            usage: self.usage.clone(),
+            peeked_bytes: self.peeked as u64,
+            read_bytes: self.bytes as u64,
+            completed: matches!(end, Some(End::Complete { .. })),
+            budget_stop,
+            cancelled: matches!(end, Some(End::Cancelled)),
         }
     }
 
@@ -929,31 +1228,26 @@ impl Run {
         self
     }
 
-    /// The handle a program passed, by its stub. A string that is not the
-    /// exact stub of a handle this program holds is refused without being
-    /// quoted.
-    fn handle(&self, a: &Args<'_>) -> Result<(u64, Handle), HostRaise> {
-        let not = || {
-            raise(
-                Tag::HandleError,
-                format!(
-                    "`{}`: its first argument is not a handle this program holds",
-                    a.f
-                ),
-            )
-        };
-        let s = a.get(0, "h").and_then(Value::as_str).ok_or_else(not)?;
-        self.held(s).ok_or_else(not)
+    /// The tools whose result this program takes as names; none until this
+    /// is said, so every result is one `str` by default.
+    fn listing(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.listings = names.into_iter().collect();
+        self
     }
 
-    /// The handle whose exact stub is `s`, if this program holds it.
-    fn held(&self, s: &str) -> Option<(u64, Handle)> {
-        let id = s
-            .strip_prefix("<handle ")
-            .and_then(|r| r.split_once(':'))
-            .and_then(|(n, _)| n.parse::<u64>().ok())?;
-        let h = self.handles.get(&id).filter(|h| stub(id, h) == s)?;
-        Some((id, h.clone()))
+    /// The text a host function was given first: a `str`, by position or as
+    /// `text` (or `h`, the name it had when it was a handle).
+    fn text<'v>(&self, a: &Args<'v>) -> Result<Text<'v>, HostRaise> {
+        a.get(0, "text")
+            .or_else(|| a.get(0, "h"))
+            .and_then(Value::as_str)
+            .map(Text::of)
+            .ok_or_else(|| {
+                raise(
+                    Tag::HandleError,
+                    format!("`{}`: its first argument must be a str", a.f),
+                )
+            })
     }
 
     /// Hold `n` more bytes, against this program's limit and the process's.
@@ -963,7 +1257,7 @@ impl Run {
                 Tag::LimitError,
                 format!(
                     "host bytes: a result of {n} bytes would take this program past its {} \
-                     ({} held)",
+                     ({} read so far)",
                     self.limits.host_bytes, self.bytes
                 ),
             ));
@@ -982,60 +1276,7 @@ impl Run {
         Ok(())
     }
 
-    fn buffer(&mut self, text: String, tool: &str, external: bool) -> Result<Handle, HostRaise> {
-        self.charge(text.len())?;
-        let ascii = text.is_ascii();
-        let chars = if ascii {
-            text.len()
-        } else {
-            text.chars().count()
-        };
-        let end = text.len();
-        Ok(Handle {
-            buf: Arc::new(Buffer {
-                text: text.into_boxed_str(),
-                ascii,
-                tool: tool.to_string(),
-                external,
-            }),
-            start: 0,
-            end,
-            chars,
-        })
-    }
-
-    fn room_for(&self, n: usize, f: &str) -> Result<(), HostRaise> {
-        if self.handles.len().saturating_add(n) > self.limits.live_handles {
-            return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "live handles: `{f}` would make {n} more, past this program's {} ({} held)",
-                    self.limits.live_handles,
-                    self.handles.len()
-                ),
-            ));
-        }
-        Ok(())
-    }
-
-    fn mint(&mut self, h: Handle) -> String {
-        let id = self.next;
-        self.next += 1;
-        let s = stub(id, &h);
-        self.handles.insert(id, h);
-        s
-    }
-
-    fn mint_all(&mut self, hs: Vec<Handle>, f: &str) -> Result<Value, HostRaise> {
-        self.room_for(hs.len(), f)?;
-        Ok(Value::Array(
-            hs.into_iter()
-                .map(|h| Value::String(self.mint(h)))
-                .collect(),
-        ))
-    }
-
-    /// One tool read: counted, through the gate, and its result a handle.
+    /// One tool read: counted, through the gate, and its result a `str`.
     async fn read(
         &mut self,
         host: &HostCalls,
@@ -1067,7 +1308,7 @@ impl Run {
         // wait ends, the raise lands, and the interpreter, seeing the token,
         // ends the program `Cancelled` at that suspension.
         let answer = tokio::select! {
-            a = host.call(name, input) => a,
+            a = host.call(name, input.clone(), self.limits.host_bytes.saturating_sub(self.bytes)) => a,
             () = cancel.cancelled() => HostAnswer::Refused(
                 "stopped: the run was cancelled while this call ran".into(),
             ),
@@ -1085,20 +1326,46 @@ impl Run {
                      running it, and a program cannot stage. The gate said: {notice}"
                 ),
             )),
-            HostAnswer::Ran(out) => {
+            HostAnswer::Ran { id, output: out } => {
+                // No admitted tool carries reads of its own (a subagent is never
+                // admitted, §12): one that did would lose them here, silently.
+                debug_assert!(out.reads.is_empty(), "a host call carried reads");
                 self.external |= out.external;
-                self.room_for(1, name)?;
                 let failed = out.is_error;
-                let h = self.buffer(out.content, name, out.external)?;
-                let s = self.mint(h);
+                let bytes: Arc<str> = Arc::from(out.content);
+                // Recorded before any limit below can refuse the handle: the
+                // call ran and its result armed the run, so it is part of
+                // what the run received whether or not the program holds it.
+                self.recorded.push(record::ProgramCall::ran(
+                    id,
+                    host.call_id.clone(),
+                    name,
+                    input,
+                    out.external,
+                    failed,
+                    Arc::clone(&bytes),
+                ));
+                record::bound_at(&mut self.recorded, self.retain);
                 if failed {
-                    Err(raise(
+                    let more = if bytes.len() > ERROR_TEXT {
+                        format!(" [{} more bytes cut]", bytes.len() - ERROR_TEXT)
+                    } else {
+                        String::new()
+                    };
+                    return Err(raise(
                         Tag::ToolError,
-                        format!("`{name}` returned an error; its text is {s}"),
-                    ))
-                } else {
-                    Ok(Value::String(s))
+                        format!(
+                            "{}{}{more}",
+                            crate::interpreter::ran_and_failed(name),
+                            cut(&bytes, ERROR_TEXT)
+                        ),
+                    ));
                 }
+                self.charge(bytes.len())?;
+                if self.listings.contains(name) {
+                    return Self::names(name, &bytes);
+                }
+                Ok(Value::String(bytes.to_string()))
             }
         }
     }
@@ -1134,40 +1401,26 @@ impl Run {
             Some(Value::Bool(b)) => *b,
             Some(_) => return Err(q(format!("`{f}`: `thinking` must be True or False"))),
         };
-        let not_held = |i: usize| {
-            raise(
-                Tag::HandleError,
-                format!("`{f}`: source {i} is not a handle this program holds"),
-            )
-        };
-        let resolve = |v: &Value, i: usize| {
+        fn resolve<'v>(v: &'v Value, i: usize, f: &str) -> Result<&'v str, HostRaise> {
             v.as_str()
-                .and_then(|s| self.held(s))
-                .map(|(_, h)| h)
-                .ok_or_else(|| not_held(i))
-        };
-        let items: Vec<Vec<Handle>> = match (map, a.get(1, if map { "sources" } else { "source" }))
-        {
+                .ok_or_else(|| raise(Tag::HandleError, format!("`{f}`: source {i} is not a str")))
+        }
+        let items: Vec<Vec<&str>> = match (map, a.get(1, if map { "sources" } else { "source" })) {
             (true, Some(Value::Array(vs))) => vs
                 .iter()
                 .enumerate()
-                .map(|(i, v)| resolve(v, i).map(|h| vec![h]))
+                .map(|(i, v)| resolve(v, i, f).map(|t| vec![t]))
                 .collect::<Result<_, _>>()?,
-            (true, _) => {
-                return Err(q(
-                    "`llm_map`: `sources` must be a list of handles".to_string()
-                ))
-            }
+            (true, _) => return Err(q("`llm_map`: `sources` must be a list of str".to_string())),
             (false, Some(Value::Array(vs))) if !vs.is_empty() => vec![vs
                 .iter()
                 .enumerate()
-                .map(|(i, v)| resolve(v, i))
+                .map(|(i, v)| resolve(v, i, f))
                 .collect::<Result<_, _>>()?],
-            (false, Some(v @ Value::String(_))) => vec![vec![resolve(v, 0)?]],
+            (false, Some(Value::String(t))) => vec![vec![t.as_str()]],
             (false, _) => {
                 return Err(q(
-                    "`llm_query`: `source` must be a handle or a non-empty list of handles"
-                        .to_string(),
+                    "`llm_query`: `source` must be a str or a non-empty list of them".to_string(),
                 ))
             }
         };
@@ -1176,19 +1429,6 @@ impl Run {
             return Ok(Value::Array(Vec::new()));
         }
         let l = self.limits;
-        let text_left = l.peek_bytes.saturating_sub(self.peeked);
-        let most = shape.max_text_chars().saturating_mul(n);
-        if most > text_left {
-            return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "peek bytes: this shape's text could come to {most} characters (at least \
-                     as many bytes) over {n} pass(es), past the {text_left} bytes left of this \
-                     program's {} (peek and str[n] results share it); narrow n or the sweep",
-                    l.peek_bytes
-                ),
-            ));
-        }
         let calls_left = l.subcalls.saturating_sub(self.subcalls);
         if (n as u64) > u64::from(calls_left) {
             return Err(raise(
@@ -1213,7 +1453,7 @@ impl Run {
         }
         self.pass_limits().map_err(|(tag, m)| raise(tag, m))?;
         // The sweep's input, estimated before anything is sent: a source the
-        // size of a handle's 64 MB is refused here, never handed to the
+        // size of a 64 MB read is refused here, never handed to the
         // server to overflow on (review of #773).
         let tokens: u64 = items
             .iter()
@@ -1232,7 +1472,9 @@ impl Run {
         }
         // A shape bounds how much an attacker can say, not who said it: the
         // answer carries its sources' labels (§4), and nothing here narrows.
-        self.external |= items.iter().flatten().any(|h| h.buf.external);
+        // A source is a `str` with no label of its own, so it is taken to
+        // carry every external read so far, which `self.external` already
+        // holds.
         let mut out = Vec::with_capacity(n);
         for (i, sources) in items.iter().enumerate() {
             match self
@@ -1304,7 +1546,7 @@ impl Run {
         &mut self,
         host: &HostCalls,
         instruction: &str,
-        sources: &[Handle],
+        sources: &[&str],
         shape: &shape::Shape,
         think: bool,
         cancel: &tokio_util::sync::CancellationToken,
@@ -1359,6 +1601,7 @@ impl Run {
                 PassAnswer::Answered(r) => r,
             };
             self.subcalls += 1;
+            self.usage.add(&resp.usage);
             // What the server says it read; the estimate where it says none.
             let read = match resp.usage.total_input() {
                 0 => estimate,
@@ -1375,19 +1618,7 @@ impl Run {
             }
             match envelope(&resp).and_then(|text| shape.check(&text)) {
                 Ok(v) => {
-                    let bytes = shape.text_bytes(&v);
-                    let left = self.limits.peek_bytes.saturating_sub(self.peeked);
-                    if bytes > left {
-                        return Err((
-                            Tag::LimitError,
-                            format!(
-                                "peek bytes: this answer's text is {bytes} bytes, past the \
-                                 {left} left of this program's {} (the pass is spent)",
-                                self.limits.peek_bytes
-                            ),
-                        ));
-                    }
-                    self.peeked += bytes;
+                    self.peeked += shape.text_bytes(&v);
                     return Ok(v);
                 }
                 Err(why) => last = why,
@@ -1399,7 +1630,7 @@ impl Run {
         ))
     }
 
-    /// One handle operation (§3): counted, `budget()` included.
+    /// One host-function call (§3): counted, `budget()` included.
     fn op(&mut self, call: &ExternalCall) -> Result<Value, HostRaise> {
         let f: &'static str = HOST_FUNCTIONS
             .iter()
@@ -1410,15 +1641,16 @@ impl Run {
         let a = Args { call, f };
         match f {
             "budget" => Ok(self.budget()),
-            "size" => Ok(Value::from(self.handle(&a)?.1.chars)),
+            "size" => Ok(Value::from(self.text(&a)?.chars)),
             "slice" => self.slice(&a),
             "lines" => self.lines(&a),
             "split" => self.split(&a),
             "chunks" => self.chunks(&a),
             "find" => self.find(&a),
+            "grep" => self.grep(&a),
             "count" => {
-                let (_, h) = self.handle(&a)?;
-                Ok(Value::from(a.pattern(1)?.find_iter(h.text()).count()))
+                let t = self.text(&a)?;
+                Ok(Value::from(a.pattern(1)?.find_iter(t.text).count()))
             }
             "json_get" => self.json_get(&a),
             "peek" => self.peek(&a),
@@ -1453,75 +1685,61 @@ impl Run {
             "tool_reads": l.tool_reads.saturating_sub(self.reads),
             "handle_operations": l.handle_operations.saturating_sub(self.ops),
             "host_bytes": l.host_bytes.saturating_sub(self.bytes),
-            "live_handles": l.live_handles.saturating_sub(self.handles.len()),
-            "peek_bytes": l.peek_bytes.saturating_sub(self.peeked),
         })
     }
 
     fn slice(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (id, h) = self.handle(a)?;
-        let n = h.chars as i64;
+        let t = self.text(a)?;
+        let n = t.chars as i64;
         let (start, end) = (a.int(1, "start", Some(0))?, a.int(2, "end", Some(n))?);
         let norm = |i: i64| if i < 0 { i + n } else { i };
         let (s, e) = (norm(start), norm(end));
         if s < 0 || e > n || s > e {
             return Err(raise(
                 Tag::HandleError,
-                format!("`slice`: {start}..{end} is outside handle {id}, which has {n} characters"),
+                format!("`slice`: {start}..{end} is outside a text of {n} characters"),
             ));
         }
-        self.room_for(1, "slice")?;
-        let b = h.bytes_at(&[s as usize, e as usize]);
-        Ok(Value::String(self.mint(h.sub(b[0], b[1]))))
+        let b = t.bytes_at(&[s as usize, e as usize]);
+        Ok(Value::String(t.text[b[0]..b[1]].to_string()))
     }
 
     fn lines(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
-        let text = h.text();
-        let mut pieces = text.matches('\n').count() + 1;
-        if text.ends_with('\n') || text.is_empty() {
-            pieces -= 1;
-        }
-        self.room_for(pieces, "lines")?;
-        let mut out = Vec::with_capacity(pieces);
-        let mut from = 0;
-        for (i, _) in text.match_indices('\n') {
-            let to = if text[..i].ends_with('\r') { i - 1 } else { i };
-            out.push(h.sub(from, to));
-            from = i + 1;
-        }
-        if from < text.len() {
-            out.push(h.sub(from, text.len()));
-        }
-        self.mint_all(out, "lines")
+        let t = self.text(a)?;
+        pieces("lines", t.text.lines().count())?;
+        Ok(strings(t.text.lines()))
+    }
+
+    /// The lines of a text that `pattern` matches anywhere in, in order: the
+    /// sweep a log question wants, and the loop over `lines()` it replaces,
+    /// which made 22,874 handles of one 1.5 MB log before R11 (M2).
+    fn grep(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
+        let t = self.text(a)?;
+        let re = a.pattern(1)?;
+        // Bounded as `lines` is, whose subset it returns: at `find`'s 4,096
+        // the log it was built for raised on `ERROR` (review of #805). Counted
+        // before it is built, as `split` is: `grep(text, "")` over a large
+        // read would otherwise collect every line to learn it may not.
+        let hits = || t.text.lines().filter(|l| re.is_match(l));
+        pieces("grep", hits().count())?;
+        Ok(strings(hits()))
     }
 
     fn split(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let re = a.pattern(1)?;
-        let text = h.text();
-        self.room_for(re.find_iter(text).count() + 1, "split")?;
-        let mut out = Vec::new();
-        let mut from = 0;
-        for m in re.find_iter(text) {
-            out.push(h.sub(from, m.start()));
-            from = m.end();
-        }
-        out.push(h.sub(from, text.len()));
-        self.mint_all(out, "split")
+        pieces("split", re.find_iter(t.text).count() + 1)?;
+        Ok(strings(re.split(t.text)))
     }
 
     fn chunks(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let n = a.int(1, "n", None)?;
         let overlap = a.int(2, "overlap", Some(0))?;
-        if n < defaults::CHUNK_FLOOR as i64 {
+        if n < 1 {
             return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "chunk size: `chunks` takes n of at least {} characters, and was given {n}",
-                    defaults::CHUNK_FLOOR
-                ),
+                Tag::HandleError,
+                format!("`chunks`: `n` must be at least 1, and was given {n}"),
             ));
         }
         if overlap < 0 || overlap >= n {
@@ -1531,45 +1749,62 @@ impl Run {
             ));
         }
         let (n, step) = (n as usize, (n - overlap) as usize);
+        let count = t.chars.saturating_sub(n).div_ceil(step) + 1;
+        pieces("chunks", count)?;
+        // An overlap repeats text, so the pieces' total can pass the read's
+        // own size many times over: `chunks(t, 1_400_000, overlap=1_399_999)`
+        // on a 1.5 MB log is 140 GB built here, uncharged (review of #805).
+        // Bytes, as the limit is: a character of a multibyte text is up to
+        // four, so a count of characters under-refused it (review of #805).
+        // The text's own bytes per character, multiplied before dividing so
+        // one `é` in a long log does not round it up to two (review of #817).
+        let chars = count as u128 * n.min(t.chars) as u128;
+        let total = (chars * t.text.len() as u128)
+            .div_ceil(t.chars.max(1) as u128)
+            .min(usize::MAX as u128) as usize;
+        if total > self.limits.host_bytes {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "chunk text: `chunks` would return about {total} bytes in all, past \
+                     this program's {} (an overlap repeats text); use a smaller overlap or a \
+                     larger step",
+                    self.limits.host_bytes
+                ),
+            ));
+        }
         let mut spans = Vec::new();
         let mut start = 0;
-        // Counted as it goes and stopped one past the limit, so a refusal
-        // never allocates the whole list first.
-        while start < h.chars {
-            let end = (start + n).min(h.chars);
+        while start < t.chars {
+            let end = (start + n).min(t.chars);
             spans.push((start, end));
-            if end == h.chars {
+            if end == t.chars {
                 break;
             }
             start += step;
-            if spans.len() > self.limits.live_handles {
-                break;
-            }
         }
-        self.room_for(spans.len(), "chunks")?;
         let flat: Vec<usize> = {
             let mut v: Vec<usize> = spans.iter().flat_map(|(s, e)| [*s, *e]).collect();
             v.sort_unstable();
             v.dedup();
             v
         };
-        let bytes = h.bytes_at(&flat);
+        let bytes = t.bytes_at(&flat);
         let at = |c: usize| bytes[flat.binary_search(&c).unwrap_or_default()];
-        let out = spans.iter().map(|(s, e)| h.sub(at(*s), at(*e))).collect();
-        self.mint_all(out, "chunks")
+        Ok(strings(spans.iter().map(|(s, e)| &t.text[at(*s)..at(*e)])))
     }
 
     fn find(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let re = a.pattern(1)?;
         let mut flat = Vec::new();
-        for (k, m) in re.find_iter(h.text()).enumerate() {
+        for (k, m) in re.find_iter(t.text).enumerate() {
             if k == defaults::FIND_MATCHES {
                 return Err(raise(
                     Tag::LimitError,
                     format!(
                         "find matches: more than {} for one `find`; narrow the pattern, or \
-                         slice the handle first",
+                         slice the text first",
                         defaults::FIND_MATCHES
                     ),
                 ));
@@ -1577,14 +1812,16 @@ impl Run {
             flat.push(m.start());
             flat.push(m.end());
         }
-        let chars = h.chars_at(&flat);
+        let chars = t.chars_at(&flat);
         Ok(Value::Array(
             chars.chunks(2).map(|p| json!([p[0], p[1]])).collect(),
         ))
     }
 
+    /// The JSON value at `path` in a text: decoded, as `json.loads` would
+    /// give it, a string leaf as a `str` and an object as a dict.
     fn json_get(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (id, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let steps: Vec<Value> = match a.get(1, "path") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::String(s)) if s.is_empty() => Vec::new(),
@@ -1598,11 +1835,23 @@ impl Run {
                 ))
             }
         };
-        let root: Value = serde_json::from_str(h.text()).map_err(|e| {
+        // Bounded before it is parsed: a `str` the program built is not a
+        // read the host-byte limit charged (review of #805).
+        if t.text.len() > self.limits.host_bytes {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "host bytes: `json_get` was given {} bytes, past this program's {}",
+                    t.text.len(),
+                    self.limits.host_bytes
+                ),
+            ));
+        }
+        let root: Value = serde_json::from_str(t.text).map_err(|e| {
             raise(
                 Tag::HandleError,
                 format!(
-                    "`json_get`: handle {id} is not JSON (it fails at line {}, column {})",
+                    "`json_get`: the text is not JSON (it fails at line {}, column {})",
                     e.line(),
                     e.column()
                 ),
@@ -1613,7 +1862,7 @@ impl Run {
             let missing = || {
                 raise(
                     Tag::HandleError,
-                    format!("`json_get`: handle {id} has nothing at step {k} of the path"),
+                    format!("`json_get`: the text has nothing at step {k} of the path"),
                 )
             };
             at = match (at, step) {
@@ -1637,37 +1886,66 @@ impl Run {
                 _ => return Err(missing()),
             };
         }
-        let leaf = match at {
-            Value::String(s) => s.clone(),
-            Value::Object(_) | Value::Array(_) => at.to_string(),
-            scalar => return Ok(scalar.clone()),
-        };
-        self.room_for(1, "json_get")?;
-        let tool = h.buf.tool.clone();
-        let leaf = self.buffer(leaf, &tool, h.buf.external)?;
-        Ok(Value::String(self.mint(leaf)))
-    }
-
-    fn peek(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
-        let n = a.int(1, "n", Some(defaults::PEEK_DEFAULT as i64))?;
-        if n < 0 {
-            return Err(raise(Tag::HandleError, "`peek`: `n` must be at least 0"));
-        }
-        let take = (n as usize).min(h.chars);
-        let end = h.bytes_at(&[take])[0];
-        let text = &h.text()[..end];
-        if self.peeked.saturating_add(text.len()) > self.limits.peek_bytes {
+        // Past the depth a value may cross into the program at, the backend
+        // would fail the program uncatchably: about 130 bytes of a stranger's
+        // JSON could end it, losing what it printed (review of #805).
+        // And past PIECES values in all, as `lines` is: the leaf crosses into
+        // the program whole, uncharged (review of #805).
+        pieces("json_get", nodes(at))?;
+        if depth(at) > crate::interpreter::VALUE_DEPTH {
             return Err(raise(
-                Tag::LimitError,
+                Tag::HandleError,
                 format!(
-                    "peek bytes: {} more would take this program past its {} ({} used)",
-                    text.len(),
-                    self.limits.peek_bytes,
-                    self.peeked
+                    "`json_get`: the value at that path nests deeper than {} levels, the most \
+                     a program can hold; take a path further in",
+                    crate::interpreter::VALUE_DEPTH
                 ),
             ));
         }
+        Ok(at.clone())
+    }
+
+    /// A listing tool's answer, one `str` per entry (a directory's ends in
+    /// `/`).
+    /// Past [`defaults::PIECES`] names it raises, catchably: the peek cap
+    /// was the bound until R11 (review of #805).
+    fn names(tool: &str, listing: &str) -> Result<Value, HostRaise> {
+        // `fs_list`'s own spelling of nothing. A directory holding one file
+        // of exactly that name reads the same, here as in the tool's result.
+        if listing == "(empty directory)" {
+            return Ok(Value::Array(Vec::new()));
+        }
+        pieces(tool, listing.lines().count())?;
+        Ok(strings(listing.lines()))
+    }
+
+    /// `n` characters of a text from `start`: slicing, kept by name because
+    /// programs written before R11 call it.
+    fn peek(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
+        let t = self.text(a)?;
+        let n = a.int(1, "n", Some(defaults::PEEK_DEFAULT as i64))?;
+        // A negative `n` is the last `n` characters, the way `peek(h, -500)`
+        // was written in M2 and raised; a text shorter than that is all of
+        // it, as `text[-500:]` would be (review of #805).
+        let chars = t.chars as i64;
+        let tail = n < 0 && a.get(2, "start").is_none_or(Value::is_null);
+        let n = i64::try_from(n.unsigned_abs()).unwrap_or(i64::MAX);
+        let start = if tail {
+            -n.min(chars)
+        } else {
+            a.int(2, "start", Some(0))?
+        };
+        let from = if start < 0 { start + chars } else { start };
+        if from < 0 || from > chars {
+            return Err(raise(
+                Tag::HandleError,
+                format!("`peek`: start {start} is outside a text of {chars} characters"),
+            ));
+        }
+        let from = from as usize;
+        let take = (n as usize).min(t.chars - from);
+        let b = t.bytes_at(&[from, from + take]);
+        let text = &t.text[b[0]..b[1]];
         self.peeked += text.len();
         Ok(Value::String(text.to_string()))
     }
@@ -1702,10 +1980,10 @@ fn envelope(resp: &CompletionResponse) -> Result<String, String> {
 /// schema) over four, the usual reading for prose. Checked against what is
 /// left of the token cap before each pass, and charged for a pass the
 /// provider failed; an answered pass is charged its `Usage`.
-fn pass_tokens(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> u64 {
+fn pass_tokens(instruction: &str, sources: &[&str], shape: &shape::Shape) -> u64 {
     let bytes = PASS_FRAME.len()
         + instruction.len()
-        + sources.iter().map(|h| h.text().len() + 64).sum::<usize>()
+        + sources.iter().map(|t| t.len() + 64).sum::<usize>()
         + shape.schema().to_string().len()
         + 256;
     (bytes / 4) as u64
@@ -1737,9 +2015,8 @@ fn marker_tag(texts: &[&str]) -> Option<String> {
 /// source between marker lines, then the schema. The markers' tag is one no
 /// source contains ([`marker_tag`]), so a source cannot close its own block
 /// early; `None` when no such tag was found.
-fn pass_message(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> Option<String> {
-    let texts: Vec<&str> = sources.iter().map(Handle::text).collect();
-    let tag = marker_tag(&texts)?;
+fn pass_message(instruction: &str, texts: &[&str], shape: &shape::Shape) -> Option<String> {
+    let tag = marker_tag(texts)?;
     let n = texts.len();
     let mut m = String::with_capacity(texts.iter().map(|t| t.len() + 64).sum::<usize>() + 512);
     m.push_str(instruction.trim());
@@ -1787,7 +2064,10 @@ fn tool_input(call: &ExternalCall) -> Result<Value, HostRaise> {
 /// is the model's only feedback. So a long traceback keeps its raised line
 /// and says how many frames it dropped, and a result past `cap` opens with a
 /// line naming how it ended, ahead of the printed output the cut may take.
-fn render(f: Finished, cap: usize) -> (String, bool) {
+///
+/// `shadowed` names the functions the program assigned over
+/// ([`shadowed`]), for the hint a "not callable" error gets.
+fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
     let (ending, is_error, summary) = match f.end {
         End::Complete { value, repr } => {
             let shown = match value {
@@ -1826,6 +2106,34 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
     if out.is_empty() {
         out = "(the program printed nothing and its last line has no value)".to_string();
     }
+    // `size = size(h)` in a loop: the next call finds the int, and monty's
+    // "'int' object is not callable" says nothing about why (M2, 2026-11-02).
+    if is_error && ending.contains("object is not callable") {
+        // The name the failing line calls, where the traceback shows one:
+        // `shadowed` is in host-function order, not the error's.
+        // With none shown, no hint: a guess could name a function the
+        // failing line never called (review of #805).
+        // Searched in the ending alone: printed output that mentions `size(`
+        // is not the failing line (review of #805).
+        let called = shadowed.iter().find(|n| ending.contains(&format!("{n}(")));
+        if let Some(name) = called {
+            out.push_str(&format!(
+                "\n[`{name}` is a function this program was given, and the program assigned \
+                 a value to that name, so a later call found the value: use another name for \
+                 the variable]"
+            ));
+        }
+    }
+    // `max(d, key=d.get)`: monty 1.4 cannot take a built-in type's method as
+    // a value, though it calls one, and says only that the attribute is not
+    // there, which the description's own warning did not prevent (M5: 9).
+    if let Some(method) = is_error.then(|| method_as_value(&ending)).flatten() {
+        out.push_str(&format!(
+            "\n[monty cannot use a method as a value (`.{method}` here, without calling it), \
+             though it can call one: pass a lambda that calls it, as in `key=lambda k: d[k]` \
+             for `key=d.get`]"
+        ));
+    }
     if out.len() > cap {
         out = format!(
             "[this program's result is {} bytes, past this call's share of the output budget \
@@ -1834,6 +2142,106 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
         );
     }
     (out, is_error)
+}
+
+/// The method an `AttributeError` says a built-in value lacks, when the
+/// failing line in the traceback takes it without calling it: monty's gap,
+/// not the program's typo, since the type has that method in Python.
+fn method_as_value(ending: &str) -> Option<&str> {
+    const BUILTIN: [&str; 9] = [
+        "'dict'",
+        "'collections.defaultdict'",
+        "'collections.Counter'",
+        "'collections.OrderedDict'",
+        "'str'",
+        "'list'",
+        "'set'",
+        "'tuple'",
+        "'bytes'",
+    ];
+    let line = ending
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("AttributeError: "))?;
+    let rest = line.strip_prefix("AttributeError: ")?;
+    let (ty, attr) = rest.split_once(" object has no attribute ")?;
+    if !BUILTIN.contains(&ty) {
+        return None;
+    }
+    let method = attr.strip_prefix('\'')?.strip_suffix('\'')?;
+    // Methods those types have in Python, so a typo (`d.keyz`) is not told
+    // it found monty's gap (review of #811).
+    const METHODS: [&str; 30] = [
+        "get",
+        "keys",
+        "values",
+        "items",
+        "pop",
+        "setdefault",
+        "update",
+        "copy",
+        "count",
+        "index",
+        "append",
+        "extend",
+        "remove",
+        "add",
+        "discard",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "lower",
+        "upper",
+        "title",
+        "split",
+        "join",
+        "startswith",
+        "endswith",
+        "isdigit",
+        "isalpha",
+        "replace",
+        "find",
+        "most_common",
+    ];
+    if !METHODS.contains(&method) {
+        return None;
+    }
+    let taken = format!(".{method}");
+    let uncalled = ending.lines().filter(|l| *l != line).any(|l| {
+        l.match_indices(&taken).any(|(i, _)| {
+            let after = l[i + taken.len()..].trim_start();
+            !after.starts_with('(')
+                && !l[i + taken.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    });
+    uncalled.then_some(method)
+}
+
+/// The names among `names` that `program` assigns to (`x = …`, `x += …`,
+/// `for x in …`), in `names`' order: a host function or tool overwritten by
+/// a variable.
+fn shadowed<'n>(program: &str, names: &[&'n str]) -> Vec<&'n str> {
+    let assigned = |name: &str| {
+        program.lines().any(|line| {
+            let l = line.trim_start();
+            let after_for = l.strip_prefix("for ").map(str::trim_start);
+            [Some(l), after_for].into_iter().flatten().any(|l| {
+                l.strip_prefix(name).is_some_and(|rest| {
+                    let ident = |c: char| c.is_alphanumeric() || c == '_';
+                    let longer = rest.starts_with(ident);
+                    let rest = rest.trim_start();
+                    !longer
+                        && ((rest.starts_with('=') && !rest.starts_with("=="))
+                            || rest.starts_with("in ")
+                            || rest.starts_with(',')
+                            || ["+=", "-=", "*=", "/="]
+                                .iter()
+                                .any(|op| rest.starts_with(op)))
+                })
+            })
+        })
+    };
+    names.iter().copied().filter(|n| assigned(n)).collect()
 }
 
 /// A traceback no longer than about `room` bytes: the first line, a count

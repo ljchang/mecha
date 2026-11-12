@@ -174,6 +174,57 @@ itself and the booking it withdraws.
 A record that did not validate against the manifest at drain time is never
 extracted and never reaches a run.
 
+## Your booking hours, from the web
+
+The **Factory** view in the web app lists the manifests in
+`~/.mecha/factory/types/`. Open a booking page there to see what it offers
+now, when the slot timer last pushed, and the meetings coming up. You can also
+edit its hours: the weekly windows, dates off, meeting lengths, the gap around
+other meetings, minimum notice, how far ahead, and the most per day.
+
+The editor shows what the page would offer before you save. That preview is
+`factory-publish slots preview`, computed over the busy time the last push
+saw, so it is the page's own arithmetic. Saving writes the manifest's
+`[availability]` section in place and keeps your comments. It then pushes, so
+the page changes at once instead of at the slot timer's next run, two
+minutes later at most.
+
+Five rules hold it together:
+
+- **One file.** The slot timer reads the manifest itself
+  (`factory-publish slots push book --manifest …/book.toml`), so the hours the
+  page promises and the hours it computes cannot disagree.
+- **The time zone is not an hours edit.** The booking page reads it to label
+  its times, so the editor shows it but will not change it. Change it in your
+  working copy of the manifest and `factory-publish type push` that.
+- **A `type push` replaces the hours too.** The file the editor writes is the
+  record of what the box serves, and a push rewrites it whole. If the hours
+  you push differ from the ones set here, the push prints a note saying so.
+  Copy the hours into your working copy before you push it.
+- **Only you write it.** The save is a handler in `mecha serve`. There is no
+  CLI verb and no tool for it, so no model can change what strangers may book
+  of your week, even if a stranger's message asks it to.
+- **"How far ahead" stops at 60 days**, because the timer fetches 60 days of
+  your calendar. A longer horizon would make every push refuse.
+
+Cancelling a booking from this page is not built yet.
+
+## Your forms, from the web
+
+The same Factory view creates and edits the forms strangers fill in. **New
+form** starts a draft from a starter (a meeting request, a letter, a speaking
+invitation, a lab application, a booking page) under a link name you choose
+once. Open any form to edit its title, description, questions (each with a
+kind, a required switch, help text, and choices for the choice kinds) and the
+message people see after they submit, or switch to **Edit as TOML** for
+anything the fields do not show.
+
+Edits are saved as a **draft**: nothing changes for strangers until you press
+**Publish**, which uploads the draft as the live form. **Preview** shows the
+page as strangers will see it. A booking page's hours are not edited here, and
+publishing it keeps the hours that are live. Pausing or retiring a form is not
+built yet.
+
 ## Where to go next
 
 - [Security model](/docs/features/security) — the interlock, and why a second layer was still worth building.

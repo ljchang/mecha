@@ -18,6 +18,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 const API_VERSION: &str = "2023-06-01";
@@ -140,10 +141,11 @@ impl Anthropic {
                 .iter()
                 .enumerate()
                 .map(|(i, t)| {
+                    let (input_schema, description) = api_schema(&t.input_schema, &t.description);
                     let mut v = json!({
                         "name": t.name,
-                        "description": t.description,
-                        "input_schema": t.input_schema,
+                        "description": description,
+                        "input_schema": input_schema,
                     });
                     // Only lands here when there's no system prompt to carry it.
                     if req.cache_prompt && req.system.is_none() && i == last {
@@ -736,9 +738,81 @@ impl StreamAccumulator {
     }
 }
 
+/// The combinators the API refuses at a tool schema's top level, with a 400
+/// that fails the whole request: one MCP tool with an `anyOf` there
+/// (`kg_pending`, "this field, or that pair") stopped every run that
+/// offered it (M4 on Claude, 2026-11-02).
+const TOP_LEVEL_COMBINATORS: [&str; 3] = ["anyOf", "oneOf", "allOf"];
+
+/// A tool's schema as the API takes it, and its description: a top-level
+/// combinator comes out of the schema and into the description, verbatim,
+/// so the model still reads the rule and the tool still enforces it. Nothing
+/// else is touched, and a schema without one is sent as it is.
+fn api_schema<'a>(schema: &'a Value, description: &'a str) -> (Cow<'a, Value>, Cow<'a, str>) {
+    let Some(obj) = schema.as_object() else {
+        return (Cow::Borrowed(schema), Cow::Borrowed(description));
+    };
+    if !TOP_LEVEL_COMBINATORS.iter().any(|k| obj.contains_key(*k)) {
+        return (Cow::Borrowed(schema), Cow::Borrowed(description));
+    }
+    let mut obj = obj.clone();
+    let mut rules = Vec::new();
+    for k in TOP_LEVEL_COMBINATORS {
+        if let Some(v) = obj.remove(k) {
+            rules.push(format!("{k}: {v}"));
+        }
+    }
+    obj.entry("type").or_insert_with(|| json!("object"));
+    let described = format!(
+        "{description}\n\nThe input must also satisfy this JSON Schema rule, which the tool \
+         checks: {}",
+        rules.join("; ")
+    );
+    (Cow::Owned(Value::Object(obj)), Cow::Owned(described))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A top-level `anyOf` 400s the whole request; it moves into the
+    /// description, and a schema without one goes out byte for byte.
+    #[test]
+    fn a_top_level_combinator_moves_from_the_schema_to_the_description() {
+        let mut r = req();
+        let either = json!({
+            "type": "object",
+            "anyOf": [{"required": ["entity"]}, {"required": ["proposed_by", "predicate"]}],
+            "properties": {"entity": {"type": "string"}, "inner": {"anyOf": [{"type": "string"}]}}
+        });
+        r.tools = vec![
+            ToolSpec {
+                name: "kg_pending".into(),
+                description: "what is pending".into(),
+                input_schema: either,
+            },
+            spec("draw"),
+        ];
+        let body = client().body(&r, false).unwrap();
+        let tools = body["tools"].as_array().unwrap();
+        let pending = &tools[0];
+        assert!(pending["input_schema"].get("anyOf").is_none(), "{pending}");
+        assert_eq!(pending["input_schema"]["type"], json!("object"));
+        // nested combinators are allowed, and stay
+        assert!(pending["input_schema"]["properties"]["inner"]
+            .get("anyOf")
+            .is_some());
+        let d = pending["description"].as_str().unwrap();
+        assert!(d.starts_with("what is pending"), "{d}");
+        assert!(
+            d.contains(
+                r#"anyOf: [{"required":["entity"]},{"required":["proposed_by","predicate"]}]"#
+            ),
+            "{d}"
+        );
+        assert_eq!(tools[1]["input_schema"], json!({"type": "object"}));
+        assert_eq!(tools[1]["description"], json!("does a thing"));
+    }
 
     fn client() -> Anthropic {
         client_at("http://localhost:1")

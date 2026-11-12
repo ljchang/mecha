@@ -2,6 +2,8 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import PersonaMemory from './PersonaMemory.svelte';
+  import PersonaWeek from './PersonaWeek.svelte';
+  import PersonaPeople from './PersonaPeople.svelte';
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
   import ModelChip from './ModelChip.svelte';
@@ -29,7 +31,7 @@
   import { isDirty as mdDirty } from './mdform.js';
   import {
     listUrl, personaUrl, chatUrl, relationshipLabel, emptyRun, applyEvent, settle, splitWaiting, proposalOrigin, isProposal,
-    taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
+    taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits, personaTabs,
     toolStatus, waitingLine, withWorking, withJob, clockOf, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
     frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM, avatarSrc,
@@ -144,6 +146,19 @@
   // The editor's Memories tab: not an owner file, so it sits beside the file
   // tabs rather than in `OWNER_FILES`, whose every entry is saved as a file.
   let memoryOpen = $state(false);
+  // Her week (PERSONA-LIFE-DESIGN.md §15), beside Memories for the same
+  // reason; shown only while the world part of personas is on.
+  let weekOpen = $state(false);
+  // Her people (§15), beside her week, behind the same world gate.
+  let peopleOpen = $state(false);
+  // A tab whose part was just turned off closes, rather than staying open
+  // behind a chip that is gone.
+  $effect(() => {
+    const tabs = personaTabs(chosen?.shows, isShown(features.rows, 'world'));
+    if (memoryOpen && !tabs.includes('memories')) memoryOpen = false;
+    if (weekOpen && !tabs.includes('week')) weekOpen = false;
+    if (peopleOpen && !tabs.includes('people')) peopleOpen = false;
+  });
   // A relationship or group being added from the form: { kind, name, text }.
   let adding = $state(null);
   // How many runs this page has seen end, so a `done` that overtakes
@@ -1144,6 +1159,8 @@
       const files = await res.json();
       editing = { files, file, text: files[file].text, base: files[file].digest, saved: null };
       memoryOpen = false;
+      weekOpen = false;
+      peopleOpen = false;
     } catch (e) {
       error = String(e?.message ?? e);
     }
@@ -1762,12 +1779,25 @@
     <div class="scroll" bind:this={scroller}>
       {#if editing}
         <div class="chips">
-          {#each OWNER_FILES as [file, label]}
-            <button class="chipbtn" class:active={!memoryOpen && editing.file === file} onclick={() => { memoryOpen = false; pickFile(file); }}>{label}</button>
+          <!-- Settings last, and a tab only for a part that is on
+               (owner, 2026-11-02; `personaTabs`). -->
+          {#each personaTabs(chosen?.shows, isShown(features.rows, 'world')) as tab (tab)}
+            {#if tab === 'memories'}
+              <button class="chipbtn" class:active={memoryOpen} onclick={() => { weekOpen = false; peopleOpen = false; memoryOpen = true; }}>Memories</button>
+            {:else if tab === 'week'}
+              <button class="chipbtn" class:active={weekOpen} onclick={() => { memoryOpen = false; peopleOpen = false; weekOpen = true; }}>Week</button>
+            {:else if tab === 'people'}
+              <button class="chipbtn" class:active={peopleOpen} onclick={() => { memoryOpen = false; weekOpen = false; peopleOpen = true; }}>People</button>
+            {:else}
+              <button class="chipbtn" class:active={!memoryOpen && !weekOpen && !peopleOpen && editing.file === tab} onclick={() => { memoryOpen = false; weekOpen = false; peopleOpen = false; pickFile(tab); }}>{OWNER_FILES.find(([f]) => f === tab)?.[1]}</button>
+            {/if}
           {/each}
-          <button class="chipbtn" class:active={memoryOpen} onclick={() => (memoryOpen = true)}>Memories</button>
         </div>
-        {#if memoryOpen}
+        {#if weekOpen && isShown(features.rows, 'world')}
+          <PersonaWeek name={chosen.name} {token} onclose={() => (weekOpen = false)} />
+        {:else if peopleOpen && isShown(features.rows, 'world')}
+          <PersonaPeople name={chosen.name} display={chosen.display} {token} onclose={() => (peopleOpen = false)} />
+        {:else if memoryOpen}
           <!-- Close leaves the Memories tab, never the editor: closing the editor
                would drop unsaved file drafts out of sight (review of #519). -->
           <PersonaMemory name={chosen.name} {token} onclose={() => (memoryOpen = false)} />

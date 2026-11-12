@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested but registered nowhere. Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R13 (2026-11-02): a program lists the workspace through `fs_list` (§11). R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13); on five held-out tasks, M5 passed 32/40 against M4's 27/40, with no `open()` refusal left. R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -18,10 +18,10 @@ interpreter comparison. The evidence for the changes is in
 A `code` tool runs a short Python program in monty, out of process through
 `monty-pool`. The program can call only tools whose effect class is a
 plain read (§2), and every call goes through the same gate a model-issued
-call takes. What a read returns stays in the host as an **opaque handle**;
-the program slices, searches and counts it through host functions, and
-the bytes reach the model's context only if the program asks to see them
-(§3). A host function, `llm_query`, hands one or more handles to a
+call takes. What a read returns reaches the **program** as a `str` and
+stays out of the **model's** context: only what the program prints comes
+back, capped and wrapped like any tool result (§3; opaque handles until
+R11, 2026-11-02). A host function, `llm_query`, hands one or more texts to a
 `QuarantinedPass` whose answer is decoded against a **shape** — a boolean,
 a number, one of a closed set, or a small list or record of those (§4). A
 **budget** caps sub-calls (§5). Nothing in the program can send, write,
@@ -142,79 +142,95 @@ What the slice gives up, and why that is the right trade:
 
 ---
 
-## 3. Handles
+## 3. Results are text (R11)
 
-A tool called from a program returns a `Handle`, not a `str`. The bytes
-stay in the host, owned by the program's run, along with the tool's name,
-the call's `ToolOutput::external` and the tool's capabilities.
+A tool called from a program returns its result as a `str`. `fs_list`'s
+builtin returns a list of names (`Tool::lists_names`, answered by the
+builtin alone, so a server's tool of that name returns one `str`), a
+directory's ending in `/` and `(empty directory)` an empty list. The
+program works on the text as Python does: string methods, slicing, `in`,
+`len()`, `re`, `json`.
+
+**The guard is what leaves the program.** What the model reads is the
+program's printed output and its ending, capped by `code::render` at the
+call's share of the output budget (with how it ended said first, so the cut
+never takes the model's only feedback), then capped, spilled and wrapped by
+the dispatch like any tool result. Taint arms on the host call, from the
+result's `external` and the tool's capabilities, before the program
+resumes, exactly as before: §3.12's first hazard, unchanged. Nothing a
+label rests on moved.
+
+**Host helpers** take a text and run Rust's `regex` (linear time, so a
+pattern cannot cost unbounded time on adversarial text, unlike monty's
+backtracking `re`):
 
 | Host function | Returns | Note |
 |---|---|---|
-| `size(h)` | int | |
-| `slice(h, start, end)` | Handle | |
-| `lines(h)`, `split(h, pattern)`, `chunks(h, n, overlap=0)` | list of Handle | `n` is each chunk's size in characters, not a count of chunks |
-| `find(h, pattern)` | list of (start, end) | offsets, never text |
-| `count(h, pattern)` | int | |
-| `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
-| `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit, read without spending anything, so a program can check before a sweep. The process-wide byte pool is left out: it moves with other programs, and reading it would be a cross-program observable, the `find`/`count` oracle's cousin |
-| `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
+| `grep(text, pattern)` | list of str | the lines `pattern` matches anywhere in, in order; bounded as `lines` is (131,072) |
+| `count(text, pattern)` | int | |
+| `find(text, pattern)` | list of [start, end] | character offsets, as Python's indexing counts them; at most 4,096 pairs |
+| `lines(text)`, `split(text, pattern)`, `chunks(text, n, overlap=0)` | list of str | `n` is each chunk's size in characters, at least 1; at most 131,072 pieces, and a `chunks` whose overlap repeats more text than the host-byte limit raises, both before anything is built |
+| `json_get(text, path)` | the decoded leaf | a string as `str`, an object as a dict; a leaf nesting past 64 levels, the most a value can cross into a program at, raises `HandleError:` |
+| `size(text)`, `slice(text, start, end)`, `peek(text, n=2000, start=0)` | int, str, str | kept because programs written before R11 call them; negative `start` counts from the end, and a negative `n` with no `start` is the last `n` characters (with a `start`, `n`'s sign is dropped) |
+| `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit. The process-wide byte pool is left out: it moves with other programs |
 
-`print(h)` renders a stub such as
-`<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
-"look at it" costs a line, not the payload.
+**A tool's error reaches the program in the tool's own words**, as
+`ToolError: \`name\` returned an error: …`, cut at 2,000 bytes. A host
+function's own errors name positions and offsets, not the text it was
+given, under `HandleError:`; a failed pass is named by what failed to
+parse, never its raw output, and a provider's failure by its class, never
+its body (§4).
 
-- **Taint is unchanged.** It arms on the host call, from the result's
-  `external` and the tool's capabilities, before the program resumes —
-  §3.12's first hazard, as specified. A handle therefore saves *context*;
-  it does not lower a label. What it adds is that third-party prose reaches
-  the model's planning only when the model chooses `peek`, which CaMeL
-  calls control-flow integrity, and which mecha records rather than
-  credits (§10, the `peeked` count).
-- **Numbers do enter without `peek`.** `size`, `count`, `find` offsets and
-  `json_get`'s number, bool or null leaves are values computed over
-  attacker text. They are attacker-influenced, as a typed sub-call answer
-  is, and bounded the same way: a number carries no instruction. They
-  change no label, and they are not counted with `peek`, because the cap
-  exists to bound prose.
-- **But `find` and `count` take the program's pattern, so they are an
-  oracle.** A program can learn text a character at a time by asking
-  whether a pattern matches, which a number bounded by an attacker's
-  choice is not. It spends the 2,048 handle-operation budget, not the
-  peek cap, and `peeked_bytes` cannot see it. This is not a taint hole:
-  the read armed the run, and the slice has no sinks. It does mean "prose
-  reaches planning only through `peek`" is the default a program follows,
-  not a property the host enforces, and §10 reads `peeked_bytes` as that,
-  never as proof.
-- **`peek` exists** because RLM roots look at a prefix to learn a format,
-  and a program that cannot see its data guesses. It is capped, counted,
-  and its output takes the ordinary output budget.
-- **Patterns run host-side** with Rust's `regex` (linear time), not
-  monty's backtracking engine, so a pattern cannot cost unbounded time on
-  adversarial text.
-- **A host-raised error is a third route for prose, so the host's
-  messages carry no bytes.** A program reads a failure as `str(e)`, and an
-  uncaught one reaches the model as a traceback. A message quoting a
-  handle's text, a tool's error body or a failed pass's raw output would
-  put prose into the program past `peek`'s cap and outside
-  `peeked_bytes`, and into the model's context unasked. So every message
-  the host writes names the handle's number, offsets, the tool and the
-  limit, and for a failed pass what failed to parse (wrong type, a missing
-  field, a label outside the set), never the text. A tool's error body is
-  bytes like any result: the message names a handle that holds it, and a
-  program that wants the reason `peek`s it, counted. Monty's own errors
-  need no rule: a program holds a `str` only from `peek`, a `str[n]`
-  result or its own literals, so an error quoting a value re-quotes
-  counted text. An uncaught error's traceback takes the ordinary output
-  budget, and a cut keeps the raised line and says how many frames it
-  dropped, because that line is the model's only feedback (§5).
+**A program that reaches for the operating system is told where its data
+is.** (R12 and R13: `open(path)` in text-read mode is answered through
+`fs_read`, and a listing through `fs_list`, when the program has them; the
+rest of this paragraph is what is still refused.) An `os` call or any
+other `open()` is refused with a `PermissionError` that says a program has
+no files, environment, network or clock, leads with `fs_read` and
+`fs_list` when the program has them (in M2's first 35 runs, 19 of the 27
+first programs failed on `open()` or `os.listdir`), and lists the
+functions it was given. An unknown import is left as monty's own
+`ModuleNotFoundError`.
 
----
+**A function the program assigned over is named.** `size = size(h)` in a
+loop made the next call fail with monty's "'int' object is not callable"
+(M2). When a program's error says a value is not callable and the program
+assigned to one of its function names, the result says which, and that
+the variable needs another name.
+
+**What R11 replaced.** From slice 3b until 2026-11-02 a result was an
+opaque handle: an object string operations refused on, printing as a stub
+(`<handle 3: 48,213 chars from mail_get_thread>`), whose text entered the
+program only through `peek`, capped and counted. The design called it
+CaMeL's control-flow integrity, offered as an option: third-party prose
+would reach the model's planning only when it chose `peek`. In practice:
+- it bought no label: a read armed the run whether its text was peeked or
+  not, and the design already said a handle "saves context; it does not
+  lower a label";
+- it was not enforced: `find` and `count` take the program's pattern, an
+  oracle that learns text a character at a time, so "only through `peek`"
+  was a default, never a property (the §10 counter recorded it, never
+  credited it);
+- R5 had already found the cap guarded less than its number suggested,
+  because the read-only slice has no sink;
+- and it cost the most of any failure in M2: of the 220 programs written
+  in its first 35 runs, 108 raised, about 46 of them on a handle used as
+  text (`.strip()`, `.split()`, `in`, `len()`), the largest single cause,
+  where every other harness surveyed hands a
+  program real strings and guards what goes back to the model (§13).
+
+The handle came from RLM's *prompt as a variable*, whose gain (Qwen3-Coder
+on CodeQA, 20.0 to 66.0 with no sub-calls) is the input kept out of the
+**model's** window. RLM's own variable is a plain `str` the program reads
+freely, so that gain survives R11 whole. **The sink slice (§12) decides
+opacity again for itself**: there a branch third-party text steers could
+change what is sent, which is where CaMeL's property earns its cost.
 
 ## 4. `llm_query` and `llm_map`
 
 ```python
-llm_query(instruction: str, source: Handle | list[Handle], shape) -> value
-llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
+llm_query(instruction: str, source: str | list[str], shape) -> value
+llm_map(instruction: str, sources: list[str], shape) -> list[value]
 ```
 
 - **One `QuarantinedPass` per call.** A fixed harness system frame, then
@@ -232,7 +248,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | one of | `["urgent", "fyi", "none"]` | ≤ 32 labels, each ≤ 64 chars |
   | list | `[shape]` | ≤ 64 items |
   | record | `{"due": "str[32]", "urgent": "bool"}` | ≤ 8 fields, no nesting past one level |
-  | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 16 KB prose cap, so `[{"x": "str[2000]"}]` raises on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
+  | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 256 KiB prose cap, so 64 records of eight `str[2000]` fields raise on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
 
   Every spelling is a JSON value: a bare Python type such as `bool`
   has no JSON form and never crosses into the host, so the program
@@ -244,9 +260,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   could return (`n` per text field, 64 per list, times the items of
   an `llm_map`), and on the answer's actual bytes.
 
-- **A `str[n]` result is prose entering the program**, so it is counted
-  with `peek` against one cap (§5); otherwise it would be a second,
-  uncounted route around §3.
+- **A `str[n]` result is counted with `peek`'s** in `peeked_bytes`
+  (§5). Until R11 the two drew on one cap; with reads arriving as text,
+  the cap had nothing left to bound, and the count stays for the corpus.
 - **`str[n]` and record fields of it never cross a trust boundary.**
   `AnswerShape` deliberately has no bounded-string shape, because
   "ignore previous instructions" fits in very few characters: a length
@@ -269,8 +285,8 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   a backstop (§5) is not an exception at all. The tags are `QueryError:` for a failed pass,
   `ToolError:` for a tool that returned `is_error` or a host call refused
   (§7, followed by the loop's own refusal prefix, so a policy block still
-  never reads as a person's denial), `HandleError:` for a §3 handle
-  operation that cannot apply (`json_get` on bytes that are not JSON, a
+  never reads as a person's denial), `HandleError:` for a §3 host
+  function that cannot apply (an argument that is not a `str`, `json_get` on bytes that are not JSON, a
   path that does not exist, a slice out of range), and `LimitError:` for
   a §5 limit. The text after the tag follows §3's rule: no bytes.
 - **`llm_map` raises at the first failed item, and the passes before it
@@ -295,9 +311,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
 - **Same model only.** Sub-calls go to the model the run already holds. On
   the router, naming another preset swaps the resident model and evicts
   every slot.
-- **On a remote provider, a handle removes a cap that exists today.** Now,
+- **On a remote provider, a program's read removes a cap that exists today.** Now,
   `output_budget_bytes` and the spill rule bound how much of an oversized
-  result ever enters a request. A handle chunked into `llm_map` sends all
+  result ever enters a request. A text chunked into `llm_map` sends all
   of it to whatever model the run holds. The provider connection is not a
   tool, so the interlock never covered it. That is harmless on the local
   router, which is what this slice is for. On a remote provider it is
@@ -392,8 +408,9 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 - **Host limits** are counted by mecha at a host call. Crossing one
   raises a `LimitError:`-tagged `RuntimeError` naming the limit, which the
   program can catch (§4). These are sub-calls, sub-call input tokens,
-  thinking-on passes, tool reads, handle operations, host bytes (per
-  program and per process), live handles, and `peek` plus `str[n]` bytes.
+  thinking-on passes, tool reads, host-function calls ("handle
+  operations", the name it kept), and host bytes (per program and per
+  process). R11 retired the live-handle and `peek` caps (§3).
 - **Backstops** are the wall clock (the interpreter's own deadline, with
   `monty-pool`'s per-turn `request_timeout` and `max_feed_duration` behind
   it), monty's memory limit, and `max_suspensions`. Monty 1.4 has no
@@ -406,17 +423,15 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 
 | Limit | Default (R4, ruled 2026-10-31) | Enforced by |
 |---|---|---|
-| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
+| sub-calls | 32 | the host, **per pass**: `llm_map` over N texts is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
 | thinking passes | 8 | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
-| tool reads | 256 | the host, counted at the gate |
-| handle operations (§3) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
+| tool reads | 2,048 (was 256; owner, 2026-11-01) | the host, counted at the gate |
+| host-function calls (§3; `handle_operations` in `budget()`) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
 | wall clock | 600 s | the interpreter, from the program's start and across the host's answers. `monty-pool`'s `request_timeout` is **unset by default** and is set to the same value, but it bounds one protocol turn, not the program |
-| host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
-| live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
+| host bytes | 64 MB | the host, summed over every tool result a program is handed; the read that would cross it raises |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
-| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
-| `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
+| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap, the program's copies of its texts included. The host-byte rows above bound what the host reads and hands over before the worker sees it. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
 
 **Memory on a Mac: monty's ceiling holds, and nothing stands behind it.**
 On Linux, `[sandbox] memory_mb` puts the worker in a cgroup, a wall
@@ -488,10 +503,22 @@ draws on the budget at a higher rate. R4 sets a separate, smaller cap on
 passes that thought (8, ruled 2026-10-31), so the clock still never binds
 first.
 
-A long document chunked into handles can reach 256 host calls before 32
-sub-calls, because `find`, `slice` and `chunks` are host calls. So the
-handle operations of §3 count toward their own, larger limit (2,048),
-and 256 applies to tool reads only. Each limit's error says which limit it
+A long document chunked by host functions can make hundreds of host calls
+before 32 sub-calls, because `find`, `slice` and `chunks` are host calls.
+So the host-function calls of §3 count toward their own limit (2,048),
+apart from tool reads. Tool reads were 256 until a 300-file sweep could
+not finish: nothing a program holds survives to the next `code` call, so
+a job past the limit had no way through, and the model split it into
+programs that each hit the limit again (§13). Each read still meets the
+whole gate and arms taint. The 64 MB host-byte limit bounds what a
+program is handed, not what the program record keeps: a read whose bytes the limit
+refuses is already recorded, and a program can catch the `LimitError:` and
+read on, so the record could reach 64 MB plus one result per read. That term
+grew with the raise (review of #793), and again when a program's `fs_read`
+began to return up to 64 MB. So the record is bounded while the program
+runs too: every read applies the conversation's own ceiling
+(`record::RETAINED_BYTES`, 256 MB, newest kept), and an older call past it
+keeps its record without its bytes, which grounding reads as no referent. Each limit's error says which limit it
 was, because that error is the model's only feedback.
 
 Each run's total also draws on its existing `RunContext` budget.
@@ -688,6 +715,71 @@ attacker selects from their own text can be an address; that is a
     `ARCHITECTURE.md` §Code mode's interpreter. There, `preflight` also asks
     the kernel what the live worker's profile denies, because a launcher
     that dropped the profile would otherwise pass it.
+  - **On a Mac a watchdog stands in for `--die-with-parent`** (R10).
+    bwrap takes the worker down with a killed mecha. The Seatbelt chain is
+    all `exec`s (`env -i` → `sandbox-exec` → worker), so the pool's kill on
+    drop is the only thing that ends a worker, and a `SIGKILL`ed mecha
+    never runs it. A worker computing at that moment never reads its
+    stdin's EOF, and the wall clock lived in the host that died.
+    - An idle worker is no risk: it sits reading its stdin and exits on
+      the EOF. So a program arms a watchdog (`interpreter::watchdog`) when it
+      checks a worker out, before the worker runs a line. A watchdog that
+      cannot arm refuses the program, so preflight refuses code mode rather
+      than running it unguarded.
+    - **The watchdog is mecha's child, in a process group of its own**
+      (`process_group(0)`). tokio reaps it when it ends, and a dropped one
+      is never killed, because it has to outlive mecha.
+    - *Incident:* the first shape was a loop the launcher double-forked. It
+      was reparented to launchd at every worker start while it stayed in
+      mecha's process group. On CI that group is also the runner's, and
+      with the tests that `SIGSTOP` a worker it lost the runner itself in 5
+      of 18 macOS runs ("the hosted runner lost communication"), against 0
+      of 16 with those tests skipped. Now nothing in mecha's group is ever
+      reparented while mecha lives, and the loop's group holds only the loop
+      and its `sleep`, which nothing ever stops.
+    - Once a second the loop checks the worker with the `kill -0` builtin,
+      and it ends when the worker does.
+    - Both pids are recorded with their start times (`ps -o lstart`), and
+      `exec` keeps a process's start time. Mecha is alive while `kill -0`
+      reaches its pid and `ps` reads mecha's start time there, so a reused
+      pid cannot pass for a live mecha.
+    - Once mecha is gone, the loop kills the worker, but only if that pid
+      still has the worker's start time, so it never kills a pid the kernel
+      has since reused.
+    - **An unreadable `ps` is never an answer** (review of #772). An empty
+      read is as often a failed fork, under the process limit or memory
+      pressure, as a missing process. Concluding from one would kill a
+      healthy worker, or retire the watchdog and leave the worker
+      unguarded. So an empty read counts as mecha alive, or the worker's
+      start time unknown, and the loop asks again a second later. Before it
+      says `ok`, an unreadable start time refuses the program instead.
+      `the_watchdog_takes_no_answer_from_a_ps_that_fails` and
+      `a_watchdog_that_cannot_read_start_times_is_refused` measure both,
+      with a `ps` stand-in.
+    - **Arming races the Stop and the wall clock**, as the checkout does
+      (review of #772). A Stop during the handshake ends the program
+      `Cancelled`. A wall clock that runs out during it refuses the program.
+      Either way the checkout drops, which kills the worker.
+    - **A loop not yet armed takes its whole group with it**, however arming
+      ends: refused, timed out, or abandoned when the race above is lost
+      (review of #780). Otherwise a hung `ps` would outlive it, and the loop,
+      blocked on that `ps`, would never reach the write that ends it. An
+      armed loop is never killed, and a dropped `Watchdog` keeps guarding.
+      `a_failed_handshake_takes_its_hung_ps_with_it`,
+      `a_stop_during_the_watchdogs_handshake_ends_the_program`,
+      `a_handshake_past_the_wall_clock_refuses_the_program` and
+      `a_dropped_watchdog_keeps_guarding` measure those, with a `ps` that
+      hangs.
+    - The launcher is the bare `exec` on both platforms again. The loop runs
+      outside the profile, as mecha does, as fixed text that takes no input
+      from a program.
+    - While mecha lives, each poll forks `sleep` and one `ps`. Arming forks
+      two `ps` ahead of the program, and §10's cold start predates that.
+    - The worker outlives mecha by at most about a second, and
+      `the_watchdog_ends_a_worker_whose_mecha_was_killed` fails without the
+      watchdog. `a_seatbelt_program_is_watched_and_a_bwrap_one_is_not`
+      measures the wiring, through a stand-in `sandbox-exec`, so it runs off
+      a Mac too.
   - Littrs (0.6.2, Apache-2.0) is a fallback for this slice only. It has
     no pause API but needs none here, and its limits are weaker (no memory
     or time limit outside its WASM mode). wasmtime with a Python guest
@@ -695,8 +787,8 @@ attacker selects from their own text can be an address; that is a
 - **Output.** Printed output plus the final expression, under
   `output_budget_bytes` and the spill rule, exactly as a tool result.
 - **Recording a program's reads, so grounding can find them.** A host
-  call is not a `tool_use`/`tool_result` pair, and a handle keeps its
-  bytes out of the transcript. Without a record, everything that walks
+  call is not a `tool_use`/`tool_result` pair, and a program's read keeps
+  its bytes out of the transcript. Without a record, everything that walks
   `grounding::calls` loses its referent for what a program read:
   - gossip's citation check (`gossip.rs`);
   - the outbox's "what is this draft answering" join (`outbox_source.rs`);
@@ -726,9 +818,9 @@ attacker selects from their own text can be an address; that is a
     `the_jail_admits_the_spill_directory_and_nothing_else_new`, because a
     cap marker tells the model to go and read the rest there. Blobs there
     would let `fs_list` and `fs_read`, both admitted in §2 and both
-    callable by the model directly, read every handle's raw bytes,
-    uncapped and uncounted. That would bypass §3's `peek` rule and §5's
-    cap completely.
+    callable by the model directly, read every program read's raw bytes,
+    uncapped and uncounted, from a turn, past the output cap that guards
+    what a program's results reach the model as (§3).
   - **A root per session, under the mecha home.** Spill is also the wrong
     lifetime: its root is keyed by the workspace's hash, and
     `forget::purge_workspace` keeps it whenever another conversation shares
@@ -770,8 +862,8 @@ attacker selects from their own text can be an address; that is a
     `messages_ever`'s sibling.
   - **That is a change to `grounding.rs`, not a record format.** The walk
     gains a second source (`&[ProgramCall]`), and `Call` gains an owned,
-    nested variant under the `code` call that made it, so a handle's
-    source and a span inside it dereference. The five readers of the
+    nested variant under the `code` call that made it, so a program
+    read's source and a span inside it dereference. The five readers of the
     walk change to pass it: `attribution.rs`, `gossip.rs`,
     `outbox_source.rs`, `appraisal_store.rs` and `persona/cite.rs`. A
     sixth edit is outside it: the diagnostician's carry-over check in
@@ -829,7 +921,8 @@ attacker selects from their own text can be an address; that is a
   `sessions health` splits by the tag, so a program-heavy week reads as
   that and not as a jump in tool use.
 - **Counters.** New `RunStats` counters: `programs`, `program_errors`,
-  `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
+  `subcalls`, `subcall_tokens`, `peeked_bytes`, `program_read_bytes` (the
+  tool-result bytes a program was handed, added after R11), `budget_stops`. Each is an
   `Option<u32>`, as `context_overflows` is, because a row written before
   the sensor existed is unknown, not zero.
 
@@ -1014,7 +1107,9 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 
 - **The interpreter is not where a program's time goes.** A host call costs
   10–18 µs, against M0's 0.3–0.5 s for a thinking-off pass: the §5
-  suspension backstop's 2,336 calls would spend about 40 ms in transport.
+  suspension backstop's 2,336 calls would spend about 40 ms in transport
+  (4,128 since tool reads went to 2,048: about 75 ms; 6,176 since R12, where
+  a read through `open()` is two suspensions).
   Worker start is about 4 ms cold, most of it bwrap (bare start is under
   1 ms), and a warm worker is reused in under 0.1 ms.
 - **Contention cost the interpreter a third at most.** One decode in flight
@@ -1042,10 +1137,16 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 - **`request_timeout` bounds one protocol turn, not a program.** The
   program's wall clock is the backend's own deadline, which also counts the
   host's time answering calls.
-- **`monty-pool` needs Rust 1.96**, above the workspace's 1.89 MSRV, and
-  always builds its WebSocket transport (rustls with aws-lc, a C build;
-  about 50 crates in all). So the backend is behind the cargo feature
-  `monty`, off by default, and CI tests it in the `sandbox backends` job.
+- **`monty-pool` needs Rust 1.96**, and always builds its WebSocket
+  transport (rustls with aws-lc, a C build). The backend is the cargo
+  feature `monty`.
+  - It was off by default while the workspace promised 1.89.
+  - **Since 2026-10-31 it is on by default (owner's ruling)**, and the
+    workspace's `rust-version` is 1.96. Every monty crate declares 1.96,
+    the highest in the tree.
+  - It adds 51 crates to `mecha-cli`'s build, from 284 to 335.
+  - `--no-default-features` still builds a mecha without it, and that
+    mecha says so by name.
 
 **The experiment** (`mecha exp`, fixtures on the fictional cast only):
 
@@ -1097,7 +1198,18 @@ with your recs"), except R4, which waited on M1 and was ruled on
   a worker on this box. The numbers live in `tool/code.rs`'s `defaults`.
 - **R5. Yes.** `peek` exists, capped together with `str[n]` results, and
   counted (§3). The cap's number belongs to R4's budget table (§5): 16 KB,
-  ruled with it.
+  ruled with it. **Raised to 256 KiB on 2026-11-01 (owner).** The first live
+  test hit 16 KB on a program that read 40 short notes (#791), and in the
+  read-only slice the cap guards less than the number suggested:
+  - reading a handle already arms the run, and `peek` lowers no label;
+  - a program has no sink, so a branch that third-party text steers can
+    change only what it computes and prints;
+  - what it prints is capped and wrapped as untrusted, like any tool result.
+
+  It stays counted (`peeked_bytes`). The sink slice revisits it (§12).
+- **R4 raise: tool reads 2,048 (owner, 2026-11-01).** Was 256, which a
+  300-note sweep could not get under (§5, §13). `fs_list`'s names come to
+  a program as `str`, counted with `peek` (§3), ruled the same day.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
   thinking-off request can be silently ignored (§4). The floor alone
@@ -1116,6 +1228,60 @@ with your recs"), except R4, which waited on M1 and was ruled on
   `trusted_output` child's nested program records, but only while no model
   pass reads that join (§7). The build lists every reader of the join and
   asserts none is a model pass.
+- **R10. A watchdog over the worker** (2026-10-31, taking the
+  recommendation): on a Mac a worker must not outlive a `SIGKILL`ed
+  mecha. It was raised by #769's review. Built as §7's watchdog. The other
+  option was reaping leftover workers at the next start, which only
+  clears up after the fact.
+- **R11. A tool's result reaches a program as a `str`** (the owner,
+  2026-11-02, after M2 and a survey of other harnesses, §13). The opaque
+  handle is retired; the guard is the program's output, capped and
+  wrapped as any tool result; taint is unchanged. The live-handle and
+  `peek` caps go with it (`peeked_bytes` still counts `peek` and `str[n]`,
+  so a stored counter keeps its meaning), and `chunks` takes any `n` of
+  at least 1. The sink slice
+  decides opacity again for itself (§3, §12).
+- **R12. `open(path)` reads text, through `fs_read`** (the owner,
+  2026-11-02, after M4, §13). In a program that was given `fs_read`,
+  `open(path)` in mode `r` answers with a file object, and every read of
+  one (`read`, `readlines`, `readline`, a `for` loop, `csv` over it, a
+  `pathlib` `read_text`) is one `fs_read(path=...)` call, so the guard,
+  the limits and the taint are those of the call a program would have
+  written. Any other mode, binary or write, and any program without
+  `fs_read`, is refused as before. The refusal had cost a turn in most M2
+  to M4 first programs, and in one M4 run it was swallowed by a bare
+  `except` and the program reported no match with nothing raised. A
+  program runs in a directory that is not a real path (`/.mecha-workspace`),
+  so a relative path reaches `fs_read` relative to the workspace and an
+  absolute one (a spill file, an owner grant) as written, for `fs_read`'s
+  jail to decide. Rooted at `/`, the two could not be told apart, and M5
+  read a spill file's absolute path inside the workspace. A read through
+  `open()` is two suspensions against one tool read, so the suspension
+  backstop counts tool reads twice.
+- **R13. A program lists the workspace through `fs_list`** (the owner,
+  2026-11-02, after M5, §13). In a program given `fs_list`, monty's
+  listing calls are answered by `fs_list`, as R12 answers a read with
+  `fs_read`: `os.listdir` and `Path.iterdir` with one call, `os.walk`,
+  `os.scandir` and `Path.glob` and `rglob` (one `Path.scan` of the
+  subtree, which monty walks or globs itself) with one call per directory
+  the scan reaches, breadth first, and `os.path.exists`, `isfile` and
+  `isdir` from the parent's listing (a parent that cannot be listed is a
+  path that is not there). Each call meets the tool's guard, limits and
+  taint. A path a walk hands back opens through R12. The description
+  offers it only where `fs_list` hands out names. Walking a tree with
+  `os`, `glob` or `subprocess` was 14 of M5's 29 raised programs. Two
+  divergences from Python, on purpose: a directory a scan cannot list
+  raises rather than being skipped (`os.walk`'s `onerror=None`), so a
+  short walk is never a silent one; and `fs_list` does not follow links,
+  so a link to a directory is listed as a file. A probe answers `False`
+  only when `fs_list` ran and failed; one the gate refuses (a hook, a
+  denial, a policy, a path outside the jail when `request_access` is in the
+  run, which makes it a question for a person) raises, as do a spent limit
+  and a stop. Without `request_access`, a path outside the jail is the
+  tool's own error, so the probe reads `False`. A
+  probe in a directory the program has already listed answers from that
+  listing, without another call, and a scan past 131,072 entries raises a
+  `LimitError`.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
@@ -1137,6 +1303,12 @@ with your recs"), except R4, which waited on M1 and was ruled on
 
 ## 12. Deliberately not in this slice
 
+- **The peek cap's size in the sink slice.** R5's cap was raised to 256 KiB
+  because a read-only program has no sink (§11, R5). The moment a program
+  can reach one, prose inside it can steer a branch toward that sink, and
+  the cap bounds how much prose can do that. The sink slice must set this
+  number again, with that argument, and not inherit 256 KiB.
+
 When code lands, the invariants §2–§7 assert move to `ARCHITECTURE.md`, in
 a §Code mode section, and this document stops being cited for them. It
 is a design, and its list of named edits rots against the tree faster
@@ -1153,6 +1325,24 @@ than an architecture section kept beside the code.
   session from running a program with a sink. The sink slice is §3.12's original
   shape, with snapshots MAC'd, taint carried beside them, and a version
   mismatch failing closed.
+- **State kept between `code` calls**, a future feature to consider (the
+  owner, 2026-11-02). Pydantic AI's code mode keeps a REPL across calls
+  with a `restart` flag; this slice starts each program clean. What it
+  would buy is smaller than it looks: in M5, 11 of the 39 programs after a
+  run's first re-read a path an earlier one had read, and a local read is
+  milliseconds, while the cost of a retry is the model's turn, which state
+  does not remove (a slow tool, mail or the web, would gain more). What it
+  costs: the program record and the grounding walk assume a program is
+  self-contained, so a value read in one call and used in another needs a
+  link between their records (and the sink slice's MAC'd snapshots with
+  taint beside them, above); a worker of up to 256 MiB held per
+  conversation, across turns minutes apart and across `mecha serve`'s
+  chats; state lost to a deploy, a timeout, a crash or a compaction the
+  model may not notice, which needs a `restart` and a "state was lost"
+  note as Pydantic has; and `replay_run` re-running a chain rather than a
+  program. The cheap first form, if taken up: state that lives for one
+  model turn and is dropped at its end, which covers the fix-and-rerun
+  case without the snapshot.
 - **`Blind` tools.**
 - **Value-level labels inside the program** (CaMeL's capability tags).
   monty does not track data flow, and filtering it by hand is the approach
@@ -1178,27 +1368,16 @@ than an architecture section kept beside the code.
     ends the program as `Backstop::WorkerKilled`. Its overshoot is one
     polling interval of allocation, so it is weaker than a kernel limit and
     needs no knowledge of the map size.
-- **A worker that outlives a killed mecha on a Mac.** On Linux bwrap's
-  `--die-with-parent` makes an orphan impossible: when mecha dies, bwrap gets
-  the parent-death signal and takes the worker with it. On a Mac the launch
-  chain is all `exec`s (`env -i` → `sandbox-exec` → worker), so the only
-  thing that ends a worker is the pool's own kill when it drops, and a
-  `SIGKILL`ed mecha never runs that. A worker computing at that moment does
-  not read its stdin, so it never sees the EOF. The wall clock lived in the
-  host that died, so the orphan spins a core until someone kills it, holding
-  up to `max_memory`. Seatbelt bounds what the worker can reach, not how
-  long it lives. A clean exit, or a panic that unwinds, drops the pool and is
-  not affected. The fix is the owner's call (review of #769), not built:
-  - **A watchdog in the launcher**: a shell that starts a loop waiting on
-    mecha's pid, then `exec`s the chain, so the worker keeps the shell's
-    pid. When mecha dies, the loop kills that pid. The loop has to stop on
-    its own when the worker exits, or it will kill a reused pid. It must not
-    hold the worker's pipes, and it runs outside the profile. A polling loop
-    in `sh` can do this. A `kqueue` `NOTE_EXIT` wait is exact but needs a
-    helper binary.
-  - **The pool noticing**: nothing in the host survives a `SIGKILL`, so
-    this only covers the next start. It would reap leftover workers by
-    their recorded pids at preflight.
+- **A killed mecha that its parent never reaps** leaves its Mac worker
+  running. A zombie still answers `kill -0`, and `ps` reads its original
+  start time, so the watchdog (§7, R10) waits for as long as the zombie
+  lasts. A shell, launchd and systemd all
+  reap their children.
+- **A killed mecha leaves its launcher's directory behind.** The
+  `mecha-monty-*` directory in the temp dir, holding the launcher script
+  and the workers' stderr log, is removed by `Launcher`'s `Drop`, which a
+  `SIGKILL` skips. The watchdog ends the worker but not the directory. It
+  is mecha's own, mode 0700, and nothing sweeps it yet.
 
 ---
 
@@ -1256,3 +1435,311 @@ The literature agrees:
    found none in the current corpus. The precedent is RLM-Qwen3-8B,
    about 1,000 filtered trajectories from a stronger model writing
    programs in the same harness.
+
+**The first live test (2026-11-01, Qwen3.6-35B-A3B on the router, `mecha
+run`).** The fixture was 40 fictional meeting notes and one question that
+needed all of them. Both runs answered right. They failed in different ways:
+
+| | told nothing about `code` | told to use `code` |
+|---|---|---|
+| called `code` | **no**: 41 `fs_read` calls over 6 turns | yes: 16 programs, **8 failed** |
+| tool calls, turns, time | 41, 6, 100 s | 191, 20, 66 s |
+
+- **Unprompted, it did not reach for `code`**, though it was offered. The
+  notes come to about 16 KB, so reading them was a sound choice; this
+  fixture does not make `code` necessary.
+- **Told to use it, it wrote ordinary file I/O** (`os.listdir`, `open`).
+  Monty's bare `Permission denied: '/notes'` sent it probing paths.
+- **A silent wrong answer.** `"Priya Okafor" in text` searched a handle's
+  stub and reported 0 meetings, with nothing raised.
+- **The 16 KB `peek` cap stopped a correct program** reading 40 short
+  notes.
+
+#791 answers the last three: handles that raise when used as text, an OS
+refusal that names the program's functions, a description that leads with
+when to use `code` and shows `count`/`find` on handles, and the cap at
+256 KiB. Adoption, the first finding, is what the next test measures, on a
+fixture too large to read file by file.
+
+**The second live test (2026-11-01, the same model, after #791).** 300
+fictional notes, 846 KB, the same kind of question, not told about `code`.
+
+- **Adoption held: it chose `code` unprompted.** 37 of its 42 tool calls
+  were programs.
+- **It never answered.** The run used all 40 turns in 630 s: 20 programs
+  failed, 11 on a budget limit.
+- **The tool-read limit made the job impossible.** 256 reads cannot cover
+  300 files, and a program starts with nothing from the last, so every
+  split it tried hit the limit again.
+- **It asked the model where a pattern would do.** It sent 394 sub-calls
+  through `llm_map` to pull attendee lists, where `count` was free, and
+  the 32-sub-call limit stopped those programs too.
+- **String habits again.** `os.listdir` first, then `.startswith` on
+  `fs_list`'s entries, before a working program.
+
+The answer: tool reads at 2,048, `fs_list`'s names as `str` (§3), and a
+description that says to do the whole job in one program and to keep
+sub-calls for what a pattern cannot judge.
+
+**The third run (2026-11-01, #793's build, the same fixture).** It answered
+in 85 s and 10 turns: 7 programs, 3 failed, 536 host calls, no sub-calls.
+- **Priya: right**, 144 meetings, every number listed.
+- **Marco: wrong, for a reading reason.** It counted "Marco Bellini"
+  anywhere in a note, which is the 124 meetings he attended, and called them
+  the meetings he presented (25). The 25 decisions it owed were all in its
+  list of 124. Nothing in the program was broken; it never looked at a
+  note's layout before the sweep. The description now says to peek at one
+  item first and match the field the question names.
+- **The first program still used `in` on a handle**, which raised with the
+  hint, and the next program used `count`.
+
+**The fourth run (2026-11-01, with that line).** Both answers right: Priya's
+144 meetings and the 25 Marco presented, each with its decision, in 132 s
+and 15 turns. 11 programs, 6 failed, 1,298 host calls, 25 sub-calls. A
+single run each, so this says the path works, not how often it does; M2
+(above) is the measurement.
+
+**The battery (2026-11-01, #793 deployed).** Seven runs, none told about
+`code`, on fictional fixtures with known answers:
+
+| Task | Answer | `code`? | What happened |
+|---|---|---|---|
+| the 300 notes, three times | right once; twice Marco 18 of 25 | yes | `peek(h, n)` after `find`, expecting text around the hit; it reads the head. Two of the runs were the same program: the provider's pinned seed (42) makes repeats identical, so they are one sample |
+| which of 32 meetings ended without agreement (told in prose) | wrong: 4 of 10, 9 wrong | yes, no sub-calls | it searched for the word "inconclusive" |
+| failures in a 1.5 MB log | wrong: "0" (7) | no | `fs_read` stopped at 200 KB and said so after the text; the result cap kept the head, so the note was in the spill file's tail, and the model took a spill file's end for the log's |
+| a join of the notes and a roster | right, every count | yes | four of five programs failed first on habits |
+| five short notes | right | no, correctly | |
+
+The answers: `fs_read` says a cut first, with the file's size, and a
+program's read takes the whole file up to the host-byte limit
+(ARCHITECTURE.md, *A cut read says so first*; `shell` and `http_fetch`
+followed, after the rerun below); `peek` takes `start` (§3);
+and the description has a judgement example, asking each item's relevant
+part, in a domain unlike any fixture. A repeat must vary the seed to count
+as a second sample.
+
+**Rerun on #796's build (2026-11-01), seeds varied** by a run directory's
+`mecha.toml` (a provider table there replaces the global one whole, so it
+carries the full block):
+
+| Task | Before | After |
+|---|---|---|
+| the log | "0" | **right**: 7 failures, every date, the last code; 11 programs, 8 failed first |
+| the minutes, seed 42 | 4 of 10, 9 wrong | 10 of 10, 1 wrong, by `llm_map` over each ending (32 sub-calls) |
+| the minutes, seed 7 | | **exactly right**, by printing each ending and judging them itself |
+| the 300 notes, seed 7 | | Marco right; Priya 150 (144): a fixed 100-character window after "Attendees:" ran into the next line |
+| the 300 notes, seed 1234 | | Priya right; Marco 124: attendance counted as presenting again |
+
+What is left is reading, not machinery: a window where a line-scoped pattern
+(`Attendees:.*Priya`, the description's own) was exact, and "presented" read
+as "attended". Programs still fail first on habits about half the time.
+
+**M2 (2026-11-01 to 11-02, #798's build): the battery, measured.** Five
+fictional tasks, eight seeds (11 to 131), each run twice: with `code`
+offered and with `--no-code-tool`, one run at a time on the router's
+uncensored Qwen3.6 preset, as test sessions, from a run directory whose
+`mecha.toml` sets the seed. Graded by a scorer fixed before reading any
+answer and checked against twelve hand-graded runs. Two scorer artefacts
+were found by reading failures (counts such as "25 presentations" read as
+meeting numbers, and a table that bolded every row) and fixed against the
+same hand grades.
+
+| Task | `code` on | `code` off |
+|---|---|---|
+| 300 notes: Priya's meetings, Marco's decisions | 3/8, ~1 min | 0/8, ~11 min, 36 turns |
+| a roster joined to the notes | **8/8**, 28 s | **0/8**, ~11 min, mostly at the turn limit |
+| which of 32 meetings ended without agreement | 5/8 | 5/8 |
+| failures in a 1.5 MB log | 3/8 | 0/8 |
+| five short notes | 8/8 | 8/8 |
+| **all** | **27/40 (68%)** | **13/40 (33%)** |
+
+The 40 code-on runs wrote 257 programs, and **129 failed**; the first
+program failed in 28 of the 31 runs that wrote one. The breakdown below was
+taken at 35 runs (220 programs, 108 failed); by what raised:
+- **a handle used as text, about 46**: `.strip()`, `.split()`, `.lower()`
+  and the like (31), `in` (6), `len()` (4), a join of handles (3);
+- **the operating system, 25**: `open()` (23), `os.path`, `os.listdir`, in
+  19 of 27 first programs, though the description said "no os, open";
+- **a host limit, about 24**: `lines()` over a 22,874-line log past the
+  live-handle cap, `llm_map` asking 65 to 70 questions a pattern could
+  answer, `find` past 4,096 matches;
+- **small habits, about 6**: `size = size(h)`, `peek(h, -500)`,
+  `chunks(h, 200)`.
+
+Two failures raised nothing and cost more. Three of the four failed
+300-note runs matched "Marco Bellini" anywhere in a note and reported the
+124 meetings he attended as the 25 he presented; the description's advice
+to match the field was ignored each time. And in two of the four failed log
+runs the model barely used `code`: it paged the log in 200 KB windows, the
+cut note telling it to read on with an offset, stopped partway, and wrote
+"Based on my thorough review of the entire log file".
+
+**What other harnesses do** (researched 2026-11-02, sources in the PR):
+RLM (the paper and its repository), Prime Intellect's RLMEnv, smolagents'
+CodeAgent, DSPy's RLM, Anthropic's programmatic tool calling and its code
+execution with MCP, and Cloudflare's Code Mode all hand a program real
+values and guard what goes back to the model: a stdout prefix and its
+length (RLM), 8,192 characters (RLMEnv), `max_output_chars` (DSPy). Every
+one but mecha keeps a program's state between calls. Prompt tips that give
+a strategy help some open models and hurt others in Prime's ablations
+(GLM 4.6 on DeepDive fell to about half the plain model's score with
+them), which is the case for structure over advice. RLM's open-model
+sub-call flood was answered by one warning line and batch sizes, which the
+description now carries. RLM-Qwen3-8B, post-trained on about 1,000 filtered
+trajectories from a larger model in the same harness, is the measured
+price if the harness changes stop helping (remedy 5 above).
+
+**What changed (R11):** results as text (§3); `grep`; a cut read in a run
+that offers `code` names a program as the way to search all of it, with the
+model's own path (remedy 2 above); the `os` refusal leads with `fs_read`;
+a function assigned over is named; a negative `peek` length; and a
+description rewritten around strings, with a field-matching example and
+sub-call sizing. **Not taken:** state between `code` calls (§12, still
+deliberately out), `open()` mapped onto `fs_read` (the owner's call), and
+monty's built-in type check against stubs, whose main target was handle
+misuse.
+
+**M3 (2026-11-02, #805's build, deployed c8514549a): M2's code-on arm
+rerun on R11.** The same five tasks, eight seeds, run directories and
+scorer, with one change to the scorer, made **after reading M3's answers**:
+the log grade accepts each backup failure's date in the owner's zone
+(America/New_York, the run's configured zone; the question names none) as
+well as UTC, because a 02:00Z failure falls on the previous evening there.
+Six of M3's eight log runs dated every failure that way, all seven dates
+right, with the count and the last code. Under the grade as fixed before
+M2, M3's log row is **2/8** and its total **30/40**; both figures are
+given below. Applied to M2 the change moves nothing (3/8 and 0/8 stand),
+but that is no control for M3: M2's failed log runs missed failures
+outright, so neither grade had dates of theirs to judge.
+
+| Task | M2, `code` on | M3, `code` on (R11) |
+|---|---|---|
+| 300 notes: Priya's meetings, Marco's decisions | 3/8, ~1 min | 4/8, 50 s |
+| a roster joined to the notes | 8/8, 28 s | 8/8, 14 s |
+| which of 32 meetings ended without agreement | 5/8 | **8/8** |
+| failures in a 1.5 MB log | 3/8, 26 turns | **8/8**, 4 turns (2/8 dated in UTC) |
+| five short notes | 8/8 | 8/8 |
+| **all** | **27/40 (68%)** | **36/40 (90%)**; 30/40 under the UTC-only grade |
+
+| Programs | M2, `code` on | M3, `code` on (R11) |
+|---|---|---|
+| raised | 129 of 257 (50%) | 19 of 93 (20%) |
+| the first one raised | 28 of 31 runs | 14 of 32 runs |
+
+The 40 runs took 16 minutes of run time, against 52 for M2's code-on arm.
+**Of the 14 first programs that raised, 13 called `open()`**, and in 12 of
+those runs the next program read through `fs_read` as the refusal says; 14
+of the 19 programs that raised did so on that one habit, which `open()` on
+`fs_read` would remove (the owner's call, not taken under R11 above).
+Nothing raised on a string method, `in`, `len()` or a host limit. The four
+wrong answers are reading, all on the 300 notes, and none raised: three
+counted the 124 meetings Marco attended as the 25 he presented, as in M1
+and M2, and one took a note's discussion line for its decision.
+
+**M4 (2026-11-02, build 2d1d127d9): five tasks the description was never
+fitted to.** M3 reran the tasks the fixes were designed against, so it could
+not say whether R11 generalizes. M4's fixtures are invented and generated
+from a fixed seed (a 6,000-row CSV, 412 services in nested JSON, a 64-file
+source tree, a 485 KB report, 150 patches), with each question's decoys
+built in: a dependency listed only as soft, a function quoted in a
+docstring, three budgets for similarly named projects. The grader was
+written and checked against the truth and against wrong answers before
+any run, and no rule changed after reading answers. Code on, eight seeds,
+as M3. **M5** reran it on R12's build (188ee8c0d, `open()` through
+`fs_read`), with nothing else changed.
+
+| Task | M4 | M5 (R12) |
+|---|---|---|
+| the top region by revenue in a CSV, and a threshold count | 8/8, 35 programs | 8/8, 17 programs |
+| which services list a queue as a hard dependency | 6/8 | **8/8** |
+| which files define a function, and its default | 0/8 | 0/8 |
+| one approved budget in a long report | 8/8 | 8/8 |
+| which patches touch two files, and the lines they add | 5/8 | **8/8** |
+| **all** | **27/40** | **32/40** |
+
+| Programs | M4 | M5 |
+|---|---|---|
+| raised | 43 of 108 (40%) | 29 of 79 (37%) |
+| the first one raised | 22 of 40 runs | 17 of 40 runs |
+
+**What raised in M4:** `open()` refused, 24 of 43, in four of the five
+tasks; a method passed as a value (`max(d, key=d.get)`, which monty 1.4
+does not support while `d.get(k)` works), 11, every one in the CSV task;
+`import io`, 5; and 3 others (`import subprocess`, `fs_read` imported as a
+module, a `NameError`). One run did worse than raise: its program wrapped
+the reads in a bare `try/except`, the refusal was swallowed, and it
+printed "0 matches", so the model reported that no file defined the
+function. That was the case for R12 over a better refusal.
+
+**What raised in M5:** no `open()` refusal; `key=d.get`, 9, despite the
+description now naming it (each run recovered on its next program);
+`os.walk`, `glob`, `subprocess` and the like, 14, 13 of them in the
+source-tree task; `fs_list` imported as a module or given a path outside
+the workspace, 3; and 3 reads of a spill file by its absolute path, which
+R12's first form read inside the workspace. #809 runs a program in a
+directory that is not a real path, so an absolute path now reaches
+`fs_read` as written.
+
+**What the wrong answers were.** The source-tree task failed every run in
+both: every M5 run named all five defining files with the right defaults,
+and also the file that only quotes the function in a docstring (M4: six of
+eight had all five; one found one of them, and one said "none found" after
+the swallowed refusal). That is reading, the same shape as "attended" for
+"presented" in M1 to M3. M4's two services failures were right answers
+that also named the services listing the queue only as a soft dependency,
+which the grade counts as extras; no M5 answer did. M4's three patch
+failures were wrong line totals (107 against 135, for one), and M5 had
+none.
+
+**What is left:** the docstring decoy, a reading error R11 and R12 do not
+touch; `key=d.get`, a monty gap a description line did not move; and
+programs that reach for `os`, `glob` or `subprocess` to walk a tree, which
+the refusal answers with `fs_list` at the cost of a turn.
+
+**M6, the Claude comparison, and the grade's second form (2026-11-02).**
+M6 reran M4's tasks on R13's build (5e5b3c47a: listing through `fs_list`,
+and a hint for a method taken as a value), with nothing else changed. The
+same tasks were run four times each with Claude (`claude-opus-5`) as the
+provider, which needed #813 first: the graph server's `kg_pending` has a
+top-level `anyOf` in its schema, which the Messages API refuses for the
+whole request.
+
+**The grade's second form**, fixed before M6 ran (the script's sha256
+begins `d93ee9f7`): the first counted any extra name in an answer, so an
+answer that named the docstring decoy only to say it is not a definition
+failed. Claude's answers did that in every source-tree run, and in two
+services runs named the soft dependencies only to exclude them. Now, for
+those two tasks, an answer with a table answers in it, and only names in
+its rows count; an answer without one claims a name on any line that does
+not mark it excluded. Its wording was fitted to answers already read, so
+it was checked against hand grades of every M4, M5 and Claude answer, and
+agrees with each; M6 is the first set it graded unseen.
+
+| | M4 | M5 (R12) | M6 (R13) | Claude, 4 runs each |
+|---|---|---|---|---|
+| passed, second form | 30/40 | 32/40 | 31/40 | 20/20 |
+| passed, first form | 27/40 | 32/40 | | 14/20 |
+| programs that raised | 43 of 108 | 29 of 79 | 14 of 61 | 0 of 41 |
+| first program raised | 22 of 40 | 17 of 40 | 12 of 40 | 0 of 20 |
+
+**What M6 changed.** No walk was refused (M5: 14), and programs that
+raised fell from 37% to 23%. `key=d.get` still raised 8 times, all in the
+CSV task's first programs, and the hint was on every one; each run was
+right on its next program, as in M5. The source-tree task is still 0/8:
+seven runs listed the docstring decoy as a definition, and the eighth was
+silent. Its programs walked all 64 files and opened each with `open(path,
+'r', errors='ignore')`, which monty 1.4 refuses with a `TypeError` before
+any host call; a bare `except` swallowed every one, and the model answered
+that no file contained the word. No shim answers a call that never reaches
+the host, so the description now says `open` takes no `errors=`. One patch
+run summed its lines wrong.
+
+**What the comparison says.** With the same harness, tools and tasks,
+Claude answered all 20 correctly and none of its 41 programs raised. It
+read the decoy for what it is every time ("inside a `DOC` string literal,
+not real code"), where the local model listed it as a definition in 7 of 8
+runs in M5 and in M6. So what remains on these tasks is the local model's
+reading and its first-draft habits, not the harness: the lever left is the
+model, a stronger one or a trained one, and Claude's runs in this harness
+are the shape of the trajectories `POST-TRAINING-RESEARCH.md` §7 would
+train on.

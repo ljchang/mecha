@@ -13,9 +13,9 @@
 //! **`classify` is the quarantined pass.**
 //!
 //! Mail arrives the same way it does for the model: through the MCP tool
-//! surface. This crate has no dependency on `mecha-mail` and does not gain
-//! one here — `mail_recent` already answers in JSON, so the driver reads the
-//! same bytes the loop would.
+//! surface, so the driver reads the same JSON bytes the loop would. The CLI
+//! has no runtime dependency on `mecha-mail`; tests use its dev-dependency to
+//! check that the independently implemented triage status rules agree.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -37,6 +37,11 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
+    /// Owner-managed mail rules.
+    Rule {
+        #[command(subcommand)]
+        command: super::mail_rule::Cmd,
+    },
     /// What needs you, newest first (default). Typed fields only.
     List {
         /// Include threads already acted on, and the ones classified `ignore`.
@@ -376,6 +381,9 @@ pub enum Cmd {
 }
 
 pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
+    if let Some(Cmd::Rule { command }) = args.cmd {
+        return super::mail_rule::run(command).await;
+    }
     super::features::require(mecha_core::feature::Feature::Mail)?;
     match args.cmd.unwrap_or(Cmd::List {
         all: false,
@@ -384,6 +392,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         surface: false,
         json: false,
     }) {
+        Cmd::Rule { .. } => unreachable!("rule commands return before the mail gate"),
         Cmd::List {
             all,
             aged,
@@ -1175,6 +1184,9 @@ async fn classify(
                 r.thread_id, r.subject
             );
         }
+        if !dry_run {
+            super::mail_rule::after_classify(account).await;
+        }
         return Ok(());
     }
 
@@ -1240,9 +1252,18 @@ async fn classify(
         );
     }
     eprintln!("classifying with {model} ({provider_name})");
+    // The owner's description rules (MAIL-RULES-DESIGN.md §4.2), asked in the
+    // same quarantined call. Read once: a rule edited mid-sweep is asked
+    // about next sweep, and the record says which matcher each answer is for.
+    let described = super::mail_rule::classifier_rules();
 
     let (mut ok, mut failed, mut escalated) = (0u32, 0u32, 0u32);
     let mut prefiltered = 0u32;
+    // Model calls the description rules added, reported apart so neither
+    // `prefiltered` ("disposed without a model") nor `escalated` (triage's own
+    // second pass) is made false by them.
+    let mut rules_only = 0u32;
+    let mut rules_body = 0u32;
     // Every failure is written the moment it happens, counted against its
     // thread (`fail_now`) — a sweep that dies late (an error, the unit's
     // start timeout) must not leave a failed thread with no `failed` record,
@@ -1270,6 +1291,15 @@ async fn classify(
     for item in work {
         // `full_body`: a thread retried from the store has no snippet to start
         // from, so it is read whole up front and needs no second pass.
+        let has_attachment = match &item {
+            // `attachment_presence`, never `has_attachments`: the flag reads
+            // "cannot tell" as false, and a known negative would let a rule
+            // that may not apply take the single `rule` slot (or hide one
+            // that does). A listing from an older mail binary has no field,
+            // which is unknown, so such rules are not asked.
+            Work::Row(row) => row[ATTACHMENT_PRESENCE].as_bool(),
+            Work::Stored(_) => None,
+        };
         let (mut thread, bulk, full_body) = match item {
             Work::Row(row) => (
                 row_to_input(row),
@@ -1303,13 +1333,64 @@ async fn classify(
             }
         };
 
+        // Which description rules may answer for this message: those whose
+        // header preconditions its envelope proves. None eligible, no ask —
+        // the prompt is then exactly the one without rules.
+        let ask = described
+            .as_ref()
+            .map(|d| {
+                d.ask(&mecha_core::mail_rules::describe::Envelope {
+                    account: &thread.account,
+                    from: &thread.from,
+                    subject: &thread.subject,
+                    has_attachment,
+                })
+            })
+            .filter(|a| a.any_eligible());
+
         // Ahead of the model, never instead of it for anything in doubt.
         // About half a real mailbox is bulk or an automated sender, and
         // spending a classifier call on a shipping notification is the cost
         // this removes. The rule only ever produces `ignore` and reads only
         // the envelope — see `mail_triage::prefilter`.
         if let Some((v, rule)) = mecha_core::mail_triage::prefilter(&thread, bulk) {
-            if let Err(e) = store.put(&record(&thread, Some(v), None)) {
+            let mut rec = record(&thread, Some(v), None);
+            // Owner ruling 2026-11-07: a bulk thread a description rule could
+            // match is read by the classifier for the rules alone. Its triage
+            // reading stays the pre-filter's `ignore`; only the rule answer
+            // is kept, and a failure costs the rules, never the record.
+            if let (Some(ask), Some(d)) = (&ask, &described) {
+                let asked = ask_rules_only(
+                    provider.as_ref(),
+                    &model,
+                    &mut thread,
+                    &today,
+                    &examples,
+                    learned.as_deref(),
+                    ask,
+                    d,
+                    get_thread.map(|t| (t.as_ref(), &ctx)),
+                    full_body,
+                )
+                .await;
+                rules_only += 1;
+                match asked {
+                    Ok(rules) => {
+                        if !full_body
+                            && rules.input
+                                == mecha_core::mail_triage::rule_frame::RuleInput::FullBody
+                        {
+                            rules_body += 1;
+                        }
+                        rec.rules = Some(rules)
+                    }
+                    Err(e) => eprintln!(
+                        "      (description rules not read for {}: {e:#})",
+                        thread.thread_id
+                    ),
+                }
+            }
+            if let Err(e) = store.put(&rec) {
                 eprintln!("  ! {} — {e}", thread.thread_id);
                 failed += 1;
                 // Fails the run at the end, like every other write here.
@@ -1317,21 +1398,46 @@ async fn classify(
             } else {
                 prefiltered += 1;
                 if global.verbose {
-                    println!("  · {} — {} (no model)", thread.subject, rule.as_str());
+                    println!(
+                        "  · {} — {} ({})",
+                        thread.subject,
+                        rule.as_str(),
+                        if rec.rules.is_some() {
+                            "no model for triage; read for description rules"
+                        } else {
+                            "no model"
+                        }
+                    );
                 }
             }
             continue;
         }
 
-        let verdict = mecha_core::mail_triage::classify_with(
+        let first = mecha_core::mail_triage::classify_asking(
             provider.as_ref(),
             &model,
             &thread,
             &today,
             &examples,
             learned.as_deref(),
+            ask.as_ref(),
         )
         .await;
+        let (verdict, mut reading) = match first {
+            Ok((v, reading)) => (Ok(v), reading),
+            Err(e) => (Err(e), None),
+        };
+        let mut rule_input = if full_body {
+            mecha_core::mail_triage::rule_frame::RuleInput::FullBody
+        } else {
+            mecha_core::mail_triage::rule_frame::RuleInput::Snippet
+        };
+        // A match on a rule with a send forces the full body before the rule
+        // verdicts are final (§4.2), per thread and across rules. It changes
+        // only the rule answer: the triage verdict escalates on its own rule
+        // alone, so its measurement stays its own.
+        let rules_need_body =
+            matches!((&reading, &described), (Some(r), Some(d)) if d.escalates(r));
 
         // The second pass. Only where the answer changes what happens — see
         // `needs_body` — and only when the whole thread can actually be
@@ -1341,10 +1447,45 @@ async fn classify(
         let mut did_escalate = false;
         let mut changed: Vec<String> = Vec::new();
         let verdict = match (&verdict, &get_thread) {
+            (Ok(v), Some(tool)) if !needs_body(v) && rules_need_body && !full_body => {
+                match fetch_body(tool.as_ref(), &ctx, &thread).await {
+                    Ok(body) => {
+                        // Kept, so a failed second pass leaves the text the
+                        // stored answer read — the confirmation pass reads it.
+                        let snippet = std::mem::replace(&mut thread.body, body);
+                        match mecha_core::mail_triage::classify_asking(
+                            provider.as_ref(),
+                            &model,
+                            &thread,
+                            &today,
+                            &examples,
+                            learned.as_deref(),
+                            ask.as_ref(),
+                        )
+                        .await
+                        {
+                            Ok((_, second)) => {
+                                reading = second;
+                                rule_input =
+                                    mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
+                                rules_body += 1;
+                            }
+                            Err(e) => {
+                                thread.body = snippet;
+                                eprintln!(
+                                    "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                                )
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
+                }
+                verdict
+            }
             (Ok(v), Some(tool)) if needs_body(v) && !full_body => {
                 match fetch_body(tool.as_ref(), &ctx, &thread).await {
                     Ok(body) => {
-                        thread.body = body;
+                        let snippet = std::mem::replace(&mut thread.body, body);
                         // The same corrections and rules as the first pass.
                         // Escalation fires on `respond` or a named request
                         // kind — the threads the user cares most about — so a
@@ -1352,17 +1493,21 @@ async fn classify(
                         // verdict from a prompt that had never seen a single
                         // correction, including one made about this very kind
                         // of mail.
-                        match mecha_core::mail_triage::classify_with(
+                        match mecha_core::mail_triage::classify_asking(
                             provider.as_ref(),
                             &model,
                             &thread,
                             &today,
                             &examples,
                             learned.as_deref(),
+                            ask.as_ref(),
                         )
                         .await
                         {
-                            Ok(second) => {
+                            Ok((second, second_reading)) => {
+                                reading = second_reading;
+                                rule_input =
+                                    mecha_core::mail_triage::rule_frame::RuleInput::FullBody;
                                 escalated += 1;
                                 did_escalate = true;
                                 changed = changed_fields(v, &second);
@@ -1374,6 +1519,8 @@ async fn classify(
                             // The body pass failing is not the snippet pass
                             // being wrong.
                             Err(e) => {
+                                // And the text it read, for the confirmation.
+                                thread.body = snippet;
                                 eprintln!("      (second pass failed, keeping the first: {e:#})");
                                 verdict
                             }
@@ -1402,6 +1549,18 @@ async fn classify(
                 r.read_whole = full_body;
                 r.escalated_changed = changed;
                 r.escalated_from = from_bucket;
+                if let (Some(ask), Some(reading), Some(d)) = (&ask, reading, &described) {
+                    if let Some(hit) = &reading.active {
+                        println!("      rule: {}", hit.name);
+                    }
+                    let confirmation =
+                        confirm_reading(provider.as_ref(), &model, &thread, d, ask, &reading).await;
+                    let mut rules = mecha_core::mail_triage::rule_frame::RuleRecord::new(
+                        ask, reading, rule_input,
+                    );
+                    rules.confirmation = confirmation;
+                    r.rules = Some(rules);
+                }
                 r
             }
             // A failure is a row and a human's problem. It never falls back to
@@ -1562,9 +1721,21 @@ async fn classify(
     // nobody can grade.
     println!(
         "\n{ok} classified ({escalated} read in full on a second pass{}), \
-         {prefiltered} disposed without a model, {failed} failed",
+         {prefiltered} disposed without a model{}, {failed} failed{}",
         if requeued_ok > 0 {
             format!(", {requeued_ok} retried whole from the store")
+        } else {
+            String::new()
+        },
+        if rules_only > 0 {
+            format!(" for triage ({rules_only} of them read by the model for description rules)")
+        } else {
+            String::new()
+        },
+        // Across both paths, so a total of its own rather than under either
+        // (review of #855, pass 4).
+        if rules_body > 0 {
+            format!("; {rules_body} read in full for description rules")
         } else {
             String::new()
         }
@@ -1584,6 +1755,7 @@ async fn classify(
     // train someone to ignore the alarm. What is reported here is the run
     // having done *nothing*: no classification and no pre-filter disposal,
     // with at least one failure to explain why.
+    super::mail_rule::after_classify(account).await;
     if run_accomplished_nothing(ok, prefiltered, failed) {
         bail!(
             "classified nothing: all {failed} thread(s) failed. \
@@ -1592,6 +1764,107 @@ async fn classify(
         );
     }
     Ok(())
+}
+
+/// The `mail_recent` row key the sweep reads attachment presence from. A
+/// string key into another binary's output, so a test pins it to the writer:
+/// renamed on one side only, `as_bool()` would quietly read every row as
+/// unknown and every rule with `has_attachment` would stop being asked.
+const ATTACHMENT_PRESENCE: &str = "attachment_presence";
+
+/// The rule answer alone for a thread the pre-filter disposed of (owner
+/// ruling 2026-11-07): the same quarantined call and frame as any thread, so
+/// the evidence means the same thing; its triage fields are discarded. A
+/// match on a rule with a send reads the full body, as everywhere.
+#[allow(clippy::too_many_arguments)]
+async fn ask_rules_only(
+    provider: &dyn mecha_core::provider::Provider,
+    model: &str,
+    thread: &mut ThreadInput,
+    today: &str,
+    examples: &[mecha_core::mail_triage::FewShot],
+    learned: Option<&str>,
+    ask: &mecha_core::mail_triage::rule_frame::RuleAsk<'_>,
+    described: &mecha_core::mail_rules::describe::ClassifierRules,
+    get_thread: Option<(&dyn mecha_core::tool::Tool, &mecha_core::tool::ToolCtx)>,
+    full_body: bool,
+) -> Result<mecha_core::mail_triage::rule_frame::RuleRecord> {
+    use mecha_core::mail_triage::rule_frame::{RuleInput, RuleRecord};
+    let (_, reading) = mecha_core::mail_triage::classify_asking(
+        provider,
+        model,
+        thread,
+        today,
+        examples,
+        learned,
+        Some(ask),
+    )
+    .await?;
+    let mut reading = reading.unwrap_or_default();
+    let mut input = if full_body {
+        RuleInput::FullBody
+    } else {
+        RuleInput::Snippet
+    };
+    if !full_body && described.escalates(&reading) {
+        if let Some((tool, ctx)) = get_thread {
+            match fetch_body(tool, ctx, thread).await {
+                Ok(body) => {
+                    let snippet = std::mem::replace(&mut thread.body, body);
+                    match mecha_core::mail_triage::classify_asking(
+                        provider,
+                        model,
+                        thread,
+                        today,
+                        examples,
+                        learned,
+                        Some(ask),
+                    )
+                    .await
+                    {
+                        Ok((_, second)) => {
+                            reading = second.unwrap_or_default();
+                            input = RuleInput::FullBody;
+                        }
+                        Err(e) => {
+                            thread.body = snippet;
+                            eprintln!(
+                                "      (full-body read for the rules failed, keeping the snippet's: {e:#})"
+                            )
+                        }
+                    }
+                }
+                Err(e) => eprintln!("      (could not read the thread for the rules: {e:#})"),
+            }
+        }
+    }
+    let confirmation = confirm_reading(provider, model, thread, described, ask, &reading).await;
+    let mut record = RuleRecord::new(ask, reading, input);
+    record.confirmation = confirmation;
+    Ok(record)
+}
+
+/// The confirmation pass (`ClassifierRules::confirm`), with its failure on
+/// stderr where the sweep's other notes go.
+async fn confirm_reading(
+    provider: &dyn mecha_core::provider::Provider,
+    model: &str,
+    thread: &ThreadInput,
+    described: &mecha_core::mail_rules::describe::ClassifierRules,
+    ask: &mecha_core::mail_triage::rule_frame::RuleAsk<'_>,
+    reading: &mecha_core::mail_triage::rule_frame::RuleReading,
+) -> Option<mecha_core::mail_triage::confirm::Confirmation> {
+    let out = described
+        .confirm(provider, model, thread, ask, reading)
+        .await;
+    if let Some(failed) = out
+        .as_ref()
+        .and_then(|c| c.active.as_ref())
+        .and_then(|a| a.failed.as_ref())
+    {
+        eprintln!("      (confirmation pass failed; its tasks propose: {failed})");
+    }
+    out
 }
 
 /// The whole conversation, as text, for the second pass.
@@ -1789,6 +2062,7 @@ fn record(t: &ThreadInput, verdict: Option<Verdict>, error: Option<String>) -> R
         escalated_changed: Vec::new(),
         escalated_from: None,
         read_whole: false,
+        rules: None,
         corrections: Vec::new(),
         acted: None,
         acted_at: None,
@@ -1839,6 +2113,14 @@ struct CorpusThread {
 /// message would include threads the user started and somebody replied to,
 /// which is not an answer to anything and inflates the baseline.
 fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>> {
+    corpus_threads_with_warning(path, me, |warning| eprintln!("{warning}"))
+}
+
+fn corpus_threads_with_warning(
+    path: &std::path::Path,
+    me: &str,
+    warn: impl FnOnce(String),
+) -> Result<Vec<CorpusThread>> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {} — run `mecha-mail corpus` first", path.display()))?;
     let mut by: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
@@ -1850,8 +2132,20 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
         by.entry(t.to_string()).or_default().push(v);
     }
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for (thread_id, mut msgs) in by {
-        msgs.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
+        let arrival = |message: &Value| {
+            message["date"]
+                .as_str()
+                .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        };
+        // Reply evidence requires known instants. Variable-width fractional
+        // stamps do not sort as text, and a missing date cannot prove order.
+        if msgs.iter().any(|message| arrival(message).is_none()) {
+            skipped.push(thread_id);
+            continue;
+        }
+        msgs.sort_by_key(&arrival);
         let is_me = |m: &Value| {
             m["from"]
                 .as_str()
@@ -1868,17 +2162,14 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
         // request. Counting those inflated the answered stratum by ~1% of the
         // graded pool and put at least one bogus "false ignore" in the first
         // scorecard — an auto-reply from an office they had emailed first.
-        if msgs.iter().any(|m| {
-            is_me(m)
-                && m["date"].as_str().unwrap_or_default()
-                    < first_in["date"].as_str().unwrap_or_default()
-        }) {
+        if msgs
+            .iter()
+            .any(|m| is_me(m) && arrival(m) < arrival(first_in))
+        {
             continue;
         }
-        let after = first_in["date"].as_str().unwrap_or_default().to_string();
-        let replied = msgs
-            .iter()
-            .any(|m| is_me(m) && m["date"].as_str().unwrap_or_default() >= after.as_str());
+        let after = arrival(first_in);
+        let replied = msgs.iter().any(|m| is_me(m) && arrival(m) >= after);
         let g = |k: &str| first_in[k].as_str().unwrap_or_default().to_string();
         out.push(CorpusThread {
             input: ThreadInput {
@@ -1902,6 +2193,14 @@ fn corpus_threads(path: &std::path::Path, me: &str) -> Result<Vec<CorpusThread>>
     // different samples, while the flag documented itself as making a
     // scorecard reproducible.
     out.sort_by(|a: &CorpusThread, b: &CorpusThread| a.input.thread_id.cmp(&b.input.thread_id));
+    if !skipped.is_empty() {
+        skipped.sort();
+        warn(format!(
+            "warning: skipped {} corpus thread(s) with missing or invalid arrival dates: {}",
+            skipped.len(),
+            skipped.join(", "),
+        ));
+    }
     Ok(out)
 }
 
@@ -2336,12 +2635,19 @@ fn score(account: &str, min_age_hours: i64, json_out: bool) -> Result<()> {
         }
     }
 
+    // A thread whose only correction is a description rule's wrong match had
+    // its triage verdict right: it is not a corrected thread. `by_field`
+    // still counts every correction, `rule` included.
     let corrected: Vec<&Record> = records
         .iter()
-        .filter(|r| !r.corrections.is_empty())
+        .filter(|r| {
+            r.corrections
+                .iter()
+                .any(mecha_core::mail_triage::reflectable)
+        })
         .collect();
     let mut by_field: std::collections::BTreeMap<&str, usize> = Default::default();
-    for r in &corrected {
+    for r in records.iter().filter(|r| !r.corrections.is_empty()) {
         for c in &r.corrections {
             *by_field.entry(c.field.as_str()).or_default() += 1;
         }
@@ -2425,7 +2731,11 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
         if account.is_some_and(|a| a != r.account) {
             continue;
         }
-        for c in &r.corrections {
+        for c in r
+            .corrections
+            .iter()
+            .filter(|c| mecha_core::mail_triage::reflectable(c))
+        {
             if !mined.contains(&mecha_core::mail_triage::correction_key(
                 &r.account,
                 &r.thread_id,
@@ -2811,15 +3121,443 @@ async fn triage(
             &tool_ctx(&prepared),
         )
         .await?;
-    if out.is_error {
-        bail!("{action} failed: {}", out.content);
-    }
-    // Recorded before reporting: the mailbox has already changed, and a store
-    // that disagrees with it would send the next sweep back over a thread the
-    // user has dealt with.
-    store.mark(&account, thread_id, action, mecha_core::mail_triage::ACTED)?;
-    println!("{action}d {} — {}", handle(thread_id), out.content.trim());
+    println!(
+        "{}",
+        finish_triage(&store, &account, thread_id, action, &out)?
+    );
     Ok(())
+}
+
+/// Keep the CLI independent of the mail library at runtime. The parity test
+/// compares this rule with mecha-mail's `status_of` through a dev-dependency.
+fn triage_status_of(moved: Option<usize>, failed: usize, left_in_place: usize) -> &'static str {
+    if failed > 0 || left_in_place > 0 {
+        "partial"
+    } else if moved == Some(0) {
+        "nothing_to_do"
+    } else {
+        "completed"
+    }
+}
+
+/// Settle confirmed completion, including an archive already out of Inbox.
+/// A spam no-op does not establish junk training; partial failures likewise
+/// leave the record untouched and in the needs-attention queue.
+fn finish_triage(
+    store: &TriageStore,
+    account: &str,
+    thread_id: &str,
+    action: &str,
+    out: &mecha_core::tool::ToolOutput,
+) -> Result<String> {
+    let short = handle(thread_id);
+    let frame = format!("{action} {short}");
+    let completed = match action {
+        "archive" => "archived",
+        "spam" => "marked as spam",
+        "trash" => "trashed",
+        "read" => "marked read",
+        "unread" => "marked unread",
+        "unarchive" => "unarchived",
+        "untrash" => "untrashed",
+        _ => action,
+    };
+    #[derive(serde::Deserialize)]
+    struct Outcome {
+        account: String,
+        thread_id: String,
+        action: String,
+        status: String,
+        // Required even when null: Gmail acknowledges a thread operation
+        // without counting messages. Missing counts are not that promise.
+        moved: Value,
+        failed: usize,
+        left_in_place: usize,
+        source: Option<String>,
+        message: String,
+    }
+    let outcome: Outcome = match serde_json::from_str(&out.content) {
+        Ok(outcome) => outcome,
+        Err(_) if out.is_error => bail!("{frame} — failed: {}", out.content),
+        Err(_) => bail!(
+            "{frame} — missing structured triage outcome; state unchanged — update the mail server"
+        ),
+    };
+    let moved = match &outcome.moved {
+        Value::Null => None,
+        value => Some(
+            usize::try_from(value.as_u64().with_context(|| {
+                format!("{frame} — invalid triage moved count; state unchanged")
+            })?)
+            .with_context(|| {
+                format!("{frame} — triage moved count exceeds usize; state unchanged")
+            })?,
+        ),
+    };
+    let expected = triage_status_of(moved, outcome.failed, outcome.left_in_place);
+    if outcome.account != account
+        || outcome.thread_id != thread_id
+        || outcome.action != action
+        || outcome.status != expected
+    {
+        bail!("{frame} — inconsistent triage outcome; state unchanged");
+    }
+    if expected == "partial" {
+        bail!("{frame} — partial completion — {} moved; {} failed; {} left in place; state unchanged — {}",
+            moved.unwrap_or(0), outcome.failed, outcome.left_in_place, outcome.message);
+    }
+    if out.is_error {
+        bail!("{frame} — failed: {}", outcome.message);
+    }
+    if expected == "nothing_to_do" {
+        if action == "archive" {
+            if outcome.source.as_deref() != Some("Inbox") {
+                bail!("{frame} — inconsistent archive source; state unchanged");
+            }
+            // The existence probe established that the conversation exists
+            // outside Inbox: archive's desired state is already satisfied.
+            store
+                .mark(account, thread_id, action, mecha_core::mail_triage::ACTED)
+                .with_context(|| format!("{frame} — could not record archive completion"))?;
+            return Ok(format!("{completed} {short} — already out of the Inbox"));
+        }
+        return Ok(format!(
+            "{frame} — skipped: nothing in {}",
+            outcome.source.as_deref().unwrap_or("the source"),
+        ));
+    }
+    store
+        .mark(account, thread_id, action, mecha_core::mail_triage::ACTED)
+        .with_context(|| format!("{frame} — could not record completion"))?;
+    Ok(format!("{completed} {short} — {}", outcome.message))
+}
+
+#[cfg(test)]
+mod triage_result_tests {
+    use super::*;
+    use mecha_core::tool::ToolOutput;
+    use mecha_mail::microsoft::graph_mail::{MutationOutcome, RestoreOutcome};
+    use mecha_mail::unified::{triage_reply, TriageAction, TriageResult};
+
+    #[test]
+    fn independent_cli_and_mail_status_rules_agree() {
+        let counts = || (0..=2).chain(std::iter::once(usize::MAX));
+        for moved in std::iter::once(None).chain(counts().map(Some)) {
+            for failed in counts() {
+                for left_in_place in counts() {
+                    assert_eq!(
+                        triage_status_of(moved, failed, left_in_place),
+                        mecha_mail::unified::status_of(moved, failed, left_in_place),
+                        "status rules diverged for {moved:?} moved, {failed} failed, {left_in_place} left in place"
+                    );
+                }
+            }
+        }
+    }
+
+    struct Fixture {
+        root: std::path::PathBuf,
+        store: TriageStore,
+        file: std::path::PathBuf,
+        before: Vec<u8>,
+        thread_id: String,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Self::for_thread("thread-1")
+        }
+
+        fn for_thread(thread_id: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("mecha-mail-triage-{}", uuid::Uuid::new_v4()));
+            let store = TriageStore::open(root.clone()).unwrap();
+            let record: Record = serde_json::from_value(json!({
+                "account":"fixture", "thread_id":thread_id, "state":"classified",
+                "from":"sender@example.edu", "subject":"Fixture",
+                "verdict":{"bucket":"respond", "urgency":"today", "proposed":"reply"}
+            }))
+            .unwrap();
+            assert!(record.needs_me());
+            store.put(&record).unwrap();
+            let file = root.join(record.file_name());
+            let before = std::fs::read(&file).unwrap();
+            Self {
+                root,
+                store,
+                file,
+                before,
+                thread_id: thread_id.to_owned(),
+            }
+        }
+
+        fn settled_with(&self, action: TriageAction) {
+            let record = self.store.get("fixture", &self.thread_id).unwrap();
+            assert_eq!(record.state, mecha_core::mail_triage::ACTED);
+            assert_eq!(record.acted.as_deref(), Some(action.name()));
+            assert!(record.acted_at.is_some());
+            assert!(!self.store.list().unwrap().iter().any(|r| r.needs_me()));
+        }
+
+        fn unchanged_and_still_needs_attention(&self) {
+            assert_eq!(std::fs::read(&self.file).unwrap(), self.before);
+            assert_eq!(
+                self.store
+                    .list()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r.needs_me())
+                    .count(),
+                1
+            );
+            let record = self.store.get("fixture", &self.thread_id).unwrap();
+            assert_eq!(record.state, CLASSIFIED);
+            assert!(record.acted.is_none());
+            assert!(record.acted_at.is_none());
+        }
+
+        fn finish(&self, action: TriageAction, result: TriageResult) -> Result<String> {
+            finish_triage(
+                &self.store,
+                "fixture",
+                &self.thread_id,
+                action.name(),
+                &wire_output_for(&self.thread_id, action, result),
+            )
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    // Use the actual server renderer and MCP serializer, then the text
+    // content preserved by mecha-core's MCP adapter. No invented prose or
+    // synthetic count-only result bypasses the wire contract in these tests.
+    fn wire_output(action: TriageAction, result: TriageResult) -> ToolOutput {
+        wire_output_for("thread-1", action, result)
+    }
+
+    fn wire_output_for(thread_id: &str, action: TriageAction, result: TriageResult) -> ToolOutput {
+        let reply = triage_reply("fixture", thread_id, action, result);
+        let wire = mecha_mail::mcp::result_json(&reply);
+        let text = wire["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            wire["structuredContent"]
+        );
+        let mut out = ToolOutput::ok(text);
+        out.is_error = wire["isError"].as_bool().unwrap();
+        out
+    }
+
+    #[test]
+    fn empty_inbox_settles_archive_but_leaves_spam_needing_attention() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            let fixture = Fixture::new();
+            let text = fixture
+                .finish(action, TriageResult::Count(MutationOutcome::default()))
+                .unwrap();
+            if action == TriageAction::Archive {
+                assert!(
+                    text.starts_with("archived thread-1 — already out of the Inbox"),
+                    "{text}"
+                );
+                fixture.settled_with(action);
+            } else {
+                assert!(
+                    text.starts_with("spam thread-1 — skipped: nothing in Inbox"),
+                    "{text}"
+                );
+                fixture.unchanged_and_still_needs_attention();
+            }
+        }
+    }
+
+    #[test]
+    fn partial_triage_reports_failure_and_keeps_the_record_for_attention() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            let fixture = Fixture::new();
+            let result = TriageResult::Count(MutationOutcome {
+                moved: 1,
+                failed: 1,
+                ..Default::default()
+            });
+            assert!(wire_output(action, result).is_error);
+            let error = fixture.finish(action, result).unwrap_err().to_string();
+            assert!(
+                error.contains("partial completion — 1 moved; 1 failed"),
+                "{error}"
+            );
+            fixture.unchanged_and_still_needs_attention();
+            // Failed moves may have reached the server. A later confirmed
+            // empty Inbox establishes archive's end state, but not spam's.
+            fixture
+                .finish(action, TriageResult::Count(MutationOutcome::default()))
+                .unwrap();
+            if action == TriageAction::Archive {
+                fixture.settled_with(action);
+            } else {
+                fixture.unchanged_and_still_needs_attention();
+            }
+        }
+    }
+
+    #[test]
+    fn every_triage_outcome_keeps_the_action_and_short_handle() {
+        let thread_id: String = "fixture-graph-id".chars().cycle().take(76).collect();
+        let short = handle(&thread_id);
+        assert_eq!(short.chars().count(), mecha_core::mail_triage::HANDLE_CHARS);
+        assert_ne!(short, thread_id);
+        for action in TriageAction::ALL {
+            let restores = matches!(action, TriageAction::Unarchive | TriageAction::Untrash);
+            for moved in 0..=1 {
+                for failed in 0..=1 {
+                    for left_in_place in 0..=1 {
+                        if !restores && left_in_place > 0 {
+                            continue;
+                        }
+                        let outcome = if restores {
+                            TriageResult::Restore(RestoreOutcome {
+                                moved,
+                                failed,
+                                left_in_place,
+                            })
+                        } else {
+                            TriageResult::Count(MutationOutcome {
+                                moved,
+                                failed,
+                                ..Default::default()
+                            })
+                        };
+                        let fixture = Fixture::for_thread(&thread_id);
+                        let result = fixture.finish(action, outcome);
+                        assert_eq!(result.is_err(), failed > 0 || left_in_place > 0);
+                        let text = result.unwrap_or_else(|error| error.to_string());
+                        let (frame, _) = text.split_once(" — ").expect("CLI result framing");
+                        assert!(frame.contains(action.name()), "{text}");
+                        assert!(frame.ends_with(&format!(" {short}")), "{text}");
+                        assert!(!frame.contains(&thread_id), "{text}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn archive_noop_needs_a_confirmed_inbox_source_to_settle() {
+        let action = TriageAction::Archive;
+        for source in [None, Some("Archive")] {
+            let fixture = Fixture::new();
+            let mut out = wire_output(action, TriageResult::Count(MutationOutcome::default()));
+            let mut report: Value = serde_json::from_str(&out.content).unwrap();
+            report["source"] = json!(source);
+            out.content = report.to_string();
+            assert!(
+                finish_triage(&fixture.store, "fixture", "thread-1", action.name(), &out).is_err()
+            );
+            fixture.unchanged_and_still_needs_attention();
+        }
+    }
+
+    #[test]
+    fn completed_outlook_and_gmail_triage_settle_the_store() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            for result in [
+                TriageResult::Count(MutationOutcome {
+                    moved: 2,
+                    failed: 0,
+                    ..Default::default()
+                }),
+                TriageResult::Uncounted,
+            ] {
+                let fixture = Fixture::new();
+                let text = fixture.finish(action, result).unwrap();
+                if matches!(result, TriageResult::Count(_)) {
+                    assert!(text.contains("2 Inbox messages moved"), "{text}");
+                } else {
+                    assert!(!text.contains("Inbox messages"), "{text}");
+                    assert!(
+                        text.contains(if action == TriageAction::Archive {
+                            "archived"
+                        } else {
+                            "reported as spam and removed from the inbox"
+                        }),
+                        "{text}"
+                    );
+                }
+                fixture.settled_with(action);
+            }
+        }
+    }
+
+    #[test]
+    fn empty_or_incomplete_restores_do_not_settle_the_store() {
+        for action in [TriageAction::Unarchive, TriageAction::Untrash] {
+            for outcome in [
+                RestoreOutcome::default(),
+                RestoreOutcome {
+                    moved: 1,
+                    failed: 1,
+                    left_in_place: 0,
+                },
+                RestoreOutcome {
+                    moved: 0,
+                    failed: 0,
+                    left_in_place: 1,
+                },
+            ] {
+                let fixture = Fixture::new();
+                let result = fixture.finish(action, TriageResult::Restore(outcome));
+                assert_eq!(
+                    result.is_err(),
+                    outcome.failed > 0 || outcome.left_in_place > 0
+                );
+                fixture.unchanged_and_still_needs_attention();
+            }
+        }
+    }
+
+    #[test]
+    fn missing_inconsistent_or_error_results_cannot_mark_acted() {
+        let action = TriageAction::Archive;
+        let success = wire_output(
+            action,
+            TriageResult::Count(MutationOutcome {
+                moved: 1,
+                failed: 0,
+                ..Default::default()
+            }),
+        );
+        let valid: Value = serde_json::from_str(&success.content).unwrap();
+        let mut outputs = vec![
+            ToolOutput::ok("archived"),
+            ToolOutput::err("fixture unavailable"),
+        ];
+        for (key, value) in [
+            ("status", json!("nothing_to_do")),
+            ("failed", json!(1)),
+            ("thread_id", json!("other-thread")),
+            ("account", json!("other-account")),
+            ("action", json!("spam")),
+            ("moved", json!(-1)),
+        ] {
+            let mut bad = valid.clone();
+            bad[key] = value;
+            outputs.push(ToolOutput::ok(bad.to_string()));
+        }
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("moved");
+        outputs.push(ToolOutput::ok(missing.to_string()));
+        outputs.push(ToolOutput::err(valid.to_string()));
+        for out in outputs {
+            let fixture = Fixture::new();
+            assert!(finish_triage(&fixture.store, "fixture", "thread-1", "archive", &out).is_err());
+            fixture.unchanged_and_still_needs_attention();
+        }
+    }
 }
 
 /// Parse a closed-vocabulary value, listing the alternatives on failure.
@@ -3477,6 +4215,20 @@ mod classify_exit_tests {
         assert!(!run_accomplished_nothing(0, 0, 0));
     }
 
+    #[test]
+    fn the_attachment_key_the_sweep_reads_is_the_one_mail_recent_writes() {
+        // Review of #854: nothing else joins the reader to the writer.
+        let writer = include_str!("../../../mecha-mail/src/unified.rs");
+        assert!(
+            writer.contains(&format!(
+                "\"{}\": e.attachment_presence",
+                super::ATTACHMENT_PRESENCE
+            )),
+            "mail_recent no longer writes `{}`",
+            super::ATTACHMENT_PRESENCE
+        );
+    }
+
     /// A clean fan-out is plain JSON and must stay exactly as it was.
     #[test]
     fn recent_rows_parse_without_a_note() {
@@ -3723,5 +4475,65 @@ mod measured_account_tests {
         assert!(missing.unwrap_err().contains("does not exist"));
         assert_eq!(read.as_deref(), Ok("campus"));
         assert!(broken.unwrap_err().contains("cannot parse"));
+    }
+}
+
+#[cfg(test)]
+mod mail_rules_ordering_tests {
+    #[test]
+    fn corpus_thread_arrivals_keep_fractional_reply_order() {
+        let root = std::env::temp_dir().join(format!("corpus-order-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("mail.jsonl");
+        let rows = [
+            serde_json::json!({"thread_id":"thread-alpha", "account":"campus", "from":"sender@example.edu", "date":"2026-11-03T12:00:00Z"}),
+            serde_json::json!({"thread_id":"thread-alpha", "account":"campus", "from":"owner@example.com", "date":"2026-11-03T12:00:00.100Z"}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(|r| r.to_string() + "\n")
+                .collect::<String>(),
+        )
+        .unwrap();
+        let threads = super::corpus_threads(&path, "owner@example.com").unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(threads[0].replied);
+        assert_eq!(threads[0].input.from, "sender@example.edu");
+    }
+}
+
+#[cfg(test)]
+mod mail_corpus_date_tests {
+    #[test]
+    fn invalid_arrivals_skip_only_their_thread_with_a_counted_warning() {
+        let root = std::env::temp_dir().join(format!("corpus-dates-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("mail.jsonl");
+        let rows = [
+            serde_json::json!({"thread_id":"thread-bad", "from":"sender@example.edu", "date":"invalid"}),
+            serde_json::json!({"thread_id":"thread-bad", "from":"owner@example.com"}),
+            serde_json::json!({"thread_id":"thread-good", "from":"sender@example.edu", "date":"2026-11-03T12:00:00Z"}),
+            serde_json::json!({"thread_id":"thread-good", "from":"owner@example.com", "date":"2026-11-03T12:00:00.100Z"}),
+        ];
+        std::fs::write(
+            &path,
+            rows.iter()
+                .map(|row| row.to_string() + "\n")
+                .collect::<String>(),
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        let result = super::corpus_threads_with_warning(&path, "owner@example.com", |warning| {
+            warnings.push(warning)
+        });
+        std::fs::remove_dir_all(root).unwrap();
+        let threads = result.expect("one unknown date must not discard the valid corpus");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].input.thread_id, "thread-good");
+        assert!(threads[0].replied);
+        assert_eq!(warnings.len(), 1, "count threads, not bad messages");
+        assert!(warnings[0].contains("skipped 1") && warnings[0].contains("thread-bad"));
     }
 }

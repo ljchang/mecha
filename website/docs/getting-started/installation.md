@@ -13,14 +13,14 @@ from the registry or from a checkout.
 
 ## Requirements
 
-**Rust 1.89 or newer.** The workspace pins `rust-version = "1.89"` on edition
+**Rust 1.96 or newer.** The workspace pins `rust-version = "1.96"` on edition
 2021, so an older toolchain fails at build time with a clear message rather than
 part-way through compiling a dependency. The pin is raised only to the minimum
 a dependency actually needs, never to current stable — the difference is
 headroom for anyone on the toolchain their distribution chose.
 
 ```bash
-rustc --version        # must be 1.89.0 or later
+rustc --version        # must be 1.96.0 or later
 rustup update stable   # if it is not
 ```
 

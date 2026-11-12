@@ -32,6 +32,11 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
+    /// Apply global mail rules without a model.
+    Rules {
+        #[command(subcommand)]
+        command: RulesCommand,
+    },
     /// Sign an account in and add it to the registry.
     Auth {
         /// Account name the model will use (lowercase, digits, - and _).
@@ -174,6 +179,35 @@ enum Command {
     Serve,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum RulesCommand {
+    /// Match a header rule against 30 days across all folders. Always read-only.
+    Test {
+        rule: String,
+        #[arg(long)]
+        account: Option<String>,
+        /// Machine report (also the default for compatibility).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore a completed mailbox action by its exact ledger row id.
+    Undo { row_id: String },
+    /// Execute the timer pass (default), or work owed after classification.
+    Apply {
+        #[arg(long, conflicts_with = "after_classify")]
+        headers: bool,
+        #[arg(long)]
+        after_classify: bool,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        /// Plan only the named rules (repeatable; requires --dry-run).
+        #[arg(long = "rule", requires = "dry_run")]
+        rules: Vec<String>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     mecha_mail::init_tracing();
@@ -201,6 +235,27 @@ fn exit_code_for(e: &anyhow::Error) -> u8 {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Some(Command::Rules {
+            command:
+                RulesCommand::Apply {
+                    headers: _,
+                    after_classify,
+                    account,
+                    dry_run,
+                    rules,
+                },
+        }) => mecha_mail::rules::apply(account.as_deref(), after_classify, dry_run, rules).await,
+        Some(Command::Rules {
+            command:
+                RulesCommand::Test {
+                    rule,
+                    account,
+                    json: _,
+                },
+        }) => mecha_mail::rules::test(&rule, account.as_deref()).await,
+        Some(Command::Rules {
+            command: RulesCommand::Undo { row_id },
+        }) => mecha_mail::rules::undo(&row_id).await,
         Some(Command::Auth {
             name,
             provider,
@@ -1853,6 +1908,92 @@ fn set_default(name: Option<String>, mail: bool, calendar: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_apply_filter_requires_dry_run_at_argument_parsing() {
+        use clap::Parser;
+        for pass in ["--headers", "--after-classify"] {
+            assert!(Cli::try_parse_from([
+                "mecha-mail",
+                "rules",
+                "apply",
+                pass,
+                "--rule",
+                "notice"
+            ])
+            .is_err());
+            assert!(Cli::try_parse_from([
+                "mecha-mail",
+                "rules",
+                "apply",
+                pass,
+                "--rule",
+                "notice",
+                "--dry-run"
+            ])
+            .is_ok());
+        }
+        assert!(Cli::try_parse_from(["mecha-mail", "rules", "apply", "--rule", "notice"]).is_err());
+    }
+
+    #[test]
+    fn rule_test_has_no_live_or_timer_window_option() {
+        assert!(Cli::try_parse_from([
+            "mecha-mail",
+            "rules",
+            "test",
+            "notice",
+            "--account",
+            "campus"
+        ])
+        .is_ok());
+        for flag in ["--live", "--headers", "--after-classify", "--test-window"] {
+            assert!(Cli::try_parse_from(["mecha-mail", "rules", "test", "notice", flag]).is_err());
+        }
+        assert!(
+            Cli::try_parse_from(["mecha-mail", "rules", "apply", "--test-window", "30d"]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "mecha-mail",
+            "rules",
+            "apply",
+            "--dry-run",
+            "--rule",
+            "first",
+            "--rule",
+            "second"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn rules_apply_flags_are_exclusive_and_not_an_mcp_tool() {
+        assert!(Cli::try_parse_from([
+            "mecha-mail",
+            "rules",
+            "apply",
+            "--headers",
+            "--after-classify"
+        ])
+        .is_err());
+        for flag in ["--headers", "--after-classify"] {
+            assert!(Cli::try_parse_from([
+                "mecha-mail",
+                "rules",
+                "apply",
+                flag,
+                "--account",
+                "campus",
+                "--dry-run"
+            ])
+            .is_ok());
+        }
+        assert!(Cli::try_parse_from(["mecha-mail", "rules", "apply"]).is_ok());
+        let file = accounts::AccountsFile::default();
+        assert!(!mecha_mail::unified::tool_definitions(&[], &file)
+            .iter()
+            .any(|tool| tool["name"].as_str().is_some_and(|n| n.contains("rules"))));
+    }
 
     /// The 2026-08-14 review finding: the re-verify had been scoped to the
     /// account the event lands on (to stop one dead token from blocking

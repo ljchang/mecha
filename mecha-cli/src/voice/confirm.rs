@@ -802,6 +802,7 @@ mod tests {
 
     fn item(id: &str, kind: OutboxKind, args: serde_json::Value, tainted: bool) -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
@@ -1196,6 +1197,7 @@ mod echo_at_the_confirmation_door {
 
     pub(super) fn draft() -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),

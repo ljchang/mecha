@@ -333,7 +333,7 @@ if [ -n "$F" ] && [ -n "$D" ] && MP=$(hub_mmproj "$R"); then
 [gemma-4-26b-a4b]
 model = $F
 mmproj = $MP
-ctx-size = 32768
+ctx-size = 262144
 parallel = 1
 spec-type = draft-mtp
 model-draft = $D

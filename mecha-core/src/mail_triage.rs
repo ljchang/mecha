@@ -39,6 +39,10 @@
 //! here, so the retention question stays the provider's and there is no second
 //! place for mail to leak from.
 
+pub mod rule_records;
+
+pub mod confirm;
+pub mod rule_frame;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -639,7 +643,8 @@ pub const REQUEST_TYPES: &[&str] = &[
 /// from it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Correction {
-    /// `bucket`, `urgency`, `proposed`, `request_type` or `deadline`.
+    /// `bucket`, `urgency`, `proposed`, `request_type`, `deadline`, or
+    /// `rule` (a description rule's wrong match, MAIL-RULES-DESIGN.md §10).
     pub field: String,
     pub was: String,
     pub now: String,
@@ -907,6 +912,13 @@ pub struct Record {
     /// without this flag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_whole: bool,
+    /// The description-rule verdict for this thread's message, when any
+    /// description rule was in the classifier's frame (MAIL-RULES-DESIGN.md
+    /// §4.2). Absent means no rule was asked, never "no rule matched".
+    /// **The quotes inside are the sender's prose**, for a human's ledger;
+    /// no privileged run reads them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<rule_frame::RuleRecord>,
     /// Every field a human corrected, oldest first.
     ///
     /// **Appended, never overwritten.** A correction that was itself wrong is
@@ -1307,7 +1319,12 @@ impl TriageStore {
     /// Open the default location only if it exists — read paths must not
     /// create state as a side effect, the rule `doctor` leans on.
     pub fn open_existing_default() -> Option<Self> {
-        let root = Self::default_root().ok()?;
+        Self::open_existing(Self::default_root().ok()?)
+    }
+
+    /// Read an explicit store without creating directories or changing modes.
+    pub fn open_existing(root: impl Into<PathBuf>) -> Option<Self> {
+        let root = root.into();
         root.is_dir().then_some(TriageStore { root })
     }
 
@@ -1316,8 +1333,14 @@ impl TriageStore {
     }
 
     /// Every record, newest first. Unreadable rows are skipped rather than
-    /// fatal: one torn file must not hide the rest of the inbox.
+    /// fatal: one torn file must not hide the rest of the inbox. An unreadable
+    /// rule overlay warns once and leaves its base record available.
     pub fn list(&self) -> Result<Vec<Record>> {
+        self.list_with_warning(|warning| eprintln!("{warning}"))
+    }
+
+    fn list_with_warning(&self, mut warn: impl FnMut(String)) -> Result<Vec<Record>> {
+        let mut warned = false;
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return Ok(out);
@@ -1328,12 +1351,20 @@ impl TriageStore {
                 continue;
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(rec) = serde_json::from_str::<Record>(&text) {
+                if let Ok(mut rec) = serde_json::from_str::<Record>(&text) {
+                    rule_records::overlay_with_warning(&self.root, &mut rec, |warning| {
+                        if !warned {
+                            warn(warning);
+                            warned = true;
+                        }
+                    });
                     out.push(rec);
                 }
             }
         }
-        out.sort_by(|a, b| b.date.cmp(&a.date));
+        out.sort_by_key(|record| {
+            std::cmp::Reverse(chrono::DateTime::parse_from_rfc3339(&record.date).ok())
+        });
         Ok(out)
     }
 
@@ -1354,13 +1385,16 @@ impl TriageStore {
             escalated_changed: Vec::new(),
             escalated_from: None,
             read_whole: false,
+            rules: None,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
             rest: Default::default(),
         };
         let text = std::fs::read_to_string(self.root.join(probe.file_name())).ok()?;
-        serde_json::from_str(&text).ok()
+        let mut record = serde_json::from_str(&text).ok()?;
+        rule_records::overlay(&self.root, &mut record);
+        Some(record)
     }
 
     /// Has this thread already been classified? The question a sweep asks
@@ -1405,7 +1439,9 @@ impl TriageStore {
     pub fn put(&self, rec: &Record) -> Result<()> {
         let path = self.root.join(rec.file_name());
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(rec)?)?;
+        let mut stored = rec.clone();
+        rule_records::clear_overlay(&mut stored);
+        std::fs::write(&tmp, serde_json::to_string_pretty(&stored)?)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
@@ -1449,6 +1485,38 @@ impl TriageStore {
         rec.corrections.extend(made.iter().cloned());
         self.put(&rec)?;
         Ok(Some(made))
+    }
+
+    /// The owner's *wrong match* on a description rule's row (MAIL-RULES-DESIGN.md
+    /// §10): a field-level correction, `rule: <name> → none`, so it joins the
+    /// classifier's correction examples like any other. Idempotent per rule,
+    /// so a retried wrong-match records it once. `Ok(false)` when the thread
+    /// has no record here or the correction is already recorded.
+    pub fn correct_rule(
+        &self,
+        account: &str,
+        thread_id: &str,
+        rule: &str,
+        at: &str,
+    ) -> Result<bool> {
+        let Some(mut rec) = self.get(account, thread_id) else {
+            return Ok(false);
+        };
+        if rec
+            .corrections
+            .iter()
+            .any(|c| c.field == "rule" && c.was == rule && c.now == "none")
+        {
+            return Ok(false);
+        }
+        rec.corrections.push(Correction {
+            field: "rule".into(),
+            was: rule.into(),
+            now: "none".into(),
+            at: at.into(),
+        });
+        self.put(&rec)?;
+        Ok(true)
     }
 
     pub fn mark(&self, account: &str, thread_id: &str, action: &str, state: &str) -> Result<bool> {
@@ -1507,6 +1575,7 @@ mod tests {
             escalated_changed: Vec::new(),
             escalated_from: None,
             read_whole: false,
+            rules: None,
             corrections: Vec::new(),
             acted: None,
             acted_at: None,
@@ -1517,6 +1586,32 @@ mod tests {
     /// The boundary is a function with no way to ask for the prose. Every
     /// free-text field a stranger or the classifier authored must be absent
     /// from what a run with tools is handed.
+    #[test]
+    fn rule_overlay_warning_is_once_per_list_pass() {
+        let store = temp_store("overlay-pass");
+        for thread in ["first", "second"] {
+            store.put(&rec("campus", thread, Bucket::Notify)).unwrap();
+            rule_records::update(store.root(), "campus", thread, |_| {}).unwrap();
+        }
+        for file in std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+        {
+            if file.path().extension().is_some_and(|e| e == "json") {
+                std::fs::write(file.path(), "broken").unwrap();
+            }
+        }
+        for _ in 0..2 {
+            let mut warnings = Vec::new();
+            assert_eq!(
+                store.list_with_warning(|w| warnings.push(w)).unwrap().len(),
+                2
+            );
+            assert_eq!(warnings.len(), 1, "repeat warnings in one pass");
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
+    }
+
     #[test]
     fn the_privileged_view_carries_no_prose() {
         let mut r = rec("personal", "t1", Bucket::Respond);
@@ -1576,6 +1671,136 @@ mod tests {
         let got = store.get("campus", "abc").unwrap();
         assert_eq!(got.verdict.unwrap().bucket, Bucket::Notify);
         assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rule_overlays_are_never_persisted_by_mark_or_correct() {
+        let store = temp_store("overlay-write-projection");
+        let base = rec("campus", "notice", Bucket::Notify);
+        store.put(&base).unwrap();
+        rule_records::update(store.root(), "campus", "notice", |flags| {
+            flags.tags.insert("notice".into());
+            flags.digest_rules.insert("digest".into());
+            flags.handled_message = Some("message".into());
+        })
+        .unwrap();
+        assert_eq!(
+            store.get("campus", "notice").unwrap().rest["rule_tags"],
+            serde_json::json!(["notice"])
+        );
+        store.mark("campus", "notice", "read", ACTED).unwrap();
+        let path = store.root().join(base.file_name());
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            assert!(disk.get(key).is_none(), "derived {key} persisted by mark");
+        }
+        store
+            .correct(
+                "campus",
+                "notice",
+                &Correcting {
+                    bucket: Some(Bucket::Respond),
+                    ..Default::default()
+                },
+                "2026-11-03T12:00:00Z",
+            )
+            .unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            assert!(
+                disk.get(key).is_none(),
+                "derived {key} persisted by correct"
+            );
+        }
+        let sidecar = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        std::fs::write(sidecar, "corrupt").unwrap();
+        let got = store.get("campus", "notice").unwrap();
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            assert!(!got.rest.contains_key(key));
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
+    }
+
+    #[test]
+    fn corrupt_overlay_cannot_expose_legacy_baked_annotations() {
+        let store = temp_store("overlay-stale-projection");
+        let mut base = rec("campus", "notice", Bucket::Notify);
+        for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+            base.rest.insert(key.into(), serde_json::json!("stale"));
+        }
+        base.rest
+            .insert("unrelated_future_field".into(), serde_json::json!("keep"));
+        // Bypass put to reproduce rows written by the old implementation.
+        std::fs::write(
+            store.root().join(base.file_name()),
+            serde_json::to_vec(&base).unwrap(),
+        )
+        .unwrap();
+        rule_records::update(store.root(), "campus", "notice", |_| {}).unwrap();
+        let sidecar = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        std::fs::write(sidecar, "corrupt").unwrap();
+        for got in [
+            store.get("campus", "notice").unwrap(),
+            store.list().unwrap().remove(0),
+        ] {
+            for key in ["rule_tags", "digest_rules", "rules_handled_message"] {
+                assert!(
+                    !got.rest.contains_key(key),
+                    "stale {key} survived a failed overlay"
+                );
+            }
+            assert_eq!(got.rest["unrelated_future_field"], "keep");
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
+    }
+
+    #[test]
+    fn unreadable_rule_overlay_preserves_list_and_get_records() {
+        let store = temp_store("unreadable-overlay");
+        let broken = rec("campus", "broken", Bucket::Notify);
+        let healthy = rec("campus", "healthy", Bucket::Respond);
+        store.put(&broken).unwrap();
+        store.put(&healthy).unwrap();
+        rule_records::update(store.root(), "campus", "broken", |r| {
+            r.tags.insert("notice".into());
+        })
+        .unwrap();
+        let path = std::fs::read_dir(store.root().join("rule-records"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e == "json"))
+            .unwrap();
+        for as_directory in [false, true] {
+            if as_directory {
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+            } else {
+                std::fs::write(&path, "not json").unwrap();
+            }
+            let records = store
+                .list()
+                .expect("one unreadable overlay cannot hide the inbox");
+            assert_eq!(records.len(), 2);
+            let got = store.get("campus", "broken").expect("base record survives");
+            assert_eq!(got.subject, broken.subject);
+            assert_eq!(got.verdict.unwrap().bucket, Bucket::Notify);
+            assert!(!got.rest.contains_key("rule_tags"));
+            assert!(rule_records::read(store.root(), "campus", "broken").is_err());
+        }
+        std::fs::remove_dir_all(store.root()).unwrap();
     }
 
     /// A provider is free to put anything in a thread id; a store that cannot
@@ -3436,6 +3661,15 @@ pub fn resolve_thread_id<'a>(
     }
 }
 
+/// Whether `mecha mail reflect` may mine this correction into a learned
+/// triage rule. A description rule's wrong match (`rule`) is not a triage
+/// lesson: §10 of MAIL-RULES-DESIGN.md sends it to the correction examples
+/// only, and a reflector asked for a triage directive from it would invent
+/// one about buckets and put it in every future classifier prompt.
+pub fn reflectable(c: &Correction) -> bool {
+    c.field != "rule"
+}
+
 /// A stable key for one correction, for the mining ledger.
 ///
 /// Thread, field and timestamp. Per *correction* rather than per thread,
@@ -3604,7 +3838,20 @@ fn classifier_prompt(t: &ThreadInput, today: &str) -> String {
     classifier_prompt_with(t, today, "", "")
 }
 
+#[cfg(test)]
 fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &str) -> String {
+    classifier_prompt_asking(t, today, few_shot, rules, None)
+}
+
+/// The prompt, with the description rules' frame when there is one. With no
+/// frame (or an empty one) the bytes are exactly [`classifier_prompt_with`]'s.
+fn classifier_prompt_asking(
+    t: &ThreadInput,
+    today: &str,
+    few_shot: &str,
+    rules: &str,
+    ask: Option<&rule_frame::RuleAsk<'_>>,
+) -> String {
     format!(
         "You are triaging one email thread for its recipient. Today is {today}.\n\
          \n\
@@ -3649,8 +3896,9 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
          Reply with one JSON object and nothing else. Reason first:\n\
          {{\"reasoning\": \"<why>\", \"bucket\": \"...\", \"urgency\": \"...\", \
          \"one_line\": \"...\", \"tags\": [...], \"proposed\": \"...\", \
-         \"deadline\": null, \"deadline_quote\": null, \"request_type\": null}}\n\
+         \"deadline\": null, \"deadline_quote\": null, \"request_type\": null{rule_fields}}}\n\
          \n\
+         {rule_frame}\
          {rules}\
          {few_shot}\
          BEGIN MESSAGE DATA\n\
@@ -3659,7 +3907,13 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
          Subject: {subject}\n\
          \n\
          {body}\n\
-         END MESSAGE DATA\n",
+         END MESSAGE DATA\n\
+         {rule_suffix}",
+        rule_fields = rule_frame::example_fields(ask),
+        rule_frame = ask
+            .map(|a| rule_frame::frame_block(a.frame))
+            .unwrap_or_default(),
+        rule_suffix = ask.map(rule_frame::eligible_suffix).unwrap_or_default(),
         tags = TAGS.join(", "),
         types = REQUEST_TYPES.join(", "),
         few_shot = few_shot,
@@ -3670,6 +3924,13 @@ fn classifier_prompt_with(t: &ThreadInput, today: &str, few_shot: &str, rules: &
         subject = t.subject,
         body = t.body,
     )
+}
+
+/// The reply's JSON object, by the same bounds [`parse_verdict`] uses.
+fn json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end > start).then(|| &text[start..=end])
 }
 
 /// Pull the JSON object out of a reply and drop anything outside the closed
@@ -3758,11 +4019,34 @@ pub async fn classify_with(
     examples: &[FewShot],
     rules: Option<&str>,
 ) -> Result<Verdict> {
-    let prompt = classifier_prompt_with(
+    classify_asking(provider, model, thread, today, examples, rules, None)
+        .await
+        .map(|(verdict, _)| verdict)
+}
+
+/// [`classify_with`], also asking about the owner's description rules
+/// (MAIL-RULES-DESIGN.md §4.2) in the same call. The reading is grounded
+/// against exactly the text the model was shown; `None` when no frame was
+/// given or it was empty.
+pub async fn classify_asking(
+    provider: &dyn crate::provider::Provider,
+    model: &str,
+    thread: &ThreadInput,
+    today: &str,
+    examples: &[FewShot],
+    rules: Option<&str>,
+    ask: Option<&rule_frame::RuleAsk<'_>>,
+) -> Result<(Verdict, Option<rule_frame::RuleReading>)> {
+    // Ask only when some rule could answer: a frame whose every answer is
+    // fixed at `none` decides nothing, and leaving it out keeps the prompt
+    // byte-identical to one without rules.
+    let ask = ask.filter(|a| !a.frame.is_empty() && a.any_eligible());
+    let prompt = classifier_prompt_asking(
         thread,
         today,
         &few_shot_block(examples),
         rules.unwrap_or_default(),
+        ask,
     );
     let mut attempt = prompt.clone();
     let mut last_error = String::new();
@@ -3773,7 +4057,13 @@ pub async fn classify_with(
         // with, and caching other people's mail across calls is a property
         // nobody asked for.
         let request = crate::quarantine::QuarantinedPass::new(model, 4096)
-            .response_schema(provider.structured_output().then(verdict_schema))
+            .response_schema(provider.structured_output().then(|| {
+                let mut schema = verdict_schema();
+                if let Some(ask) = ask {
+                    rule_frame::extend_schema(&mut schema, ask);
+                }
+                schema
+            }))
             .ask(attempt.clone());
         let response = provider.complete(&request, None).await?;
 
@@ -3793,10 +4083,16 @@ pub async fn classify_with(
 
         match parse_verdict(&text) {
             Ok(mut v) => {
-                // The one check that needs the text the model was shown, so
-                // it lives here and not in `parse_verdict`.
+                // The checks that need the text the model was shown, so they
+                // live here and not in `parse_verdict`.
                 ground_deadline(&mut v, thread);
-                return Ok(v);
+                let reading = ask.map(|ask| {
+                    let answer = json_object(&text)
+                        .and_then(|o| serde_json::from_str(o).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    rule_frame::read_answer(&answer, ask, thread)
+                });
+                return Ok((v, reading));
             }
             Err(_) if truncated && text.trim().is_empty() => {
                 last_error = format!(

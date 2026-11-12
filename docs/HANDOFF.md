@@ -4224,8 +4224,8 @@ not link `mecha-core`.
 
 **Test residue** from every lane's suite (#471's leak) was moved, never deleted, to
 `~/.mecha/test-residue-backup-20261001`: 251 `provider: test` sessions and
-the `work/web/{srctest,libtest}*` uploads (under `work-web/`). One persona there is the owner's
-and was not touched.
+the `work/web/{srctest,libtest}*` uploads (under `work-web/`). A persona of the
+owner's that a lane had used as a test name was not touched.
 
 ## What the measurements say
 

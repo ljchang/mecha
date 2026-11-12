@@ -1,12 +1,14 @@
 //! What a tool does to the world: a closed class per tool, separate from
 //! [`Tool::read_only`](super::Tool::read_only) and from [`Capabilities`].
 //!
-//! The axis is `docs/ROLLOUT-DESIGN.md` §3.2's, and it has two consumers:
-//! a rollout's dry world decides from it alone what a call may do, and
-//! code mode (`docs/CODE-MODE-DESIGN.md` §2) admits a tool into a program by
-//! it. Neither consumer is built yet. This module is metadata, and nothing
-//! may read it to loosen a guard: the interlock, the jail, approval and taint
-//! all decide exactly as they did before it existed.
+//! The axis is `docs/ROLLOUT-DESIGN.md` §3.2's. Code mode
+//! (`docs/CODE-MODE-DESIGN.md` §2) admits a tool into a program by it
+//! (`tool::code`); a rollout's dry world will decide from it alone what a call
+//! may do, and is not built yet; and boredom keys only a declared read by its
+//! target (`Boredom::reads`), every other call whole, so the one reading it
+//! fails toward *not* interrupting a run. Nothing may read it to loosen a
+//! guard: the interlock, the jail, approval and taint all decide exactly as
+//! they did before it existed.
 //!
 //! **`read_only()` cannot stand in for it.** `read_only()` means "skips the
 //! approval gate", not "has no effect": `message_send`, `image_generate`,

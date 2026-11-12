@@ -153,7 +153,7 @@ answered and drafted on the owner's M-series Mac the same day:
 | `qwen3.8-27b` | unsloth UD-Q4_K_XL + BF16 projector (two revisions) | 64, 128 | 131072 × 1 at 64, 262144 × 1 at 128 | 0.51 |
 | `qwen3.8-27b-uncensored` | HauhauCS Q4_K_P (head in file) + BF16 projector | 64, 128 | as `qwen3.8-27b` | 0.51 |
 | `qwen3.8-27b-abliterated` | huihui-ai UD-Q4_K_XL + BF16 projector | 64, 128 | as `qwen3.8-27b` | 0.64 |
-| `gemma-4-26b-a4b` | unsloth UD-Q4_K_M + BF16 projector + MTP draft file, one revision | 32, 64, 128 | 32768 × 1 | 0.73 |
+| `gemma-4-26b-a4b` | unsloth UD-Q4_K_M + BF16 projector + MTP draft file, one revision | 32, 64, 128 | 131072 × 1 at 32, 262144 × 1 at 64 and 128 (production's per-slot window) | 0.73 |
 
 Three of the five are uncensored or abliterated builds. They are in the
 catalog because the owner runs them; the catalog says so in each entry's

@@ -270,7 +270,7 @@ async fn dispatch(
                 .unwrap_or(false);
             let html = crate::google::server::markdown_to_html(&body_md);
             OutlookProvider::new(token)
-                .reply(&message_id, &html, reply_all)
+                .reply(&message_id, &html, reply_all, None)
                 .await
                 .map(|()| "replied in the original conversation".to_string())
         }

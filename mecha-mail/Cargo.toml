@@ -32,6 +32,7 @@ name = "mecha-docs"
 path = "src/bin/mecha-docs.rs"
 
 [dependencies]
+mecha-core = { path = "../mecha-core", version = "0.1.1", default-features = false }
 anyhow.workspace = true
 async-trait.workspace = true
 base64 = "0.23"
@@ -44,6 +45,7 @@ htmd = "0.5"
 # The bookings sweep's advisory flock — same mechanism as mecha-core's
 # outbox, for the same reason: two sweeps must not both create an event.
 libc = "0.2"
+mailparse = "0.15"
 pulldown-cmark = "0.13"
 rand = "0.10"
 reqwest.workspace = true

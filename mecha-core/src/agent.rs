@@ -1173,6 +1173,14 @@ impl Taint {
                         self.private |= private;
                         self.untrusted |= untrusted;
                     }
+                    // **And a persona's today-block** (PERSONA-LIFE-DESIGN.md
+                    // §4.5): private always, since it carries memory of
+                    // conversations with the owner; untrusted when any row
+                    // folded into it came from outside, said by its stem.
+                    if let Some((private, untrusted)) = crate::persona::today::stem_of(text) {
+                        self.private |= private;
+                        self.untrusted |= untrusted;
+                    }
                 }
             }
         }
@@ -1275,6 +1283,24 @@ pub struct Conversation {
     /// (`cache_lens` module docs). Never persisted; a conversation read back
     /// from disk starts with nothing to compare against.
     pub cache_lens: crate::cache_lens::CacheLens,
+    /// What this conversation's programs read (`CODE-MODE-DESIGN.md` §7):
+    /// every host call that ran, in issue order, each under the `code` call
+    /// (or the subagent call) that made it — this run's with their bytes in hand,
+    /// an earlier run's without (the store has a recorded run's). The
+    /// grounding walk's second source ([`crate::grounding::calls`]), so a
+    /// draft staged after a program read a thread joins to that thread.
+    ///
+    /// Beside the messages rather than in them, as `taint` is: the only
+    /// message list several readers hold *is* the model's context, and these
+    /// must never enter it. A compaction rewrites the messages and nothing
+    /// here, so a cut carries them, never summarised.
+    pub program_calls: Vec<crate::tool::code::record::ProgramCall>,
+    /// Where this run's entries of `program_calls` begin: set at run start,
+    /// and what [`Session::record_run`] writes from, so a call is recorded
+    /// once, by the run that made it.
+    ///
+    /// [`Session::record_run`]: crate::session::Session::record_run
+    pub program_calls_from: usize,
 }
 
 impl Conversation {
@@ -1293,6 +1319,8 @@ impl Conversation {
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
+            program_calls: Vec::new(),
+            program_calls_from: 0,
         }
     }
 
@@ -1311,6 +1339,8 @@ impl Conversation {
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
+            program_calls: Vec::new(),
+            program_calls_from: 0,
         }
     }
 
@@ -1471,6 +1501,8 @@ impl From<Vec<Message>> for Conversation {
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
+            program_calls: Vec::new(),
+            program_calls_from: 0,
         }
     }
 }
@@ -1508,6 +1540,12 @@ pub struct ToolCallTrace {
     /// written before the field reads `false`, which is what it was.
     #[serde(default)]
     pub in_program: bool,
+    /// A `code` call's program, in numbers (`code::ProgramStats`): what
+    /// `RunStats`' program counters are counted from, and the passes' usage
+    /// the loop adds to the run's own. `None` for every other call, and on a
+    /// record written before the field — unknown, never zero programs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<crate::tool::code::ProgramStats>,
 }
 
 impl ToolCallTrace {
@@ -1523,8 +1561,32 @@ impl ToolCallTrace {
             unknown: false,
             staged: false,
             in_program: false,
+            program: out.program.as_deref().cloned(),
         }
     }
+}
+
+/// One batch's results, as [`Agent::dispatch`] returns them: the result
+/// blocks, each call's provenance by id, and what the batch's programs read
+/// (`CODE-MODE-DESIGN.md` §7), for the caller to put on the conversation.
+type Batch = (
+    Vec<Block>,
+    std::collections::BTreeMap<String, bool>,
+    Vec<crate::tool::code::record::ProgramCall>,
+);
+
+/// The sub-call passes' usage of every program in `trace`
+/// (`ToolCallTrace::program`): what the loop adds to the run's own after a
+/// batch, so a pass's tokens count toward the run's total and its
+/// [`Budget`] like any other model call's. A program in flight is not cut
+/// short by the run's budget; its own per-program caps (§5) bound it, and
+/// the run's ceiling is checked again once the batch is done.
+fn program_usage(trace: &[ToolCallTrace]) -> Usage {
+    let mut total = Usage::default();
+    for p in trace.iter().filter_map(|t| t.program.as_ref()) {
+        total.add(&p.usage);
+    }
+    total
 }
 
 /// Why a run is being cancelled, said by the canceller so the outcome can
@@ -1819,6 +1881,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona's scene (IMAGE-SCENE-DESIGN.md §5.5): the harness's note
         // of what her last picture showed, never the owner's words.
         || crate::scene::stem_of(text).is_some()
+        // A persona's today-block (PERSONA-LIFE-DESIGN.md §4.5): the
+        // harness's note of what her sampled day has her doing now.
+        || crate::persona::today::stem_of(text).is_some()
         // A persona on a call (§11): how a reply is heard, folded beside the
         // owner's spoken words — the harness's note, never what they said.
         || crate::persona::call::is_note(text)
@@ -1982,6 +2047,15 @@ pub fn owner_text(message: &Message) -> String {
 /// cannot be a poll the way a changing result is: the answer did not move,
 /// and neither did the call. A call the harness refused — the approver, a
 /// hook, a policy, the interlock — never counts: that is the harness working.
+///
+/// **A door may end it sooner** (`Agent::with_refused_repeats`), and the
+/// persona door does, at [`Self::FEWEST_REPEATS`]: its runs are measured not
+/// to recover (31 resends across three runs, 2026-11-10, each stopped at the
+/// seventh with both notices read), so there the stop comes with boredom's
+/// first notice and before its second. The count keys on the error's text,
+/// which a server that is down also repeats byte for byte, so a persona's
+/// `Loop` can mean an outage that outlasted one retry, not only a stuck
+/// model.
 struct LoopGuard {
     enabled: bool,
     armed: bool,
@@ -1989,6 +2063,10 @@ struct LoopGuard {
     /// Errored call-and-result digests, with how many consecutive turns each
     /// has come back in. A turn without one ends its streak.
     refused: std::collections::HashMap<u64, u32>,
+    /// How many such turns end the run: [`Self::REFUSED_REPEATS`] unless
+    /// the agent was given its own (`Agent::with_refused_repeats`), set
+    /// only through [`Self::ending_after`].
+    refused_repeats: u32,
 }
 
 impl LoopGuard {
@@ -2009,7 +2087,28 @@ impl LoopGuard {
             armed: false,
             recent: std::collections::VecDeque::new(),
             refused: std::collections::HashMap::new(),
+            refused_repeats: Self::REFUSED_REPEATS,
         }
+    }
+
+    /// The fewest identical failures in a row that may end a run: the
+    /// first is a failure, the second is a retry (an outage that clears, a
+    /// server mid-restart), and the third is the same call sent a third time
+    /// to the same answer. Below this the guard would end a run on one
+    /// ordinary retry, or at zero on any error at all.
+    const FEWEST_REPEATS: u32 = 3;
+
+    fn floor(turns: u32) -> u32 {
+        turns.max(Self::FEWEST_REPEATS)
+    }
+
+    /// This guard, ending a refused repeat after `turns` consecutive turns
+    /// in place of [`Self::REFUSED_REPEATS`], never fewer than
+    /// [`Self::FEWEST_REPEATS`]: the one way the count is set, so the floor
+    /// holds wherever it is.
+    fn ending_after(mut self, turns: u32) -> Self {
+        self.refused_repeats = Self::floor(turns);
+        self
     }
 
     fn arm(&mut self) {
@@ -2055,7 +2154,7 @@ impl LoopGuard {
             .into_iter()
             .map(|d| (d, prior.get(&d).copied().unwrap_or(0) + 1))
             .collect();
-        self.refused.values().any(|&n| n >= Self::REFUSED_REPEATS)
+        self.refused.values().any(|&n| n >= self.refused_repeats)
     }
 
     fn digest(name: &str, input: &Value, result: &str) -> u64 {
@@ -2264,12 +2363,49 @@ pub struct Agent {
     /// Whether reasoning from before the turn being answered goes back to
     /// the model. Kept unless a driver says otherwise; see [`PriorThinking`].
     prior_thinking: PriorThinking,
+    /// Consecutive turns one identical call may fail identically before the
+    /// run ends (`LoopGuard::REFUSED_REPEATS` unless a door sets its own).
+    refused_repeats: u32,
     /// Whether earlier replies that stop mid-sentence go back to the model
     /// as they are. Kept unless a driver says otherwise; see [`PriorTails`].
     prior_tails: PriorTails,
     /// Whether one-turn harness nudges in earlier owner turns go back to the
     /// model. Kept unless a driver says otherwise; see [`PriorNudges`].
     prior_nudges: PriorNudges,
+    /// Code mode's interpreter, when this agent serves `code`
+    /// ([`Agent::enable_code`]): kept so `code` can be built again over the
+    /// registry each time it changes, and so stay built last.
+    code: Option<Arc<dyn crate::interpreter::Interpreter>>,
+    /// The `--tool-profile` a run's surface was narrowed by, with the outbox's
+    /// routed names, asked of `code` again after every rebuild
+    /// ([`Agent::narrow_code_by`]): a rebuild widens `code`'s union to what
+    /// was registered since, and the profile must judge that union too.
+    code_profile: Option<(crate::tool::profile::ToolProfile, Vec<String>)>,
+}
+
+/// [`Agent::registry_mut`]'s guard: the registry, and on drop `code` built
+/// again over whatever it now holds.
+pub struct RegistryMut<'a> {
+    agent: &'a mut Agent,
+}
+
+impl std::ops::Deref for RegistryMut<'_> {
+    type Target = Registry;
+    fn deref(&self) -> &Registry {
+        &self.agent.registry
+    }
+}
+
+impl std::ops::DerefMut for RegistryMut<'_> {
+    fn deref_mut(&mut self) -> &mut Registry {
+        &mut self.agent.registry
+    }
+}
+
+impl Drop for RegistryMut<'_> {
+    fn drop(&mut self) {
+        self.agent.build_code(false);
+    }
 }
 
 impl Agent {
@@ -2295,8 +2431,11 @@ impl Agent {
             cache_contended: false,
             clock: Arc::new(crate::clock::SystemClock),
             prior_thinking: PriorThinking::Keep,
+            refused_repeats: LoopGuard::REFUSED_REPEATS,
             prior_tails: PriorTails::Keep,
             prior_nudges: PriorNudges::Keep,
+            code: None,
+            code_profile: None,
         })
     }
 
@@ -2311,6 +2450,18 @@ impl Agent {
     /// default). The transcript records it either way.
     pub fn with_prior_thinking(mut self, prior: PriorThinking) -> Self {
         self.prior_thinking = prior;
+        self
+    }
+
+    /// End a run once one identical call has failed identically in this
+    /// many consecutive turns, in place of the default seven
+    /// (`LoopGuard::REFUSED_REPEATS`), which waits for both of boredom's
+    /// notices. For a door whose runs are measured not to recover: a persona
+    /// chat resent one refused picture call 31 times across three runs, each
+    /// stopped at the seventh with both notices read (2026-11-10). Held to
+    /// the guard's floor (`LoopGuard::ending_after`).
+    pub fn with_refused_repeats(mut self, turns: u32) -> Self {
+        self.refused_repeats = LoopGuard::floor(turns);
         self
     }
 
@@ -2594,8 +2745,87 @@ impl Agent {
     ///
     /// For tools that need something only the front-end has — `ask_user` needs
     /// somebody to ask, and core must not assume a terminal exists.
-    pub fn registry_mut(&mut self) -> &mut Registry {
-        &mut self.registry
+    ///
+    /// **A guard, not a bare `&mut`**, because of `code`
+    /// (`CODE-MODE-DESIGN.md` §7, "the parent's `code` is built last too"):
+    /// it admits and declares the union of the registry it was built over,
+    /// and the front ends insert `recall`, `ask_user` and their own tools
+    /// after `prepare` returns, from half a dozen places. So when the guard
+    /// drops, a `code` this agent serves is built again over the registry as
+    /// it now stands. However late a tool arrives, `code` is built after it,
+    /// and no front end has to remember to say so. A change that took `code`
+    /// itself off the registry (`withhold_tool`) is left as it is.
+    pub fn registry_mut(&mut self) -> RegistryMut<'_> {
+        RegistryMut { agent: self }
+    }
+
+    /// Serve `code` over this agent's registry, with `interpreter` running
+    /// its programs (`CODE-MODE-DESIGN.md` §7). `interpreter` must already
+    /// have passed its `preflight`: nothing in the trait enforces it, and the
+    /// caller that switches code mode on refuses to start when it fails.
+    ///
+    /// `code` is built here over the registry as it stands, and built again
+    /// whenever the registry changes through [`Agent::registry_mut`] or the
+    /// outbox route changes ([`Agent::set_outbox`]). So its admitted set and
+    /// its declared capabilities are always those of every tool registered
+    /// before it, which is what the turn's taint forecast reads (`dispatch`)
+    /// and what a program's start checks again (`Agent::program_reach`). One
+    /// interpreter serves every run of this agent; its pool spawns a worker
+    /// per program (`interpreter::monty::PROGRAMS_PER_WORKER`).
+    pub fn enable_code(&mut self, interpreter: Arc<dyn crate::interpreter::Interpreter>) {
+        self.code = Some(interpreter);
+        self.build_code(true);
+    }
+
+    /// Hold `code` to `profile` from now on: judged now, and again after
+    /// every rebuild, so a read registered later that widens `code`'s union
+    /// past what the profile keeps takes `code` off the surface rather than
+    /// widening it (review of #774). Narrowing only: once off, it stays off.
+    pub fn narrow_code_by(
+        &mut self,
+        profile: crate::tool::profile::ToolProfile,
+        routed: Vec<String>,
+    ) {
+        self.code_profile = Some((profile, routed));
+        self.judge_code();
+    }
+
+    /// Take `code` off the registry where the run's profile would not keep it.
+    fn judge_code(&mut self) {
+        let Some((profile, routed)) = &self.code_profile else {
+            return;
+        };
+        let kept = self
+            .registry
+            .get(crate::tool::code::NAME)
+            .is_none_or(|code| profile.keeps(code.as_ref(), routed));
+        if !kept {
+            self.registry.remove(crate::tool::code::NAME);
+        }
+    }
+
+    /// Build `code` over the registry as it stands: always when `force`, and
+    /// otherwise only where this agent serves code mode and `code` is still
+    /// registered (a front end that withheld it keeps it withheld).
+    fn build_code(&mut self, force: bool) {
+        let Some(interpreter) = self.code.as_ref().map(Arc::clone) else {
+            return;
+        };
+        let present = self
+            .registry
+            .get(crate::tool::code::NAME)
+            .is_some_and(|t| t.hosts_programs());
+        if !force && !present {
+            return;
+        }
+        let outbox = self.cx.outbox.clone();
+        let code = crate::tool::code::CodeTool::over(
+            &self.registry,
+            |n| outbox.as_ref().is_some_and(|o| o.routes(n)),
+            interpreter,
+        );
+        self.registry.insert(Arc::new(code));
+        self.judge_code();
     }
 
     /// The connection this agent talks over, for a caller that needs a
@@ -2651,6 +2881,9 @@ impl Agent {
     /// context. Copy-on-write, like [`Agent::set_hooks`].
     pub fn set_outbox(&mut self, route: Arc<crate::outbox::OutboxRoute>) {
         Arc::make_mut(&mut self.cx).outbox = Some(route);
+        // A routed read is not admitted (`code::Admission::over`), so the
+        // route is a term of `code`'s admitted set.
+        self.build_code(false);
     }
 
     /// Deliver inter-agent mail to runs on the agent's own context. Attaching
@@ -2948,7 +3181,7 @@ impl Agent {
         cache_lens: &mut crate::cache_lens::CacheLens,
     ) -> Result<RunOutcome> {
         let harness_notes = self.now_notes();
-        let stamped = Self::stamped(cx, &events);
+        let stamped = self.stamped(cx, &events);
         let cx = &stamped;
         Self::arm_at_start(cx, convo);
 
@@ -2975,7 +3208,7 @@ impl Agent {
         // from the conversation, so a run's first request is judged against
         // the last run's final one; a surface that honestly differs across
         // runs is a verdict (`SurfaceChanged`), never a warning.
-        let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
+        let mut loop_guard = LoopGuard::new(self.cfg.loop_guard).ending_after(self.refused_repeats);
         let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
         // See `MAX_STEP_ESCALATIONS_PER_RUN`. Both carried into `RunOutcome`
         // via `emit_done`, on `boredom_notices`'s own argument: a mechanism
@@ -3015,6 +3248,16 @@ impl Agent {
         // record at all. Without this, a `--no-session` chat accumulates
         // every compacted state it ever passed through.
         convo.rewritten.clear();
+        // Likewise what the programs read: the previous run's were the
+        // previous recording's to write. Their bytes go now — the store holds
+        // a recorded run's (`record::ever`), and a run's live readers read only
+        // its own — so a conversation holds one run's raw reads at most,
+        // never every program it ever ran (review of #784). The calls stay,
+        // for the walk to place.
+        for call in &mut convo.program_calls {
+            call.bytes = crate::tool::code::record::Bytes::Unloaded;
+        }
+        convo.program_calls_from = convo.program_calls.len();
         // What this run sends beside the history, for the recording.
         convo.harness_notes = harness_notes;
         // Whatever happens below, including an early return, the conversation
@@ -3809,7 +4052,7 @@ impl Agent {
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
-                    let (results, provenance) = self
+                    let (results, provenance, reads) = self
                         .run_tools(
                             cx,
                             &response.message,
@@ -3828,6 +4071,13 @@ impl Agent {
                                 .and_then(|limit| pressure.forecast(limit, transcript_bytes)),
                         )
                         .await;
+                    // A program's passes are this run's model calls too
+                    // (`CODE-MODE-DESIGN.md` §5's last line): their tokens join
+                    // the run's usage before the next ceiling check reads it.
+                    usage.add(&program_usage(&trace[traced..]));
+                    // What the programs read, onto the conversation beside its
+                    // messages (§7), before anything below can return early.
+                    crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
 
                     // Written back the moment it changes — here and at the
                     // mailbox delivery above, the only two places it does —
@@ -3878,11 +4128,12 @@ impl Agent {
                     // One walk, three consumers, for the reason the byte
                     // measurement above is taken once: pairing every result
                     // with its call renders each input, and every reader needs
-                    // the same values. They key differently on purpose —
-                    // the guard on the exact call, boredom on the *target*, so
-                    // two tools that read one file and get the same bytes count
-                    // as the same thing learned twice. Only the guard's refusal
-                    // streak reads the error flag.
+                    // the same values. They key differently on purpose — the
+                    // guard on the exact call; boredom as `Boredom::key` says,
+                    // a declared read or a failed call by its target and any
+                    // other call whole, where that rule is stated once. The
+                    // guard's refusal streak and boredom's key both read the
+                    // error flag.
                     let outcomes: Vec<(&str, &Value, &str, bool)> = results
                         .iter()
                         .filter_map(|block| {
@@ -3937,7 +4188,7 @@ impl Agent {
                             }),
                     ) {
                         tracing::warn!(
-                            repeats = LoopGuard::REFUSED_REPEATS,
+                            repeats = self.refused_repeats,
                             "one call refused identically, turn after turn; stopping"
                         );
                         loop_detected = true;
@@ -3970,9 +4221,22 @@ impl Agent {
                     let bored = boredom.observe_turn(outcomes.iter().map(
                         |&(name, input, content, is_error)| {
                             let call = (name, input.to_string());
+                            // A write is keyed whole, a read by its target:
+                            // six different edits to one file are six pieces
+                            // of work, never one edit repeated (`Boredom::key`).
+                            // A *failed* call is keyed by target whatever it
+                            // declares: it changed nothing, so its arguments
+                            // are guesses rather than work — `fs_edit` missing
+                            // with a new `old` each turn is the guessing loop
+                            // this exists to name, and the shape key sees one
+                            // target there (review of #857, pass 2).
+                            let reads = is_error
+                                || crate::boredom::Boredom::reads(
+                                    self.registry.get(name).and_then(|t| t.effect()),
+                                );
                             crate::boredom::Outcome {
                                 tool: name,
-                                key: crate::boredom::Boredom::key(name, input, content),
+                                key: crate::boredom::Boredom::key(name, input, content, reads),
                                 failure: (is_error && !declined_by_person.contains(&call)).then(
                                     || {
                                         crate::boredom::Boredom::failure(
@@ -4082,7 +4346,7 @@ impl Agent {
                         // Preserve refused checks in their trace, without reporting
                         // harness dispatch as a model-initiated send attempt.
                         let mut check_blocks = 0;
-                        let (results, provenance) = self
+                        let (results, provenance, reads) = self
                             .run_tools(
                                 cx,
                                 &request,
@@ -4099,6 +4363,8 @@ impl Agent {
                                 None,
                             )
                             .await;
+                        usage.add(&program_usage(&trace[start..]));
+                        crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
                         convo.taint = taint;
                         for result in &mut trace[start..] {
                             result.name = crate::step::CHECK_TRACE.into();
@@ -5021,9 +5287,11 @@ impl Agent {
     /// is a fourth copy of the bug this fixes. One function for a run and a
     /// harness call (`dispatch_one`), so the two cannot drift (review of
     /// #592, pass 3).
-    fn stamped(cx: &RunContext, events: &Option<UnboundedSender<AgentEvent>>) -> RunContext {
+    fn stamped(&self, cx: &RunContext, events: &Option<UnboundedSender<AgentEvent>>) -> RunContext {
+        let code = crate::tool::code::NAME;
         RunContext {
             tools: Arc::new(ToolCtx {
+                code_offered: self.registry.available(code).is_some() && !cx.is_withheld(code),
                 events: events.clone(),
                 cancel: cx.cancel.clone(),
                 cancel_reason: Some(Arc::clone(&cx.cancel_reason)),
@@ -5071,7 +5339,7 @@ impl Agent {
         run_pictures: &mut RunPictures,
         output_budget: usize,
         context: Option<crate::pressure::Forecast>,
-    ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
+    ) -> Batch {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
             .into_iter()
@@ -5159,12 +5427,12 @@ impl Agent {
         let call_id = format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
         // Stamped and armed as a run is, so what the run would withhold and
         // what its messages and notes armed reach this call too.
-        let stamped = Self::stamped(cx, events);
+        let stamped = self.stamped(cx, events);
         let cx = &stamped;
         Self::arm_at_start(cx, convo);
         let mut trace = Vec::new();
         let mut blocked_sends = 0;
-        let (blocks, provenance) = self
+        let (blocks, provenance, reads) = self
             .dispatch(
                 cx,
                 vec![(call_id.clone(), name.to_string(), input)],
@@ -5178,6 +5446,11 @@ impl Agent {
                 false,
             )
             .await;
+        // The conversation keeps what a harness call's program read, as it
+        // keeps the taint the call armed. No message carries the call, so no
+        // walk yields them; one made between a run and its recording is
+        // written with that run's, under an anchor nothing resolves.
+        crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
         let (content, is_error) = blocks
             .iter()
             .find_map(|b| match b {
@@ -5219,7 +5492,7 @@ impl Agent {
         // Whether a deferred call may go to the host's job queue: a model
         // turn's may; a harness call's runs inline (`dispatch_one`).
         defer: bool,
-    ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
+    ) -> Batch {
         // Refusals and staging notices are ours; executed results overwrite
         // their entries with the tool's actual per-call classification.
         let mut provenance: std::collections::BTreeMap<String, bool> =
@@ -5355,6 +5628,7 @@ impl Agent {
                     context,
                     work,
                     host_calls,
+                    None,
                 );
                 async move {
                     let out = Self::execute(&tool, &name, input, &tool_ctx).await;
@@ -5399,6 +5673,7 @@ impl Agent {
         // `tool_result` blocks first, and the OpenAI dialect lifts them out
         // into `role: "tool"` messages ahead of the parts array anyway.
         let mut pictures = Vec::new();
+        let mut batch_reads = Vec::new();
         for (i, id, name, mut out) in executed {
             // A deferred call's slow half (`ToolOutput::deferred`): handed to
             // the host's queue, where it outlives this run and its output
@@ -5516,6 +5791,14 @@ impl Agent {
                 };
             }
             provenance.insert(id.clone(), out.external);
+            // What a program read (§7): a `code` call's own host calls, or a
+            // child's carried up by a subagent, which this call's id is the
+            // only place to name.
+            batch_reads.extend(
+                std::mem::take(&mut out.reads)
+                    .into_iter()
+                    .map(|r| r.anchored_at(&id)),
+            );
             // The gate's last step, then the rendering (`CODE-MODE-DESIGN.md`
             // §7): taint armed from what actually ran, read off the raw
             // result; then capped, and an outside result marked as data. The
@@ -5593,7 +5876,7 @@ impl Agent {
         }
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
-        (blocks, provenance)
+        (blocks, provenance, batch_reads)
     }
 
     /// What a batch of calls will arm, forecast from declared reach before
@@ -5707,6 +5990,7 @@ impl Agent {
         run_pictures: &mut RunPictures,
         context: Option<crate::pressure::Forecast>,
         asking: Asking,
+        program_room: Option<usize>,
     ) -> Gated {
         let (id, name, input) = call;
         let grants_before = cx.tools.grants.live();
@@ -5732,7 +6016,16 @@ impl Agent {
         };
         let work =
             crate::step::Work::of(trace).in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
-        let tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work, None);
+        let tool_ctx = Self::call_ctx(
+            cx,
+            id,
+            turn_taint,
+            recorded_taint,
+            context,
+            work,
+            None,
+            program_room,
+        );
         let mut output = Self::execute(&tool, name, input.clone(), &tool_ctx).await;
         let terms = self.terms(
             cx,
@@ -5753,7 +6046,10 @@ impl Agent {
         if cx.tools.grants.live() != grants_before {
             emit(events, AgentEvent::Grants(cx.tools.grants.all()));
         }
-        Gated::Ran { output, terms }
+        Gated::Ran {
+            output: Box::new(output),
+            terms,
+        }
     }
 
     /// Serve the host calls of the programs running in this batch, until the
@@ -5789,10 +6085,12 @@ impl Agent {
                     call_id,
                     name,
                     input,
+                    room,
                     reply,
                 } => {
                     made += 1;
                     let call = (format!("{call_id}.host-{made}"), name, input);
+                    let host_id = call.0.clone();
                     let before = trace.len();
                     let gated = self
                         .gate(
@@ -5805,6 +6103,7 @@ impl Agent {
                             run_pictures,
                             context,
                             Asking::Refuse,
+                            Some(room),
                         )
                         .await;
                     for t in &mut trace[before..] {
@@ -5813,7 +6112,10 @@ impl Agent {
                     let _ = reply.send(match gated {
                         Gated::Refused(why) => HostAnswer::Refused(why),
                         Gated::Staged(notice) => HostAnswer::Staged(notice),
-                        Gated::Ran { output, .. } => HostAnswer::Ran(output),
+                        Gated::Ran { output, .. } => HostAnswer::Ran {
+                            id: host_id,
+                            output: *output,
+                        },
                     });
                 }
                 HostRequest::Pass { pass, reply } => {
@@ -5855,7 +6157,7 @@ impl Agent {
         if !self.provider.local() {
             return PassAnswer::Refused(
                 "this run's provider is not local (a `local` provider on a loopback address), \
-                 and a sub-call sends a handle's bytes to the model, so no pass was sent"
+                 and a sub-call sends a program's text to the model, so no pass was sent"
                     .into(),
             );
         }
@@ -5919,8 +6221,12 @@ impl Agent {
     ///
     /// `host_calls` is the program channel, for a tool that
     /// [`hosts_programs`](crate::tool::Tool::hosts_programs) and for no
-    /// other: every context is built with it set here, so none inherits one
-    /// from the run's own (`CODE-MODE-DESIGN.md` §7).
+    /// other, and `program_room` marks a program's host call: every context
+    /// is built with both set here, so none inherits either from the run's
+    /// own (`CODE-MODE-DESIGN.md` §7). A subagent's run is based on a call's
+    /// context, which is how an inherited mark would have reached a child's
+    /// turn reads (review of #796).
+    #[allow(clippy::too_many_arguments)]
     fn call_ctx(
         cx: &RunContext,
         id: &str,
@@ -5929,6 +6235,7 @@ impl Agent {
         context: Option<crate::pressure::Forecast>,
         work: crate::step::Work,
         host_calls: Option<crate::tool::code::HostCalls>,
+        program_room: Option<usize>,
     ) -> Arc<ToolCtx> {
         Arc::new(ToolCtx {
             call_id: Some(id.to_string()),
@@ -5937,6 +6244,7 @@ impl Agent {
             context,
             work: Some(work),
             host_calls,
+            program_room,
             ..(*cx.tools).clone()
         })
     }
@@ -6064,6 +6372,7 @@ impl Agent {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             });
             return Checked::Refused(content);
         }
@@ -6086,6 +6395,7 @@ impl Agent {
                     unknown: false,
                     staged: false,
                     in_program: false,
+                    program: None,
                 });
                 emit(
                     events,
@@ -6163,6 +6473,7 @@ impl Agent {
                 unknown: !withheld,
                 staged: false,
                 in_program: false,
+                program: None,
             });
             return Checked::Refused(content);
         };
@@ -6192,6 +6503,7 @@ impl Agent {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             });
             return Checked::Refused(content);
         }
@@ -6388,6 +6700,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                         in_program: false,
+                        program: None,
                     });
                     return Checked::Refused(reason);
                 }
@@ -6503,6 +6816,7 @@ impl Agent {
                     unknown: false,
                     staged: false,
                     in_program: false,
+                    program: None,
                 });
                 return Checked::Refused(format!("Blocked by a hook: {reason}"));
             }
@@ -6635,6 +6949,7 @@ impl Agent {
                         unknown: false,
                         staged: true,
                         in_program: false,
+                        program: None,
                     });
                     Checked::Staged(content)
                 }
@@ -6664,6 +6979,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                         in_program: false,
+                        program: None,
                     });
                     Checked::Refused(content)
                 }
@@ -6839,6 +7155,7 @@ impl Agent {
                     unknown: false,
                     staged: false,
                     in_program: false,
+                    program: None,
                 });
                 return Checked::Refused(content);
             }
@@ -6923,7 +7240,7 @@ pub(crate) enum Gated {
     /// [`jobs::render`](crate::jobs::render) applies to whatever of it
     /// re-enters the context.
     Ran {
-        output: ToolOutput,
+        output: Box<ToolOutput>,
         /// Read by the test that pins the seam; a host call keeps the raw
         /// bytes and is rendered with its `code` call instead.
         #[cfg_attr(not(test), allow(dead_code))]
@@ -7031,6 +7348,47 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Mutex;
+
+    /// A program's mark is stamped on every call, never inherited: a
+    /// subagent's run is based on a call's context, so a base context
+    /// carrying `program_room` must not hand it to the next call's tool
+    /// (review of #796), as `host_calls` is not handed on either.
+    #[test]
+    fn a_call_context_never_inherits_a_programs_mark() {
+        let base = ToolCtx {
+            program_room: Some(64),
+            ..ToolCtx::default()
+        };
+        let cx = RunContext::new(
+            base,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        );
+        let w = crate::step::Work::default();
+        let turn = Agent::call_ctx(
+            &cx,
+            "t1",
+            Taint::default(),
+            Taint::default(),
+            None,
+            w,
+            None,
+            None,
+        );
+        assert_eq!(turn.program_room, None);
+        let host = Agent::call_ctx(
+            &cx,
+            "t2",
+            Taint::default(),
+            Taint::default(),
+            None,
+            w,
+            None,
+            Some(9),
+        );
+        assert_eq!(host.program_room, Some(9));
+    }
 
     /// The stuck-loop digest is one call however the model ordered its
     /// arguments (review of #755): a repeat written in a new order still
@@ -7750,6 +8108,79 @@ mod tests {
         let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[1].messages.len(), 3);
+    }
+
+    /// A call's context says whether its run offers `code`, so a read that
+    /// cuts a long text can point at a program: registered and not withheld,
+    /// and only then (`ToolCtx::code_offered`).
+    #[tokio::test]
+    async fn a_call_knows_whether_its_run_offers_code() {
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Says whether the run offers code."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok(ctx.code_offered.to_string()))
+            }
+        }
+        struct NamedCode;
+        #[async_trait]
+        impl Tool for NamedCode {
+            fn name(&self) -> &str {
+                crate::tool::code::NAME
+            }
+            fn description(&self) -> &str {
+                "Stands in for code."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok(""))
+            }
+        }
+        let turns = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "probe".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]
+        };
+        let said = |convo: &Conversation| match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected a tool result, got {other:?}"),
+        };
+        for (tools, withhold, want) in [
+            (vec![Arc::new(Probe) as Arc<dyn Tool>], false, "false"),
+            (vec![Arc::new(Probe), Arc::new(NamedCode)], false, "true"),
+            (vec![Arc::new(Probe), Arc::new(NamedCode)], true, "false"),
+        ] {
+            let (agent, _) = agent_with_tools(turns(), tools, PermissionMode::Allow);
+            let mut cx = (**agent.context()).clone();
+            if withhold {
+                cx = cx.withholding([crate::tool::code::NAME.to_string()]);
+            }
+            let mut convo = Conversation::from(vec![Message::user("go")]);
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert_eq!(said(&convo), want, "withheld: {withhold}");
+        }
     }
 
     #[tokio::test]
@@ -11069,6 +11500,7 @@ mod tests {
                 &mut RunPictures::default(),
                 None,
                 Asking::Person,
+                None,
             )
             .await;
         let Gated::Ran { output, terms } = gated else {
@@ -11088,7 +11520,7 @@ mod tests {
             .await;
         assert!(today.content.contains(crate::tool::CAP_MARKER));
         assert!(today.content.starts_with("<untrusted-content"));
-        let rendered = crate::jobs::render("long_page", &today.call_id, output, &terms);
+        let rendered = crate::jobs::render("long_page", &today.call_id, *output, &terms);
         assert_eq!(rendered.content, today.content);
         assert_eq!(rendered.is_error, today.is_error);
         assert_eq!(convo.taint, taint, "both paths arm the same taint");
@@ -11120,6 +11552,7 @@ mod tests {
                     &mut RunPictures::default(),
                     None,
                     Asking::Person,
+                    None,
                 )
                 .await;
             assert_eq!(trace.len(), 1, "one trace entry per call");
@@ -14411,6 +14844,206 @@ justification = "echo is off on this box"
         );
     }
 
+    /// A file edited in six different places answers `edited <path>` six
+    /// times, and that is a refactor, not a loop. The driven pilot's defect
+    /// (2026-11-08): keyed by path, the six read as one edit made six times,
+    /// the run was told to stop and say what blocked it, and Claude did — with
+    /// ten edits still to make. Fails on the old key, which ignored a write's
+    /// arguments.
+    #[tokio::test]
+    async fn different_edits_to_one_file_are_work_and_never_called_stuck() {
+        let edit = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("e{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": format!("a{i}"), "new": format!("b{i}")}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..6).map(edit).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(ReceiptEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("refactor it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(
+            convo
+                .messages
+                .iter()
+                .all(|m| !m.text().contains(crate::boredom::NOTICE_STEM)),
+            "six different edits are six pieces of work"
+        );
+    }
+
+    /// The other half, so the fix above cannot pass by never firing: the same
+    /// edit, word for word, three turns running is still a repeat.
+    #[tokio::test]
+    async fn the_same_edit_three_times_is_still_named() {
+        let same = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("e{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": "a", "new": "b"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(same).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(ReceiptEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("edit it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// The half of the rule that kept the old behaviour: two *declared reads*
+    /// reaching one file and getting the same bytes are one thing learned
+    /// twice, keyed by target through the registry's `effect()`. The only
+    /// test that proves the loop reads `effect()` at all — with the lookup
+    /// replaced by `is_error` alone the suite stayed green (review of #857,
+    /// pass 9).
+    #[tokio::test]
+    async fn two_read_tools_reaching_one_files_same_bytes_are_one_finding() {
+        let read = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("r{i}"),
+                    name: if i.is_multiple_of(2) { "peek" } else { "look" }.into(),
+                    input: json!({"path": "src/lib.rs"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(read).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(SameBytes("peek")), Arc::new(SameBytes("look"))],
+            PermissionMode::Allow,
+        );
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("read it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// A declared read that answers the same bytes whichever tool asked.
+    struct SameBytes(&'static str);
+    #[async_trait]
+    impl Tool for SameBytes {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "Read a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Read)
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("fn main() {}"))
+        }
+    }
+
+    /// And a *failed* write is a guess, not work: `fs_edit` missing with a new
+    /// `old` each turn answers the same error every time, and that streak on
+    /// one file is what boredom exists to name. Keyed whole like a success,
+    /// three guesses were three keys and the shape key saw one target, so
+    /// nothing fired (review of #857, pass 2).
+    #[tokio::test]
+    async fn different_guesses_failing_on_one_file_are_still_named() {
+        let guess = |i: usize| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: format!("g{i}"),
+                    name: "edit".into(),
+                    input: json!({"path": "src/lib.rs", "old": format!("guess {i}"), "new": "b"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(guess).collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(MissingEdit)], PermissionMode::Allow);
+        agent.cfg.max_turns = 10;
+
+        let mut convo = Conversation::user("edit it");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo
+            .messages
+            .iter()
+            .any(|m| m.text().contains(crate::boredom::NOTICE_STEM)));
+    }
+
+    /// `fs_edit` when `old` is not in the file: a workspace write that errors
+    /// the same way whatever was guessed.
+    struct MissingEdit;
+    #[async_trait]
+    impl Tool for MissingEdit {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "Replace text in a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Workspace)
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::err("`old` does not appear in the file"))
+        }
+    }
+
+    /// `fs_edit`'s shape: a workspace write whose result is a receipt that
+    /// never mentions what changed.
+    struct ReceiptEdit;
+    #[async_trait]
+    impl Tool for ReceiptEdit {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "Replace text in a file."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn effect(&self) -> Option<crate::tool::effect::Effect> {
+            Some(crate::tool::effect::Effect::Workspace)
+        }
+        async fn call(&self, i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(format!(
+                "edited {}",
+                i["path"].as_str().unwrap_or("")
+            )))
+        }
+    }
+
     #[tokio::test]
     async fn switching_boredom_off_leaves_the_transcript_alone() {
         let same = || {
@@ -17303,6 +17936,68 @@ justification = "echo is off on this box"
         );
         assert_eq!(outcome.stop_cause, StopCause::Loop);
         assert_eq!(outcome.tool_calls.len(), n + 1);
+    }
+
+    /// A door may end such a run sooner (`Agent::with_refused_repeats`): a
+    /// persona's stops at the third, and nothing sets fewer, since a second
+    /// identical failure is one ordinary retry (review of #869).
+    #[test]
+    fn a_door_may_end_a_refused_repeat_sooner_and_never_before_the_third() {
+        let fire = |repeats: u32, turns: usize| {
+            let mut g = LoopGuard::new(true).ending_after(repeats);
+            (0..turns)
+                .map(|_| g.observe_refusals([7u64]))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fire(3, 4), [false, false, true, true]);
+        // Zero, one and two are all held to the floor: zero never means
+        // "any error ends the run".
+        for under in [0, 1, 2] {
+            assert_eq!(fire(under, 3), [false, false, true], "asked for {under}");
+        }
+        assert_eq!(fire(5, 5), [false, false, false, false, true]);
+        // A different failure between two ends the streak.
+        let mut g = LoopGuard::new(true).ending_after(3);
+        for digest in [7u64, 7, 8, 7, 7] {
+            assert!(!g.observe_refusals([digest]));
+        }
+        assert!(g.observe_refusals([7u64]));
+    }
+
+    /// The same through a run: the third identical failure ends it as a
+    /// loop, with the closing reply, where the default would have sent four
+    /// more; one retry short of that is still the model's to work out.
+    #[tokio::test]
+    async fn a_run_given_three_ends_at_the_third_identical_failure() {
+        let mut turns = refused_calls(LoopGuard::REFUSED_REPEATS as usize);
+        turns.insert(
+            3,
+            assistant(
+                vec![Block::text("I couldn't draw it.")],
+                StopReason::EndTurn,
+            ),
+        );
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        // The builder holds the floor too.
+        let agent = agent.with_refused_repeats(1);
+        assert_eq!(agent.refused_repeats, LoopGuard::FEWEST_REPEATS);
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert_eq!(outcome.tool_calls.len(), 3);
+        assert_eq!(outcome.text, "I couldn't draw it.");
+
+        // Two identical failures and then an answer: a retry, not a loop.
+        let mut turns = refused_calls(2);
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        let agent = agent.with_refused_repeats(3);
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert_eq!(outcome.text, "done");
     }
 
     #[test]

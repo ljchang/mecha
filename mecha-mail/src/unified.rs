@@ -28,7 +28,7 @@ use crate::google::gmail::GmailProvider;
 use crate::google::server::markdown_to_html;
 use crate::mcp::Reply;
 use crate::microsoft::graph_calendar as mcal;
-use crate::microsoft::graph_mail::OutlookProvider;
+use crate::microsoft::graph_mail::{MutationOutcome, OutlookProvider, RestoreOutcome};
 use crate::text::clean_body;
 use crate::token::{self, TokenManager};
 use crate::types::{Email, MailError};
@@ -53,6 +53,17 @@ pub struct MailTools {
 }
 
 impl MailTools {
+    #[cfg(test)]
+    pub(crate) fn empty_for_rules_test() -> Self {
+        Self {
+            accounts: Vec::new(),
+            default: None,
+            default_mail: None,
+            default_calendar: None,
+            definitions: Vec::new(),
+        }
+    }
+
     /// The configured accounts, for operator commands that work per mailbox
     /// rather than through the tool surface — `mecha-mail corpus` is the one
     /// today. Read-only: nothing outside this module builds an `Account`.
@@ -343,7 +354,9 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                     "body_markdown": {"type": "string"},
                     "account": item_account("The account the thread lives in. Omit it and the account holding this thread_id is looked up."),
                     "message_id": {"type": "string", "description": "Reply to this specific message instead of the newest one."},
-                    "reply_all": {"type": "boolean", "default": false}
+                    "reply_all": {"type": "boolean", "default": false},
+                    "from_only": {"type": "boolean", "default": false, "description": "Address only the message's From address: never its Reply-To, never anyone else."},
+                    "expect_from": {"type": "string", "description": "Refuse the reply unless the message being answered is from this address."}
                 },
                 "required": ["thread_id", "body_markdown"]
             },
@@ -351,14 +364,14 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "mail_triage",
-            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Acts on the WHOLE thread. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
+            "description": "Clear a conversation out of the inbox: archive it, mark it read or unread, report it as spam, or move it to the trash. Undo archive with unarchive; undo trash with untrash. Outlook restores only messages in the corresponding Archive or Deleted Items folder: drafts to Drafts, own messages to Sent Items, others to Inbox; unknown destinations stay put and are counted. Gmail unarchive adds Inbox and untrash restores labels; use untrash for trashed mail. Gmail acts on the whole thread. Outlook archive and spam move only the conversation's Inbox messages, leaving filed mail untouched; trash and read/unread act on the whole conversation. Pass the thread_id and its `account` (both are in every search row). Nothing here leaves the mailbox or reaches anyone else — archive just drops the thread out of the inbox, and trash is recoverable. Use archive for anything dealt with; use spam only for genuine junk, because it also trains the provider's filter. To tag a thread for later, do not use this — tags are mecha's own and are set on the triage record.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "thread_id": {"type": "string"},
                     "action": {
                         "type": "string",
-                        "enum": ["archive", "read", "unread", "spam", "trash"]
+                        "enum": ["archive", "read", "unread", "spam", "trash", "unarchive", "untrash"]
                     },
                     "account": item_account("The account the thread lives in. Omit it and the account holding this thread_id is looked up.")
                 },
@@ -496,7 +509,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
 
 /// Run one provider call with a live token; on a 401, one forced refresh and
 /// retry — the same `refreshOrReconnect` shape the per-provider servers use.
-async fn with_token<T, F, Fut>(manager: &TokenManager, f: F) -> Result<T, MailError>
+pub(crate) async fn with_token<T, F, Fut>(manager: &TokenManager, f: F) -> Result<T, MailError>
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = Result<T, MailError>>,
@@ -707,7 +720,7 @@ fn calendar_home(calendar_id: &str, answers: &[(&str, CalendarReach)]) -> Result
 /// provider difference leaking into the schema.
 ///
 /// Tagging is **not** here. A mecha tag lives on the triage record, costs no
-/// OAuth scope, and works identically on both providers; these five are the
+/// OAuth scope, and works identically on both providers; these are the
 /// operations that must reach the provider or they have not happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriageAction {
@@ -720,9 +733,15 @@ pub enum TriageAction {
     Spam,
     /// Recoverable. Neither scope this crate holds can delete permanently.
     Trash,
+    /// Undo archive; Outlook restores message roles from Archive only.
+    Unarchive,
+    /// Undo trash; Outlook restores message roles from Deleted Items only.
+    Untrash,
 }
 
 impl TriageAction {
+    // Unknown names stay absent. This enum has no serde representation;
+    // introducing one must preserve the store family's unknown-on-load rule.
     fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "archive" => Self::Archive,
@@ -730,6 +749,8 @@ impl TriageAction {
             "unread" => Self::Unread,
             "spam" => Self::Spam,
             "trash" => Self::Trash,
+            "unarchive" => Self::Unarchive,
+            "untrash" => Self::Untrash,
             _ => return None,
         })
     }
@@ -741,6 +762,8 @@ impl TriageAction {
             Self::Unread => "unread",
             Self::Spam => "spam",
             Self::Trash => "trash",
+            Self::Unarchive => "unarchive",
+            Self::Untrash => "untrash",
         }
     }
 
@@ -752,16 +775,146 @@ impl TriageAction {
             Self::Unread => "marked unread",
             Self::Spam => "reported as spam and removed from the inbox",
             Self::Trash => "moved to the trash",
+            Self::Unarchive => "restored from archive",
+            Self::Untrash => "restored from the trash",
         }
     }
 
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Archive,
         Self::Read,
         Self::Unread,
         Self::Spam,
         Self::Trash,
+        Self::Unarchive,
+        Self::Untrash,
     ];
+}
+
+/// Provider outcome before rendering the MCP triage report.
+#[derive(Debug, Clone, Copy)]
+pub enum TriageResult {
+    Uncounted,
+    Count(MutationOutcome),
+    Restore(RestoreOutcome),
+}
+
+fn render_triage_result(
+    account: &str,
+    thread_id: &str,
+    action: TriageAction,
+    result: TriageResult,
+) -> String {
+    let status = format!("{account}: thread {thread_id} {}", action.done());
+    match result {
+        TriageResult::Uncounted => status,
+        TriageResult::Count(MutationOutcome {
+            moved: 0,
+            failed: 0,
+            ..
+        }) if matches!(action, TriageAction::Archive | TriageAction::Spam) => {
+            let verb = if matches!(action, TriageAction::Archive) {
+                "archive"
+            } else {
+                "mark as spam"
+            };
+            format!("{account}: thread {thread_id}: nothing in Inbox to {verb}")
+        }
+        TriageResult::Count(outcome) => {
+            let completion = if outcome.failed > 0 {
+                "partial completion: "
+            } else {
+                ""
+            };
+            if matches!(action, TriageAction::Archive | TriageAction::Spam) {
+                let destination = if action == TriageAction::Archive {
+                    "Archive"
+                } else {
+                    "Junk Email"
+                };
+                format!("{account}: thread {thread_id}: {completion}{} Inbox message{} moved to {destination}; {} failed",
+                    outcome.moved, if outcome.moved == 1 { "" } else { "s" }, outcome.failed)
+            } else {
+                format!(
+                    "{account}: thread {thread_id}: {completion}{} message{} {}; {} failed",
+                    outcome.moved,
+                    if outcome.moved == 1 { "" } else { "s" },
+                    action.done(),
+                    outcome.failed
+                )
+            }
+        }
+        TriageResult::Restore(RestoreOutcome {
+            moved: 0,
+            left_in_place: 0,
+            failed: 0,
+        }) => {
+            let source = match action {
+                TriageAction::Unarchive => "archive",
+                TriageAction::Untrash => "Deleted Items",
+                _ => return status,
+            };
+            format!("{account}: thread {thread_id}: nothing in {source} to restore")
+        }
+        TriageResult::Restore(outcome) => format!(
+            "{status} ({}{} moved; {} left in place; {} failed)",
+            if outcome.failed > 0 || outcome.left_in_place > 0 {
+                "incomplete restore: "
+            } else {
+                ""
+            },
+            outcome.moved,
+            outcome.left_in_place,
+            outcome.failed
+        ),
+    }
+}
+
+/// Classify counts independently of any claimed wire status. An absent moved
+/// count is a successful, uncounted thread operation; failures or messages
+/// left in place always take precedence over an empty successful count.
+pub fn status_of(moved: Option<usize>, failed: usize, left_in_place: usize) -> &'static str {
+    if failed > 0 || left_in_place > 0 {
+        "partial"
+    } else if moved == Some(0) {
+        "nothing_to_do"
+    } else {
+        "completed"
+    }
+}
+
+/// Machine-readable result, also included as JSON text for text-only MCP
+/// clients. `moved: null` means Gmail acknowledged the thread operation without
+/// a per-message count. A partial operation is an error, never a clean success.
+pub fn triage_reply(
+    account: &str,
+    thread_id: &str,
+    action: TriageAction,
+    result: TriageResult,
+) -> Reply {
+    let (moved, failed, left_in_place) = match result {
+        TriageResult::Uncounted => (None, 0, 0),
+        TriageResult::Count(outcome) => (Some(outcome.moved), outcome.failed, 0),
+        TriageResult::Restore(outcome) => {
+            (Some(outcome.moved), outcome.failed, outcome.left_in_place)
+        }
+    };
+    let status = status_of(moved, failed, left_in_place);
+    let source = match (result, action) {
+        (TriageResult::Count(_), TriageAction::Archive | TriageAction::Spam) => Some("Inbox"),
+        (TriageResult::Restore(_), TriageAction::Unarchive) => Some("Archive"),
+        (TriageResult::Restore(_), TriageAction::Untrash) => Some("Deleted Items"),
+        _ => None,
+    };
+    Reply::structured(
+        json!({
+            "account": account, "thread_id": thread_id, "action": action.name(),
+            "status": status, "moved": moved, "failed": failed,
+            "left_in_place": left_in_place, "source": source,
+            "message": render_triage_result(account, thread_id, action, result),
+        }),
+        status == "partial",
+    )
 }
 
 /// Apply one triage action to one thread in one account.
@@ -774,7 +927,7 @@ async fn triage_one(
     a: &Account,
     thread_id: &str,
     action: TriageAction,
-) -> Result<Option<usize>, MailError> {
+) -> Result<TriageResult, MailError> {
     with_token(&a.manager, |t| async move {
         match a.provider {
             Provider::Google => {
@@ -785,8 +938,10 @@ async fn triage_one(
                     TriageAction::Unread => g.set_thread_read(thread_id, false).await,
                     TriageAction::Spam => g.spam_thread(thread_id).await,
                     TriageAction::Trash => g.trash_thread(thread_id).await,
+                    TriageAction::Unarchive => g.unarchive_thread(thread_id).await,
+                    TriageAction::Untrash => g.untrash_thread(thread_id).await,
                 }
-                .map(|()| None)
+                .map(|()| TriageResult::Uncounted)
             }
             Provider::Outlook => {
                 let o = OutlookProvider::new(t);
@@ -796,8 +951,20 @@ async fn triage_one(
                     TriageAction::Unread => o.set_thread_read(thread_id, false).await,
                     TriageAction::Spam => o.spam_thread(thread_id).await,
                     TriageAction::Trash => o.trash_thread(thread_id).await,
+                    TriageAction::Unarchive => {
+                        return o
+                            .unarchive_thread(thread_id, a.address.as_deref())
+                            .await
+                            .map(TriageResult::Restore)
+                    }
+                    TriageAction::Untrash => {
+                        return o
+                            .untrash_thread(thread_id, a.address.as_deref())
+                            .await
+                            .map(TriageResult::Restore)
+                    }
                 }
-                .map(Some)
+                .map(TriageResult::Count)
             }
         }
     })
@@ -947,7 +1114,7 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
     if rows.is_empty() {
         return "no matching messages".into();
     }
-    rows.sort_by_key(|(_, _, e)| std::cmp::Reverse(date_key(&e.date_received)));
+    rows.sort_by_key(|(_, _, e)| std::cmp::Reverse(e.received_instant()));
     let rows: Vec<Value> = rows
         .into_iter()
         .map(|(provider, account, e)| {
@@ -964,6 +1131,9 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
                 "unread_scope": "owner_mailbox",
                 "recipient_read_status": "unknown",
                 "has_attachments": e.has_attachments,
+                // The fact, not the best-effort flag: null when the MIME tree
+                // could not be read, so "cannot tell" never reads as "none".
+                "attachment_presence": e.attachment_presence,
                 // The deterministic bulk signal, surfaced so the triage
                 // pre-filter can dispose of a thread without a model call.
                 // A property of the message rather than a judgement about it,
@@ -1063,6 +1233,17 @@ fn with_notes(body: String, failures: &[String]) -> String {
 
 // ------------------------------------------------------------ gmail replies
 
+/// Select the explicitly requested message, or the newest in a chronologically
+/// ordered provider thread. Shared by mail_reply and its provider-path tests.
+pub(crate) fn reply_target<'a>(emails: &'a [Email], wanted: Option<&str>) -> Option<&'a Email> {
+    match wanted {
+        Some(mid) => emails
+            .iter()
+            .find(|e| e.provider_id == mid || e.message_id.as_deref() == Some(mid)),
+        None => emails.last(),
+    }
+}
+
 /// Synthesize the addressing of a Gmail reply from the message being
 /// answered. Outlook gets this from Graph's reply endpoint; Gmail threads by
 /// headers, so the recipient logic has to live here: answer the sender
@@ -1127,6 +1308,40 @@ pub(crate) fn gmail_reply_fields(
         format!("Re: {}", target.subject)
     };
     (to.join(", "), cc, subject)
+}
+
+/// Why a `from_only` reply cannot be made: it answers exactly the message's
+/// From, so it needs one that is not the owner's own, and never reply-all.
+pub(crate) fn from_only_refusal(
+    target: &Email,
+    self_address: Option<&str>,
+    reply_all: bool,
+) -> Option<String> {
+    if reply_all {
+        return Some("from_only and reply_all cannot both be set".into());
+    }
+    let from = target.from_address.trim();
+    if from.is_empty() || self_address.is_some_and(|a| a.eq_ignore_ascii_case(from)) {
+        return Some("from_only: the message has no sender to answer but you".into());
+    }
+    None
+}
+
+/// Why a reply pinned to `expect_from` cannot be made: the message the
+/// selector resolved to is from someone else. A mail rule's staged reply is
+/// approved against the address its review showed, and `message_id` is the
+/// sender-written RFC Message-ID — a sender who copies another participant's
+/// out of the thread's `References` would otherwise redirect the released
+/// reply to that participant (review of #856, pass 6). An empty pin refuses:
+/// it names nobody the owner approved.
+pub(crate) fn expect_from_refusal(target: &Email, expected: &str) -> Option<String> {
+    let (from, expected) = (target.from_address.trim(), expected.trim());
+    if expected.is_empty() || !from.eq_ignore_ascii_case(expected) {
+        return Some(format!(
+            "expect_from: the message answered is from `{from}`, not `{expected}`"
+        ));
+    }
+    None
 }
 
 // ------------------------------------------------------------------ dispatch
@@ -1510,21 +1725,7 @@ impl MailTools {
                     Err(e) => return fail(e),
                 };
                 match triage_one(account, &thread_id, action).await {
-                    Ok(None) => Some(Reply::from((
-                        format!("{}: thread {thread_id} {}", account.name, action.done()),
-                        false,
-                    ))),
-                    // Graph's per-message reality, surfaced rather than
-                    // rounded up: a conversation that half-moved says so.
-                    Ok(Some(n)) => Some(Reply::from((
-                        format!(
-                            "{}: thread {thread_id} {} ({n} message{})",
-                            account.name,
-                            action.done(),
-                            if n == 1 { "" } else { "s" }
-                        ),
-                        false,
-                    ))),
+                    Ok(result) => Some(triage_reply(&account.name, &thread_id, action, result)),
                     Err(e) => fail(format!("{e}")),
                 }
             }
@@ -1598,28 +1799,49 @@ impl MailTools {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let wanted = str_arg("message_id");
-                let target = match &wanted {
-                    Some(mid) => emails
-                        .iter()
-                        .find(|e| e.provider_id == *mid || e.message_id.as_deref() == Some(mid)),
-                    None => emails.last(),
-                };
+                let target = reply_target(&emails, wanted.as_deref());
                 let Some(target) = target else {
                     return refuse(match wanted {
                         Some(mid) => format!("no message `{mid}` in thread {thread_id}"),
                         None => format!("thread {thread_id} has no messages"),
                     });
                 };
+                // A narrowing, never a widening: the reply answers one
+                // person, the message's From (MAIL-RULES-DESIGN.md §5.4).
+                // A mail rule's staged reply sets it.
+                let from_only = args
+                    .get("from_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if from_only {
+                    if let Some(why) =
+                        from_only_refusal(target, account.address.as_deref(), reply_all)
+                    {
+                        return refuse(why);
+                    }
+                }
+                // The recipient the owner approved, checked against the one
+                // the selector found (a narrowing, like `from_only`).
+                if let Some(expected) = args.get("expect_from") {
+                    let Some(expected) = expected.as_str() else {
+                        return refuse("expect_from must be a string address".to_string());
+                    };
+                    if let Some(why) = expect_from_refusal(target, expected) {
+                        return refuse(why);
+                    }
+                }
 
                 let html = markdown_to_html(&body_md);
                 let result = match account.provider {
                     Provider::Outlook => {
                         let target_id = target.provider_id.clone();
+                        let only = from_only.then(|| target.from_address.trim().to_string());
                         with_token(&account.manager, |t| {
-                            let (target_id, html) = (target_id.clone(), html.clone());
+                            let (target_id, html, only) =
+                                (target_id.clone(), html.clone(), only.clone());
                             async move {
                                 OutlookProvider::new(t)
-                                    .reply(&target_id, &html, reply_all)
+                                    .reply(&target_id, &html, reply_all, only.as_deref())
                                     .await
                             }
                         })
@@ -2086,6 +2308,33 @@ impl crate::mcp::ToolProvider for MailTools {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thread_triage_has_no_alternate_id_mode() {
+        // This is a structural regression: removing an unused flag cannot
+        // change runtime behavior. Rules have their own message-ID boundary.
+        let source = include_str!("unified.rs");
+        let triage = source
+            .split_once("async fn triage_one(")
+            .unwrap()
+            .1
+            .split_once("async fn calendars_one(")
+            .unwrap()
+            .0;
+        assert!(
+            !triage.contains("triage_with_ids"),
+            "obsolete ID-mode adapter remains"
+        );
+        assert!(
+            !triage.contains("with_immutable_ids"),
+            "interactive triage must use its existing ID format"
+        );
+        assert!(
+            triage.contains("with_token"),
+            "triage retains token refresh routing"
+        );
+    }
+
+    use crate::types::ThreadMetadata;
     /// Found on #258's review: a failed account arrived as a prose note
     /// after the JSON, which a reader of the rows drops, so the outbox's
     /// calendar picker showed "no calendars" for an account it could not
@@ -2279,7 +2528,7 @@ mod tests {
             assert_eq!(TriageAction::parse(action.name()), Some(action));
             assert!(!action.done().is_empty());
         }
-        for bogus in ["delete", "label", "SPAM", "", "archive "] {
+        for bogus in ["delete", "label", "SPAM", "", "archive ", "future_action"] {
             assert_eq!(TriageAction::parse(bogus), None, "{bogus} must not parse");
         }
 
@@ -2287,6 +2536,10 @@ mod tests {
         // offered a verb that fails or denied one that works.
         let defs = tool_definitions(&names(&["a"]), &conf(Some("a"), None, None));
         let tool = defs.iter().find(|t| t["name"] == "mail_triage").unwrap();
+        let description = tool["description"].as_str().unwrap();
+        assert!(!description.contains("Acts on the WHOLE thread"));
+        assert!(description.contains("Gmail acts on the whole thread"));
+        assert!(description.contains("Outlook archive and spam move only the conversation's Inbox messages, leaving filed mail untouched"));
         let schema: Vec<&str> = tool["inputSchema"]["properties"]["action"]["enum"]
             .as_array()
             .unwrap()
@@ -2913,12 +3166,17 @@ mod tests {
             thread_id: Some("t1".into()),
             message_id: Some("<m1@x>".into()),
             subject: subject.into(),
+            subject_is_raw: false,
             from_address: from.into(),
+            sender_known: Some(true),
             from_name: "Someone".into(),
             to_addresses: to.iter().map(|s| s.to_string()).collect(),
             cc_addresses: cc.iter().map(|s| s.to_string()).collect(),
             bcc_addresses: vec![],
             date_received: "2026-08-05T12:00:00Z".into(),
+            date_known: Some(true),
+            provider_arrival_at: None,
+            attachment_presence: None,
             body_text: "hi".into(),
             body_html: String::new(),
             snippet: "hi".into(),
@@ -2927,6 +3185,17 @@ mod tests {
             is_starred: false,
             has_attachments: false,
             list_unsubscribe: None,
+            auto_submitted: None,
+            precedence: None,
+            list_id: None,
+            reply_to: None,
+            authentication_results: None,
+            headers: Default::default(),
+            headers_complete: None,
+            subject_complete: None,
+            recipients_complete: None,
+            is_draft: Some(false),
+            direction_evidence: Some(crate::types::DirectionEvidence::NotDraft),
         }
     }
 
@@ -3034,7 +3303,7 @@ mod tests {
         let mut older = email("a@x.com", &[], &[], "old");
         older.date_received = "2026-08-01T00:00:00Z".into();
         let mut newer = email("b@y.com", &[], &[], "new");
-        newer.date_received = "2026-08-04T00:00:00Z".into();
+        newer.date_received = "2026-08-01T00:00:00.100Z".into();
         let out = render_rows(vec![
             (Provider::Google, "personal".into(), older),
             (Provider::Outlook, "campus".into(), newer),
@@ -3043,6 +3312,75 @@ mod tests {
         assert_eq!(rows[0]["subject"], "new");
         assert_eq!(rows[0]["account"], "campus");
         assert_eq!(rows[1]["account"], "personal");
+    }
+
+    /// Review of #856, pass 6: a sender who copies another participant's
+    /// Message-ID makes the selector resolve to that participant's message,
+    /// and the pin to the approved address is what refuses the release.
+    #[test]
+    fn a_copied_message_id_cannot_redirect_a_pinned_reply() {
+        let mut third = email("third@example.com", &[], &[], "Booking");
+        third.provider_id = "p-1".into();
+        third.message_id = Some("<shared@example.com>".into());
+        let mut mallory = email("mallory@example.org", &[], &[], "Re: Booking");
+        mallory.provider_id = "p-2".into();
+        mallory.message_id = Some("<shared@example.com>".into());
+        let thread = [third, mallory];
+        let target = reply_target(&thread, Some("<shared@example.com>")).unwrap();
+        assert_eq!(
+            target.from_address, "third@example.com",
+            "oldest match wins"
+        );
+        // The owner approved a reply to the newest sender; the release refuses.
+        assert!(expect_from_refusal(target, "mallory@example.org").is_some());
+    }
+
+    #[test]
+    fn a_from_only_reply_answers_one_sender_who_is_not_you() {
+        let mut e = email("dana@example.com", &[], &[], "Booking");
+        e.reply_to = Some("elsewhere@example.net".into());
+        assert_eq!(
+            from_only_refusal(&e, Some("owner@example.edu"), false),
+            None
+        );
+        assert!(from_only_refusal(&e, Some("owner@example.edu"), true).is_some());
+        assert!(from_only_refusal(&e, Some("DANA@example.com"), false).is_some());
+        e.from_address = " ".into();
+        assert!(from_only_refusal(&e, None, false).is_some());
+        // The pin: the approved address, case aside, and nobody else.
+        let e = email("dana@example.com", &[], &[], "Booking");
+        assert_eq!(expect_from_refusal(&e, " Dana@Example.com "), None);
+        assert!(expect_from_refusal(&e, "mallory@example.org").is_some());
+        assert!(expect_from_refusal(&e, "").is_some());
+        // Gmail's addressing never reads Reply-To: the From is the one recipient.
+        let e = email("dana@example.com", &[], &[], "Booking");
+        let (to, cc, _) = gmail_reply_fields(&e, Some("owner@example.edu"), false);
+        assert_eq!((to.as_str(), cc), ("dana@example.com", None));
+    }
+
+    #[test]
+    fn a_row_carries_attachment_presence_with_unknown_kept_unknown() {
+        // Review of #854: the classify sweep judges `has_attachment` from
+        // this row, and the best-effort flag reads "cannot tell" as false.
+        let mut unknown = email("a@x.com", &[], &[], "unknown");
+        unknown.has_attachments = false;
+        unknown.attachment_presence = None;
+        let mut known = email("b@y.com", &[], &[], "known");
+        known.attachment_presence = Some(false);
+        let out = render_rows(vec![
+            (Provider::Google, "personal".into(), unknown),
+            (Provider::Google, "personal".into(), known),
+        ]);
+        let rows: Vec<Value> = serde_json::from_str(&out).unwrap();
+        let by = |subject: &str| {
+            rows.iter()
+                .find(|r| r["subject"] == subject)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(by("unknown")["attachment_presence"], Value::Null);
+        assert_eq!(by("unknown")["has_attachments"], false);
+        assert_eq!(by("known")["attachment_presence"], false);
     }
 
     #[test]
@@ -3070,5 +3408,377 @@ mod tests {
             Err(MailError::AuthError("expired".into())),
         )]);
         assert!(all_failed);
+    }
+    #[test]
+    fn thread_metadata_distinguishes_owner_inbound_drafts_and_unknown() {
+        let mut inbound = email("sender@example.edu", &["owner@example.com"], &[], "Fixture");
+        inbound.provider_id = "inbound-id".into();
+        inbound.message_id = Some("<untrusted-rfc-id@example.edu>".into());
+        let mut sent = email("OWNER@example.com", &["sender@example.edu"], &[], "Fixture");
+        sent.provider_id = "sent-id".into();
+        sent.date_received = "2026-08-06T12:00:00Z".into();
+        let mut draft = sent.clone();
+        draft.provider_id = "draft-id".into();
+        draft.date_received = "2026-08-07T12:00:00Z".into();
+        draft.is_draft = Some(true);
+        draft.direction_evidence = Some(crate::types::DirectionEvidence::Draft);
+        let thread = vec![draft.clone(), sent, inbound.clone()];
+        let metadata = ThreadMetadata::from_emails(&thread, Some("owner@example.com"));
+        assert_eq!(metadata.owner_participated, Some(true));
+        assert_eq!(
+            metadata.newest_inbound_provider_id.as_deref(),
+            Some("inbound-id")
+        );
+        assert_eq!(
+            ThreadMetadata::from_emails(&[draft, inbound.clone()], Some("owner@example.com"))
+                .owner_participated,
+            Some(false)
+        );
+        for address in [None, Some("")] {
+            let unknown = ThreadMetadata::from_emails(&thread, address);
+            assert_eq!(unknown.owner_participated, None);
+            assert_eq!(unknown.newest_inbound_provider_id, None);
+        }
+        inbound.from_address.clear();
+        let unknown = ThreadMetadata::from_emails(&[inbound], Some("owner@example.com"));
+        assert_eq!(unknown.owner_participated, None);
+        assert_eq!(unknown.newest_inbound_provider_id, None);
+        let mut unknown_draft = email("owner@example.com", &[], &[], "Fixture");
+        unknown_draft.is_draft = None;
+        unknown_draft.direction_evidence = None;
+        assert_eq!(
+            ThreadMetadata::from_emails(&[unknown_draft], Some("owner@example.com"))
+                .owner_participated,
+            None
+        );
+    }
+
+    #[test]
+    fn quoted_local_thread_text_preserves_main_display_bytes() {
+        let email = crate::google::gmail::parse_gmail_message(
+            crate::google::gmail::HeaderRead::Full,
+            &json!({"id":"fixture", "internalDate":"1785931200000", "payload":{"headers":[
+                {"name":"From", "value":"Fixture <\"quoted.local\"@example.com>"},
+                {"name":"Subject", "value":"Notice"},
+                {"name":"Message-ID", "value":"<fixture@example.com>"}
+            ]}}),
+        );
+        let date = crate::time::calendar_date(&email.date_received, crate::time::configured_zone())
+            .unwrap();
+        let expected = format!("--- [fixture] From: Fixture <\"quoted.local\"@example.com> · 2026-08-05T12:00:00Z\nCalendar date: {date}\nSubject: Notice\nMessage id (for mail_reply): <fixture@example.com>\n\n\n\n--- end of thread · 1 message");
+        assert_eq!(
+            render_thread(Provider::Google, "fixture", &[email]).as_bytes(),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn thread_rendering_keeps_the_original_text_and_omits_library_metadata() {
+        let mut inbound = email("sender@example.edu", &["owner@example.com"], &[], "Fixture");
+        inbound.from_name = "Sender".into();
+        inbound.body_text = "Fixture message.".into();
+        inbound.provider_id = "provider-message".into();
+        inbound.message_id = Some("<fixture@example.edu>".into());
+        inbound.auto_submitted = Some("auto-generated".into());
+        inbound.precedence = Some("bulk".into());
+        inbound.list_id = Some("<notices.example.edu>".into());
+        inbound.reply_to = Some("reply@example.com".into());
+        inbound.authentication_results = Some(vec![crate::types::AuthenticationResults::parse(
+            "mx.google.com; dmarc=pass header.from=example.edu",
+        )]);
+        inbound.headers_complete = Some(true);
+        let calendar_date =
+            crate::time::calendar_date(&inbound.date_received, crate::time::configured_zone())
+                .unwrap();
+        let mut response = inbound.clone();
+        response.from_name = "Owner".into();
+        response.from_address = "owner@example.com".into();
+        response.body_text = "Fixture response.".into();
+        response.provider_id = "response-id".into();
+        response.message_id = Some("<response@example.com>".into());
+        let emails = [inbound, response];
+        // Pin the original wire text, including the separator and footer.
+        // Populate the library-only fields so accidentally rendering them
+        // changes this fixture even when the old headers still look right.
+        for (provider, first_id, second_id) in [
+            (
+                Provider::Google,
+                "<fixture@example.edu>",
+                "<response@example.com>",
+            ),
+            (Provider::Outlook, "provider-message", "response-id"),
+        ] {
+            let text = render_thread(provider, "fixture", &emails);
+            let expected = format!(
+                "--- [fixture] From: Sender <sender@example.edu> · 2026-08-05T12:00:00Z\n\
+                 Calendar date: {calendar_date}\nSubject: Fixture\n\
+                 Message id (for mail_reply): {first_id}\n\nFixture message.\n\n\
+                 --- [fixture] From: Owner <owner@example.com> · 2026-08-05T12:00:00Z\n\
+                 Calendar date: {calendar_date}\nSubject: Fixture\n\
+                 Message id (for mail_reply): {second_id}\n\nFixture response.\n\n\
+                 --- end of thread · 2 messages"
+            );
+            assert_eq!(text, expected);
+            assert!(!text.contains("Mail metadata"));
+            assert!(!text.contains("dmarc=pass"));
+            assert!(text.ends_with("--- end of thread · 2 messages"));
+        }
+    }
+
+    #[test]
+    fn thread_tool_description_preserves_the_cached_prefix() {
+        let defs = tool_definitions(&names(&["a"]), &conf(Some("a"), None, None));
+        let tool = defs
+            .iter()
+            .find(|tool| tool["name"] == "mail_get_thread")
+            .unwrap();
+        assert_eq!(tool["description"], "Read a whole conversation by thread_id, oldest first, with clean text bodies. thread_ids are account-scoped: pass the `account` from the search row the id came from.");
+    }
+
+    #[test]
+    fn triage_status_classifies_counts_with_incomplete_work_first() {
+        for moved in [None, Some(0), Some(1), Some(2)] {
+            assert_eq!(
+                status_of(moved, 0, 0),
+                if moved == Some(0) {
+                    "nothing_to_do"
+                } else {
+                    "completed"
+                }
+            );
+            // Every combination with any incomplete work is partial.
+            for failed in 0..=1 {
+                for left in 0..=1 {
+                    if failed + left > 0 {
+                        assert_eq!(status_of(moved, failed, left), "partial");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn triage_message_counts_use_singular_and_plural_for_every_verb() {
+        for action in [
+            TriageAction::Archive,
+            TriageAction::Spam,
+            TriageAction::Read,
+            TriageAction::Unread,
+            TriageAction::Trash,
+        ] {
+            for moved in [1, 2] {
+                for failed in [0, 1] {
+                    let text = render_triage_result(
+                        "fixture",
+                        "thread-1",
+                        action,
+                        TriageResult::Count(MutationOutcome {
+                            moved,
+                            failed,
+                            ..Default::default()
+                        }),
+                    );
+                    let scope = if matches!(action, TriageAction::Archive | TriageAction::Spam) {
+                        "Inbox "
+                    } else {
+                        ""
+                    };
+                    assert!(
+                        text.contains(&format!(
+                            "{moved} {scope}message{} ",
+                            if moved == 1 { "" } else { "s" }
+                        )),
+                        "{text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn triage_counts_cross_mcp_as_structured_content_and_json_text() {
+        for action in [TriageAction::Archive, TriageAction::Spam] {
+            for (moved, failed, status) in [
+                (0, 0, "nothing_to_do"),
+                (2, 0, "completed"),
+                (1, 1, "partial"),
+            ] {
+                let reply = triage_reply(
+                    "fixture",
+                    "thread-1",
+                    action,
+                    TriageResult::Count(MutationOutcome {
+                        moved,
+                        failed,
+                        ..Default::default()
+                    }),
+                );
+                let wire = crate::mcp::result_json(&reply);
+                let text: Value =
+                    serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(wire["structuredContent"], text);
+                assert_eq!(text["moved"], moved);
+                assert_eq!(text["failed"], failed);
+                assert_eq!(text["status"], status);
+                assert_eq!(text["source"], "Inbox");
+                assert_eq!(wire["isError"], failed > 0);
+                assert!(
+                    wire.get("_meta").is_none(),
+                    "a partial operation is not a pre-dispatch refusal"
+                );
+                if failed > 0 {
+                    assert!(text["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("partial completion"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_inbox_triage_reports_nothing_in_the_source_folder() {
+        for (action, verb) in [
+            (TriageAction::Archive, "archive"),
+            (TriageAction::Spam, "mark as spam"),
+        ] {
+            assert_eq!(
+                render_triage_result(
+                    "fixture",
+                    "thread-1",
+                    action,
+                    TriageResult::Count(MutationOutcome::default())
+                ),
+                format!("fixture: thread thread-1: nothing in Inbox to {verb}")
+            );
+            for count in [1, 2] {
+                assert_eq!(
+                    render_triage_result(
+                        "fixture",
+                        "thread-1",
+                        action,
+                        TriageResult::Count(MutationOutcome {
+                            moved: count,
+                            failed: 0,
+                            ..Default::default()
+                        })
+                    ),
+                    format!(
+                        "fixture: thread thread-1: {count} Inbox message{} moved to {}; 0 failed",
+                        if count == 1 { "" } else { "s" },
+                        if action == TriageAction::Archive {
+                            "Archive"
+                        } else {
+                            "Junk Email"
+                        }
+                    )
+                );
+            }
+            assert_eq!(
+                render_triage_result("fixture", "thread-1", action, TriageResult::Uncounted),
+                format!("fixture: thread thread-1 {}", action.done())
+            );
+        }
+    }
+
+    #[test]
+    fn empty_restores_report_nothing_in_the_source_folder() {
+        for (action, source) in [
+            (TriageAction::Unarchive, "archive"),
+            (TriageAction::Untrash, "Deleted Items"),
+        ] {
+            let text = render_triage_result(
+                "fixture",
+                "thread-1",
+                action,
+                TriageResult::Restore(RestoreOutcome::default()),
+            );
+            assert_eq!(
+                text,
+                format!("fixture: thread thread-1: nothing in {source} to restore")
+            );
+        }
+    }
+
+    #[test]
+    fn empty_restore_with_a_non_restore_action_renders_status_without_panicking() {
+        for action in [
+            TriageAction::Archive,
+            TriageAction::Read,
+            TriageAction::Unread,
+            TriageAction::Spam,
+            TriageAction::Trash,
+        ] {
+            assert_eq!(
+                render_triage_result(
+                    "fixture",
+                    "thread-1",
+                    action,
+                    TriageResult::Restore(RestoreOutcome::default())
+                ),
+                format!("fixture: thread thread-1 {}", action.done())
+            );
+        }
+    }
+
+    #[test]
+    fn nonempty_restore_results_name_the_action() {
+        for action in [TriageAction::Unarchive, TriageAction::Untrash] {
+            for moved in 0..=1 {
+                for failed in 0..=1 {
+                    for left_in_place in 0..=1 {
+                        if moved == 0 && failed == 0 && left_in_place == 0 {
+                            continue;
+                        }
+                        let text = render_triage_result(
+                            "fixture",
+                            "thread-1",
+                            action,
+                            TriageResult::Restore(RestoreOutcome {
+                                moved,
+                                failed,
+                                left_in_place,
+                            }),
+                        );
+                        assert!(text.contains(action.done()), "{text}");
+                        assert!(
+                            text.contains(&format!(
+                                "{moved} moved; {left_in_place} left in place; {failed} failed"
+                            )),
+                            "{text}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restore_results_expose_messages_left_in_place() {
+        for action in [TriageAction::Unarchive, TriageAction::Untrash] {
+            let text = render_triage_result(
+                "fixture",
+                "thread-1",
+                action,
+                TriageResult::Restore(RestoreOutcome {
+                    moved: 1,
+                    left_in_place: 2,
+                    failed: 0,
+                }),
+            );
+            assert!(text.contains("1 moved; 2 left in place"), "{text}");
+            assert!(!text.contains("restored to the inbox"), "{text}");
+            let text = render_triage_result(
+                "fixture",
+                "thread-1",
+                action,
+                TriageResult::Restore(RestoreOutcome {
+                    moved: 0,
+                    left_in_place: 3,
+                    failed: 0,
+                }),
+            );
+            assert!(text.contains("0 moved; 3 left in place"), "{text}");
+        }
     }
 }

@@ -19,8 +19,17 @@
 //!   write, no network, no service.
 //! - **No mounts, and every `OsCall` and `NameLookup` is refused.** Monty's
 //!   files, environment, clock-driven sleeps and unknown imports all arrive
-//!   as `OsCall`s; this backend answers each `NotHandled`, so the program
-//!   gets monty's own `PermissionError`/`RuntimeError`/`ModuleNotFoundError`.
+//!   as `OsCall`s. An unknown import is answered `NotHandled`, so it stays
+//!   monty's own `ModuleNotFoundError` and `except ImportError:` catches it.
+//!   Every other one is a `PermissionError` that says a program has no files,
+//!   environment, network or clock and names the functions it was given
+//!   (`os_refusal`): monty's bare `Permission denied: '/notes'` read as a
+//!   sandbox fault (#791).
+//!   The one exception is a text read of a file by a program given `fs_read`
+//!   (`open(path)`, a `pathlib` `read_text`): it is answered by a host call
+//!   to `fs_read`, not by anything the worker can see (R12), and a listing
+//!   by a program given `fs_list` (`os.listdir`, `os.walk`, `glob`,
+//!   `os.path.exists`) is answered by `fs_list` calls the same way (R13).
 //!   A `NameLookup` (an undefined name) is answered `Undefined`. Registered
 //!   functions are globals, so no lookup is ever needed to reach one.
 //! - **`preflight` runs a program through the real confinement**, and a
@@ -50,21 +59,23 @@ use async_trait::async_trait;
 use monty_pool::{
     on_print_sync, Checkout, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent,
 };
+use monty_types::scan::{scan_reply, EntryInfo, ScanEntry};
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, ObjectRef,
-    OsPolicy, ResourceLimits, SleepMode,
+    CallArgs, ExcType, FileMode, MontyException, MontyFileHandle, MontyObject, NameLookupResult,
+    NamedValues, ObjectRef, OsPolicy, ResourceLimits, SleepMode,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::watchdog::{self, Watchdog};
 use super::worker::VerifiedWorker;
 use super::{
-    registrable, Backstop, Backstops, Builtin, End, ExternalCall, Finished, HostRaise, Interpreter,
-    Program, Raised, Step, Value,
+    ran_and_failed, registrable, Backstop, Backstops, Builtin, End, ExternalCall, FileTools,
+    Finished, HostRaise, Interpreter, Program, Raised, Step, Tag, Value,
 };
 use crate::sandbox::{Backend, Sandbox};
 
@@ -88,6 +99,13 @@ pub enum Confinement {
 }
 
 impl Confinement {
+    /// Whether a program arms a [`Watchdog`] over its worker: Seatbelt has
+    /// no `--die-with-parent`, so nothing else ends a worker whose mecha was
+    /// `SIGKILL`ed (`CODE-MODE-DESIGN.md` §7).
+    fn watchdog(&self) -> bool {
+        matches!(self, Confinement::Seatbelt { .. })
+    }
+
     /// The confinement this platform gives a worker, or a refusal naming why
     /// it gives none. On Linux that is the configured sandbox, and `none`
     /// refuses too: the sandbox is the second wall (§7), because round 1 of
@@ -179,8 +197,8 @@ impl Confinement {
             // `env -i` execs `sandbox-exec`, which applies the profile and
             // execs the worker: one process from the launcher's shell to the
             // program, so the pid the pool holds is the confined worker.
-            // There is no `--die-with-parent` here: a worker outlives a
-            // `SIGKILL`ed mecha (`CODE-MODE-DESIGN.md` §12).
+            // There is no `--die-with-parent` here; the program's
+            // [`Watchdog`] stands in for it.
             Confinement::Seatbelt { sandbox_exec } => {
                 return Ok(vec![
                     ENV.into(),
@@ -395,6 +413,9 @@ pub struct Monty {
     repl: ReplConfig,
     backstops: Backstops,
     confinement: Confinement,
+    /// What a program's [`Watchdog`] reads start times with: [`watchdog::PS`],
+    /// or a test's stand-in.
+    watchdog_ps: String,
     launcher: Launcher,
 }
 
@@ -450,6 +471,7 @@ impl Monty {
             repl,
             backstops,
             confinement: confinement.clone(),
+            watchdog_ps: watchdog::PS.into(),
             launcher,
         })
     }
@@ -502,6 +524,17 @@ impl Interpreter for Monty {
         externals: &[String],
         cancel: CancellationToken,
     ) -> Result<(Box<dyn Program>, Step)> {
+        let files = FileTools::named(externals);
+        self.start_with(source, externals, files, cancel).await
+    }
+
+    async fn start_with(
+        &self,
+        source: &str,
+        externals: &[String],
+        files: FileTools,
+        cancel: CancellationToken,
+    ) -> Result<(Box<dyn Program>, Step)> {
         for name in externals {
             if !registrable(name) {
                 bail!("`{name}` cannot be registered as an external function");
@@ -511,10 +544,33 @@ impl Interpreter for Monty {
         let deadline = started + self.backstops.wall_clock;
         // A Stop while every worker is busy ends the program here, rather
         // than waiting out `checkout_timeout` (review of #765).
-        let checkout = tokio::select! {
+        let mut checkout = tokio::select! {
             c = self.pool.checkout(&self.repl) => Some(c.map_err(|e| anyhow::anyhow!("checking out a monty worker: {e}"))?),
             _ = cancel.cancelled() => None,
             _ = tokio::time::sleep_until(deadline) => bail!("no monty worker within the program's wall clock"),
+        };
+        // Before the worker runs a line: a refusal drops the checkout, which
+        // kills the worker, and the program never starts. Raced against the
+        // Stop and the wall clock as the checkout is, so a handshake slowed
+        // by a starved fork cannot hold either (review of #772).
+        let guarded = match &checkout {
+            Some(co) if self.confinement.watchdog() => {
+                Some(co.pid().context("a monty worker with no pid")?)
+            }
+            _ => None,
+        };
+        let watchdog = match guarded {
+            Some(pid) => tokio::select! {
+                w = Watchdog::arm(pid, std::process::id(), &self.watchdog_ps) => Some(w?),
+                _ = cancel.cancelled() => {
+                    checkout = None;
+                    None
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("the monty worker's watchdog did not arm within the program's wall clock")
+                }
+            },
+            None => None,
         };
         let cancelled_waiting = checkout.is_none();
         let externals: BTreeSet<String> = externals.iter().cloned().collect();
@@ -523,6 +579,12 @@ impl Interpreter for Monty {
             .map(|n| (n.clone(), MontyObject::function(n.clone(), None)))
             .collect();
         let mut program = MontyProgram::new(checkout, externals, self.backstops, started, cancel);
+        // Only a tool the program was given, in the shape the shims need.
+        program.files = FileTools {
+            read: files.read && program.externals.contains("fs_read"),
+            list: files.list && program.externals.contains("fs_list"),
+        };
+        program.watchdog = watchdog;
         let step = if cancelled_waiting {
             program.end(End::Cancelled, false).await
         } else {
@@ -570,6 +632,20 @@ struct MontyProgram {
     suspensions: u64,
     /// A call is waiting on the host.
     pending: bool,
+    /// A listing being answered through `fs_list`, between its calls.
+    walk: Option<Walk>,
+    /// Every directory this program has listed, by the path monty gave,
+    /// with its names: a probe of a path in one answers from it, without
+    /// listing the parent again (review of #811: `os.walk` and `isfile` per
+    /// file was a listing per file). Each came through the gate already.
+    listed: HashMap<String, Vec<String>>,
+    /// Names held in `listed`; past [`SCAN_ENTRIES`] nothing more is kept.
+    listed_names: usize,
+    /// Which file tools answer the program's own file calls.
+    files: FileTools,
+    /// What ends the worker if mecha dies first, under Seatbelt. Dropped
+    /// with the program, it runs until the worker has gone.
+    watchdog: Option<Watchdog>,
 }
 
 impl MontyProgram {
@@ -590,6 +666,11 @@ impl MontyProgram {
             cancel,
             suspensions: 0,
             pending: false,
+            walk: None,
+            listed: HashMap::new(),
+            listed_names: 0,
+            files: FileTools::default(),
+            watchdog: None,
         }
     }
 
@@ -627,7 +708,10 @@ impl MontyProgram {
         });
         let fut = async {
             match req {
-                Req::Feed(src, inputs) => co.feed(src, inputs, vec![], true, &mut on_print).await,
+                Req::Feed(src, inputs) => {
+                    co.feed_with_cwd(src, inputs, vec![], Some(WORKSPACE), true, &mut on_print)
+                        .await
+                }
                 Req::Resume(v) => co.resume(v, &mut on_print).await,
                 Req::Undefined => {
                     co.resume_name_lookup(NameLookupResult::Undefined, &mut on_print)
@@ -712,8 +796,157 @@ impl MontyProgram {
                         }
                     }
                 }
-                // Files, the environment, sleeps, imports: no handler.
-                TurnEvent::OsCall { .. } => Req::Resume(ResumeValue::NotHandled),
+                // Files, the environment, sleeps, imports: no handler, and a
+                // refusal that says where the data is. Monty's own bare
+                // `PermissionError: Permission denied: '/notes'` read as a
+                // sandbox fault, and a model went probing paths (#791).
+                // An unknown import is an `OsCall` too, and stays monty's own
+                // `ModuleNotFoundError`, so `except ImportError:` still
+                // catches it (review of #791).
+                TurnEvent::OsCall { function_name, .. } if function_name == "import" => {
+                    Req::Resume(ResumeValue::NotHandled)
+                }
+                // A program given `fs_read` may open a file to read its text:
+                // `open` is answered with a handle, and every read of one
+                // (`read`, `readlines`, `readline`, a `for` loop, a
+                // `pathlib` `read_text`) arrives as a `Path.read_text` of the
+                // whole file, which goes to `fs_read` as the program's own
+                // call would, through the same guard, limits and taint. Any
+                // other mode, and a program without `fs_read`, is refused
+                // below. A program runs in `WORKSPACE`, so a relative path
+                // arrives under it and goes to `fs_read` relative again, and
+                // an absolute one (a spill file, a grant) goes as written:
+                // rooted at `/`, the two could not be told apart, and M5's
+                // `open()` of a spill file was read inside the workspace
+                // (M4: `open()` was 24 of 43 raised programs).
+                TurnEvent::OsCall {
+                    function_name,
+                    args,
+                    ..
+                } if self.files.read
+                    && matches!(function_name.as_str(), "open" | "Path.read_text")
+                    && args.args().next().and_then(os_path).is_some() =>
+                {
+                    let path = args.args().next().and_then(os_path).unwrap_or_default();
+                    // The mode is the second positional or the `mode` keyword; a
+                    // keyword is not in `args()`, and an absent one is `r`.
+                    let mode = args
+                        .kwargs()
+                        .find(|(k, _)| k.as_str() == Some("mode"))
+                        .map(|(_, v)| v)
+                        .or_else(|| args.args().nth(1))
+                        .map_or(Some("r"), |m| m.as_str());
+                    let text_read = mode
+                        .and_then(|m| m.parse::<FileMode>().ok())
+                        .is_some_and(|m| m == FileMode::Read(false));
+                    if function_name == "open" {
+                        if text_read {
+                            Req::Resume(ResumeValue::Return(MontyObject::file_handle(
+                                MontyFileHandle {
+                                    path,
+                                    mode: FileMode::Read(false),
+                                    position: 0,
+                                },
+                            )))
+                        } else {
+                            Req::Resume(ResumeValue::Error(MontyException::new(
+                                ExcType::PermissionError,
+                                Some(format!(
+                                    "a program may open a file only to read its text, in mode \
+                                     'r', and cannot write files or read bytes; reach data \
+                                     through the functions it was given: {}",
+                                    given_functions(&self.externals)
+                                )),
+                            )))
+                        }
+                    } else {
+                        self.pending = true;
+                        return Ok(Step::Call(ExternalCall {
+                            name: "fs_read".to_string(),
+                            args: Vec::new(),
+                            kwargs: vec![(
+                                "path".to_string(),
+                                Value::String(workspace_path(&path)),
+                            )],
+                        }));
+                    }
+                }
+                // A program given `fs_list` may list the workspace the way
+                // Python does: `os.listdir` and `Path.iterdir` arrive as
+                // `Path.iterdir`; `os.walk`, `os.scandir` and `Path.glob` and
+                // `rglob` as one `Path.scan` of the subtree, which monty walks
+                // or globs itself; `os.path.exists`, `isfile` and `isdir` as
+                // `Path.exists`, `is_file` and `is_dir`. Each is answered by
+                // `fs_list` calls (one per directory a scan reaches), so the
+                // guard, the tool-read limit and the taint are the tool's, as
+                // `open` is the read's (M5: 14 programs raised walking a tree).
+                TurnEvent::OsCall {
+                    function_name,
+                    args,
+                    ..
+                } if self.files.list
+                    && matches!(
+                        function_name.as_str(),
+                        "Path.iterdir"
+                            | "Path.scan"
+                            | "Path.exists"
+                            | "Path.is_file"
+                            | "Path.is_dir"
+                    )
+                    && args.args().next().and_then(os_path).is_some() =>
+                {
+                    let path = args.args().next().and_then(os_path).unwrap_or_default();
+                    let (walk, dir) = match function_name.as_str() {
+                        "Path.iterdir" => (Walk::List { dir: path.clone() }, path),
+                        "Path.scan" => {
+                            let max_depth = args
+                                .kwargs()
+                                .find(|(k, _)| k.as_str() == Some("max_depth"))
+                                .and_then(|(_, v)| v.as_int())
+                                .and_then(|d| u32::try_from(d).ok());
+                            let walk = Walk::Scan {
+                                root: path.clone(),
+                                max_depth,
+                                at: (String::new(), 0),
+                                queue: VecDeque::new(),
+                                entries: vec![ScanEntry {
+                                    path: String::new(),
+                                    info: DIRECTORY,
+                                }],
+                            };
+                            (walk, path)
+                        }
+                        probe => match path.rsplit_once('/') {
+                            Some((parent, name)) if !name.is_empty() && path != WORKSPACE => {
+                                let parent = dir_key(if parent.is_empty() { "/" } else { parent });
+                                if let Some(names) = self.listed.get(&parent) {
+                                    let yes = probed(names, name, probe);
+                                    req = Req::Resume(ResumeValue::Return(MontyObject::bool(yes)));
+                                    continue;
+                                }
+                                let walk = Walk::Probe {
+                                    parent: parent.clone(),
+                                    name: name.to_string(),
+                                    what: probe.to_string(),
+                                };
+                                (walk, parent)
+                            }
+                            // `/` and the workspace itself are directories
+                            _ => {
+                                let yes = probe != "Path.is_file";
+                                req = Req::Resume(ResumeValue::Return(MontyObject::bool(yes)));
+                                continue;
+                            }
+                        },
+                    };
+                    self.walk = Some(walk);
+                    self.pending = true;
+                    return Ok(Step::Call(list_call(&dir)));
+                }
+                TurnEvent::OsCall { .. } => Req::Resume(ResumeValue::Error(MontyException::new(
+                    ExcType::PermissionError,
+                    Some(os_refusal(&self.externals)),
+                ))),
                 TurnEvent::NameLookup { .. } => Req::Undefined,
                 // Only an answer of `Future` creates one, and this host never
                 // gives that answer.
@@ -844,6 +1077,37 @@ impl MontyProgram {
 #[async_trait]
 impl Program for MontyProgram {
     async fn resume(&mut self, value: Value) -> Result<Step> {
+        if let Some(walk) = self.walk.take() {
+            self.take_pending()?;
+            if let Some(names) = names_of(&value) {
+                // A directory listed again replaces its entry, and its count.
+                let key = dir_key(&walk.listed_dir());
+                let held = self.listed.get(&key).map_or(0, Vec::len);
+                if self.listed_names - held + names.len() <= SCAN_ENTRIES {
+                    self.listed_names = self.listed_names - held + names.len();
+                    let names = names.into_iter().map(str::to_string).collect();
+                    self.listed.insert(key, names);
+                }
+            }
+            return match walk.answer(&value) {
+                // A scan's listings go straight back to the host, past the
+                // checks `run` makes per event, so the wall clock is read here.
+                Walked::Next(..) if Instant::now() >= self.deadline => {
+                    let b = Backstop::WallClock(self.backstops.wall_clock);
+                    Ok(self.end(End::Backstop(b), false).await)
+                }
+                Walked::Next(walk, dir) => {
+                    self.walk = Some(walk);
+                    self.pending = true;
+                    Ok(Step::Call(list_call(&dir)))
+                }
+                Walked::Reply(obj) => self.run(Req::Resume(ResumeValue::Return(obj))).await,
+                Walked::Fail(why) => {
+                    let exc = MontyException::new(ExcType::RuntimeError, Some(why));
+                    self.run(Req::Resume(ResumeValue::Error(exc))).await
+                }
+            };
+        }
         // Converted before the pending call is taken, so a host value that
         // cannot cross leaves the call still answerable.
         let obj = from_json(&value, 0)?;
@@ -852,6 +1116,18 @@ impl Program for MontyProgram {
     }
 
     async fn raise(&mut self, raise: HostRaise) -> Result<Step> {
+        // A probe whose parent cannot be listed is a path that is not there,
+        // as `os.path.exists` says of one it cannot reach. Only `fs_list`
+        // running and failing: a refusal by the gate (a hook, a denial, a
+        // policy), a spent limit or a stop still raises, or a denied or
+        // stopped probe would read as a missing file.
+        let walk = self.walk.take();
+        let failed = format!("{} {}", Tag::ToolError.prefix(), ran_and_failed("fs_list"));
+        if matches!(walk, Some(Walk::Probe { .. })) && raise.message.starts_with(&failed) {
+            self.take_pending()?;
+            let no = MontyObject::bool(false);
+            return self.run(Req::Resume(ResumeValue::Return(no))).await;
+        }
         self.take_pending()?;
         let exc = match raise.exc {
             Builtin::RuntimeError => ExcType::RuntimeError,
@@ -872,8 +1148,249 @@ impl Program for MontyProgram {
     }
 }
 
+/// The functions a program was given, by name: the first 32, then a count.
+fn given_functions(externals: &BTreeSet<String>) -> String {
+    const SHOWN: usize = 32;
+    let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
+    let more = externals.len().saturating_sub(SHOWN);
+    let mut out = if given.is_empty() {
+        "none".to_string()
+    } else {
+        given.join(", ")
+    };
+    if more > 0 {
+        out.push_str(&format!(", and {more} more"));
+    }
+    out
+}
+
+/// What a program that reached for the operating system is told: it has no
+/// files, environment, network or clock, and the functions it was given are
+/// the way to its data. Their names are the program's own externals, so the
+/// backend names no tool. The file functions lead, when the program has
+/// them: listed alphabetically they came after `docs__*`, `document_read` and
+/// `find`, and `open()` was how 19 of 27 first programs failed in M2.
+fn os_refusal(externals: &BTreeSet<String>) -> String {
+    let files = match (externals.contains("fs_read"), externals.contains("fs_list")) {
+        (true, true) => {
+            "read a file with fs_read(path=...), which returns its text as a str, and list a \
+             directory with fs_list(path=...); "
+        }
+        (true, false) => "read a file with fs_read(path=...), which returns its text as a str; ",
+        _ => "",
+    };
+    format!(
+        "a program has no files, environment, network or clock; {files}reach data through \
+         the functions it was given: {}",
+        given_functions(externals)
+    )
+}
+
 /// Nesting deeper than this does not cross the boundary either way.
-const MAX_DEPTH: usize = 64;
+const MAX_DEPTH: usize = super::VALUE_DEPTH;
+
+/// The directory a program runs in, as monty sees it: not a real path, so
+/// that a relative path arrives under it and an absolute one does not. Its
+/// name is what `os.getcwd()` would say, were `os` not refused.
+const WORKSPACE: &str = "/.mecha-workspace";
+
+/// A path monty resolved, as `fs_read` takes it: under [`WORKSPACE`],
+/// relative to the run's workspace; anything else, as written.
+fn workspace_path(path: &str) -> String {
+    match path.strip_prefix(WORKSPACE) {
+        Some("") => ".".to_string(),
+        Some(rest) if rest.starts_with('/') => rest[1..].to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// What a directory is, to a scan.
+const DIRECTORY: EntryInfo = EntryInfo {
+    is_dir: true,
+    is_file: false,
+    is_symlink: false,
+};
+
+/// A listing answered through `fs_list`: one call, or for a scan, one per
+/// directory it reaches, before the program resumes.
+enum Walk {
+    /// `Path.iterdir`: the entries' paths, under `dir` as monty gave it.
+    List { dir: String },
+    /// `Path.exists`, `is_file` or `is_dir`, from the parent's listing.
+    Probe {
+        parent: String,
+        name: String,
+        what: String,
+    },
+    /// `Path.scan`: the tree under `root` to `max_depth`, breadth first;
+    /// `at` is the directory (relative to `root`, and its depth) just listed.
+    Scan {
+        root: String,
+        max_depth: Option<u32>,
+        at: (String, u32),
+        queue: VecDeque<(String, u32)>,
+        entries: Vec<ScanEntry>,
+    },
+}
+
+/// What one `fs_list` answer does to a walk.
+enum Walked {
+    /// List this directory next.
+    Next(Walk, String),
+    /// The OS call's answer.
+    Reply(MontyObject),
+    /// The answer was not a listing.
+    Fail(String),
+}
+
+impl Walk {
+    /// The directory the call now waiting listed, as monty gave its path.
+    fn listed_dir(&self) -> String {
+        match self {
+            Walk::List { dir } => dir.clone(),
+            Walk::Probe { parent, .. } => parent.clone(),
+            Walk::Scan { root, at, .. } => join(root, &at.0),
+        }
+    }
+
+    fn answer(self, value: &Value) -> Walked {
+        let Some(names) = names_of(value) else {
+            return Walked::Fail("`fs_list` did not return a list of names".to_string());
+        };
+        match self {
+            // As `Path(dir).iterdir()` names them: relative when `dir` was,
+            // so they read as a scan's do and never show `WORKSPACE`.
+            Walk::List { dir } => Walked::Reply(MontyObject::list(names.iter().map(|n| {
+                let path = join(&dir, n.trim_end_matches('/'));
+                MontyObject::path(match workspace_path(&path) {
+                    p if p.starts_with('/') => p,
+                    p => p.trim_start_matches("./").to_string(),
+                })
+            }))),
+            Walk::Probe { name, what, .. } => {
+                Walked::Reply(MontyObject::bool(probed(&names, &name, &what)))
+            }
+            Walk::Scan {
+                root,
+                max_depth,
+                at: (rel, depth),
+                mut queue,
+                mut entries,
+            } => {
+                let within = |d: u32| max_depth.is_none_or(|m| d <= m);
+                for n in &names {
+                    let is_dir = n.ends_with('/');
+                    let child = join(&rel, n.trim_end_matches('/'));
+                    let child = child.trim_start_matches('/').to_string();
+                    if within(depth + 1) {
+                        entries.push(ScanEntry {
+                            path: child.clone(),
+                            info: EntryInfo {
+                                is_dir,
+                                is_file: !is_dir,
+                                is_symlink: false,
+                            },
+                        });
+                    }
+                    if is_dir && max_depth.is_none_or(|m| depth + 1 < m) {
+                        queue.push_back((child, depth + 1));
+                    }
+                }
+                // Bounded as the host's own helpers are: the byte pool sees
+                // each listing's text, not the entries built from them.
+                if entries.len() > SCAN_ENTRIES {
+                    return Walked::Fail(format!(
+                        "{} pieces: a scan of `{}` would return more than {SCAN_ENTRIES} \
+                         entries; walk a smaller directory",
+                        Tag::LimitError.prefix(),
+                        workspace_path(&root)
+                    ));
+                }
+                match queue.pop_front() {
+                    Some(next) => {
+                        let dir = join(&root, &next.0);
+                        let walk = Walk::Scan {
+                            root,
+                            max_depth,
+                            at: next,
+                            queue,
+                            entries,
+                        };
+                        Walked::Next(walk, dir)
+                    }
+                    None => Walked::Reply(scan_reply(entries)),
+                }
+            }
+        }
+    }
+}
+
+/// The entries one scan may return, and the names a program's listings may
+/// keep: the host helpers' `PIECES`, for the same reason.
+const SCAN_ENTRIES: usize = 1 << 17;
+
+/// A listing's names, when the answer is one.
+fn names_of(value: &Value) -> Option<Vec<&str>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|n| n.as_str())
+        .collect::<Option<Vec<&str>>>()
+}
+
+/// A probe's answer from its parent's names (a directory's end in `/`).
+fn probed<S: AsRef<str>>(names: &[S], name: &str, what: &str) -> bool {
+    let found = names
+        .iter()
+        .map(AsRef::as_ref)
+        .find(|n| n.trim_end_matches('/') == name);
+    let is_dir = found.is_some_and(|n| n.ends_with('/'));
+    match what {
+        "Path.is_dir" => is_dir,
+        "Path.is_file" => found.is_some() && !is_dir,
+        _ => found.is_some(),
+    }
+}
+
+/// A directory's path as a key: no trailing slash, `/` for the root.
+fn dir_key(path: &str) -> String {
+    match path.trim_end_matches('/') {
+        "" => "/".to_string(),
+        p => p.to_string(),
+    }
+}
+
+/// `dir/name`, without doubling a slash.
+fn join(dir: &str, name: &str) -> String {
+    if dir.is_empty() || dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// The `fs_list` call that lists `dir`, a path as monty resolved it.
+fn list_call(dir: &str) -> ExternalCall {
+    ExternalCall {
+        name: "fs_list".to_string(),
+        args: Vec::new(),
+        kwargs: vec![("path".to_string(), Value::String(workspace_path(dir)))],
+    }
+}
+
+/// The path an OS call was given. Monty hands a `PosixPath`, resolved against
+/// the program's directory, whose repr is `PosixPath('<the path>')` with no
+/// escaping, which the worker test holds for 1.4.0 with a path that has a
+/// quote in it.
+fn os_path(o: ObjectRef<'_>) -> Option<String> {
+    if o.type_name() != "PosixPath" {
+        return None;
+    }
+    o.py_repr()
+        .strip_prefix("PosixPath('")?
+        .strip_suffix("')")
+        .map(str::to_string)
+}
 
 /// A call's positional and keyword arguments, as JSON.
 type Args = (Vec<Value>, Vec<(String, Value)>);
@@ -968,8 +1485,7 @@ fn from_json(v: &Value, depth: usize) -> Result<MontyObject> {
 /// The integration tests' process helpers (`/proc`, libproc), shared so the
 /// unit tests below ask the kernel the same way.
 #[cfg(test)]
-#[path = "../../tests/support/process.rs"]
-mod test_process;
+use super::test_process;
 
 #[cfg(test)]
 mod tests {
@@ -1211,6 +1727,247 @@ mod tests {
             !dir.exists(),
             "the private directory outlived the interpreter"
         );
+    }
+
+    /// The gate that decides whether the guard exists at all (review of
+    /// #772): a Seatbelt program arms a watchdog and a bwrap one does not,
+    /// and either launcher is the bare `exec` it always was.
+    #[test]
+    fn only_seatbelt_arms_a_watchdog() {
+        let seatbelt = Confinement::seatbelt_at(SANDBOX_EXEC);
+        let bwrap = Confinement::bwrap_at("/usr/bin/bwrap");
+        assert!(seatbelt.watchdog());
+        assert!(!bwrap.watchdog());
+        let worker = Path::new("/x/monty");
+        for c in [&seatbelt, &bwrap] {
+            let l = Launcher::write(&c.argv(worker).unwrap()).unwrap();
+            let body = std::fs::read_to_string(&l.script).unwrap();
+            assert!(body.starts_with("#!/bin/sh\nexec "), "{body}");
+            assert!(!body.contains("lstart") && !body.contains("kill"), "{body}");
+        }
+    }
+
+    /// The processes now running whose arguments name `needle`: pid, parent
+    /// and process group. `ps ax` is spelled the BSD way, which both
+    /// platforms' `ps` read.
+    fn processes_naming(needle: &str) -> Vec<(u32, u32, i32)> {
+        let out = std::process::Command::new(super::watchdog::PS)
+            .args(["ax", "-o", "pid=,ppid=,pgid=,args="])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(needle))
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                Some((
+                    f.next()?.parse().ok()?,
+                    f.next()?.parse().ok()?,
+                    f.next()?.parse().ok()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// A program under Seatbelt arms its watchdog before it runs, as this
+    /// process's child in a group of its own, and the watchdog is gone once
+    /// the program's worker is; a bwrap program arms none. Seatbelt is
+    /// stood in for by a `sandbox-exec` that only `exec`s the worker, so this
+    /// runs off a Mac too, with the worker unconfined (a test, never a run).
+    #[tokio::test]
+    async fn a_seatbelt_program_is_watched_and_a_bwrap_one_is_not() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("mecha-fake-sbx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let fake = dir.join("sandbox-exec");
+        std::fs::write(&fake, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let me = std::process::id();
+        for (conf, watched) in [
+            (Confinement::seatbelt_at(&fake), true),
+            (
+                Confinement::for_sandbox(&sandbox(Backend::Bwrap)).unwrap(),
+                false,
+            ),
+        ] {
+            if !watched && cfg!(target_os = "macos") {
+                // A Mac has no bwrap; its half of the gate is the test above.
+                continue;
+            }
+            let interp = Monty::new(&w, &conf, Backstops::default(), 1)
+                .await
+                .unwrap();
+            let (program, step) = interp
+                .start("hold()\n1", &["hold".into()], CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(matches!(step, Step::Call(_)), "{step:?}");
+            let worker = program.worker_pid().unwrap();
+            let dogs = processes_naming(&format!("mecha-watchdog {worker} {me}"));
+            if !watched {
+                assert!(
+                    dogs.is_empty(),
+                    "a bwrap program armed a watchdog: {dogs:?}"
+                );
+                continue;
+            }
+            let [(dog, parent, group)] = dogs[..] else {
+                panic!("not one watchdog over worker {worker}: {dogs:?}")
+            };
+            assert_eq!(parent, me, "the watchdog is this process's child");
+            assert_eq!(group, dog as i32, "the watchdog leads its own group");
+            // SAFETY: a plain query of this process.
+            assert_ne!(group, unsafe { libc::getpgrp() });
+            // Dropping the program kills the worker, and the loop follows it.
+            drop(program);
+            let t = std::time::Instant::now();
+            while !test_process::is_gone(dog) && t.elapsed() < Duration::from_secs(5) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                test_process::is_gone(dog),
+                "the watchdog outlived its worker"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Seatbelt interpreter whose watchdog's handshake hangs: Seatbelt
+    /// stood in for as above, and a `ps` that records its pid in the
+    /// returned file and then never answers.
+    async fn hung_handshake(w: &VerifiedWorker, backstops: Backstops) -> (Monty, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mecha-fake-sbx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let (fake, ps, pids) = (dir.join("sandbox-exec"), dir.join("ps"), dir.join("pids"));
+        std::fs::write(&fake, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::write(
+            &ps,
+            format!(
+                "#!/bin/sh\necho $$ >>{}\nexec /bin/sleep 300\n",
+                sh_quote(&pids.display().to_string())
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&fake, &ps] {
+                std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        let mut interp = Monty::new(w, &Confinement::seatbelt_at(&fake), backstops, 1)
+            .await
+            .unwrap();
+        interp.watchdog_ps = ps.display().to_string();
+        (interp, dir, pids)
+    }
+
+    /// The hung `ps` a handshake recorded, once there is one.
+    fn hung_pid(pids: &Path) -> Option<u32> {
+        std::fs::read_to_string(pids)
+            .ok()?
+            .lines()
+            .find_map(|l| l.trim().parse().ok())
+    }
+
+    /// Whether the group kill reached the hung `ps` within 10 s: gone, or a
+    /// `SIGKILL` pending. Killed here if not, so a failing test leaves nothing
+    /// behind, and the error says what it was last seen doing.
+    async fn hung_ps_gone(pid: u32) -> Result<(), String> {
+        // Killed is the claim, gone or a `SIGKILL` pending: how soon the
+        // kernel finishes it is the scheduler's (see `watchdog`'s own test).
+        let t = std::time::Instant::now();
+        let mut seen = String::new();
+        while !test_process::is_killed(pid) && t.elapsed() < Duration::from_secs(10) {
+            seen = format!(
+                "{:?}, stat {:?}",
+                test_process::state(pid),
+                test_process::stat_line(pid)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if test_process::is_killed(pid) {
+            return Ok(());
+        }
+        let left = format!("last seen as {seen}");
+        // SAFETY: a plain signal to the stand-in this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        Err(left)
+    }
+
+    /// A Stop during the watchdog's handshake ends the program `Cancelled`
+    /// at once, as a Stop while waiting for a worker does, rather than
+    /// waiting out the handshake, and the abandoned handshake's hung `ps`
+    /// goes with it (reviews of #772 and #780). The Stop is sent once the
+    /// stand-in has recorded its pid, so it lands in the handshake and not
+    /// in the checkout before it, however long the worker takes to spawn.
+    #[tokio::test]
+    async fn a_stop_during_the_watchdogs_handshake_ends_the_program() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let (interp, dir, pids) = hung_handshake(&w, Backstops::default()).await;
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let in_handshake = pids.clone();
+        let stopper = tokio::spawn(async move {
+            let t = std::time::Instant::now();
+            while hung_pid(&in_handshake).is_none() && t.elapsed() < Duration::from_secs(60) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            stop.cancel();
+            std::time::Instant::now()
+        });
+        let (_program, step) = interp.start("1", &[], cancel).await.unwrap();
+        let returned = std::time::Instant::now();
+        let stopped = stopper.await.unwrap();
+        let hung = hung_pid(&pids).expect("the handshake never reached its ps");
+        assert!(
+            matches!(&step, Step::Done(f) if f.end == End::Cancelled),
+            "{step:?}"
+        );
+        assert!(
+            returned.duration_since(stopped) < Duration::from_secs(3),
+            "the Stop waited out the handshake: {:?}",
+            returned.duration_since(stopped)
+        );
+        if let Err(left) = hung_ps_gone(hung).await {
+            panic!("the abandoned handshake's ps outlived the Stop: {left}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A handshake still hanging when the program's wall clock runs out
+    /// refuses the program, by a message apart from the checkout's own
+    /// deadline, and its hung `ps` goes with it (review of #780).
+    #[tokio::test]
+    async fn a_handshake_past_the_wall_clock_refuses_the_program() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let backstops = Backstops {
+            wall_clock: Duration::from_secs(4),
+            ..Backstops::default()
+        };
+        let (interp, dir, pids) = hung_handshake(&w, backstops).await;
+        let e = interp
+            .start("1", &[], CancellationToken::new())
+            .await
+            .err()
+            .expect("a program ran with no watchdog armed");
+        assert!(
+            format!("{e:#}").contains("watchdog did not arm within the program's wall clock"),
+            "{e:#}"
+        );
+        let hung = hung_pid(&pids).expect("the handshake never reached its ps");
+        if let Err(left) = hung_ps_gone(hung).await {
+            panic!("the abandoned handshake's ps outlived the refusal: {left}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

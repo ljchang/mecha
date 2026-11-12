@@ -180,6 +180,40 @@ impl Actor {
     }
 }
 
+/// The live pids of delegated and scheduled runs, across every guarded home's
+/// task markers and trigger locks. A marker directory that exists and cannot be
+/// read is an error, never an empty one (review of #294).
+pub fn live_run_pids() -> Result<std::collections::HashSet<u32>> {
+    let mut dirs = Vec::new();
+    for home in crate::work::guard_homes()? {
+        dirs.push(crate::runmarker::task_dir_under(&home));
+        dirs.push(crate::trigger::TriggerStore::locks_dir_under(&home));
+    }
+    if let Ok(root) = crate::trigger::TriggerStore::default_root() {
+        dirs.push(root.join("locks"));
+    }
+    let mut pids = std::collections::HashSet::new();
+    for dir in dirs {
+        pids.extend(crate::runmarker::RunMarkers::new(dir).live_pids()?);
+    }
+    Ok(pids)
+}
+
+/// The shared CLI actor reading, including owner-home registries and delegated
+/// and scheduled run markers. Provider binaries use the same attribution as the
+/// owner CLI; no request-causality or authentication signal is added here.
+pub fn acting_actor_explained() -> (Actor, Option<String>) {
+    let ancestor = match live_run_pids() {
+        Ok(pids) => run_ancestor(&pids),
+        Err(error) => return (Actor::Unknown, Some(format!("the run markers could not be read ({error:#}), so whether a run did this cannot be told"))),
+    };
+    attribute_explained(
+        &posture_from_env(),
+        &ShellReading::from_registry(),
+        ancestor,
+    )
+}
+
 /// Who performed an owner's act that is **stamped rather than refused** —
 /// an outbox rejection or release (`APPRAISAL-WIRING-DESIGN.md` R16a's ruling D3, ruled
 /// 2026-09-27). The same signals and the same rules as [`decide`], so the

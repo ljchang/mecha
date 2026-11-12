@@ -122,7 +122,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
-    let opts = GlobalOpts {
+    // A driven run is a fresh one-shot, and recorded (`docs/DRIVER-DESIGN.md`
+    // §6, D1b). `--resume` would register `recall` straight into the
+    // registry with no narrowing consulted, and a second attempt at a task
+    // is a fresh run; `--no-session` would leave nowhere to record what the
+    // mark forced, and an unrecorded driven run is one D4 cannot attribute.
+    let driven = mecha_core::driven::marked();
+    if driven {
+        anyhow::ensure!(
+            args.resume.is_none(),
+            "a driven run is a fresh one-shot and never resumes; run the task again instead"
+        );
+        anyhow::ensure!(
+            !args.no_session,
+            "a driven run is recorded: what it forced lives on its session"
+        );
+    }
+    let mut opts = GlobalOpts {
         surface: Some(mecha_core::session::SessionKind::Run),
         // The owner's `--goal`, the one this run is matched toward. A
         // resume without it keeps the saved anchor (below) but declares no
@@ -131,6 +147,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         goal: args.goal.clone(),
         ..global.clone()
     };
+    if driven {
+        setup::force_driven(&mut opts)?;
+    }
     let mut prepared = setup::prepare(&opts, interactive).await?;
     if let Some(evidence) = appraisal_evidence {
         prepared.agent.set_appraisal_evidence(evidence)?;
@@ -182,6 +201,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     seed_goal_anchor(&mut convo, args.goal, session.as_ref())?;
+    // Armed before the first turn: the charter rides in the system prompt,
+    // where no taint sees it, and it is private data. With the leak guard
+    // forced on, every send is then refused for the whole run (D1b).
+    if let Some(forced) = &prepared.driven {
+        convo.taint.private |= forced.private_armed_at_start;
+    }
 
     // Written on create *and* on resume: a session picked up under different
     // flags is exactly the case this record exists to catch.
@@ -200,6 +225,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Some(&prepared.rules),
         );
         recorded.mismatch_case = mismatch_case.clone();
+        // The surface as recorded is the surface as run: checked once more
+        // here, after everything this front-end inserts, because `setup`'s
+        // check cannot see what was added after it returned.
+        if prepared.driven.is_some() {
+            let unlisted = mecha_core::driven::unlisted(recorded.tools.iter().map(String::as_str));
+            anyhow::ensure!(
+                unlisted.is_empty(),
+                "refusing a driven run: tools outside the allowlist: {}",
+                unlisted.join(", ")
+            );
+        }
+        recorded.driven = prepared.driven.clone();
         s.append(&Record::Config(recorded))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
@@ -623,6 +660,7 @@ mod tests {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             }],
             malformed_tool_args: 1,
             blocked_sends: 2,

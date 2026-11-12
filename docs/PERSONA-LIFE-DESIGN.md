@@ -1,9 +1,24 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed; §17's registry step and the `[life]`
-> switches of step 1 are built (`Feature::World`, `persona::Life`), and the
-> rest of step 1 is next. **Every decision in §16
-> is ruled** by the owner, the same day: PL1–PL22 and PL24–PL26 as rulings,
+> switches of step 1 are built (`Feature::World`, `persona::Life`), and so
+> is the routine's file with its activity set and owner approval
+> (`persona::routine`, `persona::activity`), the model drafter
+> (`persona::drafter`, `mecha persona routine draft`), the ATUS table (`persona::atus`, §4.2), and the day sampler with
+> `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
+> `mecha persona day`), and the today-block's first line, what she is doing
+> now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
+> `mecha persona week`, the editor's Week tab, §15), the form's Life section
+> with its world switch, the Week tab's cell picker, and reviewing a
+> drafted routine there (draft, edit, approve, discard). Step 2 has begun
+> with her network's store (`persona::network`, `mecha persona people`,
+> `network.md`, §6.6), her people in her prompt (PL32) and proposed from
+> `identity.md` (`persona::people_draft`, PL31), and the People tab's rings,
+> card, owner doors, proposal review and time slider (§15). Step 2 is built;
+> its measures are read before step 3.
+> **Every decision in §16
+> is ruled** by the owner: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings
+> on 2026-10-31, PL31 and PL32 on 2026-11-01,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
@@ -320,7 +335,9 @@ no world, no today-block, no new tools, no nightly work.
 ```toml
 [life]                     # owner-written; outside persona_propose's schema
 world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
-people    = false          # her own network (§6); needs world
+people    = false          # her own network (§6); independent of world (owner, 2026-11-03)
+events    = false          # events, levels and weather in the today-block (§4.5); needs world
+place     = "Springfield, Illinois" # optional; where her weather is for (§4.3)
 my_people = false          # her model of the owner's network, and gap questions (§7); needs [memory] on, user_facts != "off"
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
@@ -360,6 +377,13 @@ threshold per persona once the access log says where it should sit. The
 - **Dependencies are refused by name, never silently satisfied.** `camera`
   without `world` is a load error naming the missing switch, the way an
   unknown key is. It never quietly turns `world` on.
+- **`people` needs no world either (owner, 2026-11-03).** As built it is the
+  people the owner wrote on the People tab, rendered into each chat beside
+  who she is, and nothing in that reads a simulated day. Tying it to
+  `world` meant that switching off a day note that had gone wrong also took
+  away an accurate list the owner wrote. Where the world later reads her
+  people (a storylet casting someone, §4.3), it reads them only when both
+  are on, as `story::story` already does.
 - **`my_people` needs no world, but it needs memory of the owner.** It is
   memory of the owner, not of her world (§7.1), so a persona can learn the
   owner's people without a simulated life of its own. But it is built over
@@ -373,7 +397,7 @@ threshold per persona once the access log says where it should sit. The
   never stores the owner's relatives by another route.
 - **Two rules, by what a setting does.**
   - **Switches that decide which tools, blocks and runs exist** (`world`,
-    `people`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
+    `people`, `events`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
     per persona
     version. A chat pins the version it started with (`PERSONA-DESIGN.md`
     §8.1), because the tool list is the front of the cached prefix, so
@@ -384,6 +408,9 @@ threshold per persona once the access log says where it should sit. The
     (`setup::persona_agent`: "turning memory off reaches the chat at its
     next call"). `remember_articles` in particular is the one an owner may
     want to revoke in a hurry, and turning it off stops the next recall.
+    Owner-written inputs that do not change the chat's shape are live too:
+    `[life] place` is read from the store for every eligible weather refresh,
+    while the `events` switch that admits the teller remains pinned.
   - **But `remember_articles` never reaches backwards.** Read live, it would
     also work in the other direction: switching it on after weeks of `news`
     would admit every candidate already stored from past article chats, a
@@ -405,7 +432,19 @@ threshold per persona once the access log says where it should sit. The
     unreadable live file then fails toward the safe side for each setting:
     no recall under `remember_articles`, `intensity` at `"capped"`,
     `name_search_filter` **on** (the one setting whose safe direction is on),
-    and **no pruning that night**. The decay knobs have no "off", and shipped defaults
+    and **no pruning of her own rows that night** (a shared node's test
+    reads only the shipped defaults, §3.2, so her typo does not stall the
+    group's), and **no persona-level decaying rows in
+    that turn's today-block** (the fold reads `world_prune_below` too, §3.2,
+    and neither threshold is safe to guess; shared rows fold on PL29's shipped
+    default, which needs no file). Rows the threshold never reads still fold:
+    owner-origin rows and `state`, which §9 exempts from decay, and `days`
+    and `items`, which are pruned on a fixed age (§5). Events, arcs and
+    `people` rows that are not owner-origin decay on the threshold (§9), so
+    they are withheld. A day's companions
+    who are decaying `people` rows are withheld with them and render as
+    "someone", as a pruned id does (§6.3). So a typo empties the part of the block that
+    needs the owner's numbers, not the whole of it. The decay knobs have no "off", and shipped defaults
     could be looser than what the owner wrote, which is the substitution §9
     refuses. So nothing is deleted on a read that failed. It never falls back to the pinned value or the last
     value read, and the persona's notes say the file could not be read. That
@@ -477,12 +516,35 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   personas the sampler placed there know: a staff meeting). Two personas can
   share a world without learning anything about each other, and personas
   still never know that another persona exists (`PERSONA-DESIGN.md` §8.1).
-- **Only clean sources write above the persona level.** The everyone and
+- **Nothing from a chat writes above the persona level.** The everyone and
   group worlds are written only by the owner, the simulation and feeds
-  registered at that level. Nothing from a chat moves up a level on its own,
-  as with `shared.db`. So a tainted chat with one persona cannot plant an
-  event that reaches every member, and `forget` on a chat never has to reach
-  across personas.
+  registered at that level. Those writers are not all clean: a feed's items
+  keep their shelf's origin (§8.2), and shelf C's are untrusted wherever
+  they are stored. What the levels rule out is a chat. Nothing from a chat
+  moves up a level on its own, as with `shared.db`. That covers writes to
+  rows that already exist: the `told` flag, the retelling boost and
+  `known_to_owner` (§4.5) land on her own derived row (§3.2's first bullet)
+  or her own person node, **never on the shared row**. A shared person
+  (§6.5) is held by the members' nodes that point at it: the group's node
+  is pruned only once no member's node is above the threshold, so a
+  colleague two personas keep mentioning never decays out from under
+  them. Whether the shared node goes is how a shared row decays, so PL29
+  governs it: for that test each member's node is scored under the shipped
+  defaults, never under the member's own `[life.decay]`, so one
+  persona's `world_prune_below = 0` keeps her own node but cannot pin the
+  shared one for the group. The other direction holds too: a member whose
+  own knobs prune her node sooner than the defaults would does not release
+  the shared one early. Her node leaves everything she reads on her own
+  knobs, but its hold, the dates and retellings the score is computed from
+  and no name or line, stays until the defaults would prune it as well, so
+  decay alone never leaves the test without a row to score. A `forget` can:
+  it removes the chat's contribution to the hold like any row (§5), and a
+  hold built only from forgotten chats goes, as the owner's erasure should. A node of hers that outlives the
+  shared one points at a pruned id, which renders as "someone" (§6.3). So a tainted chat
+  with one persona cannot plant an event that reaches every member, nor
+  silence one for them all: a tainted `told` stays within §4.5's bound,
+  what was in front of her. (What `forget` removes, in the persona's store
+  and the group's, is §5's.)
 - **Several groups at once.** A persona can belong to a workplace and a town.
   Both groups' shared events flow into her life, and place names are unique
   within a group, so the two never collide.
@@ -492,6 +554,30 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   work runs only when at least one member persona has `world` on**, so §3.1's
   "no nightly job for a persona with `world` off" holds at every level. A persona's derived events decay
   under her own `[life.decay]`.
+  - **A shared row that decays does so under the shipped defaults** (ruled,
+    §16 PL29); §9's owner-origin and `state` exemptions hold at every level.
+    (Seasons, holidays and a term calendar live in the routine file or a
+    group's, §4.1, never in a `world.db`, so no decay reaches them.)
+    Members may disagree, and a shared row is one row, so no one member's
+    `[life.decay]` can govern it, even in a group of one. A level's own
+    knobs, if wanted, arrive with the group world in step 3, in the owner's
+    files and never in layered config.
+  - **No pruner runs while no member has `world` on, and none is needed.**
+    Strength is a function of age, computed when the pruner reads a row, so
+    skipped nights lose nothing. **The fold computes strength too**, and
+    folds no row below `world_prune_below` (the shipped default for a
+    shared row, PL29), so a chat started the morning a member turns `world`
+    back on, before that night's prune pass, folds nothing the pass would
+    delete. The pass then removes what decayed meanwhile. Until then
+    nothing machine-written lands in the level's `world.db`; the owner's
+    edits still may.
+  - **`items` are not a curve, and their expiry holds without a pruner.**
+    Their five days are a fixed lifetime (§5). `news_read` refuses an item
+    past its expiry whether or not the prune pass has run, and the
+    today-block's shelf C lines carry only the night's arrivals, never the
+    live shelf (§8.3), and no arrivals land on a night when no member has
+    `world` on. So the day a member turns `world` and `news` back on cannot
+    reopen a stale article by either path.
 - **Feeds attach at any level.** A team's feed or local news is registered
   once at the group or everyone level (§8.1), and every member persona sees
   it.
@@ -531,12 +617,79 @@ requested later comes back as a new candidate beside the owner's version,
 never over it. A term calendar, holidays and seasons ride in the same
 file or a group's.
 
+**As built (step 1):** the drafter (`persona::drafter`) is one
+quarantined pass over `identity.md` and `motivation.md` on the persona's
+own model, which already reads both on every turn, so no new destination
+sees her text. The model answers typed anchors and the harness renders the
+file, so its words reach the draft only as anchor labels. Her kind of week
+(`cell`) is not drafted: the owner picks it (§15), and approving a draft
+that names none keeps the routine's, so a draft cannot quietly undo the
+pick. Only an approved persona whose recorded origin is not untrusted is
+drafted for. `mecha persona routine draft <name>` drafts from the CLI;
+show, edit (`--draft`), approve and discard were already there. The Week
+tab reviews a draft too (§15). The draft's header comment survives
+approval, so it is worded to stay true after it and sends a change of her
+kind of week to the picker: approval writes `cell` above it, and a
+comment inviting "add `cell` here" would have made two, which does not load.
+
+**As built (notes and seasons; owner's request, 2026-11-02):** the owner
+keeps notes for the drafter in `routine.notes.md` beside the routine: the
+week's fixed points in their own words, a class's days and hours or a
+sport's season. They ride in the drafter's one question as `notes` and the
+frame tells it to draft each as given, to turn a season into months, and to
+fill in a typical schedule where a note names a commitment without one. They
+are the owner's text and reach nothing else: no day, no chat. The Week tab
+shows them above the draft button and saves them with the draft request
+(blank removes them); `mecha persona routine notes <name>` edits them in an
+editor, and `show` prints them. They are capped at 4,000 characters, and a
+hand edit past that is refused when read, never sent cut. An anchor may
+also name `months` (`jan`..`dec`): out of them it is not on that day at all,
+as on a weekday it does not name, and two certain anchors that share no
+month may take the same slot. One that runs past midnight into the other's
+first month is left to the sampler, as soft anchors are.
+
 ### 4.2 The day sampler
 
 A semi-Markov chain over ATUS tier-1/2 activities (§2.2), estimated once from
 the public files for a handful of demographic cells and shipped as a table:
 per-hour transition probabilities, an empirical duration distribution per
-activity, and a who-was-present distribution from the Who file. Each day:
+activity, and a who-was-present distribution from the Who file.
+
+- **As built (`persona::atus`):** the 2023–2025 files, holidays left out,
+  in six cells: a full-time college student, full-time employed without and
+  with a household child under 13, part-time employed, not employed under
+  65, and 65 or older. The table holds weighted counts, so how a thin cell
+  backs off to the pool is the sampler's code. Durations are 21 quantiles
+  per start band, leaving out each diary's first stretch, which began
+  before the diary's 4am. Who was there is ten kinds of company, from
+  partner to colleague to strangers, which casting maps onto her network's
+  edge types. How a persona is placed in a cell is the sampler's step.
+- **As built (`persona::sampler`, `persona::world`):** the owner picks her
+  cell per persona, as `cell` in `routine.toml` (ruled 2026-11-01: "we
+  would need to pick this per persona"). With none named no day is drawn,
+  and `mecha persona day` says why: a guessed week would look as plausible
+  as a right one. A day runs 4am to 4am, as a diary does, so an anchor
+  before 4am belongs to the day before. It opens asleep, waking at an hour
+  drawn from when the table's sleep stretches ended, unless an anchor opens
+  it. Anchors are placed first, each drawn against its chance (drawn even
+  at 1, so one anchor's chance never shifts the rest of the day's draws);
+  where two that happened overlap, the earlier start is kept. A drawn
+  stretch cut short by an anchor of the same activity becomes that anchor
+  begun early. A cell's transition counts are blended with the pool's
+  shares at a weight of five stretches, so a thin row follows the pool
+  and a thick one its cell; where the pool has no row, the nearest hour
+  of the pool's (or band's, for a duration) stands in, and every such step
+  is counted on the day. Company is the Who file's shares the same way:
+  alone, or one or more kinds of company, never both, and none where ATUS
+  does not ask. Casting people into those kinds waits for her network
+  (step 2), and traits moving the numbers waits for the storyteller
+  (step 3). A day is stored when first asked for, from today back; today's
+  is drawn again when its routine, cell or table changed, and a past one is
+  kept. A day ahead is drawn and never stored. A night shift running past
+  4am is stored with its day, and the next day opens on it. After fourteen
+  days a day folds into its week's minutes per activity.
+
+Each day:
 
 1. Place the routine's anchors (each drawn against its probability).
 2. Fill the gaps from the chain, conditioned on day type and cell.
@@ -555,6 +708,25 @@ widening that module's holdout role), so a day is reproducible and a
 replay can recompute it. **Traits move the numbers**, never just the prose
 (§2.4): an adventurous persona's novelty weight, an athlete's workout slots,
 a night owl's shifted sleep.
+
+**As built (life profile):** `life.toml` is an optional owner-written file
+beside the routine. It names who is in the household by a People-tab name
+and a closed relation, an optional usual bedtime and wake time, and
+activities filler may never draw. With no file the existing ATUS draw is
+byte-for-byte unchanged. With one, household kinds not named there are
+dropped, caring needs a child, parent or partner, forbidden activities are
+removed before transition weights are normalised, and the usual night keeps
+sleep within its stated windows while routine anchors still win. The file's
+text is one of today's sampled inputs, so an edit redraws today and later but
+never rewrites a stored past day; a today-block names a kept household member
+rather than announcing a relation borrowed from a stranger's diary.
+`persona::life_drafter` can make a waiting `life.draft.toml` from the two
+persona files, routine notes and clean People-tab names. Its one quarantined
+answer is closed JSON, with household names constrained to that list; the
+harness renders and parses TOML, and only digest-checked owner approval swaps
+it into `life.toml` while keeping the replaced profile as
+`life.previous.toml`. Someone absent from the People tab is left out rather
+than invented.
 
 ### 4.3 The storyteller and the director
 
@@ -583,6 +755,57 @@ owner's deck is the owner's.
   narrows a persona and never opens Holmes–Rahe events.
 - **Most events involve other people** (§2.1): the director weights storylets
   with a cast member above solo ones.
+
+**As built (step 3, a first build to iterate on; owner's rulings
+2026-11-02):** `persona::story`, with no model and nothing reaching her
+chats.
+- **Her state** is three short-term levels, energy, stress and mood, each
+  low, normal or high. Each morning a level away from normal steps back
+  with even odds, and the day's events move it one step at a time.
+- **Her deck** is `story.toml` in her folder: storylets with a title
+  (`{who}` names the person cast), a size (minor, major, severe), a
+  weight, conditions (activities in her day, weekdays, sky and
+  temperature, her levels, a tie to cast) and an effect of one step per
+  level. A `cooldown` (5 days for a minor, the 28-day lookback otherwise,
+  and never more than that lookback, or the deck is refused)
+  and a `group` (at most one a day) keep it from repeating itself.
+- **Starter decks come from her cell**: one shared everyday deck plus her
+  cell's, written for editing by `mecha persona story init`.
+- **The director:**
+  - a minor floor at 0.75 a day, with a second at 0.2 of that;
+  - majors no sooner than 6 days apart, at 0.12 a day after that, and
+    forced after a 13-day drought;
+  - two quiet days after a major, with the minor floor halved;
+  - severe only under `intensity = "full"`;
+  - cast storylets weighted ×2, and who is cast weighted by closeness.
+- **Storage:** seeded per persona per day; stored in `world.db` version 3
+  (`story_days`, `events`) up to today; today redrawn when the deck, her day,
+  intensity, director version or castable people change, and the past kept.
+  Whether a day had weather is an input, never what it was: a day drawn
+  before its first forecast is redrawn once when one arrives, so a
+  weather-gated storylet can fire, and a later forecast changes only the
+  weather shown, never the day's events or levels.
+- **Weather** is pulled ahead from §8.2's shelf A, at the owner's word:
+  - `[life] place` is a town and its state or country. The harness resolves
+    it through Open-Meteo's geocoder, caches the coordinates and the label
+    shown to the owner, and resolves it again when the owner's text changes;
+    before that first new-place attempt, the previous place's weather rows
+    and stored story snapshot are cleared, so a failed lookup tells no old
+    town's weather;
+    `story.toml`'s `[place]` with exact coordinates remains the fallback;
+  - the Week route refreshes weather older than six hours before drawing,
+    while a chat with `[life] events` starts the same refresh without
+    waiting. `mecha persona story weather` asks directly. Each fetch covers
+    the last two weeks and the next one, parsed into a closed sky and whole
+    degrees, or refused;
+  - it is stored in `weather` and shown as a fact on a day drawn before
+    it arrived.
+- **Where it shows:** the Week tab and `mecha persona story show`, and in
+  the today-block when `[life] events` is on.
+- **Not yet:**
+  - arcs;
+  - tie effects (recorded, held back);
+  - pruning `story_days` past the keep window.
 
 ### 4.4 The narrator
 
@@ -623,7 +846,9 @@ arrivals**, never the live shelf:
 - shelf A, at most 48 bits, the larger channel, and clean by provider trust
   under render ranges rather than by capacity alone (§8.2).
 
-That is **at most about 77 bits a night**. (Reading the live shelf over five
+That is **at most about 77 bits a night**, plus the publisher's placement
+of shelf B's three arrivals among k interests, at most 3·log₂k bits, which
+no vocabulary carries (§8.2). (Reading the live shelf over five
 days would be about 385, which is why it reads arrivals.)
 That influence can *select among* narrations the model would write anyway,
 but it cannot *author* a string. That is a stronger argument than the model
@@ -652,7 +877,8 @@ one more reason §14's gate part 1 exists.
   that remembered anything untrusted." The today-block is a seventh fold and
   takes the recall pair's shape:
   - **the clean stem arms `private`.** Most of the block is code, owner
-    files, clean narration and shelves A and B. But stated plans and people she
+    files, clean narration and shelves A and B. Shelf C's lines ride here
+    too (§16 PL30), as the one named exception below. But stated plans and people she
     mentioned in a chat ride in it too (§13): a plan the two of them made is
     memory of a conversation with the owner, the case §9.7 arms `private` for.
     Arming is close to free here, since D11 already lifts the leak guard in
@@ -661,7 +887,23 @@ one more reason §14's gate part 1 exists.
     of the block and sending them through the recall block, splits one day
     across two folds for no gain.
   - **the untrusted stem arms `private` and `untrusted`** the moment any
-    folded row's origin is not clean.
+    folded row's origin is not clean. Origin is per row (§5), and a row
+    whose fields are all from code-fixed sets still arms it: a typed plan
+    (PL21) has code's vocabulary and about 20 attacker-chosen bits of value.
+    **The one exception is a shelf C line in the first build (PL30)**,
+    before shelf B exists, which is not a row's fields but a line code
+    composes: the interest from the owner's feed
+    mapping and the harness-minted id, carrying no value the publisher
+    wrote. Its presence, count and timing, and for a publisher reaching
+    feeds under several interests which one a line shows (§8.3), are the
+    residual §14's steering arm covers. Nothing else is exempt. Once shelf B ships, the id rides
+    shelf B's interest line instead (§8.3), and that line folds by the
+    origin of the clean half §8.2's single constructor emits, never the
+    untrusted half beside it in the same `items` row (an `items` row
+    carries one origin per shelf half, §5): clean by shelf
+    B's capacity, with the untrusted variant below ready if its gate (§14,
+    PL20) comes back dirty.
+    Shelf B's line is clean by its own capacity, not by this exception.
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -698,6 +940,70 @@ one more reason §14's gate part 1 exists.
   existing persona fold is registered there, and that function's own rule is
   that "the party that knows a new voice exists is the one that adds it."
   §17 step 1 registers all three.
+- **As built (`persona::today`, `persona::world::now`):** step 1's block
+  holds one line, what she is doing now: the stretch of her stored day the
+  owner's clock falls in (before 4am, the day before's tail), its
+  routine label, until when, and with what kinds of company. The edges of
+  a day are not times, so a stretch carried in from the night before has
+  no "since". The untrusted stem is chosen by the folded row's
+  `days.source`, which only the sampler writes so far, and a source this
+  binary does not know is never clean; a stretch carried past 4am keeps
+  the source of the row it ran as. An anchor label read back from
+  `world.db` is held to the routine parser's limits, or the day is
+  unreadable and drawn again. With `[life] world` off, or no routine with
+  a cell, there is no note; a day that will not read is logged and left
+  out, since a missing note arms nothing. The routine stays out of the
+  persona's version: a version is what a chat's prompt renders from, and
+  the block, like the recall block, renders from the world's store, where
+  what a chat was told about a day is already kept.
+- **As built (the teller):** `[life] events`, off by default and refused
+  without `[life] world`, adds the director's event titles, levels away from
+  normal and today's closed weather to that same note after the doing-now
+  sentence. Before noon in the owner's timezone it tells yesterday's
+  untimed events with today's morning levels; from noon it tells today's
+  events with evening levels. `persona::story::story` draws and stores each
+  day through the same door as the Week tab, and a story failure is logged
+  and drops only these lines. The fold carries only the owner's deck titles,
+  clean People-tab names, and shelf A's closed sky and integers; the
+  geocoder's owner-facing label never enters a prompt. The `events` switch is
+  pinned with the chat's other switches, while `[life] place` is read live;
+  a due weather refresh runs in the background and never delays the chat.
+  A stored day's event draw and levels stay fixed when only its weather
+  changes, so a refresh updates the weather line without changing "What
+  happened" on the next turn; deck, routine/day, cast, intensity and director
+  changes still redraw today. `persona::today::EVENTS_HEADING` marks the arm that
+  `persona::initiative` reads back from the transcript.
+- **As built (the chat's ledger, `persona::today::Ledger`):** the doing-now
+  sentence rides every turn, since the clock moves it. The teller's three
+  lines (what happened, how she feels, the weather) do not: each rides until
+  her reply has said it or it has been offered `today::OFFERS` times, and
+  again on any turn the owner's message is about it. What she said stays in
+  the history, which is where a follow-up comes from. Before this the lines
+  rode every turn as the last thing read, and in one chat the weather came
+  up in 24 of 31 replies, 2 of them asked (owner, 2026-11-12). The match is
+  by word: closed sets for the weather and the levels, the titles' longer
+  words for events, so it errs toward dropping a line early. A new diary
+  day starts over; a changed events or feeling line (the noon turn) is a new
+  line; the weather is the day's first reading for that chat, so a forecast
+  refreshed mid-chat cannot contradict what she said. A turn that is
+  rolled back (a recording that fails, a run that errors) gives its offer
+  back, since she never read it; a run the owner stops is not rolled back,
+  since the request reached her. The note sits ahead of the
+  variety and scene notes, on purpose and unmeasured: it had been the last
+  text she read, which is where an instruction lands hardest, and the scene
+  note now is. The ledger is held by the process serving the chat and is
+  never stored, so a restart offers each line once more. It is the
+  within-chat half only: the nightly `told` flag below is still unbuilt,
+  and nothing here writes a world row.
+- **What this does to the initiative reading.** `persona::initiative` filed
+  each turn by whether its own note carried `EVENTS_HEADING`. With the
+  ledger that would scatter an events-on chat across two arms, so the
+  events arm is now the chat's: once a transcript has shown the teller,
+  every later turn of it that shows her days is the events arm
+  (`initiative`'s module doc), across a router rebind too, which writes a
+  `Config` record the ledger outlives. A reading of
+  chats from before the ledger reads the same way under both rules, since
+  the heading rode every turn then.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -715,6 +1021,9 @@ one more reason §14's gate part 1 exists.
     direction. A tainted stretch **never clears** a flag. Each flag records
     its source chat and taint, so the week view can show which events went
     quiet from a tainted chat (§13).
+  - **A flag lands on her own row.** For a shared event, `told` marks her
+    derived event, never the group's row (§3.2), so one persona's chat
+    never decides what the others have left to say.
   - **The set is bounded by what the chat was shown.** A tainted stretch may
     set `told` only on events that rode in *that chat's* today-block or recall
     block, never on arbitrary world rows. So an injection that makes her
@@ -827,7 +1136,7 @@ read every chat, several processes write it).
 | `events` | `{when, kind, storylet, people, arc, importance_her, origin, source, told}` | Pruned by score (§9) |
 | `arcs` | Ongoing situations with a stage and a next-step distribution | Closed arcs collapse to one summary event |
 | `state` | Slow facts about her life: job, relationship status, home, health | **Persists**, superseded by a later row; never decays |
-| `people`, `edge_events` | Her network (§6) | Minor people decay out (§6.3) |
+| `people`, `edge_events` | Her network (§6) | Minor people decay out (§6.3); a node pointing at a shared person keeps only its hold, dates and retellings, past her own prune until the defaults would prune it (§3.2), and `forget` removes what a chat contributed to it like any row |
 | `items` | Interest shelves A and B as typed rows; shelf C's prose (headline, summary, link) in an untrusted column `news_read` alone reads, never rendered into a block (§8) | Five days, all shelves; a feed's items go with the feed when the owner unregisters it |
 
 **State vs events** is what makes aggressive pruning safe. "She changed jobs"
@@ -838,7 +1147,11 @@ fact): an event is momentary, a mood is short-term state, an arc is an ongoing
 situation, a state row is lasting.
 
 **Every row carries an origin and a source** (owner edit, storylet, chat turn,
-feed item), which is what `forget` on a chat works from.
+feed item), which is what `forget` on a chat works from. **An `items` row
+carries one origin per shelf half:** clean for shelf A's typed columns,
+by §8.2's closed parse, and for shelf B's, the clean half §8.2's single
+constructor emits; untrusted for shelf C's prose column. A fold's per-row test reads the origin of the half it folds
+from (§4.5), so a shelf B line beside a shelf C column stays clean.
 
 **D27 is a rebuild that memory doesn't yet have, and the world can do it
 cheaply.** D27 ruled "rebuild the fact from the chats that remain"; until that
@@ -947,7 +1260,7 @@ friend from my study group, …"); afterwards she can name them in passing.
 
 ### 6.3 Decay
 
-Owner people never decay, the one exception PL7 and §9 rule. Everyone else
+Owner people never decay (PL7, §9). Everyone else
 in her network is a world row, pruned below the world threshold like any
 event:
 - **a person she has mentioned** (`known_to_owner`) gains strength each time
@@ -955,7 +1268,11 @@ event:
   does, the episodes that mention them name them by id, and a pruned id
   renders as "someone" (§5);
 - **a sim person never mentioned** decays out of the outer layers when
-  untouched.
+  untouched;
+- **a node that points at a shared person** prunes in two steps: on her
+  own knobs for everything she reads, while its hold stays until the
+  shipped defaults would prune it, so the group's holder test keeps a row
+  to score (§3.2, §9).
 
 The world has no recall ranking to demote a person out of, so memory's
 soft-prune does not apply here. The owner's people (§7) are the ones that
@@ -1017,6 +1334,37 @@ parsed back into it. People
 already written into `identity.md` are proposed once as owner nodes; after
 approval the network is their home and `identity.md` keeps personality, so the
 fact lives in one place (§16 PL6).
+
+**As built (step 2, the store):** `world.db` version 2 adds `people` and
+`edge_events`; `persona::network` folds an edge's events into its state.
+The owner writes it with `mecha persona people add | edit | event |
+retract | remove`, reads it with `show` and `export`, and every write
+renders `network.md`. Two choices the design left open: an undated `met`
+or `formed` folds as the edge's start, and any other undated event as of
+the day it was recorded, since it happened no later; and only an owner
+event can be taken back one at a time, since a chat's events go with
+`forget`. A tie's forming sets no mood: only `strengthened`, `reconciled`
+and `renewed` make an edge warm and `conflict` tense, since an ex is
+formed too (found on a live run, where a proposed ex came back warm).
+Everyone is owner-written in this step, so nothing decays yet.
+
+**As built (step 2, into her chats; PL31, PL32):** `mecha persona people
+propose` runs one quarantined pass over `identity.md` on her own model
+(`persona::people_draft`), refused for a persona that is not approved or
+whose origin is untrusted, since an accepted person is an owner row. The
+typed answer is checked by the network's own door (`network::check_new`)
+and staged as `people.draft.json` against `identity.md`'s digest; `accept`
+(all, or `--only 1,3`) adds each as an owner row, skips anyone already
+there by name or alias, and lists the `identity.md` lines that still name
+them for the owner to edit, as `people show` does whenever one does.
+Nothing rewrites the prose. Her people reach her prompt as "The people in
+your life", after "Who you are" (`network::prompt_section`): the closest
+two layers a line each, the rest by name and role, ended ties, then the
+ties between people, only from clean sources, within `PROMPT_CHARS`
+(3000), dropping from the outside in and saying how many were left out.
+While `[life] people` is on it is snapshotted into her version as
+`people.md`, so a change to her network is a new version and a chat
+renders the one it pinned.
 
 ---
 
@@ -1244,8 +1592,8 @@ so its rules must hold before any of §14's gate exists:**
   stated as one. What makes it safe to lean on is a **per-field render
   bound**, fixed in code:
   - an integer has a plausible range stated per field: a score is 0–200
-    (about 7.65 bits), a temperature is a whole degree Celsius from −40 to
-    50 (91 values, about 6.5 bits);
+    (about 7.65 bits); the built weather type uses whole degrees Celsius
+    from −60 to 60 (121 values), with low constrained not to exceed high;
   - a date has **a window per field**: a game or weather date within ±7 days
     of today (15 values, about 3.9 bits); an airdate or release date within
     the next 90 days (91 values, about 6.5 bits). A forward-looking date is
@@ -1264,7 +1612,8 @@ so its rules must hold before any of §14's gate exists:**
     date costs 15.3 + 3.9 ≈ 19.2 bits, which fails. So it renders as a win,
     loss or draw (1.6 bits), a margin band of eight (3 bits), the date (3.9)
     and the opponent's registry id (5): about 13.5 bits, which passes. A
-    weather item, a temperature and a date, is about 10.4 bits;
+    weather item is one of seven skies and an ordered low/high pair from
+    those 121 degrees: log₂(7 × 121·122/2), about 15.66 bits;
   - **at most three shelf A items a day**;
   - **expiry fixed at five days**.
 
@@ -1279,6 +1628,16 @@ so its rules must hold before any of §14's gate exists:**
   (§14) runs over shelf A's parsers too: a canary in any feed field must
   never reach the world or a prompt.
 
+  **As built for weather, all three gate parts exist before its teller
+  fold:** `persona::weather::tests::regression_shelf_a_weather_canary_never_reaches_world_or_prompt`
+  is part 1, including the page-only geocoder label;
+  `persona::weather::tests::shelf_a_weather_item_stays_within_sixteen_bits`
+  derives part 2 from `Sky::ALL`, `COLDEST` and `HOTTEST`; and
+  `persona::story::tests::shelf_a_weather_steering_measures_event_mix_without_direct_level_motion`
+  is part 3's deterministic 30-day honest-versus-storm arm. It reports the
+  event-mix distance without inventing a threshold; its zero-effect deck
+  asserts the narrower invariant that weather moves no level directly.
+
 Shelf B meets §2.7's three conditions in code:
 
 - **Robust declassification.** The schema is a Rust type, and the decision to
@@ -1288,7 +1647,12 @@ Shelf B meets §2.7's three conditions in code:
 - **A stated capacity.** Only the fields the article could actually influence
   count, so code supplies everything it can:
   - **interest** comes from which feed the item arrived on, the owner's
-    mapping, so it carries 0 attacker bits;
+    mapping, so the extraction adds 0 attacker bits. A publisher reaching
+    feeds the owner mapped under k interests still chooses among them by
+    where it publishes, at most log₂k bits an item. Like the count below,
+    that sits outside the per-item ceiling: §14 part 3 measures it while it
+    steers inside the measured days, and what narration carries past them
+    is bounded by construction (§14, out of the gate's reach);
   - **salience** is computed by code from kind and entity, never extracted
     (0 bits);
   - **the order** of the items is a lexical sort over the extracted values
@@ -1355,7 +1719,8 @@ Shelf B meets §2.7's three conditions in code:
   That puts the ceiling at **about 9.6 bits per item**. With **at most three
   shelf B items a day** per persona, the ceiling is **under 30 bits a day**
   (28.8), the constant the bit test enforces. The surviving count's 2 bits
-  are counted separately, under the steering arm.
+  and the interest choice's at most log₂k bits an item (above) are counted
+  separately, under the steering arm.
   Shelf B items **expire at five days**, a figure fixed for this shelf, so
   the ceiling is **under 150 bits live at once** on the shelf. That bounds
   the shelf, not its influence: narration steered by shelf B is snapshotted
@@ -1394,17 +1759,25 @@ the headline never rides in the today-block.
   live shelf, the same rule as the narrator (§4.4): at most three shelf A and
   three shelf B items, so **at most about 77 bits a day** of shelf values,
   against about 385 over the live shelf. That is the constant §14's bit test
-  checks for the block. It rides every turn, which is why it is held to the
+  checks for the block. The placement of shelf B's three items among k interests adds
+  at most 3·log₂k bits a day beside it, which part 2 cannot see (it has no
+  vocabulary) and part 3 covers while it steers inside the measured days;
+  what narration carries past them is bounded by construction (§14). It rides every turn, which is why it is held to the
   narrower figure. In the first build, without shelf B, its shelf C lines
   carry an interest and an opaque id, both code's, so a line's *fields* carry
-  0 attacker bits. Its **presence, count and timing** are still the
+  0 attacker bits from a publisher whose feeds map to one interest. A
+  publisher reaching feeds the owner mapped under k interests picks among
+  them by choosing where to publish, at most log₂k bits a line, a
+  channel beside the count and timing below and covered with them. Its **presence, count and timing** are still the
   publisher's: whether 0–3 lines appear (about 2 bits a day) and when
   (a bit a day). That is the same channel §8.2 counts for shelf B, and §14's
   steering arm covers it for shelf C too. The storyteller may turn A and B into lived events —
   watching the game with friends — that she raises on her own and memory may
   keep.
 - **On demand:** `news_read(item_id)` returns shelf C's prose inside
-  `<untrusted-content>`. **Taint rises at that turn, honestly**, and §9.6's
+  `<untrusted-content>`. **It refuses an item past its five-day expiry**,
+  by name, whether or not the prune pass has run (§3.2), so a stale id in
+  an old transcript or a recalled episode opens nothing. **Taint rises at that turn, honestly**, and §9.6's
   split keeps everything before it clean. Three details carry the "honestly":
   - **Both halves of the loop's rule.** Taint rises on
     `caps.untrusted_input && out.external` (`jobs::settle`), and the
@@ -1486,7 +1859,8 @@ the headline never rides in the today-block.
       that is the interest line ("good news about [interest] — item 41"). **In
       the first build, which ships C before B (PL9)**, it is a code-supplied
       line per shelf C item: the interest, from the owner's feed mapping
-      (0 attacker bits), and the opaque id, with no feed-authored string at
+      (0 attacker bits for one publisher's feeds under one interest, at most
+      log₂k a line across k interests, as above), and the opaque id, with no feed-authored string at
       all ("something new about [interest] — item 41"). That is strictly
       narrower than shelf B's line, so it costs the ceilings nothing. Without
       it `news_read` would have no callable argument, and the tempting patch,
@@ -1494,10 +1868,19 @@ the headline never rides in the today-block.
       `discussed_at` comes from the transcript, all
       supplied by code (0 attacker bits). Only `owner_reaction` is chosen by
       the writer, from a closed set of four (2 bits). So the ceiling is **2
-      bits per episode**.
+      bits per episode**. `interest` follows from the item, so the writer
+      adds nothing to it, but it keeps the publisher's placement: a
+      publisher reaching feeds under k interests chose it, at most log₂k
+      bits an episode. That sits outside the ceiling and outlives the five-day
+      expiry, kept as long as the episode is recalled, past any window the
+      steering arm's days would see; shelf B's placement does too, through
+      the narration it steers (§8.2). So both are bounded by construction
+      instead, beside `owner_reaction` (§14, out of the gate's reach): here
+      one episode per item read and three a day (below), at most 3·log₂k
+      bits a day.
     - **One typed episode per item read, fixed by code.** If the writer could
       choose which of several read items an episode is about, that choice
-      would add log₂k bits. So the count is set by the recorded `news_read`
+      would add log₂n bits over n items read. So the count is set by the recorded `news_read`
       calls: one episode for each distinct item read.
     - **And a per-day cap, because reads are not bounded by arrivals.**
       `news_read` can open anything still on the shelf, about fifteen items
@@ -1512,11 +1895,12 @@ the headline never rides in the today-block.
       bounds the feed's choice. A fourth read still works and is
       still discussed. Its free text is stored as candidates like any other,
       and it simply gets no clean typed episode, with nothing asked of the
-      owner. That makes the ceiling **at most 6 bits a day**, the constant
-      gate part 2 checks.
+      owner. That makes the ceiling **at most 6 bits a day** the writer
+      chooses, the constant gate part 2 checks; the placement beside it is
+      at most 3·log₂k bits a day.
     - **The live total is not bounded by an expiry**, unlike shelves A and B,
-      because typed episodes are memory and persist. It is 6 bits × the days
-      an episode stays recalled, bounded by memory's own soft-pruning
+      because typed episodes are memory and persist. It is 6 bits (plus the
+      placement's 3·log₂k) × the days an episode stays recalled, bounded by memory's own soft-pruning
       (`[memory] recall_below`, §9). The document states that rather than
       giving a live ceiling it cannot have.
     - **Transparent endorsement does not hold here, and that is stated.**
@@ -1772,7 +2156,8 @@ clamped quietly. The asymmetry with `intensity` (an unknown value loads as
 `"capped"` with a note) is deliberate. An enum has a safe narrowest value to
 land on. A number out of range has none: clamping a threshold could as easily
 loosen pruning as tighten it, so the owner is told instead. Owner-origin rows and state ignore the world threshold
-entirely: they never decay.
+entirely: they never decay. A shared person's hold reads the shipped
+defaults rather than her knobs (§3.2, the second exception below).
 
 **Pruning differs by store** (§16 PL7):
 
@@ -1832,6 +2217,13 @@ entirely: they never decay.
   shown (§4.5), visible on the week view, and never reaches deletion. The
   cost of the rule is that a suppressed event stays quiet until the owner
   rejects the episode or the row prunes on its own score (§16 PL25).
+
+  **A second exception: a node that points at a shared person is pruned in
+  two steps** (§3.2). On the persona's own knobs it leaves everything she
+  reads, but its hold (the dates and retellings its score comes from, no
+  name or line) stays until the shipped defaults would prune it too, so a
+  member's sooner knobs cannot release the shared node early. A `forget`
+  removes a hold's chat-sourced rows like any other (§5).
 - **Memory soft-prunes first:** below the threshold a record leaves recall and
   stays in the store, which is what D26 already says ("states expire from
   recall, never from the store"). D28's access log then shows whether the
@@ -1970,14 +2362,14 @@ to keep proactive messages from ever becoming one.
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
-| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | only through `news_read`, which declares `untrusted_input` and marks every result `external` |
+| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | its prose only through `news_read`, which declares `untrusted_input` and marks every result `external`; in the first build, without shelf B, and only once the owner has read the gate's readings (§17 step 5), the today-block carries one line per item, its interest and an opaque id, both code's, whose presence, count, timing and placement among interests are the publisher's (§8.3) |
 
 The folds, which arrive in no tool result and so arm at the fold
 (`PERSONA-DESIGN.md` §9.7):
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
+| Today-block (§4.5) | `private`; both when any folded row's origin is not clean, except, in the first build, a code-composed shelf C line, which carries no value the publisher wrote (PL30; its placement, at most log₂k bits a line, is the steering arm's residual inside its measured days, and bounded by construction past them, §14) | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 | Owner's roster, per-turn people cards and the unknown-name note (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block; the note is a line of the cards fold, never its own block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 | Proactive framing turn (§12) | nothing of its own; the run's today-block carries the arming | its own stem, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
@@ -2094,6 +2486,31 @@ ruled for repetition.
   - **The claim the comparison tests** is that world-on raises initiative
     *without* lowering the uptake rate of persona-introduced topics. Rising
     initiative with falling uptake is the ComPeer failure, measured.
+  - **As built (`persona::initiative`, `mecha persona measures`):** people
+    only, by the names and aliases in her network,
+    the one list read over every chat so before and after share an
+    instrument. Each arm records separately whether the today-block carried
+    `persona::today::EVENTS_HEADING`, so the teller-on comparison is honest
+    even though event-title uptake is not scored yet. An
+    introduction is a completed reply naming someone neither side named
+    earlier in the chat (harness notes are not read). Uptake is the owner
+    naming them in the next turn they speak in (with a question mark:
+    asked) or first in another chat, later; her bringing them up again
+    first in another chat, or the owner speaking on without ever naming
+    them, is not taken up; an introduction the owner has not spoken after yet has no outcome
+    and stays out of the rate. "Later" is time, not chat: a chat is read
+    as stretches split at each recorded config, all ordered by its clock,
+    and a split decides only that order. That order is only as fine as the
+    configs: one is written when a `serve` process first takes the chat up
+    or the router rebinds, never per run, so a chat held open in one
+    process across days is read at its start. A per-run clock in the
+    record would close that. Every text she says in a run
+    counts, the one before a tool call too. A capitalised name must be capitalised, except in an owner turn
+    typed with no capital at all. Turns are filed by what the transcript shows she was given (a
+    today-block among the run's notes, the people heading in the recorded
+    prompt), not by settings. Counts only, never words. Memory is not read
+    as "before that turn": a name recalled into a note is a harness note,
+    and only what the two sides said counts.
 - **The comparison:** world on vs off, read **offline from the owner's own
   transcripts**, like echo, and **not through the experiment instrument**.
   `Personas` is operator-only (`FEATURES-DESIGN.md` §5.1): it is not
@@ -2127,8 +2544,9 @@ ruled for repetition.
      is a feed that chooses `kind`, `tone` and `entity`. For shelf A it is a
      fake structured provider that chooses in-range values: scores, dates,
      taxonomy codes. For shelf C it is a feed that chooses only *when* and
-     *how many* items to publish, the one thing it controls in a line whose
-     fields are code's. Shelves A and C ship first, A on provider trust and C
+     *how many* items to publish and, where it reaches feeds under several
+     interests, *under which*: all it controls in a line whose fields are
+     code's. Shelves A and C ship first, A on provider trust and C
      on a channel no other part of the gate can see, so they need this arm
      as much as shelf B does. The measure: does it move what the persona
      raises, her mood, or the director's choices beyond what the honest feed
@@ -2137,28 +2555,51 @@ ruled for repetition.
      to survive. It also covers what the per-item ceiling cannot: a
      publisher who controls *when* to publish gets a presence-or-absence bit
      per day on top of the item's fields, and the number of surviving items
-     (0–3) adds about 2 bits more. Those count and timing channels would show
-     here, and nowhere else.
+     (0–3) adds about 2 bits more, and a publisher reaching feeds under k
+     interests picks among them, at most log₂k bits an item (§8.2). Those
+     count, timing and placement channels would show here, and nowhere else,
+     for as long as they stay inside the measured days; what outlives them
+     in memory is bounded by construction (out of the gate's reach, below).
 
   **Each shelf ships only when the owner has read all three parts for it:
   shelves A and C before their first build reaches a prompt, shelf B before
   it is built** (§16 PL9). Part 3 would
   be, as far as the research found, the first measurement of what endorsement
   by capacity leaves over.
+
+  **Weather's shelf A gate is now present in all three parts:** part 1 is
+  `persona::weather::tests::regression_shelf_a_weather_canary_never_reaches_world_or_prompt`,
+  part 2 is
+  `persona::weather::tests::shelf_a_weather_item_stays_within_sixteen_bits`,
+  and part 3 is
+  `persona::story::tests::shelf_a_weather_steering_measures_event_mix_without_direct_level_motion`.
+  The third prints end-level and event-mix distances; only the structural
+  no-direct-level-motion claim is pass/fail, because the design has not set
+  an acceptable event-mix threshold.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
-- **Out of the gate's reach:** the in-chat writes from a tainted stretch,
-  each bounded by construction instead:
-  - the `told` flag, bounded to events the chat was shown (§4.5);
-  - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
-  - the retelling boost and `known_to_owner`, which a tainted stretch never
-    writes at all (§4.5);
-  - typed plans under `remember_articles` (PL21), at most about 20 bits a
-    plan and 60 a day, each checked against its turn and badged (§4.5).
+- **Out of the gate's reach:** two kinds of residual, each bounded by
+  construction instead.
+  - **The in-chat writes from a tainted stretch**, out of reach because the
+    steering arm drives a feed and never writes from a chat:
+    - the `told` flag, bounded to events the chat was shown (§4.5);
+    - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
+    - the retelling boost and `known_to_owner`, which a tainted stretch
+      never writes at all (§4.5);
+    - typed plans under `remember_articles` (PL21), at most about 20 bits a
+      plan and 60 a day, each checked against its turn and badged (§4.5).
+  - **The publisher's placement where it outlives the five-day expiry**,
+    out of reach because memory outlives the arm's measured days, so part
+    3's window would not see it: the typed episode's `interest`, at most
+    log₂k bits an episode and three episodes a day (§8.4), which is the
+    only way the first build's shelf C line persists (PL30), and shelf B's
+    `interest` in the narration snapshotted from it, at most log₂k bits an
+    item and three arrivals a night (§4.4, §8.2). The caps bound the rate,
+    3·log₂k bits a day each, and the live total is that times the days the
+    memory stays recalled (§8.4).
 
-  The steering arm drives a feed and never writes from a chat. Part 1's
-  conformance test does cover the typed episode, since a canary must never
-  reach it.
+  Part 1's conformance test does cover the typed episode, since a canary
+  must never reach it.
 
 ---
 
@@ -2167,6 +2608,43 @@ ruled for repetition.
 - **Week view** on the persona page: her routine and sampled days; the owner
   adds or edits events ("the formal is Saturday"), and what the owner writes outranks
   what the simulation drew.
+  - **As built (step 1, read only to the owner):** a Week tab in the
+    persona editor, beside Memories, shown while `world` is on
+    (`isShown(features.rows, 'world')`; no `PANE_FEATURE` row, §17),
+    reading `GET /api/personas/{name}/week`, owned by
+    `Feature::World`. Asking stores the in-window days it draws and may
+    prune, as `mecha persona day` does, so the route asks for the page's
+    own header as a mutation would. Each day is a 4am-to-4am bar
+    coloured by activity group; a tapped stretch says its times, routine
+    label and company, and one from a source that is not clean is hatched.
+    A day already kept is shown from the store first, with no routine
+    needed, so a routine that breaks or goes leaves the kept days showing
+    and says why the rest are not drawn. A day past fourteen days that is
+    no longer stored shows as "not kept", never drawn again, with its
+    week's folded minutes below; the store counts folded days a week, never
+    which, so the day cannot say whether it was folded or never drawn. A
+    day ahead is drawn and marked so, never stored. A persona with `world`
+    off, or with nothing kept and no routine or cell, answers with which,
+    and the tab says it, never a route error. Owner events wait for step
+    3's event table.
+  - **The cell picker (step 1):** the Week tab offers her kind of week
+    whenever `world` is on, and writes `cell` into `routine.toml`
+    (`POST /api/personas/{name}/routine/cell`), every other line kept, only
+    over the routine the page was shown. The persona form's Life section
+    holds the `world` switch, "Their days"; the other `[life]` switches join
+    it as their steps build them.
+  - **Reviewing a drafted routine (step 1):** under the picker, the Week
+    tab asks her model for a draft (`POST …/routine/draft`, tens of
+    seconds, the button says so) unless she cannot be drafted for, when it
+    says why. A waiting draft is shown as the anchors it would give her,
+    one line each (days, hours, name, activity, how often), with the kind
+    of week approving keeps and that her routine's anchors are replaced.
+    Approve (`POST …/routine/draft/approve`) and an owner's edit (`PUT
+    …/routine/draft`, the text itself) go only over the draft as shown, a
+    409 re-reading the week; Discard is `DELETE`. An edit that does not
+    load is refused, so a draft can always be approved as saved, and an
+    edited draft is the owner's, which no redraft replaces. A draft that
+    found no fixed point says so and stages nothing.
 - **People**, two views:
   - *Her people* — concentric Dunbar rings with her at the centre, portraits
     from library links, warm or tense lines, ended relationships greyed on an
@@ -2180,6 +2658,43 @@ ruled for repetition.
     or world event behind it; edit, backdate, end, merge, split, link a
     character, promote, forget, share. A time slider shows the network as it
     was on a date — nearly free from the event log.
+  - **The editor's tabs and words (owner, 2026-11-02):** the page is
+    gender-neutral ("Their days", "Their people", "Draft their week"), and
+    its tabs show only the parts that are on, Settings always last:
+    Memories while any kind is on or anything is stored, Week with `world`,
+    People with `people` alone, since 2026-11-03 (`shows` on the persona list,
+    `personaTabs`).
+  - **As built (step 2, her people):** a People tab beside Week, behind the
+    same world gate (the feature's, on whenever personas are; the persona's
+    own switch is `[life] people`), answering "off for this persona" while `[life] people`
+    is off (the form's Life section gains the "Their people" switch). Rings
+    for the four layers, a dashed ring for those not placed and a greyed
+    outer band for ended ties; spokes green when warm, orange and dashed
+    when tense, dotted when out of touch; ties between people as thin lines;
+    a node a fold could not wholly read gets a hazard rim. The same people
+    as a list by ring, for touch and screen readers. The card shows who
+    they are, the timeline in the order things happened (an owner event can
+    be taken back), each tie with someone else, a form to record an event
+    on her tie or a tie between two, and edit and remove. Routes:
+    `GET`/`POST /api/personas/{name}/people`, `PUT`/`DELETE …/people/{id}`,
+    `POST …/people/{id}/events`, `DELETE …/people/{id}/events/{event}`. A
+    portrait is named and shown only by the library's lock rule; a locked
+    one is hidden and an edit that leaves it out keeps it (§6.5). Merge,
+    split, promote, forget and share wait for the people step 3 adds;
+    links to chat turns wait for events that have them.
+  - **As built (step 2, proposals and the slider):** the tab proposes her
+    people from `identity.md` (`POST …/people/proposal`, her model on the
+    router hold, "Reading identity.md…" while it runs), lists them ticked
+    for the owner to add all or some (`POST …/people/proposal/accept` with
+    `only`; the rest keep waiting), or dismiss (`DELETE …/people/proposal`);
+    one read from an `identity.md` changed since is a 409, and so is
+    proposing again while a current one waits (`ProposalWaiting`); a stale
+    one shows "Propose again", which replaces it. "As it was on" a
+    day folds the event log up to it (`Network::as_of`, `GET …/people?as_of=`),
+    read only, with the forms hidden; problems and the proposal stay about
+    now. The page's writes are refused while `[life] people` is off, so a
+    save cannot land out of sight; the CLI stays the owner's door either
+    way.
 - **What she read last night** (§8.5) and **the camera roll** (§10).
 - **Feed** (§11).
 
@@ -2199,9 +2714,9 @@ this document's; the ruling is the owner's.
 | PL4 | Shared worlds across personas | **Ruled (2026-10-31):** a three-level hierarchy (everyone, group, persona), each its own `world.db`. A shared event exists once and each persona experiences it her own way; visibility decides who knows; only the owner, the simulation and level-registered feeds write above the persona level (§3.2) |
 | PL5 | Where the network lives | **Ruled (2026-10-31): built like memories.** SQLite in `world.db` with per-event origin and owner precedence, edited on the People tab and the CLI, with a rendered `network.md` for reading; a stated deviation from §4.3 (§6.6) |
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
-| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
+| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows (and a node pointing at a shared person keeps its hold until the shipped defaults would prune it, PL29's application, §3.2); memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
-| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day) is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
+| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day), with at most log₂k bits a line, 3·log₂k a day, for a publisher reaching feeds under k interests (§8.3), is the entire residual: the steering arm sees it inside its measured days, and what outlives them in memory is bounded by construction (§14, out of the gate's reach). B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
 | PL11 | Feed sources | **Ruled (2026-10-31):** Registered per persona, per group and for everyone (PL4), in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | **Ruled (2026-10-31):** Politics, deaths, disasters and crime, unless a feed is opted in |
@@ -2220,7 +2735,11 @@ this document's; the ruling is the owner's.
 | PL25 | A `told` set only by a tainted stretch | **Ruled (2026-10-31):** suppresses but never licenses pruning; unchanged while unreviewed, since silence is not a rejection; becomes ordinary on approval, cleared on rejection (§9) |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
-| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
+| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `proactive`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; the switches that decide which tools, blocks and runs exist are fixed per persona version (`proactive` at the scheduler's next check), and `remember_articles` is read live, never reaching backwards (§3.1) |
+| PL29 | How a shared row decays | **Ruled (2026-10-31), as recommended:** a group's and everyone's rows that decay do so under the shipped `[life.decay]` defaults (§9's owner-origin and `state` exemptions hold at every level), since members may disagree and a shared row is one row; a level's own knobs, if wanted, come with the group world (§17 step 3), in the owner's files. This carves an exception out of PL7, whose knobs are per persona (§3.2). Applied in §3.2 to the holder test that decides when a shared person goes: member nodes are scored for it under the shipped defaults, in both directions, so a looser member's node cannot pin the shared node and a stricter member's leaves her view on her own knobs while its hold stays until the defaults would prune it |
+| PL31 | Who takes the people out of `identity.md` once they are approved into her network | **Ruled (2026-11-01): the owner, with a list.** Her model proposes the people `identity.md` names; after accepting, the owner is shown the lines that still name them and edits the file. Nothing rewrites the owner's prose; until the edit she reads them in both places (§6.6) |
+| PL32 | Where her network reaches her chats | **Ruled (2026-11-01): beside `identity.md`.** A "people in your life" section in her system prompt, the closest a line each and the rest by name, within a size limit, snapshotted with her version so it changes only when the network does. Only owner-written (clean) people; chat and simulation people (step 3) reach her another way, since untrusted text never enters a system prompt (§6.6) |
+| PL30 | Which stem the today-block takes on a day with a shelf C line | **Ruled (2026-10-31), as recommended:** the clean stem, for a shelf C line in the first build; once shelf B ships, the id rides its interest line, which folds by the origin of the half it comes from, like any row (§4.5; an `items` row carries one origin per shelf half, §5). The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day), and for a publisher reaching feeds under k interests at most log₂k bits a line, 3·log₂k a day, are the residual §14's steering arm covers inside its measured days; what outlives them in memory is bounded by construction (§14, out of the gate's reach). §4.5 names the line as the one exception to its per-row rule, because it is a line code composes, not a row's fields; a typed plan, whose fields are code-shaped but attacker-chosen, gets no such exemption. The alternative, the untrusted stem, rejected: it makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
 
 ---
 
@@ -2268,6 +2787,16 @@ surfaces it adds to that registry: the week view and People tab (steps 1–2),
 the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
 Feed tab (step 7).
 
+**As built (step 1):** `PANE_FEATURE` gains no `personas/...` row. Under
+the `personas` view the route's sub is a persona's name (`App.svelte` hands
+it to `Personas` as the persona to open), so `personas/week` would be the
+deep link to a persona named `week`, giving her page the world's banner
+and the world's hidden-line in place of the personas ones. The world's
+surfaces are tabs in the persona editor, each gated there by
+`isShown(features.rows, 'world')`, a literal the registry's test holds to a
+real id. A world surface that becomes a route of its own needs a sub that
+cannot be a persona's name before it can take a row.
+
 1. **A day.** The `[life]` switches (§3.1), all off by default, with
    dependencies refused by name, and `intensity`'s row in
    `persona::unknown_values` beside its `#[serde(other)]`. The attribute
@@ -2288,9 +2817,10 @@ Feed tab (step 7).
    sensor.
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
    eligibility declaration, `untrusted_input` declared, `external` set
-   unconditionally, and withheld by `answers = "files"` through the admission
-   check on the per-persona path, built in #778 (§13); `news_read` declares
-   nothing, so it is withheld by default), stances,
+   unconditionally, refusing an item past its expiry (§8.3), and withheld by
+   `answers = "files"` through the admission check on the per-persona path,
+   built in #778 (§13); `news_read` declares nothing, so it is withheld by
+   default), stances,
    filters, the reading list; the typed episode (PL23) and the
    `remember_articles` switch with its `TRIFECTA.md` row (PL27). **The
    three-part gate runs over shelves A and C before either reaches a

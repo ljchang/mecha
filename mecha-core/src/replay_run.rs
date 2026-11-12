@@ -456,6 +456,11 @@ impl Tool for ReplayTool {
     fn hosts_programs(&self) -> bool {
         self.inner.hosts_programs()
     }
+    /// Delegated so a replayed program sees `fs_list`'s names as the live
+    /// one did.
+    fn lists_names(&self) -> bool {
+        self.inner.lists_names()
+    }
     /// The live tool's capabilities, minus `external_send` in the modes where
     /// nothing executes — the sandbox's rule in the other direction. A
     /// replayed "send" sends nothing: its answer comes from the recording, so
@@ -505,9 +510,12 @@ impl Tool for ReplayTool {
         // std mutex must not be held across an await point.
         match self.decide(&input) {
             Action::Recorded(content, is_error, external) => Ok(ToolOutput {
+                reads: Vec::new(),
                 deferred: None,
+                program: None,
                 content,
                 is_error,
+                failure_kind: None,
                 external: external.unwrap_or(true),
                 refusal: false,
                 not_dispatched: false,
@@ -3429,6 +3437,7 @@ mod decision_turn_tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 

@@ -599,6 +599,120 @@ export const frontdoor = {
   ],
 };
 
+// --- the factory ----------------------------------------------------------
+
+export const factory = {
+  dir: '/home/demo/.mecha/factory/types',
+  instruments: [
+    { id: 'book', kind: 'booking', title: 'Book a meeting', path: '/home/demo/.mecha/factory/types/book.toml', problem: null },
+    { id: 'speaking', kind: 'request', title: 'Invite me to speak', path: '/home/demo/.mecha/factory/types/speaking.toml', problem: null },
+  ],
+};
+
+const demoHours = {
+  timezone: 'America/New_York',
+  durations: [30, 60],
+  buffer_minutes: 10,
+  min_notice_hours: 24,
+  horizon_days: 60,
+  per_day_cap: 3,
+  windows: [
+    { day: 'tue', start: '13:00', end: '17:00' },
+    { day: 'thu', start: '09:30', end: '12:00' },
+  ],
+  overrides: [],
+};
+
+// Slots generated from today, so the preview always has a fortnight to show
+// — fixed dates would leave the demo's preview empty after the first week.
+// Tuesday afternoons and Thursday mornings, New York, half-hour starts.
+function demoSlots(now) {
+  const out = [];
+  const day = new Date(now);
+  day.setUTCHours(0, 0, 0, 0);
+  for (let i = 2; i < 60; i++) {
+    const d = new Date(day.getTime() + i * 86400000);
+    const dow = d.getUTCDay();
+    // 18:00Z is 13:00 or 14:00 in New York depending on DST; the demo shows
+    // a plausible week, not a DST-correct one.
+    const starts = dow === 2 ? [18, 18.5, 19, 20.5] : dow === 4 ? [14.5, 15] : [];
+    for (const h of starts) {
+      const start = new Date(d.getTime() + h * 3600000);
+      for (const m of h === 20.5 ? [30] : [30, 60]) {
+        out.push({ start: start.toISOString(), end: new Date(start.getTime() + m * 60000).toISOString(), duration_minutes: m });
+      }
+    }
+  }
+  return out;
+}
+
+export function factoryInstrument(id = 'book', now = Date.now()) {
+  if (id === 'speaking') {
+    // A form: no hours, only the requests it has brought in.
+    return {
+      id: 'speaking',
+      kind: 'request',
+      title: 'Invite me to speak',
+      path: '/home/demo/.mecha/factory/types/speaking.toml',
+      digest: 'demo',
+      pipeline_days: 60,
+      days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+      requests_open: 1,
+      bookings: [],
+    };
+  }
+  const slots = demoSlots(now);
+  const nextTue = slots.find((s) => new Date(s.start).getUTCDay() === 2);
+  return {
+    id: 'book',
+    kind: 'booking',
+    title: 'Book a meeting',
+    path: '/home/demo/.mecha/factory/types/book.toml',
+    digest: 'demo',
+    pipeline_days: 60,
+    timer_pushes: true,
+    days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+    requests_open: 1,
+    hours: demoHours,
+    preview: {
+      instrument: 'book',
+      timezone: 'America/New_York',
+      horizon_days: 60,
+      busy_generated_at: new Date(now - 6 * 60000).toISOString(),
+      last_pushed_at: new Date(now - 6 * 60000).toISOString(),
+      held_slots: 0,
+      slots: slots.slice(1),
+    },
+    bookings: nextTue
+      ? [{ seq: 44, start: nextTue.start, end: nextTue.end, duration_minutes: 30, reply_to: 'ines@fairhaven.example.edu', on_calendar: true, state: 'booked' }]
+      : [],
+  };
+}
+
+export const factoryForm = {
+  id: 'speaking',
+  kind: 'request',
+  draft: false,
+  published: true,
+  digest: 'demo',
+  kinds: ['text', 'long_text', 'email', 'url', 'date', 'integer', 'select', 'multi_select', 'bool'],
+  text: 'id = "speaking"\nversion = 1\ntitle = "Invite me to speak"\n',
+  form: {
+    title: 'Invite me to speak',
+    description: 'Tell me about the event; I read every invitation.',
+    confirmation_heading: 'Thank you',
+    confirmation_body: 'I will reply within two weeks.',
+    fields: [
+      { name: 'requester_email', label: 'Your email', help: null, kind: 'email', required: true, options: null, max_length: null },
+      { name: 'event', label: 'The event', help: 'Name, place and dates', kind: 'text', required: true, options: null, max_length: 200 },
+      { name: 'format', label: 'Format', help: null, kind: 'select', required: true, options: [{ value: 'keynote', label: 'Keynote' }, { value: 'panel', label: 'Panel' }], max_length: null },
+    ],
+  },
+};
+
+export const factoryFormPreview =
+  '<html><head><style>body{font-family:sans-serif;padding:24px}label{display:block;margin:12px 0 4px}</style></head><body><h1>Invite me to speak</h1><p>Tell me about the event; I read every invitation.</p><form><label>Your email</label><input><label>The event</label><input><label>Format</label><select><option>Keynote</option><option>Panel</option></select></form></body></html>';
+
 // --- the graph review queue ---------------------------------------------
 
 export const queue = [
@@ -1701,12 +1815,12 @@ export const chatImages = {
 
 export const personas = {
   personas: [
-    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
-    { name: 'ada', display: 'Ada', relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
+    { name: 'mara', display: 'Mara', relationship: ['colleague'], character: 'maya', portrait: null, version: 3, approved: true, locked: false, shows: { memories: true, week: true, people: true }, touching: 'single', image: imageGuided, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 4, turns_7d: 19, late_night_7d: 2 } },
+    { name: 'ada', display: 'Ada', shows: { memories: true, week: false, people: false }, relationship: ['simulated'], character: null, portrait: null, version: 1, approved: true, locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: { turns_today: 0, turns_7d: 3, late_night_7d: 0 } },
     // Proposed from the main chat and waiting on the owner (the Waiting
     // section): the review below is what its page reads.
-    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
-    { name: 'rook', display: 'Rook', relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
+    { name: 'juniper', display: 'Juniper', relationship: ['friend'], character: null, portrait: null, version: 1, approved: false, waiting: true, origin: 'model_clean', locked: false, shows: { memories: true, week: false, people: false }, touching: 'single', image: imageDefault, problems: [], safety: { disclosure: true, crisis: 'enabled', reanchor: true, dose: true }, dose: null },
+    { name: 'rook', display: 'Rook', shows: { memories: false, week: false, people: false }, relationship: ['devils_advocate'], character: null, portrait: null, version: 2, approved: true, locked: false, touching: 'single', image: imageDefault, problems: ['identity.md\'s `## Core` section is empty'], safety: { disclosure: true, crisis: 'off', reanchor: true, dose: false }, dose: null },
   ],
   image_options: imageOptions,
   unlocked: false,
@@ -1814,6 +1928,182 @@ export const personaMemory = {
   groups: ['work'],
 };
 
+// Her week as `GET /api/personas/{name}/week` answers it: a weekday of
+// work and a weekend at home, minutes after midnight on a 4am-to-4am day.
+const demoDay = (date, when, weekend) => ({
+  date,
+  when,
+  sources: ['sampler', 'sampler', 'sampler', 'sampler', 'sampler', 'sampler'],
+  day: {
+    date,
+    cell: 'full_time',
+    day_type: weekend ? 'weekend' : 'weekday',
+    backoffs: 0,
+    carries: null,
+    stretches: weekend
+      ? [
+          { activity: 'sleep', start_minute: 240, end_minute: 540, company: null, anchor: null },
+          { activity: 'eating', start_minute: 540, end_minute: 600, company: ['partner'], anchor: null },
+          { activity: 'outing', start_minute: 600, end_minute: 840, company: ['friend'], anchor: null },
+          { activity: 'cooking', start_minute: 840, end_minute: 1080, company: ['partner'], anchor: null },
+          { activity: 'reading', start_minute: 1080, end_minute: 1380, company: ['alone'], anchor: null },
+          { activity: 'sleep', start_minute: 1380, end_minute: 1680, company: null, anchor: null },
+        ]
+      : [
+          { activity: 'sleep', start_minute: 240, end_minute: 420, company: null, anchor: null },
+          { activity: 'exercise', start_minute: 420, end_minute: 480, company: ['alone'], anchor: 'swim' },
+          { activity: 'work', start_minute: 480, end_minute: 1050, company: ['colleague'], anchor: 'lab' },
+          { activity: 'commute', start_minute: 1050, end_minute: 1090, company: ['alone'], anchor: null },
+          { activity: 'tv', start_minute: 1090, end_minute: 1380, company: ['partner'], anchor: null },
+          { activity: 'sleep', start_minute: 1380, end_minute: 1680, company: null, anchor: null },
+        ],
+  },
+});
+
+// The week holding `date` (YYYY-MM-DD, this demo week when absent), so
+// Earlier and Later step as they do on a real server. Today is fixed.
+const DEMO_TODAY = '2026-09-30';
+// `null` for a date that is not one, which the route answers 400 as the
+// server does, rather than throwing on an Invalid Date (review of #797).
+export function personaWeek(date) {
+  if (date != null && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const at = new Date(`${date ?? DEMO_TODAY}T12:00:00Z`);
+  if (Number.isNaN(at.getTime())) return null;
+  const monday = new Date(at);
+  monday.setUTCDate(at.getUTCDate() - ((at.getUTCDay() + 6) % 7));
+  const days = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(monday);
+    d.setUTCDate(monday.getUTCDate() + i);
+    const iso = d.toISOString().slice(0, 10);
+    const when = iso < DEMO_TODAY ? 'past' : iso === DEMO_TODAY ? 'today' : 'ahead';
+    days.push(demoDay(iso, when, i >= 5));
+  }
+  return {
+    today: DEMO_TODAY,
+    place: { query: 'Springfield, Illinois', label: 'Springfield, Illinois, US' },
+    weather_error: null,
+    life: {
+      household: [{ person: 'Theo', relation: 'partner' }],
+      alone: false,
+      sleep: { bed: '23:00', wake: '07:00' },
+      never: ['caring'],
+      error: null,
+      draft: null,
+      undraftable: null,
+    },
+    routine: {
+      digest: '0'.repeat(64),
+      cell: 'full_time',
+      // A drafted week waiting on the owner, so the demo shows the review.
+      draft: {
+        text: '# Drafted by a model from what you wrote of them.\n\n[[anchor]]\nwhat = "field survey"\nactivity = "work"\ndays = ["tue", "thu"]\nat = "08:00"\nminutes = 360\nchance = 1.0\n\n[[anchor]]\nwhat = "harbour swim"\nactivity = "exercise"\ndays = ["sat"]\nat = "07:00"\nminutes = 60\nchance = 0.7\nmonths = ["may", "jun", "jul", "aug", "sep"]\n',
+        digest: '1'.repeat(64),
+        anchors: [
+          { what: 'field survey', activity: 'work', days: [1, 3], start_minute: 480, minutes: 360, chance: 1 },
+          { what: 'harbour swim', activity: 'exercise', days: [5], start_minute: 420, minutes: 60, chance: 0.7, months: [5, 6, 7, 8, 9] },
+        ],
+        error: null,
+        kept_cell: 'full_time',
+        edited: false,
+      },
+      undraftable: null,
+      notes: '- survey days are Tuesdays and Thursdays\n- swims in the harbour through the warm months\n',
+    },
+    week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
+    // Her story over the week (`story::to_json`): invented events.
+    story: days.map((d, i) => ({
+      date: d.date,
+      weather: i % 3 === 0 ? { sky: 'rain', high_c: 9, low_c: 4 } : { sky: 'cloudy', high_c: 12, low_c: 6 },
+      morning: { energy: 'normal', stress: 'normal', mood: 'normal' },
+      evening: { energy: i === 2 ? 'low' : 'normal', stress: i === 2 ? 'high' : 'normal', mood: 'normal' },
+      events: i === 2
+        ? [{ storylet: 'deadline_crunch', title: 'a deadline crunch', size: 'minor', people: [], effect: { energy: 0, stress: 1, mood: 0 }, importance: 1.33, shown: 'a deadline crunch' }]
+        : i === 4
+          ? [{ storylet: 'good_news_friend', title: '{who} shared big good news', size: 'major', people: [DEMO_P(1)], effect: { energy: 0, stress: 0, mood: 1 }, importance: 5.6, shown: 'Ines shared big good news' }]
+          : [],
+      kept: d.when !== 'ahead',
+    })),
+  };
+}
+
+// Her network on the People tab, an invented cast (the shapes
+// `PersonaChats::people` serves).
+const demoEvent = (id, person, other, event, extra = {}) => ({
+  id: id.repeat(32).slice(0, 32),
+  person,
+  other,
+  event,
+  tie: null,
+  label: null,
+  layer: null,
+  when: { on: null, precision: 'unknown', said: null },
+  context: null,
+  source: 'owner',
+  recorded_at: '2026-10-30T12:00:00.000Z',
+  ...extra,
+});
+const demoEdge = (extra) => ({ tie: null, label: null, layer: null, valence: null, status: 'active', started: null, ended: null, last: null, unreadable: 0, unclean: false, ...extra });
+const DEMO_P = (n) => String(n).repeat(32).slice(0, 32);
+export const personaPeople = {
+  people: [
+    {
+      id: DEMO_P(1), name: 'Ines', aliases: ['Nessa'], role: 'older sister', description: 'Runs a bakery two towns over.',
+      character: null, portrait: null, source: 'owner', known_to_owner: true,
+      edge: demoEdge({ tie: 'kin', label: 'sister', layer: 5, valence: 'warm', started: { on: '1994-01-01', precision: 'year', said: '1994' } }),
+      events: [demoEvent('a', DEMO_P(1), null, 'formed', { tie: 'kin', label: 'sister', layer: 5, when: { on: '1994-01-01', precision: 'year', said: '1994' } }), demoEvent('b', DEMO_P(1), null, 'strengthened', { when: { on: '2025-06-01', precision: 'season', said: 'summer 2025' }, context: 'helped her move' })],
+    },
+    {
+      id: DEMO_P(2), name: 'Theo', aliases: [], role: 'lab partner', description: null,
+      character: null, portrait: null, source: 'owner', known_to_owner: true,
+      edge: demoEdge({ tie: 'colleague', layer: 15, valence: 'tense', started: { on: '2023-09-01', precision: 'season', said: 'autumn 2023' } }),
+      events: [demoEvent('c', DEMO_P(2), null, 'formed', { tie: 'colleague', layer: 15, when: { on: '2023-09-01', precision: 'season', said: 'autumn 2023' } }), demoEvent('d', DEMO_P(2), null, 'conflict', { when: { on: '2026-03-01', precision: 'month', said: 'March 2026' }, context: 'over the grant' })],
+    },
+    {
+      id: DEMO_P(3), name: 'Rory', aliases: [], role: 'ex', description: null,
+      character: null, portrait: null, source: 'owner', known_to_owner: true,
+      edge: demoEdge({ tie: 'ex', layer: 50, status: 'ended', ended: { on: '2022-01-01', precision: 'year', said: '2022' } }),
+      events: [demoEvent('e', DEMO_P(3), null, 'ended', { tie: 'ex', when: { on: '2022-01-01', precision: 'year', said: '2022' } })],
+    },
+  ],
+  ties: [
+    { a: DEMO_P(1), b: DEMO_P(2), edge: demoEdge({ tie: 'acquaintance' }), events: [demoEvent('f', DEMO_P(1), DEMO_P(2), 'met', { tie: 'acquaintance' })] },
+  ],
+  problems: [],
+  overlap: [{ line: 6, text: 'Her older sister Ines runs a bakery two towns over.' }],
+  // A proposal from identity.md waiting on the owner.
+  proposal: {
+    people: [
+      { name: 'Pell', aliases: [], role: 'diving buddy', description: 'Checks her gear before every dive.', tie: 'friend', label: null, layer: 15 },
+      { name: 'Ines', aliases: ['Nessa'], role: 'older sister', description: null, tie: 'kin', label: 'sister', layer: 5 },
+    ],
+    stale: false,
+  },
+  characters: [],
+};
+
+// The demo's time slider: the fixture's events up to a day, and the people
+// any of them are about, folded no further than the page needs (each edge's
+// valence and status from its last event by then).
+export function personaPeopleAsOf(asOf) {
+  if (!asOf || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return personaPeople;
+  const by = (e) => (e.when?.on ?? '0000-01-01') <= asOf;
+  const mood = { conflict: 'tense', strengthened: 'warm', reconciled: 'warm', renewed: 'warm' };
+  // As `Network::as_of` keeps them: someone with an event by then, or with
+  // no event at all, who has been there from the beginning (review of #804).
+  const people = personaPeople.people
+    .filter((p) => !p.events.length || p.events.some(by))
+    .map((p) => ({ ...p, events: p.events.filter(by) }))
+    .map((p) => {
+      if (!p.events.length) return p;
+      const last = p.events[p.events.length - 1];
+      return { ...p, edge: { ...p.edge, valence: p.events.map((e) => mood[e.event]).filter(Boolean).pop() ?? null, status: last.event === 'ended' ? 'ended' : 'active' } };
+    });
+  const ids = new Set(people.map((p) => p.id));
+  const ties = personaPeople.ties.filter((t) => ids.has(t.a) && ids.has(t.b));
+  return { ...personaPeople, people, ties, as_of: asOf };
+}
+
 export const personaFiles = {
   identity: {
     file: 'identity.md',
@@ -1873,6 +2163,7 @@ export const features = {
     on('incognito', 'Incognito chat', 'provider `local`', { part_of: 'web' }),
     on('slack', 'Slack remote control', 'tokens stored'),
     on('mail', 'Mail and calendar', '[[mcp]] `mail`, 2 account(s)'),
+    on('mail_rules', 'Automatic mail rules', '2 rules', { part_of: null, requires: ['mail'] }),
     on('docs', 'Google Docs, Sheets and Slides', '[[mcp]] `docs`, 1 account(s)'),
     on('graph', 'Knowledge graph', '[[mcp]] `graph`'),
     on('tasks', 'Task board', "rides the graph's kg_task_* tools", { part_of: 'graph' }),
@@ -2031,5 +2322,131 @@ export const lorasVideo = {
   unused: [
     { file: 'spin_ref.safetensors', family: 'h3', note: null },
     { file: 'styles/watercolor_qi.safetensors', family: 'qwen-image', note: null },
+  ],
+};
+
+// --- mail rules (#mail/rules) --------------------------------------------
+//
+// The shapes `mecha mail rule list|show|ledger --json` print
+// (`mail_rules::RuleView`, `presentation::ledger_views`), read off P3-1's
+// structs. Two rules over the cast's own mail: Fairhaven's IT notices are
+// archived on their own, and the library's hold notices are tagged in shadow.
+const ruleStats = (matched, automatic, undoRate, shadow = false) => [
+  {
+    verdict_input: 'not_applicable',
+    matched_actions: matched,
+    matching_threads: matched,
+    automatic_mailbox_actions: automatic,
+    owner_undos: undoRate ? 1 : 0,
+    owner_wrong_matches: 0,
+    owner_corrected_actions: undoRate ? 1 : 0,
+    undo_rate: automatic ? undoRate : null,
+    wrong_match_rate: matched ? 0 : null,
+    correction_rate: matched ? undoRate : null,
+    // The store sets this on a shadow group: its rates are an upper bound.
+    shadow_upper_bound: shadow,
+  },
+];
+const itToml =
+  'description = "Fairhaven IT notices"\npriority = 20\n\n[match]\nfrom = ["it-notices@fairhaven.example.edu"]\n\n[[action]]\ndo = "archive"\n';
+const holdsToml =
+  'description = "Library hold notices"\n\n[match]\nfrom_domain = ["fairhaven-library.example.org"]\n\n[[action]]\ndo = "tag"\ntag = "library"\n';
+const itDigest = { directory: 'demo-it-notices' };
+const holdsDigest = { directory: 'demo-library-holds' };
+const itRule = {
+  name: 'it-notices',
+  description: 'Fairhaven IT notices',
+  approval_digest: itDigest,
+  holds: [],
+  last_activity: '2026-03-12T14:05:00Z',
+  load_error: null,
+  fires_7d: 6,
+  last_fired: '2026-03-12T14:05:00Z',
+  failures: 0,
+  groups: [
+    {
+      group: 'mailbox',
+      recorded_mode: 'auto',
+      effective_mode: 'auto',
+      activated_at: '2026-03-02T09:00:00Z',
+      holds: [],
+      match_digest: { matcher: 'demo-it' },
+      statistics: ruleStats(14, 12, 1 / 12),
+    },
+  ],
+};
+const holdsRule = {
+  name: 'library-holds',
+  description: 'Library hold notices',
+  approval_digest: holdsDigest,
+  holds: [],
+  last_activity: null,
+  load_error: null,
+  fires_7d: 0,
+  last_fired: null,
+  failures: 0,
+  groups: [
+    {
+      group: 'private_record',
+      recorded_mode: 'shadow',
+      effective_mode: 'shadow',
+      activated_at: null,
+      holds: [],
+      match_digest: { matcher: 'demo-holds' },
+      statistics: ruleStats(2, 0, null, true),
+    },
+  ],
+};
+export const mailRules = [itRule, holdsRule];
+export const mailRule = {
+  'it-notices': { ...itRule, rule_toml: itToml, inputs: { digest: itDigest, files: { 'rule/rule.toml': itToml } } },
+  'library-holds': { ...holdsRule, rule_toml: holdsToml, inputs: { digest: holdsDigest, files: { 'rule/rule.toml': holdsToml } } },
+};
+const ledgerRow = (id, rule, at, subject, outcome, extra = {}) => ({
+  id,
+  rule,
+  account: 'work',
+  thread_id: `thr-${id}`,
+  provider_message_id: `msg-${id}`,
+  sender: rule === 'it-notices' ? 'it-notices@fairhaven.example.edu' : 'holds@fairhaven-library.example.org',
+  subject,
+  action: { verb: rule === 'it-notices' ? 'archive' : 'tag', digest: 'demo' },
+  group: rule === 'it-notices' ? 'mailbox' : 'private_record',
+  mode: rule === 'it-notices' ? 'auto' : 'shadow',
+  match_digest: { matcher: rule === 'it-notices' ? 'demo-it' : 'demo-holds' },
+  verdict_input: 'not_applicable',
+  outcome,
+  closes: outcome !== 'would_have',
+  matched_because: JSON.stringify(
+    rule === 'it-notices' ? { from: ['it-notices@fairhaven.example.edu'] } : { from_domain: ['fairhaven-library.example.org'] },
+  ),
+  reason: '',
+  at,
+  headers_partial: false,
+  undoable: outcome === 'done',
+  wrong_match_allowed: outcome === 'done' || outcome === 'would_have',
+  ...extra,
+});
+// Each ledger row's thread, so the read-only sheet shows the message the row
+// is about rather than the demo's fallback thread.
+const ruleThread = (id, sender, subject, body) => {
+  mailRead[`thr-${id}`] = { subject, meta: `${sender} · work · 2026-03-12 09:00`, body };
+};
+ruleThread('r7101', 'Fairhaven IT <it-notices@fairhaven.example.edu>', 'Scheduled maintenance: VPN, Saturday 06:00',
+  'The campus VPN will be unavailable on Saturday from 06:00 to 08:00 while we apply updates.\n\nNo action is needed.');
+ruleThread('r7100', 'Fairhaven IT <it-notices@fairhaven.example.edu>', 'Password expiry reminder',
+  'Your campus password expires in 14 days. You can change it at any time from the account portal.');
+ruleThread('r7099', 'Fairhaven IT <it-notices@fairhaven.example.edu>', 'Printer queue migration complete',
+  'All department printers now use the new print queue. Saved printers will update on their own.');
+ruleThread('r7098', 'Fairhaven Library <holds@fairhaven-library.example.org>', 'Your hold is ready: Memory and the Brain',
+  'Your hold is ready for pickup at the main desk and will be kept for seven days.');
+export const mailRulesLedger = {
+  'it-notices': [
+    ledgerRow('r7101', 'it-notices', '2026-03-12T14:05:00Z', 'Scheduled maintenance: VPN, Saturday 06:00', 'done'),
+    ledgerRow('r7100', 'it-notices', '2026-03-11T09:40:00Z', 'Password expiry reminder', 'done'),
+    ledgerRow('r7099', 'it-notices', '2026-03-10T16:12:00Z', 'Printer queue migration complete', 'undone', { undoable: false, wrong_match_allowed: false }),
+  ],
+  'library-holds': [
+    ledgerRow('r7098', 'library-holds', '2026-03-11T08:00:00Z', 'Your hold is ready: Memory and the Brain', 'would_have'),
   ],
 };

@@ -1,0 +1,16 @@
+# Install: cp scripts/mecha-mail-rules.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload
+#          systemctl --user enable --now mecha-mail-rules.timer
+#          loginctl enable-linger "$USER"
+# Enable explicitly: mecha features enable mail mail_rules
+# Global config only. No model: no model-idle gate. Typed engine contention
+# skips successfully; candidate/read/action/handled failures exit non-zero.
+[Unit]
+Description=Apply approved mail header rules
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.cargo/bin/mecha-mail rules apply --headers
+TimeoutStartSec=15min

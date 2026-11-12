@@ -26,12 +26,21 @@ Then it looks at the text being added — each run of consecutive added lines
 read as one passage, since prose here is wrapped and a sentence crosses lines
 — in the staged diff (`--staged`, the
 pre-commit hook), a commit range (`--range A..B`, the pre-push hook) or a
-commit message (`--message FILE`, the commit-msg hook) — for:
+commit message (`--message FILE`, the commit-msg hook), or any other text that
+will be published (`--text FILE`: every line, `#` lines included, which is
+how a driven task's prompt is checked before admission) — for:
 
 1. a run of `SHINGLE` words that was said in a conversation;
 2. a quoted phrase of three or more words that was said in one;
 3. a real persona or voice session id;
-4. the name of one of the owner's own personas;
+4. the name of one of the owner's own personas, or of someone in a
+   persona's life: a person on its People tab (`world.db`'s `people`, with
+   their aliases) or in its household (`life.toml`), matched as a whole
+   word with its capital, since these are ordinary first names (the owner's
+   ruling, 2026-11-03: no persona data in a public repository). An ordinary
+   word that is also someone's name can be allowed knowingly in
+   `~/.mecha/check-private.allow`, one per line, kept beside the store and
+   never in a repository;
 5. text from the owner's LoRA registry (`~/.mecha/loras.toml`, and while it is
    still read the old file `[video] loras` names): every file stem, and every
    `name` or `trigger` that is specific (more than one word, or holding `_`,
@@ -42,7 +51,12 @@ commit message (`--message FILE`, the commit-msg hook) — for:
 
 Text already in the repository before the change is never flagged: the harness's own
 sentences (the call note, the outbox read-back) are spoken in conversations
-too, and they come from the code. On a machine with no `~/.mecha` (CI, a
+too, and they come from the code. Text merged in from main is the repository's too
+(the owner's ruling, 2026-10-06): a merge's lines are read only where they
+are new against every parent, a push skips the commits already on the public
+branch (`--public REF`, which the pre-push hook passes as the remote's
+default branch), and both count that branch's text, or the commit being
+merged, as already said. On a machine with no `~/.mecha` (CI, a
 fresh clone) there is nothing to compare against, and it passes, saying so.
 Nothing it finds is printed beyond the file, the line number and which check
 fired: the words stay where they are. It reads text only: a recording or other
@@ -56,6 +70,7 @@ instead of passing.
 
 import glob
 import json
+import sqlite3
 import tomllib
 import os
 import re
@@ -200,7 +215,6 @@ def read_memory(db):
     which need not appear verbatim in any transcript (review of #557).
     `recall_fts` indexes all of them; an older store without it is read
     column by column. A store that exists and cannot be read is refused."""
-    import sqlite3
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
@@ -454,30 +468,50 @@ def spoken_turns(records):
         yield from header
 
 
+def persona_glob(rel):
+    """`rel` under every persona folder, the live ones and the ones the owner
+    removed: `persona::remove` moves a whole folder to
+    `personas/removed/<name>-<stamp>-<id>/`, and its chats, profile and people
+    are no less persona data there (review of #841)."""
+    return glob.glob(f"{MECHA}/personas/*/{rel}") + glob.glob(f"{MECHA}/personas/removed/*/{rel}")
+
+
 def corpus():
     """(shingles, short phrases, session ids, persona names) from ~/.mecha."""
     said = []
     ids = set()
     names = set()
-    for d in glob.glob(f"{MECHA}/personas/*/"):
-        toml = f"{d}persona.toml"
-        if os.path.exists(toml):
-            names.add(os.path.basename(d.rstrip("/")).lower())
-            # How the persona is addressed and drawn, which is what a fixture
-            # or a doc would spell (review of #557): `display` and its words,
-            # and `character`.
-            try:
-                text = open(toml, errors="replace").read()
-            except OSError:
-                text = ""
-            for key in ("display", "character"):
-                m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
-                if m and m.group(1).strip():
-                    value = m.group(1).strip().lower()
-                    names.add(value)
+    for toml in persona_glob("persona.toml"):
+        d = os.path.dirname(toml) + "/"
+        base = os.path.basename(d.rstrip("/"))
+        if "/personas/removed/" in toml:
+            # `persona::remove` names the folder `{name}-{stamp}-{id8}`, and
+            # persona.toml carries no name, so the name is the folder's
+            # front (review of #841).
+            m = re.fullmatch(r"(.+)-\d{8}T\d{6}Z-[0-9a-f]{8}", base)
+            if m:
+                names.add(m.group(1).lower())
+        else:
+            names.add(base.lower())
+        # How the persona is addressed and drawn, which is what a fixture
+        # or a doc would spell (review of #557): `display` and its words,
+        # and `character`.
+        try:
+            text = open(toml, errors="replace").read()
+        except OSError:
+            text = ""
+        for key in ("display", "character"):
+            m = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', text, re.M)
+            if m and m.group(1).strip():
+                value = m.group(1).strip().lower()
+                names.add(value)
+                # A display's words are how a persona is addressed; a
+                # character is a library id, matched whole, since its
+                # parts are often this project's own words.
+                if key == "display":
                     names.update(w for w in words(value) if len(w) >= 4)
     # Read whole: every persona chat, and every session that is a call.
-    whole = glob.glob(f"{MECHA}/personas/*/sessions/*.jsonl")
+    whole = persona_glob("sessions/*.jsonl")
     # Read for their spoken turns only: any other session a call spoke into
     # (a web chat, a test session, one from before `kind` existed). The rest
     # of such a chat is the owner typing — often mecha's own development —
@@ -530,7 +564,7 @@ def corpus():
             said.extend(spoken_turns(records))
     # The owner's saved picture prompts: only their chat-derived `words`, never
     # the compiler's own sentences, which the repository holds by design.
-    for f in glob.glob(f"{MECHA}/personas/*/sessions/*.prompts.log") + glob.glob(f"{MECHA}/sessions/*.prompts.log"):
+    for f in persona_glob("sessions/*.prompts.log") + glob.glob(f"{MECHA}/sessions/*.prompts.log"):
         try:
             with open(f, errors="replace") as fh:
                 for line in fh:
@@ -543,8 +577,9 @@ def corpus():
         except OSError as e:
             print(f"check-private: the prompt log {f} could not be read ({e}); refusing rather than passing unread.")
             sys.exit(2)
-    for db in glob.glob(f"{MECHA}/personas/*/memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
+    for db in persona_glob("memory.db") + glob.glob(f"{MECHA}/personas/shared.db"):
         said.extend(read_memory(db))
+    said.extend(persona_prose())
     # The worker journal is this machine's; a test of the check itself sets
     # CHECK_PRIVATE_JOURNAL=0 and reads only the store it built.
     if os.environ.get("CHECK_PRIVATE_JOURNAL", "1") == "0":
@@ -563,6 +598,198 @@ def corpus():
             phrases |= grams(w, n)
     # Persona folders with no chats yet still have names to refuse.
     return shingles, phrases, ids, names, bool(whole or partly or names)
+
+
+def persona_prose():
+    """What the owner wrote of each persona and its people, read as text a
+    fixture could copy: `identity.md` and `motivation.md`, and each person's
+    role and description and each tie event's label and context in
+    `world.db`. Matched by runs of words, like a conversation (the owner's
+    ruling, 2026-11-03: no persona data; review of #841). A store that
+    exists and does not read refuses."""
+    out = []
+    # The live files and every saved version of them: a version keeps the
+    # profile and the rendered people section after a person is forgotten
+    # (review of #841).
+    patterns = ["identity.md", "motivation.md", "story.toml", "routine.toml",
+                "routine.notes.md", "life.toml", "routine.draft.toml", "life.draft.toml"]
+    patterns += [f"versions/*/{name}" for name in ("identity.md", "motivation.md", "people.md")]
+    patterns += ["versions/*/relationships/*.md"]
+    files = [f for pattern in patterns for f in persona_glob(pattern)]
+    # The owner's notes about themselves (the store's and each group's) and
+    # the relationship templates a persona names; a starter template is the
+    # repository's own text and in_head excuses it (review of #841).
+    files += glob.glob(f"{MECHA}/personas/about-me.md") + glob.glob(f"{MECHA}/personas/groups/*/about-me.md")
+    files += glob.glob(f"{MECHA}/personas/relationships/*.md")
+    for f in files:
+        try:
+            with open(f, errors="replace") as fh:
+                out.append(fh.read())
+        except OSError as e:
+            print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    for db in persona_glob("world.db"):
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                # Every text value of every table, as memory.db is read: a
+                # column added by a later migration (a fact, an event's
+                # title, a plan) is read without this list growing (review
+                # of #841). Ids and closed words make no run of six.
+                tables = [r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+                for table in tables:
+                    for row in conn.execute(f'SELECT * FROM "{table}"'):
+                        out.extend(v for v in row if isinstance(v, str))
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    # A proposal's prose, waiting on the owner, as its names are.
+    for f in persona_glob("people.draft.json"):
+        try:
+            with open(f, errors="replace") as fh:
+                draft = json.load(fh)
+        except (OSError, ValueError) as e:
+            print(f"check-private: the people draft {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+        for p in (draft.get("people") if isinstance(draft, dict) else None) or []:
+            if isinstance(p, dict):
+                out.extend(v for k in ("role", "description", "label")
+                           if isinstance(v := p.get(k), str))
+    return out
+
+
+def people_names():
+    """Everyone in a persona's life, by name: the People tab (`world.db`'s
+    `people`, name and aliases) and the household in `life.toml`. A store
+    that exists and does not read refuses, never passes unread: a persona's
+    people are exactly what a fixture would borrow (the owner's ruling,
+    2026-11-03)."""
+    out = set()
+    for db in persona_glob("world.db"):
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                has = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'people'"
+                ).fetchone()
+                if has:
+                    for name, aliases in conn.execute("SELECT name, aliases FROM people"):
+                        if isinstance(name, str) and name.strip():
+                            out.add(name.strip())
+                        try:
+                            listed = json.loads(aliases or "[]")
+                        except (ValueError, TypeError):
+                            listed = []
+                        # Only a list: a bare string would iterate as letters.
+                        for a in listed if isinstance(listed, list) else []:
+                            if isinstance(a, str) and a.strip():
+                                out.add(a.strip())
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            print(f"check-private: the people store {db} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    # The profile, a waiting draft of it and the one it replaced: a name is
+    # in a persona's life before approval and after removal too (review of
+    # #841).
+    for pattern in ("life.toml", "life.draft.toml", "life.previous.toml"):
+        for f in persona_glob(pattern):
+            try:
+                with open(f, "rb") as fh:
+                    life = tomllib.load(fh)
+            except (OSError, ValueError) as e:
+                print(f"check-private: the life profile {f} could not be read ({e}); refusing rather than passing unread.")
+                sys.exit(2)
+            for h in life.get("household", []) or []:
+                if isinstance(h, dict) and isinstance(h.get("person"), str) and h["person"].strip():
+                    out.add(h["person"].strip())
+    # People a model proposed from identity.md, waiting on the owner.
+    for f in persona_glob("people.draft.json"):
+        try:
+            with open(f, errors="replace") as fh:
+                draft = json.load(fh)
+        except (OSError, ValueError) as e:
+            print(f"check-private: the people draft {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+        for p in (draft.get("people") if isinstance(draft, dict) else None) or []:
+            if not isinstance(p, dict):
+                continue
+            for n in [p.get("name")] + (p.get("aliases") if isinstance(p.get("aliases"), list) else []):
+                if isinstance(n, str) and n.strip():
+                    out.add(n.strip())
+    # Everyone a saved version named: a person removed from the People tab
+    # leaves world.db but stays in each snapshot of the rendered section
+    # (`network::prompt_section`), so the name stays refused (review of
+    # #841).
+    for f in persona_glob("versions/*/people.md"):
+        try:
+            with open(f, errors="replace") as fh:
+                out.update(section_names(fh.read()))
+        except OSError as e:
+            print(f"check-private: {f} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    # The owner's own list of words that may stay, kept beside the store and
+    # never in a repository: an ordinary word that is also someone's name
+    # ("Max"), allowed knowingly rather than by --no-verify.
+    allowed = set()
+    allow = f"{MECHA}/check-private.allow"
+    if os.path.exists(allow):
+        try:
+            with open(allow, errors="replace") as fh:
+                allowed = {l.strip() for l in fh if l.strip() and not l.startswith("#")}
+        except OSError as e:
+            print(f"check-private: {allow} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+    # A one-letter name would refuse every line holding that letter alone.
+    return {n for n in out if len(n) >= 2 and n not in allowed}
+
+
+def section_names(text):
+    """The people a rendered people section names, read by its own headings
+    (`network::prompt_section`): a close person's line (`- Name (role),
+    also called A, B. ...`), the comma lists after "Others in your life:"
+    and "No longer in your life:" (`Name (role)`, an `ended ...` note
+    skipped), and the pairs after "Between them:" (`A and B: tie, tense`,
+    names only: a tie's notes are words, not people; review of #841)."""
+    def top_level(rest, sep):
+        depth, part, parts = 0, "", []
+        i = 0
+        while i < len(rest):
+            ch = rest[i]
+            depth += ch == "("
+            depth -= ch == ")"
+            if depth == 0 and rest.startswith(sep, i):
+                parts.append(part)
+                part = ""
+                i += len(sep)
+                continue
+            part += ch
+            i += 1
+        parts.append(part)
+        return [p.strip() for p in parts if p.strip()]
+
+    out = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            body = line[2:]
+            out.add(re.split(r" \(|,|\. ", body, maxsplit=1)[0].strip().rstrip("."))
+            m = re.search(r"also called ([^.(]*)", body)
+            if m:
+                out.update(a.strip() for a in m.group(1).split(",") if a.strip())
+        elif line.startswith(("Others in your life: ", "No longer in your life: ")):
+            rest = line.split(": ", 1)[1].rstrip(".")
+            for part in top_level(rest, ", "):
+                if not part.startswith("ended "):
+                    out.add(part.split(" (", 1)[0].strip())
+        elif line.startswith("Between them: "):
+            rest = line.split(": ", 1)[1].rstrip(".")
+            for pair in top_level(rest, "; "):
+                out.update(n.strip() for n in pair.split(":", 1)[0].split(" and ") if n.strip())
+    return {n for n in out if n and len(n.split()) <= 4}
 
 
 def lora_registry():
@@ -685,6 +912,14 @@ def added_lines(args):
     one — an endpoint diff would never read text added and then rewritten
     inside the range, which is exactly a `--no-verify` WIP branch (review of
     #557)."""
+    if args and args[0] == "--text":
+        # A prompt written for a driven task (DRIVER-DESIGN.md D3b): markdown,
+        # so its headings start with `#`, and `--message` would skip them as
+        # git's own instruction lines.
+        with open(args[1], errors="replace") as fh:
+            for num, line in enumerate(fh, 1):
+                yield "text", num, line.rstrip("\n")
+        return
     if args and args[0] == "--message":
         with open(args[1], errors="replace") as fh:
             for num, line in enumerate(fh, 1):
@@ -692,52 +927,145 @@ def added_lines(args):
                     yield "commit message", num, line.rstrip("\n")
         return
     if args and args[0] == "--range":
-        commits = run_git(["git", "rev-list", "--reverse", args[1]]).split()
+        # A commit already on the public branch is the repository's own, not
+        # this push's: a branch that merged main carries main's commits in
+        # its range, and they went public when main took them.
+        public = ["--not", *PUBLIC] if PUBLIC else []
+        commits = run_git(["git", "rev-list", "--reverse", args[1]] + public).split()
         for c in commits:
             short = c[:8]
             parents = run_git(["git", "rev-list", "--parents", "-n", "1", c]).split()[1:]
-            base = parents[0] if parents else "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            bases = parents or ["4b825dc642cb6eb9a060e54bf8d69288fbee4904"]
             # Each commit's lines are their own passages: a run that exists
             # only by joining two commits' lines is not what the push adds.
-            for path, num, text in diff_lines(run_git(DIFF + [base, c]), f" in {short}"):
+            diffs = [run_git(DIFF + [b, c]) for b in bases]
+            for path, num, text in new_against_all(diffs, f" in {short}"):
                 yield f"{path} (in {short})", num, text
             message = run_git(["git", "log", "-n", "1", "--format=%B", c])
             for num, line in enumerate(message.splitlines(), 1):
                 yield f"commit message of {short}", num, line
         return
-    yield from diff_lines(run_git(DIFF + ["--cached"]))
+    # A merge being committed: only what the resolution adds against every
+    # side, so the text merged in from main is not read as this change's.
+    # Outside one, the bare form, which also reads a first commit's index
+    # against an unborn HEAD.
+    heads = merging()
+    if heads:
+        yield from new_against_all([run_git(DIFF + ["--cached", h]) for h in ["HEAD"] + heads])
+    else:
+        yield from diff_lines(run_git(DIFF + ["--cached"]))
+
+
+def new_against_all(diffs, where=""):
+    """The lines every one of `diffs` adds — each a diff from one parent into
+    the same tree, so a line's number names the same line in all of them. One
+    diff is a plain commit's; more is a merge's, and a line any parent already
+    had came in with that parent: the text a branch merges in from main is
+    main's, not the branch's (the owner's ruling, 2026-10-06). What a
+    resolution writes that no side had is read."""
+    first = list(diff_lines(diffs[0], where))
+    for other in diffs[1:]:
+        keep = {(p, n) for p, n, _ in diff_lines(other, where)}
+        first = [(p, n, t) for p, n, t in first if (p, n) in keep]
+    yield from first
+
+
+def merging():
+    """The commits being merged in while a merge is in progress
+    (`MERGE_HEAD`, one per line for an octopus), or none."""
+    path = run_git(["git", "rev-parse", "--git-path", "MERGE_HEAD"]).strip()
+    try:
+        with open(path) as fh:
+            return [h for h in fh.read().split() if h]
+    except FileNotFoundError:
+        return []
 
 
 BASE = ["HEAD"]
+# The public branch a push goes beside (`--public REF`, the pre-push hook's
+# `<remote>/HEAD`), or none.
+PUBLIC = []
+# `--text FILE`: the checked file's own path in the repository, if it is one.
+# Its committed copy is never "what the repository already says", or a
+# prompt checked after it lands would excuse itself (review of #852).
+SELF = []
 
 
-def in_head(normalised, head_cache=[]):
+def in_head(normalised, head_cache={}):
     """Whether the repository already says this before the change — the
-    harness's own words. `HEAD` for a commit; the range's base for a push,
-    whose `HEAD` is the change itself. Each file is read as one run of words
-    — prose here is wrapped at ~80 columns, and a wrapped harness sentence is
-    still the repository's — but files are kept apart by a separator no word
-    can match: a run that only exists by straddling two files is not
-    something the repository says (review of #557)."""
-    if not head_cache:
-        # Per file: `git grep -h` gives no file boundaries, so ask with them.
-        listing = subprocess.run(["git", "grep", "-I", "-z", "-e", "", BASE[0], "--"],
-                                 capture_output=True, text=True, errors="replace").stdout
-        files = {}
-        for rec in listing.split("\n"):
-            # `<rev>:<path>\0<line>` with -z: path and text split on the NUL.
-            if "\0" not in rec:
-                continue
-            path, text = rec.split("\0", 1)
-            files.setdefault(path, []).append(text)
-        head_cache.append(" | ".join(" ".join(words(" ".join(lines))) for lines in files.values()))
-    return f" {normalised} " in f" {head_cache[0]} "
+    harness's own words. `HEAD` for a commit, and while a merge is in
+    progress each commit being merged in; the range's base for a push, whose
+    `HEAD` is the change itself, and the public branch it goes beside — text
+    on main is the repository's own, though this branch's base predates it
+    (the owner's ruling, 2026-10-06). Each tree's files are read as one run
+    of words — prose here is wrapped at ~80 columns, and a wrapped harness
+    sentence is still the repository's — but files are kept apart by a
+    separator no word can match: a run that only exists by straddling two
+    files is not something the repository says (review of #557)."""
+    for rev in BASE + PUBLIC:
+        if rev not in head_cache:
+            head_cache[rev] = tree_words(rev)
+        if f" {normalised} " in f" {head_cache[rev]} ":
+            return True
+    return False
+
+
+def in_head_exact(text, cache={}):
+    """Whether the repository already holds `text` exactly (any case): a
+    multi-part id ("brine-ledger") is excused only by itself, never by its
+    parts appearing apart (review of #841)."""
+    if text not in cache:
+        cache[text] = any(
+            # `:/` and `top`: SELF is the toplevel's path, and a bare pathspec
+            # is the cwd's (review of #852, pass 2).
+            subprocess.run(["git", "grep", "-q", "-I", "-i", "-F", "-e", text, rev, "--", ":/",
+                            *[f":(top,exclude){p}" for p in SELF]],
+                           capture_output=True).returncode == 0
+            for rev in BASE + PUBLIC)
+    return cache[text]
+
+
+def tree_words(rev):
+    """Every file of `rev` as one run of words, files apart."""
+    # Per file: `git grep -h` gives no file boundaries, so ask with them.
+    listing = subprocess.run(["git", "grep", "--full-name", "-I", "-z", "-e", "", rev, "--", ":/"],
+                             capture_output=True, text=True, errors="replace").stdout
+    files = {}
+    for rec in listing.split("\n"):
+        # `<rev>:<path>\0<line>` with -z: path and text split on the NUL.
+        if "\0" not in rec:
+            continue
+        path, text = rec.split("\0", 1)
+        if path.split(":", 1)[-1] in SELF:
+            continue
+        files.setdefault(path, []).append(text)
+    return " | ".join(" ".join(words(" ".join(lines))) for lines in files.values())
 
 
 def main(args):
+    while "--public" in args:
+        i = args.index("--public")
+        if i + 1 >= len(args):
+            print("check-private: --public needs a ref; refusing.")
+            return 2
+        PUBLIC.append(run_git(["git", "rev-parse", "--verify", f"{args[i + 1]}^{{commit}}"]).strip())
+        args = args[:i] + args[i + 2:]
+    if args and args[0] == "--text" and (len(args) < 2 or not os.path.isfile(args[1])):
+        print("check-private: --text needs a file that exists; refusing.")
+        return 2
+    if args and args[0] == "--text":
+        top = run_git(["git", "rev-parse", "--show-toplevel"]).strip()
+        rel = os.path.relpath(os.path.realpath(args[1]), os.path.realpath(top))
+        if not rel.startswith(".."):
+            SELF.append(rel)
     if args and args[0] == "--range":
         BASE[0] = args[1].split("..")[0]
+    elif not args or args[0] == "--staged":
+        BASE.extend(merging())
     shingles, phrases, ids, names, found = corpus()
+    people = people_names()
+    # A store with people and no persona.toml still has names to refuse.
+    found = found or bool(people)
     lora_refuse, lora_warn = lora_registry()
     if not found:
         # On the machine that holds the conversations, set
@@ -760,6 +1088,9 @@ def main(args):
     # so a sentence wrapped across lines — which prose here always is — is
     # still a run of words and a quote (review of #557). Ids and names are
     # line-local and checked per line.
+    # Names excused because the repository already spells them: one warning
+    # per name at the end, never one per line.
+    excused = {}
     passages = []
     for p, n, t in lines:
         if passages and passages[-1][0] == p and passages[-1][2] == n - 1:
@@ -773,7 +1104,7 @@ def main(args):
         hit = None
         for g in grams(words(text), SHINGLE) & shingles:
             if not in_head(g):
-                hit = "words said in a conversation"
+                hit = "words said in a conversation or written of a persona"
                 break
         if not hit:
             for m in QUOTE.finditer(text):
@@ -801,9 +1132,50 @@ def main(args):
                 break
         if not hit:
             for name in names:
-                if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
-                    hit = "the name of one of the owner's personas"
-                    break
+                if not re.search(rf"\b{re.escape(name)}\b", t, re.I):
+                    continue
+                # Excused when the repository already holds the word in any
+                # case, since a display's longer words are often ordinary
+                # English ("Marsh"), and a refusal that cannot name its word
+                # cannot be acted on; but said when excused, so a real use
+                # is looked at, never passed silently (review of #841).
+                single = re.fullmatch(r"\w+", name) is not None
+                if in_head(name) if single else in_head_exact(name):
+                    excused.setdefault(name, []).append(f"{p}:{n}")
+                    continue
+                hit = "the name of one of the owner's personas"
+                break
+        if not hit:
+            # A capitalised use only: "Will" is a person, "will" a word,
+            # whatever case the store happened to spell the name in (review
+            # of #841).
+            for name in people:
+                # Unicode word edges, so a name inside a longer word is not
+                # it, in any script (review of #841).
+                pattern = rf"(?<!\w){re.escape(name)}(?!\w)"
+                cased = name.upper() != name.lower()
+                # A name in a script with case is a person only when
+                # capitalised; one without case (Hebrew, Arabic, CJK) has no
+                # capital to test, so any use is the name, never passed.
+                # Cased: any capitalised spelling (DeShawn stored, Deshawn
+                # written) except a shout (u32::MAX for a person named Max),
+                # unless the name was stored in capitals; never the
+                # lowercase word.
+                shout_ok = name.isupper()
+                spots = [m for m in re.finditer(pattern, t, re.I)
+                         if not cased or (m.group(0)[:1].isupper()
+                                          and (shout_ok or len(m.group(0)) < 2 or not m.group(0).isupper()))]
+                if not spots:
+                    continue
+                person_col = spots[0].start() + 1
+                # Never excused by the repository already using the word: an
+                # ordinary first name (Max, Grace, May) is in its prose, and
+                # an excuse would pass exactly the names this exists for. A
+                # made-up name that collides is renamed (review of #841).
+                # The column, so a sentence-initial ordinary word that is also
+                # someone's name can be told from a real use (review of #841).
+                hit = f"the name of someone in a persona's life (column {person_col})"
+                break
         if hit:
             findings.append((p, n, hit))
         else:
@@ -811,13 +1183,18 @@ def main(args):
                 if phrase_in(word, t) and not in_head(word):
                     print(f"check-private: warning: {p}:{n} has a word that is a LoRA registry `{field}`; check it is not one of the owner's LoRAs.")
                     break
+    for name, where in sorted(excused.items()):
+        shown = ", ".join(where[:3]) + (f" and {len(where) - 3} more" if len(where) > 3 else "")
+        print(f"check-private: warning: `{name}`, a persona's name the repository already uses, appears at {shown}; check each is the made-up one.")
     if not findings:
         return 0
-    print("check-private: refusing — this change carries conversation text or LoRA registry")
-    print("text (owner's rulings, 2026-10-04 and 2026-10-23: neither belongs in this repository).")
+    print("check-private: refusing — this change carries conversation text, persona data or LoRA")
+    print("registry text (owner's rulings, 2026-10-04, 2026-10-23 and 2026-11-03: none belongs in")
+    print("this repository).")
     for path, num, hit in findings[:40]:
         print(f"  {path}:{num}: {hit}")
     print("Replace it with made-up text of the same shape. The words are not printed here.")
+    print(f"An ordinary word that is also someone's name may be allowed in {MECHA}/check-private.allow (one per line).")
     return 1
 
 

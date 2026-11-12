@@ -39,6 +39,7 @@ pub enum Feature {
     Incognito,
     Slack,
     Mail,
+    MailRules,
     Docs,
     Graph,
     Tasks,
@@ -64,6 +65,11 @@ pub enum Feature {
     /// `system_read`: the machine's state for the assistant
     /// (`SYSTEM-STATE-DESIGN.md` §5, R3).
     System,
+    /// `code`: a short Python program over tool results, in the pinned monty
+    /// worker under the platform's sandbox (`CODE-MODE-DESIGN.md` §7).
+    /// Present in every build, and available only in one built with the
+    /// cargo feature `monty` ([`crate::interpreter::BUILT`]).
+    Code,
 }
 
 impl Feature {
@@ -72,6 +78,7 @@ impl Feature {
         Feature::Incognito,
         Feature::Slack,
         Feature::Mail,
+        Feature::MailRules,
         Feature::Docs,
         Feature::Graph,
         Feature::Tasks,
@@ -92,6 +99,7 @@ impl Feature {
         Feature::Publishing,
         Feature::Messages,
         Feature::System,
+        Feature::Code,
     ];
 
     /// The name on the command line and on the wire.
@@ -100,6 +108,7 @@ impl Feature {
             Feature::Web => "web",
             Feature::Slack => "slack",
             Feature::Mail => "mail",
+            Feature::MailRules => "mail_rules",
             Feature::Docs => "docs",
             Feature::Graph => "graph",
             Feature::Tasks => "tasks",
@@ -121,6 +130,7 @@ impl Feature {
             Feature::Publishing => "publishing",
             Feature::Messages => "messages",
             Feature::System => "system",
+            Feature::Code => "code",
         }
     }
 
@@ -129,6 +139,7 @@ impl Feature {
             Feature::Web => "The web app",
             Feature::Slack => "Slack remote control",
             Feature::Mail => "Mail and calendar",
+            Feature::MailRules => "Automatic mail rules",
             Feature::Docs => "Google Docs, Sheets and Slides",
             Feature::Graph => "Knowledge graph",
             Feature::Tasks => "Task board",
@@ -150,6 +161,7 @@ impl Feature {
             Feature::Publishing => "Publishing tools",
             Feature::Messages => "Messages between sessions",
             Feature::System => "Machine state for the assistant",
+            Feature::Code => "Code mode (programs over tool results)",
         }
     }
 
@@ -182,6 +194,7 @@ impl Feature {
     /// What must be on for this to be on, beyond [`Feature::part_of`].
     pub fn requires(self) -> &'static [Feature] {
         match self {
+            Feature::MailRules => &[Feature::Mail],
             // Not the front door on mail: requests arrive by `factory-publish
             // drain` and publishing needs no mailbox; only booking settlement
             // reads the mail ledger, and that side fails closed on its own
@@ -222,6 +235,7 @@ impl Feature {
         match self {
             Feature::Web
             | Feature::Mail
+            | Feature::MailRules
             | Feature::Docs
             | Feature::Graph
             | Feature::Search
@@ -233,7 +247,8 @@ impl Feature {
             | Feature::Voice
             | Feature::Frontdoor
             | Feature::Messages
-            | Feature::System => true,
+            | Feature::System
+            | Feature::Code => true,
             Feature::Incognito
             | Feature::Tasks
             | Feature::Ocr
@@ -274,11 +289,16 @@ impl Feature {
             // The operator's credentials: the mail crate's stores live under
             // the real home whatever `$MECHA_HOME` says.
             | Feature::Mail
+            | Feature::MailRules
             | Feature::Docs
             // The operator's backends and keys (`MACHINE_TABLES`).
             | Feature::Search
             // The operator's machine, read through its own series.
             | Feature::System
+            // Its worker is a sidecar under the operator's mecha home, and a
+            // trial's home has none: switched on there, every trial would
+            // fail its preflight and blame the trial rather than the line.
+            | Feature::Code
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -590,6 +610,9 @@ pub fn unknown_switches(cfg: &Config) -> Vec<String> {
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub has_mail_binary: bool,
+    /// The same canonical executable sibling used by the rules child launcher.
+    pub has_mail_rules_binary: bool,
+    pub mail_rules_stored: Option<bool>,
     pub has_docs_binary: bool,
     pub has_graph_binary: bool,
     pub has_factory_binary: bool,
@@ -605,6 +628,11 @@ pub struct Facts {
     /// worker's launchd agent on a Mac). Installed, not running: a
     /// socket-activated unit is idle until asked.
     pub voice_unit_installed: bool,
+    /// Whether the pinned monty worker is where code mode looks for it, at
+    /// its pinned size (`interpreter::worker::installed_path`). Its sha256
+    /// is checked every time a pool starts (`worker::verify`), not on every
+    /// read of this row, which a page load makes.
+    pub code_worker_installed: bool,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -633,6 +661,11 @@ impl Facts {
             // the feature's server (§15; review of #699) — or mecha's own
             // build in its tree.
             has_mail_binary: current_on_path("mecha-mail") || crate::mail_mcp::installed(home),
+            has_mail_rules_binary: std::env::current_exe()
+                .ok()
+                .and_then(|exe| crate::mail_rules::child_path(&exe).ok())
+                .is_some_and(|path| crate::mail_rules::is_executable_file(&path)),
+            mail_rules_stored: crate::mail_rules::store_has_rules(home),
             has_docs_binary: current_on_path("mecha-docs") || crate::mail_mcp::installed(home),
             has_graph_binary: current_on_path("mecha-graph-mcp")
                 || crate::graph_mcp::installed(home),
@@ -650,6 +683,10 @@ impl Facts {
                 crate::launchd::agents_dir(&h)
                     .join(crate::launchd::plist_name("mecha-voice-worker"))
                     .is_file()
+            }),
+            code_worker_installed: crate::interpreter::worker::pin().is_some_and(|pin| {
+                std::fs::metadata(crate::interpreter::worker::installed_path(home))
+                    .is_ok_and(|m| m.is_file() && m.len() == pin.binary_bytes)
             }),
             config: global.clone(),
         }
@@ -736,6 +773,44 @@ pub fn state(facts: &Facts, f: Feature) -> State {
     // refuses a feature alone when its requirement is off — the row must
     // not print a command the same binary rejects (found on review of #443).
     let fix = || enable_command(&facts.config, f);
+    // A feature this binary was built without is that before it is anything
+    // else: `enable` refuses it here, so a row offering the switch would
+    // print a command the same binary rejects. Switched on (by another
+    // build sharing the file), it is a yes this build cannot honour, and
+    // reads unready, shown, rather than off.
+    if let Some(why) = unbuilt(f) {
+        let (reason, fix) = (why.to_string(), Some(BUILD_WITH_MONTY.to_string()));
+        return match switch(&facts.config, f) {
+            Some(Switch::On) => State::Unready { reason, fix },
+            _ => State::Off { reason, fix },
+        };
+    }
+    // Code mode with a precondition unmet is the same shape: `enable`
+    // refuses it until the precondition is fixed, so the off row names that
+    // fix, never the command alone (review of #774). An explicit `false` is
+    // still the owner's no, and reads as one; its fix is the whole path.
+    if f == Feature::Code {
+        if let Some((reason, fix)) = code_unmet(&facts.config) {
+            match switch(&facts.config, f) {
+                Some(Switch::Absent) => return State::Off { reason, fix },
+                Some(Switch::Off) => {
+                    // With a fix, the reason is the owner's no and the fix is
+                    // the whole path. With none (no worker pinned for this
+                    // platform), the reason keeps that fact, the only place it
+                    // shows (review of #781).
+                    return State::Off {
+                        reason: match &fix {
+                            Some(_) => "turned off in [features]".into(),
+                            None => format!("turned off in [features]; {reason}"),
+                        },
+                        fix: fix
+                            .map(|fix| format!("{fix}, then {}", enable_command(&facts.config, f))),
+                    };
+                }
+                Some(Switch::On) | None => {}
+            }
+        }
+    }
     match switch(&facts.config, f) {
         Some(Switch::Off) => return off("turned off in [features]", fix()),
         Some(Switch::Absent) => return off("not enabled in [features]", fix()),
@@ -848,6 +923,7 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
             .is_some_and(|l| !l.is_empty()),
         Feature::Slack => facts.slack_linked == Some(true),
         Feature::Mail => mcp_entry(facts, "mecha-mail").is_some_and(|m| !m.disabled),
+        Feature::MailRules => facts.mail_rules_stored == Some(true),
         Feature::Docs => mcp_entry(facts, "mecha-docs").is_some_and(|m| !m.disabled),
         Feature::Graph => mcp_entry(facts, "mecha-graph-mcp").is_some_and(|m| !m.disabled),
         Feature::Search => cfg.search.iter().any(|b| !b.disabled),
@@ -857,7 +933,8 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
-        Feature::Messages | Feature::System => false,
+        // Code mode is newer than `[features]`: no install had it to lose.
+        Feature::Messages | Feature::System | Feature::Code => false,
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -925,19 +1002,65 @@ pub const WORLD_IS_PER_PERSONA: &str =
     "`world` is part of `personas` and is switched per persona, never here — `[life] world` in \
      a persona's persona.toml turns it on or off for that persona";
 
+/// What this machine's configuration lacks for code mode to start, with the
+/// fix when there is one, or `None`. Unlike `[tools]` leaving `code` out,
+/// which only withholds the tool, each of these fails every start once the
+/// switch is on: a worker pinned for this platform, and on Linux the bwrap
+/// sandbox `interpreter::monty::Confinement::for_sandbox` requires (a Mac's
+/// Seatbelt is the platform's, whatever `[sandbox]` says). So the row and
+/// [`plan_enable`] ask the same question (review of #774).
+fn code_unmet(cfg: &Config) -> Option<(String, Option<String>)> {
+    if crate::interpreter::worker::pin().is_none() {
+        return Some((
+            format!(
+                "mecha pins no monty worker for {}-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            ),
+            None,
+        ));
+    }
+    if !cfg!(target_os = "macos") && cfg.sandbox.kind != crate::sandbox::Backend::Bwrap {
+        return Some((
+            format!(
+                "code mode runs its interpreter only inside bwrap, and [sandbox] kind is \"{}\"",
+                cfg.sandbox.kind.as_str()
+            ),
+            Some("set [sandbox] kind = \"bwrap\"".into()),
+        ));
+    }
+    None
+}
+
 /// Check a request to switch features on, before anything is written.
 ///
 /// A part id is refused by name, pointing at its parent and the setting that
 /// turns it on. A feature whose `requires` is not already on and not in the
 /// same request is refused with the chained command, as Claude Code refuses a
 /// disable that would break another plugin, rather than land in `Blocked`.
-/// (No feature with a switch has a `requires` edge since F15; the branch
-/// waits for the next one.)
+/// `mail_rules` has its own switch and requires `mail`.
 pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String> {
     let mut wanted = Vec::new();
     for id in ids {
         let f = Feature::parse(id)
             .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
+        if let Some(why) = unbuilt(f) {
+            return Err(format!(
+                "`{id}` cannot be switched on here: {why} — {BUILD_WITH_MONTY}"
+            ));
+        }
+        // A switch on with these unmet would stop every start, not degrade
+        // one, so it is refused before it is written (review of #774).
+        if f == Feature::Code {
+            if let Some((why, fix)) = code_unmet(cfg) {
+                return Err(match fix {
+                    Some(fix) => {
+                        format!("`{id}` cannot be switched on yet: {why} — {fix}, then enable it")
+                    }
+                    None => format!("`{id}` cannot be switched on here: {why}"),
+                });
+            }
+        }
         // Incognito had a switch until the owner folded it into the web app
         // (2026-10-14); it has no setting to turn on, only the local model.
         if f == Feature::Incognito {
@@ -1439,6 +1562,18 @@ pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Resul
     Ok(())
 }
 
+/// Why this binary cannot run `f` at all, or `None`. Only code mode can be
+/// built out: its interpreter is the cargo feature `monty`, on by default and
+/// left out by `--no-default-features`.
+pub fn unbuilt(f: Feature) -> Option<&'static str> {
+    (f == Feature::Code && !crate::interpreter::BUILT).then_some(
+        "this mecha was built without code mode's interpreter (the cargo feature `monty`)",
+    )
+}
+
+/// The fix [`unbuilt`] names.
+pub const BUILD_WITH_MONTY: &str = "build mecha with `--features monty`";
+
 fn on(detail: impl Into<String>) -> State {
     State::On {
         detail: detail.into(),
@@ -1546,6 +1681,16 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                 reason: "the Slack token store could not be read".into(),
             },
         },
+        Feature::MailRules => {
+            if !facts.has_mail_rules_binary {
+                off("the mecha-mail executable sibling is missing",
+                    "cargo install --path mecha-mail")
+            } else if facts.mail_rules_stored.is_none() {
+                State::Unknown { reason: "the mail rule store could not be read".into() }
+            } else {
+                on("owner-approved rules; headers every five minutes, deferred actions after classify")
+            }
+        }
         Feature::Mail => server_state(
             Feature::Mail,
             facts,
@@ -1792,6 +1937,42 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             true => on("`system_read` over ~/.mecha/system/series.sqlite"),
             false => tools_off("system_read"),
         },
+        // What registration asks, in its order, short of starting a worker
+        // (no process here, ever): `[tools]`, a worker pinned for this
+        // platform, the sandbox the interpreter needs
+        // (`interpreter::monty::Confinement::for_sandbox`: bwrap on Linux;
+        // a Mac's Seatbelt is the platform's, whatever `[sandbox]` says), and
+        // the worker installed. `state` has already answered for a build
+        // without the interpreter. What only a start can tell — bwrap able
+        // to build its namespaces, the worker's hash — is the preflight's,
+        // and a failed one stops the start rather than dropping the tool.
+        Feature::Code => {
+            use crate::interpreter::worker;
+            if !cfg.tools.registers(crate::tool::code::NAME) {
+                return tools_off(crate::tool::code::NAME);
+            }
+            if let Some((reason, fix)) = code_unmet(cfg) {
+                return State::Unready { reason, fix };
+            }
+            if !facts.code_worker_installed {
+                return off(
+                    format!(
+                        "the monty {} worker is not installed",
+                        worker::MONTY_VERSION
+                    ),
+                    enable_command(cfg, f),
+                );
+            }
+            on(format!(
+                "monty {} under {}",
+                worker::MONTY_VERSION,
+                if cfg!(target_os = "macos") {
+                    "Seatbelt"
+                } else {
+                    "bwrap"
+                }
+            ))
+        }
     }
 }
 
@@ -2187,6 +2368,102 @@ mod tests {
         &rows.iter().find(|r| r.id == f).unwrap().state
     }
 
+    /// Code mode's row asks what its registration asks, in its order — the
+    /// build, `[tools]`, the sandbox the interpreter needs, the worker — and
+    /// a build without the interpreter says so by name, switched on or not,
+    /// where `enable` refuses it naming the cargo feature.
+    #[test]
+    fn code_mode_reads_its_build_tools_sandbox_and_worker() {
+        let code = |facts: &Facts| state(facts, Feature::Code);
+        let mut facts = empty_machine();
+        if !crate::interpreter::BUILT {
+            let off = code(&facts);
+            assert!(
+                matches!(&off, State::Off { reason, fix: Some(fix) }
+                    if reason.contains("cargo feature `monty`") && fix.contains("--features monty")),
+                "{off:?}"
+            );
+            set_switch(&mut facts.config, Feature::Code, true);
+            let on = code(&facts);
+            assert!(
+                matches!(&on, State::Unready { reason, .. } if reason.contains("`monty`")),
+                "a yes this build cannot honour is shown, unready: {on:?}"
+            );
+            let refused = plan_enable(&facts.config, &["code".into()]).unwrap_err();
+            assert!(refused.contains("cargo feature `monty`"), "{refused}");
+            return;
+        }
+        if crate::interpreter::worker::pin().is_some() && !cfg!(target_os = "macos") {
+            // The default `[sandbox]` is `none`: a switch written now would
+            // stop every start, so it is refused, naming the fix (review of
+            // #774).
+            let refused = plan_enable(&facts.config, &["code".into()]).unwrap_err();
+            assert!(refused.contains("kind = \"bwrap\""), "{refused}");
+            // And the off row names the same fix, never the refused command.
+            assert!(
+                matches!(code(&facts), State::Off { fix: Some(fix), .. } if fix.contains("kind = \"bwrap\"")),
+                "{:?}",
+                code(&facts)
+            );
+            // An explicit `false` is still the owner's no, and its fix is the
+            // whole path, which onboarding prints as what turns it on.
+            set_switch(&mut facts.config, Feature::Code, false);
+            assert!(
+                matches!(code(&facts), State::Off { reason, fix: Some(fix) }
+                    if reason == "turned off in [features]"
+                        && fix.starts_with("set [sandbox] kind = \"bwrap\", then mecha features enable code")),
+                "{:?}",
+                code(&facts)
+            );
+            facts.config.features.0.remove("code");
+            facts.config.sandbox.kind = crate::sandbox::Backend::Bwrap;
+        }
+        if crate::interpreter::worker::pin().is_some() {
+            assert_eq!(
+                plan_enable(&facts.config, &["code".into()]),
+                Ok(vec![Feature::Code])
+            );
+        }
+        assert_eq!(code(&facts).word(), "off", "the switch first");
+        set_switch(&mut facts.config, Feature::Code, true);
+        facts.config.tools.disabled = vec!["code".into()];
+        assert!(
+            matches!(code(&facts), State::Unready { reason, .. } if reason.contains("[tools]")),
+            "[tools] withholds it"
+        );
+        facts.config.tools.disabled.clear();
+        if crate::interpreter::worker::pin().is_none() {
+            assert_eq!(code(&facts).word(), "unready", "no worker pinned here");
+            // An explicit no keeps the platform fact, there being no fix.
+            set_switch(&mut facts.config, Feature::Code, false);
+            assert!(
+                matches!(code(&facts), State::Off { reason, fix: None }
+                    if reason.starts_with("turned off in [features]; mecha pins no monty worker")),
+                "{:?}",
+                code(&facts)
+            );
+            return;
+        }
+        if !cfg!(target_os = "macos") {
+            facts.config.sandbox.kind = crate::sandbox::Backend::None;
+            assert!(
+                matches!(code(&facts), State::Unready { reason, fix: Some(fix) }
+                    if reason.ends_with("[sandbox] kind is \"none\"")
+                        && fix.contains("kind = \"bwrap\"")),
+                "the interpreter runs only inside bwrap here"
+            );
+            facts.config.sandbox.kind = crate::sandbox::Backend::Bwrap;
+        }
+        assert!(
+            matches!(code(&facts), State::Unready { reason, fix: Some(fix) }
+                if reason.contains("not installed") && fix == "mecha features enable code"),
+            "no worker yet: {:?}",
+            code(&facts)
+        );
+        facts.code_worker_installed = true;
+        assert_eq!(code(&facts).word(), "on");
+    }
+
     /// `Feature::ALL` is a hand-kept list, and every other test iterates it
     /// — so a variant left out of it would vanish from `mecha features` and
     /// from every test at once. This `match` has no wildcard: a new variant
@@ -2199,6 +2476,7 @@ mod tests {
                 Feature::Web
                 | Feature::Slack
                 | Feature::Mail
+                | Feature::MailRules
                 | Feature::Docs
                 | Feature::Graph
                 | Feature::Tasks
@@ -2219,12 +2497,13 @@ mod tests {
                 | Feature::Frontdoor
                 | Feature::Publishing
                 | Feature::Messages
-                | Feature::System => {}
+                | Feature::System
+                | Feature::Code => {}
             }
         }
-        // The match above lists 24 — raise this with it, and a variant
+        // The match above lists 26 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 24);
+        assert_eq!(Feature::ALL.len(), 26);
     }
 
     #[test]
@@ -2279,6 +2558,7 @@ mod tests {
             Feature::Frontdoor,
             Feature::Messages,
             Feature::System,
+            Feature::Code,
         ] {
             assert_eq!(get(&rows, f).word(), "off", "{}", f.id());
         }
@@ -2845,9 +3125,21 @@ mod tests {
             ..empty_machine()
         };
         for &f in Feature::ALL.iter().filter(|f| f.has_switch()) {
+            // Code mode with a precondition unmet names that precondition's
+            // fix (or none, with no worker pinned here), never `enable`
+            // (`code_mode_reads_its_build_tools_sandbox_and_worker`).
+            if f == Feature::Code && unbuilt(f).is_none() && code_unmet(&cfg).is_some() {
+                continue;
+            }
             let State::Off { fix: Some(fix), .. } = state(&facts, f) else {
                 panic!("{} is off on an empty machine", f.id())
             };
+            // Not in this build: the fix is the build, which `enable` names
+            // when it refuses.
+            if unbuilt(f).is_some() {
+                assert_eq!(fix, BUILD_WITH_MONTY, "{}", f.id());
+                continue;
+            }
             let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&cfg, &args).unwrap_or_else(|e| panic!("{fix}: {e}"));
         }
@@ -2886,7 +3178,15 @@ mod tests {
         assert!(switched_on(&cfg, Feature::Dictate));
         // Every command it prints is one `enable` accepts.
         let empty = Config::default();
-        for &f in Feature::ALL {
+        // A feature not in this build is refused by `enable` whatever is
+        // asked, naming the build (`code_mode_reads_its_build_tools_sandbox_and_worker`).
+        // Nor is code mode with a precondition unmet: its row names that
+        // precondition's fix instead.
+        for &f in Feature::ALL
+            .iter()
+            .filter(|f| unbuilt(**f).is_none())
+            .filter(|f| **f != Feature::Code || code_unmet(&empty).is_none())
+        {
             let cmd = enable_command(&empty, f);
             let args: Vec<String> = cmd.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&empty, &args).unwrap_or_else(|e| panic!("{}: {cmd}: {e}", f.id()));
@@ -2978,5 +3278,39 @@ mod tests {
             serde_json::to_value(rows.iter().find(|r| r.id == Feature::Tasks).unwrap()).unwrap();
         assert_eq!(tasks["part_of"], "graph");
         assert_eq!(tasks["on"], "graph");
+    }
+}
+
+#[cfg(test)]
+mod mail_rules_feature_tests {
+    use super::*;
+    #[test]
+    fn mail_rules_has_its_own_default_off_switch_and_requires_mail() {
+        let mut facts = Facts::default();
+        assert_eq!(state(&facts, Feature::MailRules).word(), "off");
+        assert!(Feature::MailRules.has_switch());
+        assert!(!Feature::MailRules.switchable_from_environment());
+        set_switch(&mut facts.config, Feature::MailRules, true);
+        assert_eq!(state(&facts, Feature::MailRules).word(), "blocked");
+        set_switch(&mut facts.config, Feature::Mail, true);
+        assert!(matches!(
+            own_state(&facts, Feature::MailRules),
+            State::Off { .. }
+        ));
+        facts.has_mail_rules_binary = true;
+        assert!(matches!(
+            own_state(&facts, Feature::MailRules),
+            State::Unknown { .. }
+        ));
+        facts.mail_rules_stored = Some(false);
+        assert!(matches!(
+            own_state(&facts, Feature::MailRules),
+            State::On { .. }
+        ));
+        assert!(!evidence(&facts, Feature::MailRules));
+        facts.mail_rules_stored = Some(true);
+        assert!(evidence(&facts, Feature::MailRules));
+        assert_eq!(Feature::MailRules.part_of(), None);
+        assert_eq!(Feature::MailRules.requires(), &[Feature::Mail]);
     }
 }

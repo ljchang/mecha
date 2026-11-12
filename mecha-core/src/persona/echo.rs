@@ -130,6 +130,20 @@ pub fn session_echoes(path: &Path) -> Result<Vec<f64>> {
     Ok(out)
 }
 
+/// Whether a session counts as the owner's own chat: not a test run
+/// (`MECHA_SESSION_KIND=test`), not a driven run (another agent was the
+/// principal, `DRIVER-DESIGN.md` D1), and not one the owner withdrew, which
+/// `sessions mark` files as an experiment so every reader hides it
+/// (`runlog::Admission`'s rule). A reading of her chats that read its own
+/// tests would measure the instrument (review of #808).
+pub fn is_owner_chat(meta: &crate::session::SessionMeta) -> bool {
+    use crate::session::SessionKind;
+    !matches!(
+        meta.kind,
+        Some(SessionKind::Test) | Some(SessionKind::Experiment) | Some(SessionKind::Driven)
+    )
+}
+
 /// What one persona's chats say, over a window.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
 pub struct Echoes {
@@ -144,6 +158,8 @@ pub struct Echoes {
     /// Session files that could not be read — counted, never silently an
     /// empty chat.
     pub unreadable: usize,
+    /// Test or withdrawn sessions left out ([`is_owner_chat`]), counted.
+    pub left_out: usize,
 }
 
 /// The echoes of every chat in `sessions` (a persona's `sessions/`) last
@@ -154,7 +170,11 @@ pub fn echoes(sessions: &Path, since: std::time::SystemTime) -> Result<Echoes> {
         unreadable,
         ..Echoes::default()
     };
-    for (_, path) in listed {
+    for (meta, path) in listed {
+        if !is_owner_chat(&meta) {
+            out.left_out += 1;
+            continue;
+        }
         let active = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .is_ok_and(|t| t >= since);
@@ -292,8 +312,15 @@ mod tests {
         let long_ago = std::time::SystemTime::UNIX_EPOCH;
         let e = echoes(&dir, long_ago).unwrap();
         assert_eq!(
-            (e.chats, e.replies, e.repeated, e.max, e.unreadable),
-            (1, 1, 1, Some(1.0), 0)
+            (
+                e.chats,
+                e.replies,
+                e.repeated,
+                e.max,
+                e.unreadable,
+                e.left_out
+            ),
+            (1, 1, 1, Some(1.0), 0, 0)
         );
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
         assert_eq!(echoes(&dir, later).unwrap().chats, 0, "outside the window");

@@ -312,7 +312,20 @@ impl Situation {
     /// by the old miner, from a transcript since deleted so the reconcile
     /// left it, would otherwise have scoped a rule to a surface nothing
     /// matches, dark with nothing warning (found on review).
-    pub const MARK_KINDS: &[SessionKind] = &[SessionKind::Test, SessionKind::Experiment];
+    ///
+    /// `Driven` is a mark and stays one. `DRIVER-DESIGN.md` D2 keeps driven
+    /// runs' rules in a learning store of their own (R6), never in a scope:
+    /// every way a `surface = driven` scope could be lost widens the rule
+    /// onto the owner's runs, and the mark must not reach the match anyway
+    /// (`setup.rs`: applying `MECHA_SESSION_KIND` to the matched key took
+    /// every surface-scoped rule out of each `mecha exp` trial). A driven
+    /// run renders the owner's rules, and nothing is learned from it until
+    /// D2 builds that store.
+    pub const MARK_KINDS: &[SessionKind] = &[
+        SessionKind::Test,
+        SessionKind::Experiment,
+        SessionKind::Driven,
+    ];
 
     /// The situation an intervention was recorded in.
     pub fn recorded(

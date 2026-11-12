@@ -6,6 +6,9 @@
   import { LANES, sortRows, acceptVerb, keyOf, senderOf, sweepGroups, ageOf, tickedGroups } from './mail-desk.js';
   import { MailQueue, HOLD_MS, VERB_PAST, VERB_LABEL, UNSEEN } from './mail-queue.svelte.js';
   import MailBody from './MailBody.svelte';
+  import { features } from './features.svelte.js';
+  import { isShown } from './features.js';
+  import { offerRuleFrom } from './mail-rules-handoff.svelte.js';
 
   // Mail on a phone: the desk's model with thumbs instead of keys. The queue,
   // its hold-then-commit timing and its reads are MailQueue's, shared with
@@ -24,6 +27,17 @@
   //   the provider's filter, the only effect outside the owner's mailbox.
 
   const INBOX = { id: 'inbox', label: 'Inbox' };
+
+  // The rules page (#mail/rules) and its *Make a rule from this thread*:
+  // offered only while the feature is on (PANE_FEATURE sends a link home
+  // otherwise). The draft carries the row's headers; nothing installs
+  // until the owner presses Install there.
+  let { navigate = () => {} } = $props();
+  const rulesOn = $derived(isShown(features.rows, 'mail_rules'));
+  function makeRule(row) {
+    offerRuleFrom(row);
+    navigate('mail/rules');
+  }
   const SWIPE_AT = 90; // px past which a released swipe acts
   const SWIPE_MAX = 140;
 
@@ -295,6 +309,7 @@
       <div class="titlerow">
         <span class="title">Mail</span>
         {#if q.rows !== null}<span class="left">{leftCount} left</span>{/if}
+        {#if rulesOn}<button class="ruleslink" onclick={() => navigate('mail/rules')}>Rules</button>{/if}
       </div>
       <div class="lanes" role="tablist" aria-label="Lanes">
         {#each LANES as l}
@@ -439,6 +454,7 @@
           <button class="abtn" onclick={() => ask('forward', 'Forward to (comma-separated) + covering note', 'FYI — this is the one I mentioned', cur, { wantTo: true })}>Forward…</button>
           <button class="abtn" onclick={() => run('dismiss', [cur])}>Dismiss</button>
           <button class="abtn" onclick={() => { more = false; confirmSpam = cur; }}>Spam…</button>
+          {#if rulesOn}<button class="abtn" onclick={() => makeRule(cur)}>Make a rule…</button>{/if}
         </div>
       {/if}
       <div class="grid">
@@ -560,6 +576,7 @@
   .titlerow { display: flex; align-items: baseline; gap: 10px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
   .left { font-size: 12px; color: var(--text-muted); }
+  .ruleslink { margin-left: auto; background: none; border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--accent-300); font-family: var(--mono); font-size: 12px; padding: 0 12px; min-height: 36px; cursor: pointer; }
   .lanes { display: flex; gap: 6px; overflow-x: auto; margin: 0 calc(-1 * var(--gutter-gear)) 0 0; padding-right: var(--gutter); -webkit-overflow-scrolling: touch; }
   .lanes::-webkit-scrollbar { display: none; }
   .sweeptabs { padding: 10px var(--gutter); margin: 0; border-bottom: 1px solid var(--accent-900); }

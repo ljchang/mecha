@@ -1217,6 +1217,21 @@ pub struct Tasks {
     /// Only cases carrying one of these tags, when set.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Driven trials (`DRIVER-DESIGN.md` §1, the measurement mode): each
+    /// child is marked `SessionKind::Driven` rather than `Experiment`, so
+    /// D1b's guardrails hold for it exactly as for the pilot's runs, and the
+    /// source owns the whole starting state — the fixture is not staged,
+    /// because a task clone starts empty. Needs a `source` and a
+    /// `workspace_root`. Skipped when false, so a manifest without it hashes
+    /// as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub driven: bool,
+    /// Where a driven trial's clone lives: `<root>/<experiment>/<trial>/
+    /// workspace`. Outside the mecha home, never under it — a task clone
+    /// holds the vendored crates (hundreds of MB each) and is the model's to
+    /// write, and §7 keeps it out of the home either way round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<PathBuf>,
 }
 
 fn confirmed_goals<'de, D: serde::Deserializer<'de>>(
@@ -1252,7 +1267,32 @@ impl Tasks {
             tags: Vec::new(),
             confirmed_goals: BTreeMap::new(),
             mismatch_cases: BTreeMap::new(),
+            driven: false,
+            workspace_root: None,
         }
+    }
+
+    /// Why a driven manifest's `workspace_root` cannot be used under `home`,
+    /// or `None` when it can. Overlap is refused either way round, as
+    /// `driven::refusals` refuses a workspace: a root under the home puts
+    /// every clone in it, and a root above the home binds all of it. Judged
+    /// as each path would resolve once made, so a root that does not exist
+    /// yet (made at the first trial) is judged by its nearest existing
+    /// ancestor, its `.` and `..` taken as written.
+    pub fn driven_root_refusal(&self, home: &Path) -> Option<String> {
+        let root = self.workspace_root.as_deref()?;
+        // The resolver `driven::refusals` uses, so the two checks are one
+        // rule: a `..` after a component that does not exist yet is taken
+        // as written, never left unresolved (review of #859, pass 2).
+        let canon = crate::work::as_it_would_resolve;
+        let (root, home) = (canon(root), canon(home));
+        (root.starts_with(&home) || home.starts_with(&root)).then(|| {
+            format!(
+                "`[tasks] workspace_root` {} overlaps the mecha home {}; a task clone lives outside it",
+                root.display(),
+                home.display()
+            )
+        })
     }
 
     pub fn has_source(&self) -> bool {
@@ -1290,6 +1330,26 @@ impl Tasks {
             self.source_timeout_secs > 0,
             "`[tasks] source_timeout_secs` must be positive"
         );
+        if self.driven {
+            anyhow::ensure!(
+                self.has_source(),
+                "`[tasks] driven` needs a `source`: a driven task's clone, marker and grade are the source's"
+            );
+            match &self.workspace_root {
+                Some(root) => anyhow::ensure!(
+                    root.is_absolute(),
+                    "`[tasks] workspace_root` must be absolute, not resolved against wherever `exp run` starts"
+                ),
+                None => anyhow::bail!(
+                    "`[tasks] driven` needs a `workspace_root` outside the mecha home, where each trial's clone lives"
+                ),
+            }
+        } else {
+            anyhow::ensure!(
+                self.workspace_root.is_none(),
+                "`[tasks] workspace_root` places driven clones only; set `driven = true` or drop it"
+            );
+        }
         Ok(())
     }
 }
@@ -1357,6 +1417,15 @@ pub struct SourceGrade {
     pub detail: String,
     #[serde(default)]
     pub checks: Vec<crate::eval::Check>,
+    /// The paths the run changed in the task's tree, when the source knows
+    /// them (a repository source does; a world-state benchmark may not).
+    /// Recorded on the trial beside the checks, never read as a verdict.
+    /// Named here rather than admitted by loosening the shape: a field this
+    /// build does not know still fails the grade. `None` — absent, or `null`
+    /// when the source could not tell (its git failed in the jail) — is kept
+    /// apart from an empty list, which says nothing changed.
+    #[serde(default)]
+    pub changed: Option<Vec<String>>,
 }
 
 impl SourceGrade {
@@ -1624,6 +1693,15 @@ impl Manifest {
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
         self.tasks.validate()?;
+        // A driven run is a fresh one-shot in a fresh clone, with no
+        // principal verbs (`DRIVER-DESIGN.md` §6): its verdict is the hidden
+        // grade, and nothing steers, answers or denies between the prompt
+        // and it. A principal is a lifetime's, so refusing the lifetime
+        // refuses the principal with it.
+        anyhow::ensure!(
+            !(self.tasks.driven && self.kind == TrialKind::Lifetime),
+            "`[tasks] driven` runs `single` trials: each driven task starts in a fresh clone, with no principal"
+        );
         self.fixtures.validate()?;
         // Both kinds: `ids` names each case once. For a lifetime the
         // positions are the tasks; for a single, `cases_for` walks `ids` in
@@ -1744,6 +1822,15 @@ impl Manifest {
     }
 
     fn with_grading_clock_hash(&self, original: String) -> String {
+        // A driven trial runs under D1b's guardrails (the allowlist, the
+        // forced levers), so it is another condition from the same arm run
+        // as `experiment`, and two such rows must not pair. The term enters
+        // only for a driven manifest, so every earlier hash keeps its value.
+        let original = if self.tasks.driven {
+            fnv64(format!("{original}|kind=driven").as_bytes())
+        } else {
+            original
+        };
         if self.fixtures.clock.is_empty()
             && self.judge.is_none()
             && self.tasks.confirmed_goals.is_empty()
@@ -1902,6 +1989,7 @@ impl Manifest {
             let env_digest = env.map(|c| c.digest.as_str());
             let features_on = env.map(|c| c.features_on.as_slice());
             let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
+                changed: None,
                 owner_actions: None,
                 fixture_checked: None,
                 id: trial_id(arm_name, task, seed, rep),
@@ -2007,6 +2095,14 @@ impl Arm {
                 lever != Lever::SystemRead,
                 "`system_read` cannot be forced on in an experiment: it reads this machine's own series, which a trial's home does not have (SYSTEM-STATE-DESIGN.md R3)"
             );
+            // The same shape: the switch is not an environment's to set
+            // (`Feature::switchable_from_environment`), and a trial's home
+            // has no worker, so forced on the arm would run as the control
+            // under a matching condition hash.
+            anyhow::ensure!(
+                lever != Lever::CodeTool,
+                "`code_tool` cannot be forced on in an experiment: `[features] code` is the operator's switch, and a trial's home has no monty worker (CODE-MODE-DESIGN.md §7)"
+            );
             on.push(lever);
         }
         Ok(Lever::ALL
@@ -2110,6 +2206,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config, bool)> {
         | Lever::CompactTool
         | Lever::SystemRead
         | Lever::Grants
+        | Lever::CodeTool
         | Lever::ApprovalRules => None,
     }
 }
@@ -2378,6 +2475,13 @@ pub struct Trial {
     /// existed, which were all one at a time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jobs: Option<u32>,
+    /// The paths the run changed in its tree, as its source's `grade` named
+    /// them (`SourceGrade::changed`). A driven trial's audit: the driver
+    /// reads any diff that touches a build file, because the grade executes
+    /// the run's own code (`DRIVER-DESIGN.md` §3). `None` on rows whose
+    /// source could not say, and on every row written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
 }
 
 impl Trial {
@@ -2645,6 +2749,28 @@ impl ExperimentStore {
 
     pub fn workspace_for(&self, trial_id: &str) -> PathBuf {
         self.root.join("trials").join(trial_id).join("workspace")
+    }
+
+    /// Where a trial's run is jailed: its store directory's `workspace`, or —
+    /// for a driven manifest — `<workspace_root>/<experiment>/<trial>/
+    /// workspace`, outside the mecha home. The trial's record and logs stay
+    /// in the store either way; only the clone moves.
+    pub fn trial_workspace(&self, tasks: &Tasks, trial_id: &str) -> PathBuf {
+        if !tasks.driven {
+            return self.workspace_for(trial_id);
+        }
+        // Never a fall-through to the store, inside the home the manifest
+        // forbade: `validate` makes a driven root `Some`, and `open` names
+        // the store's directory after the experiment.
+        let root = tasks
+            .workspace_root
+            .as_ref()
+            .expect("a driven manifest's workspace_root is checked at load");
+        let name = self
+            .root
+            .file_name()
+            .expect("an experiment store's directory is named after it");
+        root.join(name).join(trial_id).join("workspace")
     }
 
     /// One lifetime's stage ledger: `stages/<lifetime>.jsonl`, appended per
@@ -3214,6 +3340,7 @@ pub fn child_invocation(
             Lever::CompactTool => flags.push("--no-compact-tool".into()),
             Lever::SystemRead => flags.push("--no-system-read".into()),
             Lever::Grants => flags.push("--no-grants".into()),
+            Lever::CodeTool => flags.push("--no-code-tool".into()),
             Lever::ApprovalRules => unreachable!("refused at load"),
         }
     }
@@ -3671,6 +3798,145 @@ overrides = ["max_turns=20"]
 metric = "turns"
 rationale = "no notice, fewer turns"
 "#;
+
+    /// `MANIFEST` with its case file swapped for a source and `extra` lines
+    /// appended to `[tasks]`.
+    fn driven_manifest(extra: &str) -> Result<Manifest> {
+        let text = MANIFEST.replace(
+            "[tasks]\ncases = \"eval/cases.jsonl\"\nfixture = \"eval/workspace\"\n",
+            &format!("[tasks]\nsource = [\"python3\", \"src.py\"]\nfixture = \"eval/workspace\"\n{extra}\n"),
+        );
+        assert_ne!(
+            text, MANIFEST,
+            "the fixture's [tasks] block moved; this helper no longer edits it"
+        );
+        Manifest::parse(&text)
+    }
+
+    #[test]
+    fn a_driven_manifest_needs_a_source_an_absolute_root_and_single_trials() {
+        assert!(driven_manifest("driven = true\nworkspace_root = \"/srv/driven\"").is_ok());
+        let err = |extra: &str| format!("{:#}", driven_manifest(extra).unwrap_err());
+        assert!(err("driven = true").contains("needs a `workspace_root`"));
+        assert!(err("driven = true\nworkspace_root = \"rel/dir\"").contains("must be absolute"));
+        assert!(err("workspace_root = \"/srv/driven\"").contains("places driven clones only"));
+        // A case file cannot be driven: the clone, marker and grade are a source's.
+        let cases = MANIFEST.replace(
+            "fixture = \"eval/workspace\"\n",
+            "fixture = \"eval/workspace\"\ndriven = true\nworkspace_root = \"/srv/driven\"\n",
+        );
+        assert!(format!("{:#}", Manifest::parse(&cases).unwrap_err()).contains("needs a `source`"));
+        // A lifetime (and so a principal) is refused: each task is a fresh clone.
+        let lifetime = MANIFEST
+            .replace("control = \"full\"", "kind = \"lifetime\"\ncontrol = \"full\"")
+            .replace(
+                "[tasks]\ncases = \"eval/cases.jsonl\"\nfixture = \"eval/workspace\"\n",
+                "[tasks]\nsource = [\"python3\", \"src.py\"]\nfixture = \"eval/workspace\"\nids = [\"a\"]\ndriven = true\nworkspace_root = \"/srv/driven\"\n",
+            );
+        let e = format!("{:#}", Manifest::parse(&lifetime).unwrap_err());
+        assert!(e.contains("runs `single` trials"), "{e}");
+    }
+
+    #[test]
+    fn a_driven_root_that_overlaps_the_home_either_way_is_refused() {
+        let base =
+            std::env::temp_dir().join(format!("mecha-exp-driven-root-{}", uuid::Uuid::new_v4()));
+        let home = base.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let tasks = |root: PathBuf| {
+            let mut t = Tasks::from_cases("c", "f", Vec::new());
+            t.driven = true;
+            t.workspace_root = Some(root);
+            t
+        };
+        // Under the home, even where nothing exists yet: judged by the
+        // nearest existing ancestor, so the first trial cannot make it.
+        assert!(tasks(home.join("experiments/not-yet"))
+            .driven_root_refusal(&home)
+            .is_some());
+        // Above the home: a parent binds all of it.
+        assert!(tasks(base.clone()).driven_root_refusal(&home).is_some());
+        // Beside it, the clone is outside.
+        assert!(tasks(base.join("driven-work"))
+            .driven_root_refusal(&home)
+            .is_none());
+        // A `..` after a component that does not exist yet still lands in
+        // the home (review of #859, pass 2: the first resolver left it
+        // unresolved, and this root passed).
+        assert!(tasks(base.join("nope/../home/experiments"))
+            .driven_root_refusal(&home)
+            .is_some());
+        // Through a symlink into the home is still the home.
+        let link = base.join("sneaky");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        assert!(tasks(link.join("x")).driven_root_refusal(&home).is_some());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_driven_trial_is_cloned_under_the_root_and_hashes_apart_from_an_experiment_one() {
+        let store = ExperimentStore::open("/tmp/store-root", "boredom").unwrap();
+        let plain = driven_manifest("").unwrap();
+        let driven = driven_manifest("driven = true\nworkspace_root = \"/srv/driven\"").unwrap();
+        assert_eq!(
+            store.trial_workspace(&driven.tasks, "t1"),
+            PathBuf::from("/srv/driven/boredom/t1/workspace")
+        );
+        assert_eq!(
+            store.trial_workspace(&plain.tasks, "t1"),
+            store.workspace_for("t1")
+        );
+        let hash = |m: &Manifest| m.trials(&["t1".into()], "p", "m")[0].condition_hash.clone();
+        assert_ne!(
+            hash(&plain),
+            hash(&driven),
+            "a driven row must not pair with an experiment one"
+        );
+        // And a manifest that never says `driven` keeps its old hash and its
+        // old text: the fields are skipped when unset.
+        let base = Manifest::parse(MANIFEST).unwrap();
+        let text = toml::to_string(&base).unwrap();
+        assert!(
+            !text.contains("driven") && !text.contains("workspace_root"),
+            "{text}"
+        );
+        assert_eq!(hash(&Manifest::parse(&text).unwrap()), hash(&base));
+    }
+
+    /// A repository source names the paths the run changed, and the row
+    /// keeps them; the shape stays strict, so a field no build knows still
+    /// fails the grade (the driven smoke run's first trial, 2026-11-09,
+    /// failed on exactly this before `changed` was named).
+    #[test]
+    fn a_grade_may_name_what_changed_and_nothing_this_build_does_not_know() {
+        let g: SourceGrade = serde_json::from_str(
+            r#"{"passed": false, "detail": "0/1", "checks": [], "changed": ["src/a.rs", "Cargo.toml"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            g.changed,
+            Some(vec!["src/a.rs".to_string(), "Cargo.toml".to_string()])
+        );
+        let plain: SourceGrade = serde_json::from_str(r#"{"passed": true}"#).unwrap();
+        assert_eq!(plain.changed, None);
+        // `null` is the source saying it could not tell: still a grade, and
+        // never read as "nothing changed" (review of #859, pass 1).
+        let unknown: SourceGrade =
+            serde_json::from_str(r#"{"passed": true, "changed": null}"#).unwrap();
+        assert_eq!(unknown.changed, None);
+        let none: SourceGrade = serde_json::from_str(r#"{"passed": true, "changed": []}"#).unwrap();
+        assert_eq!(none.changed, Some(Vec::new()));
+        assert!(
+            serde_json::from_str::<SourceGrade>(r#"{"passed": true, "verdict": "yes"}"#).is_err()
+        );
+        // An old row, written before the field, loads with nothing changed.
+        let old: Trial = serde_json::from_value(serde_json::json!({
+            "id": "a__t__r1", "arm": "a", "task": "t", "repetition": 1,
+            "condition_hash": "h", "status": "done"
+        }))
+        .unwrap();
+        assert_eq!(old.changed, None);
+    }
 
     #[test]
     fn a_manifest_loads_and_enumerates_its_trials_in_a_stable_order() {
@@ -4445,6 +4711,7 @@ rationale = "r"
 
     fn done(arm: &str, task: &str, seed: u64, passed: bool, turns: u32) -> Trial {
         Trial {
+            changed: None,
             owner_actions: None,
             fixture_checked: None,
             id: trial_id(arm, task, Some(seed), 1),

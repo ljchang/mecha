@@ -107,6 +107,11 @@ pub fn installable(id: &str) -> bool {
         crate::graph_mcp::ID => true,
         // mecha's own mail and documents servers, likewise (§15).
         crate::mail_mcp::ID => true,
+        // Code mode's worker: a pinned file, wherever a pin exists — and only
+        // in a build that can run it, since `enable code` refuses elsewhere.
+        crate::interpreter::worker::SIDECAR => {
+            crate::interpreter::BUILT && crate::interpreter::worker::pin().is_some()
+        }
         _ => false,
     }
 }
@@ -225,6 +230,21 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
                 && not_needed(s.id, feature, chat_here).is_none()
         })
     };
+    // Code mode's worker: the pinned wheel it is unpacked from.
+    if wanted(plan, crate::interpreter::worker::SIDECAR)
+        && installable(crate::interpreter::worker::SIDECAR)
+    {
+        if let Some(pin) = crate::interpreter::worker::pin() {
+            if let Some(s) = plan
+                .sidecars
+                .iter_mut()
+                .find(|s| s.id == crate::interpreter::worker::SIDECAR)
+            {
+                s.bytes = Some(pin.wheel_bytes);
+            }
+            plan.download_bytes += pin.wheel_bytes;
+        }
+    }
     // The speech server's default voice is fetched beside the slot's model
     // and codec, which the plan prices already; the clip is priced here so
     // nothing it fetches goes uncounted (review of #649). A machine
@@ -746,6 +766,18 @@ pub async fn install(
         "layout" => install_layout(m, machine, hub, say).await,
         crate::graph_mcp::ID => crate::graph_mcp::install(m, say).await,
         crate::mail_mcp::ID => crate::mail_mcp::install(m, say).await,
+        // Fetched by its pin, unpacked, hashed, and recorded before the first
+        // byte (`worker::ensure`); its health check is the hash, and the
+        // first start's preflight runs a program under the sandbox.
+        crate::interpreter::worker::SIDECAR => {
+            let worker = crate::interpreter::worker::ensure(&m.mecha_home, &mut |_| {}).await?;
+            say(&format!(
+                "the monty {} worker is {}, checked by its sha256",
+                crate::interpreter::worker::MONTY_VERSION,
+                worker.path().display()
+            ));
+            Ok(())
+        }
         "embed-server" | "ocr-server" => {
             let which = if id == "embed-server" {
                 crate::llama_units::Which::Embeddings
@@ -1261,16 +1293,20 @@ mod tests {
         // The on-demand servers' installer is built, for systemd machines.
         // The graph's MCP server (§13) and the mail servers (§15) are cargo
         // builds, on every system.
-        let built: &[&str] = if cfg!(target_os = "linux") {
-            &[
+        let mut built: Vec<&str> = if cfg!(target_os = "linux") {
+            vec![
                 "7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13", "15",
             ]
         } else if cfg!(target_os = "macos") {
             // launchd agents for the on-demand servers, voice and images (§12).
-            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f", "13", "15"]
+            vec!["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f", "13", "15"]
         } else {
-            &["7a-3", "7b", "13", "15"]
+            vec!["7a-3", "7b", "13", "15"]
         };
+        // Code mode's worker, wherever it is pinned, in a build that runs it.
+        if crate::interpreter::BUILT && crate::interpreter::worker::pin().is_some() {
+            built.push("code");
+        }
         assert!(installable("layout"));
         assert!(installable("llama"));
         assert_eq!(

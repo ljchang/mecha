@@ -22,6 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GUARD = os.path.join(HERE, "check-private.py")
 SAID = "The lighthouse keeper painted every second stair a pale blue colour."
 SESSION = "20990101T000000-0a1b2c3d"
+# Said too, and never on main in the merge tests: what a branch adds itself.
+ALSO = "The orchard gate was left open so the goats could find the clover field."
 
 
 def git(repo, *args):
@@ -41,6 +43,8 @@ class Guard(unittest.TestCase):
             f.write(json.dumps({"record": "meta", "id": SESSION}) + "\n")
             f.write(json.dumps({"record": "message", "role": "assistant",
                                 "content": [{"type": "text", "text": SAID}]}) + "\n")
+            f.write(json.dumps({"record": "message", "role": "assistant",
+                                "content": [{"type": "text", "text": ALSO}]}) + "\n")
         self.repo = os.path.join(root, "repo")
         os.makedirs(self.repo)
         git(self.repo, "init", "-q")
@@ -53,9 +57,9 @@ class Guard(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_guard(self, *args, home=None):
+    def run_guard(self, *args, home=None, cwd=None):
         env = dict(os.environ, MECHA_HOME=home or self.home, CHECK_PRIVATE_JOURNAL="0")
-        return subprocess.run([sys.executable, GUARD, *args], cwd=self.repo, env=env,
+        return subprocess.run([sys.executable, GUARD, *args], cwd=cwd or self.repo, env=env,
                               capture_output=True, text=True)
 
     def stage(self, name, text):
@@ -128,6 +132,55 @@ class Guard(unittest.TestCase):
         self.assertIn("commit message:1-3", r.stdout)
         open(msg, "w").write("Fix the fixture\n\nIt said something made up.\n")
         self.assertEqual(self.run_guard("--message", msg).returncode, 0)
+
+    def test_a_text_is_checked_headings_included(self):
+        # `--message` skips `#` lines as git's; a markdown prompt's headings
+        # are not git's, so `--text` reads them (DRIVER-DESIGN.md D3b).
+        doc = os.path.join(self.tmp.name, "prompt.md")
+        open(doc, "w").write(f"# {SAID}\n\nMake the change.\n")
+        self.assertEqual(self.run_guard("--message", doc).returncode, 0)
+        r = self.run_guard("--text", doc)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("text:1", r.stdout)
+        self.assertNotIn("lighthouse", r.stdout)
+        open(doc, "w").write("# Count the bytes\n\nMake the change.\n")
+        self.assertEqual(self.run_guard("--text", doc).returncode, 0)
+
+    def test_a_text_that_is_missing_or_unnamed_is_refused(self):
+        # check-prompts reads any non-zero exit as "not admitted".
+        for args in (["--text"], ["--text", os.path.join(self.repo, "absent.md")]):
+            r = self.run_guard(*args)
+            self.assertEqual(r.returncode, 2, (args, r.stdout, r.stderr))
+            self.assertIn("refusing", r.stdout)
+
+    def test_a_committed_text_does_not_excuse_itself(self):
+        # Checked after it lands, a prompt is in HEAD; its own copy must not
+        # count as the repository already saying it (review of #852).
+        self.stage("prompt.md", f"# {SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "add")
+        r = self.run_guard("--text", os.path.join(self.repo, "prompt.md"))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        # The repository's other files still excuse what they say.
+        self.stage("harness.md", f"{SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
+        self.assertEqual(self.run_guard("--text", os.path.join(self.repo, "prompt.md")).returncode, 0)
+
+    def test_a_committed_text_does_not_excuse_itself_from_any_directory(self):
+        # The exclusion is the toplevel's path, so it must hold wherever the
+        # guard runs from, not only at the toplevel (review of #852, pass 2).
+        for d in ("bank", "elsewhere"):
+            os.makedirs(os.path.join(self.repo, d), exist_ok=True)
+        self.stage("bank/prompt.md", f"# {SAID}\n")
+        self.stage("elsewhere/keep.md", "Nothing to say.\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "add")
+        prompt = os.path.join(self.repo, "bank", "prompt.md")
+        for cwd in ("bank", "elsewhere"):
+            r = self.run_guard("--text", prompt, cwd=os.path.join(self.repo, cwd))
+            self.assertEqual(r.returncode, 1, (cwd, r.stdout))
+        # And another file anywhere in the tree still excuses it, from below.
+        self.stage("harness.md", f"{SAID}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "harness")
+        self.assertEqual(self.run_guard("--text", prompt, cwd=os.path.join(self.repo, "bank")).returncode, 0)
 
     def test_a_push_reads_every_commit_not_only_the_ends(self):
         # Added in one --no-verify commit and rewritten in the next: the
@@ -724,6 +777,298 @@ class Guard(unittest.TestCase):
         r = self.run_guard("--staged")
         self.assertEqual(r.returncode, 2, r.stdout)
         self.assertIn("LoRA registry", r.stdout)
+
+    def merge_main_with_said(self):
+        """A main that took SAID after this branch forked, as when a harness
+        line reaches a transcript once deployed; returns the branch's tip
+        before the merge."""
+        git(self.repo, "branch", "-M", "work")
+        fork = git(self.repo, "rev-parse", "HEAD").strip()
+        git(self.repo, "checkout", "-q", "-b", "main")
+        self.stage("harness.py", f"NOTE = {SAID!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "main's own")
+        git(self.repo, "checkout", "-q", "work")
+        self.stage("mine.py", 'X = "The ferry leaves at noon."\n')
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "mine")
+        return fork
+
+    def test_text_merged_in_from_main_is_the_repositorys(self):
+        # Pre-commit, mid-merge: main's lines came with MERGE_HEAD.
+        self.merge_main_with_said()
+        git(self.repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        # A resolution that writes conversation words main does not hold is
+        # still read; main's own are excused wherever they land.
+        self.stage("resolved.py", f"Y = {ALSO!r}\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("resolved.py:1:", r.stdout)
+
+    def test_a_push_after_merging_main_skips_mains_commits(self):
+        fork = self.merge_main_with_said()
+        git(self.repo, "merge", "-q", "--no-verify", "--no-ff", "-m", "merge main", "main")
+        main = git(self.repo, "rev-parse", "main").strip()
+        # Without the public branch the range holds main's commit, refused:
+        # what the exemption changes, not a range that was clean anyway.
+        self.assertEqual(self.run_guard("--range", f"{fork}..HEAD").returncode, 1)
+        r = self.run_guard("--range", f"{fork}..HEAD", "--public", main)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        # The branch's own commit after the merge is still read.
+        self.stage("later.py", f"Z = {ALSO!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "later")
+        r = self.run_guard("--range", f"{fork}..HEAD", "--public", main)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("later.py (in ", r.stdout)
+
+    def test_a_merge_resolution_in_a_push_is_read(self):
+        fork = self.merge_main_with_said()
+        git(self.repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+        self.stage("resolved.py", f"Y = {ALSO!r}\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "merge main")
+        main = git(self.repo, "rev-parse", "main").strip()
+        r = self.run_guard("--range", f"{fork}..HEAD", "--public", main)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("resolved.py (in ", r.stdout)
+        self.assertNotIn("harness.py", r.stdout)
+
+    def test_an_unreadable_public_branch_fails_closed(self):
+        r = self.run_guard("--range", "HEAD..HEAD", "--public", "no-such-ref")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        r = self.run_guard("--range", "HEAD..HEAD", "--public")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("needs a ref", r.stdout)
+
+    def test_a_first_commit_is_read_against_an_unborn_head(self):
+        fresh = os.path.join(self.tmp.name, "fresh")
+        os.makedirs(fresh)
+        git(fresh, "init", "-q")
+        open(os.path.join(fresh, "first.py"), "w").write(f"X = {SAID!r}\n")
+        git(fresh, "add", "first.py")
+        env = dict(os.environ, MECHA_HOME=self.home, CHECK_PRIVATE_JOURNAL="0")
+        r = subprocess.run([sys.executable, GUARD, "--staged"], cwd=fresh, env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("first.py:1:", r.stdout)
+
+    def people_store(self):
+        """quillon's People tab with one person and an alias, and a household
+        in life.toml."""
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Orrin', '[\"Rinny\"]')")
+        db.commit()
+        db.close()
+        with open(os.path.join(pdir, "life.toml"), "w") as f:
+            f.write('[[household]]\nperson = "Brisa"\nrelation = "housemate"\n')
+
+    def test_a_name_from_a_personas_life_is_refused(self):
+        self.people_store()
+        for name, text in [("people.py", "X = 'Orrin came by.'\n"),
+                           ("alias.py", "X = 'Rinny says hi.'\n"),
+                           ("house.py", "X = 'Brisa cooked.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("the name of someone in a persona's life", r.stdout)
+            self.assertNotIn(text.split("'")[1].split()[0], r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+        # Case kept: a lowercase word is not the person.
+        self.stage("word.py", "X = 'the orrin and the brisa'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_common_name_is_not_excused_by_its_lowercase_word(self):
+        # The word is already in the repository; the person is not.
+        self.stage("prose.py", "X = 'a larkin of rain'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Larkin', 5)")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = 'Larkin came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("the name of someone in a persona's life", r.stdout)
+        # Even spelled so already in the repository: a person's name is never
+        # excused, since ordinary first names are in any repository's prose.
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "the name")
+        self.stage("again.py", "Y = 'Larkin again.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_a_name_stored_in_lowercase_still_refuses_its_capital(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'corwin', '[]')")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = 'Corwin came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+
+    def test_a_name_waiting_in_a_draft_is_refused_too(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        with open(os.path.join(pdir, "people.draft.json"), "w") as f:
+            json.dump({"people": [{"name": "Tamsin", "aliases": ["Tam"]}]}, f)
+        with open(os.path.join(pdir, "life.previous.toml"), "w") as f:
+            f.write('[[household]]\nperson = "Ferrand"\nrelation = "partner"\n')
+        for name, text in [("a.py", "X = 'Tamsin waved.'\n"), ("b.py", "X = 'Ferrand left.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_what_the_owner_wrote_of_a_persona_and_its_people_is_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        with open(os.path.join(pdir, "identity.md"), "w") as f:
+            f.write("## Core\nShe keeps bees on a rooftop above the old cannery by the harbour.\n")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT, role TEXT, description TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Orrin', '[]', 'cousin', 'Repairs clocks in a shop that smells of lamp oil and cedar.')")
+        db.commit()
+        db.close()
+        for name, text in [("a.py", "X = 'keeps bees on a rooftop above the old cannery'\n"),
+                           ("b.py", "X = 'repairs clocks in a shop that smells of lamp oil'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("words said in a conversation", r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_a_display_word_already_in_the_repository_is_excused_and_said(self):
+        # "marsh" (from quillon's display "Quillon Marsh") is an ordinary word.
+        self.stage("prose.py", "X = 'the tide over the marsh'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "a word")
+        self.stage("start.py", "X = 'Marsh grass bends in the wind.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("the repository already uses", r.stdout)
+
+    def test_a_saved_version_and_a_drafts_prose_are_read(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        os.makedirs(os.path.join(pdir, "versions", "abc"))
+        with open(os.path.join(pdir, "versions", "abc", "people.md"), "w") as f:
+            f.write("Orla mends fishing nets on the jetty every Sunday at dawn.\n")
+        with open(os.path.join(pdir, "people.draft.json"), "w") as f:
+            json.dump({"people": [{"name": "Petra", "aliases": [],
+                       "description": "Teaches the fiddle in a barn near the river crossing."}]}, f)
+        for name, text in [("a.py", "X = 'mends fishing nets on the jetty every Sunday'\n"),
+                           ("b.py", "X = 'teaches the fiddle in a barn near the river'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_a_name_in_a_script_without_case_is_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', '\u05e0\u05d5\u05e2\u05d4', '[]')")
+        db.commit()
+        db.close()
+        self.stage("fixture.py", "X = '\u05e0\u05d5\u05e2\u05d4 came by.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("(column 6)", r.stdout)
+
+    def test_a_removed_person_named_in_a_saved_version_stays_refused(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        os.makedirs(os.path.join(pdir, "versions", "v1"))
+        with open(os.path.join(pdir, "versions", "v1", "people.md"), "w") as f:
+            f.write("Closest to you:\n- Oswin (your brother), also called Oz. Builds kites.\n"
+                    "Others in your life: Pelham (your neighbour), Quenby.\n"
+                    "Between them: Oswin and Pelham: friend, tense; Oswin and Quenby: friend, no longer.\n")
+        for name, text in [("a.py", "X = 'Oswin waved.'\n"), ("b.py", "X = 'Oz waved.'\n"),
+                           ("c.py", "X = 'Pelham waved.'\n"), ("d.py", "X = 'Quenby waved.'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, (text, r.stdout))
+            git(self.repo, "rm", "-q", "--cached", name)
+        # A tie's notes are words, not people.
+        self.stage("e.py", "X = 'Tense, and No longer friends.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_shout_is_not_the_name_and_the_owner_may_allow_a_word(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Maxim', '[]')")
+        db.execute("INSERT INTO people VALUES ('u2', 'Grove', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = MAXIM_LIMIT  # MAXIM\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+        git(self.repo, "rm", "-q", "--cached", "a.py")
+        self.stage("b.py", "X = 'Grove of oaks'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+        with open(os.path.join(self.home, "check-private.allow"), "w") as f:
+            f.write("# words that may stay\nGrove\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_removed_personas_people_stay_refused(self):
+        gone = os.path.join(self.home, "personas", "removed", "ferrow-20991231T235959Z-0a1b2c3d")
+        os.makedirs(gone)
+        open(os.path.join(gone, "persona.toml"), "w").write('display = "Ferrow"\n')
+        db = sqlite3.connect(os.path.join(gone, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'Thessaly', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = 'Thessaly waved.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+        git(self.repo, "rm", "-q", "--cached", "a.py")
+        # The removed persona's own name, from its folder's front.
+        self.stage("b.py", "X = load('ferrow')\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("the name of one of the owner's personas", r.stdout)
+
+    def test_a_name_stored_with_odd_capitals_refuses_its_plain_capital(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE people (uid TEXT, name TEXT, aliases TEXT)")
+        db.execute("INSERT INTO people VALUES ('u1', 'DeVantry', '[]')")
+        db.commit()
+        db.close()
+        self.stage("a.py", "X = 'Devantry waved.'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_a_multi_part_character_id_is_excused_only_by_itself(self):
+        toml = os.path.join(self.home, "personas", "quillon", "persona.toml")
+        with open(toml, "w") as f:
+            f.write('name = "quillon"\ndisplay = "Quillon Marsh"\ncharacter = "brine-ledger"\n')
+        self.stage("prose.py", "X = 'the brine and the ledger'\n")
+        git(self.repo, "commit", "-q", "--no-verify", "-m", "words")
+        self.stage("a.py", "X = 'draw brine-ledger here'\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_every_text_in_the_world_store_and_the_week_files_is_read(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        db = sqlite3.connect(os.path.join(pdir, "world.db"))
+        db.execute("CREATE TABLE state (key TEXT, value TEXT)")
+        db.execute("INSERT INTO state VALUES ('job', 'Runs the night ferry between the two islands every winter.')")
+        db.commit()
+        db.close()
+        with open(os.path.join(pdir, "routine.notes.md"), "w") as f:
+            f.write("- choir practice in the old granary on Thursday evenings\n")
+        for name, text in [("a.py", "X = 'runs the night ferry between the two islands'\n"),
+                           ("b.py", "X = 'choir practice in the old granary on Thursday'\n")]:
+            self.stage(name, text)
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, r.stdout)
+            git(self.repo, "rm", "-q", "--cached", name)
+
+    def test_an_unreadable_people_store_refuses(self):
+        pdir = os.path.join(self.home, "personas", "quillon")
+        open(os.path.join(pdir, "world.db"), "w").write("not a database")
+        self.stage("ok.py", "X = 'The ferry leaves at noon.'\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("people store", r.stdout)
 
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')

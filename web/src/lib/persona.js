@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve', '/life/draft', '/life/draft/approve', '/people', '/people/proposal', '/people/proposal/accept'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -43,7 +43,28 @@ export const ENDPOINTS = [
   '/api/personas/groups',
   ...PERSONA_SUFFIXES.map((s) => `/api/personas/X${s}`),
   ...CHAT_SUFFIXES.map((s) => `/api/persona-chat/X${s}`),
+  // One person in her network, and the events on her tie to them.
+  '/api/personas/X/people/X',
+  '/api/personas/X/people/X/events',
+  '/api/personas/X/people/X/events/X',
 ];
+
+// A person's or an event's id: 32 hex characters, as the store mints them.
+const NETWORK_ID = /^[0-9a-f]{32}$/;
+
+// The URL of one person in her network, or of an event on her tie to them.
+// An id that is not one the store mints is refused here, so the page can
+// never address a path the server does not route.
+export function personUrl(name, id, event = null, token = null) {
+  if (!NETWORK_ID.test(id ?? '')) throw new Error(`not a person's id: ${id}`);
+  let path = `/api/personas/${encodeURIComponent(name)}/people/${id}`;
+  if (event === '') path += '/events';
+  else if (event != null) {
+    if (!NETWORK_ID.test(event)) throw new Error(`not an event's id: ${event}`);
+    path += `/events/${event}`;
+  }
+  return withUnlock(path, token);
+}
 
 // The picture-settings presets: nothing set — the layer below, the chat's on
 // a persona's page and the model's own on the chat's (the owner,
@@ -106,12 +127,31 @@ export function personaName(typed) {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) && !reserved.includes(name) ? name : null;
 }
 
-// The three files the page edits, in the order it shows them.
+// The three files the page edits, in the order it shows them; Settings is
+// always the last tab (`personaTabs`), after the parts that are on.
 export const OWNER_FILES = [
   ['identity', 'Who they are'],
   ['motivation', 'What they want'],
   ['settings', 'Settings'],
 ];
+
+// The persona editor's tabs, in order: its two prose files, then each part
+// that is on (`shows`, from the list: memories, the week and the people,
+// those two behind the world feature too), then Settings, always last
+// (owner, 2026-11-02). A row from a server that says nothing shows them all.
+export function personaTabs(shows, world) {
+  const on = (k) => shows?.[k] ?? true;
+  // The owner files in their own order, Settings held back to close the row,
+  // so a file added to OWNER_FILES gets a tab without this changing.
+  const files = OWNER_FILES.map(([f]) => f).filter((f) => f !== 'settings');
+  return [
+    ...files,
+    ...(on('memories') ? ['memories'] : []),
+    ...(world && on('week') ? ['week'] : []),
+    ...(world && on('people') ? ['people'] : []),
+    'settings',
+  ];
+}
 
 // One of a persona's files, by its listed name: to download (`file`) or to
 // read as text (`text`). The server finds it in the persona's own listing.
@@ -788,11 +828,411 @@ export function memoryText(r) {
   return r.section === 'episodes' ? r.summary : r.text;
 }
 
-const MEMORY_ACTIONS = ['approve', 'pin', 'unpin', 'correct', 'forget', 'share', 'unshare'];
+// Only outside-origin records still in use can receive the owner's clean
+// vouch. Active is included for records approved before clean approval existed.
+export function canApproveMemoryClean(r) {
+  return r?.origin === 'model_untrusted' && (r.status === 'candidate' || r.status === 'active');
+}
+
+export function memoryVouchLabel(r) {
+  return r?.vouched_at ? 'approved as clean' : '';
+}
+
+const MEMORY_ACTIONS = ['approve', 'approve_clean', 'pin', 'unpin', 'correct', 'forget', 'share', 'unshare'];
 
 // The body of one curation act. An action the server does not take is
 // refused here, so the page can never send one.
 export function memoryActBody(action, id, extra = {}, token = null) {
   if (!MEMORY_ACTIONS.includes(action)) throw new Error(`not a memory action: ${action}`);
   return { action, id, ...extra, unlock: token ?? undefined };
+}
+
+// Her week (PERSONA-LIFE-DESIGN.md §15), as `GET /api/personas/{name}/week`
+// answers it. Her day runs 4am to 4am, as a time-use diary does, so a
+// minute past 1439 is the next morning.
+const DAY_START = 240;
+const DAY_MINUTES = 1440;
+// Midnight, in a day's own minutes.
+const MIDNIGHT = 24 * 60;
+
+// Why she has no days, said with its fix; the server's `why` is the CLI's.
+export const WEEK_ABSENT = {
+  off: 'Their days are off for this persona. Turn on Their days in the Life section of their Settings.',
+  no_routine: 'They have no routine yet. Pick their kind of week below and their days are drawn from it.',
+  no_cell: 'Their routine names no kind of week yet. Pick one below and their days are drawn from it.',
+};
+
+// Activities in a few groups the week view colours by.
+export const ACTIVITY_GROUP = {
+  sleep: 'rest', personal_care: 'rest', relaxing: 'rest',
+  work: 'work', class: 'work', studying: 'work', volunteering: 'work',
+  eating: 'home', cooking: 'home', housework: 'home', shopping: 'home', errands: 'home', caring: 'home',
+  commute: 'move', travel: 'move', exercise: 'move', outing: 'move', sports_event: 'move',
+  socializing: 'social', religion: 'social',
+  tv: 'leisure', music: 'leisure', games: 'leisure', computer: 'leisure', hobbies: 'leisure', reading: 'leisure',
+};
+
+// Her kind of week (the routine's `cell`), as the picker offers it.
+export const WEEK_CELLS = [
+  ['student', 'Student'],
+  ['full_time', 'Works full time'],
+  ['full_time_parent', 'Works full time, a child under 13 at home'],
+  ['part_time', 'Works part time'],
+  ['at_home', 'Not working, under 65'],
+  ['retired', 'Retired'],
+];
+
+// The owner-written constraints on the sampled filler, in one read-only
+// line under the kind-of-week picker. A missing file gets its command in
+// the component, where the persona's name is available.
+export function lifeLine(life) {
+  if (!life) return '';
+  if (life.error) return `life.toml does not load: ${life.error}`;
+  if (life.alone == null && life.household == null && life.sleep == null && life.never == null) return '';
+  const parts = [];
+  if (life.alone) parts.push('Lives alone');
+  else if (life.household?.length) {
+    parts.push(`Lives with ${life.household.map((h) => `${h.person} (${h.relation})`).join(', ')}`);
+  } else parts.push('Household not named');
+  if (life.sleep) parts.push(`usually sleeps ${life.sleep.bed}–${life.sleep.wake}`);
+  if (life.never?.length) parts.push(`never ${life.never.map((a) => a.replace(/_/g, ' ')).join(', ')}`);
+  return parts.join(' · ');
+}
+
+// The body of the owner's cell pick: the cell, the routine's digest as the
+// page was shown it, and the week on screen. A cell the server does not
+// draw is refused here, so the page can never send one.
+export function cellBody(cell, data, date, token = null) {
+  if (!WEEK_CELLS.some(([id]) => id === cell)) throw new Error(`not a kind of week: ${cell}`);
+  return { cell, base: data?.routine?.digest ?? '', date: date ?? undefined, unlock: token ?? undefined };
+}
+
+// The body of the owner's doors to a waiting draft: the draft's digest as
+// the page was shown it (approve, edit), the owner's text (edit), and the
+// week on screen.
+export function draftBody(data, date, token = null, text = undefined, notes = undefined) {
+  return {
+    digest: data?.routine?.draft?.digest ?? '',
+    text,
+    notes,
+    date: date ?? undefined,
+    unlock: token ?? undefined,
+  };
+}
+
+// The life-draft doors have the same wire body, but their digest lives under
+// `life`: keeping that choice here prevents a page from approving one draft
+// with the other draft's digest.
+export function lifeDraftBody(data, date, token = null, text = undefined) {
+  return {
+    digest: data?.life?.draft?.digest ?? '',
+    text,
+    date: date ?? undefined,
+    unlock: token ?? undefined,
+  };
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// The months a seasonal anchor runs in (1 = January), said shortly: '' for
+// all year or none given, a span for a run of months (one that wraps the new
+// year too, Nov–Feb), and a list otherwise.
+export function monthsLine(months) {
+  const set = new Set((months ?? []).filter((m) => m >= 1 && m <= 12));
+  if (set.size === 0 || set.size === 12) return '';
+  // Start the run just after a month it leaves out, so a span across the
+  // new year reads in order.
+  let first = 1;
+  while (!(set.has(first) && !set.has(first === 1 ? 12 : first - 1))) first += 1;
+  const order = Array.from({ length: 12 }, (_, i) => ((first - 1 + i) % 12) + 1).filter((m) => set.has(m));
+  const span = order.every((m, i) => i === 0 || m === (order[i - 1] % 12) + 1);
+  if (span && order.length > 2) return `${MONTH_NAMES[order[0] - 1]}–${MONTH_NAMES[order.at(-1) - 1]}`;
+  return order.map((m) => MONTH_NAMES[m - 1]).join(', ');
+}
+
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// A drafted anchor said in a line, as the owner reviews it: its days, its
+// hours, its name, its activity, and how often it really happens.
+export function anchorLine(a) {
+  const days = a.days ?? [];
+  const mask = days.reduce((m, d) => m | (1 << d), 0);
+  const when =
+    mask === 0b1111111 ? 'Daily'
+    : mask === 0b0011111 ? 'Weekdays'
+    : mask === 0b1100000 ? 'Weekends'
+    : days.map((d) => DAY_NAMES[d] ?? '?').join(', ');
+  const end = a.start_minute + a.minutes;
+  const nextDay = end > 1440 ? '+1' : '';
+  const activity = String(a.activity ?? '').replace(/_/g, ' ');
+  const name = a.what && a.what !== a.activity ? `${a.what} (${activity})` : activity;
+  const often = a.chance >= 1 ? 'always' : `${Math.round(a.chance * 100)}% of weeks`;
+  const season = monthsLine(a.months);
+  return `${when} ${dayClock(a.start_minute)}–${dayClock(end)}${nextDay} · ${name} · ${often}${season ? ` · ${season}` : ''}`;
+}
+
+// Her people (PERSONA-LIFE-DESIGN §6, §15). The closed sets the page offers,
+// held to `network::Tie::ALL` and `EventKind::ALL` by the server's key test.
+export const PEOPLE_TIES = [
+  ['kin', 'kin'],
+  ['romantic', 'partner'],
+  ['ex', 'ex'],
+  ['friend', 'friend'],
+  ['colleague', 'colleague'],
+  ['mentor', 'mentor'],
+  ['neighbour', 'neighbour'],
+  ['acquaintance', 'acquaintance'],
+  ['rival', 'rival'],
+];
+
+export const PEOPLE_EVENTS = [
+  ['met', 'met'],
+  ['formed', 'became close'],
+  ['strengthened', 'grew closer'],
+  ['conflict', 'fell out'],
+  ['reconciled', 'made up'],
+  ['paused', 'lost touch'],
+  ['ended', 'ended'],
+  ['renewed', 'back in touch'],
+];
+
+// The Dunbar layers, innermost first.
+export const PEOPLE_LAYERS = [5, 15, 50, 150];
+
+export const PEOPLE_ABSENT = {
+  off: 'Their people are off for this persona. Turn on Their people in the Life section of their Settings.',
+};
+
+// Each ring's radius on a 200-unit board, her at the centre: the four
+// layers, then one ring for those not placed, then the outer band where
+// ended ties are greyed (§15).
+export const RINGS = { 5: 31, 15: 47, 50: 63, 150: 78, none: 88, ended: 96 };
+// The rings innermost first.
+export const RING_ORDER = [...PEOPLE_LAYERS, 'none', 'ended'];
+
+// Her network's read, as it is or as it was on a day (§15's time slider).
+export function peopleUrl(name, asOf = null, token = null) {
+  let url = personaUrl(name, '/people', token);
+  if (asOf) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) throw new Error(`not a date: ${asOf}`);
+    url += `${url.includes('?') ? '&' : '?'}as_of=${asOf}`;
+  }
+  return url;
+}
+
+// What accepting a proposal did, in a line.
+export function acceptedLine(a) {
+  if (!a) return '';
+  const parts = [];
+  if (a.added?.length) parts.push(`Added ${a.added.join(', ')}.`);
+  if (a.already?.length) parts.push(`${a.already.join(', ')} ${a.already.length === 1 ? 'was' : 'were'} already in their network.`);
+  if (a.waiting) parts.push(`${a.waiting} more still ${a.waiting === 1 ? 'waits' : 'wait'} below.`);
+  return parts.join(' ') || 'Nothing to add.';
+}
+
+// Where each person sits: on their layer's ring, or the unplaced ring, or
+// the ended band, spread evenly round it in name order from the top, so the
+// same network lays out the same way every time.
+export function ringLayout(people) {
+  const rings = new Map();
+  for (const p of people ?? []) {
+    const e = p.edge ?? {};
+    const ring = e.status === 'ended' ? 'ended' : (PEOPLE_LAYERS.includes(e.layer) ? e.layer : 'none');
+    if (!rings.has(ring)) rings.set(ring, []);
+    rings.get(ring).push(p);
+  }
+  const out = [];
+  // Rings in a fixed order, innermost first, so the output is the same
+  // whatever order the people came in.
+  for (const ring of RING_ORDER) {
+    const members = rings.get(ring);
+    if (!members) continue;
+    members.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id));
+    const r = RINGS[ring];
+    // Rings offset a little from one another so two rings' first members
+    // never line up on the same spoke; by the rings' own order, said here
+    // rather than left to how object keys happen to iterate (review of #803).
+    const offset = (RING_ORDER.indexOf(ring) * Math.PI) / 7;
+    members.forEach((p, i) => {
+      const a = -Math.PI / 2 + offset + (2 * Math.PI * i) / members.length;
+      out.push({
+        id: p.id,
+        name: p.name,
+        ring,
+        x: Math.round(r * Math.cos(a) * 100) / 100,
+        y: Math.round(r * Math.sin(a) * 100) / 100,
+        portrait: p.portrait ?? null,
+        valence: p.edge?.valence ?? null,
+        status: p.edge?.status ?? 'active',
+        unvouched: Boolean(p.edge?.unreadable || p.edge?.unclean),
+      });
+    });
+  }
+  return out;
+}
+
+// Initials for a node without a portrait.
+export function initials(name) {
+  const words = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  return (words.length > 1 ? words[0][0] + words[words.length - 1][0] : (words[0] ?? '?').slice(0, 2)).toUpperCase();
+}
+
+// One event on a timeline: when (as precisely as it was said), what, the
+// tie and layer it names, and what it was about.
+export function eventLine(e) {
+  const what = PEOPLE_EVENTS.find(([k]) => k === e.event)?.[1] ?? 'an event this version cannot read';
+  const parts = [what];
+  const tie = e.label ?? PEOPLE_TIES.find(([k]) => k === e.tie)?.[1];
+  if (tie) parts.push(tie);
+  if (e.layer) parts.push(`closest ${e.layer}`);
+  let line = `${e.when?.said ?? 'undated'} · ${parts.join(', ')}`;
+  if (e.context) line += ` · ${e.context}`;
+  return line;
+}
+
+// The body of the People tab's doors: the fields given, and the unlock.
+export function personBody(fields, token = null) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields ?? {})) if (v !== undefined) out[k] = v;
+  if (token) out.unlock = token;
+  return out;
+}
+
+export const WEEK_GROUPS = [
+  ['rest', 'sleep and rest'],
+  ['work', 'work and study'],
+  ['home', 'home and errands'],
+  ['move', 'out and about'],
+  ['social', 'with people'],
+  ['leisure', 'free time'],
+  ['unknown', 'not named here'],
+];
+
+// A minute of her day as a clock time.
+export function dayClock(m) {
+  const h = Math.floor(m / 60) % 24;
+  return `${String(h).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+// Hours and minutes, as 8h05.
+export function hoursOf(m) {
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
+}
+
+// One stretch said in a line: when, what, the routine's name, and company.
+export function stretchLine(s) {
+  // A stretch across midnight says its end is the next day's, as
+  // `mecha persona day` does.
+  const nextDay = s.start_minute < MIDNIGHT && s.end_minute > MIDNIGHT ? '+1' : '';
+  let line = `${dayClock(s.start_minute)}–${dayClock(s.end_minute)}${nextDay} ${s.activity.replace(/_/g, ' ')}`;
+  if (s.anchor && s.anchor !== s.activity) line += ` (${s.anchor})`;
+  const who = s.company ?? [];
+  if (who.length === 1 && who[0] === 'alone') line += ', alone';
+  else if (who.length) line += `, with ${who.join(', ')}`;
+  return line;
+}
+
+// Her story on one day of the week view (PERSONA-LIFE-DESIGN.md §4.3): the
+// weather, the levels that ended the day away from normal, and the events,
+// as the server shows them. `null` when the week carries no story.
+export const STORY_SKY = { clear: 'clear', cloudy: 'cloudy', fog: 'fog', drizzle: 'drizzle', rain: 'rain', snow: 'snow', storm: 'storm' };
+// What the week says about their story as a whole: whether any day was
+// drawn, why the rest was not, and why who was there is not named — a
+// separate fault, so it is never shown as the story stopping. All can hold,
+// so none hides another.
+export function storyNotes(data) {
+  return {
+    drawn: (data?.story ?? []).length > 0,
+    why: data?.story_error ?? null,
+    names: data?.story_names_error ?? null,
+  };
+}
+
+// The owner-facing place line and refresh error. The geocoder's label is
+// display data only; no prompt reads it.
+export function weatherPlace(data) {
+  if (!data || data.absent === 'off') return null;
+  const label = typeof data?.place?.label === 'string' ? data.place.label.trim() : '';
+  return label ? `Weather for ${label}` : 'Set Where they live in Settings to add local weather.';
+}
+
+export function weatherError(data) {
+  if (!data || data.absent === 'off') return null;
+  const error = typeof data?.weather_error === 'string' ? data.weather_error.trim() : '';
+  return error || null;
+}
+
+export function storyDay(data, date) {
+  const d = (data?.story ?? []).find((s) => s.date === date);
+  // A past day the store does not keep was drawn for this view alone: not
+  // her history, so not shown as it (the day row says "not kept").
+  if (!d || (d.kept === false && data?.today && date <= data.today)) return null;
+  const w = d.weather;
+  const weather = w ? `${STORY_SKY[w.sky] ?? 'unknown sky'} ${w.high_c}°/${w.low_c}°C` : null;
+  const levels = ['energy', 'stress', 'mood']
+    .filter((k) => d.evening?.[k] && d.evening[k] !== 'normal')
+    .map((k) => `${k} ${d.evening[k]}`)
+    .join(' · ');
+  const events = (d.events ?? []).map((e) => ({ text: e.shown ?? e.title, major: e.size !== 'minor' }));
+  // Nothing to show is no row, never an empty one.
+  if (!weather && !levels && !events.length) return null;
+  return { weather, levels, events };
+}
+
+// The week's rows: one a day, Monday first, each stretch placed on a 4am to
+// 4am bar as percentages. A folded day has no bars. A stretch whose source
+// is not the sampler's or the owner's is marked, since unknown is never
+// clean.
+export function weekDays(data) {
+  return (data?.week?.days ?? []).map((d) => {
+    const date = new Date(`${d.date}T12:00:00`);
+    const stretches = d.day?.stretches ?? [];
+    return {
+      date: d.date,
+      weekday: date.toLocaleDateString(undefined, { weekday: 'short' }),
+      dayOfMonth: date.getDate(),
+      when: d.when,
+      folded: d.when === 'folded',
+      // Neither kept nor folded: her routine could not draw it
+      // (`week.unavailable` says why).
+      undrawn: !d.day && d.when !== 'folded',
+      bars: stretches.map((s, i) => ({
+        ...s,
+        // An activity this bundle does not know is said as unknown, never
+        // coloured as one it does (a stale build beside a newer binary).
+        group: ACTIVITY_GROUP[s.activity] ?? 'unknown',
+        left: ((s.start_minute - DAY_START) / DAY_MINUTES) * 100,
+        width: ((s.end_minute - s.start_minute) / DAY_MINUTES) * 100,
+        unclean: !['sampler', 'owner'].includes(d.sources?.[i]),
+        line: stretchLine(s),
+      })),
+    };
+  });
+}
+
+// Why the days not drawn wait, when the week still shows kept ones.
+export function weekUnavailable(data) {
+  return data?.week?.unavailable ?? null;
+}
+
+// What the week's folded days left: hours by activity, most first.
+export function foldedHours(data) {
+  const f = data?.week?.folded;
+  if (!f) return null;
+  const rows = [...(f.minutes ?? [])].sort((a, b) => b.minutes - a.minutes || a.activity.localeCompare(b.activity));
+  return { days: f.days, rows: rows.map((r) => ({ activity: r.activity.replace(/_/g, ' '), hours: hoursOf(r.minutes) })), unreadable: f.unreadable ? hoursOf(f.unreadable) : null };
+}
+
+// The Monday a week away from `monday` (YYYY-MM-DD), by whole days.
+export function shiftWeek(monday, weeks) {
+  const [y, m, d] = monday.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + 7 * weeks));
+  return t.toISOString().slice(0, 10);
+}
+
+// The week view's URL: this week, or the one holding `date`.
+export function weekUrl(name, date, token) {
+  const url = personaUrl(name, '/week', token);
+  if (!date) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}date=${encodeURIComponent(date)}`;
 }

@@ -18,7 +18,7 @@ use mecha_core::learning::{
     evidence_for, extract_interventions, Evidence, Intervention, LearningStore, Origin, Reflector,
     Trigger,
 };
-use mecha_core::session::Session;
+use mecha_core::session::{Session, SessionMeta};
 use std::path::{Path, PathBuf};
 
 #[derive(clap::Args, Debug)]
@@ -105,6 +105,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .iter()
         .map(|(meta, path)| (meta.id.clone(), path.clone()))
         .collect();
+    // Sessions the default admission refuses: tests, stray experiments and
+    // driven runs. The outbox pass below selects by the owner's verdict on
+    // a draft, never by the session that staged it, so without this a draft
+    // a driven run staged and the owner then edited or rejected was mined
+    // into the owner's store, the longest-half-life path there is (review
+    // of #848; `DRIVER-DESIGN.md` D1: nothing is learned from a driven
+    // session until D2's own store). A draft whose session cannot be
+    // resolved is refused too: `list_counting` drops a transcript whose
+    // header is torn, so a driven session can be refused and invisible at
+    // once, and unknown is never clean (review of #848, pass 3).
+    let refused = refused_sessions(&sessions);
+    let listed: std::collections::HashSet<String> =
+        sessions.iter().map(|(meta, _)| meta.id.clone()).collect();
     // Test and stray experiment sessions are the harness measuring itself,
     // not the owner's work: never mined (`session::split_admitted`),
     // and counted aloud so a skip is not mistaken for an empty store.
@@ -124,7 +137,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .collect();
     let (mut todo, skipped) = mecha_core::session::split_admitted(candidates);
     if skipped > 0 {
-        println!("passing over {skipped} test or experiment session(s) in the store");
+        println!("passing over {skipped} test, experiment or driven session(s) in the store");
     }
     if let Some(limit) = args.limit {
         todo.truncate(limit);
@@ -161,6 +174,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // reason typed there — or on an item resolved before the stamp — is not
     // the owner's correction however it reads. It is left unmined, not
     // marked mined: nothing here can make it the owner's later.
+    let mut outbox_refused = 0usize;
     let outbox_todo: Vec<_> = match &outbox {
         Some(ob) => ob
             .items()?
@@ -169,9 +183,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 (i.mineable_as_writing() || i.rejection_reason().is_some())
                     && !outbox_mined.contains(&i.id)
             })
+            .filter(|i| {
+                let from_refused = staged_by_refused(i.session_id.as_deref(), &refused, &listed);
+                outbox_refused += usize::from(from_refused);
+                !from_refused
+            })
             .collect(),
         None => Vec::new(),
     };
+    if outbox_refused > 0 {
+        println!(
+            "passing over {outbox_refused} outbox draft(s) staged by a test, experiment or driven \
+             session, or by one the store cannot resolve"
+        );
+    }
 
     // Every pass, before anything is mined or batched: the workspace on
     // each recorded situation against the run record. Not a flag a human
@@ -309,6 +334,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // written only when they are, so a retried session counts once.
         let mut replies = Vec::new();
         let mut failed = false;
+        // What the session's programs read, once: the walk takes only those
+        // under a call before each correction, so the file read does not
+        // depend on the intervention.
+        let programs = mecha_core::tool::code::record::ever(&text, &meta.id);
         for intervention in &interventions {
             // What the reflector may see, decided per intervention: full
             // excerpts under provably clean coverage, the user's own words
@@ -366,7 +395,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         r.attribution = Some(mecha_core::attribution::decide(
                             &answer,
                             &intervention.text,
-                            &given_in(ever.as_deref()),
+                            &given_in(ever.as_deref(), &programs),
                         ));
                     }
                     r.goals = goals_for(&t, intervention);
@@ -504,12 +533,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         item.rejection_reason(),
                         mecha_core::attribution::in_scope(&r.domain, &r.trigger),
                     ) {
-                        let messages =
-                            mecha_core::outbox_source::messages_for_item(item, &sessions_dir);
+                        let drafting = mecha_core::outbox_source::drafting(item, &sessions_dir);
                         r.attribution = Some(mecha_core::attribution::decide(
                             &answer,
                             reason,
-                            &given_at_staging(item, &messages),
+                            &given_at_staging(item, &drafting.messages, &drafting.programs),
                         ));
                     }
                     // The drafting session, when the front-end knew it — the
@@ -1024,9 +1052,12 @@ fn ever_before(
         .and_then(|m| Session::messages_ever_before(text, m))
 }
 
-fn given_in(ever: Option<&[mecha_core::message::Message]>) -> mecha_core::attribution::Given<'_> {
+fn given_in<'a>(
+    ever: Option<&'a [mecha_core::message::Message]>,
+    programs: &'a [mecha_core::tool::code::record::ProgramCall],
+) -> mecha_core::attribution::Given<'a> {
     match ever {
-        Some(ever) => mecha_core::attribution::Given::before(ever, ever.len()),
+        Some(ever) => mecha_core::attribution::Given::before(ever, programs, ever.len()),
         None => mecha_core::attribution::Given::unreadable(),
     }
 }
@@ -1039,10 +1070,11 @@ fn given_in(ever: Option<&[mecha_core::message::Message]>) -> mecha_core::attrib
 fn given_at_staging<'a>(
     item: &mecha_core::outbox::OutboxItem,
     messages: &'a [mecha_core::message::Message],
+    programs: &'a [mecha_core::tool::code::record::ProgramCall],
 ) -> mecha_core::attribution::Given<'a> {
     match mecha_core::outbox_source::staged_in(item, messages) {
         Some(at) => {
-            let mut given = mecha_core::attribution::Given::before(messages, at);
+            let mut given = mecha_core::attribution::Given::before(messages, programs, at);
             given.said.push(item.args_before.to_string());
             given
         }
@@ -1206,10 +1238,83 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     Ok(())
 }
 
+/// Ids of the sessions the default admission refuses (tests, stray
+/// experiments, driven runs): the population the transcript pass passes
+/// over, named so the outbox pass can pass over their drafts too.
+fn refused_sessions(sessions: &[(SessionMeta, PathBuf)]) -> std::collections::HashSet<String> {
+    sessions
+        .iter()
+        .filter(|(meta, _)| !meta.admitted_by_default())
+        .map(|(meta, _)| meta.id.clone())
+        .collect()
+}
+
+/// Was this draft staged by a session the admission refuses, or by one the
+/// store cannot resolve? A draft with no session predates the field and is
+/// judged as it was before. One whose session is not listed is *unknown*,
+/// and unknown is never clean: `list_counting` drops a transcript whose
+/// header is torn, so a driven session can be refused and invisible at once.
+/// A draft whose session was deleted is passed over too, which costs a
+/// lesson rather than risking the owner's store.
+fn staged_by_refused(
+    session_id: Option<&str>,
+    refused: &std::collections::HashSet<String>,
+    listed: &std::collections::HashSet<String>,
+) -> bool {
+    session_id.is_some_and(|s| refused.contains(s) || !listed.contains(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mecha_core::session::{Record, RunConfig, SessionKind, SessionMeta};
+
+    /// A draft a driven run staged is never mined into the owner's store,
+    /// even after the owner edits or rejects it; nor one a smoke test staged,
+    /// nor one whose session the store cannot resolve (review of #848). An
+    /// ordinary session's draft, and one from before the field, are judged
+    /// as before. Fails on the old selection, which never looked at the
+    /// staging session.
+    #[test]
+    fn a_draft_staged_by_a_driven_session_is_passed_over() {
+        let meta = |id: &str, kind: Option<SessionKind>| SessionMeta {
+            id: id.into(),
+            created_at: chrono::Utc::now(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: PathBuf::from("/w"),
+            title: None,
+            kind,
+        };
+        let listed = vec![
+            (
+                meta("owner", Some(SessionKind::Web)),
+                PathBuf::from("/s/owner.jsonl"),
+            ),
+            (
+                meta("driven", Some(SessionKind::Driven)),
+                PathBuf::from("/s/driven.jsonl"),
+            ),
+            (
+                meta("smoke", Some(SessionKind::Test)),
+                PathBuf::from("/s/smoke.jsonl"),
+            ),
+        ];
+        let refused = refused_sessions(&listed);
+        let ids: std::collections::HashSet<String> =
+            listed.iter().map(|(m, _)| m.id.clone()).collect();
+        assert!(staged_by_refused(Some("driven"), &refused, &ids));
+        assert!(staged_by_refused(Some("smoke"), &refused, &ids));
+        assert!(!staged_by_refused(Some("owner"), &refused, &ids));
+        assert!(
+            staged_by_refused(Some("torn-or-deleted"), &refused, &ids),
+            "a session the store cannot resolve is unknown, and unknown is never clean"
+        );
+        assert!(
+            !staged_by_refused(None, &refused, &ids),
+            "a draft from before the field is judged as before"
+        );
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1331,19 +1436,23 @@ mod tests {
         });
 
         let read_wrong = transcript("Dana Whitfield — employer: Northwind Labs.");
-        let a = decide(&answer, &reason, &given_at_staging(&item, &read_wrong));
+        let a = decide(&answer, &reason, &given_at_staging(&item, &read_wrong, &[]));
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
         assert_eq!(a.source.unwrap().call, "t1");
 
         let read_nothing = transcript("Dana Whitfield — no employer on record.");
-        let a = decide(&answer, &reason, &given_at_staging(&item, &read_nothing));
+        let a = decide(
+            &answer,
+            &reason,
+            &given_at_staging(&item, &read_nothing, &[]),
+        );
         assert_eq!(
             (a.class, a.basis),
             (Class::Gap, Basis::NeitherGiven),
             "the wrong value is grounded in the draft; the staging result is not given"
         );
 
-        let a = decide(&answer, &reason, &given_at_staging(&item, &[]));
+        let a = decide(&answer, &reason, &given_at_staging(&item, &[], &[]));
         assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2213,7 +2322,7 @@ mod tests {
         let a = decide(
             &answer,
             correction,
-            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref(), &[]),
         );
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
         assert_eq!(a.source.unwrap().call, "t1");
@@ -2230,7 +2339,7 @@ mod tests {
         let a = decide(
             &answer,
             correction,
-            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref(), &[]),
         );
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
 
@@ -2247,7 +2356,7 @@ mod tests {
         let a = decide(
             &answer,
             correction,
-            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref(), &[]),
         );
         assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
         let _ = std::fs::remove_dir_all(&root);

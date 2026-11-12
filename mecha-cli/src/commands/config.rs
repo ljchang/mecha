@@ -98,6 +98,7 @@ pub const FEATURES_STARTER: &str = r#"
 # web = false        # the web app (`mecha serve`)
 # slack = false      # Slack remote control
 # mail = false       # mail and calendar
+# mail_rules = false # owner-approved automatic mail rules (requires mail)
 # docs = false       # Google Docs, Sheets and Slides
 # graph = false      # the knowledge graph and the task board
 # search = false     # web search and open
@@ -109,6 +110,7 @@ pub const FEATURES_STARTER: &str = r#"
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
 # system = false     # the assistant reads this machine's state (system_read)
+# code = false       # programs over tool results (code)
 "#;
 
 /// A commented starting point rather than a dump of defaults — the point of the

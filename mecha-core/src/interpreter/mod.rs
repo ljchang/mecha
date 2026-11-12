@@ -36,7 +36,114 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "monty")]
 pub mod monty;
+#[cfg(feature = "monty")]
+mod watchdog;
+
+/// The integration tests' process helpers (`/proc`, libproc), loaded once
+/// for this module's unit tests, so they ask the kernel the same way.
+#[cfg(all(test, feature = "monty"))]
+#[path = "../../tests/support/process.rs"]
+mod test_process;
 pub mod worker;
+
+/// How deeply a value may nest to cross between host and program, either
+/// way. A host answering with a deeper one must refuse it itself, as a
+/// catchable error: past this the backend fails the program whole.
+pub const VALUE_DEPTH: usize = 64;
+
+/// Whether this binary has an interpreter at all: the cargo feature `monty`,
+/// on by default. A build without it (`--no-default-features`) still knows
+/// code mode, and says by name that it cannot run it (`feature::unbuilt`).
+pub const BUILT: bool = cfg!(feature = "monty");
+
+/// Workers one run's interpreter may hold at once: two `code` calls in one
+/// message, and a long-lived surface's concurrent chats, each hold one per
+/// program (one program per worker); a fifth program waits for a free one,
+/// as a Stop can end that wait.
+pub const RUN_WORKERS: usize = 4;
+
+/// The interpreter a run's `code` serves its programs with: the pinned
+/// worker installed under `mecha_home`, confined by the platform
+/// ([`monty::Confinement::for_sandbox`] over `sandbox`), and proven by
+/// [`Interpreter::preflight`] before it is handed out. **An `Err` is for the
+/// caller to stop the start with**: code mode switched on with a worker or a
+/// sandbox that cannot start must never become a run without `code`.
+///
+/// One per built agent, shared by every run it serves (`Agent::enable_code`):
+/// a worker is never reused across programs, so a pool per process would
+/// share nothing but its launcher, and an agent rebuilt for a config change
+/// takes the new `[sandbox]` with it. The host bytes every program holds are
+/// still one process-wide pool (`code::BytePool::process`, §5).
+///
+/// On a Mac, `[sandbox] memory_mb` and `cpus` never reach the worker: a
+/// Seatbelt profile has no cgroup to carry them, and monty's own allocator
+/// ceiling is the only memory bound there (`ARCHITECTURE.md` §Code mode's
+/// interpreter). That is warned once per process, here, rather than
+/// refused: `[sandbox]` is `shell`'s table, where the limits do hold, and
+/// refusing code mode for a setting it never claimed would be the wrong
+/// table's answer (review of #769).
+pub async fn for_runs(
+    sandbox: &crate::sandbox::SandboxConfig,
+    mecha_home: &std::path::Path,
+) -> Result<std::sync::Arc<dyn Interpreter>> {
+    if let Some(gap) = limits_not_applied(sandbox, cfg!(target_os = "macos")) {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| tracing::warn!("{gap}"));
+    }
+    start(sandbox, mecha_home).await
+}
+
+/// The Mac gap [`for_runs`] warns about, as a sentence, or `None` where
+/// there is none: `[sandbox] memory_mb` or `cpus` set on a platform whose
+/// worker confinement cannot apply them.
+pub fn limits_not_applied(sandbox: &crate::sandbox::SandboxConfig, macos: bool) -> Option<String> {
+    let mut set = Vec::new();
+    if let Some(mb) = sandbox.memory_mb {
+        set.push(format!("memory_mb = {mb}"));
+    }
+    if let Some(cpus) = sandbox.cpus {
+        set.push(format!("cpus = {cpus}"));
+    }
+    (macos && !set.is_empty()).then(|| {
+        format!(
+            "code mode: [sandbox] {} does not reach the interpreter's worker on a Mac: \
+             Seatbelt has no cgroup to apply it, so monty's own memory ceiling is the only \
+             bound on a program there, and no CPU quota applies (`shell` still gets the \
+             limits under its own sandbox)",
+            set.join(", ")
+        )
+    })
+}
+
+#[cfg(feature = "monty")]
+async fn start(
+    sandbox: &crate::sandbox::SandboxConfig,
+    mecha_home: &std::path::Path,
+) -> Result<std::sync::Arc<dyn Interpreter>> {
+    use anyhow::Context as _;
+    let confinement =
+        monty::Confinement::for_sandbox(&crate::sandbox::Sandbox::new(sandbox.clone()))
+            .context("code mode's interpreter has no sandbox to run in")?;
+    let worker = worker::installed(mecha_home)
+        .context("code mode's worker — `mecha features enable code` installs it")?;
+    let interpreter =
+        monty::Monty::new(&worker, &confinement, Backstops::default(), RUN_WORKERS).await?;
+    interpreter
+        .preflight()
+        .await
+        .context("code mode's interpreter failed its preflight")?;
+    Ok(std::sync::Arc::new(interpreter))
+}
+
+#[cfg(not(feature = "monty"))]
+async fn start(
+    _sandbox: &crate::sandbox::SandboxConfig,
+    _mecha_home: &std::path::Path,
+) -> Result<std::sync::Arc<dyn Interpreter>> {
+    anyhow::bail!(
+        "this mecha was built without code mode's interpreter (the cargo feature `monty`)"
+    )
+}
 
 /// A value crossing between the program and the host. JSON's shapes,
 /// because tool arguments and results already are; a program value with no
@@ -146,8 +253,9 @@ pub struct Backstops {
     /// §5's wall clock: 600 s, sized against the contended worst case of the
     /// sub-call token budget, not against a well-behaved program.
     pub wall_clock: Duration,
-    /// The interpreter's heap. The handles' bytes live in the host, not
-    /// here (§5), so this bounds the program's own data.
+    /// The interpreter's heap, the program's copies of the texts its reads
+    /// returned included (§5, R11): the host-byte limits bound what the
+    /// host reads and hands over, and this what the program then holds.
     pub max_memory: usize,
     /// Call-stack depth. Monty raises a *catchable* `RecursionError` here,
     /// as CPython does, so this one bounds the stack rather than ending the
@@ -164,11 +272,16 @@ pub struct Backstops {
     pub max_printed_bytes: usize,
 }
 
-/// §5's counted host limits, as R4 ruled them: 32 sub-calls, 256 tool
-/// reads and 2,048 handle operations. Thinking passes are a subset of
+/// §5's counted host limits, as R4 ruled them and the owner raised tool
+/// reads (2026-11-01): 32 sub-calls, 2,048 tool reads and 2,048 handle
+/// operations. Thinking passes are a subset of
 /// sub-calls and add nothing; an `llm_query` or `llm_map` call is one
-/// suspension and spends a handle operation, so the sum still bounds it.
-pub const COUNTED_HOST_LIMITS: u64 = 32 + 256 + 2048;
+/// suspension and spends a handle operation, so the sum still bounds it. A
+/// tool read made by `open(path)` is two suspensions (the `open`, then the
+/// read, R12) against one tool read, so tool reads count twice. A listing
+/// through `fs_list` (R13) is one suspension and at least one tool read, so
+/// it adds nothing.
+pub const COUNTED_HOST_LIMITS: u64 = 32 + 2 * 2048 + 2048;
 
 impl Default for Backstops {
     fn default() -> Self {
@@ -219,6 +332,36 @@ impl Tag {
     }
 }
 
+/// How a raise says the tool ran and failed, after its tag: the one shape a
+/// listing probe reads as "not there", where a refusal by the gate, a limit
+/// or a stop must still raise (review of #811).
+pub fn ran_and_failed(name: &str) -> String {
+    format!("`{name}` returned an error: ")
+}
+
+/// Which tools answer a program's own file calls, by the shape their answer
+/// takes rather than their name alone: `read` when `fs_read` returns a
+/// file's text (R12), `list` when `fs_list` returns a list of names (R13). A
+/// server's tool called `fs_list` answers in one string, which a walk cannot
+/// use, so it must not be walked (review of #811).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileTools {
+    pub read: bool,
+    pub list: bool,
+}
+
+impl FileTools {
+    /// By name alone: what a caller that knows nothing of shapes gets, and
+    /// what [`Interpreter::start`] assumes.
+    pub fn named(externals: &[String]) -> Self {
+        let has = |n: &str| externals.iter().any(|e| e == n);
+        FileTools {
+            read: has("fs_read"),
+            list: has("fs_list"),
+        }
+    }
+}
+
 /// What the host raises into a program in answer to a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRaise {
@@ -257,6 +400,19 @@ pub trait Interpreter: Send + Sync {
         externals: &[String],
         cancel: CancellationToken,
     ) -> Result<(Box<dyn Program>, Step)>;
+
+    /// [`start`](Self::start), told which of `externals` answer a program's
+    /// own file calls (R12, R13). A backend with no such calls ignores it.
+    async fn start_with(
+        &self,
+        source: &str,
+        externals: &[String],
+        files: FileTools,
+        cancel: CancellationToken,
+    ) -> Result<(Box<dyn Program>, Step)> {
+        let _ = files;
+        self.start(source, externals, cancel).await
+    }
 
     /// Reserved: restore a program [`Program::dump`] saved (the sink slice).
     async fn load(&self, _snapshot: &[u8]) -> Result<(Box<dyn Program>, Step)> {
@@ -343,11 +499,11 @@ mod tests {
         let lines = [
             Backstop::WallClock(Duration::from_secs(600)).to_string(),
             Backstop::Memory(1024).to_string(),
-            Backstop::Suspensions(2336).to_string(),
+            Backstop::Suspensions(4128).to_string(),
         ];
         assert!(lines[0].contains("wall-clock") && lines[0].contains("600 s"));
         assert!(lines[1].contains("memory") && lines[1].contains("1024"));
-        assert!(lines[2].contains("suspension") && lines[2].contains("2336"));
+        assert!(lines[2].contains("suspension") && lines[2].contains("4128"));
         let killed = Backstop::WorkerKilled { signal: Some(9) }.to_string();
         assert!(killed.contains("killed by signal 9"), "{killed}");
         let lost = Backstop::WorkerKilled { signal: None }.to_string();
@@ -358,6 +514,6 @@ mod tests {
     fn the_default_backstops_are_the_designs() {
         let b = Backstops::default();
         assert_eq!(b.wall_clock, Duration::from_secs(600));
-        assert_eq!(b.max_suspensions, 2336);
+        assert_eq!(b.max_suspensions, 6176);
     }
 }

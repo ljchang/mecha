@@ -1,0 +1,487 @@
+<script>
+  // Her week (PERSONA-LIFE-DESIGN.md §15): each day of the week her routine
+  // and the time-use table drew, 4am to 4am. Read only: what is drawn is
+  // kept, and a day ahead is shown as it would be drawn now. A persona with
+  // her life switched off says so here rather than failing.
+  import { untrack } from 'svelte';
+  import { apiFetch as fetch } from './api.js';
+  import { personaUrl, weekUrl, weekDays, storyDay, storyNotes, weatherPlace, weatherError, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, lifeDraftBody, anchorLine, lifeLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+
+  let { name, token = null, onclose } = $props();
+
+  let data = $state(null);
+  let error = $state('');
+  // Any day of the week shown; null is this week.
+  let date = $state(null);
+  // The stretch tapped, as `${date}/${index}`, whose line shows under its day.
+  let picked = $state(null);
+  // A cell pick on its way to routine.toml.
+  let saving = $state(false);
+  // A draft being asked of her model, or acted on.
+  let drafting = $state(false);
+  let acting = $state(false);
+  // The owner's text while editing a draft, null when not editing.
+  let draftText = $state(null);
+  let lifeDrafting = $state(false);
+  // What the last life draft found, when it found nothing to stage.
+  let lifeNote = $state('');
+  let lifeActing = $state(false);
+  let lifeDraftText = $state(null);
+  // What the last draft found, when it found nothing to stage.
+  let draftNote = $state('');
+  // The owner's notes for the drafter, as typed; read from the server once
+  // per persona, so stepping through weeks keeps what is being typed.
+  let notes = $state('');
+  let notesOf = null;
+
+  const days = $derived(weekDays(data));
+  const folded = $derived(foldedHours(data));
+  const unavailable = $derived(weekUnavailable(data));
+  const monday = $derived(data?.week?.monday ?? null);
+  const draft = $derived(data?.routine?.draft ?? null);
+  const lifeDraft = $derived(data?.life?.draft ?? null);
+  const lifeSummary = $derived(lifeLine(data?.life));
+  const cellLabel = (id) => WEEK_CELLS.find(([c]) => c === id)?.[1] ?? id;
+  // Where the bar's ticks sit: 8am, noon, 6pm and midnight on a 4am day.
+  const TICKS = [
+    [((8 * 60 - 240) / 1440) * 100, '8'],
+    [((12 * 60 - 240) / 1440) * 100, '12'],
+    [((18 * 60 - 240) / 1440) * 100, '18'],
+    [((24 * 60 - 240) / 1440) * 100, '0'],
+  ];
+
+  async function load() {
+    error = '';
+    try {
+      // Asked with the page's header: this read stores the days it draws, so
+      // the server wants proof it came from here (`request_verified`).
+      const res = await fetch(weekUrl(name, date, token), { headers: { 'X-Mecha-Request': '1' } });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      picked = null;
+      if (notesOf !== name) {
+        notes = data?.routine?.notes ?? '';
+        notesOf = name;
+      }
+    } catch (e) {
+      // A failed step keeps no stale week under the error, or the nav
+      // would step on from a week no longer shown.
+      data = null;
+      error = String(e?.message ?? e);
+    }
+  }
+
+  // The owner picks her kind of week: written into routine.toml over the
+  // file as shown, and the week answered back as it now stands. A refused
+  // pick puts the picker back on the cell her routine names, never the one
+  // refused; a stale one (409, an edit made elsewhere) reads the week
+  // again, so the next pick is made over the file as it now stands.
+  async function pickCell(select, cell) {
+    // Not while a draft runs or lands: whichever answer came last would
+    // show, and a pick's answer was read before the draft was staged.
+    if (!cell || cell === data?.routine?.cell || drafting || acting || lifeDrafting || lifeActing) {
+      select.value = data?.routine?.cell ?? '';
+      return;
+    }
+    saving = true;
+    error = '';
+    try {
+      const res = await fetch(personaUrl(name, '/routine/cell', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(cellBody(cell, data, date, token)),
+      });
+      if (res.status === 409) {
+        const why = (await res.text()).trim();
+        await load();
+        // A reload that failed keeps its own words: the week is gone, and
+        // saying it is shown would say the opposite of the page.
+        if (data) error = `${why} It is shown as it stands now.`;
+        return;
+      }
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      picked = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      saving = false;
+      select.value = data?.routine?.cell ?? '';
+    }
+  }
+
+  // Their model drafts their week from what the owner wrote of them (§4.1),
+  // with the owner's notes, which the server saves first: a model run of
+  // tens of seconds, so the button says so while it runs. Zero anchors is
+  // the model finding no fixed point, said rather than failed.
+  async function draftWeek() {
+    drafting = true;
+    error = '';
+    draftNote = '';
+    try {
+      const res = await fetch(personaUrl(name, '/routine/draft', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody(data, date, token, undefined, notes)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      notes = data?.routine?.notes ?? '';
+      picked = null;
+      if (data.drafted === 0) draftNote = 'Their model found no fixed point in their week to draft from what you wrote of them.';
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      drafting = false;
+    }
+  }
+
+  // The owner's doors to a waiting draft: approve it as shown, save an edit
+  // over it as shown, or discard it. A 409 (changed since it was shown)
+  // reads the week again, as a stale cell pick does.
+  async function actOnDraft(method, suffix, text = undefined) {
+    acting = true;
+    error = '';
+    try {
+      const res = await fetch(personaUrl(name, suffix, null), {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody(data, date, token, text)),
+      });
+      if (res.status === 409) {
+        const why = (await res.text()).trim();
+        await load();
+        draftText = null;
+        if (data) error = `${why} It is shown as it stands now.`;
+        return;
+      }
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      draftText = null;
+      picked = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      acting = false;
+    }
+  }
+
+  async function draftLife() {
+    lifeDrafting = true;
+    error = '';
+    lifeNote = '';
+    try {
+      const res = await fetch(personaUrl(name, '/life/draft', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(lifeDraftBody(data, date, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      picked = null;
+      if (data.life_drafted === false) lifeNote = 'Their model found nothing in what you wrote of them to draft a life profile from; nothing waits on you.';
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      lifeDrafting = false;
+    }
+  }
+
+  // The life draft's digest is independent of the routine draft's. As with
+  // that panel, a stale action reloads before anything can be tried again.
+  async function actOnLifeDraft(method, suffix, text = undefined) {
+    lifeActing = true;
+    error = '';
+    try {
+      const res = await fetch(personaUrl(name, suffix, null), {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(lifeDraftBody(data, date, token, text)),
+      });
+      if (res.status === 409) {
+        const why = (await res.text()).trim();
+        await load();
+        lifeDraftText = null;
+        if (data) error = `${why} It is shown as it stands now.`;
+        return;
+      }
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      lifeDraftText = null;
+      picked = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      lifeActing = false;
+    }
+  }
+
+  function step(weeks) {
+    if (!monday) return;
+    date = shiftWeek(monday, weeks);
+    load();
+  }
+
+  $effect(() => {
+    // Back to this week when the persona or the unlock changes under the
+    // page. Untracked, or the `date` that `load` reads would make every
+    // step through the weeks land back on this one.
+    void name;
+    void token;
+    untrack(() => {
+      date = null;
+      draftText = null;
+      lifeDraftText = null;
+      draftNote = '';
+      notesOf = null;
+      load();
+    });
+  });
+</script>
+
+<div class="week">
+  {#if error}<div class="warnline">{error}</div>{/if}
+  {#if !data && error}
+    <!-- A failed step keeps no week, so the nav goes with it: these are
+         the way on from here (review of #797). -->
+    <div class="wnav">
+      <button class="linkbtn" onclick={load}>Try again</button>
+      <button class="linkbtn" onclick={() => { date = null; load(); }}>This week</button>
+    </div>
+  {/if}
+  {#if !data && !error}
+    <div class="wnote">loading…</div>
+  {:else if data?.absent}
+    <p class="wnote">{WEEK_ABSENT[data.absent] ?? data.why}</p>
+  {/if}
+  {#if weatherPlace(data)}
+    <p class="wnote">{weatherPlace(data)}</p>
+    {#if weatherError(data)}<p class="warnline">{weatherError(data)}</p>{/if}
+  {/if}
+  {#if data && data.absent !== 'off' && data.routine}
+    <label class="wcell">
+      <span>Kind of week</span>
+      <select disabled={saving || drafting || acting || lifeDrafting || lifeActing} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget, e.currentTarget.value)}>
+        {#if !data.routine.cell}<option value="" disabled>Pick one…</option>{/if}
+        {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
+      </select>
+    </label>
+    {#if !lifeSummary}
+      <p class="wnote">No life profile yet: <code>mecha persona life edit {name}</code> writes one.</p>
+    {:else}
+      <p class:warnline={!!data.life.error} class:wnote={!data.life.error}>Their life: {lifeSummary}</p>
+    {/if}
+    <div class="wdraft">
+      {#if lifeDraft}
+        <div class="wdhead">A drafted life waits on you{#if lifeDraft.edited} · edited by you{/if}</div>
+        {#if lifeDraftText !== null}
+          <textarea class="wdtext" rows="12" spellcheck="false" bind:value={lifeDraftText} disabled={lifeActing}></textarea>
+          <div class="wdacts">
+            <button class="abtn" disabled={lifeActing || drafting || acting} onclick={() => actOnLifeDraft('PUT', '/life/draft', lifeDraftText)}>Save draft</button>
+            <button class="linkbtn" disabled={lifeActing} onclick={() => (lifeDraftText = null)}>Cancel</button>
+          </div>
+        {:else}
+          {#if lifeDraft.parsed}
+            <p class="wnote">{lifeLine(lifeDraft.parsed)}</p>
+          {:else}
+            <div class="warnline">It does not load, so it cannot be approved yet: {lifeDraft.error}</div>
+          {/if}
+          {#if lifeSummary}<p class="wnote">Approving replaces their current life profile; the old one is kept beside it.</p>{/if}
+          <div class="wdacts">
+            <button class="abtn" disabled={lifeActing || drafting || acting || saving || !lifeDraft.parsed} onclick={() => actOnLifeDraft('POST', '/life/draft/approve')}>Approve</button>
+            <button class="linkbtn" disabled={lifeActing || drafting || acting} onclick={() => (lifeDraftText = lifeDraft.text)}>Edit</button>
+            <button class="linkbtn" disabled={lifeActing || drafting || acting || saving} onclick={() => actOnLifeDraft('DELETE', '/life/draft')}>Discard</button>
+          </div>
+        {/if}
+      {:else}
+        <button class="abtn" disabled={lifeDrafting || drafting || acting || saving || !!data.life.undraftable} onclick={draftLife}>
+          {lifeDrafting ? 'Drafting their life…' : 'Draft their life from what you wrote'}
+        </button>
+        {#if data.life.undraftable}<p class="wnote">{data.life.undraftable}</p>{/if}
+        {#if lifeNote}<p class="wnote">{lifeNote}</p>{/if}
+        <p class="wnote">Someone must be on their People tab before the drafter can put them in the household.</p>
+      {/if}
+    </div>
+    <!-- Her routine's anchors, drafted by her model and shown as they would
+         land before anything reaches her days (§4.1). -->
+    <div class="wdraft">
+      {#if draft}
+        <div class="wdhead">A drafted week waits on you{#if draft.edited} · edited by you{/if}</div>
+        {#if draftText !== null}
+          <textarea class="wdtext" rows="14" spellcheck="false" bind:value={draftText} disabled={acting}></textarea>
+          <div class="wdacts">
+            <button class="abtn" disabled={acting || lifeDrafting || lifeActing} onclick={() => actOnDraft('PUT', '/routine/draft', draftText)}>Save draft</button>
+            <button class="linkbtn" disabled={acting} onclick={() => (draftText = null)}>Cancel</button>
+          </div>
+        {:else}
+          {#if draft.anchors?.length}
+            <ul class="wdlist">{#each draft.anchors as a}<li>{anchorLine(a)}</li>{/each}</ul>
+          {:else if draft.anchors}
+            <div class="warnline">It holds no anchors, so approving it would empty their week. Edit it or discard it.</div>
+          {:else}
+            <div class="warnline">It does not load, so it cannot be approved yet: {draft.error}</div>
+          {/if}
+          {#if draft.kept_cell}<p class="wnote">Approving keeps their kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
+          {#if data.routine.digest}<p class="wnote">Approving replaces the anchors their routine has now; the old routine is kept beside it.</p>{/if}
+          <div class="wdacts">
+            <button class="abtn" disabled={acting || lifeDrafting || lifeActing || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
+            <button class="linkbtn" disabled={acting || lifeDrafting || lifeActing} onclick={() => (draftText = draft.text)}>Edit</button>
+            <button class="linkbtn" disabled={acting || lifeDrafting || lifeActing || saving} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
+          </div>
+        {/if}
+      {:else}
+        <label class="wnlabel" for="wnotes">Notes for the drafter</label>
+        <textarea id="wnotes" class="wdtext" rows="4" maxlength="4000" bind:value={notes} disabled={drafting}
+          placeholder={'Fixed points in your own words, one a line. For example:\n- choir on Wednesday evenings, 7 to 9\n- rowing in the spring'}></textarea>
+        <p class="wnote">Saved when you draft. The draft takes each one as given, a season as its months, and fills in a schedule where a note gives none.</p>
+        <button class="abtn" disabled={drafting || lifeDrafting || lifeActing || saving || !!data.routine.undraftable} onclick={draftWeek}>
+          {drafting ? 'Drafting their week…' : 'Draft their week from what you wrote'}
+        </button>
+        {#if data.routine.undraftable}<p class="wnote">{data.routine.undraftable}</p>{/if}
+        {#if draftNote}<p class="wnote">{draftNote}</p>{/if}
+      {/if}
+    </div>
+  {/if}
+  {#if data?.week}
+    <div class="wnav">
+      <button class="linkbtn" onclick={() => step(-1)}>‹ Earlier</button>
+      <span class="wtitle">Week of {monday}</span>
+      <button class="linkbtn" onclick={() => step(1)}>Later ›</button>
+    </div>
+    <div class="wrows">
+      {#each days as d (d.date)}
+        {@const st = storyDay(data, d.date)}
+        <div class="wrow" class:today={d.when === 'today'}>
+          <div class="wday">
+            <span>{d.weekday} {d.dayOfMonth}</span>
+            {#if d.when === 'today'}<span class="wtag">today</span>{:else if d.when === 'ahead'}<span class="wtag dim">ahead</span>{/if}
+          </div>
+          {#if d.folded}
+            <!-- The store counts folded days a week, never which, so a day
+                 here may be folded or may never have been drawn. -->
+            <div class="wbar folded"><span>not kept</span></div>
+          {:else if d.undrawn}
+            <div class="wbar folded"><span>not drawn</span></div>
+          {:else}
+            <div class="wbar" class:ahead={d.when === 'ahead'}>
+              {#each TICKS as [at]}<span class="tick" style:left="{at}%"></span>{/each}
+              {#each d.bars as b, i}
+                <button
+                  class="seg {b.group}"
+                  class:unclean={b.unclean}
+                  class:sel={picked === `${d.date}/${i}`}
+                  style:left="{b.left}%"
+                  style:width="{b.width}%"
+                  title={b.line}
+                  aria-label={b.line}
+                  onclick={() => (picked = picked === `${d.date}/${i}` ? null : `${d.date}/${i}`)}
+                ></button>
+              {/each}
+            </div>
+          {/if}
+          {#each d.bars as b, i}
+            {#if picked === `${d.date}/${i}`}
+              <div class="wline">{b.line}{#if b.unclean} · from a source this version does not know{/if}</div>
+            {/if}
+          {/each}
+          {#if st}
+            <div class="wstory">
+              {#if st.weather}<span class="wsky">{st.weather}</span>{/if}
+              {#each st.events as e}<span class="wev" class:major={e.major}>{e.text}</span>{/each}
+              {#if st.levels}<span class="wlev">{st.levels}</span>{/if}
+            </div>
+          {/if}
+        </div>
+      {/each}
+      <div class="wrow">
+        <div class="wday"></div>
+        <div class="wscale">
+          <span style:left="0%">4</span>
+          {#each TICKS as [at, label]}<span style:left="{at}%">{label}</span>{/each}
+        </div>
+      </div>
+    </div>
+    {#if unavailable}
+      <div class="warnline">The days not drawn wait on their routine: {unavailable}</div>
+    {/if}
+    <div class="wlegend">
+      {#each WEEK_GROUPS as [group, label]}<span class="lchip"><span class="swatch {group}"></span>{label}</span>{/each}
+    </div>
+    {#if folded}
+      <div class="wnote">
+        {folded.days} {folded.days === 1 ? 'day' : 'days'} folded: {folded.rows.map((r) => `${r.activity} ${r.hours}`).join(', ')}{#if folded.unreadable}, and {folded.unreadable} this version cannot name{/if}.
+      </div>
+    {/if}
+    <div class="barnote">
+      Drawn from their routine and American time-use diaries, the first time each day is asked for, then kept. A day ahead is how it would be drawn now; it can change until it comes.
+    </div>
+    {#if storyNotes(data).drawn}
+      <div class="barnote">Events are drawn from their deck (<code>story.toml</code>) by a director that keeps a rhythm; the weather is where they live. The Week tab shows these either way; with Their events on, the teller brings them into chats.</div>
+    {/if}
+    {#if storyNotes(data).why}
+      <!-- Beside what was kept, never instead of it (review of #814). -->
+      <div class="warnline">No story for the rest of the week: {storyNotes(data).why}</div>
+    {/if}
+    {#if storyNotes(data).names}
+      <div class="warnline">{storyNotes(data).names}</div>
+    {/if}
+  {/if}
+  <button class="abtn" onclick={() => onclose?.()}>Close</button>
+</div>
+
+<style>
+  .week { display: flex; flex-direction: column; gap: 14px; }
+  .wnav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .wcell { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted); }
+  .wcell select { min-height: 36px; padding: 0 8px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font: inherit; font-size: 13px; }
+  /* A field under 16px makes iOS zoom the page, and it stays zoomed. */
+  @media (pointer: coarse) { .wcell select { font-size: 16px; } }
+  .wtitle { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+  .wrows { display: flex; flex-direction: column; gap: 8px; }
+  .wrow { display: grid; grid-template-columns: 64px 1fr; column-gap: 10px; row-gap: 4px; align-items: center; }
+  .wday { display: flex; flex-direction: column; font-family: var(--mono); font-size: 12px; color: var(--text); line-height: 1.3; }
+  .wrow.today .wday { color: var(--accent-400); }
+  .wtag { font-size: 10px; color: var(--accent-400); }
+  .wtag.dim { color: var(--text-muted); }
+  .wbar { position: relative; height: 28px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); overflow: hidden; }
+  .wbar.ahead { opacity: 0.6; }
+  .wstory { grid-column: 2; display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0; font-size: 12px; line-height: 1.4; color: var(--text); }
+  .wsky { color: var(--text-muted); }
+  .wev::before { content: '• '; color: var(--text-muted); }
+  .wev.major { font-weight: 600; }
+  .wlev { color: var(--text-muted); font-style: italic; }
+  .wbar.folded { display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--text-muted); }
+  .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent-900); pointer-events: none; }
+  .seg { position: absolute; top: 2px; bottom: 2px; border: none; padding: 0; border-radius: 3px; cursor: pointer; min-width: 2px; box-shadow: inset -1px 0 0 var(--surface); }
+  .seg.sel { outline: 2px solid var(--text); outline-offset: -2px; z-index: 1; }
+  .seg.unclean { background-image: repeating-linear-gradient(45deg, transparent 0 4px, var(--hazard) 4px 6px); }
+  .wline { grid-column: 2; font-size: 12px; color: var(--text); line-height: 1.4; }
+  .wscale { position: relative; height: 14px; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+  .wscale span { position: absolute; transform: translateX(-50%); }
+  .wscale span:first-child { transform: none; }
+  .wlegend { display: flex; flex-wrap: wrap; gap: 10px; }
+  .lchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+  /* One hue a group, mid lightness so each reads on a light and a dark
+     surface alike. */
+  .rest { background: #7c8db5; }
+  .work { background: #c9894a; }
+  .home { background: #6fa37a; }
+  .move { background: #4f9fb0; }
+  .social { background: #b8739d; }
+  .leisure { background: #a99a52; }
+  .unknown { background: var(--text-muted); }
+  .wnote { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+  .linkbtn { background: none; border: none; padding: 4px 0; min-height: 32px; color: var(--accent-400); font-size: 12px; cursor: pointer; }
+  .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
+  .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+  .wnlabel { font-size: 12px; color: var(--text-muted); }
+  .wdraft { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
+  .wdhead { font-size: 13px; color: var(--text); }
+  .wdlist { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); line-height: 1.4; }
+  .wdtext { width: 100%; box-sizing: border-box; padding: 8px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--mono); font-size: 12px; line-height: 1.45; resize: vertical; }
+  @media (pointer: coarse) { .wdtext { font-size: 16px; } }
+  .wdacts { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .abtn:disabled, .linkbtn:disabled { opacity: 0.5; cursor: default; }
+  .abtn { min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
+</style>

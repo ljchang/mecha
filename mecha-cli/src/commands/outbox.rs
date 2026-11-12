@@ -17,7 +17,7 @@
 //! editing neither the draft nor anything a reader sees.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::closure::{self, Actor};
+use mecha_core::closure::Actor;
 use mecha_core::outbox::{
     DeliveryOutcome, DraftView, OutboxItem, OutboxKind, OutboxLock, OutboxStore,
 };
@@ -289,32 +289,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// sends nothing, and the stamp is what keeps the words from reading as the
 /// owner's. A marker directory that cannot be read is `unknown` rather than
 /// an error for the same reason.
-pub(crate) fn acting_actor() -> Actor {
-    acting_actor_explained().0
-}
-
-/// [`acting_actor`], with why it is not `owner` when it is not — so a
-/// reject whose reason will not be read as the owner's says so rather than
-/// demoting it silently (review of #343).
-fn acting_actor_explained() -> (Actor, Option<String>) {
-    let ancestor = match crate::commands::tasks::live_run_pids() {
-        Ok(pids) => closure::run_ancestor(&pids),
-        Err(e) => {
-            return (
-                Actor::Unknown,
-                Some(format!(
-                    "the run markers could not be read ({e:#}), so whether a run did this \
-                     cannot be told"
-                )),
-            )
-        }
-    };
-    closure::attribute_explained(
-        &closure::posture_from_env(),
-        &closure::ShellReading::from_registry(),
-        ancestor,
-    )
-}
+pub(crate) use super::actor::acting_actor;
+use super::actor::acting_actor_explained;
 
 /// What a demotion note is about.
 #[derive(Clone, Copy)]
@@ -590,6 +566,11 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
         );
         println!();
     }
+    if let Some(a) = &item.answering {
+        // No session holds the thread a rule's reply answers, so the item
+        // says who it goes to and what it is about (review of #856).
+        println!("A rule's reply to {} — \"{}\"\n", a.to, a.subject);
+    }
     if let Some(error) = &item.error {
         println!("last send attempt failed: {error}\n");
     }
@@ -858,10 +839,15 @@ pub(crate) fn review_reads(item: &OutboxItem) -> ReviewReads {
             serves: None,
         };
     };
-    let messages = mecha_core::outbox_source::messages_for_item(item, &dir);
+    let drafting = mecha_core::outbox_source::drafting(item, &dir);
     ReviewReads {
-        reads: mecha_core::outbox_source::from_messages(item, &messages),
-        serves: mecha_core::outbox_source::serves_at_staging(item, &messages).map(serves_note),
+        reads: mecha_core::outbox_source::from_messages(
+            item,
+            &drafting.messages,
+            &drafting.programs,
+        ),
+        serves: mecha_core::outbox_source::serves_at_staging(item, &drafting.messages)
+            .map(serves_note),
     }
 }
 
@@ -1742,6 +1728,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            answering: None,
             predictions: Vec::new(),
             outcomes: Vec::new(),
             delivery_attempts: Vec::new(),
@@ -2165,6 +2152,7 @@ mod tests {
                 compact_requested: None,
                 posture: mecha_core::closure::RunPosture::Unattended,
                 _mcp: Vec::new(),
+                driven: None,
             },
             ctx: mecha_core::tool::ToolCtx::default(),
         }
@@ -2195,13 +2183,16 @@ mod tests {
                 _: &mecha_core::tool::ToolCtx,
             ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
                 Ok(mecha_core::tool::ToolOutput {
+                    reads: Vec::new(),
                     content: "unknown account `work`".into(),
                     is_error: true,
+                    failure_kind: None,
                     external: true,
                     refusal: false,
                     not_dispatched: self.0,
                     image: None,
                     deferred: None,
+                    program: None,
                 })
             }
         }

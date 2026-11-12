@@ -5,19 +5,21 @@
   import Review from './lib/Review.svelte';
   import Mail from './lib/Mail.svelte';
   import MailDesk from './lib/MailDesk.svelte';
+  import MailRules from './lib/MailRules.svelte';
   import Tasks from './lib/Tasks.svelte';
   import Library from './lib/Library.svelte';
   import Personas from './lib/Personas.svelte';
   import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
   import Hud from './lib/Hud.svelte';
+  import Factory from './lib/Factory.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
   import { featureFor, isShown, banner, hiddenLine, bounceFor } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
   // view's component interprets; the router only splits it.
-  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'personas', 'library', 'settings', 'hud'];
+  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'personas', 'library', 'factory', 'settings', 'hud'];
   const fromHash = () => {
     let [h, s] = location.hash.slice(1).split('/');
     // The notes tab folded into graph (NOTES-GRAPH-DESIGN.md D1); the old
@@ -165,7 +167,9 @@
     {#if view === 'chat'}
       <Chat resume={route.sub} />
     {:else if view === 'mail'}
-      {#if wide}<MailDesk />{:else}<Mail />{/if}
+      <!-- #mail/rules is one responsive page for both builds; the pane's
+           feature (PANE_FEATURE) sends a link home while it refuses. -->
+      {#if route.sub === 'rules'}<MailRules {navigate} />{:else if wide}<MailDesk {navigate} />{:else}<Mail {navigate} />{/if}
     {:else if view === 'review'}
       <Review initial={route.sub} {navigate} />
     {:else if view === 'tasks'}
@@ -180,6 +184,8 @@
       <Settings initial={route.sub} {navigate} {backTo} />
     {:else if view === 'hud'}
       <Hud initial={route.sub} {navigate} />
+    {:else if view === 'factory'}
+      <Factory initial={route.sub} {navigate} />
     {:else}
       <Home {navigate} />
     {/if}

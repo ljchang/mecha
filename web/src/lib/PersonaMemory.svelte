@@ -4,7 +4,7 @@
   // you, forget. Every act goes to the owner-guarded route and comes back as
   // the page as it now stands; no tool reaches it, so no model writes here.
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, memorySections, memoryText, memoryActBody, MEMORY_KINDS } from './persona.js';
+  import { personaUrl, memorySections, memoryText, canApproveMemoryClean, memoryVouchLabel, memoryActBody, MEMORY_KINDS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -82,8 +82,11 @@
       {#if r.section === 'episodes' && r.open_threads?.length}
         <div class="mnote">Left open: {r.open_threads.join('; ')}</div>
       {/if}
-      {#if r.origin === 'model_untrusted'}
-        <div class="mnote">From a chat that read something from outside.</div>
+      {#if canApproveMemoryClean(r)}
+        <div class="mnote">Marked as from outside. Keeping it as clean says you vouch for it, so recalling it no longer marks the chat.</div>
+      {/if}
+      {#if memoryVouchLabel(r)}
+        <div class="mnote">{memoryVouchLabel(r)}</div>
       {/if}
       {#if r.shared?.length}
         <div class="mshared">
@@ -113,6 +116,9 @@
         <div class="mbtns">
           {#if r.status === 'candidate'}
             <button class="linkbtn strong" disabled={busy} onclick={() => act('approve', r.uid)}>Keep it</button>
+          {/if}
+          {#if canApproveMemoryClean(r)}
+            <button class="linkbtn strong" disabled={busy} onclick={() => act('approve_clean', r.uid)}>Keep it as clean</button>
           {/if}
           {#if r.section !== 'episodes' && r.status !== 'candidate'}
             <button class="linkbtn" disabled={busy} onclick={() => start('edit', r.uid, r.text)}>Edit</button>

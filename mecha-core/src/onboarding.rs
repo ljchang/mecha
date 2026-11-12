@@ -814,6 +814,9 @@ fn feature_steps(facts: &Facts) -> Vec<Step> {
         .features
         .iter()
         .filter(|row| row.part_of.is_none())
+        // A feature this build cannot run is not a question setup can ask:
+        // `mecha features` says it is not in this build, and why.
+        .filter(|row| crate::feature::unbuilt(row.id).is_none())
         .map(|row| {
             let f = row.id;
             let (id, title) = (f.id(), f.label());
@@ -1046,6 +1049,7 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         Feature::Mail => {
             "Mail and calendar, behind one server that names an account, never a provider."
         }
+        Feature::MailRules => "Run owner-approved mail rules every five minutes and after classification; new rules start in shadow.",
         Feature::Docs => {
             "Google Docs, Sheets and Slides — only files it made or you hand it in Google's picker."
         }
@@ -1066,6 +1070,10 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         Feature::Messages => "Messages between this machine's own sessions.",
         Feature::System => {
             "Letting the assistant read this machine's state: memory, disk, GPU, models."
+        }
+        Feature::Code => {
+            "Letting the assistant run a short Python program over what its read-only tools \
+             return, in a sandboxed interpreter, without reading it all into the conversation."
         }
         // Parts are summarised under their parent and never stepped alone.
         Feature::Incognito
@@ -2241,6 +2249,7 @@ mod tests {
                 "web",
                 "slack",
                 "mail",
+                "mail_rules",
                 "docs",
                 "graph",
                 "search",
@@ -2252,8 +2261,13 @@ mod tests {
                 "frontdoor",
                 "messages",
                 "system",
+                "code",
                 "charter"
             ]
+            .into_iter()
+            // Code mode is a step only in a build that can run it.
+            .filter(|id| *id != "code" || crate::interpreter::BUILT)
+            .collect::<Vec<_>>()
         );
     }
 

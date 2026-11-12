@@ -1195,6 +1195,8 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         "frontdoor",
         "messages",
         "system",
+        // Built in by default since #781: the newest question setup asks.
+        "code",
     ];
     let plan = steps(&mecha(&home, &["setup", "--json"]));
     for id in features {
@@ -1283,6 +1285,7 @@ fn the_closing_note_names_each_way_back() {
         "web",
         "slack",
         "mail",
+        "mail_rules",
         "docs",
         "graph",
         "search",
@@ -1295,6 +1298,9 @@ fn the_closing_note_names_each_way_back() {
         // Once a `false` here read as unanswered and stayed outstanding.
         "messages",
         "system",
+        // Built in by default since code mode's interpreter shipped, so a
+        // no is an answer it needs too.
+        "code",
     ]
     .iter()
     .map(|id| format!("{id} = false\n"))

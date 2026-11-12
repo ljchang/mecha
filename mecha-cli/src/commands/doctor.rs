@@ -51,6 +51,10 @@ pub async fn execute(args: Args) -> Result<()> {
     match mecha_core::config::Config::load_global() {
         Ok(cfg) => {
             findings.extend(doctor::check_shell_confinement(&cfg.sandbox, &home));
+            findings.extend(doctor::check_mail_rule_shell(&home, &cfg));
+            if mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::MailRules) {
+                findings.extend(mail_rules_timer());
+            }
             // The LoRA registry's files are checked against the folders
             // `[image]` and `[video]` name, so it reads the same config.
             findings.extend(doctor::check_loras(
@@ -412,9 +416,77 @@ fn legacy_learning_git_note() {
     }
 }
 
+fn mail_rules_timer() -> Vec<Finding> {
+    mail_rules_timer_with(std::ffi::OsStr::new("systemctl"))
+}
+
+fn mail_rules_timer_with(systemctl: &std::ffi::OsStr) -> Vec<Finding> {
+    let read = |unit: &str| {
+        std::process::Command::new(systemctl)
+            .args([
+                "--user",
+                "show",
+                unit,
+                "--property=LoadState,ActiveState,Result",
+            ])
+            .output()
+            .ok()
+            .and_then(|output| {
+                let properties = String::from_utf8_lossy(&output.stdout).into_owned();
+                // A missing unit may return a nonzero status with LoadState.
+                // No binary/bus produces no properties: skip like failed_units,
+                // rather than treating an unavailable init system as broken.
+                (output.status.success()
+                    || properties
+                        .lines()
+                        .any(|line| line.starts_with("LoadState=")))
+                .then_some(properties)
+            })
+    };
+    let timer = read("mecha-mail-rules.timer");
+    let service = read("mecha-mail-rules.service");
+    doctor::check_mail_rules_timer(true, timer.as_deref(), service.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mail_rules_timer_skips_unavailable_systemd_but_reports_missing_and_failed_units() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "doctor-systemctl-{}",
+            mecha_core::session::Session::new_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let executable = root.join("systemctl");
+        let missing_binary = mail_rules_timer_with(executable.as_os_str());
+        let run = |script: &str| {
+            std::fs::write(&executable, script).unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            mail_rules_timer_with(executable.as_os_str())
+        };
+        let no_bus = run("#!/bin/sh\nprintf 'Failed to connect to bus' >&2\nexit 1\n");
+        // systemctl show can return properties for a missing unit with a nonzero exit.
+        let missing =
+            run("#!/bin/sh\nprintf 'LoadState=not-found\\nActiveState=inactive\\n'\nexit 4\n");
+        let healthy = run("#!/bin/sh\ncase \"$3\" in *.timer) printf 'LoadState=loaded\\nActiveState=active\\n';; *) printf 'LoadState=loaded\\nActiveState=inactive\\nResult=success\\n';; esac\n");
+        let failed = run("#!/bin/sh\ncase \"$3\" in *.timer) printf 'LoadState=loaded\\nActiveState=active\\n';; *) printf 'LoadState=loaded\\nActiveState=failed\\nResult=exit-code\\n';; esac\n");
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            missing_binary.is_empty(),
+            "no systemctl is not a timer finding"
+        );
+        assert!(no_bus.is_empty(), "no user bus is not a timer finding");
+        assert_eq!(missing.len(), 2);
+        assert!(missing
+            .iter()
+            .all(|finding| finding.summary.contains("unit missing")));
+        assert!(healthy.is_empty());
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].summary.contains("unit failed"));
+    }
 
     #[test]
     fn silence_is_not_consent_and_only_yes_is_yes() {

@@ -9,7 +9,7 @@
 //!
 //! Like `mecha imagelib`, it builds no provider and connects to nothing.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use mecha_core::imagelib::{self, Library};
 use mecha_core::persona::{self, NewPersona, Origin, Persona, Status, Store};
 use std::path::Path;
@@ -33,6 +33,18 @@ pub enum Cmd {
     /// One persona: its settings, links, version and problems.
     Show {
         name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// How their chats went over a window, read from the transcripts: how
+    /// much their replies repeat, and how often they bring up their people
+    /// beside what you did with them, by what they were shown
+    /// (PERSONA-LIFE-DESIGN.md §14). Counts only, never words.
+    Measures {
+        name: String,
+        /// Chats active in the last this many days.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
+        days: u32,
         #[arg(long)]
         json: bool,
     },
@@ -108,6 +120,243 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: MemoryCmd,
     },
+    /// Their people: who is in their life and how they stand with each
+    /// (PERSONA-LIFE-DESIGN §6). Every change renders network.md again.
+    People {
+        #[command(subcommand)]
+        cmd: PeopleCmd,
+    },
+    /// Their week: the anchors their days are built around, and a model's draft
+    /// waiting on you (`PERSONA-LIFE-DESIGN.md` §4.1).
+    Routine {
+        #[command(subcommand)]
+        cmd: RoutineCmd,
+    },
+    /// The constraints their sampled days obey: household, usual sleep and
+    /// activities that never occur (`PERSONA-LIFE-DESIGN.md` §4.2).
+    Life {
+        #[command(subcommand)]
+        cmd: LifeCmd,
+    },
+    /// Their story: small events drawn over their days by the director,
+    /// their energy, stress and mood, and the weather where they live
+    /// (`PERSONA-LIFE-DESIGN.md` §4.3). `[life] events` brings it into chats.
+    Story {
+        #[command(subcommand)]
+        cmd: StoryCmd,
+    },
+    /// Their day: drawn from their routine and time-use data the first time it
+    /// is asked for, then kept (`PERSONA-LIFE-DESIGN.md` §4.2). Needs
+    /// `[life] world = true` and a `cell` in routine.toml.
+    Day {
+        name: String,
+        /// YYYY-MM-DD; today when left out.
+        #[arg(long)]
+        date: Option<String>,
+        /// As JSON. A day runs 4am to 4am, so a minute past 1439 is the
+        /// next morning.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Their week: each day's hours by activity, Monday first; a day past two
+    /// weeks shows as its week's folded minutes. Needs what `day` needs.
+    Week {
+        name: String,
+        /// Any day of the week, YYYY-MM-DD; this week when left out.
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum StoryCmd {
+    /// Their days' events, levels and weather, a week to today by default.
+    Show {
+        name: String,
+        /// The last day shown, YYYY-MM-DD; today when left out.
+        #[arg(long)]
+        date: Option<String>,
+        /// How many days, ending on `--date`.
+        #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(u32).range(1..=31))]
+        days: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write their deck (`story.toml`) from the starter for their kind of
+    /// week, to edit. Refused when they already have one.
+    Init { name: String },
+    /// Fetch the weather where they live (`[life] place`, falling back to
+    /// `story.toml`'s `[place]`): the last two weeks and the next one.
+    Weather { name: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum RoutineCmd {
+    /// The routine, a waiting draft, and the activities an anchor may name.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit routine.toml in $EDITOR, starting from a commented template.
+    Edit {
+        name: String,
+        /// Edit the waiting draft instead, before approving it.
+        #[arg(long)]
+        draft: bool,
+    },
+    /// Make the waiting draft the routine, after reading it. The routine it
+    /// replaces is kept as routine.previous.toml.
+    Approve {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Drop the waiting draft; the routine is untouched.
+    Discard { name: String },
+    /// Have their own model draft their week from identity.md,
+    /// motivation.md and your notes, as a draft waiting on you beside their
+    /// routine.
+    Draft { name: String },
+    /// Edit your notes for the drafter (routine.notes.md) in $EDITOR: the
+    /// week's fixed points in your own words, such as a class's days and
+    /// hours or a sport's season. Only the drafter reads them.
+    Notes { name: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum LifeCmd {
+    /// Their life profile and a waiting draft, if any.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit life.toml in $EDITOR, starting from a commented template.
+    Edit {
+        name: String,
+        /// Edit the waiting draft instead, before approving it.
+        #[arg(long)]
+        draft: bool,
+    },
+    /// Have their own model draft their life from what you wrote, the
+    /// routine notes, and clean names on their People tab.
+    Draft { name: String },
+    /// Make the waiting draft their life profile after reading it.
+    Approve {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Drop the waiting draft; life.toml is untouched.
+    Discard { name: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum PeopleCmd {
+    /// Everyone in their network, how they stand with each, and the ties
+    /// between them.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Their whole network as JSON: people, every event, and the folds.
+    Export { name: String },
+    /// Add someone to their life, with their tie to them.
+    Add {
+        name: String,
+        /// Their name.
+        person: String,
+        /// Another name they go by (repeatable).
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
+        /// Their role in the persona's life: "older sister", "advisor".
+        #[arg(long)]
+        role: Option<String>,
+        /// A line about them.
+        #[arg(long)]
+        description: Option<String>,
+        /// An image-library character: their portrait.
+        #[arg(long)]
+        character: Option<String>,
+        /// kin, romantic, ex, friend, colleague, mentor, neighbour,
+        /// acquaintance or rival.
+        #[arg(long)]
+        tie: Option<String>,
+        /// The tie in the persona's words: "sister", "lab partner".
+        #[arg(long)]
+        label: Option<String>,
+        /// How close: 5, 15, 50 or 150 (a Dunbar layer).
+        #[arg(long)]
+        layer: Option<u32>,
+        /// Since when: 2019-06-14, 2019-06, summer 2019, or 2019.
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Change who someone is. An empty value clears a field.
+    Edit {
+        name: String,
+        person: String,
+        #[arg(long = "name")]
+        rename: Option<String>,
+        /// Replaces their aliases (repeatable); `--alias ""` clears them.
+        #[arg(long = "alias")]
+        aliases: Option<Vec<String>>,
+        #[arg(long)]
+        role: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        character: Option<String>,
+    },
+    /// Record something that happened: met, formed, strengthened,
+    /// conflict, reconciled, paused, ended or renewed.
+    Event {
+        name: String,
+        person: String,
+        kind: String,
+        /// On the tie between them and this person, not the persona's own.
+        #[arg(long)]
+        with: Option<String>,
+        /// When: 2019-06-14, 2019-06, summer 2019, or 2019.
+        #[arg(long)]
+        on: Option<String>,
+        /// What it was about, in a line.
+        #[arg(long)]
+        context: Option<String>,
+        #[arg(long)]
+        tie: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        layer: Option<u32>,
+    },
+    /// Take back an event you recorded by mistake, by its id.
+    Retract { name: String, event: String },
+    /// Take someone out of their network, with every event they are part of.
+    Remove {
+        name: String,
+        person: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Have their own model find the people identity.md names, as a
+    /// proposal waiting on you (PL6).
+    Propose { name: String },
+    /// The people proposed from identity.md, numbered, waiting on you.
+    Proposal { name: String },
+    /// Add the proposed people to their network, or only some (`--only 1,3`),
+    /// then list the identity.md lines that still name them.
+    Accept {
+        name: String,
+        #[arg(long, value_delimiter = ',')]
+        only: Option<Vec<usize>>,
+    },
+    /// Drop the proposal; their network is untouched.
+    Dismiss { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -123,11 +372,20 @@ pub enum MemoryCmd {
     Export {
         name: String,
     },
-    /// Let a candidate be recalled. It keeps its origin, so a recalled
-    /// untrusted record still marks the chat untrusted.
+    /// Let a candidate be recalled. By default it keeps its origin; --clean
+    /// is the owner's vouch that it no longer marks a recalling chat
+    /// untrusted. With --chat, vouch for that chat's untrusted records.
     Approve {
         name: String,
-        id: String,
+        #[arg(required_unless_present = "chat", conflicts_with = "chat")]
+        id: Option<String>,
+        #[arg(long, requires = "clean")]
+        chat: Option<String>,
+        #[arg(long)]
+        clean: bool,
+        /// With --chat: skip the question after the records are listed.
+        #[arg(long)]
+        yes: bool,
     },
     /// Replace a fact with your wording; the old one is kept, invalidated.
     Correct {
@@ -219,11 +477,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         args.cmd,
         Cmd::List { .. }
             | Cmd::Show { .. }
+            | Cmd::Measures { .. }
             | Cmd::Group {
                 cmd: GroupCmd::List
             }
             | Cmd::Memory {
                 cmd: MemoryCmd::Show { .. } | MemoryCmd::Export { .. } | MemoryCmd::Shared { .. }
+            }
+            | Cmd::Routine {
+                cmd: RoutineCmd::Show { .. }
+            }
+            | Cmd::Life {
+                cmd: LifeCmd::Show { .. }
+            }
+            | Cmd::People {
+                cmd: PeopleCmd::Show { .. } | PeopleCmd::Export { .. }
             }
     ) {
         super::features::require(mecha_core::feature::Feature::Personas)?;
@@ -240,8 +508,189 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     {
         return write_memory(global, &dir, name, chat, idle_minutes).await;
     }
+    if let Cmd::Routine {
+        cmd: RoutineCmd::Draft { name },
+    } = args.cmd
+    {
+        return draft_routine(global, &dir, &name).await;
+    }
+    if let Cmd::Life {
+        cmd: LifeCmd::Draft { name },
+    } = args.cmd
+    {
+        return draft_life(global, &dir, &name).await;
+    }
+    if let Cmd::People {
+        cmd: PeopleCmd::Propose { name },
+    } = args.cmd
+    {
+        return propose_people(global, &dir, &name).await;
+    }
+    if let Cmd::Story {
+        cmd: StoryCmd::Weather { name },
+    } = args.cmd
+    {
+        return fetch_weather(&dir, &name).await;
+    }
     let lib_dir = Library::default_dir()?;
     run(&dir, &lib_dir, args.cmd)
+}
+
+/// `mecha persona story weather`: one read of the weather service for her
+/// place, parsed into closed fields and stored. No model is involved.
+async fn fetch_weather(dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::weather;
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    if !p.settings.life.world {
+        bail!(
+            "[life] world is off for `{}`; their days are not drawn",
+            p.name
+        );
+    }
+    let pdir = dir.join(&p.name);
+    let (_, today) = owner_dates(None)?;
+    let Some((place, n)) = weather::refresh(&pdir, p.settings.life.place.as_deref(), today).await?
+    else {
+        bail!(
+            "`{}` names no [life] place or story.toml [place] for its weather",
+            p.name
+        );
+    };
+    println!(
+        "Stored {n} days of weather for `{}` at {}.",
+        p.name, place.name
+    );
+    Ok(())
+}
+
+/// `mecha persona routine draft`: her week drafted by her own model, the
+/// one she talks through (`persona::drafter`), held through the router's
+/// hold so a model switch waits on it, and staged beside her routine.
+async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::drafter;
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    // What can be refused without the answer is refused before the model
+    // runs: the persona, and a waiting draft the owner has edited.
+    drafter::check(&p)?;
+    mecha_core::persona::routine::may_stage(dir, &p.name)?;
+    // One request with no tools: no MCP server is started for it.
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
+    let (_held, bound) = follower
+        .enter("routine draft", |s| {
+            eprintln!("waiting: the model is switching to {}", s.to)
+        })
+        .await?;
+    // Unseeded, as her own turns are: a pinned seed would make a redraft
+    // after a discard the same week again (review of #799).
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
+    eprintln!("drafting `{}`'s week with {}", p.name, bound.model);
+    let Some(r) = drafter::draft(provider.as_ref(), &bound.model, dir, &p).await? else {
+        println!(
+            "The model found no fixed point in `{}`'s week to draft from what you wrote \
+             of them, so nothing waits on you. `mecha persona routine edit {}` writes \
+             their routine by hand.",
+            p.name, p.name
+        );
+        return Ok(());
+    };
+    println!(
+        "Drafted {} anchor(s) for `{}`, waiting on you beside their routine. \
+         `mecha persona routine show {}` reads it; `edit {} --draft` changes it; \
+         `approve {}` makes it their routine.",
+        r.anchors.len(),
+        p.name,
+        p.name,
+        p.name,
+        p.name
+    );
+    Ok(())
+}
+
+/// `mecha persona life draft`: a typed profile drafted by her own model,
+/// held through the router and staged beside life.toml for owner review.
+async fn draft_life(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::{life, life_drafter};
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    life_drafter::check(&p)?;
+    life::may_stage(dir, &p.name)?;
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
+    let (_held, bound) = follower
+        .enter("life draft", |s| {
+            eprintln!("waiting: the model is switching to {}", s.to)
+        })
+        .await?;
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
+    eprintln!("drafting `{}`'s life with {}", p.name, bound.model);
+    let Some(profile) = life_drafter::draft(provider.as_ref(), &bound.model, dir, &p).await? else {
+        println!(
+            "The model found nothing in what you wrote of `{}` to draft a life profile from, \
+             so nothing waits on you. `mecha persona life edit {}` writes one by hand.",
+            p.name, p.name
+        );
+        return Ok(());
+    };
+    println!(
+        "Drafted `{}`'s life: {} household member(s), {} usual sleep, {} never activity(s). \
+         It waits beside life.toml; `mecha persona life show {}` reads it and `approve {}` makes it their profile.",
+        p.name,
+        profile.household.len(),
+        if profile.sleep.is_some() { "a" } else { "no" },
+        profile.never.len(),
+        p.name,
+        p.name,
+    );
+    Ok(())
+}
+
+/// `mecha persona people propose`: her own model reads identity.md for the
+/// people it names (`persona::people_draft`), held through the router's
+/// hold as a draft is, and stages them for the owner to accept.
+async fn propose_people(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::{drafter, people_draft};
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    drafter::check(&p)?;
+    // Before waiting on the model, as the model run itself re-checks.
+    people_draft::may_propose(dir, &p)?;
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
+    let (_held, bound) = follower
+        .enter("people proposal", |s| {
+            eprintln!("waiting: the model is switching to {}", s.to)
+        })
+        .await?;
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
+    eprintln!("reading `{}`'s people with {}", p.name, bound.model);
+    let Some(d) = people_draft::propose(provider.as_ref(), &bound.model, dir, &p).await? else {
+        println!(
+            "The model found no one named in `{}`'s identity.md, so nothing waits on you.",
+            p.name
+        );
+        return Ok(());
+    };
+    println!(
+        "Proposed {} people from `{}`'s identity.md. `mecha persona people proposal {}` \
+         reads them; `accept {}` adds them (or `--only 1,3`).",
+        d.people.len(),
+        p.name,
+        p.name,
+        p.name
+    );
+    Ok(())
 }
 
 /// Embed whatever of one persona's memory has no vector yet, in batches.
@@ -586,24 +1035,108 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
 /// How much `p`'s replies repeated earlier ones, read from its chats active
 /// over the window `mecha persona show` reads (`persona::echo`).
 fn recent_echoes(store: &Store, p: &Persona) -> anyhow::Result<persona::echo::Echoes> {
-    let window = std::time::Duration::from_secs(persona::echo::SHOWN_DAYS as u64 * 86_400);
-    let since = std::time::SystemTime::now()
-        .checked_sub(window)
-        .unwrap_or(std::time::UNIX_EPOCH);
-    persona::echo::echoes(&store.sessions_dir(&p.name), since)
+    persona::echo::echoes(
+        &store.sessions_dir(&p.name),
+        days_ago(persona::echo::SHOWN_DAYS as u64),
+    )
+}
+
+/// The start of a window of `days` ending now.
+fn days_ago(days: u64) -> std::time::SystemTime {
+    std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(days * 86_400))
+        .unwrap_or(std::time::UNIX_EPOCH)
+}
+
+/// `p`'s initiative and uptake over chats active since `since`
+/// (`persona::initiative`).
+fn read_initiative(
+    dir: &Path,
+    store: &Store,
+    p: &Persona,
+    since: std::time::SystemTime,
+) -> anyhow::Result<persona::initiative::Initiative> {
+    persona::initiative::initiative(&dir.join(&p.name), &store.sessions_dir(&p.name), since)
+}
+
+fn share(n: usize, of: usize) -> String {
+    match of {
+        0 => format!("{n} of 0"),
+        _ => format!("{n} of {of} ({:.0}%)", 100.0 * n as f64 / of as f64),
+    }
+}
+
+/// The initiative reading in words, one line per arm, over `days`.
+fn initiative_lines(
+    read: &anyhow::Result<persona::initiative::Initiative>,
+    days: u64,
+) -> Vec<String> {
+    let i = match read {
+        Err(e) => return vec![format!("unreadable — {e:#}")],
+        Ok(i) => i,
+    };
+    let unreadable = not_read(i.unreadable, i.left_out);
+    if i.people == 0 {
+        return vec![format!(
+            "no one in their network to look for; add their people first{unreadable}"
+        )];
+    }
+    if i.arms.is_empty() {
+        return vec![format!(
+            "no replies in chats from the last {days} days{unreadable}"
+        )];
+    }
+    let on = |b: bool| if b { "on" } else { "off" };
+    let mut out = vec![format!(
+        "{} people looked for in {} chat(s) from the last {days} days{unreadable}",
+        i.people, i.chats
+    )];
+    for a in &i.arms {
+        let r = &a.reading;
+        let decided = r.decided();
+        out.push(format!(
+            "days {}, events {}, people {}: {} replies, {} brought someone up ({} introductions); \
+             you took up {}: {} in your next turn ({} asking), {} in a later chat; \
+             {} not answered yet",
+            on(a.arm.days),
+            on(a.arm.events),
+            on(a.arm.people),
+            r.replies,
+            share(r.introducing, r.replies),
+            r.introductions,
+            share(r.taken_up + r.came_back, decided),
+            r.taken_up,
+            r.asked,
+            r.came_back,
+            r.unanswered,
+        ));
+    }
+    out
+}
+
+/// What a reading did not read, as a line's tail: chats that could not be
+/// read, and test or withdrawn chats left out; empty when neither.
+fn not_read(unreadable: usize, left_out: usize) -> String {
+    match (unreadable, left_out) {
+        (0, 0) => String::new(),
+        (n, 0) => format!(" ({n} chat(s) could not be read)"),
+        (0, m) => format!(" ({m} test or withdrawn chat(s) left out)"),
+        (n, m) => format!(" ({n} chat(s) could not be read; {m} test or withdrawn left out)"),
+    }
 }
 
 /// One line for `mecha persona show`: the echo reading in words.
 fn echo_line(echoes: &anyhow::Result<persona::echo::Echoes>) -> String {
-    let days = persona::echo::SHOWN_DAYS;
+    echo_line_over(echoes, persona::echo::SHOWN_DAYS as u64)
+}
+
+/// The echo reading in words, over `days`.
+fn echo_line_over(echoes: &anyhow::Result<persona::echo::Echoes>, days: u64) -> String {
     let e = match echoes {
         Err(e) => return format!("unreadable — {e:#}"),
         Ok(e) => e,
     };
-    let unreadable = match e.unreadable {
-        0 => String::new(),
-        n => format!(" ({n} chat(s) could not be read)"),
-    };
+    let unreadable = not_read(e.unreadable, e.left_out);
     match e.max {
         None => format!("no replies to compare in chats from the last {days} days{unreadable}"),
         Some(max) => format!(
@@ -787,6 +1320,35 @@ fn run_with(
                 println!("  echo:         {}", echo_line(&echoes));
             }
         }
+        Cmd::Measures { name, days, json } => {
+            let store = load(dir);
+            let p = find(&store, &name)?;
+            let since = days_ago(days as u64);
+            let echoes = persona::echo::echoes(&store.sessions_dir(&p.name), since);
+            let initiative = read_initiative(dir, &store, p, since);
+            if json {
+                // `null` when unreadable — never an empty reading — with
+                // why beside it, as the text names it (review of #808).
+                let why = |e: Option<&anyhow::Error>| e.map(|e| format!("{e:#}"));
+                let out = serde_json::json!({
+                    "name": p.name,
+                    "days": days,
+                    "echo_error": why(echoes.as_ref().err()),
+                    "initiative_error": why(initiative.as_ref().err()),
+                    "echo": echoes.ok(),
+                    "initiative": initiative.ok(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("{} — `{}`", p.display(), p.name);
+                println!("  echo:        {}", echo_line_over(&echoes, days as u64));
+                let mut lines = initiative_lines(&initiative, days as u64).into_iter();
+                println!("  initiative:  {}", lines.next().unwrap_or_default());
+                for l in lines {
+                    println!("    {l}");
+                }
+            }
+        }
         Cmd::New {
             name,
             display,
@@ -919,6 +1481,12 @@ fn run_with(
             println!("Removed `{}` — kept at {}.", p.name, to.display());
         }
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
+        Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
+        Cmd::Life { cmd } => life_cmd(dir, cmd, edit_file)?,
+        Cmd::Story { cmd } => story_cmd(dir, cmd)?,
+        Cmd::People { cmd } => people_cmd(dir, &lib, cmd)?,
+        Cmd::Day { name, date, json } => day_cmd(dir, &name, date.as_deref(), json)?,
+        Cmd::Week { name, date, json } => week_cmd(dir, &name, date.as_deref(), json)?,
         Cmd::Relationship { cmd } => {
             persona::seed_starters(dir)?;
             let store = load(dir);
@@ -1024,6 +1592,833 @@ fn run_with(
     Ok(())
 }
 
+/// The owner's calendar day, not the machine's UTC one, and `date` read
+/// against it.
+fn owner_dates(date: Option<&str>) -> Result<(chrono::NaiveDate, chrono::NaiveDate)> {
+    let cfg = mecha_core::config::Config::load(&std::env::current_dir()?)?;
+    let today = match cfg.agent.timezone() {
+        Some(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
+        None => chrono::Local::now().date_naive(),
+    };
+    let date = match date {
+        None => today,
+        Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .with_context(|| format!("`{d}` is not a date (YYYY-MM-DD)"))?,
+    };
+    Ok((date, today))
+}
+
+/// `mecha persona story`: her events, levels and weather, through
+/// `story::story`'s own door, drawn and stored on the first asking.
+fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
+    use mecha_core::persona::{routine, story};
+    match cmd {
+        StoryCmd::Show {
+            name,
+            date,
+            days,
+            json,
+        } => {
+            let (to, today) = owner_dates(date.as_deref())?;
+            let name = name.trim().to_lowercase();
+            let from = to - chrono::Days::new(u64::from(days - 1));
+            let got = story::story(dir, &name, from, to, today)?;
+            let people = load(dir).get(&name).is_some_and(|p| p.settings.life.people);
+            let names = story::names(&dir.join(&name), people)?;
+            print!("{}", render_story(&got.days, &names, json, today)?);
+            if let Some(why) = &got.why {
+                eprintln!("the rest is not drawn: {why}");
+            }
+        }
+        StoryCmd::Init { name } => {
+            let store = load(dir);
+            let p = find(&store, &name)?;
+            let pdir = dir.join(&p.name);
+            let Some(cell) = routine::load(&pdir)?.and_then(|r| r.cell) else {
+                bail!(
+                    "`{}` has no routine naming their kind of week; set it first \
+                     (`mecha persona routine edit {}`)",
+                    p.name,
+                    p.name
+                );
+            };
+            let path = story::init(&pdir, cell).with_context(|| format!("`{}`", p.name))?;
+            println!("Wrote {} from the {} starter.", path.display(), cell.id());
+        }
+        StoryCmd::Weather { .. } => bail!("`story weather` is run by `execute`"),
+    }
+    Ok(())
+}
+
+/// Her story as `mecha persona story show` prints it: counts and closed
+/// fields, and titles with `{who}` filled from her network.
+fn render_story(
+    days: &[mecha_core::persona::story::StoryDay],
+    names: &std::collections::BTreeMap<String, String>,
+    json: bool,
+    today: chrono::NaiveDate,
+) -> Result<String> {
+    use mecha_core::persona::story;
+    use std::fmt::Write;
+    let mut out = String::new();
+    if json {
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&story::to_json(days, names))?
+        )?;
+        return Ok(out);
+    }
+    let lv = |l: &story::Levels| {
+        format!(
+            "energy {}, stress {}, mood {}",
+            l.energy.id(),
+            l.stress.id(),
+            l.mood.id()
+        )
+    };
+    for d in days {
+        let weather = d.weather.map_or("no weather stored".to_string(), |w| {
+            format!("{}, {}°/{}°C", w.sky.id(), w.high_c, w.low_c)
+        });
+        writeln!(
+            out,
+            "{} {}{} · {weather}",
+            d.date.format("%a"),
+            d.date,
+            match (d.kept, d.date > today) {
+                (true, _) => "",
+                (false, true) => " (ahead, not kept)",
+                (false, false) => " (past the keep window, drawn now and not kept)",
+            }
+        )?;
+        writeln!(out, "  morning: {}", lv(&d.morning))?;
+        if d.events.is_empty() {
+            writeln!(out, "  (a quiet day)")?;
+        }
+        for e in &d.events {
+            writeln!(out, "  - [{}] {}", e.size.id(), story::title(e, names))?;
+        }
+        writeln!(out, "  evening: {}", lv(&d.evening))?;
+    }
+    Ok(out)
+}
+
+/// `mecha persona day`: the sampled day, through `world::day`'s own door,
+/// drawn and stored on the first asking and read back on the next.
+fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
+    use mecha_core::persona::world;
+    let (date, today) = owner_dates(date)?;
+    let name = name.trim().to_lowercase();
+    let day = world::day(dir, &name, date, today)?;
+    print!("{}", render_day(&name, &day, json)?);
+    Ok(())
+}
+
+/// A day as `mecha persona day` prints it.
+fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -> Result<String> {
+    use mecha_core::persona::sampler;
+    use std::fmt::Write;
+    let mut out = String::new();
+    let clock = |m: u32| format!("{:02}:{:02}", (m / 60) % 24, m % 60);
+    let company = |s: &sampler::Stretch| -> Option<Vec<&'static str>> {
+        s.company
+            .as_ref()
+            .map(|c| c.iter().map(|k| k.id()).collect())
+    };
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&day.to_json())?)?;
+        return Ok(out);
+    }
+    writeln!(
+        out,
+        "{name}, {} {} ({}, {})",
+        day.date.format("%A"),
+        day.date,
+        day.day_type.id(),
+        day.cell.id()
+    )?;
+    let mut midnight = false;
+    for s in &day.stretches {
+        if !midnight && s.start >= 24 * 60 {
+            writeln!(out, "  ── after midnight ──")?;
+            midnight = true;
+        }
+        let who = match company(s) {
+            None => String::new(),
+            Some(c) if c == ["alone"] => "alone".into(),
+            Some(c) => format!("with {}", c.join(", ")),
+        };
+        let anchor = s
+            .anchor
+            .as_deref()
+            .map(|a| format!("[{a}] "))
+            .unwrap_or_default();
+        // A stretch that runs across midnight sits above the rule, so its
+        // end says it is the next day's.
+        let next_day = if s.start < 24 * 60 && s.end > 24 * 60 {
+            "+1"
+        } else {
+            ""
+        };
+        let span = format!("{}–{}{next_day}", clock(s.start), clock(s.end));
+        writeln!(out, "  {span:<13}  {:<16} {anchor}{who}", s.activity.id())?;
+    }
+    if day.backoffs > 0 {
+        writeln!(
+            out,
+            "\n{} draws read past the {} rows, to the pool or a nearer hour.",
+            day.backoffs,
+            day.cell.id()
+        )?;
+    }
+    Ok(out)
+}
+
+/// `mecha persona week`: the week holding a date, through `world::week_view`.
+fn week_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
+    use mecha_core::persona::world;
+    let (date, today) = owner_dates(date)?;
+    let name = name.trim().to_lowercase();
+    match world::week_view(dir, &name, date, today)? {
+        Ok(week) => print!("{}", render_week(&name, &week, json)?),
+        Err(why) => bail!(why.why(&name)),
+    }
+    Ok(())
+}
+
+/// A week as `mecha persona week` prints it: a line a day, its hours by
+/// activity, most first.
+fn render_week(
+    name: &str,
+    week: &mecha_core::persona::world::WeekView,
+    json: bool,
+) -> Result<String> {
+    use mecha_core::persona::world::When;
+    use std::fmt::Write;
+    let mut out = String::new();
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&week.to_json())?)?;
+        return Ok(out);
+    }
+    let hours = |m: u32| format!("{}h{:02}", m / 60, m % 60);
+    writeln!(out, "{name}, the week of {}", week.monday)?;
+    for d in &week.days {
+        let when = match d.when {
+            // Folded or never drawn: the store keeps only the week's count.
+            When::Folded => "not kept",
+            When::Past => "",
+            When::Today => "today",
+            When::Ahead => "ahead",
+        };
+        write!(out, "  {} {}  {when:<8}", d.date.format("%a"), d.date)?;
+        let Some(day) = &d.day else {
+            match d.when {
+                When::Folded => writeln!(out)?,
+                _ => writeln!(out, "  not drawn")?,
+            }
+            continue;
+        };
+        let mut by: Vec<(&str, u32)> = Vec::new();
+        for s in &day.stretches {
+            let id = s.activity.id();
+            match by.iter_mut().find(|(a, _)| *a == id) {
+                Some((_, m)) => *m += s.end - s.start,
+                None => by.push((id, s.end - s.start)),
+            }
+        }
+        by.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let line: Vec<String> = by
+            .iter()
+            .map(|(a, m)| format!("{a} {}", hours(*m)))
+            .collect();
+        writeln!(out, "  {}", line.join(", "))?;
+    }
+    if let Some(why) = &week.unavailable {
+        writeln!(out, "\nThe days not drawn wait on their routine: {why}")?;
+    }
+    if let Some(f) = &week.folded {
+        // Most first, as each day's line and the web app's summary are.
+        let mut minutes = f.minutes.clone();
+        minutes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.id().cmp(b.0.id())));
+        let line: Vec<String> = minutes
+            .iter()
+            .map(|(a, m)| format!("{} {}", a.id(), hours(*m)))
+            .collect();
+        writeln!(out, "\nFolded, {} day(s): {}", f.days, line.join(", "))?;
+        if f.unreadable > 0 {
+            writeln!(out, "  and {} this binary cannot name", hours(f.unreadable))?;
+        }
+    }
+    Ok(out)
+}
+
+/// `mecha persona routine`: the owner's door to `routine.toml` and a
+/// waiting draft. The editor writes the file itself, as `edit` does, and
+/// what it left is read back through the sampler's own door.
+fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
+    use mecha_core::persona::activity::Activity;
+    use mecha_core::persona::routine::{self, Routine};
+    // By folder, as `edit` finds a persona: one whose persona.toml no longer
+    // parses still has a week to look at. `routine::read` checks the name.
+    let named = |name: &str| -> Result<String> { Ok(name.trim().to_lowercase()) };
+    let anchors =
+        |r: &Routine| -> Vec<serde_json::Value> { r.anchors.iter().map(|a| a.to_json()).collect() };
+    match cmd {
+        RoutineCmd::Show { name, json } => {
+            let name = named(&name)?;
+            let texts = routine::read(dir, &name)?;
+            let parsed = texts.routine.as_deref().map(routine::parse).transpose();
+            if json {
+                let out = serde_json::json!({
+                    // `null` with an error beside it when it does not load —
+                    // never an empty week.
+                    "routine": parsed.as_ref().ok().map(|r| r.as_ref().map(anchors)),
+                    "cell": parsed.as_ref().ok().and_then(|r| r.as_ref()).and_then(|r| r.cell).map(|c| c.id()),
+                    "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                    "draft": texts.draft,
+                    "notes": texts.notes,
+                    "activities": Activity::ALL.iter().map(|a| a.id()).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
+            match (&texts.routine, &parsed) {
+                (None, _) => println!(
+                    "`{name}` has no routine, so no day is drawn for them: it names their cell, \
+                     the kind of week their days come from. \
+                     `mecha persona routine edit {name}` writes one."
+                ),
+                (Some(_), Err(e)) => println!("routine.toml does not load: {e:#}"),
+                (Some(text), Ok(r)) => {
+                    println!("── routine.toml ──\n{}", text.trim());
+                    if r.as_ref().is_some_and(|r| r.cell.is_none()) {
+                        println!(
+                            "\nIt names no cell, so no day is drawn for them until it does \
+                             (`cell = \"student\"`, `full_time`, `full_time_parent`, \
+                             `part_time`, `at_home` or `retired`)."
+                        );
+                    }
+                }
+            }
+            if let Some(draft) = &texts.draft {
+                println!(
+                    "\n── routine.draft.toml (waiting on you) ──\n{}\n\n\
+                     `mecha persona routine approve {name}` makes it the routine; \
+                     `discard` drops it.",
+                    draft.trim()
+                );
+            }
+            if let Some(notes) = texts.notes.as_deref().filter(|n| !n.trim().is_empty()) {
+                println!(
+                    "\n── routine.notes.md (what the drafter is told) ──\n{}",
+                    notes.trim()
+                );
+            }
+            let ids: Vec<&str> = Activity::ALL.iter().map(|a| a.id()).collect();
+            println!("\nActivities an anchor may name: {}", ids.join(", "));
+        }
+        RoutineCmd::Edit { name, draft } => {
+            let name = named(&name)?;
+            let file = if draft {
+                if routine::read(dir, &name)?.draft.is_none() {
+                    bail!("`{name}` has no routine draft waiting");
+                }
+                dir.join(&name).join(routine::DRAFT)
+            } else {
+                routine::ensure(dir, &name)?
+            };
+            edit_file(&file)?;
+            // Read back through the store's door, so a save is checked as
+            // strictly as the sampler will load it.
+            let texts = routine::read(dir, &name)?;
+            let Some(text) = (if draft { texts.draft } else { texts.routine }) else {
+                println!(
+                    "{} was removed{}.",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        ""
+                    } else {
+                        ": no day is drawn for them until a routine names their cell"
+                    }
+                );
+                return Ok(());
+            };
+            match routine::parse(&text) {
+                Ok(r) => println!(
+                    "Saved: {} anchor(s), {}{}.",
+                    r.anchors.len(),
+                    match r.cell {
+                        Some(c) => format!("cell {}", c.id()),
+                        None => "no cell, so no day is drawn yet".into(),
+                    },
+                    if draft {
+                        format!(" — `mecha persona routine approve {name}` when it reads right")
+                    } else {
+                        String::new()
+                    }
+                ),
+                Err(e) => bail!(
+                    "{} was saved but does not load, so {}: {e:#}. \
+                     `mecha persona routine edit {name}{}` to fix it.",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        "it cannot be approved yet"
+                    } else {
+                        "no day is built from it"
+                    },
+                    if draft { " --draft" } else { "" },
+                ),
+            }
+        }
+        RoutineCmd::Notes { name } => {
+            let name = named(&name)?;
+            let path = routine::ensure_notes(dir, &name)?;
+            edit_file(&path)?;
+            // Read back through the store's door: trimmed, checked, and a
+            // blank file removed. A save that cannot be read is an error,
+            // never blank: blank would delete the notes.
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {} back", path.display()))?;
+            routine::write_notes(dir, &name, &text).with_context(|| {
+                format!("the notes were saved but are refused; `mecha persona routine notes {name}` to fix them")
+            })?;
+            if text.trim().is_empty() {
+                println!("No notes: the drafter works from identity.md and motivation.md alone.");
+            } else {
+                println!(
+                    "Saved. `mecha persona routine draft {name}` drafts their week with them."
+                );
+            }
+        }
+        RoutineCmd::Approve { name, yes } => {
+            let name = named(&name)?;
+            let texts = routine::read(dir, &name)?;
+            let Some(draft) = texts.draft else {
+                bail!("`{name}` has no routine draft waiting");
+            };
+            println!("── routine.draft.toml ──\n{}", draft.trim());
+            if texts.routine.is_some() {
+                println!("\nIt replaces the routine `{name}` has now, which is kept as routine.previous.toml.");
+            }
+            if let Some(cell) = routine::kept_cell(&draft, texts.routine.as_deref()) {
+                println!(
+                    "It names no kind of week, so they keep theirs: {}.",
+                    cell.id()
+                );
+            }
+            if !yes && !confirm(&format!("Make this `{name}`'s routine?"))? {
+                println!("Not approved.");
+                return Ok(());
+            }
+            let r = routine::approve_draft_as_shown(dir, &name, &persona::text_digest(&draft))?;
+            println!(
+                "Approved: `{name}`'s routine has {} anchor(s).",
+                r.anchors.len()
+            );
+        }
+        RoutineCmd::Discard { name } => {
+            let name = named(&name)?;
+            routine::discard_draft(dir, &name)?;
+            println!("Dropped `{name}`'s routine draft.");
+        }
+        // Asks a model, so `execute` routes it before this synchronous door.
+        RoutineCmd::Draft { .. } => bail!("`routine draft` is run by `execute`"),
+    }
+    Ok(())
+}
+
+/// `mecha persona life`: the owner's door to the constraints the sampler
+/// applies to time-use filler. The file is optional, so `show` distinguishes
+/// no profile from an empty one.
+fn life_cmd(dir: &Path, cmd: LifeCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
+    use mecha_core::persona::life;
+    let named = |name: &str| -> String { name.trim().to_lowercase() };
+    match cmd {
+        LifeCmd::Show { name, json } => {
+            let name = named(&name);
+            let text = life::read(dir, &name)?;
+            let draft = life::read_draft(dir, &name)?;
+            let parsed = text.as_deref().map(life::parse).transpose();
+            if json {
+                let out = serde_json::json!({
+                    "life": parsed.as_ref().ok().and_then(|l| l.as_ref()).map(|l| l.to_json()),
+                    "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                    "draft": draft,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                match (text, parsed) {
+                    (None, _) => println!(
+                        "`{name}` has no life profile yet; `mecha persona life edit {name}` writes one."
+                    ),
+                    (Some(_), Err(e)) => println!("life.toml does not load: {e:#}"),
+                    (Some(text), Ok(_)) => println!("── life.toml ──\n{}", text.trim()),
+                }
+                if let Some(draft) = draft {
+                    println!(
+                        "\n── life.draft.toml (waiting on you) ──\n{}\n\n\
+                         `mecha persona life approve {name}` makes it their profile; `discard` drops it.",
+                        draft.trim()
+                    );
+                }
+            }
+        }
+        LifeCmd::Edit { name, draft } => {
+            let name = named(&name);
+            let path = if draft {
+                if life::read_draft(dir, &name)?.is_none() {
+                    bail!("`{name}` has no life draft waiting");
+                }
+                dir.join(&name).join(life::DRAFT)
+            } else {
+                life::ensure(dir, &name)?
+            };
+            edit_file(&path)?;
+            let text = if draft {
+                life::read_draft(dir, &name)?
+            } else {
+                life::read(dir, &name)?
+            };
+            let Some(text) = text else {
+                println!(
+                    "{} was removed{}.",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        ""
+                    } else {
+                        ": their days use the time-use table without a profile"
+                    }
+                );
+                return Ok(());
+            };
+            let profile = life::parse(&text).with_context(|| {
+                format!(
+                    "{} was saved but does not load, so {}; `mecha persona life edit {name}{}` to fix it",
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft { "it cannot be approved yet" } else { "no day is built with it" },
+                    if draft { " --draft" } else { "" },
+                )
+            })?;
+            println!(
+                "Saved: {} household member(s), {} usual sleep, {} never activity(s){}.",
+                profile.household.len(),
+                if profile.sleep.is_some() { "a" } else { "no" },
+                profile.never.len(),
+                if draft {
+                    format!(" — `mecha persona life approve {name}` when it reads right")
+                } else {
+                    String::new()
+                },
+            );
+        }
+        LifeCmd::Approve { name, yes } => {
+            let name = named(&name);
+            let Some(draft) = life::read_draft(dir, &name)? else {
+                bail!("`{name}` has no life draft waiting");
+            };
+            println!("── life.draft.toml ──\n{}", draft.trim());
+            if life::read(dir, &name)?.is_some() {
+                println!("\nIt replaces life.toml, which is kept as life.previous.toml.");
+            }
+            if !yes && !confirm(&format!("Make this `{name}`'s life profile?"))? {
+                println!("Not approved.");
+                return Ok(());
+            }
+            let profile = life::approve_draft_as_shown(dir, &name, &persona::text_digest(&draft))?;
+            println!(
+                "Approved: `{name}`'s life has {} household member(s) and {} never activity(s).",
+                profile.household.len(),
+                profile.never.len()
+            );
+        }
+        LifeCmd::Discard { name } => {
+            let name = named(&name);
+            life::discard_draft(dir, &name)?;
+            println!("Dropped `{name}`'s life draft.");
+        }
+        LifeCmd::Draft { .. } => bail!("`life draft` is run by `execute`"),
+    }
+    Ok(())
+}
+
+/// A closed-set word as the owner types it, refused with the words it takes.
+fn closed<T: serde::de::DeserializeOwned>(what: &str, word: &str, all: &[&str]) -> Result<T> {
+    let w = word.trim().to_lowercase();
+    if all.contains(&w.as_str()) {
+        if let Ok(v) = serde_json::from_value(serde_json::Value::String(w)) {
+            return Ok(v);
+        }
+    }
+    bail!("{word:?} is not a {what}; use {}", all.join(", "))
+}
+
+/// `mecha persona people …`: the owner's door to her network (§6). Every
+/// write renders `network.md` again, in the store.
+fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
+    use mecha_core::persona::network::{
+        self, EventKind, Layer, NewEvent, NewPerson, PersonEdit, Tie, When,
+    };
+    use mecha_core::persona::people_draft;
+    let wire = |v: serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let ties: Vec<String> = Tie::ALL
+        .iter()
+        .map(|t| wire(serde_json::json!(t)))
+        .collect();
+    let kinds: Vec<String> = EventKind::ALL
+        .iter()
+        .map(|k| wire(serde_json::json!(k)))
+        .collect();
+    let tie = |t: Option<String>| -> Result<Option<Tie>> {
+        let all: Vec<&str> = ties.iter().map(String::as_str).collect();
+        t.map(|t| closed("tie", &t, &all)).transpose()
+    };
+    let layer = |n: Option<u32>| -> Result<Option<Layer>> {
+        n.map(|n| {
+            Layer::of_size(n)
+                .ok_or_else(|| anyhow::anyhow!("{n} is not a layer; use 5, 15, 50 or 150"))
+        })
+        .transpose()
+    };
+    let when =
+        |w: Option<String>| -> Result<When> { w.map_or(Ok(When::UNKNOWN), |w| When::parse(&w)) };
+    let store = load(dir);
+    let open =
+        |name: &str| -> Result<std::path::PathBuf> { Ok(dir.join(&find(&store, name)?.name)) };
+    // The identity.md lines naming someone in her network: the owner edits
+    // them so each person lives in one place (PL31); nothing rewrites them.
+    let overlap = |p: &Persona| -> Result<()> {
+        let lines = people_draft::identity_overlap(dir, p)?;
+        if !lines.is_empty() {
+            println!(
+                "\nidentity.md still names people who now live in their network. Edit these \
+                 lines (`mecha persona edit {}`) so each lives in one place:",
+                p.name
+            );
+            for (n, l) in lines {
+                println!("  {n:>4}: {l}");
+            }
+        }
+        Ok(())
+    };
+    match cmd {
+        PeopleCmd::Show { name, json } => {
+            let n = network::Network::read(&open(&name)?)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&n.to_json())?);
+            } else {
+                print!("{}", network::markdown(&n));
+                overlap(find(&store, &name)?)?;
+            }
+        }
+        PeopleCmd::Propose { .. } => bail!("`people propose` is run by `execute`"),
+        PeopleCmd::Proposal { name } => {
+            let p = find(&store, &name)?;
+            let Some(d) = people_draft::read(&dir.join(&p.name))? else {
+                println!("No proposal of people is waiting for `{}`.", p.name);
+                return Ok(());
+            };
+            if d.identity != persona::text_digest(&p.identity) {
+                println!("identity.md changed since these were read from it; propose again.\n");
+            }
+            for (i, q) in d.people.iter().enumerate() {
+                let mut line = format!("{:>2}. {}", i + 1, q.name);
+                // A label that only repeats the role is said once.
+                let mut what: Vec<String> = q.role.iter().cloned().collect();
+                if let Some(l) = q.label.clone().filter(|l| q.role.as_ref() != Some(l)) {
+                    what.push(l);
+                }
+                if !what.is_empty() {
+                    line.push_str(&format!(" ({})", what.join(", ")));
+                }
+                if !q.aliases.is_empty() {
+                    line.push_str(&format!(", also {}", q.aliases.join(", ")));
+                }
+                if let Some(l) = q.layer {
+                    line.push_str(&format!(", closest {l}"));
+                }
+                if let Some(d) = &q.description {
+                    line.push_str(&format!(". {d}"));
+                }
+                println!("{line}");
+            }
+            println!(
+                "\n`mecha persona people accept {}` adds them all, or `--only 1,3`.",
+                p.name
+            );
+        }
+        PeopleCmd::Accept { name, only } => {
+            let p = find(&store, &name)?;
+            let got = people_draft::accept(dir, lib, p, only.as_deref())?;
+            for (_, n) in &got.added {
+                println!("Added {n}.");
+            }
+            for n in &got.already {
+                println!("{n} is already in their network; left as it is.");
+            }
+            if got.waiting > 0 {
+                println!(
+                    "{} more still wait in the proposal (`mecha persona people proposal {}`).",
+                    got.waiting, p.name
+                );
+            }
+            overlap(p)?;
+        }
+        PeopleCmd::Dismiss { name } => {
+            let p = find(&store, &name)?;
+            people_draft::dismiss(&dir.join(&p.name))?;
+            println!("Dropped the proposal; their network is untouched.");
+        }
+        PeopleCmd::Export { name } => {
+            let n = network::Network::read(&open(&name)?)?;
+            let mut out = n.to_json();
+            out["events"] = n.events.iter().map(|e| e.to_json()).collect();
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        PeopleCmd::Add {
+            name,
+            person,
+            aliases,
+            role,
+            description,
+            character: portrait,
+            tie: t,
+            label,
+            layer: l,
+            since,
+        } => {
+            let pdir = open(&name)?;
+            let id = network::add_person(
+                &pdir,
+                lib,
+                &NewPerson {
+                    name: person,
+                    aliases,
+                    role,
+                    description,
+                    character: portrait,
+                    tie: tie(t)?,
+                    label,
+                    layer: layer(l)?,
+                    since: when(since)?,
+                },
+            )?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.person(&id).context("the person just added")?;
+            println!("Added {} ({}) to their network.", p.name, &id[..8]);
+        }
+        PeopleCmd::Edit {
+            name,
+            person,
+            rename,
+            aliases,
+            role,
+            description,
+            character: portrait,
+        } => {
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.find(&person)?;
+            // An empty value clears a field.
+            let clear = |v: Option<String>| v.map(|v| Some(v).filter(|v| !v.trim().is_empty()));
+            let portrait = clear(portrait);
+            network::edit_person(
+                &pdir,
+                lib,
+                &p.uid,
+                &PersonEdit {
+                    name: rename,
+                    aliases: aliases
+                        .map(|a| a.into_iter().filter(|a| !a.trim().is_empty()).collect()),
+                    role: clear(role),
+                    description: clear(description),
+                    character: portrait,
+                },
+            )?;
+            println!("Changed {}.", p.name);
+        }
+        PeopleCmd::Event {
+            name,
+            person,
+            kind,
+            with,
+            on,
+            context,
+            tie: t,
+            label,
+            layer: l,
+        } => {
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.find(&person)?;
+            let other = with.as_deref().map(|w| n.find(w)).transpose()?;
+            let all: Vec<&str> = kinds.iter().map(String::as_str).collect();
+            let id = network::record(
+                &pdir,
+                &p.uid,
+                other.map(|o| o.uid.as_str()),
+                &NewEvent {
+                    kind: closed("kind of event", &kind, &all)?,
+                    tie: tie(t)?,
+                    label,
+                    layer: layer(l)?,
+                    when: when(on)?,
+                    context,
+                },
+            )?;
+            println!(
+                "Recorded {} on {}{} ({}).",
+                kind.trim().to_lowercase(),
+                p.name,
+                other
+                    .map(|o| format!(" and {}", o.name))
+                    .unwrap_or_default(),
+                &id[..8]
+            );
+        }
+        PeopleCmd::Retract { name, event } => {
+            // At least an id's first four characters, as a person's id
+            // prefix: an empty one would match every event.
+            if event.trim().len() < 4 {
+                bail!("name the event by at least the first four characters of its id");
+            }
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let hits: Vec<_> = n
+                .events
+                .iter()
+                .filter(|e| e.uid.starts_with(&event.trim().to_lowercase()))
+                .collect();
+            let [one] = hits.as_slice() else {
+                bail!(
+                    "{} events match {:?}; name one by its id",
+                    hits.len(),
+                    event.trim()
+                );
+            };
+            network::remove_event(&pdir, &one.uid)?;
+            println!("Took back the event.");
+        }
+        PeopleCmd::Remove { name, person, yes } => {
+            let pdir = open(&name)?;
+            let n = network::Network::read(&pdir)?;
+            let p = n.find(&person)?;
+            if !yes
+                && !confirm(&format!(
+                    "Take {} out of their network, with everything recorded between them?",
+                    p.name
+                ))?
+            {
+                println!("Not removed.");
+                return Ok(());
+            }
+            network::remove_person(&pdir, &p.uid)?;
+            println!("Took {} out of their network.", p.name);
+        }
+    }
+    Ok(())
+}
+
 /// `mecha persona memory …`: the owner's curation of what a persona
 /// remembers (§9.8). Every id printed is the first eight characters of the
 /// record's; any unambiguous prefix is accepted back.
@@ -1057,27 +2452,32 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 );
                 return Ok(());
             }
-            let mark = |status: memory::Status, origin: Origin, pinned: bool| {
-                let mut tags = Vec::new();
-                if pinned {
-                    tags.push("pinned");
-                }
-                match status {
-                    memory::Status::Candidate => tags.push("waiting on you"),
-                    memory::Status::Invalidated => tags.push("invalidated"),
-                    memory::Status::Active => {}
-                }
-                match origin {
-                    Origin::Owner => tags.push("yours"),
-                    Origin::ModelUntrusted => tags.push("untrusted"),
-                    Origin::ModelClean => {}
-                }
-                if tags.is_empty() {
-                    String::new()
-                } else {
-                    format!("  [{}]", tags.join(", "))
-                }
-            };
+            let mark =
+                |status: memory::Status, origin: Origin, pinned: bool, vouched_at: Option<&str>| {
+                    let mut tags = Vec::new();
+                    if pinned {
+                        tags.push("pinned");
+                    }
+                    match status {
+                        memory::Status::Candidate => tags.push("waiting on you"),
+                        memory::Status::Invalidated => tags.push("invalidated"),
+                        memory::Status::Active => {}
+                    }
+                    if vouched_at.is_some() {
+                        tags.push("approved as clean");
+                    }
+                    match origin {
+                        Origin::Owner if vouched_at.is_none() => tags.push("yours"),
+                        Origin::Owner => {}
+                        Origin::ModelUntrusted => tags.push("untrusted"),
+                        Origin::ModelClean => {}
+                    }
+                    if tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{}]", tags.join(", "))
+                    }
+                };
             println!("Episodes ({})", episodes.len());
             for e in &episodes {
                 println!(
@@ -1086,7 +2486,7 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                     e.source.chat,
                     e.source.from,
                     e.source.to,
-                    mark(e.status, e.origin, e.pinned)
+                    mark(e.status, e.origin, e.pinned, e.vouched_at.as_deref())
                 );
                 println!("            {}", e.summary);
                 if !e.open_threads.is_empty() {
@@ -1105,7 +2505,7 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                         "  {}  {}{}",
                         &f.uid[..8],
                         f.text,
-                        mark(f.status, f.origin, f.pinned)
+                        mark(f.status, f.origin, f.pinned, f.vouched_at.as_deref())
                     );
                 }
             }
@@ -1116,10 +2516,78 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
                 print!("{}", m.export()?);
             }
         }
-        MemoryCmd::Approve { name, id } => {
+        MemoryCmd::Approve {
+            name,
+            id,
+            chat,
+            clean,
+            yes,
+        } => {
             let m = Memory::open_to_edit(dir, &named(&name)?)?;
-            m.approve(&m.resolve(&id)?)?;
-            println!("Approved — it can be recalled now.");
+            if let Some(chat) = chat {
+                // A bulk vouch on provenance: what is vouched for is shown
+                // first, and asked about, as forget --chat asks (review of
+                // #837). The owner signs for text they can read.
+                let found = chat_records(&m, &chat)?;
+                if !found.any {
+                    bail!("`{name}` has no memory records from chat `{chat}`");
+                }
+                let waiting = found.untrusted;
+                let mut count = 0;
+                if !waiting.is_empty() {
+                    println!("From chat {chat}, marked as from outside:");
+                    for (uid, text) in &waiting {
+                        println!("  {}  {}", &uid[..8.min(uid.len())], text);
+                    }
+                    let question = format!(
+                        "Vouch for these {} record(s) as clean? Recalling them will no longer mark a chat untrusted.",
+                        waiting.len()
+                    );
+                    if !yes && !confirm(&question)? {
+                        println!("Kept as they were.");
+                        return Ok(());
+                    }
+                    // Exactly the records shown, in one transaction: one the
+                    // writer adds while the question waits was never read, and
+                    // one withdrawn meanwhile is skipped and named, never a
+                    // half-done loop (review of #837).
+                    let uids: Vec<String> = waiting.iter().map(|(uid, _)| uid.clone()).collect();
+                    let (vouched, skipped) = m.approve_clean_listed(&chat, &uids)?;
+                    count = vouched;
+                    for uid in &skipped {
+                        println!(
+                            "  {} changed while you were asked and was left as it was.",
+                            &uid[..8.min(uid.len())]
+                        );
+                    }
+                }
+                // Records vouched for before: a repeat re-syncs their shared
+                // copies and vouches for nothing new, so nothing to show.
+                for uid in &found.vouched {
+                    m.approve_clean(uid)?;
+                }
+                if count == 0 {
+                    println!(
+                        "Nothing from {chat} needed a new clean approval; any existing vouches were re-synced."
+                    );
+                } else {
+                    println!(
+                        "Approved {count} record(s) as clean — recalling them no longer marks the chat untrusted."
+                    );
+                }
+            } else {
+                let id = id.expect("clap requires an id or --chat");
+                let uid = m.resolve(&id)?;
+                if clean {
+                    m.approve_clean(&uid)?;
+                    println!(
+                        "Approved as clean — it can be recalled without marking the chat untrusted."
+                    );
+                } else {
+                    m.approve(&uid)?;
+                    println!("Approved — it can be recalled now.");
+                }
+            }
         }
         MemoryCmd::Correct { name, id, text } => {
             let m = Memory::open_to_edit(dir, &named(&name)?)?;
@@ -1243,10 +2711,408 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
     Ok(())
 }
 
+/// What `chat` left in memory, as a chat-wide vouch reviews it: whether it
+/// left anything at all, its live records still marked as from outside (id
+/// and text, what a vouch would sign for), and its live records already
+/// vouched for (whose shared copies a repeat re-syncs).
+struct ChatRecords {
+    any: bool,
+    untrusted: Vec<(String, String)>,
+    vouched: Vec<String>,
+}
+
+fn chat_records(m: &mecha_core::persona::memory::Memory, chat: &str) -> Result<ChatRecords> {
+    use mecha_core::persona::memory::{Filter, Status as MemoryStatus, Table};
+    use mecha_core::persona::Origin;
+    let mut out = ChatRecords {
+        any: false,
+        untrusted: Vec::new(),
+        vouched: Vec::new(),
+    };
+    let mut note = |uid: String, text: String, origin: Origin, vouched: bool, live: bool| {
+        out.any = true;
+        if !live {
+            return;
+        }
+        if origin == Origin::ModelUntrusted {
+            out.untrusted.push((uid, text));
+        } else if vouched {
+            out.vouched.push(uid);
+        }
+    };
+    for e in m.episodes(Filter::All)? {
+        if e.source.chat == chat {
+            let live = e.status != MemoryStatus::Invalidated;
+            // The whole episode, as recall folds it: a vouch signs for its
+            // threads and decisions too, not only the summary (review of
+            // #837).
+            let mut text = e.summary.clone();
+            for (label, items) in [
+                ("topics", &e.topics),
+                ("decisions", &e.decisions),
+                ("open threads", &e.open_threads),
+            ] {
+                if !items.is_empty() {
+                    text.push_str(&format!("\n      {label}: {}", items.join("; ")));
+                }
+            }
+            note(e.uid, text, e.origin, e.vouched_at.is_some(), live);
+        }
+    }
+    // Every fact table the module knows, never a hand list that a new one
+    // would slip past (review of #837).
+    for table in Table::ALL {
+        for f in m.facts(table, Filter::All)? {
+            if f.source.chat == chat {
+                let live = f.status != MemoryStatus::Invalidated;
+                note(f.uid, f.text, f.origin, f.vouched_at.is_some(), live);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[derive(clap::Parser)]
+    struct PersonaCli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    fn parse_memory(argv: &[&str]) -> std::result::Result<MemoryCmd, clap::Error> {
+        use clap::Parser;
+        let cli =
+            PersonaCli::try_parse_from(std::iter::once("persona").chain(argv.iter().copied()))?;
+        let Cmd::Memory { cmd } = cli.args.cmd else {
+            unreachable!("the test argv begins with memory")
+        };
+        Ok(cmd)
+    }
+
+    #[test]
+    fn memory_approve_parses_plain_clean_and_clean_chat_forms() {
+        let plain = parse_memory(&["memory", "approve", "mara", "abcd1234"]).unwrap();
+        assert!(matches!(
+            plain,
+            MemoryCmd::Approve {
+                id: Some(id),
+                chat: None,
+                clean: false,
+                ..
+            } if id == "abcd1234"
+        ));
+        let clean = parse_memory(&["memory", "approve", "mara", "abcd1234", "--clean"]).unwrap();
+        assert!(matches!(
+            clean,
+            MemoryCmd::Approve {
+                id: Some(id),
+                chat: None,
+                clean: true,
+                ..
+            } if id == "abcd1234"
+        ));
+        let chat = parse_memory(&[
+            "memory",
+            "approve",
+            "mara",
+            "--chat",
+            "20261103T010203-made-up",
+            "--clean",
+        ])
+        .unwrap();
+        assert!(matches!(
+            chat,
+            MemoryCmd::Approve {
+                id: None,
+                chat: Some(chat),
+                clean: true,
+                ..
+            } if chat == "20261103T010203-made-up"
+        ));
+        assert!(parse_memory(&["memory", "approve", "mara", "--chat", "c1"]).is_err());
+        assert!(parse_memory(&["memory", "approve", "mara"]).is_err());
+        assert!(parse_memory(&[
+            "memory", "approve", "mara", "abcd1234", "--chat", "c1", "--clean"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn memory_approve_executes_plain_clean_and_clean_chat_forms() {
+        use mecha_core::persona::memory::{
+            Kind, Memory, NewFact, Source, Status as MemoryStatus, Table,
+        };
+
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let store = dir.join("personas");
+        let (lib, _) = Library::load(&lib_dir);
+        persona::create(
+            &store,
+            &lib,
+            NewPersona {
+                name: "mara".into(),
+                origin: Origin::Owner,
+                ..NewPersona::default()
+            },
+        )
+        .unwrap();
+        let (one, chat_one, chat_two, other, plain) = {
+            let memory = Memory::open(&store, "mara").unwrap();
+            let remember = |text: &str, chat: &str| {
+                memory
+                    .add_fact(
+                        Table::Persona,
+                        NewFact {
+                            text: text.into(),
+                            kind: Kind::Observed,
+                            source: Source {
+                                chat: chat.into(),
+                                from: 0,
+                                to: 1,
+                            },
+                            origin: Origin::ModelUntrusted,
+                            model: "local".into(),
+                            valid_from: None,
+                            valid_to: None,
+                        },
+                    )
+                    .unwrap()
+            };
+            let one = remember("A field guide called the inlet silver.", "one-chat");
+            let chat_one = remember("The guide marked a bell-shaped rock.", "chosen-chat");
+            let chat_two = remember("Its map used blue contour lines.", "chosen-chat");
+            let other = remember("Another map used a red cover.", "other-chat");
+            let plain = remember("A leaflet described the western pier.", "plain-chat");
+            (one, chat_one, chat_two, other, plain)
+        };
+
+        memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: Some(one.uid.clone()),
+                chat: None,
+                clean: true,
+                yes: false,
+            },
+        )
+        .unwrap();
+        memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: None,
+                chat: Some("chosen-chat".into()),
+                clean: true,
+                yes: true,
+            },
+        )
+        .unwrap();
+        memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: Some(plain.uid.clone()),
+                chat: None,
+                clean: false,
+                yes: false,
+            },
+        )
+        .unwrap();
+        let err = memory_cmd(
+            &store,
+            MemoryCmd::Approve {
+                name: "mara".into(),
+                id: None,
+                chat: Some("missing-chat".into()),
+                clean: true,
+                yes: true,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("missing-chat"), "{err}");
+
+        let memory = Memory::open_existing(&store, "mara").unwrap().unwrap();
+        let one = memory.fact(&one.uid).unwrap().unwrap();
+        assert_eq!(one.status, MemoryStatus::Active);
+        assert_eq!(one.origin, Origin::Owner);
+        assert!(one.vouched_at.is_some());
+        for uid in [&chat_one.uid, &chat_two.uid] {
+            let row = memory.fact(uid).unwrap().unwrap();
+            assert_eq!(row.status, MemoryStatus::Active);
+            assert_eq!(row.origin, Origin::Owner);
+            assert!(row.vouched_at.is_some());
+        }
+        let other = memory.fact(&other.uid).unwrap().unwrap();
+        assert_eq!(other.status, MemoryStatus::Candidate);
+        assert_eq!(other.origin, Origin::ModelUntrusted);
+        assert!(other.vouched_at.is_none());
+        let plain = memory.fact(&plain.uid).unwrap().unwrap();
+        assert_eq!(plain.status, MemoryStatus::Active);
+        assert_eq!(plain.origin, Origin::ModelUntrusted);
+        assert!(plain.vouched_at.is_none());
+
+        drop(memory);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_day_prints_its_clock_company_anchors_and_the_turn_of_midnight() {
+        use mecha_core::persona::activity::Activity;
+        use mecha_core::persona::atus::{Cell, Company, DayType};
+        use mecha_core::persona::sampler::{Carry, Day, Stretch};
+        let stretch =
+            |activity, start, end, company: Option<Vec<Company>>, anchor: Option<&str>| Stretch {
+                activity,
+                start,
+                end,
+                company,
+                anchor: anchor.map(Into::into),
+            };
+        let day = Day {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+            cell: Cell::Student,
+            day_type: DayType::Weekday,
+            stretches: vec![
+                stretch(Activity::Sleep, 240, 600, None, None),
+                stretch(
+                    Activity::Class,
+                    600,
+                    675,
+                    Some(vec![Company::Alone]),
+                    Some("lecture"),
+                ),
+                stretch(
+                    Activity::Eating,
+                    675,
+                    1500,
+                    Some(vec![Company::Partner, Company::Friend]),
+                    None,
+                ),
+                stretch(
+                    Activity::Work,
+                    1500,
+                    1680,
+                    Some(vec![Company::Colleague]),
+                    Some("ward"),
+                ),
+            ],
+            backoffs: 2,
+            carries: Some(Carry {
+                activity: Activity::Work,
+                label: "ward".into(),
+                until: 360,
+            }),
+        };
+        let text = render_day("juno", &day, false).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "juno, Monday 2026-11-02 (weekday, student)");
+        assert!(
+            lines[1].starts_with("  04:00–10:00    sleep")
+                && lines[1].trim_end().ends_with("sleep"),
+            "{}",
+            lines[1]
+        );
+        assert!(lines[2].ends_with("[lecture] alone"), "{}", lines[2]);
+        // The stretch across midnight says where it ends, in one column.
+        assert!(
+            lines[3].starts_with("  11:15–01:00+1  eating ")
+                && lines[3].ends_with("with partner, friend"),
+            "{}",
+            lines[3]
+        );
+        assert_eq!(lines[4], "  ── after midnight ──");
+        assert!(
+            lines[5].starts_with("  01:00–04:00    work"),
+            "{}",
+            lines[5]
+        );
+        assert!(text.contains("2 draws read past the student rows"));
+        let json: serde_json::Value =
+            serde_json::from_str(&render_day("juno", &day, true).unwrap()).unwrap();
+        assert_eq!(json["stretches"][3]["end_minute"], 1680);
+        assert_eq!(json["stretches"][0]["company"], serde_json::Value::Null);
+        assert_eq!(json["stretches"][1]["company"][0], "alone");
+        assert_eq!(json["carries"]["until_minute"], 360);
+        assert_eq!(json["backoffs"], 2);
+    }
+
+    #[test]
+    fn a_week_prints_a_line_a_day_most_hours_first_and_its_folded_minutes() {
+        use mecha_core::persona::activity::Activity;
+        use mecha_core::persona::atus::{Cell, DayType};
+        use mecha_core::persona::sampler::{Day, Stretch};
+        use mecha_core::persona::world::{Source, Week, WeekDay, WeekView, When};
+        let date = |d: u32| chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+        let stretch = |activity, start, end| Stretch {
+            activity,
+            start,
+            end,
+            company: None,
+            anchor: None,
+        };
+        let day = Day {
+            date: date(3),
+            cell: Cell::Retired,
+            day_type: DayType::Weekday,
+            stretches: vec![
+                stretch(Activity::Sleep, 240, 600),
+                stretch(Activity::Reading, 600, 720),
+                stretch(Activity::Sleep, 720, 1680),
+            ],
+            backoffs: 0,
+            carries: None,
+        };
+        let mut days = vec![WeekDay {
+            date: date(2),
+            when: When::Folded,
+            day: None,
+            sources: vec![],
+        }];
+        days.push(WeekDay {
+            date: date(3),
+            when: When::Today,
+            day: Some(day),
+            sources: vec![Source::Sampler; 3],
+        });
+        let week = WeekView {
+            monday: date(2),
+            days,
+            folded: Some(Week {
+                days: 1,
+                minutes: vec![(Activity::Sleep, 1000), (Activity::Work, 440)],
+                unreadable: 30,
+            }),
+            unavailable: None,
+        };
+        let text = render_week("juno", &week, false).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "juno, the week of 2026-11-02");
+        assert!(lines[1].contains("2026-11-02  not kept"), "{}", lines[1]);
+        assert!(
+            lines[2].contains("today") && lines[2].ends_with("sleep 22h00, reading 2h00"),
+            "{}",
+            lines[2]
+        );
+        // Most first, though `Week` holds them in Activity order.
+        assert!(
+            text.contains("Folded, 1 day(s): sleep 16h40, work 7h20"),
+            "{text}"
+        );
+        assert!(text.contains("and 0h30 this binary cannot name"), "{text}");
+        let json: serde_json::Value =
+            serde_json::from_str(&render_week("juno", &week, true).unwrap()).unwrap();
+        assert_eq!(json["days"][0]["when"], "folded");
+        assert_eq!(json["days"][0]["day"], serde_json::Value::Null);
+        assert_eq!(json["days"][1]["sources"][0], "sampler");
+        assert_eq!(json["days"][1]["day"]["stretches"][2]["end_minute"], 1680);
+        assert_eq!(json["folded"]["minutes"][0]["activity"], "sleep");
+    }
 
     fn scratch() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mecha-persona-cli-{}", uuid::Uuid::new_v4()));
@@ -1355,6 +3221,355 @@ mod tests {
     }
 
     #[test]
+    fn the_owner_builds_her_network_from_the_cli() {
+        use mecha_core::persona::network::{EventKind, Layer, Network, Tie, Valence, NETWORK_MD};
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let people = |cmd: PeopleCmd| run(&store, &lib, Cmd::People { cmd });
+        let add = |person: &str, tie: Option<&str>, layer: Option<u32>| PeopleCmd::Add {
+            name: "Mara".into(),
+            person: person.into(),
+            aliases: vec![],
+            role: None,
+            description: None,
+            character: None,
+            tie: tie.map(Into::into),
+            label: None,
+            layer,
+            since: Some("2019".into()),
+        };
+        people(add("Ines", Some("kin"), Some(5))).unwrap();
+        people(add("Theo", Some("friend"), Some(50))).unwrap();
+        // Words outside a closed set are refused with the words it takes.
+        let bad_tie = format!("{:#}", people(add("Bo", Some("cousin"), None)).unwrap_err());
+        assert!(
+            bad_tie.contains("not a tie") && bad_tie.contains("acquaintance"),
+            "{bad_tie}"
+        );
+        assert!(
+            format!("{:#}", people(add("Bo", None, Some(7))).unwrap_err()).contains("not a layer")
+        );
+        // A portrait the library does not have is refused.
+        let mut portrait = add("Bo", None, None);
+        if let PeopleCmd::Add { character, .. } = &mut portrait {
+            *character = Some("nobody".into());
+        }
+        assert!(format!("{:#}", people(portrait).unwrap_err()).contains("no character"));
+
+        let event =
+            |person: &str, kind: &str, with: Option<&str>, on: Option<&str>| PeopleCmd::Event {
+                name: "mara".into(),
+                person: person.into(),
+                kind: kind.into(),
+                with: with.map(Into::into),
+                on: on.map(Into::into),
+                context: Some("over the move".into()),
+                tie: None,
+                label: None,
+                layer: None,
+            };
+        people(event("theo", "Strengthened", None, Some("2022"))).unwrap();
+        people(event("ines", "conflict", Some("theo"), Some("spring 2024"))).unwrap();
+        assert!(format!(
+            "{:#}",
+            people(event("ines", "eloped", None, None)).unwrap_err()
+        )
+        .contains("not a kind of event"));
+
+        let pdir = store.join("mara");
+        let n = Network::read(&pdir).unwrap();
+        let theo = n.find("Theo").unwrap().uid.clone();
+        assert_eq!(n.her_edge(&theo).layer, Some(Layer::Fifteen));
+        assert_eq!(n.her_edge(&theo).tie, Some(Tie::Friend));
+        assert_eq!(
+            n.ties().values().next().unwrap().valence,
+            Some(Valence::Tense)
+        );
+        assert!(std::fs::read_to_string(pdir.join(NETWORK_MD))
+            .unwrap()
+            .contains("## Between them"));
+
+        // Retracted by an id prefix; renamed; removed with everything on it.
+        let conflict = n
+            .events
+            .iter()
+            .find(|e| e.kind == EventKind::Conflict)
+            .unwrap()
+            .uid
+            .clone();
+        people(PeopleCmd::Retract {
+            name: "mara".into(),
+            event: conflict[..8].into(),
+        })
+        .unwrap();
+        assert!(Network::read(&pdir).unwrap().ties().is_empty());
+        people(PeopleCmd::Edit {
+            name: "mara".into(),
+            person: "theo".into(),
+            rename: Some("Theodore".into()),
+            aliases: Some(vec!["Teddy".into()]),
+            role: Some("lab partner".into()),
+            description: None,
+            character: None,
+        })
+        .unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert_eq!(
+            n.find("teddy").unwrap().role.as_deref(),
+            Some("lab partner")
+        );
+        people(PeopleCmd::Edit {
+            name: "mara".into(),
+            person: "teddy".into(),
+            rename: None,
+            aliases: None,
+            role: Some(String::new()),
+            description: None,
+            character: None,
+        })
+        .unwrap();
+        assert_eq!(
+            Network::read(&pdir).unwrap().find("teddy").unwrap().role,
+            None,
+            "an empty value clears"
+        );
+        people(PeopleCmd::Remove {
+            name: "mara".into(),
+            person: "theodore".into(),
+            yes: true,
+        })
+        .unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert_eq!(n.people.len(), 1);
+        assert!(n
+            .events
+            .iter()
+            .all(|e| e.person != theo && e.other.as_deref() != Some(theo.as_str())));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn people_proposed_from_identity_are_accepted_from_the_cli() {
+        use mecha_core::persona::{network::Network, people_draft};
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let id = store.join("mara").join("identity.md");
+        let text = std::fs::read_to_string(&id).unwrap();
+        std::fs::write(
+            &id,
+            format!("{text}\n## Core\nHer brother Oskar fixes bicycles.\n"),
+        )
+        .unwrap();
+        let people = |cmd: PeopleCmd| run(&store, &lib, Cmd::People { cmd });
+        // Nothing waiting yet is said, never an error.
+        people(PeopleCmd::Proposal {
+            name: "mara".into(),
+        })
+        .unwrap();
+        let p = Store::load(&store).get("mara").unwrap().clone();
+        people_draft::stage(
+            &store,
+            &p,
+            r#"{"people": [
+                {"name": "Oskar", "aliases": [], "role": "brother", "description": "Fixes bicycles.",
+                 "tie": "kin", "label": "brother", "layer": 5},
+                {"name": "Pell", "aliases": [], "role": null, "description": null,
+                 "tie": null, "label": null, "layer": null}
+            ]}"#,
+        )
+        .unwrap();
+        people(PeopleCmd::Proposal {
+            name: "mara".into(),
+        })
+        .unwrap();
+        people(PeopleCmd::Accept {
+            name: "mara".into(),
+            only: Some(vec![1]),
+        })
+        .unwrap();
+        let n = Network::read(&store.join("mara")).unwrap();
+        assert_eq!(
+            n.people.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["Oskar"]
+        );
+        // The one not chosen still waits; dismissed, nothing is left.
+        let left = people_draft::read(&store.join("mara")).unwrap().unwrap();
+        assert_eq!(left.people[0].name, "Pell");
+        people(PeopleCmd::Dismiss {
+            name: "mara".into(),
+        })
+        .unwrap();
+        assert!(
+            people(PeopleCmd::Dismiss {
+                name: "mara".into()
+            })
+            .is_err(),
+            "nothing left to dismiss"
+        );
+        // identity.md still names him: the owner's to edit, never rewritten.
+        assert!(std::fs::read_to_string(&id)
+            .unwrap()
+            .contains("Oskar fixes bicycles"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_routine_starts_from_the_template_and_a_draft_waits_for_approval() {
+        use mecha_core::persona::routine;
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let edit = |draft: bool, write: &'static str| {
+            run_with(
+                &store,
+                &lib,
+                Cmd::Routine {
+                    cmd: RoutineCmd::Edit {
+                        name: "Mara".into(),
+                        draft,
+                    },
+                },
+                &move |path: &Path| {
+                    let before = std::fs::read_to_string(path).unwrap();
+                    std::fs::write(path, format!("{before}{write}")).unwrap();
+                    Ok(())
+                },
+            )
+        };
+        // The editor opens on the template, and an anchor appended to it loads.
+        edit(false, "[[anchor]]\nactivity = \"work\"\ndays = [\"weekdays\"]\nat = \"09:00\"\nminutes = 480\n").unwrap();
+        let pdir = store.join("mara");
+        let text = std::fs::read_to_string(pdir.join(routine::FILE)).unwrap();
+        assert!(text.starts_with(routine::TEMPLATE), "{text}");
+        assert_eq!(routine::load(&pdir).unwrap().unwrap().anchors.len(), 1);
+
+        // A save that does not load is kept as written and says how to fix it.
+        let refused = edit(false, "[[anchor]]\nactivity = \"nap\"\n").unwrap_err();
+        assert!(
+            format!("{refused}").contains("edit mara` to fix"),
+            "{refused}"
+        );
+        let loaded = Store::load(&store);
+        let problems = loaded.problems(loaded.get("mara").unwrap(), &Library::load(&lib).0);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("routine.toml does not load")),
+            "{problems:?}"
+        );
+        std::fs::write(pdir.join(routine::FILE), &text).unwrap();
+
+        assert!(format!("{}", edit(true, "").unwrap_err()).contains("no routine draft"));
+        let draft = "[[anchor]]\nwhat = \"choir\"\nactivity = \"hobbies\"\ndays = [\"wed\"]\nat = \"19:30\"\nminutes = 90\n";
+        routine::stage_draft(&store, "mara", draft, Origin::ModelClean).unwrap();
+        edit(true, "chance = 0.8\n").unwrap();
+        run(
+            &store,
+            &lib,
+            Cmd::Routine {
+                cmd: RoutineCmd::Approve {
+                    name: "mara".into(),
+                    yes: true,
+                },
+            },
+        )
+        .unwrap();
+        let r = routine::load(&pdir).unwrap().unwrap();
+        assert_eq!(
+            (r.anchors.len(), r.anchors[0].chance),
+            (1, 0.8),
+            "the owner's edit to the draft was lost"
+        );
+        assert_eq!(
+            std::fs::read_to_string(pdir.join(routine::PREVIOUS)).unwrap(),
+            text
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_life_profile_starts_from_the_template_and_reads_back_through_parse() {
+        use mecha_core::persona::life;
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let edit = |write: &'static str| {
+            run_with(
+                &store,
+                &lib,
+                Cmd::Life {
+                    cmd: LifeCmd::Edit {
+                        name: "Mara".into(),
+                        draft: false,
+                    },
+                },
+                &move |path: &Path| {
+                    let before = std::fs::read_to_string(path).unwrap();
+                    std::fs::write(path, format!("{before}{write}")).unwrap();
+                    Ok(())
+                },
+            )
+        };
+        edit("[[household]]\nperson = \"Theo\"\nrelation = \"housemate\"\n").unwrap();
+        let pdir = store.join("mara");
+        let text = std::fs::read_to_string(pdir.join(life::FILE)).unwrap();
+        assert!(text.starts_with(life::TEMPLATE), "{text}");
+        assert_eq!(life::load(&pdir).unwrap().unwrap().household.len(), 1);
+
+        let refused =
+            edit("[[household]]\nperson = \"Cal\"\nrelation = \"neighbour\"\n").unwrap_err();
+        assert!(format!("{refused:#}").contains("neighbour"), "{refused:#}");
+        let loaded = Store::load(&store);
+        let problems = loaded.problems(loaded.get("mara").unwrap(), &Library::load(&lib).0);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("life.toml does not load")),
+            "{problems:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_life_draft_is_approved_from_the_cli_and_keeps_the_previous_profile() {
+        use mecha_core::persona::life;
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let pdir = store.join("mara");
+        let previous = "never = [\"caring\"]\n";
+        std::fs::write(pdir.join(life::FILE), previous).unwrap();
+        let drafted = "alone = true\nnever = [\"work\"]\n";
+        life::stage_draft(&store, "mara", drafted, Origin::ModelClean).unwrap();
+
+        run(
+            &store,
+            &lib,
+            Cmd::Life {
+                cmd: LifeCmd::Approve {
+                    name: "mara".into(),
+                    yes: true,
+                },
+            },
+        )
+        .unwrap();
+
+        assert!(life::load(&pdir).unwrap().unwrap().alone);
+        assert_eq!(
+            std::fs::read_to_string(pdir.join(life::PREVIOUS)).unwrap(),
+            previous
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn new_then_lock_then_group() {
         let dir = scratch();
         let lib = dir.join("imagelib");
@@ -1396,5 +3611,69 @@ mod tests {
         .unwrap();
         run(&store, &lib, Cmd::List { json: false }).unwrap();
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_initiative_lines_say_nothing_to_read_apart_from_a_zero() {
+        use mecha_core::persona::initiative::{Arm, ArmReading, Initiative, Reading};
+        let none = Ok(Initiative::default());
+        assert!(initiative_lines(&none, 30)[0].contains("add their people first"));
+        let quiet = Ok(Initiative {
+            people: 2,
+            chats: 1,
+            ..Initiative::default()
+        });
+        assert!(initiative_lines(&quiet, 30)[0].contains("no replies"));
+        let reading = Reading {
+            replies: 10,
+            introducing: 2,
+            introductions: 3,
+            taken_up: 1,
+            asked: 1,
+            came_back: 1,
+            not_taken_up: 0,
+            unanswered: 1,
+        };
+        let read = Ok(Initiative {
+            people: 2,
+            chats: 3,
+            unreadable: 1,
+            left_out: 2,
+            arms: vec![ArmReading {
+                arm: Arm {
+                    days: true,
+                    people: false,
+                    events: true,
+                },
+                reading,
+                initiative: reading.initiative(),
+                uptake: reading.uptake(),
+            }],
+        });
+        let lines = initiative_lines(&read, 30);
+        assert!(
+            lines[0].contains("1 chat(s) could not be read; 2 test or withdrawn left out"),
+            "{lines:?}"
+        );
+        assert!(lines[1].starts_with("days on, events on, people off: 10 replies, 2 of 10 (20%)"));
+        assert!(lines[1].contains("you took up 2 of 2 (100%)"), "{lines:?}");
+        assert!(lines[1].contains("1 not answered yet"));
+    }
+
+    #[test]
+    fn the_echo_line_says_what_it_left_out() {
+        let echoes = Ok(mecha_core::persona::echo::Echoes {
+            chats: 2,
+            replies: 9,
+            repeated: 1,
+            max: Some(0.8),
+            unreadable: 0,
+            left_out: 3,
+        });
+        let line = echo_line_over(&echoes, 30);
+        assert!(
+            line.ends_with("(3 test or withdrawn chat(s) left out)"),
+            "{line}"
+        );
     }
 }

@@ -86,7 +86,7 @@ assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
   assert.deepEqual(Object.keys(IMAGE_PRESETS), ['default', 'guided', 'turbo']);
 }
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 30);
+assert.equal(ENDPOINTS.length, 42);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));
@@ -670,4 +670,16 @@ console.log('persona: ok');
   assert.match(proposalOrigin('model_untrusted'), /outside content/);
   // An origin this page does not know reads as the cautious one.
   assert.match(proposalOrigin('something_new'), /outside content/);
+}
+
+// The editor's tabs: the two prose files, each part that is on, Settings
+// last (owner, 2026-11-02); the world feature off hides the week and people
+// whatever the persona says, and an older server's row shows them all.
+{
+  const { personaTabs } = await import('../src/lib/persona.js');
+  assert.deepEqual(personaTabs({ memories: true, week: true, people: true }, true), ['identity', 'motivation', 'memories', 'week', 'people', 'settings']);
+  assert.deepEqual(personaTabs({ memories: false, week: true, people: false }, true), ['identity', 'motivation', 'week', 'settings']);
+  assert.deepEqual(personaTabs({ memories: true, week: true, people: true }, false), ['identity', 'motivation', 'memories', 'settings']);
+  assert.deepEqual(personaTabs(undefined, true), ['identity', 'motivation', 'memories', 'week', 'people', 'settings']);
+  assert.equal(personaTabs({}, true).at(-1), 'settings');
 }

@@ -86,4 +86,7 @@ Nice=10
 # classified 38. Records are written per thread, so a timeout loses nothing,
 # but it would read as a failure — 30 minutes covers the catch-up, and a
 # still-running sweep simply makes the next ticks skip.
-TimeoutStartSec=30min
+# Preserve the 30-minute sweep budget; reserve ten more minutes for the
+# mail-rules hook, including SIGTERM grace (10 seconds) and reap (2 seconds).
+# Re-copy this service and daemon-reload when deploying the hook.
+TimeoutStartSec=40min

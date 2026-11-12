@@ -173,7 +173,7 @@ async fn distill_sessions(global: &GlobalOpts, args: Args) -> Result<()> {
         .collect();
     let (mut todo, skipped) = mecha_core::session::split_admitted(candidates);
     if skipped > 0 {
-        println!("passing over {skipped} test or experiment session(s) in the store");
+        println!("passing over {skipped} test, experiment or driven session(s) in the store");
     }
     if let Some(limit) = args.limit {
         todo.truncate(limit);

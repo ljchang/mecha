@@ -15,7 +15,9 @@
 
 /**
  * The view each nav place belongs to. A view not named is core — home,
- * chat, review and settings are there whatever is switched on.
+ * chat, review and settings are there whatever is switched on. `factory`
+ * rides `frontdoor`: a factory is what the front door is the door of, so one
+ * switch hides both and the two cannot disagree about whether one is here.
  */
 export const VIEW_FEATURE = {
   mail: 'mail',
@@ -23,6 +25,7 @@ export const VIEW_FEATURE = {
   tasks: 'tasks',
   personas: 'personas',
   library: 'library',
+  factory: 'frontdoor',
 };
 
 /**
@@ -38,6 +41,7 @@ export const VIEW_FEATURE = {
  * shown, and an array handed to them would fail open (LORA-DESIGN.md §6).
  */
 export const PANE_FEATURE = {
+  'mail/rules': 'mail_rules',
   'review/graph': 'graph',
   'review/entities': 'graph',
   'review/frontdoor': 'frontdoor',
@@ -45,6 +49,10 @@ export const PANE_FEATURE = {
   'settings/images': 'image',
   'settings/loras': ['image', 'video'],
   'library/voices': 'voice',
+  // No `personas/...` rows. A personas sub is a persona's name, so such a
+  // key would be the deep link to a persona so named, and would give her
+  // page another feature's banner. The world's tabs live in the persona
+  // editor, gated there by isShown(features.rows, 'world').
 };
 
 /** A pane's features as a list: none, one, or several. */
@@ -78,6 +86,7 @@ export function featureFor(rows, view, sub) {
  * are core stores and appear nowhere here.
  */
 export const QUEUE_FEATURE = {
+  'mail rules': 'mail_rules',
   'front-door requests': 'frontdoor',
   'graph candidates': 'graph',
   'graph shadow': 'graph',

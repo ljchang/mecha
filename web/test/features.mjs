@@ -64,6 +64,14 @@ t('an off queue with requests waiting is shown', queueCardShown(rows, 'front-doo
 t('an off queue that could not be read is shown', queueCardShown(rows, 'front-door requests', null));
 t('a core queue is shown at zero', queueCardShown(rows, 'outbox drafts', 0));
 
+const mailRulesOff = new Map([
+  ['mail', row('mail', 'on', { gated: true })],
+  ['mail_rules', row('mail_rules', 'off', { gated: true })],
+]);
+t('the rules pane has its own feature while the mailbox keeps mail', featureOf('mail', 'rules') === 'mail_rules' && VIEW_FEATURE.mail === 'mail');
+t('a disabled rules deep link bounces even with mail on', bounceFor(mailRulesOff, 'mail', 'rules') === 'mail_rules');
+t('mail rules waiting remain visible while disabled', queueCardShown(mailRulesOff, 'mail rules', 1) && !queueCardShown(mailRulesOff, 'mail rules', 0));
+
 console.log('routes that open anyway');
 t('a run\'s question opens on the board\'s page with the board off', opensAnyway('tasks', 'waiting'));
 t('so do the workflows', opensAnyway('tasks', 'workflows'));

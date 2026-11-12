@@ -928,6 +928,7 @@ pub fn corpus_rate_in(dir: &std::path::Path) -> CorpusRate {
             kind: None,
             include_tests: false,
             include_experiments: crate::experiment::in_experiment_home(),
+            include_driven: false,
         },
     ) {
         Ok(corpus) => corpus,

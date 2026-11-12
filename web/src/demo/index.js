@@ -110,6 +110,17 @@ export const ROUTES = [
   ['GET', /^\/api\/mail$/, () => fx.mail],
   ['GET', /^\/api\/mail\/inbox$/, () => fx.mailInbox],
   ['GET', /^\/api\/mail\/calendars$/, () => fx.mailCalendars],
+  // #mail/rules: reads from fixtures; every change, and a test (which would
+  // read a mailbox), is declined — the demo keeps no rules.
+  ['GET', /^\/api\/mail\/rules$/, () => fx.mailRules],
+  ['GET', /^\/api\/mail\/rules\/ledger$/, (url) => fx.mailRulesLedger[url.searchParams.get('rule')] ?? []],
+  [
+    'GET',
+    /^\/api\/mail\/rules\/([^/]+)$/,
+    (_url, [name]) => fx.mailRule[decodeURIComponent(name)] ?? new Response('unknown rule', { status: 502 }),
+  ],
+  ['POST', /^\/api\/mail\/rules\/(add|pause-all|undo|wrong-match)$/, () => new Response('the demo keeps no mail rules', { status: 501 })],
+  ['POST', /^\/api\/mail\/rules\/[^/]+\/(edit|mode|pause|test)$/, () => new Response('the demo keeps no mail rules and reads no mailbox', { status: 501 })],
   [
     'GET',
     /^\/api\/mail\/read$/,
@@ -138,6 +149,18 @@ export const ROUTES = [
   // reader pane renders. Answering this with an object would have been a
   // silent `[object Object]` in the pane.
   ['GET', /^\/api\/frontdoor\/read$/, () => text(fx.frontdoorShow)],
+
+  // The Factory view: one booking page and one form. A preview answers with
+  // the page's own slots — the demo computes nothing — and a save declines.
+  ['GET', /^\/api\/factory$/, () => fx.factory],
+  ['GET', /^\/api\/factory\/instrument$/, (url) => fx.factoryInstrument(url.searchParams.get('id'))],
+  ['POST', /^\/api\/factory\/preview$/, () => ({ preview: fx.factoryInstrument('book').preview })],
+  ['POST', /^\/api\/factory\/hours$/, () => new Response('the demo does not keep hours', { status: 501 })],
+  // Forms: the demo shows a form and its preview; it keeps and publishes nothing.
+  ['GET', /^\/api\/factory\/starters$/, () => ({ starters: [{ name: 'meeting', title: 'Request a meeting' }, { name: 'speaking', title: 'Invite me to speak' }] })],
+  ['GET', /^\/api\/factory\/form$/, () => fx.factoryForm],
+  ['POST', /^\/api\/factory\/form\/render$/, () => ({ kind: 'request', html: fx.factoryFormPreview })],
+  ['POST', /^\/api\/factory\/form\/(save|new|publish|discard)$/, () => new Response('the demo does not keep or publish forms', { status: 501 })],
 
   // The Proposals pane: the store chips, one store's listing, one item's
   // `show`. Every store answers with the same demo listing — the pane is
@@ -228,6 +251,25 @@ export const ROUTES = [
   ['POST', /^\/api\/personas\/[^/]+\/image-settings$/, () => new Response('the demo does not keep image settings', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
   ['GET', /^\/api\/personas\/[^/]+\/memory$/, () => fx.personaMemory],
+  ['GET', /^\/api\/personas\/[^/]+\/week$/, (url) => fx.personaWeek(url.searchParams.get('date')) ?? new Response('not a date', { status: 400 })],
+  ['POST', /^\/api\/personas\/[^/]+\/routine\/cell$/, () => new Response('the demo does not change routines', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/routine\/draft$/, () => new Response('the demo does not draft routines', { status: 501 })],
+  ['PUT', /^\/api\/personas\/[^/]+\/routine\/draft$/, () => new Response('the demo does not change routines', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/routine\/draft$/, () => new Response('the demo does not change routines', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/routine\/draft\/approve$/, () => new Response('the demo does not change routines', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/life\/draft$/, () => new Response('the demo does not draft life profiles', { status: 501 })],
+  ['PUT', /^\/api\/personas\/[^/]+\/life\/draft$/, () => new Response('the demo does not change life profiles', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/life\/draft$/, () => new Response('the demo does not change life profiles', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/life\/draft\/approve$/, () => new Response('the demo does not change life profiles', { status: 501 })],
+  ['GET', /^\/api\/personas\/[^/]+\/people$/, (url) => fx.personaPeopleAsOf(url.searchParams.get('as_of'))],
+  ['POST', /^\/api\/personas\/[^/]+\/people\/proposal$/, () => new Response('the demo does not read identity.md', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/people\/proposal$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/people\/proposal\/accept$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/people$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['PUT', /^\/api\/personas\/[^/]+\/people\/[^/]+$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/people\/[^/]+$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['POST', /^\/api\/personas\/[^/]+\/people\/[^/]+\/events$/, () => new Response('the demo does not change their people', { status: 501 })],
+  ['DELETE', /^\/api\/personas\/[^/]+\/people\/[^/]+\/events\/[^/]+$/, () => new Response('the demo does not change their people', { status: 501 })],
   ['POST', /^\/api\/personas\/[^/]+\/memory$/, () => new Response('the demo does not change memories', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/review$/, () => fx.personaReview],
   ['POST', /^\/api\/personas\/[^/]+\/(approve|reject)$/, () => new Response('the demo does not approve or reject personas', { status: 501 })],
