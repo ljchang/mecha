@@ -1864,3 +1864,73 @@ fn a_clip_is_a_render_and_its_guide_a_read() {
         EffectClass::Read
     );
 }
+
+/// A stopped video server is said in the turn that asked: an error, with no
+/// job handed over and nothing promised. Before, the call answered "being
+/// made" and the failure arrived turns later (owner's chats, 2026-11-11: the
+/// server had been down since a reboot).
+#[tokio::test]
+async fn a_stopped_server_is_refused_in_the_turn_that_asked() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    // A port nothing listens on: bound, read, and let go.
+    let gone = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    };
+    let t = tool(&gone, &home, Arc::new(Stub::default()));
+    let out =
+        <VideoGenerate as Tool>::call(&t, json!({"prompt": "Rain on a window."}), &ctx(&chat))
+            .await
+            .unwrap();
+    assert!(out.is_error && out.deferred.is_none(), "{}", out.content);
+    assert!(out.content.contains("is not answering"), "{}", out.content);
+    assert!(
+        out.content.contains("Nothing was started"),
+        "{}",
+        out.content
+    );
+    assert!(!out.content.contains("being made"), "{}", out.content);
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// A call's notes after a failure are said apart from its cause: read
+/// straight after the failure, a note on a missing `wearing` was taken for
+/// why the clip failed, and the same call was sent again.
+#[test]
+fn notes_after_a_failure_are_said_not_to_be_its_cause() {
+    assert_eq!(said_notes_after_failure(&[]), "");
+    let said = said_notes_after_failure(&["No `wearing` for Wren.".to_string()]);
+    assert_eq!(
+        said,
+        " Notes on the call itself, which are not why it was not made: No `wearing` for Wren."
+    );
+}
+
+/// Only a refused connect is "stopped". A server that accepts and does not
+/// answer in time (an on-demand proxy mid-start, a busy queue) is there: the
+/// clip is handed over as before, and the job waits for it (review of #868).
+#[tokio::test]
+async fn a_server_that_accepts_and_is_slow_still_gets_the_job() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let slow = format!("http://{}", listener.local_addr().unwrap());
+    // Accepts, holds each connection open, and never writes a byte.
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    let t = tool(&slow, &home, Arc::new(Stub::default()));
+    let out =
+        <VideoGenerate as Tool>::call(&t, json!({"prompt": "Rain on a window."}), &ctx(&chat))
+            .await
+            .unwrap();
+    assert!(!out.is_error && out.deferred.is_some(), "{}", out.content);
+    assert!(out.content.starts_with("being made"), "{}", out.content);
+    std::fs::remove_dir_all(&home).ok();
+}
