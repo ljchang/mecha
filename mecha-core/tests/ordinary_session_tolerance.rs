@@ -408,6 +408,16 @@ fn a_grant_may_not_reach_the_store_its_key_or_the_transcript() {
         );
     }
 
+    // Once the session exists, the same rule covers its transcript: a
+    // session directory may sit outside the mecha home.
+    let (_, session, _) = f.begin();
+    memory
+        .validate_session_grants(&session, &[grant(&elsewhere)])
+        .unwrap();
+    assert!(memory
+        .validate_session_grants(&session, &[grant(&f.root.join("sessions"))])
+        .is_err());
+
     // A grant made during the run is in the transcript. One elsewhere costs
     // nothing; one over the transcript's own directory, or over the key,
     // refuses the capture.

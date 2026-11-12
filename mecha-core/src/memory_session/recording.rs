@@ -74,12 +74,11 @@ fn fit(
     for (p, _) in &units {
         costs.push(serde_json::to_vec(p)?.len() + 1);
     }
-    let receipt_cost = |call: &str| {
-        receipts
-            .iter()
-            .find(|r| r.call_id == call)
-            .map_or(0, |r| r.call_id.len() + r.tool_name.len() + 64)
-    };
+    // Indexed once: a run's call count is bounded only by its transcript.
+    let receipt_costs: BTreeMap<&str, usize> = receipts
+        .iter()
+        .map(|r| (r.call_id.as_str(), r.call_id.len() + r.tool_name.len() + 64))
+        .collect();
     let mut bytes: usize = units
         .iter()
         .enumerate()
@@ -99,13 +98,17 @@ fn fit(
             kept.push(passage);
             continue;
         }
+        if full {
+            continue;
+        }
         let invocation = passage.kind == PassageKind::ActionInvocation;
         let cost = costs[index]
-            + if invocation {
-                receipt_cost(call.as_deref().unwrap_or_default())
-            } else {
-                0
-            };
+            + call
+                .as_deref()
+                .filter(|_| invocation)
+                .and_then(|id| receipt_costs.get(id))
+                .copied()
+                .unwrap_or(0);
         let answered = passage.kind != PassageKind::ToolResult
             || call.as_ref().is_some_and(|id| invoked.contains(id));
         full |= !answered
@@ -528,6 +531,10 @@ pub(super) fn capture(
                     if text.trim().is_empty() {
                         continue;
                     }
+                    // An invocation is never cut here: `action_invocation`
+                    // omits an input over 1,024 bytes, so its JSON is well
+                    // under a passage. A cut one would not parse at
+                    // admission and would refuse the capture.
                     let (text, source_bytes) = excerpt(text);
                     let pointer = format!("/content/{index}/{field}");
                     units.push((

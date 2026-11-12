@@ -380,10 +380,13 @@ pub async fn execute(
     let ordinary_run = ordinary_memory
         .as_ref()
         .map(|memory| {
+            let recorded = session
+                .as_ref()
+                .context("ordinary memory requires a recorded session")?;
+            memory
+                .validate_session_grants(recorded, &prepared.agent.context().tools.grants.all())?;
             let run = memory.begin(
-                session
-                    .as_ref()
-                    .context("ordinary memory requires a recorded session")?,
+                recorded,
                 &prompt,
                 convo
                     .goal_anchor

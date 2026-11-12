@@ -163,6 +163,21 @@ impl SessionMemory {
         authority::exclude_workspace(&self.request, workspace)?;
         Ok(())
     }
+    /// The grants a run starts with, against the transcript it is about to
+    /// record: one that reaches the session file would let a tool rewrite
+    /// what is sealed. `validate_surface` runs before the session exists
+    /// and can only check the store; this is the other half, so a grant
+    /// that would cost the run its memory at the first recall is refused
+    /// before the run starts. `grant::admit` covers a session directory
+    /// under the mecha home, and `MECHA_SESSION_DIR` may place one
+    /// elsewhere.
+    pub fn validate_session_grants(
+        &self,
+        session: &Session,
+        grants: &[crate::grant::Grant],
+    ) -> Result<()> {
+        authority::exclude_grants(&self.request, Some(&session.path), grants)
+    }
     /// A chat's surface before it is attached: the closed tool set and no
     /// grants, refused here so nothing is started for a chat that could
     /// not record its first turn.

@@ -13159,8 +13159,9 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   at most the "local" label. **A grant may not reach the store**
   (`authority::exclude_grants`): one that contains the database, the key,
   the authority directory or the transcript, or sits inside the store, is
-  refused at the start, at every recall and when the transcript records
-  it, because `grant::admit` protects the mecha home and a manifest may
+  refused at the start (`validate_surface` for the store,
+  `validate_session_grants` for the transcript once the session exists),
+  at every recall and when the transcript records it, because `grant::admit` protects the mecha home and a manifest may
   place a store elsewhere (review of #864). The recorder used to admit `fs_read`, `fs_write`,
   `fs_list` and `goal_context` and refuse any run with a hook, a server, a
   grant, a subagent, an inbound message or a compaction (owner's rulings,
@@ -13177,7 +13178,10 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   whole calls, because admission requires a receipt for every invocation and
   an invocation for every receipt (`recording::fit`). The bounds were 16
   passages and 32 KiB, which refused any run of more than about seven
-  calls. The learning inventory (`learning_run_sources`) still lists at
+  calls. `host_capture::validate` is shared, so the same bounds now apply to
+  a chat turn's capture and to the trial paths' admission; the chat
+  recorder's own limits (128 messages, 32 calls, whole passages only) and
+  the trial bridge's sixteen-passage check are unchanged. The learning inventory (`learning_run_sources`) still lists at
   most sixteen passages of a run.
 
 - **Operational tasks have a typed authority boundary inside the memory store.**
