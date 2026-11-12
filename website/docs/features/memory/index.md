@@ -207,6 +207,15 @@ reaches the store, its key or the transcript. `/clear` is refused, because a
 cleared context is a different conversation. Only complete seals can be
 retried.
 
+The web app's ordinary chat is remembered the same way when the server is
+started with `serve --dynamic-goals --chat-memory "$MECHA_MEMORY_ROOT/memory.json"`.
+Each typed message is one remembered turn, with whatever tools the chat has; a
+message typed while the model is working is stored as yours too. Spoken turns
+and task seed turns are not remembered yet. A remembered chat appears in the
+session list like any other and resumes the usual way. This is separate from
+the web memory mode described further down, which keeps its own restricted
+profile.
+
 A conversation is still bounded: an owner message of at most 2,048 bytes, 64
 owner messages and 256 turns per chat, and a 32 MiB transcript. The graph,
 task and web profiles below are closed profiles and keep their own restricted

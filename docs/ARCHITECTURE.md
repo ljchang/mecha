@@ -13228,6 +13228,44 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   clean. The chat recorder
   used to bind each turn to the exact history every request sent, admit
   four tools and no grant, and end the chat at the first turn it refused.
+- **An ordinary web chat is remembered through the same recorder**
+  (`serve --chat-memory MANIFEST`, `serve/web_memory.rs`; attachment
+  protocol `ordinary-chat-memory-v5`, recorder version v5,
+  `SessionMemory::attach_open_web_chat`). The separate web memory mode
+  (`memory_chat.rs`, protocol v3) is unchanged and still closed. Five
+  things differ from the terminal chat, each because of how the server is
+  built. **Memory attaches in `ensure_session_as` between `Session::create`
+  and the first `Record::Config`**, because an attachment binds the
+  transcript from its header. **One recall tool serves every
+  conversation** (`memory_session::router::RecallRouter`): the server
+  builds one agent whose tool list is the front of a cached prefix, so the
+  list cannot differ per conversation; the router stands in the registry
+  under the recall tool's name, schema and capabilities (`bind` refuses a
+  reader that differs in any of them, since the interlock believed the
+  ones announced) and answers each call with the reader bound to the
+  call's `ToolCtx::workspace`, which is a web conversation's own. A turn
+  with no reader bound gets a tool error it can go on from. **A
+  configuration record names the producer root**, an ancestor of each
+  chat's workspace, where a terminal chat's names its own
+  (`Attachment::configured_in`, which also refuses a store inside that
+  root). **A line typed while the model works is the owner's**: the host
+  authenticates a steer as an owner input, a later decision's context
+  version lists it after the turn's first, and the walk stores the block
+  that carries it as a `UserRequest` with its own locator
+  (`Walk::expect_steers`); the same words in a block no owner input backs
+  are left out like any other user-role text. **Only a typed turn is
+  remembered**: a spoken turn, a task's seed turn and a harness draw carry
+  no authenticated owner input, run with no reader bound, and their
+  records are part of what the next typed turn continues from. The turn
+  is begun in `begin_turn` before its message is recorded and sealed in
+  the run's task right after `Record::Taint`, before a late result or a
+  title can land behind it. A grant that reaches the store refuses the
+  turn (`OrdinaryMemory::grants_may_run`). A remembered chat resumes
+  through the ordinary door (`resume` reads it with `Session::read`,
+  since `Session::load` refuses every memory-marked transcript, and
+  re-attaches); a server started without `--chat-memory` refuses to
+  resume one. A chat whose memory cannot attach or re-attach goes on
+  unremembered.
   **The sidecar still bounds a conversation**: a turn's context names at
   most 128 decisions and 16 context versions in 24 KiB (later decisions
   are left to the transcript), each version repeats every owner input so
