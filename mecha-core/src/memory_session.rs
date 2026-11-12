@@ -151,8 +151,9 @@ impl SessionMemory {
         grants: &[crate::grant::Grant],
     ) -> Result<()> {
         // A grant is the owner's exception to the jail; what a tool reads
-        // under one is recorded with the result like any other.
-        let _ = grants;
+        // under one is recorded with the result like any other. One that
+        // reaches the store itself is refused.
+        authority::exclude_grants(&self.request, None, grants)?;
         recording::surface(names)?;
         ensure!(
             workspace.canonicalize()? == self.execution_workspace()?,

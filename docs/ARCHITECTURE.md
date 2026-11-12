@@ -13143,15 +13143,25 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   refuse the run** (`memory_session::recording::capture`). Two kinds of
   check, kept apart: one on *whose run this is* (the header, the workspace,
   the goal, a recall that does not reconcile with what the tool returned)
-  still refuses the capture; one on a record's or block's *shape* (a tool
-  the recorder has no list for, a late result, a rewrite, a delivered
-  inter-agent message, a notice it has no exact text for, a run that was
-  cancelled or compacted) does not. What is left out is reported to
-  `Intake::unplaced`, and the recorded taint settles it: under a taint
-  recorded clean nothing outside entered by any route, and otherwise
-  everything the model wrote in that capture is stored as outside. So a
-  restriction that used to cost the whole memory now costs at most the
-  "local" label. The recorder used to admit `fs_read`, `fs_write`,
+  still refuses the capture; one on a record's or block's *shape* does
+  not. Three things happen to a shape. A tool the recorder has no list
+  for, a cancelled run and a compaction's rewrite cost nothing: the calls
+  and results are passages like any other, and the walk has already read
+  the rewritten history line by line. A late result is classified exactly,
+  from the provenance its record carries (`Intake::result`). And content
+  the walk can neither place nor classify (a delivered inter-agent
+  message, a notice it has no exact text for, an image, a record kind it
+  has no reading for) is left out and reported to `Intake::unplaced`,
+  which the recorded taint settles once the whole transcript is read:
+  under a taint recorded clean nothing outside entered by any route, and
+  otherwise everything the model wrote in that capture is stored as
+  outside. So a restriction that used to cost the whole memory now costs
+  at most the "local" label. **A grant may not reach the store**
+  (`authority::exclude_grants`): one that contains the database, the key,
+  the authority directory or the transcript, or sits inside the store, is
+  refused at the start, at every recall and when the transcript records
+  it, because `grant::admit` protects the mecha home and a manifest may
+  place a store elsewhere (review of #864). The recorder used to admit `fs_read`, `fs_write`,
   `fs_list` and `goal_context` and refuse any run with a hook, a server, a
   grant, a subagent, an inbound message or a compaction (owner's rulings,
   2026-11-11). **The chat recorder is still the closed profile**

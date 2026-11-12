@@ -372,3 +372,138 @@ fn a_run_too_large_for_one_capture_keeps_its_request_its_answer_and_whole_calls(
         .collect();
     assert_eq!(receipts, invoked);
 }
+
+fn grant(path: &std::path::Path) -> mecha_core::grant::Grant {
+    mecha_core::grant::Grant {
+        path: path.canonicalize().unwrap(),
+        access: mecha_core::grant::Access::Read,
+        source: mecha_core::grant::Source::Owner,
+    }
+}
+
+#[test]
+fn a_grant_may_not_reach_the_store_its_key_or_the_transcript() {
+    let names = ["goal_context".to_string(), "shell".to_string()];
+    let f = Fixture::new();
+    let elsewhere = f.root.join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    let memory = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    // A grant somewhere else is the owner's business.
+    memory
+        .validate_surface(&names, &f.workspace, &[grant(&elsewhere)])
+        .unwrap();
+    // One over the database, the key, the authority directory, or a
+    // directory holding all of them is refused before the run starts.
+    for reach in [
+        f.root.join("db"),
+        f.root.join("keys"),
+        f.request.authority.clone(),
+        f.root.clone(),
+    ] {
+        assert!(
+            memory
+                .validate_surface(&names, &f.workspace, &[grant(&reach)])
+                .is_err(),
+            "{reach:?}"
+        );
+    }
+
+    // A grant made during the run is in the transcript. One elsewhere costs
+    // nothing; one over the transcript's own directory, or over the key,
+    // refuses the capture.
+    for (reach, status) in [
+        (elsewhere.clone(), SessionMemoryStatus::Retained),
+        (f.root.join("sessions"), SessionMemoryStatus::Unavailable),
+        (f.root.join("keys"), SessionMemoryStatus::Unavailable),
+    ] {
+        let (memory, session, run) = f.begin();
+        session
+            .append(&Record::Grants {
+                grants: vec![grant(&reach)],
+            })
+            .unwrap();
+        say(&session, "Done.");
+        end(&session, false, StopCause::Completed);
+        assert_eq!(memory.finish(&run).status, status, "{reach:?}");
+    }
+}
+
+#[test]
+fn a_run_is_cut_by_bytes_as_well_as_by_count_and_still_admitted() {
+    let f = Fixture::new();
+    let (memory, session, run) = f.begin();
+    // A quote doubles when it is serialized, so each result costs about
+    // 8 KiB of the capture: the byte bound is reached before the count.
+    let quoted = "\"".repeat(4096);
+    for index in 0..120 {
+        call(
+            &session,
+            &format!("call-{index}"),
+            "shell",
+            Some((&quoted, false)),
+        );
+    }
+    say(&session, "All of them are done.");
+    end(&session, false, StopCause::Completed);
+    let report = memory.finish(&run);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let payload = f.sealed(&run);
+    let all = passages(&payload);
+    assert!(all.len() < 2 + 120 * 2, "{}", all.len());
+    assert!(serde_json::to_vec(&payload).unwrap().len() <= 1 << 20);
+    assert_eq!(all[0]["kind"], "UserRequest");
+    assert_eq!(all[all.len() - 1]["text"], "All of them are done.");
+    // The call at the cut may keep its invocation without its result; no
+    // result is kept without its invocation.
+    let invoked = of_kind(&payload, "ActionInvocation").len();
+    let answered = of_kind(&payload, "ToolResult").len();
+    assert!(answered <= invoked && invoked <= answered + 1);
+    assert_eq!(payload["receipts"].as_array().unwrap().len(), invoked);
+}
+
+#[test]
+fn a_prompt_that_opens_with_blank_space_still_has_a_criterion() {
+    let f = Fixture::new();
+    let memory = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    let prompt = format!("{}Tidy the fixture directory", " ".repeat(3000));
+    let meta = SessionMeta {
+        id: Session::new_id(),
+        created_at: Utc::now(),
+        provider: "fixture".into(),
+        model: "fixture".into(),
+        workspace: f.workspace.clone(),
+        title: None,
+        kind: Some(SessionKind::Run),
+    };
+    let session = Session {
+        path: f.root.join("sessions").join(format!("{}.jsonl", meta.id)),
+        meta: meta.clone(),
+    };
+    session.append(&Record::Meta(meta)).unwrap();
+    session
+        .append(&Record::Config(RunConfig {
+            workspace: f.workspace.clone(),
+            tools: vec!["goal_context".into()],
+            ..Default::default()
+        }))
+        .unwrap();
+    session
+        .append(&Record::GoalAnchor {
+            goal: Some("charter:1".parse().unwrap()),
+        })
+        .unwrap();
+    let run = memory
+        .begin(&session, &prompt, &"charter:1".parse().unwrap())
+        .unwrap();
+    session
+        .append(&Record::Message(Message::user(prompt.as_str())))
+        .unwrap();
+    say(&session, "Done.");
+    end(&session, false, StopCause::Completed);
+    let report = memory.finish(&run);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    assert_eq!(
+        f.sealed(&run)["criterion"]["criterion_text"],
+        "Tidy the fixture directory"
+    );
+}

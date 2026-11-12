@@ -33,6 +33,9 @@ pub(super) fn chat_surface(names: &[String]) -> Result<()> {
 }
 /// The head of the owner's prompt that a criterion's text fields admit.
 pub(super) fn criterion_text(prompt: &str) -> String {
+    // Of the trimmed prompt: admission refuses a blank criterion, and a
+    // prompt may open with more whitespace than the head holds.
+    let prompt = prompt.trim();
     let mut end = prompt.len().min(2048);
     while !prompt.is_char_boundary(end) {
         end -= 1;
@@ -249,6 +252,7 @@ pub(super) fn capture(
     let mut owner = 0;
     let mut messages = 0;
     let mut taint = false;
+    let mut recorded_untrusted = None;
     // A one-shot run is a whole conversation, so it starts having taken
     // in nothing.
     let mut intake = Intake::starting(false);
@@ -311,11 +315,16 @@ pub(super) fn capture(
                 intake.result(Some(external));
             }
             // Nothing here is content the model read that a message or a
-            // result does not also carry: what an owner allowed, what a run
-            // cost, a title, a rewrite of history the walk has already read
-            // line by line, the audit of a recall decision.
-            Record::Grants { .. }
-            | Record::Summary { .. }
+            // result does not also carry: what a run cost, a title, a
+            // rewrite of history the walk has already read line by line,
+            // the audit of a recall decision.
+            // An owner-made exception to the jail is a fact about whose run
+            // this is when it reaches the store or this transcript: a tool
+            // could then have read the key or rewritten what is sealed.
+            Record::Grants { grants } => {
+                authority::exclude_grants(&f.request, Some(&f.source), &grants)?;
+            }
+            Record::Summary { .. }
             | Record::Title { .. }
             | Record::Rewrite { .. }
             | Record::ChatMemory { .. }
@@ -331,12 +340,7 @@ pub(super) fn capture(
                 );
                 ensure!(!taint && messages > 0, "ordinary taint unavailable");
                 taint = true;
-                // No message follows this record, so every passage is in.
-                let mut originals: Vec<_> = units.iter().map(|(p, _)| p.clone()).collect();
-                intake.settle(Some(recorded.untrusted), &mut originals);
-                for ((passage, _), settled) in units.iter_mut().zip(originals) {
-                    *passage = settled;
-                }
+                recorded_untrusted = Some(recorded.untrusted);
             }
             // However the run stopped. One that was cancelled, ran out of
             // turns or compacted on the way is still what happened.
@@ -555,6 +559,13 @@ pub(super) fn capture(
         meta == 1 && config == 1 && owner == 1 && ended && matched.len() == attempts.len(),
         "ordinary recording incomplete"
     );
+    // Settled once the whole transcript is read, not at the taint record: a
+    // record the walk cannot place may follow it, and must still count.
+    let mut originals: Vec<_> = units.iter().map(|(p, _)| p.clone()).collect();
+    intake.settle(recorded_untrusted, &mut originals);
+    for ((passage, _), settled) in units.iter_mut().zip(originals) {
+        *passage = settled;
+    }
     // A call the run stopped before answering is still a call the model
     // made; its receipt says no result is available.
     for (call_id, (name, _, complete)) in &calls {

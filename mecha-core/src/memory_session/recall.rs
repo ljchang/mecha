@@ -59,9 +59,12 @@ impl Tool for TrackedTool {
         // These four stores have independent authority. Refuse before calling the
         // legacy composer, including calls without memory, instead of laundering it.
         ensure!(
-            ctx.workspace.canonicalize()? == frozen.workspace && ctx.grants.is_empty(),
+            ctx.workspace.canonicalize()? == frozen.workspace,
             "ordinary recall execution surface changed"
         );
+        // A grant made since the run began is held to the same rule as one
+        // it started with: it may not reach the store or the transcript.
+        authority::exclude_grants(&frozen.request, Some(&frozen.source), &ctx.grants.all())?;
         let output = if input
             .get("serves")
             .is_some_and(|g| g.as_str() != Some(frozen.goal.as_str()))

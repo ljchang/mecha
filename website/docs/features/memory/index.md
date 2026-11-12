@@ -77,6 +77,11 @@ from a deferred tool, a message delivered from another agent, a notice from
 the harness, the rewrite a compaction makes. A run that was cancelled or ran
 out of turns is remembered as far as it got.
 
+A grant is the one configuration memory checks. A grant that contains the
+store, its key, its authority directory or the session's transcript is
+refused, at the start and again whenever the run recalls, because the jail
+is what keeps those out of a tool's reach.
+
 Leaving something out has one cost. When the run's recorded taint says
 untrusted content entered and the recorder met something it could not place,
 everything the model wrote in that run is stored as outside content, so

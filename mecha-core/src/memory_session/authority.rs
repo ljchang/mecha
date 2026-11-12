@@ -102,6 +102,25 @@ pub(super) fn exclude_workspace(r: &SessionMemoryRequest, w: &Path) -> Result<()
     );
     Ok(())
 }
+/// A grant is the owner's exception to the jail, and the jail is what keeps
+/// the store, its key, its authority directory and the transcript being
+/// recorded out of a tool's reach. `grant::admit` protects the mecha home
+/// and the credential directories; a store a manifest places elsewhere is
+/// protected here. So a grant is held to the workspace's own rule: it may
+/// neither contain any of those paths nor sit inside the store.
+pub(super) fn exclude_grants(
+    r: &SessionMemoryRequest,
+    source: Option<&Path>,
+    grants: &[crate::grant::Grant],
+) -> Result<()> {
+    for grant in grants {
+        exclude_workspace(r, &grant.path)?;
+        if let Some(source) = source {
+            exclude_path(source, &grant.path)?;
+        }
+    }
+    Ok(())
+}
 pub(super) fn validate_request(r: &SessionMemoryRequest) -> Result<()> {
     ensure!(
         r.protocol == SESSION_MEMORY_PROTOCOL,
