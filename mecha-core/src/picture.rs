@@ -1521,17 +1521,37 @@ pub fn plan(
             // be refused (review of #758).
             // A change, never a redraw of the same outfit (review of #758,
             // pass 3).
-            if before.is_some_and(|q| {
+            // A top already off stays off through a change of the rest
+            // ("cargo shorts, no top" to "jeans"): rewritten without it, the
+            // record landed on an unsaid chest, which draws the portrait's
+            // top (review of #758, pass 11).
+            let stays_off = |q: &crate::scene::Person| {
+                bare_chest_said(&q.wearing)
+                    && !covers_chest(&p.wearing)
+                    && !bare_chest_said(&p.wearing)
+                    && names_any(&p.wearing, LOWER)
+            };
+            let came_off = before.is_some_and(|q| {
                 q.wearing.trim() != p.wearing.trim() && removed_top(&q.wearing, &p.wearing)
-            }) && with.chars().count() <= crate::imagelib::MAX_CAST_FIELD
-            {
+            });
+            let kept_off =
+                before.is_some_and(|q| q.wearing.trim() != p.wearing.trim() && stays_off(q));
+            if (came_off || kept_off) && with.chars().count() <= crate::imagelib::MAX_CAST_FIELD {
                 p.wearing = with;
                 clothes_said.push((
                     shown(&p.who),
-                    format!(
-                        "{}'s top came off in this change, so the outfit says \"no top\".",
-                        shown(&p.who)
-                    ),
+                    if came_off {
+                        format!(
+                            "{}'s top came off in this change, so the outfit says \"no top\".",
+                            shown(&p.who)
+                        )
+                    } else {
+                        format!(
+                            "{}'s top was already off and this change names none, so the \
+                             outfit still says \"no top\".",
+                            shown(&p.who)
+                        )
+                    },
                 ));
             }
         }
@@ -1634,7 +1654,10 @@ pub fn plan(
     let drawn_from_scene = call.regions.is_empty()
         && call.mask.is_none()
         && call.mask_words.is_none()
-        && (new_picture || !unchanged);
+        // A picture drawn again as it is comes from the scene too
+        // (`redrawn`): left out, Regenerate on a first-person picture cast
+        // the holder again (review of #758, pass 11).
+        && (new_picture || !unchanged || call.retouch.is_none());
     if let Some(camera) = next
         .camera
         .as_ref()
@@ -2705,7 +2728,7 @@ mod tests {
             "a hoodie and jeans"
         ));
         assert!(!removed_top("jeans and boots", "jeans"), "no top before");
-        assert!(!removed_top("a sundress", "jeans"), "a change of clothes");
+        assert!(!removed_top("a dress", "jeans"), "a change of clothes");
         assert!(
             !removed_top("a sundress", "barefoot"),
             "no lower garment named"
@@ -2778,6 +2801,21 @@ mod tests {
             Some(&landed(&p, 3)),
         );
         assert_eq!(after.next.people[0].wearing, "cargo shorts, no top");
+        // And a change of the rest keeps it off, said.
+        let jeans = planned(
+            &call(json!({"picture": "images/b.png", "scene": {"people": [
+                {"who": "maya", "wearing": "jeans"}]}})),
+            Some(&landed(&p, 3)),
+        );
+        assert_eq!(jeans.next.people[0].wearing, "jeans, no top");
+        assert!(
+            jeans
+                .clothes_said
+                .iter()
+                .any(|(_, s)| s.contains("already off")),
+            "{:?}",
+            jeans.clothes_said
+        );
     }
 
     /// A retouch of a picture whose camera is first person keeps its holder:
@@ -2809,6 +2847,17 @@ mod tests {
             Some(&base),
         );
         assert_eq!(q.offstage, vec!["john".to_string()]);
+        // So is the picture drawn again as it is: the holder stays out.
+        let again = planned(&call(json!({"picture": "images/a.png"})), Some(&base));
+        assert_eq!(again.route, "redrawn");
+        let cast: Vec<String> = again.people.iter().map(|x| x.who.key()).collect();
+        assert_eq!(cast, ["maya"]);
+        assert!(
+            !again.faces.contains(&"john".to_string()),
+            "{:?}",
+            again.faces
+        );
+        assert!(again.seen_from.is_some());
     }
 
     /// A new picture naming library characters with nobody in `people`
