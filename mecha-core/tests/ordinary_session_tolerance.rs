@@ -564,3 +564,60 @@ fn the_learning_inventory_pages_through_a_run_larger_than_one_page() {
         .unwrap()
         .is_empty());
 }
+
+/// A run that compacted records its messages once, at the end, as a rewrite
+/// of the whole list: nothing after the owner's request exists as a message
+/// record. The capture reads the rewrite, so the run is remembered by what
+/// it did and said rather than by its request alone.
+#[test]
+fn a_run_that_compacted_is_remembered_from_its_rewrite() {
+    let f = Fixture::new();
+    let (memory, session, run) = f.begin();
+    let mut answered = Message::user("");
+    answered.content = vec![Block::ToolResult {
+        tool_use_id: "kept".into(),
+        content: "what the tool returned".into(),
+        is_error: false,
+    }];
+    answered.tool_provenance.insert("kept".into(), false);
+    session
+        .append(&Record::Rewrite {
+            messages: vec![
+                Message::user("A summary of the run so far."),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "kept".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({ "argument": "kept" }),
+                }]),
+                answered,
+                Message::assistant(vec![Block::text("The answer after the cut.")]),
+            ],
+        })
+        .unwrap();
+    end(&session, false, StopCause::Completed);
+
+    let report = memory.finish(&run);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let payload = f.sealed(&run);
+    let stored: Vec<_> = passages(&payload)
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            "UserRequest",
+            "ActionInvocation",
+            "ToolResult",
+            "AssistantText"
+        ]
+    );
+    assert_eq!(
+        of_kind(&payload, "AssistantText")[0]["text"],
+        "The answer after the cut."
+    );
+    assert_eq!(of_kind(&payload, "UserRequest")[0]["text"], PROMPT);
+    // Nothing outside entered, so the summary the walk cannot place does
+    // not cost the model's words their label.
+    assert!(passages(&payload).iter().all(|p| p["external"] == false));
+}

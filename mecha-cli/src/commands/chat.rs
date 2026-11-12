@@ -151,7 +151,7 @@ pub(crate) async fn preflight_memory(
             .collect();
         match &state {
             MemoryState::Fresh(memory) => {
-                memory.validate_chat_surface(&local_names, &staged.tools.workspace, &[])?;
+                memory.validate_surface(&local_names, &staged.tools.workspace, &[])?;
             }
             MemoryState::Resumed(memory) => {
                 // Authenticate saved authority before spawning even the selected child.
@@ -531,14 +531,16 @@ pub async fn execute(
         }
 
         if let Some(command) = input.strip_prefix('/') {
-            match handle_command(
-                command,
-                &prepared,
-                &mut convo,
-                &total,
-                session.as_ref(),
-                memory_enabled,
-            ) {
+            match handle_command(command, &prepared, &mut convo, &total, session.as_ref(), {
+                #[cfg(feature = "memory-prototype")]
+                {
+                    chat_memory.as_ref().map(|memory| memory.is_open())
+                }
+                #[cfg(not(feature = "memory-prototype"))]
+                {
+                    None
+                }
+            }) {
                 Flow::Continue => continue,
                 Flow::Quit => break,
             }
@@ -565,23 +567,40 @@ pub async fn execute(
         };
         #[cfg(feature = "memory-prototype")]
         let memory_turn = if let Some(memory) = chat_memory.as_mut() {
-            let turn = memory.begin_turn(
+            let begun = memory.begin_turn(
                 session.as_ref().expect("recorded chat"),
                 owner_input.as_ref().expect("dynamic owner input"),
-            )?;
-            let tool = memory.goal_memory(&turn)?;
-            let old = prepared
-                .agent
-                .registry()
-                .get("goal_context")
-                .expect("profile tool");
-            anyhow::ensure!(
-                old.input_schema() == tool.input_schema()
-                    && old.description() == tool.description(),
-                "chat memory schema changed between turns"
             );
-            prepared.agent.registry_mut().insert(tool);
-            Some(turn)
+            let turn = match begun {
+                Ok(turn) => Some(turn),
+                // An ordinary chat goes on without remembering a turn its
+                // memory cannot begin, and says so. The recall tool goes
+                // back to the placeholder that refuses dispatch, so the
+                // last turn's reader is not left answering for this one.
+                Err(error) if memory.is_open() => {
+                    eprintln!("mecha: this turn will not be remembered: {error:#}");
+                    prepared.agent.registry_mut().insert(memory.context_tool()?);
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(turn) = turn {
+                let tool = memory.goal_memory(&turn)?;
+                let old = prepared
+                    .agent
+                    .registry()
+                    .get("goal_context")
+                    .expect("profile tool");
+                anyhow::ensure!(
+                    old.input_schema() == tool.input_schema()
+                        && old.description() == tool.description(),
+                    "chat memory schema changed between turns"
+                );
+                prepared.agent.registry_mut().insert(tool);
+                Some(turn)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -690,7 +709,12 @@ pub async fn execute(
                     }
                     let report = memory.finish_turn(turn);
                     report_memory(&report);
-                    if report.status != mecha_core::memory_session::SessionMemoryStatus::Retained {
+                    // A closed profile ends with the turn it cannot retain.
+                    // An ordinary chat goes on: that turn is passed over
+                    // and the next one is remembered.
+                    if report.status != mecha_core::memory_session::SessionMemoryStatus::Retained
+                        && !memory.is_open()
+                    {
                         break;
                     }
                     continue;
@@ -708,9 +732,11 @@ pub async fn execute(
             Err(e) => {
                 eprintln!("error: {e:#}");
                 #[cfg(feature = "memory-prototype")]
-                if let (Some(memory), Some(turn), Some(s)) =
-                    (chat_memory.as_mut(), memory_turn.as_ref(), session.as_ref())
-                {
+                if let (Some(memory), Some(turn), Some(s)) = (
+                    chat_memory.as_mut().filter(|memory| !memory.is_open()),
+                    memory_turn.as_ref(),
+                    session.as_ref(),
+                ) {
                     if let Some(active) = task_active.take() {
                         if let Err(error) =
                             memory.task_record_final(turn, active, &recorded, &convo, None)
@@ -751,6 +777,13 @@ pub async fn execute(
                         );
                     }
                     let _ = s.append(&Record::Taint(convo.taint));
+                }
+                // An ordinary chat's failed turn is rolled back like any
+                // other, and what it did before failing is still what
+                // happened: its memory is whatever the recorder can read.
+                #[cfg(feature = "memory-prototype")]
+                if let (Some(memory), Some(turn)) = (chat_memory.as_mut(), memory_turn.as_ref()) {
+                    report_memory(&memory.finish_turn(turn));
                 }
             }
         }
@@ -794,13 +827,20 @@ fn handle_command(
     convo: &mut Conversation,
     total: &Usage,
     session: Option<&Session>,
-    memory_enabled: bool,
+    // Whether this chat is remembered, and if so whether as an ordinary
+    // chat (`true`) or a closed profile.
+    memory: Option<bool>,
 ) -> Flow {
     let (name, rest) = command.split_once(' ').unwrap_or((command, ""));
-    if memory_enabled
-        && (name == "clear"
-            || matches!(name, "grant" | "grants" | "revoke") && !rest.trim().is_empty())
-    {
+    // Clearing the context starts a different conversation, which a
+    // remembered one cannot become. A grant is the owner's exception and is
+    // recorded like any other fact about the conversation; the closed
+    // profiles refuse those too.
+    let refused = memory.is_some_and(|open| {
+        name == "clear"
+            || (!open && matches!(name, "grant" | "grants" | "revoke") && !rest.trim().is_empty())
+    });
+    if refused {
         eprintln!("chat memory refuses /{name}; start a fresh session for a new context or grants");
         return Flow::Continue;
     }

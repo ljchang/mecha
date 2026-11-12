@@ -130,8 +130,17 @@ impl Attachment {
         }
         match &self.graph_surface {
             Some(graph) => graph.validate_tools(names),
-            None => recording::chat_surface(names),
+            None => recording::surface(names),
         }
+    }
+    /// An ordinary local chat: whichever tools its configuration gives
+    /// it, recorded however a turn went. The graph, task and web
+    /// attachments are closed profiles with a recorder that refuses what
+    /// it does not expect; the web one has a host built on those refusals
+    /// (a stopped turn blocks the conversation until an explicit resume)
+    /// and opens with that host.
+    fn open(&self) -> bool {
+        self.task.is_none() && self.graph_surface.is_none() && self.web_ingress.is_none()
     }
     fn owner_source(&self) -> OwnerSource {
         if self.web_ingress.is_some() {
@@ -850,8 +859,16 @@ impl ChatMemory {
             authority::exclude_workspace(&self.memory.request, workspace)?;
             Ok(())
         } else {
-            self.memory.validate_chat_surface(names, workspace, grants)
+            // A grant that reaches the store or this conversation's
+            // transcript is refused; any other is the owner's exception.
+            authority::exclude_grants(&self.memory.request, Some(&self.attachment.source), grants)?;
+            self.memory.validate_surface(names, workspace, grants)
         }
+    }
+    /// Whether this is an ordinary chat rather than a closed profile: its
+    /// host goes on without remembering a turn the recorder cannot capture.
+    pub fn is_open(&self) -> bool {
+        self.attachment.open()
     }
     /// Authenticates immutable private attachment bytes, without runtime I/O.
     pub fn graph_surface(&self) -> Result<Option<ChatGraphSurface>> {
@@ -924,6 +941,15 @@ impl ChatMemory {
             ensure!(!gap, "chat turn order has a gap");
             authority::private(&path, false)?;
             let id = String::from_utf8(authority::read(&path, 128)?)?;
+            // An ordinary chat passes over a turn that began and was never
+            // sealed: the recorder could not capture it, or the process
+            // died in it. Its records stay in the transcript as part of
+            // what the next turn continues from, and its taint with them.
+            // A seal that exists and does not verify is still a refusal.
+            if a.open() && !self.memory.authority.file(&id, "chat-seal")?.try_exists()? {
+                frozen_metadata(&self.memory.authority, &id)?;
+                continue;
+            }
             let (mut s,revision,f)=seal(&self.memory.authority,&id).map_err(|e|anyhow::anyhow!("chat has an unfinished or unavailable turn; retry a sealed capture or start a fresh chat: {e:#}"))?;
             ensure!(
                 f.ordinal == ordinal
@@ -954,6 +980,13 @@ impl ChatMemory {
                         );
                         a.validate_tools(&c.tools)?;
                     }
+                    // Between an ordinary chat's turns: a late result, a
+                    // title, a turn passed over. The next turn starts from
+                    // all of it. Never a second header or marker.
+                    Record::Meta(_) | Record::ChatMemory { .. } => {
+                        anyhow::bail!("chat has an unsealed tail; start a fresh chat")
+                    }
+                    _ if a.open() => {}
                     _ => anyhow::bail!("chat has an unsealed tail; start a fresh chat"),
                 }
             }
@@ -966,9 +999,21 @@ impl ChatMemory {
         self.ordinal_after(last.as_ref())
     }
     fn ordinal_after(&self, last: Option<&RetainedTurnCheckpoint>) -> Result<u64> {
-        let ordinal = match last {
-            Some((id, _, _)) => frozen(&self.memory.authority, id)?.0.ordinal + 1,
-            None => 1,
+        let ordinal = if self.attachment.open() {
+            // After every turn begun, sealed or passed over.
+            let mut next = 1;
+            while next <= MAX_TURNS
+                && ordinal_path(&self.memory.authority, &self.attachment.session_id, next)
+                    .try_exists()?
+            {
+                next += 1;
+            }
+            next
+        } else {
+            match last {
+                Some((id, _, _)) => frozen(&self.memory.authority, id)?.0.ordinal + 1,
+                None => 1,
+            }
         };
         ensure!(
             ordinal <= MAX_TURNS,
@@ -1033,7 +1078,7 @@ impl ChatMemory {
         }
         ensure!(
             bytes.len() + owner.text().len() + 4096 < authority::SOURCE_MAX,
-            "chat transcript approaches 4 MiB; start a fresh chat"
+            "chat transcript approaches its size limit; start a fresh chat"
         );
         let f = Turn {
             attachment: self.digest.clone(),
@@ -1132,6 +1177,14 @@ impl ChatMemory {
                 .file(&turn.id, "chat-seal")?
                 .try_exists()?
             {
+                // A turn that was passed over stays passed over: sealing
+                // it now would take in the turns begun since.
+                ensure!(
+                    f.ordinal == MAX_TURNS
+                        || !ordinal_path(&self.memory.authority, &f.session_id, f.ordinal + 1)
+                            .try_exists()?,
+                    "chat turn was passed over"
+                );
                 let bytes = authority::read(&a.source, authority::SOURCE_MAX)?;
                 source_prefix(&a, bytes.len() as u64)?;
                 let attempts = self.memory.authority.attempts(&turn.id)?;

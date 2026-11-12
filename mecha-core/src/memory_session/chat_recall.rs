@@ -58,9 +58,23 @@ impl Tool for TrackedChat {
         };
         let (frozen, attachment) = frozen(&self.authority, &self.id)?;
         ensure!(
-            ctx.workspace.canonicalize()? == attachment.workspace && ctx.grants.is_empty(),
+            ctx.workspace.canonicalize()? == attachment.workspace,
             "chat recall execution surface changed"
         );
+        if attachment.open() {
+            // Checked on every call: a grant may be made mid-chat, and one
+            // that reaches the store or this transcript ends the recall.
+            authority::exclude_grants(
+                &self.authority.request,
+                Some(&attachment.source),
+                &ctx.grants.all(),
+            )?;
+        } else {
+            ensure!(
+                ctx.grants.is_empty(),
+                "chat recall execution surface changed"
+            );
+        }
         let memory =
             Memory::open_read_only_with_storage(&self.authority.request.db, self.storage.clone())?
                 .with_source_guard(self.authority.clone());

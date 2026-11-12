@@ -198,13 +198,18 @@ impl ChatObservationContext {
                 && self.prefix_length <= 64 * 1024 * 1024
                 && digest(&self.prefix_digest)
                 && self.prefix_digest == identity.prefix_digest
-                && if self.turn_ordinal == 1 {
-                    self.previous_turn.is_none() && self.prefix_start == 0
-                } else {
-                    self.previous_turn
-                        .as_ref()
-                        .is_some_and(|s| digest(s) && s != &identity.check_id)
-                        && self.prefix_start > 0
+                // A turn the recorder could not capture is passed over, so
+                // the first turn retained need not be the first begun: what
+                // must agree is that a turn names a predecessor exactly when
+                // a sealed prefix lies before it.
+                && match &self.previous_turn {
+                    None => self.prefix_start == 0,
+                    Some(previous) => {
+                        self.turn_ordinal > 1
+                            && digest(previous)
+                            && previous != &identity.check_id
+                            && self.prefix_start > 0
+                    }
                 },
             "invalid chat observation identity"
         );
@@ -298,12 +303,22 @@ impl ChatObservationContext {
         Ok(())
     }
 }
+/// `/content/N/text` in a message record, or `/messages/M/content/N/text`
+/// in a rewrite: an owner's line folded into a message that already held
+/// tool results is recorded only there.
 fn owner_pointer(pointer: &str) -> bool {
-    let Some(index) = pointer
-        .strip_prefix("/content/")
-        .and_then(|s| s.strip_suffix("/text"))
-    else {
-        return false;
+    let index = |s: &str| s.parse::<usize>().is_ok_and(|n| n.to_string() == s);
+    let rest = match pointer.strip_prefix("/messages/") {
+        Some(listed) => match listed.split_once('/') {
+            Some((message, rest)) if index(message) => rest,
+            _ => return false,
+        },
+        None => match pointer.strip_prefix('/') {
+            Some(rest) => rest,
+            None => return false,
+        },
     };
-    index.parse::<usize>().is_ok_and(|n| n.to_string() == index)
+    rest.strip_prefix("content/")
+        .and_then(|s| s.strip_suffix("/text"))
+        .is_some_and(index)
 }

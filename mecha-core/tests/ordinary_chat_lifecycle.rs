@@ -204,6 +204,27 @@ impl Fixture {
         turn
     }
 }
+/// What a sealed turn stored: each passage's kind, provenance label and text.
+fn sealed(f: &Fixture, run_id: &str) -> Vec<(String, serde_json::Value, String)> {
+    seal_json(f, run_id)["payload"]["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["kind"].as_str().unwrap().to_string(),
+                p["external"].clone(),
+                p["text"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+fn seal_json(f: &Fixture, run_id: &str) -> serde_json::Value {
+    serde_json::from_slice(
+        &fs::read(f.request.authority.join(format!("{run_id}.chat-seal"))).unwrap(),
+    )
+    .unwrap()
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
@@ -245,7 +266,7 @@ fn changing_context_retains_distinct_turns_and_resumes_without_reimporting_histo
     );
 }
 #[test]
-fn exclusive_attachment_and_unfinished_tail_refuse_continuation_but_not_old_seal() {
+fn an_attachment_is_exclusive_and_an_unfinished_turn_is_passed_over() {
     let f = Fixture::new();
     let s = f.session();
     let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
@@ -260,8 +281,27 @@ fn exclusive_attachment_and_unfinished_tail_refuse_continuation_but_not_old_seal
     .unwrap();
     s.append(&Record::Message(Message::user("Interrupted")))
         .unwrap();
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Cut short.",
+    )])))
+    .unwrap();
     drop(chat);
-    assert!(f.memory().attach_chat(&s, ChatAttachMode::Resume).is_err());
+    // The turn that never sealed costs its own memory and nothing else:
+    // the chat resumes, and the next turn follows the last one retained.
+    let mut resumed = f.memory().attach_chat(&s, ChatAttachMode::Resume).unwrap();
+    f.config(&s);
+    assert_eq!(resumed.next_turn_ordinal().unwrap(), 3);
+    let third = f.turn(&mut resumed, &s, "Carry on", "Keep records");
+    assert_eq!(third.status, SessionMemoryStatus::Retained, "{third:?}");
+    assert_eq!(third.turn_ordinal, 3);
+    let stored = sealed(&f, &third.run_id);
+    assert!(
+        stored
+            .iter()
+            .all(|(_, _, text)| text != "Interrupted" && text != "Cut short."),
+        "a passed-over turn's messages are not the next turn's: {stored:?}"
+    );
+    drop(resumed);
     assert_eq!(
         SessionMemory::open_for_recovery(&f.request)
             .unwrap()
@@ -493,17 +533,17 @@ async fn per_turn_recall_uses_current_owner_context_and_retains_exact_delivery()
 }
 
 #[test]
-fn missing_decision_coverage_withholds_even_a_completed_answer() {
+fn a_turn_is_retained_whatever_its_outcome_counted() {
     let f = Fixture::new();
     let s = f.session();
     let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
     f.config(&s);
     let report = f.turn_reported(&mut chat, &s, "Authored input", "Keep records", 2);
-    assert_eq!(report.status, SessionMemoryStatus::Unavailable);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
 }
 
 #[test]
-fn unsupported_compaction_overflow_and_forced_final_outcomes_stop_continuation() {
+fn a_turn_that_compacted_overflowed_or_ran_out_is_retained_and_the_chat_goes_on() {
     for outcome in [
         RunStats {
             stop_cause: Some(StopCause::Completed),
@@ -530,13 +570,9 @@ fn unsupported_compaction_overflow_and_forced_final_outcomes_stop_continuation()
         let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
         f.config(&s);
         let report = f.turn_outcome(&mut chat, &s, "Authored input", "Keep records", outcome);
-        assert_eq!(report.status, SessionMemoryStatus::Unavailable);
-        assert!(chat
-            .begin_turn(
-                &s,
-                &OwnerInput::new(OwnerSource::CliChat, "Continue".into()).unwrap()
-            )
-            .is_err());
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        let next = f.turn(&mut chat, &s, "Continue", "Keep records");
+        assert_eq!(next.status, SessionMemoryStatus::Retained, "{next:?}");
     }
 }
 
@@ -598,9 +634,11 @@ fn repeated_owner_text_requires_a_new_authenticated_owner_occurrence() {
 }
 
 #[test]
-fn recomputed_native_bindings_cannot_omit_or_reuse_response_boundaries() {
-    let mut accepted = vec![];
-    for mode in ["empty", "old_only", "stale", "skipped"] {
+fn a_history_the_walk_cannot_derive_is_stored_as_local_only_under_a_clean_taint() {
+    for (mode, untrusted) in ["empty", "old_only", "stale", "skipped"]
+        .into_iter()
+        .flat_map(|mode| [(mode, false), (mode, true)])
+    {
         let f = Fixture::new();
         let s = f.session();
         let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
@@ -695,17 +733,42 @@ fn recomputed_native_bindings_cannot_omit_or_reuse_response_boundaries() {
         .unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: false,
+            untrusted,
         }))
         .unwrap();
-        if chat.finish_turn(&turn).status != SessionMemoryStatus::Unavailable {
-            accepted.push(mode);
+        // The request histories do not follow from one another, so the
+        // walk cannot say what was in front of the model. The turn is
+        // still what happened; whether the model's words are stored as
+        // local is the recorded taint's to say, and under an untrusted
+        // one none of them is.
+        let report = chat.finish_turn(&turn);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{mode}");
+        let stored = sealed(&f, &report.run_id);
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|(kind, _, _)| kind == "UserRequest")
+                .map(|(_, external, text)| (external.clone(), text.as_str()))
+                .collect::<Vec<_>>(),
+            [(serde_json::json!(false), "New authored task")],
+            "{mode}"
+        );
+        // "stale" and "skipped" ran a tool whose result carries no recorded
+        // provenance: that result accounts for a taint, what the model
+        // wrote before it is local, and what it wrote after is not,
+        // whatever the taint says. The other two ran nothing, so the
+        // recorded taint alone decides.
+        let ran_a_tool = matches!(mode, "stale" | "skipped");
+        for (kind, external, text) in stored.iter().filter(|(kind, _, _)| kind != "UserRequest") {
+            let local = external == &serde_json::json!(false);
+            if kind == "AssistantText" {
+                assert_eq!(text, "Authored final reply.");
+                assert_eq!(local, !untrusted && !ran_a_tool, "{mode} {untrusted}");
+            } else if !ran_a_tool {
+                assert_eq!(local, !untrusted, "{mode} {kind}");
+            }
         }
     }
-    assert!(
-        accepted.is_empty(),
-        "accepted malformed boundaries: {accepted:?}"
-    );
 }
 
 #[test]
@@ -1129,7 +1192,7 @@ fn oversized_invocation_retains_bounded_metadata_and_exact_sealed_source() {
 }
 
 #[test]
-fn oversized_invocation_does_not_relax_result_passage_bound() {
+fn a_result_longer_than_a_passage_is_stored_as_its_head() {
     let f = Fixture::new();
     let s = f.session();
     let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
@@ -1146,12 +1209,16 @@ fn oversized_invocation_does_not_relax_result_passage_bound() {
         &"x".repeat(4097),
     );
     let report = chat.finish_turn(&turn);
-    assert_eq!(report.status, SessionMemoryStatus::Unavailable);
-    assert!(!f
-        .request
-        .authority
-        .join(format!("{}.chat-seal", report.run_id))
-        .exists());
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let seal = seal_json(&f, &report.run_id);
+    let result = seal["payload"]["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "ToolResult")
+        .unwrap();
+    assert_eq!(result["text"].as_str().unwrap().len(), 4096);
+    assert_eq!(result["source_bytes"], 4097);
 }
 
 fn authored_graph_surface(f: &Fixture) -> mecha_core::memory_session::surface::ChatGraphSurface {
@@ -2744,15 +2811,18 @@ async fn native_boredom_notice_retains_exact_owner_and_decision_histories() {
 }
 
 #[test]
-fn native_inline_notices_cannot_rewrite_history_or_admit_arbitrary_user_text() {
+fn user_role_text_the_owner_did_not_type_is_left_out_and_never_owner_evidence() {
     let retry = "Your previous turn ended without producing anything — the token budget went entirely to reasoning before you began your answer. Do not start the task over and do not re-derive what you already worked out. Either give your answer now, briefly, using what you already know, or make the single next tool call. Keep your reasoning short this turn.";
-    for mode in [
+    for (mode, untrusted) in [
         "unknown",
         "canonical-prefix",
         "wrong-tail",
         "rewrite",
         "edited-owner",
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|mode| [(mode, false), (mode, true)])
+    {
         let f = Fixture::new();
         let s = f.session();
         let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
@@ -2850,57 +2920,456 @@ fn native_inline_notices_cannot_rewrite_history_or_admit_arbitrary_user_text() {
         .unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: false,
+            untrusted,
         }))
         .unwrap();
+        let report = chat.finish_turn(&turn);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{mode}");
+        // The one owner passage is the line the host froze at the start;
+        // nothing folded in beside it is stored at all, as owner evidence
+        // or otherwise. Under an untrusted taint the model's reply is
+        // stored as outside.
+        let stored = sealed(&f, &report.run_id);
         assert_eq!(
-            chat.finish_turn(&turn).status,
-            SessionMemoryStatus::Unavailable,
+            stored
+                .iter()
+                .map(|(kind, _, text)| (kind.as_str(), text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("UserRequest", "Current owner"),
+                ("AssistantText", "Final answer")
+            ],
             "{mode}"
         );
+        if untrusted {
+            // Where the walk saw nothing that accounts for the taint,
+            // every label is unknown, the owner's included.
+            assert_ne!(stored[0].1, serde_json::json!(true), "{mode}");
+            assert_ne!(stored[1].1, serde_json::json!(false), "{mode}");
+        } else {
+            assert_eq!(stored[0].1, serde_json::json!(false), "{mode}");
+            assert_eq!(stored[1].1, serde_json::json!(false), "{mode}");
+        }
+    }
+}
+
+/// An ordinary chat takes whichever tools its configuration gives it, and an
+/// owner's grant; what it refuses is a grant that reaches the store, the key
+/// or the transcript being sealed.
+#[test]
+fn a_chat_takes_any_tools_and_a_grant_but_none_that_reaches_the_store() {
+    let f = Fixture::new();
+    let s = f.session();
+    let chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    assert!(chat.is_open());
+    let names: Vec<String> = ["goal_context", "shell", "notes__search", "fs_edit"]
+        .map(Into::into)
+        .into();
+    chat.validate_surface(&names, &f.workspace, &[]).unwrap();
+    assert!(chat
+        .validate_surface(&["shell".into()], &f.workspace, &[])
+        .is_err());
+    let grant = |path: PathBuf| mecha_core::grant::Grant {
+        path: path.canonicalize().unwrap(),
+        access: mecha_core::grant::Access::Read,
+        source: mecha_core::grant::Source::Owner,
+    };
+    let elsewhere = f.root.join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    chat.validate_surface(&names, &f.workspace, &[grant(elsewhere)])
+        .unwrap();
+    for reaches in ["db", "keys", "sessions"] {
         assert!(
-            !f.request
-                .authority
-                .join(format!("{}.chat-seal", turn.run_id()))
-                .exists(),
-            "{mode} sealed unsupported content"
+            chat.validate_surface(&names, &f.workspace, &[grant(f.root.join(reaches))])
+                .is_err(),
+            "{reaches}"
         );
     }
 }
 
-/// The run recorder was opened to any tool and to grants; a chat was not.
-/// Its recorder binds each turn to the exact history every request sent,
-/// and a turn it refuses ends the chat, so the surface is refused up front.
+fn open_config(f: &Fixture, s: &Session) {
+    s.append(&Record::Config(RunConfig {
+        workspace: f.workspace.clone(),
+        tools: vec![
+            "goal_context".into(),
+            "notes__search".into(),
+            "shell".into(),
+        ],
+        ..Default::default()
+    }))
+    .unwrap();
+}
+/// The first request's decision of a turn, sent `history`.
+fn decide(s: &Session, owner: OwnerInput, history: &[Message]) {
+    let mut state = recorded_context(s);
+    let version = state
+        .transition(CharterSnapshot::disabled(), Some(owner))
+        .unwrap()
+        .unwrap();
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        history,
+        Some(version.prompt_block()),
+        true,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(history)
+    .unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![version],
+    })
+    .unwrap();
+}
+/// One scripted turn of an ordinary chat: the owner's line, the first
+/// request's decision, whatever `body` appends, then how it ended.
+fn open_turn(
+    chat: &mut ChatMemory,
+    s: &Session,
+    prompt: &str,
+    body: impl FnOnce(&Session),
+    untrusted: bool,
+    outcome: Option<StopCause>,
+) -> mecha_core::memory_session::chat::ChatMemoryReport {
+    let owner = OwnerInput::new(OwnerSource::CliChat, prompt.into()).unwrap();
+    let turn = chat.begin_turn(s, &owner).unwrap();
+    let mut history = Session::read(&s.path).unwrap().convo.messages;
+    history.push(Message::user(prompt));
+    s.append(&Record::Message(Message::user(prompt))).unwrap();
+    decide(s, owner, &history);
+    body(s);
+    if let Some(stop_cause) = outcome {
+        s.append(&Record::Outcome(RunStats {
+            stop_cause: Some(stop_cause),
+            turns: 1,
+            context_overflows: Some(0),
+            ..Default::default()
+        }))
+        .unwrap();
+    }
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted,
+    }))
+    .unwrap();
+    chat.finish_turn(&turn)
+}
+fn call(id: &str, name: &str) -> Block {
+    Block::ToolUse {
+        id: id.into(),
+        name: name.into(),
+        input: serde_json::json!({"q": id}),
+    }
+}
+fn results(answers: &[(&str, &str, bool)]) -> Message {
+    let mut m = Message::user("");
+    m.content = answers
+        .iter()
+        .map(|(id, content, _)| Block::ToolResult {
+            tool_use_id: (*id).into(),
+            content: (*content).into(),
+            is_error: false,
+        })
+        .collect();
+    m.tool_provenance = answers
+        .iter()
+        .map(|(id, _, external)| ((*id).to_string(), *external))
+        .collect();
+    m
+}
+
+/// A turn that ran a shell and a server's tool and was cancelled with a
+/// call unanswered: each result is stored beside where its bytes came
+/// from, what the model wrote after an outside result is outside, and the
+/// unanswered call says no result is available.
 #[test]
-fn a_chat_keeps_the_closed_tool_surface_and_refuses_grants() {
+fn a_turn_with_ordinary_tools_is_remembered_with_each_result_s_provenance() {
     let f = Fixture::new();
     let s = f.session();
-    let chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
-    chat.validate_surface(
-        &["goal_context".into(), "fs_read".into()],
-        &f.workspace,
-        &[],
-    )
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let report = open_turn(
+        &mut chat,
+        &s,
+        "Look it up",
+        |s| {
+            for m in [
+                Message::assistant(vec![
+                    Block::text("Looking."),
+                    call("local", "shell"),
+                    call("remote", "notes__search"),
+                ]),
+                results(&[
+                    ("local", "a file listing", false),
+                    ("remote", "a page from elsewhere", true),
+                ]),
+                Message::assistant(vec![call("unanswered", "shell")]),
+            ] {
+                s.append(&Record::Message(m)).unwrap();
+            }
+        },
+        true,
+        Some(StopCause::Interrupted),
+    );
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let stored: Vec<_> = sealed(&f, &report.run_id)
+        .into_iter()
+        .map(|(kind, external, _)| (kind, external))
+        .collect();
+    let labelled = |kind: &str, external: bool| (kind.to_string(), serde_json::json!(external));
+    assert_eq!(
+        stored,
+        [
+            labelled("UserRequest", false),
+            labelled("AssistantText", false),
+            labelled("ActionInvocation", false),
+            labelled("ActionInvocation", false),
+            labelled("ToolResult", false),
+            labelled("ToolResult", true),
+            labelled("ActionInvocation", true),
+        ]
+    );
+    let seal = seal_json(&f, &report.run_id);
+    let receipts: Vec<_> = seal["payload"]["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["call_id"].as_str().unwrap().to_string(),
+                r["status"].clone(),
+            )
+        })
+        .collect();
+    assert!(
+        receipts.contains(&("unanswered".into(), serde_json::json!("Unavailable"))),
+        "{receipts:?}"
+    );
+    // And the chat goes on.
+    let next = open_turn(&mut chat, &s, "And then?", |_| {}, true, None);
+    assert_eq!(next.status, SessionMemoryStatus::Retained, "{next:?}");
+}
+
+/// After a compaction the rest of the turn exists only in the rewrite
+/// record. It is read from there, once, and nothing an earlier turn said
+/// comes back as this turn's.
+#[test]
+fn a_compacted_turn_keeps_what_only_the_rewrite_holds_and_none_of_an_earlier_turn() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let first = open_turn(
+        &mut chat,
+        &s,
+        "First",
+        |s| {
+            s.append(&Record::Message(Message::assistant(vec![Block::text(
+                "An earlier reply.",
+            )])))
+            .unwrap();
+        },
+        false,
+        Some(StopCause::Completed),
+    );
+    assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+    let report = open_turn(
+        &mut chat,
+        &s,
+        "Second",
+        |s| {
+            let asked = Message::assistant(vec![call("before", "shell")]);
+            let answered = results(&[("before", "read before the cut", false)]);
+            s.append(&Record::Message(asked.clone())).unwrap();
+            s.append(&Record::Message(answered.clone())).unwrap();
+            s.append(&Record::Rewrite {
+                messages: vec![
+                    Message::user("A summary of the conversation so far."),
+                    Message::assistant(vec![Block::text("An earlier reply.")]),
+                    asked,
+                    answered,
+                    Message::assistant(vec![call("after", "shell")]),
+                    results(&[("after", "read after the cut", false)]),
+                    Message::assistant(vec![Block::text("Written after the cut.")]),
+                ],
+            })
+            .unwrap();
+        },
+        false,
+        Some(StopCause::Completed),
+    );
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let stored = sealed(&f, &report.run_id);
+    let texts: Vec<_> = stored
+        .iter()
+        .filter(|(kind, _, _)| kind != "ActionInvocation")
+        .map(|(kind, _, text)| (kind.as_str(), text.as_str()))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            ("UserRequest", "Second"),
+            ("ToolResult", "read before the cut"),
+            ("ToolResult", "read after the cut"),
+            ("AssistantText", "Written after the cut."),
+        ]
+    );
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|(kind, _, _)| kind == "ActionInvocation")
+            .count(),
+        2
+    );
+    // Nothing outside entered, so the summary the walk cannot place does
+    // not cost the model's words their label.
+    assert!(stored
+        .iter()
+        .all(|(_, external, _)| external == &serde_json::json!(false)));
+}
+
+/// A line typed after a cancelled tool turn is folded into the message
+/// that holds the tool results, and recorded only as a rewrite. It is
+/// still the owner's, and the earlier turn's results are not this turn's.
+#[test]
+fn an_owner_line_folded_into_a_cancelled_tail_is_still_the_owner_s() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let first = open_turn(
+        &mut chat,
+        &s,
+        "Start",
+        |s| {
+            s.append(&Record::Message(Message::assistant(vec![call(
+                "cut", "shell",
+            )])))
+            .unwrap();
+            s.append(&Record::Message(results(&[(
+                "cut",
+                "half a listing",
+                false,
+            )])))
+            .unwrap();
+        },
+        false,
+        Some(StopCause::Interrupted),
+    );
+    assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+    let owner = OwnerInput::new(OwnerSource::CliChat, "Go on".into()).unwrap();
+    let turn = chat.begin_turn(&s, &owner).unwrap();
+    let mut history = Session::read(&s.path).unwrap().convo.messages;
+    mecha_core::agent::append_user_text(&mut history, "Go on".into());
+    s.append(&Record::Rewrite {
+        messages: history.clone(),
+    })
     .unwrap();
-    for other in ["shell", "notes__search", "fs_edit"] {
-        assert!(
-            chat.validate_surface(&["goal_context".into(), other.into()], &f.workspace, &[])
-                .is_err(),
-            "{other}"
-        );
-    }
-    let elsewhere = f.root.join("elsewhere");
-    fs::create_dir(&elsewhere).unwrap();
-    let grant = mecha_core::grant::Grant {
-        path: elsewhere.canonicalize().unwrap(),
-        access: mecha_core::grant::Access::Read,
-        source: mecha_core::grant::Source::Owner,
+    decide(&s, owner, &history);
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Done.",
+    )])))
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: false,
+    }))
+    .unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    assert_eq!(
+        sealed(&f, &report.run_id),
+        [
+            (
+                "UserRequest".to_string(),
+                serde_json::json!(false),
+                "Go on".to_string()
+            ),
+            (
+                "AssistantText".to_string(),
+                serde_json::json!(false),
+                "Done.".to_string()
+            ),
+        ]
+    );
+    let seal = seal_json(&f, &report.run_id);
+    assert!(seal["payload"]["originals"][0]["pointer"]
+        .as_str()
+        .unwrap()
+        .starts_with("/messages/"));
+}
+
+/// What is appended between turns (a late result's taint, a carried note)
+/// is part of what the next turn continues from, and its taint with it.
+#[test]
+fn records_between_turns_are_what_the_next_turn_continues_from() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let reply = |text: &'static str| {
+        move |s: &Session| {
+            s.append(&Record::Message(Message::assistant(vec![Block::text(
+                text,
+            )])))
+            .unwrap();
+        }
     };
-    assert!(chat
-        .validate_surface(
-            &["goal_context".into(), "fs_read".into()],
-            &f.workspace,
-            &[grant]
-        )
-        .is_err());
+    let first = open_turn(&mut chat, &s, "First", reply("One."), false, None);
+    assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+    assert_eq!(
+        sealed(&f, &first.run_id)[1].1,
+        serde_json::json!(false),
+        "clean so far"
+    );
+    s.append(&Record::Notes {
+        notes: vec!["a carried note".into()],
+    })
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: true,
+    }))
+    .unwrap();
+    drop(chat);
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Resume).unwrap();
+    let second = open_turn(&mut chat, &s, "Second", reply("Two."), true, None);
+    assert_eq!(second.status, SessionMemoryStatus::Retained, "{second:?}");
+    let stored = sealed(&f, &second.run_id);
+    assert_eq!(stored[0].1, serde_json::json!(false));
+    assert_eq!(
+        stored[1].1,
+        serde_json::json!(true),
+        "the conversation had taken outside content in before this turn"
+    );
+}
+
+/// A turn that was passed over stays passed over: sealing it later would
+/// take in the turns begun since.
+#[test]
+fn a_turn_passed_over_cannot_be_sealed_later() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let owner = OwnerInput::new(OwnerSource::CliChat, "Abandoned".into()).unwrap();
+    let abandoned = chat.begin_turn(&s, &owner).unwrap();
+    s.append(&Record::Message(Message::user("Abandoned")))
+        .unwrap();
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Never sealed.",
+    )])))
+    .unwrap();
+    let next = open_turn(&mut chat, &s, "Next", |_| {}, false, None);
+    assert_eq!(next.status, SessionMemoryStatus::Retained, "{next:?}");
+    assert_eq!(next.turn_ordinal, 2);
+    assert_eq!(
+        chat.finish_turn(&abandoned).status,
+        SessionMemoryStatus::Unavailable
+    );
+    let after = open_turn(&mut chat, &s, "After", |_| {}, false, None);
+    assert_eq!(after.status, SessionMemoryStatus::Retained, "{after:?}");
+    assert_eq!(after.turn_ordinal, 3);
 }

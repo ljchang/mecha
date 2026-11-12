@@ -1000,7 +1000,9 @@ fn chat_context_bounds_and_locator_integrity_fail_closed() {
             c.owner_messages.push(c.owner_messages[0].clone());
         },
         |v: &mut HostCapture| v.chat_context.as_mut().unwrap().previous_turn = Some("b".repeat(64)),
-        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().turn_ordinal = 2,
+        // A first retained turn may carry a later ordinal (an earlier one
+        // was passed over); it may not claim a sealed prefix before it.
+        |v: &mut HostCapture| v.chat_context.as_mut().unwrap().prefix_start = 1,
         |v: &mut HostCapture| {
             v.chat_context.as_mut().unwrap().decisions[0].binding_digest = "bad".into()
         },

@@ -90,10 +90,8 @@ keeps its passages local.
 
 One run is one capture of at most 256 passages and 1 MiB. A longer run keeps
 the request, the model's last text and as many calls from the start as fit; the
-transcript still holds every line. A chat still uses the restricted profile
-below: the tools `fs_read`, `fs_write`, `fs_list` and `goal_context`, no MCP,
-code tool, grants, hooks, fallbacks, subagents or outbox routes, and held or
-disabled inbound messages.
+transcript still holds every line. A run that compacted is remembered from
+what it did after the cut as well as before it.
 Assistant reasoning stays in the original transcript, covered by its source
 digest, but is never imported as memory evidence. Reasoning is never silently
 disabled; `--no-thinking` remains a provider-dependent explicit control.
@@ -170,9 +168,8 @@ benefit, private-data readiness or corpus-scale performance.
 
 ### Conversations with changing goals
 
-The separate experimental chat profile uses the same initialized manifest and
-encrypted store. From an isolated workspace, keep the restricted flags and tool
-selection above, and replace the `run` command with:
+A chat uses the same initialized manifest and encrypted store, with whatever
+tools, servers, hooks and grants its configuration gives it:
 
 ```bash
 chat --dynamic-goals --episodic-memory "$MECHA_MEMORY_ROOT/memory.json"
@@ -184,9 +181,9 @@ decision. Each retained turn records which context versions and original source
 passages it used. A request is context evidence, not an automatically confirmed
 success criterion. Retention remains `not_evaluated`.
 
-To resume, use the same workspace, manifest, restricted flags and tool selection,
-adding `--resume SESSION_ID` to that chat command. A different authority, competing
-writer, incomplete turn or unsupported unflagged resume refuses before inference.
+To resume, use the same workspace and manifest, adding `--resume SESSION_ID`
+to that chat command. A different authority, a competing writer or an
+unflagged resume refuses before inference.
 The CLI prints a separate `episodic chat memory` JSON report after each turn;
 save its `run_id` for the existing host-only `retry` and `forget` commands.
 Admission retry never repeats actions. Forgetting remains possible when the
@@ -199,13 +196,21 @@ evidence that depends on it. Recalled material remains a dependency rather than
 being imported again as independent corroboration. Historical replay uses the
 recorded owner and charter context, not today's charter.
 
-This first chat profile is bounded. It refuses `/clear`, grant changes,
-compaction, context-overflow recovery and unfinished or noncompleted capture.
-A failed or oversized capture can follow an executed action; its report is
-unavailable and further memory-enabled turns stop. Only complete seals can be
-retried; an ambiguous unsealed turn requires a fresh chat. Native transcripts
-are limited to 32 MiB, and the inherited passage and context limits
-can be reached sooner. In both one-shot and chat capture, tool arguments above
+Each turn is recorded however it went: whichever tools ran, cancelled or
+completed, compacted or not, with a provider failure or a delivered message in
+it. What the recorder cannot place is left out, as in a run. A turn it cannot
+capture at all is reported as unavailable and passed over; the chat goes on and
+the next turn is remembered. A turn is refused when it is not provably this
+chat's: a changed transcript prefix, an owner line recorded under another
+ingress, a recall that does not match what the tool returned, or a grant that
+reaches the store, its key or the transcript. `/clear` is refused, because a
+cleared context is a different conversation. Only complete seals can be
+retried.
+
+A conversation is still bounded: an owner message of at most 2,048 bytes, 64
+owner messages and 256 turns per chat, and a 32 MiB transcript. The graph,
+task and web profiles below are closed profiles and keep their own restricted
+flags, tool lists and refusals. In both one-shot and chat capture, tool arguments above
 1,024 serialized JSON bytes retain their full-input digest, native source pointer
 and action receipt with an explicit oversized status; the memory record omits
 the argument content. This does not make omitted text factual support or prove
