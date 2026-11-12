@@ -985,11 +985,24 @@ one more reason §14's gate part 1 exists.
   words for events, so it errs toward dropping a line early. A new diary
   day starts over; a changed events or feeling line (the noon turn) is a new
   line; the weather is the day's first reading for that chat, so a forecast
-  refreshed mid-chat cannot contradict what she said. The note sits ahead
-  of the variety and scene notes. The ledger is held by the process serving
-  the chat and is never stored, so a restart offers each line once more. It
-  is the within-chat half only: the nightly `told` flag below is still
-  unbuilt, and nothing here writes a world row.
+  refreshed mid-chat cannot contradict what she said. A turn that is
+  rolled back (a recording that fails, a run that errors or is stopped)
+  gives its offer back, since she never read it. The note sits ahead of the
+  variety and scene notes, on purpose and unmeasured: it had been the last
+  text she read, which is where an instruction lands hardest, and the scene
+  note now is. The ledger is held by the process serving the chat and is
+  never stored, so a restart offers each line once more. It is the
+  within-chat half only: the nightly `told` flag below is still unbuilt,
+  and nothing here writes a world row.
+- **What this does to the initiative reading.** `persona::initiative` filed
+  each turn by whether its own note carried `EVENTS_HEADING`. With the
+  ledger that would scatter an events-on chat across two arms, so the
+  events arm is now the stretch's: once one attach has shown the teller,
+  every later turn of it that shows her days is the events arm
+  (`initiative`'s module doc). The ledger and a stretch share a lifetime,
+  one attach, so a stretch's first turn carries the lines. A reading of
+  chats from before the ledger reads the same way under both rules, since
+  the heading rode every turn then.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé

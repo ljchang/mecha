@@ -55,6 +55,21 @@ fn new_key() -> String {
     )
 }
 
+/// What she has said since the owner last spoke: the assistant messages at
+/// the history's tail, oldest first. Read before this turn's owner message
+/// is pushed, so it is her last reply, which `today::Ledger` reads for the
+/// lines she told.
+fn replied_since_the_owner(messages: &[Message]) -> String {
+    let mut tail: Vec<String> = messages
+        .iter()
+        .rev()
+        .take_while(|m| m.role == mecha_core::message::Role::Assistant)
+        .map(|m| m.text())
+        .collect();
+    tail.reverse();
+    tail.join("\n")
+}
+
 /// The teller half of a today-block, drawn only when `[life] events` is on.
 /// Before noon its event day is yesterday, while levels and weather are
 /// still today's (PERSONA-LIFE-DESIGN.md §4.5).
@@ -4995,6 +5010,10 @@ impl PersonaChats {
                     build_on.is_some(),
                 )
             });
+        // The ledger as it stood, put back if the turn is rolled back: an
+        // offer she never read is not an offer spent, or two failed turns
+        // would silence the day's lines unseen (review of #867).
+        let told_before = ps.told.clone();
         // What her day has her doing now (PERSONA-LIFE-DESIGN.md §4.5), on
         // the owner's clock: its own note, arming taint by the stem its
         // rows' sources pick (`persona::today::stem_of`). Nothing when `[life]
@@ -5064,14 +5083,7 @@ impl PersonaChats {
             // owner asks (`today::Ledger`), never turn after turn.
             read.map(|(now, teller)| {
                 let lines = teller.and_then(|t| {
-                    let last_reply = conversation
-                        .messages
-                        .iter()
-                        .rev()
-                        .take_while(|m| m.role == mecha_core::message::Role::Assistant)
-                        .map(|m| m.text())
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let last_reply = replied_since_the_owner(&conversation.messages);
                     ps.told.offer(
                         mecha_core::persona::today::diary_date(at),
                         &t,
@@ -5173,6 +5185,7 @@ impl PersonaChats {
             }
             ps.conversation = Some(conversation);
             ps.goal = goal;
+            ps.told = told_before;
             return Err(Refusal::Failed(format!("recording: {e:#}")));
         }
         let said_for_judge = said.clone();
@@ -5243,6 +5256,7 @@ impl PersonaChats {
         let Some((bound, agent)) = ready else {
             // Unreachable: an early pause always pauses above.
             ps.conversation = Some(conversation);
+            ps.told = told_before;
             return Err(Refusal::Failed("a paused turn reached the model".into()));
         };
         // The crisis judge, alongside the turn, on words the keywords passed
@@ -5617,6 +5631,7 @@ impl PersonaChats {
                 ps.late.ended(turn, run_ok, outcome_recorded);
                 if !run_ok {
                     ps.late.owe(arrived_back);
+                    ps.told = told_before;
                     chats.jobs.queue.cancel_run(&key, turn);
                 }
                 // Pictures that finished while this run held the chat: into
@@ -10066,6 +10081,107 @@ mod tests {
         assert!(!quiet.contains(EVENTS_HEADING), "{quiet}");
         turn(&w, &events, "And your day, did it go to plan?").await;
         assert!(newest(&w).contains(EVENTS_HEADING), "{}", newest(&w));
+    }
+
+    /// A chat of `w`'s persona with her days and the teller on, and one
+    /// storylet to tell.
+    async fn chat_with_her_day(w: &World) -> String {
+        let dir = w.store().join("mara");
+        std::fs::write(
+            dir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::story::FILE),
+            "[[storylet]]\nid = \"quiet_errand\"\ntitle = \"a quiet errand\"\nsize = \"minor\"\n",
+        )
+        .unwrap();
+        let toml = dir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        let text = text
+            .replace("world     = false", "world     = true")
+            .replace("events    = false", "events    = true");
+        assert!(text.contains("events    = true"), "{text}");
+        std::fs::write(&toml, text).unwrap();
+        w.personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap()["key"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The glue the ledger's headline rests on: her last reply is what is
+    /// read for what she said. Empty, every line would ride its offers out
+    /// whatever she told (review of #867).
+    #[test]
+    fn her_last_reply_is_what_the_ledger_reads() {
+        use mecha_core::message::Block;
+        let said = |t: &str| Message::assistant(vec![Block::text(t)]);
+        assert_eq!(replied_since_the_owner(&[]), "");
+        assert_eq!(replied_since_the_owner(&[Message::user("hi")]), "");
+        let history = [
+            said("An older reply."),
+            Message::user("hi"),
+            said("It rained all morning."),
+            said("Then it cleared."),
+        ];
+        assert_eq!(
+            replied_since_the_owner(&history),
+            "It rained all morning.\nThen it cleared."
+        );
+    }
+
+    /// An offer she never read is not an offer spent: a turn that fails is
+    /// rolled back, the ledger with it, so the day's lines are still there
+    /// for the turn that works (review of #867).
+    #[tokio::test]
+    async fn a_failed_turn_gives_its_offer_back() {
+        use mecha_core::persona::today::{EVENTS_HEADING, OFFERS};
+        let w = world_with(Mode::Fail);
+        let key = chat_with_her_day(&w).await;
+        for n in 0..=OFFERS {
+            // `turn` insists on a run that worked; this one waits for the
+            // failure to be said.
+            let (mut rx, _) = w
+                .personas()
+                .subscribe(&w.library, &key, None)
+                .await
+                .unwrap();
+            w.personas()
+                .send_with(
+                    &w.chat,
+                    &w.library,
+                    &key,
+                    "Hello there.",
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                )
+                .await
+                .unwrap();
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+                    Ok(Ok(WireEvent::Done { ok, .. })) => {
+                        assert!(!ok, "the model was to fail");
+                        break;
+                    }
+                    Ok(Ok(_)) => {}
+                    other => panic!("no Done event: {other:?}"),
+                }
+            }
+            let seen = w.seen.lock().unwrap().clone();
+            assert_eq!(
+                seen.len(),
+                usize::from(n) + 1,
+                "each turn reached the model"
+            );
+            let newest = seen.last().unwrap().messages.last().unwrap().text();
+            assert!(newest.contains(EVENTS_HEADING), "turn {n}: {newest}");
+        }
     }
 
     #[test]

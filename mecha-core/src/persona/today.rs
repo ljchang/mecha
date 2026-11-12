@@ -276,19 +276,17 @@ impl Item {
 pub const OFFERS: u8 = 2;
 
 /// Words in an owner's message that ask about the weather, beside the sky's
-/// own ([`sky_words`]).
+/// own ([`sky_words`]). Never the everyday ones ("a hot take", "cold
+/// feet", "outside the box"): each false match re-offers the line, which is
+/// the error this ledger exists to stop (review of #867).
 const WEATHER_ASKED: &[&str] = &[
     "weather",
     "forecast",
     "temperature",
     "degrees",
-    "outside",
     "umbrella",
-    "cold",
     "chilly",
     "freezing",
-    "warm",
-    "hot",
     "humid",
     "windy",
 ];
@@ -395,7 +393,9 @@ fn sky_words(sky: super::weather::Sky) -> &'static [&'static str] {
 }
 
 fn lowered(text: &str) -> Vec<String> {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
+    // A phone or a Mac types the curly apostrophe, which is the plain one.
+    text.replace('\u{2019}', "'")
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)
         .collect()
@@ -980,7 +980,7 @@ mod tests {
             None
         );
         assert_eq!(
-            l.offer(day(3), &t, "is it cold out there?", "Soup."),
+            l.offer(day(3), &t, "is it freezing out there?", "Soup."),
             t.weather.clone()
         );
         assert_eq!(
@@ -1055,11 +1055,18 @@ mod tests {
         let reply = lowered("Clearly a hot coffee kind of Sunday.");
         assert!(!mentions(Item::Weather, e, &reply, false));
         assert!(mentions(Item::Weather, e, &lowered("So sunny out."), false));
-        // Asked, "hot" is about the weather.
+        // Asked or not, an everyday word is not the weather; a curly
+        // apostrophe is the plain one.
+        assert!(!mentions(
+            Item::Weather,
+            e,
+            &lowered("that is a hot take"),
+            true
+        ));
         assert!(mentions(
             Item::Weather,
             e,
-            &lowered("is it hot there?"),
+            &lowered("what\u{2019}s the forecast?"),
             true
         ));
     }
