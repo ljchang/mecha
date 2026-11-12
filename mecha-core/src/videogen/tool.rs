@@ -1230,13 +1230,17 @@ fn said_notes_after_failure(notes: &[String]) -> String {
     }
 }
 
-/// How long a call waits for the video server before it hands the clip over
-/// as a job: long enough for a server that is up, short enough that the turn
-/// that asked hears "not answering" itself. The job waits out a restart in
-/// full ([`crate::comfy::SERVER_WAIT`]); before this a stopped server was
-/// answered "being made" and the failure arrived turns later.
+/// How long a call keeps finding nothing listening at the video server's
+/// address before it says so itself, in place of handing the clip over as a
+/// job. Past the usual restart (4-10 s measured, `comfy::SERVER_WAIT`'s
+/// doc), so one in flight is waited out here; the one 40 s restart on record
+/// would be refused, which is why the refusal says it may be restarting.
+/// Only a refused connect counts (`comfy::Client::refuses`): a server that
+/// accepts and is slow is there, and the job waits for it in full. Before
+/// this a stopped server was answered "being made" and the failure arrived
+/// turns later.
 #[cfg(not(test))]
-const ASKED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+const ASKED_WAIT: std::time::Duration = std::time::Duration::from_secs(12);
 #[cfg(test)]
 const ASKED_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
 
@@ -2165,16 +2169,18 @@ impl Tool for VideoGenerate {
             Ok(plan) => plan,
             Err(e) => return Ok(ToolOutput::err(format!("Not made: {e:#}"))),
         };
-        // Asked before the clip is handed over, so a stopped server is said
-        // in the turn that asked and nothing is promised (`ASKED_WAIT`). A
-        // stop of the run ends the wait.
-        match self.wire.await_server(ctx.cancel.as_ref(), ASKED_WAIT).await {
-            Ok(()) => {}
+        // Asked before the clip is handed over, so a server nothing is
+        // listening for is said in the turn that asked and nothing is
+        // promised (`ASKED_WAIT`). Anything else (answering, slow, busy) is
+        // the job's to wait for. A stop of the run ends the wait.
+        match self.wire.refuses(ctx.cancel.as_ref(), ASKED_WAIT).await {
+            Ok(false) => {}
             Err(Failure::Cancelled) => return Ok(ToolOutput::err("Not made: stopped")),
-            Err(Failure::Other(_)) => {
+            Ok(true) | Err(Failure::Other(_)) => {
                 return Ok(ToolOutput::err(format!(
-                    "Not made: {}. Nothing was started, and calling again will not help until it is running: tell them the video server is down.",
-                    not_answering(self.wire.base())
+                    "Not made: {} (nothing is listening there; if it was only just restarted it may be back within a minute). Nothing was started. Tell them, and send this again only when they say it is running or ask you to retry{}",
+                    not_answering(self.wire.base()),
+                    said_notes_after_failure(&plan.notes)
                 )))
             }
         }

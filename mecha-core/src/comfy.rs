@@ -245,6 +245,48 @@ impl Client {
         }
     }
 
+    /// Whether nothing is listening at the server's address: every connect
+    /// refused for the whole of `wait`. Only that. A server that answers, one
+    /// that accepts and is slow (an on-demand proxy mid-start, a busy queue),
+    /// and any other failure all read as `false`, since each is a server
+    /// that is there, and [`Self::await_server`] is what waits for those.
+    /// Refused is retried until `wait` is up, so a restart in flight (4-10 s
+    /// measured) is not taken for a stopped service.
+    pub(crate) async fn refuses(
+        &self,
+        cancel: Option<&CancellationToken>,
+        wait: Duration,
+    ) -> std::result::Result<bool, Failure> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let attempt = self
+                .http
+                .get(self.endpoint("queue")?)
+                .timeout(wait.min(Duration::from_secs(5)))
+                .send();
+            match attempt.await {
+                Ok(_) => {
+                    self.answered.store(true, Ordering::Relaxed);
+                    return Ok(false);
+                }
+                Err(e) if e.is_connect() && !e.is_timeout() => {
+                    if Instant::now() >= deadline {
+                        return Ok(true);
+                    }
+                }
+                Err(_) => return Ok(false),
+            }
+            let pause = tokio::time::sleep(SERVER_WAIT_STEP.min(wait));
+            match cancel {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => return Err(Failure::Cancelled),
+                    _ = pause => {}
+                },
+                None => pause.await,
+            }
+        }
+    }
+
     /// Put `bytes` in the server's temp directory as `filename` (a name the
     /// caller has already written down wherever it keeps them), and return
     /// the name the server filed it under; `label` names it in a refusal.

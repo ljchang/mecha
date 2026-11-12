@@ -1905,3 +1905,30 @@ fn notes_after_a_failure_are_said_not_to_be_its_cause() {
     assert!(said.starts_with(". That is why it was not made."), "{said}");
     assert!(said.ends_with("No `wearing` for Wren."), "{said}");
 }
+
+/// Only a refused connect is "stopped". A server that accepts and does not
+/// answer in time (an on-demand proxy mid-start, a busy queue) is there: the
+/// clip is handed over as before, and the job waits for it (review of #868).
+#[tokio::test]
+async fn a_server_that_accepts_and_is_slow_still_gets_the_job() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let slow = format!("http://{}", listener.local_addr().unwrap());
+    // Accepts, holds each connection open, and never writes a byte.
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    let t = tool(&slow, &home, Arc::new(Stub::default()));
+    let out =
+        <VideoGenerate as Tool>::call(&t, json!({"prompt": "Rain on a window."}), &ctx(&chat))
+            .await
+            .unwrap();
+    assert!(!out.is_error && out.deferred.is_some(), "{}", out.content);
+    assert!(out.content.starts_with("being made"), "{}", out.content);
+    std::fs::remove_dir_all(&home).ok();
+}
