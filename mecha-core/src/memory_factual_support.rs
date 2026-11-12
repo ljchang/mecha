@@ -655,6 +655,7 @@ mod tests {
                             text: text.into(),
                             occurred_at: None,
                             external: None,
+                            source_bytes: None,
                         },
                         OriginalPassage {
                             source: SourceKey {
@@ -675,6 +676,7 @@ mod tests {
                             .unwrap(),
                             occurred_at: None,
                             external: None,
+                            source_bytes: None,
                         },
                         OriginalPassage {
                             source: SourceKey {
@@ -694,6 +696,7 @@ mod tests {
                             .unwrap(),
                             occurred_at: None,
                             external: None,
+                            source_bytes: None,
                         },
                     ],
                     receipts: vec![ToolReceipt {

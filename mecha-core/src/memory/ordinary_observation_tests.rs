@@ -73,6 +73,7 @@ fn passage(
         text: text.into(),
         occurred_at: None,
         external: None,
+        source_bytes: None,
     }
 }
 
@@ -574,7 +575,7 @@ fn ordinary_overflow_is_refused_before_admission() {
     let valid = capture("ordinary", "a", "Write the fixture record");
     let mut too_many_passages = valid.clone();
     let mut too_many_bytes = valid.clone();
-    for n in 1..=16 {
+    for n in 1..=MAX_ORIGINALS {
         let p = passage(
             "ordinary",
             PassageKind::AssistantText,
@@ -583,7 +584,7 @@ fn ordinary_overflow_is_refused_before_admission() {
             "fixture",
         );
         too_many_passages.originals.push(p.clone());
-        if n <= 9 {
+        if n < MAX_ORIGINALS {
             too_many_bytes.originals.push(OriginalPassage {
                 text: "a".repeat(4096),
                 ..p
@@ -591,7 +592,7 @@ fn ordinary_overflow_is_refused_before_admission() {
         }
     }
     let mut too_many_receipts = with_invocation(valid.clone(), ReceiptStatus::Succeeded);
-    too_many_receipts.receipts = vec![too_many_receipts.receipts[0].clone(); 33];
+    too_many_receipts.receipts = vec![too_many_receipts.receipts[0].clone(); MAX_RECEIPTS + 1];
     let mut too_many_consulted = valid;
     too_many_consulted.consulted = (0..65)
         .map(|n| RevisionRef {

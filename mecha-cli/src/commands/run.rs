@@ -154,13 +154,12 @@ pub(crate) fn preflight_memory(
     let Some(path) = &args.episodic_memory else {
         return Ok(None);
     };
-    let memory = super::memory_profile::open_profile(global, path)?;
+    let memory = super::memory_profile::open_run_profile(global, path)?;
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(
-        !prompt.trim().is_empty() && prompt.len() <= 2048,
-        "ordinary memory requires a nonempty prompt of at most 2048 bytes"
+        !prompt.trim().is_empty() && prompt.len() <= 65_536,
+        "ordinary memory requires a nonempty prompt of at most 64 KiB"
     );
-    global.global_config_only = true;
     Ok(Some(OrdinaryMemory { memory, prompt }))
 }
 
@@ -288,25 +287,15 @@ pub async fn execute(
     let mut prepared = setup::prepare(&opts, interactive).await?;
     #[cfg(feature = "memory-prototype")]
     if let Some(memory) = &ordinary_memory {
-        super::memory_profile::validate_memory_config(&opts, &prepared.config)?;
         let ctx = prepared.agent.context();
-        anyhow::ensure!(
-            ctx.hooks.is_empty(),
-            "ordinary memory requires no effective hooks"
-        );
         let registry = prepared.agent.registry();
-        anyhow::ensure!(
-            !registry.iter().any(|tool| tool.runs_a_fresh_conversation()
-                || tool.defers()
-                || tool.hosts_programs()),
-            "ordinary memory requires direct tools in the final registry"
-        );
-        let names: Vec<String> = registry.iter().map(|tool| tool.name().into()).collect();
+        let mut names: Vec<String> = registry.iter().map(|tool| tool.name().into()).collect();
+        // `begin` installs the recall tool under this name, over a built-in
+        // of the same name or beside the rest.
+        if !names.iter().any(|name| name == "goal_context") {
+            names.push("goal_context".into());
+        }
         memory.validate_surface(&names, &prepared.workspace, &ctx.tools.grants.all())?;
-        anyhow::ensure!(
-            names.len() == opts.tools.len() && names.iter().all(|name| opts.tools.contains(name)),
-            "ordinary memory requires the final registry to match the selected tools"
-        );
         if !ctx.tools.goal_lessons.is_empty()
             || !ctx.tools.goal_examples.is_empty()
             || ctx.tools.success_examples.is_some()

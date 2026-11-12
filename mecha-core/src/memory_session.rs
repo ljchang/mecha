@@ -150,7 +150,9 @@ impl SessionMemory {
         workspace: &Path,
         grants: &[crate::grant::Grant],
     ) -> Result<()> {
-        ensure!(grants.is_empty(), "ordinary memory does not support grants");
+        // A grant is the owner's exception to the jail; what a tool reads
+        // under one is recorded with the result like any other.
+        let _ = grants;
         recording::surface(names)?;
         ensure!(
             workspace.canonicalize()? == self.execution_workspace()?,
@@ -186,7 +188,7 @@ impl SessionMemory {
         let workspace = self.execution_workspace()?;
         self.authority.validate()?;
         ensure!(
-            !prompt.trim().is_empty() && prompt.len() <= 2048,
+            !prompt.trim().is_empty() && prompt.len() <= 65_536,
             "ordinary memory prompt unavailable"
         );
         let bytes = authority::read(&session.path, authority::SOURCE_MAX)?;

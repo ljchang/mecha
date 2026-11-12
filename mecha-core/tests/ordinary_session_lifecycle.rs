@@ -380,7 +380,7 @@ fn edited_source_seal_alias_and_replayed_begin_refuse() {
     }
 }
 #[test]
-fn unsupported_and_cancelled_traces_are_unavailable_without_erasing_action() {
+fn only_a_changed_goal_or_a_record_after_the_outcome_refuses_a_trace() {
     for mode in [
         "goal",
         "rewrite",
@@ -428,9 +428,16 @@ fn unsupported_and_cancelled_traces_are_unavailable_without_erasing_action() {
                 .replace("Everything is verified and perfect", &"x".repeat(4097));
             fs::write(&s.path, bytes).unwrap();
         }
+        // A changed goal and a record after the outcome are about whose
+        // run this is, and still refuse. A rewrite, a folded line, a
+        // cancelled run and a long reply are shapes, and do not.
         assert_eq!(
             mem.finish(&run).status,
-            SessionMemoryStatus::Unavailable,
+            if matches!(mode, "goal" | "duplicate") {
+                SessionMemoryStatus::Unavailable
+            } else {
+                SessionMemoryStatus::Retained
+            },
             "mode {mode}"
         );
         assert_eq!(
@@ -448,8 +455,15 @@ fn authority_scope_key_and_surface_are_explicit() {
     assert!(mem
         .validate_surface(&["fs_write".into()], &f.workspace, &[])
         .is_err());
+    // Which other tools a run has is its own business.
+    mem.validate_surface(&["goal_context".into(), "shell".into()], &f.workspace, &[])
+        .unwrap();
     assert!(mem
-        .validate_surface(&["goal_context".into(), "shell".into()], &f.workspace, &[])
+        .validate_surface(
+            &["goal_context".into(), "goal_context".into()],
+            &f.workspace,
+            &[]
+        )
         .is_err());
     assert!(mem
         .validate_surface(
@@ -1119,7 +1133,7 @@ async fn assistant_thinking_stays_audit_only_and_source_bound() {
 }
 
 #[tokio::test]
-async fn thinking_requires_an_assistant_role_and_a_final_text_answer() {
+async fn thinking_is_left_out_in_any_role_and_as_the_last_word() {
     for wrong_role in [true, false] {
         let f = Fixture::new();
         SessionMemory::initialize(&f.request).unwrap();
@@ -1141,8 +1155,12 @@ async fn thinking_requires_an_assistant_role_and_a_final_text_answer() {
         } else {
             f.tail_with(&session, vec![thinking]);
         }
-        assert_eq!(memory.finish(&run).status, SessionMemoryStatus::Unavailable);
-        assert_eq!(persisted_capture_counts(&f), (0, 0));
+        // Reasoning is never a passage, in either role or as the run's last
+        // word, and neither placement costs the run its memory.
+        assert_eq!(memory.finish(&run).status, SessionMemoryStatus::Retained);
+        let sealed =
+            fs::read_to_string(f.request.authority.join(format!("{}.seal", run.run_id()))).unwrap();
+        assert!(!sealed.contains("audit only"));
         assert_completed_write_preserved(&f);
     }
 }
@@ -1390,7 +1408,7 @@ async fn oversized_recall_metadata_does_not_relax_exact_attempt_matching_or_trac
 }
 
 #[test]
-fn oversized_invocation_does_not_relax_result_passage_bound() {
+fn a_result_longer_than_a_passage_is_stored_as_a_marked_excerpt() {
     let f = Fixture::new();
     SessionMemory::initialize(&f.request).unwrap();
     let mem = SessionMemory::open(&f.request, &f.workspace).unwrap();
@@ -1404,10 +1422,18 @@ fn oversized_invocation_does_not_relax_result_passage_bound() {
     s.append(&Record::Message(call)).unwrap();
     s.append(&Record::Message(result)).unwrap();
     f.tail(&s);
-    assert_eq!(mem.finish(&run).status, SessionMemoryStatus::Unavailable);
-    assert!(!f
-        .request
-        .authority
-        .join(format!("{}.seal", run.run_id()))
-        .exists());
+    assert_eq!(mem.finish(&run).status, SessionMemoryStatus::Retained);
+    let sealed: serde_json::Value = serde_json::from_slice(
+        &fs::read(f.request.authority.join(format!("{}.seal", run.run_id()))).unwrap(),
+    )
+    .unwrap();
+    let result = sealed["payload"]["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["kind"] == "ToolResult")
+        .unwrap();
+    // A result one byte over a passage is stored as its head and says so.
+    assert_eq!(result["text"], "x".repeat(4096));
+    assert_eq!(result["source_bytes"], 4097);
 }

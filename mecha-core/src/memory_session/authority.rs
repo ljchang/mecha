@@ -7,7 +7,9 @@ use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt},
     path::Component,
 };
-pub(super) const SOURCE_MAX: usize = 4 * 1024 * 1024;
+/// The largest transcript a memory session reads. A long tool session
+/// runs to megabytes of results.
+pub(super) const SOURCE_MAX: usize = 32 * 1024 * 1024;
 pub(super) fn digest(b: &[u8]) -> String {
     Sha256::digest(b)
         .iter()

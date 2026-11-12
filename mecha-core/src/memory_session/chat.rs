@@ -130,7 +130,7 @@ impl Attachment {
         }
         match &self.graph_surface {
             Some(graph) => graph.validate_tools(names),
-            None => recording::surface(names),
+            None => recording::chat_surface(names),
         }
     }
     fn owner_source(&self) -> OwnerSource {
@@ -850,6 +850,8 @@ impl ChatMemory {
             authority::exclude_workspace(&self.memory.request, workspace)?;
             Ok(())
         } else {
+            ensure!(grants.is_empty(), "ordinary memory does not support grants");
+            recording::chat_surface(names)?;
             self.memory.validate_surface(names, workspace, grants)
         }
     }
