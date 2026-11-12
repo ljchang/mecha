@@ -3513,6 +3513,29 @@ mod tests {
         );
     }
 
+    /// The persona door is where a run of identical failures ends sooner
+    /// (`Agent::with_refused_repeats`), and that one line is the whole
+    /// behaviour: the guard and the builder are tested in `agent.rs`, which
+    /// builds its own agent, so deleting the line here left every test
+    /// green (review of #869). Read from the source, as the admit check
+    /// above is.
+    #[test]
+    fn persona_agent_ends_a_refused_repeat_sooner() {
+        let src = include_str!("setup.rs");
+        let start = src
+            .find("pub fn persona_agent(")
+            .expect("persona_agent is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("persona_agent ends")];
+        assert!(
+            body.contains(".with_refused_repeats(PERSONA_REFUSED_REPEATS)"),
+            "persona_agent no longer sets its own count of identical failures"
+        );
+        // Three: one retry, then the stop. Fewer is held to the guard's
+        // floor anyway; more gives back the resends this was added to end.
+        assert_eq!(super::PERSONA_REFUSED_REPEATS, 3);
+    }
+
     /// A routed name under a server that did not start is that server
     /// down, not a typo; a typo under a live server, or a name under no
     /// server, still warns (the owner's fresh Mac, 2026-10-14).
