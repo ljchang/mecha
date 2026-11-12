@@ -345,6 +345,10 @@ impl ChatMemoryTurn {
         &self.id
     }
 }
+/// A recall tool's metadata with nothing behind it.
+pub(super) fn schema_of(tool: &dyn Tool) -> impl Tool {
+    tracking::ContextSchema::of(tool)
+}
 fn attachment_path(a: &Authority, session: &str) -> PathBuf {
     a.root
         .join(format!("{}.chat", authority::digest(session.as_bytes())))
