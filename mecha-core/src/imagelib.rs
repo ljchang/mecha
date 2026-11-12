@@ -2241,7 +2241,14 @@ pub fn compile_with(
     // after a same-seed pair on two pictures put a ribcage tattoo on one
     // side only, where its words alone drew a different design on both).
     // Said in counts, never labels, as the bodies are.
-    let identity_images = n * if both { 2 } else { 1 };
+    // Someone seen from behind is drawn from one image, their full figure
+    // (below), where anyone else with a figure has two.
+    let seen_from_behind = members
+        .iter()
+        .zip(&bound)
+        .filter(|(m, body)| m.face_away && body.is_some())
+        .count();
+    let identity_images = n * if both { 2 } else { 1 } - seen_from_behind;
     let mut room = MAX_PICTURE_IMAGES.saturating_sub(identity_images);
     let mut details: Vec<Vec<CloseUp>> = (0..n).map(|_| Vec::new()).collect();
     let (mut no_room, mut unread, mut unlabelled, mut grouped) = (0, 0, 0, 0);
@@ -2379,22 +2386,24 @@ pub fn compile_with(
         names.push(shown.clone());
         let away = m.face_away && body.is_some();
         let who = match &body {
-            // Both slots hold the full figure: alone in one slot it drew a
-            // second head 2 of 5, in both 0 of 5 (owner, 2026-10-28).
+            // The full figure, once. It went in both slots from 2026-10-28
+            // (one slot had drawn a second head 2 of 5 while the expression
+            // and the style's eye clause were still sent), and two pictures
+            // of one standing figure drew the person twice: 17 of 31
+            // recorded pictures, and 6 of 21 on the replay rig against 3 of
+            // 21 with one, seed for seed, with no second head in any
+            // (2026-11-12).
             Some(_) if away => {
-                let (a, b) = (refs.len() + 1, refs.len() + 2);
+                let a = refs.len() + 1;
                 bindings.push(format!(
-                    "<image{a}> and <image{b}> show one person, {shown}: <image{a}> and \
-                     <image{b}> are both {shown}'s full figure. {shown} is seen from behind: \
-                     {shown}'s face is turned away from the viewer and out of sight, the back of \
-                     {shown}'s head toward the camera."
+                    "<image{a}> shows one person, {shown}: {shown}'s full figure. {shown} is \
+                     seen from behind: {shown}'s face is turned away from the viewer and out of \
+                     sight, the back of {shown}'s head toward the camera."
                 ));
-                // Both copies are the figure, so neither's outfit is worn
-                // (review of #757, pass 3).
+                // The figure's own outfit is not worn (review of #757, pass 3).
                 figures.push(format!("<image{a}>"));
-                figures.push(format!("<image{b}>"));
                 any_away = true;
-                format!("the person shown in <image{a}> and <image{b}>")
+                format!("the person shown in <image{a}>")
             }
             Some(_) => {
                 let (face, figure) = (refs.len() + 1, refs.len() + 2);
@@ -2424,9 +2433,6 @@ pub fn compile_with(
             refs.push((m.name.clone(), bytes, ext));
         }
         if let Some((bytes, ext)) = body {
-            if away {
-                refs.push((format!("full_body:{}", m.name), bytes.clone(), ext));
-            }
             refs.push((format!("full_body:{}", m.name), bytes, ext));
         }
         // V-D's binding for video, in this compiler's pointers: the mark is
@@ -4199,16 +4205,16 @@ mod tests {
         let c = compile(&lib, "a studio", &[away], &[], Some("lens")).unwrap();
         assert!(!c.prompt.contains("smiling"), "{}", c.prompt);
         let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
-        assert_eq!(names, ["full_body:maya", "full_body:maya", "detail:maya"]);
-        assert_eq!(c.references[0].1, c.references[1].1);
+        // The figure once: twice drew the person twice (2026-11-12).
+        assert_eq!(names, ["full_body:maya", "detail:maya"]);
         assert!(
             c.prompt.contains(
-                "The person shown in <image1> and <image2> (maya, a person with a memorable \
-                 face. Maya's anchor tattoo, left shoulder is shown close up in <image3>), \
-                 wearing a yellow raincoat, laughing. <image1> and <image2> show one person, \
-                 Maya: <image1> and <image2> are both Maya's full figure. Maya is seen from \
+                "The person shown in <image1> (maya, a person with a memorable \
+                 face. Maya's anchor tattoo, left shoulder is shown close up in <image2>), \
+                 wearing a yellow raincoat, laughing. <image1> shows one person, \
+                 Maya: Maya's full figure. Maya is seen from \
                  behind: Maya's face is turned away from the viewer and out of sight, the back \
-                 of Maya's head toward the camera. The clothing in <image1> and <image2> is not \
+                 of Maya's head toward the camera. The clothing in <image1> is not \
                  worn here."
             ),
             "{}",

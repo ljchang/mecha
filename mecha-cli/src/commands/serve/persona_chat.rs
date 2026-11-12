@@ -729,7 +729,14 @@ async fn draw_panel_edit(
                     // spelled the same and its card is a version too
                     // (review of #616, pass 3).
                     Ok(extracted) => {
-                        let call = extracted.call(&edit.picture);
+                        // The only person taken out by words that count two
+                        // of them is a copy the record never held: another
+                        // try (`Extracted::removes_a_copy`).
+                        let call = if extracted.removes_a_copy(&edit.words, record.as_ref()) {
+                            edit::redraw_call(&edit.picture)
+                        } else {
+                            extracted.call(&edit.picture)
+                        };
                         let change = if call == edit::redraw_call(&edit.picture) {
                             edit::REDRAWN.to_string()
                         } else {

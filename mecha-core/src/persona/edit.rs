@@ -955,14 +955,30 @@ pub fn read_extraction_for(
                 if looks_like_a_name(who) && !known(who) {
                     return Err(format!("{who} is not in this picture or the image library"));
                 }
+                // Taking someone out says nothing else of them: an entry
+                // that also poses, dresses or gives them a face is that
+                // person as now described, not a removal.
+                let described = ["wearing", "doing", "expression"]
+                    .iter()
+                    .any(|k| p[*k].as_str().is_some_and(|t| !t.trim().is_empty()));
+                let removes = p["remove"].as_bool() == Some(true) && !described;
                 // Someone named twice (by name and by "we") is read once, the
-                // first time.
-                if out.iter().any(|q: &serde_json::Value| {
+                // first time. Unless the first took them out and this one
+                // does not: a record holds each person once, so "out, and in
+                // again like this" is that person changed (or a copy of them
+                // the record never held), and reading the removal alone drew
+                // the picture without them (2 recorded changes of 14 that
+                // removed anyone, 2026-11-12).
+                if let Some(at) = out.iter().position(|q: &serde_json::Value| {
                     q["who"]
                         .as_str()
                         .is_some_and(|w| w.eq_ignore_ascii_case(who))
                 }) {
-                    continue;
+                    if out[at]["remove"].as_bool() == Some(true) && !removes {
+                        out.remove(at);
+                    } else {
+                        continue;
+                    }
                 }
                 let mut m = serde_json::Map::new();
                 m.insert("who".into(), who.into());
@@ -980,7 +996,7 @@ pub fn read_extraction_for(
                         m.insert(k.into(), t.into());
                     }
                 }
-                if p["remove"].as_bool() == Some(true) {
+                if removes {
                     m.insert("remove".into(), true.into());
                 }
                 out.push(serde_json::Value::Object(m));
@@ -1128,7 +1144,59 @@ pub struct Extracted {
     pub owner_named: bool,
 }
 
+/// Words that count more than one of somebody: what an owner says of a
+/// picture that drew a person twice.
+const COPY_WORDS: [&str; 16] = [
+    "duplicate",
+    "duplicated",
+    "duplicates",
+    "twice",
+    "two",
+    "both",
+    "double",
+    "doubled",
+    "copy",
+    "copies",
+    "clone",
+    "clones",
+    "extra",
+    "second",
+    "twin",
+    "twins",
+];
+
 impl Extracted {
+    /// Whether this change takes out a copy the record does not hold: the
+    /// picture's record has one person, the change is nothing but that
+    /// person's removal, and the owner's `words` count more than one of
+    /// them. A record holds each person once, so a person drawn twice
+    /// cannot be named in it, and the reader answers the only removal it
+    /// can: the one person, which draws the room with nobody in it (2
+    /// recorded changes, 2026-11-12). Such a change is another try, which
+    /// `image_generate` draws at a new seed and counts
+    /// (`ARCHITECTURE.md` §Image generation, "counted after it is drawn").
+    pub fn removes_a_copy(&self, words: &str, record: Option<&crate::scene::Scene>) -> bool {
+        let Some([only]) = record.map(|r| r.people.as_slice()) else {
+            return false;
+        };
+        let only = crate::picture::shown(&only.who);
+        let the_removal_alone = self.retouch.is_none()
+            && self.scene.len() == 1
+            && self
+                .scene
+                .get("people")
+                .and_then(|p| p.as_array())
+                .is_some_and(|p| {
+                    matches!(p.as_slice(), [one]
+                    if one["remove"].as_bool() == Some(true)
+                        && one["who"].as_str().is_some_and(|w| w.eq_ignore_ascii_case(&only)))
+                });
+        the_removal_alone
+            && words
+                .split(|c: char| !c.is_alphabetic())
+                .any(|w| COPY_WORDS.iter().any(|c| w.eq_ignore_ascii_case(c)))
+    }
+
     /// The `image_generate` call for `picture`: the scene change and the
     /// retouch beside it. Nothing at all is a redraw (§5.3 step 5):
     /// `picture` alone changes nothing.
@@ -1398,6 +1466,78 @@ mod tests {
         assert!(crate::agent::is_harness_voice(NOT_DRAWN));
         assert!(crate::agent::is_harness_voice(REDRAW_DONE));
         assert!(crate::agent::is_harness_voice(REDRAW_NOT_DRAWN));
+    }
+
+    /// A person taken out and listed again in one answer is that person as
+    /// now described, and a removal that poses or dresses them is not a
+    /// removal. Fails on the old reader, which kept the removal alone.
+    #[test]
+    fn a_person_removed_and_described_in_one_answer_stays() {
+        let known = |w: &str| w == "Maya";
+        let read = |t: &str| read_extraction(t, &known).unwrap().scene["people"].clone();
+        assert_eq!(
+            read(
+                r#"{"people": [{"who": "Maya", "where": "centre", "remove": true},
+                    {"who": "Maya", "doing": "sitting on the step"}]}"#
+            ),
+            serde_json::json!([{"who": "Maya", "doing": "sitting on the step"}])
+        );
+        assert_eq!(
+            read(r#"{"people": [{"who": "Maya", "expression": "calm", "remove": true}]}"#),
+            serde_json::json!([{"who": "Maya", "expression": "calm"}])
+        );
+        // A plain removal is still one, named once or twice.
+        assert_eq!(
+            read(
+                r#"{"people": [{"who": "Maya", "remove": true}, {"who": "maya", "remove": true}]}"#
+            ),
+            serde_json::json!([{"who": "Maya", "remove": true}])
+        );
+        // Described first, then taken out: the first reading stands.
+        assert_eq!(
+            read(
+                r#"{"people": [{"who": "Maya", "doing": "waving"}, {"who": "Maya", "remove": true}]}"#
+            ),
+            serde_json::json!([{"who": "Maya", "doing": "waving"}])
+        );
+    }
+
+    /// The one person in a picture, taken out by words that count two of
+    /// them, is a copy the record never held: another try, not an empty
+    /// room. The same removal in plain words, or beside anyone else, is
+    /// what it says.
+    #[test]
+    fn removing_the_only_person_by_words_that_count_two_is_a_copy() {
+        let known = |w: &str| ["Maya", "John"].contains(&w);
+        let person = |who: &str| crate::scene::Person {
+            who: crate::scene::Who::Library(who.to_lowercase()),
+            at: None,
+            wearing: String::new(),
+            doing: String::new(),
+            expression: String::new(),
+            origin: Default::default(),
+        };
+        let one = crate::scene::Scene {
+            people: vec![person("Maya")],
+            ..Default::default()
+        };
+        let two = crate::scene::Scene {
+            people: vec![person("Maya"), person("John")],
+            ..Default::default()
+        };
+        let gone =
+            read_extraction(r#"{"people": [{"who": "Maya", "remove": true}]}"#, &known).unwrap();
+        assert!(gone.removes_a_copy("take out one of the two Mayas", Some(&one)));
+        assert!(gone.removes_a_copy("there is a duplicate, remove it", Some(&one)));
+        assert!(!gone.removes_a_copy("take Maya out of the room", Some(&one)));
+        assert!(!gone.removes_a_copy("remove the second Maya", Some(&two)));
+        assert!(!gone.removes_a_copy("remove the second Maya", None));
+        let more = read_extraction(
+            r#"{"people": [{"who": "Maya", "remove": true}], "light": "dusk"}"#,
+            &known,
+        )
+        .unwrap();
+        assert!(!more.removes_a_copy("remove the extra Maya, at dusk", Some(&one)));
     }
 
     /// 2026-10-28: a reader's capitalised `who: "You"` read as a name failed

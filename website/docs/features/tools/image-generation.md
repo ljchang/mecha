@@ -142,6 +142,15 @@ It also picks a size: `square` (1024×1024), `landscape` (1344×768) or
   after the server has restarted to give its memory back takes two to three
   minutes. Anything else using the GPU at the same time — reading a
   reply aloud, say — slows it down.
+- **A new picture is counted before you see it.** Image models sometimes
+  draw a person twice. After a new picture is drawn, mecha counts the
+  people in it, and when there are more than the scene has it draws the
+  picture again at another seed, up to twice more, and keeps the best. A
+  redraw adds a render's time; the count itself takes a second or two. A
+  picture that continues an earlier one keeps that one's seed so its room
+  stays the same, so it is counted but not drawn again: the result says
+  how many people it seems to show. `[image] people_check = false` turns
+  the count off.
 
 `mecha run`, `mecha batch` and evals can also pass a `seed` to reproduce a
 new picture. A chat's schema has no seed, since models mostly copied an
