@@ -162,7 +162,14 @@ impl Attachment {
             return Ok(true);
         }
         if self.open_web() && self.workspace.starts_with(&recorded) {
+            // Held to what the chat's own workspace is held to: it may
+            // contain neither the store nor the transcript being recorded,
+            // and never the mecha home. The transcript is data, and a
+            // configuration record that names a jail over either is not
+            // one this chat ran in.
             authority::exclude_workspace(&self.request, &recorded)?;
+            authority::exclude_path(&self.source, &recorded)?;
+            crate::work::ensure_outside_mecha_home(&recorded)?;
             return Ok(true);
         }
         Ok(false)

@@ -692,6 +692,10 @@ impl ChatState {
             .and_then(ChatSlot::into_ordinary)
             .expect("found above");
         ws.questions.shutdown();
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.ordinary_memory {
+            memory.detach(ws.session.id(), &key);
+        }
         if let Ok(mut routes) = self.routes.lock() {
             routes.remove(&key);
         }
@@ -1925,6 +1929,10 @@ pub(super) async fn release_task_conversation(
     }
     let id = ws.session.id().to_string();
     sessions.remove(&key).and_then(ChatSlot::into_ordinary);
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = &chat.ordinary_memory {
+        memory.detach(&id, &key);
+    }
     if let Ok(mut routes) = chat.routes.lock() {
         routes.remove(&key);
     }
@@ -3396,7 +3404,7 @@ fn begin_turn(
                     "{error:#}: revoke the grant that reaches the memory store, then send again"
                 )));
             }
-            memory.begin(session, &ws.workspace, owner_inputs.first())
+            memory.begin(session, key, owner_inputs.first())
         }
         _ => None,
     };

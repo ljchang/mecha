@@ -13243,12 +13243,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   under the recall tool's name, schema and capabilities (`bind` refuses a
   reader that differs in any of them, since the interlock believed the
   ones announced) and answers each call with the reader bound to the
-  call's `ToolCtx::workspace`, which is a web conversation's own. A turn
+  call's `ToolCtx::conversation`, the key the front end stamps on each
+  turn. Not its workspace: a resumed conversation keeps its recorded
+  workspace under a new key, so two live chats can share one directory,
+  and a router keyed by it had each releasing the other's reader (review
+  of #866; the 2026-10-18 `ask_user` routing bug restated). A turn
   with no reader bound gets a tool error it can go on from. **A
   configuration record names the producer root**, an ancestor of each
   chat's workspace, where a terminal chat's names its own
-  (`Attachment::configured_in`, which also refuses a store inside that
-  root). **A line typed while the model works is the owner's**: the host
+  (`Attachment::configured_in`, which holds that ancestor to what the
+  chat's own workspace is held to: it may contain neither the store nor
+  the transcript, and never the mecha home). **A line typed while the model works is the owner's**: the host
   authenticates a steer as an owner input, a later decision's context
   version lists it after the turn's first, and the walk stores the block
   that carries it as a `UserRequest` with its own locator

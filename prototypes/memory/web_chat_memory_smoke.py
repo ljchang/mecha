@@ -231,6 +231,18 @@ try:
         assert third['chat_context']['turn_ordinal'] == 3
         assert [o['text'] for o in third['originals'] if o['kind'] == 'UserRequest'] == [THIRD]
         assert len(transcripts()) == 1, 'resume created a second conversation'
+        # A new chat under the old key gets the directory the resumed one
+        # was recorded in. Each still recalls through its own reader: the
+        # recall is routed by conversation, never by workspace.
+        turn(serve, 'fixture', 'A new chat in the old directory.', [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_4'), final('Hello.')], 4)
+        turn(serve, key, 'Back to the resumed one.', [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_5'), final('Coral again.')], 5)
+        newer = [rows(t) for t in transcripts() if rows(t)[0]['id'] != session_id]
+        assert len(newer) == 1 and newer[0][0]['workspace'] == recorded[0]['workspace'], 'the two chats do not share a workspace'
+        by_session = {}
+        for payload in seals():
+            by_session.setdefault(payload['identity']['session_id'], []).append(payload['chat_context']['turn_ordinal'])
+        assert sorted(by_session.values()) == [[1], [1, 2, 3, 4]], by_session
+        known = {session_id, newer[0][0]['id']}
     finally:
         serve.stop()
 
@@ -243,14 +255,14 @@ try:
             QUEUE.extend([final('An unremembered reply.')])
         status, body = serve.request('/api/chat/plain/send', {'text': 'A chat with no memory', 'request_id': 'plain'})
         assert status == 200, (status, body)
-        wait_for(lambda: len(transcripts()) == 2 and any(r['record'] == 'outcome' for t in transcripts() for r in rows(t) if rows(t)[0]['id'] != session_id))
-        plain = next(t for t in transcripts() if rows(t)[0]['id'] != session_id)
+        wait_for(lambda: len(transcripts()) == 3 and any(r['record'] == 'outcome' for t in transcripts() for r in rows(t) if rows(t) and rows(t)[0]['id'] not in known))
+        plain = next(t for t in transcripts() if rows(t)[0]['id'] not in known)
         assert not any(r['record'] == 'chat_memory' for r in rows(plain))
-        assert len(retained()) == 3
+        assert len(retained()) == 5
     finally:
         serve.stop()
     assert not ERRORS, ERRORS
-    summary = {'status': 'pass', 'retained_turns': 3, 'provider_requests': len(REQUESTS), 'checks': ['attach-before-config', 'open-web-recorder', 'ordinary-tool', 'recall-earlier-turn', 'no-recapture', 'ordinary-listing', 'ordinary-resume', 'chain-across-restart', 'memory-off-refuses-resume', 'memory-off-plain-chat']}
+    summary = {'status': 'pass', 'retained_turns': 5, 'provider_requests': len(REQUESTS), 'checks': ['attach-before-config', 'open-web-recorder', 'ordinary-tool', 'recall-earlier-turn', 'no-recapture', 'ordinary-listing', 'ordinary-resume', 'chain-across-restart', 'two-chats-one-workspace', 'memory-off-refuses-resume', 'memory-off-plain-chat']}
     (ROOT / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary))
 finally:

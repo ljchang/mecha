@@ -3762,3 +3762,31 @@ fn an_ordinary_web_chat_is_open_and_a_steer_is_the_owner_s() {
         .collect();
     assert_eq!(requests, ["Next"]);
 }
+
+/// A web chat's configuration record may name the server's root above the
+/// chat's workspace, and nothing else: not a directory beside it, and not
+/// one that holds the store or the transcript being recorded.
+#[test]
+fn a_web_configuration_record_may_not_name_a_jail_over_the_store_or_transcript() {
+    for (named, refused) in [("work", false), ("elsewhere", true), ("", true)] {
+        let f = Fixture::new();
+        fs::create_dir_all(f.root.join("elsewhere")).unwrap();
+        let s = web_session(&f);
+        let mut chat = f
+            .memory()
+            .attach_open_web_chat(&s, ChatAttachMode::Create)
+            .unwrap();
+        s.append(&Record::Config(RunConfig {
+            workspace: f.root.join(named),
+            tools: vec!["goal_context".into(), "shell".into()],
+            ..Default::default()
+        }))
+        .unwrap();
+        let owner = OwnerInput::new(OwnerSource::AuthenticatedWeb, "Ask".into()).unwrap();
+        assert_eq!(
+            chat.begin_open_web_turn(&s, &owner).is_err(),
+            refused,
+            "{named:?}"
+        );
+    }
+}
