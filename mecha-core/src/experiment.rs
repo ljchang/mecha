@@ -4244,9 +4244,6 @@ rationale = "no notice, fewer turns"
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The other axis: an arm that names a provider or a model runs
-    /// against it, its trials hash to it, and an arm naming a provider the
-    /// operator has not configured is refused where the config is known.
     /// An arm that remembers is another condition from one that does not,
     /// and a manifest written before the field existed plans the rows it
     /// always did.
@@ -4288,6 +4285,9 @@ rationale = "no notice, fewer turns"
         .is_err());
     }
 
+    /// The other axis: an arm that names a provider or a model runs
+    /// against it, its trials hash to it, and an arm naming a provider the
+    /// operator has not configured is refused where the config is known.
     #[test]
     fn an_arm_can_name_its_model_and_the_hash_follows() {
         let text = MANIFEST.replace(
