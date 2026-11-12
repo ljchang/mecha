@@ -233,6 +233,7 @@ impl SessionMemory {
             digest,
             lease,
             task_runtime: None,
+            verified: std::sync::Mutex::new(None),
         };
         // Authorized pending diagnostics are evaluated before continuation rejects an unsealed turn.
         chat.task_diagnostics()?;

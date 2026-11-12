@@ -3914,3 +3914,127 @@ fn a_steer_folded_into_the_owner_s_own_message_is_the_owner_s() {
         ]
     );
 }
+
+/// The first request's decision of a turn, recorded compactly: digests of
+/// the request and of the history in place of copies, as an ordinary
+/// chat's host records it.
+fn decide_compact(s: &Session, owner: OwnerInput, history: &[Message]) {
+    let mut state = recorded_context(s);
+    let version = state
+        .transition(CharterSnapshot::disabled(), Some(owner))
+        .unwrap()
+        .unwrap();
+    let block = version.prompt_block();
+    let binding = DecisionBinding::compact(
+        state.next_decision(),
+        version.revision(),
+        history,
+        Some(&block),
+        true,
+        0,
+        history,
+    )
+    .unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![version],
+    })
+    .unwrap();
+}
+
+/// A long conversation, recorded as an ordinary chat's host records it:
+/// every turn is remembered well past the sixteen lines a context revision
+/// carries and the sixty-four a closed profile admits, a turn's records are
+/// the same size late in the conversation as early, and a line longer than
+/// a passage is the owner's all the same.
+#[test]
+fn a_long_chat_is_remembered_turn_by_turn_and_its_transcript_grows_linearly() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let mut grew = vec![];
+    let long = "a long owner line ".repeat(600);
+    for n in 0..90 {
+        let before = fs::metadata(&s.path).unwrap().len();
+        let prompt = if n == 70 {
+            long.clone()
+        } else {
+            format!("Owner line {n}")
+        };
+        let owner = OwnerInput::new(OwnerSource::CliChat, prompt.clone()).unwrap();
+        let turn = chat.begin_turn(&s, &owner).unwrap();
+        let mut history = Session::read(&s.path).unwrap().convo.messages;
+        history.push(Message::user(prompt.clone()));
+        s.append(&Record::Message(Message::user(prompt.clone())))
+            .unwrap();
+        decide_compact(&s, owner, &history);
+        s.append(&Record::Message(Message::assistant(vec![Block::text(
+            format!("Reply {n}"),
+        )])))
+        .unwrap();
+        s.append(&Record::Taint(Taint {
+            private: true,
+            untrusted: false,
+        }))
+        .unwrap();
+        let report = chat.finish_turn(&turn);
+        assert_eq!(
+            report.status,
+            SessionMemoryStatus::Retained,
+            "turn {n}: {report:?}"
+        );
+        grew.push(fs::metadata(&s.path).unwrap().len() - before);
+        let stored = sealed(&f, &report.run_id);
+        assert_eq!(stored.len(), 2, "turn {n}");
+        assert_eq!(stored[0].1, serde_json::json!(false), "turn {n}");
+        if n == 70 {
+            assert_eq!(stored[0].2.len(), 4096);
+            assert!(long.starts_with(&stored[0].2));
+        } else {
+            assert_eq!(stored[0].2, prompt, "turn {n}");
+        }
+        assert_eq!(stored[1].2, format!("Reply {n}"));
+    }
+    // Once the window is full a turn's records stop growing: turn 60 costs
+    // what turn 30 did, give or take the digits in its numbers. (Turns 70
+    // to 85 are larger: the long line is in each one's window, and a
+    // revision repeats what its window carries.)
+    assert!(
+        grew[60] <= grew[30] + 64,
+        "turn 30 wrote {} bytes and turn 60 {}",
+        grew[30],
+        grew[60]
+    );
+    assert!(
+        grew[89] <= grew[30] + 64,
+        "the long line has left the window"
+    );
+    // And the sidecar names the turn's own line, not the window's sixteen.
+    let last = seal_json(&f, &chat_last_run(&f, &s));
+    assert_eq!(
+        last["payload"]["chat_context"]["versions"][0]["owner_inputs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+/// The run id of the conversation's most recent sealed turn.
+fn chat_last_run(f: &Fixture, s: &Session) -> String {
+    let conversation = &s.meta.id;
+    let mut found: Vec<(u64, String)> = fs::read_dir(&f.request.authority)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            let name = path.file_name()?.to_str()?.to_string();
+            let run_id = name.strip_suffix(".chat-seal")?.to_string();
+            let seal: serde_json::Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+            let context = &seal["payload"]["chat_context"];
+            (context["conversation_id"] == conversation.as_str())
+                .then(|| (context["turn_ordinal"].as_u64().unwrap(), run_id))
+        })
+        .collect();
+    found.sort();
+    found.pop().unwrap().1
+}

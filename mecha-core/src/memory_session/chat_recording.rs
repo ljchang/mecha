@@ -673,19 +673,20 @@ fn capture_open(
     );
     let transcript = Session::parse(&a.source, std::str::from_utf8(bytes)?)?;
     let prior = Session::parse(&a.source, std::str::from_utf8(&bytes[..start])?)?;
-    let mut expected_owners = prior
-        .convo
-        .goal_context
-        .current()
-        .map(|v| v.owner_inputs().to_vec())
-        .unwrap_or_default();
+    // Where this turn's owner line stands among every owner line of the
+    // conversation. A context revision carries a window of the recent ones
+    // and a chain over the rest, which `Session::parse` has verified
+    // revision by revision, so a position is all the walk needs to find a
+    // line again.
+    let prior_context = prior.convo.goal_context.current();
     ensure!(
-        expected_owners
+        prior_context.is_none_or(|v| v
+            .owner_inputs()
             .iter()
-            .all(|input| input.source() == a.owner_source()),
+            .all(|input| input.source() == a.owner_source())),
         "chat prior owner ingress changed"
     );
-    expected_owners.push(f.owner.clone());
+    let base = prior_context.map_or(0, |v| v.total_inputs());
     let config = transcript
         .configs
         .last()
@@ -725,20 +726,14 @@ fn capture_open(
     // after the turn's first. Collected before the walk, because the
     // decision records are written as the requests go out and the
     // messages after the run.
-    let base = expected_owners.len();
     let mut steers: Vec<String> = vec![];
     // Parsed once for both passes.
     let span = recording::records(bytes)?;
     for r in span.iter().skip(start_line) {
         if let Record::GoalContextDecision { binding, .. } = r {
             if let Some(version) = transcript.convo.goal_context.version(binding.version()) {
-                let inputs = version.owner_inputs();
-                if inputs.len() > base + steers.len() {
-                    steers.extend(
-                        inputs[base + steers.len()..]
-                            .iter()
-                            .map(|input| input.text().to_string()),
-                    );
+                while let Some(input) = version.input_at(base + 1 + steers.len() as u64) {
+                    steers.push(input.text().to_string());
                 }
             }
         }
@@ -748,6 +743,8 @@ fn capture_open(
     // that already holds tool results.
     let mut history = prior.convo.messages;
     crate::agent::append_user_text(&mut history, f.owner.text().to_string());
+    let heads = crate::goal_context::history_heads(&transcript.convo.messages)?;
+    let mut sent_count = 0;
     let mut decisions = vec![];
     let mut versions = BTreeSet::new();
     let mut cut = false;
@@ -769,43 +766,55 @@ fn capture_open(
                     .goal_context
                     .version(binding.version())
                     .ok_or_else(|| anyhow::anyhow!("chat version unavailable"))?;
-                // The owner inputs so far, and after them only further
-                // lines from the same authenticated ingress.
-                let inputs = version.owner_inputs();
+                // This turn's line where it belongs, and after it only
+                // further lines from the same authenticated ingress.
                 ensure!(
-                    inputs.starts_with(&expected_owners)
-                        && inputs[expected_owners.len()..]
-                            .iter()
-                            .all(|input| input.source() == a.owner_source()),
+                    version.input_at(base) == Some(&f.owner)
+                        && (base + 1..version.total_inputs()).all(|at| version
+                            .input_at(at)
+                            .is_some_and(|input| input.source() == a.owner_source())),
                     "chat decision owner changed"
                 );
-                expected_owners = inputs.to_vec();
                 // The history a request sent says what was in front of the
                 // model. One that does not follow from the last by growing
                 // (a compaction, an eviction, a line folded into the tail)
                 // is a shape the walk does not derive, so the recorded
                 // taint classifies the turn.
-                let follows = binding.conversation_messages().is_some_and(|sent| {
-                    // The turn's first request sent the history the turn
-                    // began with, or that with a line the owner typed
-                    // before it went out folded into the tail; a later one
-                    // may also have appended messages.
-                    let grew = if decisions.is_empty() && sent.len() != history.len() {
-                        false
-                    } else {
-                        // Everything before the tail unchanged, and the
-                        // tail only added to: a notice or a steer folded in.
-                        let kept = history.len().saturating_sub(1);
-                        sent.len() >= history.len()
-                            && sent[..kept] == history[..kept]
-                            && history.last().is_none_or(|tail| {
-                                sent[kept].role == tail.role
-                                    && sent[kept].content.starts_with(&tail.content)
-                            })
-                    };
-                    history = sent.to_vec();
+                let compact = binding.conversation_shape().map(|(count, head)| {
+                    // No copy to compare: the history is a prefix of the
+                    // conversation as it ended when the chain over all but
+                    // its last message is the conversation's at that
+                    // length. The turn's first request sent exactly the
+                    // opening history's length; a later one no fewer.
+                    let grew = count >= 1
+                        && count >= sent_count
+                        && (!decisions.is_empty() || count == history.len())
+                        && heads.get(count - 1).is_some_and(|known| known == head);
+                    sent_count = count;
                     grew
                 });
+                let follows = compact.unwrap_or(false)
+                    || binding.conversation_messages().is_some_and(|sent| {
+                        // The turn's first request sent the history the turn
+                        // began with, or that with a line the owner typed
+                        // before it went out folded into the tail; a later one
+                        // may also have appended messages.
+                        let grew = if decisions.is_empty() && sent.len() != history.len() {
+                            false
+                        } else {
+                            // Everything before the tail unchanged, and the
+                            // tail only added to: a notice or a steer folded in.
+                            let kept = history.len().saturating_sub(1);
+                            sent.len() >= history.len()
+                                && sent[..kept] == history[..kept]
+                                && history.last().is_none_or(|tail| {
+                                    sent[kept].role == tail.role
+                                        && sent[kept].content.starts_with(&tail.content)
+                                })
+                        };
+                        history = sent.to_vec();
+                        grew
+                    });
                 if !follows || binding.run_start() != decisions.is_empty() {
                     walk.intake.unplaced();
                 }
@@ -883,15 +892,14 @@ fn capture_open(
         let mut steer_locators = vec![];
         let mut unbacked = vec![];
         for (ordinal, (line, pointer, text)) in walk.steered.iter().enumerate() {
-            let index = base + ordinal;
+            let index = ordinal + 1;
             let backing = used.iter().find(|revision| {
                 transcript
                     .convo
                     .goal_context
                     .version(**revision)
                     .is_some_and(|v| {
-                        v.owner_inputs()
-                            .get(index)
+                        v.input_at(base + index as u64)
                             .is_some_and(|input| input.text() == text)
                     })
             });
@@ -930,7 +938,7 @@ fn capture_open(
                 line: owner_line,
                 pointer: owner_pointer.clone(),
                 context_revision: first.revision(),
-                owner_input_index: base - 1,
+                owner_input_index: 0,
             })
             .chain(steer_locators)
             .collect(),
@@ -942,11 +950,8 @@ fn capture_open(
                         .goal_context
                         .version(*revision)
                         .expect("validated version");
-                    if a.web_ingress.is_some() {
-                        ChatContextVersion::from_authenticated_web_version(version)
-                    } else {
-                        ChatContextVersion::from_version(version)
-                    }
+                    // Only this turn's lines: the first of them is index 0.
+                    ChatContextVersion::from_version_tail(version, a.web_ingress.is_some(), base)
                 })
                 .collect::<Result<_>>()?,
             decisions: decisions.clone(),
