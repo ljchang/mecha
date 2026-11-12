@@ -109,6 +109,27 @@ pub fn regenerate_line(picture: &str) -> String {
     format!("Regenerate {picture}")
 }
 
+/// The picture a panel edit's fact changed and the typed change it drew, as
+/// the call the harness dispatched: `{"picture": …, "scene": …}`. `None`
+/// for any other text, and for a fact whose change is not a scene change
+/// (a redraw, a retouch, one that was not understood): those were not this
+/// call. What a replay runs again for a panel turn (`persona::replay`).
+pub fn fact_call(text: &str) -> Option<serde_json::Value> {
+    let first = text.lines().next().filter(|l| is_fact(l))?;
+    let (picture, change) = first
+        .split_once("The picture: ")?
+        .1
+        .split_once(". The change: ")?;
+    // The change is the first JSON object after the stem; whatever the
+    // harness said after it ("; not drawn, beside …") is not the call's.
+    let scene = serde_json::Deserializer::from_str(change.trim_start())
+        .into_iter::<serde_json::Value>()
+        .next()?
+        .ok()
+        .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))?;
+    Some(serde_json::json!({"picture": picture.trim(), "scene": scene}))
+}
+
 /// The picture a Regenerate's fact drew again, so the page shows the new one
 /// as a version on that picture's card (§5.4). `None` for any other fact.
 pub fn fact_redraw_of(text: &str) -> Option<&str> {
@@ -1426,6 +1447,43 @@ mod tests {
         assert!(extraction_request("m", None, "x", None, &[], false)
             .response_schema
             .is_none());
+    }
+
+    /// A panel fact gives back the call the harness dispatched, and only a
+    /// scene change is one: what a replay runs again for a panel turn.
+    #[test]
+    fn a_panel_fact_gives_back_the_call_it_drew() {
+        let f = fact(
+            "images/a.png",
+            r#"{"camera":"from under the table","light":"dusk"}"#,
+            "image: images/b.png",
+        );
+        assert_eq!(
+            fact_call(&f),
+            Some(serde_json::json!({"picture": "images/a.png",
+                "scene": {"camera": "from under the table", "light": "dusk"}}))
+        );
+        // What the harness said after the change is not the call's.
+        let beside = fact(
+            "images/a.png",
+            r#"{"camera":"closer"}; not drawn, beside the scene change: brighter"#,
+            "image: images/b.png",
+        );
+        assert_eq!(
+            fact_call(&beside).unwrap()["scene"],
+            serde_json::json!({"camera": "closer"})
+        );
+        for other in [REDRAWN, "retouch: a tidier shelf", "{}", "not understood"] {
+            assert_eq!(
+                fact_call(&fact("images/a.png", other, "x")),
+                None,
+                "{other}"
+            );
+        }
+        assert_eq!(
+            fact_call("The picture: a. The change: {\"camera\":\"x\"}.)"),
+            None
+        );
     }
 
     /// A shot filed as a look is the camera's: moved there when the answer
