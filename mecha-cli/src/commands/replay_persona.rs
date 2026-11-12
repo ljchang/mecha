@@ -133,6 +133,9 @@ pub struct SampleArgs {
     /// Run the turn's recorded Nth tool call (1-based) verbatim through the
     /// real tool, with the turn's stamps and no model turn: arms then differ
     /// only in what they set, never in what the model wrote this time.
+    /// On a picture-panel turn, `1` is the change the harness drew there
+    /// (the one call such a turn has): the only thing about a panel turn a
+    /// replay redoes.
     #[arg(long, value_name = "N", requires = "persona", conflicts_with_all = ["at_call", "no_render"])]
     pub run_call: Option<usize>,
 
@@ -454,6 +457,8 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
     }
     let mut branch: Branch = match args.at_call {
         Some(call) => pr::branch_at_call(&path, &text, line, call)?,
+        // A panel turn is branched at only to run its drawn change again.
+        None if args.run_call.is_some() => pr::branch_at_panel(&path, &text, line)?,
         None => pr::branch_at(&path, &text, line)?,
     };
     // Before anything is sent or digested: every sample carries the history
