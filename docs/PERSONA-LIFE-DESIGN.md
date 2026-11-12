@@ -973,6 +973,23 @@ one more reason §14's gate part 1 exists.
   happened" on the next turn; deck, routine/day, cast, intensity and director
   changes still redraw today. `persona::today::EVENTS_HEADING` marks the arm that
   `persona::initiative` reads back from the transcript.
+- **As built (the chat's ledger, `persona::today::Ledger`):** the doing-now
+  sentence rides every turn, since the clock moves it. The teller's three
+  lines (what happened, how she feels, the weather) do not: each rides until
+  her reply has said it or it has been offered `today::OFFERS` times, and
+  again on any turn the owner's message is about it. What she said stays in
+  the history, which is where a follow-up comes from. Before this the lines
+  rode every turn as the last thing read, and in one chat the weather came
+  up in 24 of 31 replies, 2 of them asked (owner, 2026-11-12). The match is
+  by word: closed sets for the weather and the levels, the titles' longer
+  words for events, so it errs toward dropping a line early. A new diary
+  day starts over; a changed events or feeling line (the noon turn) is a new
+  line; the weather is the day's first reading for that chat, so a forecast
+  refreshed mid-chat cannot contradict what she said. The note sits ahead
+  of the variety and scene notes. The ledger is held by the process serving
+  the chat and is never stored, so a restart offers each line once more. It
+  is the within-chat half only: the nightly `told` flag below is still
+  unbuilt, and nothing here writes a world row.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé

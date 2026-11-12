@@ -131,6 +131,58 @@ pub fn teller_lines(
     yesterday: Option<&StoryDay>,
     names: &BTreeMap<String, String>,
 ) -> Result<String> {
+    Ok(teller(at, today, yesterday, names)?.lines())
+}
+
+/// The teller's lines, each on its own so a chat can stop repeating one it
+/// has already used ([`Ledger`]). [`teller_lines`] is these joined.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Teller {
+    /// "What happened today: …", always present.
+    pub events: String,
+    /// The words an owner's message or her reply shares with the events
+    /// when it is about them: the titles' longer words.
+    pub event_words: Vec<String>,
+    /// "You feel …", when a level is away from normal.
+    pub feeling: Option<String>,
+    /// "Today's weather is …", when the day has weather.
+    pub weather: Option<String>,
+    /// The closed sky the weather line names.
+    pub sky: Option<super::weather::Sky>,
+}
+
+impl Teller {
+    /// Every line, in the order the note has always carried them.
+    pub fn lines(&self) -> String {
+        self.only(&Item::ALL)
+    }
+
+    /// The lines for `items`, in the note's order; empty when none is held.
+    pub fn only(&self, items: &[Item]) -> String {
+        Item::ALL
+            .iter()
+            .filter(|i| items.contains(i))
+            .filter_map(|i| self.line(*i))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn line(&self, item: Item) -> Option<&str> {
+        match item {
+            Item::Events => Some(self.events.as_str()),
+            Item::Feeling => self.feeling.as_deref(),
+            Item::Weather => self.weather.as_deref(),
+        }
+    }
+}
+
+/// [`teller_lines`], kept apart by line.
+pub fn teller(
+    at: NaiveDateTime,
+    today: &StoryDay,
+    yesterday: Option<&StoryDay>,
+    names: &BTreeMap<String, String>,
+) -> Result<Teller> {
     let morning = before_noon(at);
     let events = if morning {
         yesterday.context("yesterday's story is missing")?
@@ -147,10 +199,15 @@ pub fn teller_lines(
             .collect::<Vec<_>>()
             .join("; ")
     };
-    let mut lines = vec![format!(
+    let events_line = format!(
         "{EVENTS_HEADING} {}: {happened}.",
         if morning { "yesterday" } else { "today" }
-    )];
+    );
+    let event_words = if events.events.is_empty() {
+        Vec::new()
+    } else {
+        content_words(&happened)
+    };
 
     let levels = if morning {
         today.morning
@@ -158,6 +215,7 @@ pub fn teller_lines(
         today.evening
     };
     let mut feeling = Vec::new();
+    let mut feeling_line = None;
     match levels.energy {
         Level::Low => feeling.push("low on energy"),
         Level::High => feeling.push("full of energy"),
@@ -179,19 +237,319 @@ pub fn teller_lines(
             Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
             None => unreachable!("checked non-empty"),
         };
-        lines.push(format!("You feel {said}."));
+        feeling_line = Some(format!("You feel {said}."));
     }
-    if let Some(w) = today.weather {
-        lines.push(format!(
+    let weather = today.weather.map(|w| {
+        format!(
             "Today's weather is {}, {}–{} °C ({}–{} °F).",
             w.sky.id(),
             w.low_c,
             w.high_c,
             fahrenheit(w.low_c),
             fahrenheit(w.high_c)
-        ));
+        )
+    });
+    Ok(Teller {
+        events: events_line,
+        event_words,
+        feeling: feeling_line,
+        weather,
+        sky: today.weather.map(|w| w.sky),
+    })
+}
+
+/// One of the teller's lines, as the [`Ledger`] keeps them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Item {
+    Events,
+    Feeling,
+    Weather,
+}
+
+impl Item {
+    /// In the note's order.
+    pub const ALL: [Item; 3] = [Item::Events, Item::Feeling, Item::Weather];
+}
+
+/// How many turns a line rides unsaid before it is dropped: the turn it is
+/// new, and one more for a first turn that was about something else.
+pub const OFFERS: u8 = 2;
+
+/// Words in an owner's message that ask about the weather, beside the sky's
+/// own ([`sky_words`]).
+const WEATHER_ASKED: &[&str] = &[
+    "weather",
+    "forecast",
+    "temperature",
+    "degrees",
+    "outside",
+    "umbrella",
+    "cold",
+    "chilly",
+    "freezing",
+    "warm",
+    "hot",
+    "humid",
+    "windy",
+];
+/// The weather words that count as her having said it: the unambiguous
+/// ones, so "a hot coffee" or "step outside" is not the weather told.
+const WEATHER_SAID: &[&str] = &["weather", "forecast", "degrees", "umbrella"];
+/// An owner's message that asks after her day, which is what the events
+/// line answers.
+const DAY_ASKED: &[&[&str]] = &[
+    &["your", "day"],
+    &["your", "morning"],
+    &["your", "afternoon"],
+    &["your", "evening"],
+    &["your", "night"],
+    &["your", "weekend"],
+    &["what", "happened"],
+    &["what's", "new"],
+    &["anything", "new"],
+    &["up", "to"],
+    &["been", "doing"],
+    &["did", "you", "do"],
+    &["how", "was"],
+    &["how", "did"],
+];
+/// An owner's message that asks how she is, which is what the feeling line
+/// answers.
+const FEELING_ASKED: &[&[&str]] = &[
+    &["how", "are", "you"],
+    &["how're", "you"],
+    &["how", "you", "doing"],
+    &["how", "do", "you", "feel"],
+    &["you", "feeling"],
+    &["you", "feel"],
+    &["you", "ok"],
+    &["you", "okay"],
+    &["you", "alright"],
+    &["how", "are", "things"],
+];
+/// What she says when she tells a level, by the words the line used.
+const FEELING_SAID: &[(&str, &[&str])] = &[
+    (
+        "low on energy",
+        &[
+            "tired",
+            "exhausted",
+            "drained",
+            "wiped",
+            "sleepy",
+            "worn",
+            "energy",
+            "beat",
+            "knackered",
+        ],
+    ),
+    (
+        "full of energy",
+        &[
+            "energy",
+            "energetic",
+            "energised",
+            "energized",
+            "buzzing",
+            "wired",
+        ],
+    ),
+    (
+        "relaxed",
+        &["relaxed", "relaxing", "calm", "chill", "mellow"],
+    ),
+    (
+        "stressed",
+        &[
+            "stressed",
+            "stress",
+            "stressful",
+            "tense",
+            "frazzled",
+            "overwhelmed",
+            "anxious",
+        ],
+    ),
+    (
+        "in a low mood",
+        &["mood", "down", "low", "blue", "flat", "sad"],
+    ),
+    (
+        "in a good mood",
+        &["mood", "happy", "cheerful", "great", "upbeat", "glad"],
+    ),
+];
+
+/// How a sky is said in a message, by the stems a word may open with.
+fn sky_words(sky: super::weather::Sky) -> &'static [&'static str] {
+    use super::weather::Sky;
+    match sky {
+        Sky::Clear => &["sunn", "sunsh", "sunli"],
+        Sky::Cloudy => &["cloud", "overcast"],
+        Sky::Fog => &["fog", "mist", "haz"],
+        Sky::Drizzle => &["drizzl", "rain"],
+        Sky::Rain => &["rain", "downpour"],
+        Sky::Snow => &["snow", "flurr", "blizzard"],
+        Sky::Storm => &["storm", "thunder", "lightning"],
     }
-    Ok(lines.join("\n"))
+}
+
+fn lowered(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// The longer words of event titles: what a message shares with them when
+/// it is about them. Five letters and up, which leaves out the titles'
+/// connecting words without a stop list.
+fn content_words(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = lowered(text)
+        .into_iter()
+        .filter(|w| w.chars().count() >= 5)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn has_phrase(words: &[String], phrases: &[&[&str]]) -> bool {
+    phrases.iter().any(|p| {
+        words
+            .windows(p.len())
+            .any(|w| w.iter().zip(p.iter()).all(|(a, b)| a == b))
+    })
+}
+
+fn has_any(words: &[String], set: &[&str]) -> bool {
+    words.iter().any(|w| set.contains(&w.as_str()))
+}
+
+fn has_stem(words: &[String], stems: &[&str]) -> bool {
+    words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    /// The line as first offered. For the weather it is also the line
+    /// every later offer of the day repeats, so a forecast refreshed
+    /// mid-chat never contradicts what she already said.
+    text: String,
+    event_words: Vec<String>,
+    sky: Option<super::weather::Sky>,
+    offered: u8,
+    said: bool,
+    /// Rode in the last note sent, so her next reply is read for it.
+    last: bool,
+}
+
+/// What one chat has already been told of her day, so a line the
+/// conversation did not pick up is not offered turn after turn (owner,
+/// 2026-11-12: rain in 24 of 31 replies of one chat, 2 of them asked).
+///
+/// A line rides until her reply has said it, or it has been offered
+/// [`OFFERS`] times, and again on any turn the owner's message is about it.
+/// What she said stays in the history, which is where a follow-up comes
+/// from. A new diary day starts over; within a day a changed events or
+/// feeling line (the noon turn) is a new line, and the weather is the day's
+/// first.
+///
+/// Held per chat by the process serving it and never stored: a restart
+/// offers each line once more. This is the chat's half of
+/// PERSONA-LIFE-DESIGN.md §4.5's told-ledger; the nightly `told` flag on
+/// the world's rows is not written here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ledger {
+    day: Option<chrono::NaiveDate>,
+    entries: BTreeMap<Item, Entry>,
+}
+
+impl Ledger {
+    /// The teller lines this turn's note carries, or `None` for none.
+    ///
+    /// `day` is the diary day ([`diary_date`]); `owner` is the message being
+    /// answered; `last_reply` is what she said since the last note, which is
+    /// read for the lines that note carried.
+    pub fn offer(
+        &mut self,
+        day: chrono::NaiveDate,
+        teller: &Teller,
+        owner: &str,
+        last_reply: &str,
+    ) -> Option<String> {
+        if self.day != Some(day) {
+            self.day = Some(day);
+            self.entries.clear();
+        }
+        let reply = lowered(last_reply);
+        for (item, e) in &mut self.entries {
+            if std::mem::take(&mut e.last) && mentions(*item, e, &reply, false) {
+                e.said = true;
+            }
+        }
+        let asked = lowered(owner);
+        let mut riding = Vec::new();
+        for item in Item::ALL {
+            let Some(line) = teller.line(item) else {
+                continue;
+            };
+            let fresh = || Entry {
+                text: line.to_string(),
+                event_words: teller.event_words.clone(),
+                sky: teller.sky,
+                offered: 0,
+                said: false,
+                last: false,
+            };
+            let e = self.entries.entry(item).or_insert_with(fresh);
+            // The weather is the day's first reading; the others are new
+            // lines when they change.
+            if item != Item::Weather && e.text != line {
+                *e = fresh();
+            }
+            let due = !e.said && e.offered < OFFERS;
+            if due || mentions(item, e, &asked, true) {
+                e.offered = e.offered.saturating_add(1);
+                e.last = true;
+                riding.push((item, e.text.clone()));
+            }
+        }
+        if riding.is_empty() {
+            return None;
+        }
+        Some(
+            riding
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+}
+
+/// Whether `words` are about `item`: an owner's message asking (`asking`),
+/// or her reply having said it.
+fn mentions(item: Item, e: &Entry, words: &[String], asking: bool) -> bool {
+    match item {
+        Item::Events => {
+            words.iter().any(|w| e.event_words.contains(w))
+                || (asking && has_phrase(words, DAY_ASKED))
+        }
+        Item::Feeling => {
+            if asking && has_phrase(words, FEELING_ASKED) {
+                return true;
+            }
+            FEELING_SAID
+                .iter()
+                .filter(|(said, _)| e.text.contains(said))
+                .any(|(_, set)| has_any(words, set))
+        }
+        Item::Weather => {
+            e.sky.is_some_and(|s| has_stem(words, sky_words(s)))
+                || has_any(words, if asking { WEATHER_ASKED } else { WEATHER_SAID })
+        }
+    }
 }
 
 /// The today-block for `now`. The times are the owner's clock, which is the
@@ -542,6 +900,187 @@ mod tests {
         assert_eq!(
             diary_date(at("2026-11-04T04:00:00")).to_string(),
             "2026-11-04"
+        );
+    }
+    /// An afternoon's teller, as [`teller`] writes it, with the weather
+    /// line and sky a test names.
+    fn told(weather: &str, sky: crate::persona::weather::Sky) -> Teller {
+        let tired = story::Levels {
+            energy: Level::Low,
+            ..Default::default()
+        };
+        let d = story_day(
+            "2026-03-03",
+            "a flat tyre on the way to the market",
+            story::Levels::default(),
+            tired,
+        );
+        let at: NaiveDateTime = "2026-03-03T15:00:00".parse().unwrap();
+        let mut t = teller(at, &d, None, &BTreeMap::new()).unwrap();
+        assert!(t.feeling.is_some());
+        t.weather = Some(weather.into());
+        t.sky = Some(sky);
+        t
+    }
+
+    fn day(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, d).unwrap()
+    }
+
+    /// The owner's report (2026-11-12): the day's lines rode every turn, and
+    /// the weather came up in most replies of a chat that never asked.
+    #[test]
+    fn a_line_nobody_picked_up_stops_riding_after_its_offers() {
+        use crate::persona::weather::Sky;
+        let t = told("Today's weather is rain, 4–9 °C (39–48 °F).", Sky::Rain);
+        let mut l = Ledger::default();
+        for _ in 0..OFFERS {
+            let lines = l
+                .offer(day(3), &t, "what are you reading?", "A novel.")
+                .unwrap();
+            assert_eq!(lines, t.lines());
+        }
+        assert_eq!(l.offer(day(3), &t, "is it any good?", "It is."), None);
+        assert_eq!(l.offer(day(3), &t, "who wrote it?", "No idea."), None);
+    }
+
+    #[test]
+    fn a_line_she_said_is_dropped_and_the_others_keep_riding() {
+        use crate::persona::weather::Sky;
+        let t = told("Today's weather is rain, 4–9 °C (39–48 °F).", Sky::Rain);
+        let mut l = Ledger::default();
+        assert_eq!(l.offer(day(3), &t, "morning", ""), Some(t.lines()));
+        // Her reply told the weather and nothing else.
+        let next = l
+            .offer(day(3), &t, "ha", "It's been raining since I got up.")
+            .unwrap();
+        assert_eq!(next, t.only(&[Item::Events, Item::Feeling]));
+        // Then the tyre. The feeling has had its offers, so nothing rides.
+        assert_eq!(
+            l.offer(day(3), &t, "oh?", "I got a flat tyre, of all things."),
+            None
+        );
+    }
+
+    #[test]
+    fn a_line_comes_back_on_the_turn_the_owner_asks_about_it() {
+        use crate::persona::weather::Sky;
+        let t = told("Today's weather is snow, -3–1 °C (27–34 °F).", Sky::Snow);
+        let mut l = Ledger::default();
+        for _ in 0..OFFERS {
+            l.offer(day(3), &t, "hello", "Hello.");
+        }
+        assert_eq!(
+            l.offer(
+                day(3),
+                &t,
+                "which soup is it tonight, the leek one?",
+                "Soup."
+            ),
+            None
+        );
+        assert_eq!(
+            l.offer(day(3), &t, "is it cold out there?", "Soup."),
+            t.weather.clone()
+        );
+        assert_eq!(
+            l.offer(day(3), &t, "and your day, did it go to plan?", "Freezing."),
+            Some(t.events.clone())
+        );
+        assert_eq!(
+            l.offer(
+                day(3),
+                &t,
+                "are you feeling any better for it?",
+                "Long one."
+            ),
+            t.feeling.clone()
+        );
+        assert_eq!(l.offer(day(3), &t, "and the book?", "Tired."), None);
+    }
+
+    /// A forecast refreshed mid-chat changed the line under her: one reply
+    /// said snow and a later one drizzle (2026-11-12).
+    #[test]
+    fn the_weather_is_the_days_first_reading_and_a_new_day_starts_over() {
+        use crate::persona::weather::Sky;
+        let snow = told("Today's weather is snow, -3–1 °C (27–34 °F).", Sky::Snow);
+        let drizzle = told(
+            "Today's weather is drizzle, 2–6 °C (36–43 °F).",
+            Sky::Drizzle,
+        );
+        let mut l = Ledger::default();
+        l.offer(day(3), &snow, "hello", "");
+        let asked = l
+            .offer(day(3), &drizzle, "what's the weather doing?", "Snowing.")
+            .unwrap();
+        assert!(
+            asked.contains("snow") && !asked.contains("drizzle"),
+            "{asked}"
+        );
+        // The next diary day is a new day's lines, the new forecast with them.
+        assert_eq!(
+            l.offer(day(4), &drizzle, "morning", "Night."),
+            Some(drizzle.lines())
+        );
+    }
+
+    #[test]
+    fn a_changed_events_line_is_a_new_line() {
+        use crate::persona::weather::Sky;
+        let morning = told("Today's weather is clear, 4–9 °C (39–48 °F).", Sky::Clear);
+        let mut l = Ledger::default();
+        for _ in 0..OFFERS {
+            l.offer(day(3), &morning, "hello", "Hello.");
+        }
+        assert_eq!(l.offer(day(3), &morning, "hm", "Hm."), None);
+        // Noon: the events line turns from yesterday's to today's.
+        let mut noon = morning.clone();
+        noon.events = format!("{EVENTS_HEADING} today: a long lunch with an old friend.");
+        noon.event_words = content_words("a long lunch with an old friend");
+        assert_eq!(
+            l.offer(day(3), &noon, "hm", "Hm."),
+            Some(noon.events.clone())
+        );
+    }
+
+    #[test]
+    fn everyday_words_are_not_the_weather_told() {
+        use crate::persona::weather::Sky;
+        let t = told("Today's weather is clear, 20–28 °C (68–82 °F).", Sky::Clear);
+        let mut l = Ledger::default();
+        l.offer(day(3), &t, "hello", "");
+        let e = &l.entries[&Item::Weather];
+        // "Sunday", "a hot coffee" and "clearly" say nothing of the sky.
+        let reply = lowered("Clearly a hot coffee kind of Sunday.");
+        assert!(!mentions(Item::Weather, e, &reply, false));
+        assert!(mentions(Item::Weather, e, &lowered("So sunny out."), false));
+        // Asked, "hot" is about the weather.
+        assert!(mentions(
+            Item::Weather,
+            e,
+            &lowered("is it hot there?"),
+            true
+        ));
+    }
+
+    #[test]
+    fn the_teller_joined_is_the_note_it_always_was() {
+        let names = BTreeMap::new();
+        let d = story_day(
+            "2026-03-03",
+            "a small win at work",
+            story::Levels::default(),
+            story::Levels::default(),
+        );
+        let at: NaiveDateTime = "2026-03-03T15:00:00".parse().unwrap();
+        let t = teller(at, &d, None, &names).unwrap();
+        assert_eq!(t.lines(), teller_lines(at, &d, None, &names).unwrap());
+        assert_eq!(t.only(&[Item::Weather]), t.weather.clone().unwrap());
+        assert!(
+            t.event_words.contains(&"small".to_string()),
+            "{:?}",
+            t.event_words
         );
     }
 }
