@@ -13166,9 +13166,15 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   messages once, at the end, so a run that compacted had a memory of its
   request and nothing else while the walk skipped that record. What a
   rewrite lists again is not read twice, and an earlier turn's messages
-  are never a later turn's passages: the walk holds every message, text
-  and call id the conversation already had (`Walk::hold`) and reads only
-  what is new. **A grant may not reach the store**
+  are never a later turn's passages. Which entries are new is decided by
+  position, never by bytes alone, because a reply identical to an earlier
+  one is still a reply (review of #865): where the list holds the span's
+  owner message, everything before it is an earlier turn's and everything
+  after is the span's, less what the walk already read, matched in order;
+  where a compaction summarised that message away, entries are matched in
+  order against the earlier conversation (`Walk::hold`) and then the walk,
+  which can still take a new message for an identical one the compaction
+  dropped. That costs the passage, never its label. **A grant may not reach the store**
   (`authority::exclude_grants`): one that contains the database, the key,
   the authority directory or the transcript, or sits inside the store, is
   refused at the start (`validate_surface` for the store,
@@ -13183,7 +13189,8 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   task and web attachments are closed profiles and keep the strict walk,
   `Attachment::open`. The web host is built on the strict walk's refusals,
   a stopped turn blocking the conversation until an explicit resume, and
-  opens with that host). What still refuses a turn is whose it is: the
+  opens with that host; its recorded tool list is still the closed four
+  in the library, `recording::closed_surface`, not only in its host). What still refuses a turn is whose it is: the
   prefix it began from, the attachment and its ingress, the workspace, the
   owner's line as the host froze it at the start, the owner inputs behind
   every goal-context decision, a recall that does not reconcile, a grant

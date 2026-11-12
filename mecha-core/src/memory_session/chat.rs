@@ -130,7 +130,8 @@ impl Attachment {
         }
         match &self.graph_surface {
             Some(graph) => graph.validate_tools(names),
-            None => recording::surface(names),
+            None if self.open() => recording::surface(names),
+            None => recording::closed_surface(names),
         }
     }
     /// An ordinary local chat: whichever tools its configuration gives

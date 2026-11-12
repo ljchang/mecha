@@ -17,6 +17,19 @@ pub(super) fn surface(names: &[String]) -> Result<()> {
     );
     Ok(())
 }
+/// The closed set a web memory chat still records: its strict walk admits
+/// no other call, and its host pins the same four names.
+pub(super) fn closed_surface(names: &[String]) -> Result<()> {
+    surface(names)?;
+    ensure!(
+        names.iter().all(|n| matches!(
+            n.as_str(),
+            "fs_read" | "fs_write" | "fs_list" | "goal_context"
+        )),
+        "chat memory requires an explicit supported tool surface"
+    );
+    Ok(())
+}
 /// The head of the owner's prompt that a criterion's text fields admit.
 pub(super) fn criterion_text(prompt: &str) -> String {
     // Of the trimmed prompt: admission refuses a blank criterion, and a
@@ -253,11 +266,12 @@ pub(super) struct Walk<'a> {
     pub(super) owner: Option<(u64, String)>,
     /// Records of this span that carried messages.
     pub(super) messages: usize,
-    /// What the conversation already held before this span, and what the
-    /// walk has read since: whole messages and text blocks by digest, and
-    /// call ids. A rewrite lists the conversation again, and only what is
-    /// not held is this span's.
-    held: BTreeSet<String>,
+    /// The conversation's messages before this span and the messages this
+    /// walk has read, each by digest and in order, and the earlier turns'
+    /// call ids. A rewrite lists the conversation again; these say which
+    /// of its entries are not new.
+    earlier: Vec<String>,
+    walked: Vec<String>,
     earlier_calls: BTreeSet<String>,
 }
 /// What a finished walk hands the recorder.
@@ -294,7 +308,8 @@ impl<'a> Walk<'a> {
             configured: BTreeSet::new(),
             owner: None,
             messages: 0,
-            held: BTreeSet::new(),
+            earlier: vec![],
+            walked: vec![],
             earlier_calls: BTreeSet::new(),
         }
     }
@@ -302,16 +317,10 @@ impl<'a> Walk<'a> {
     /// messages are never this turn's passages, however a rewrite lists them.
     pub(super) fn hold(&mut self, earlier: &[crate::message::Message]) -> Result<()> {
         for m in earlier {
-            self.held.insert(digest(&serde_json::to_vec(m)?));
+            self.earlier.push(digest(&serde_json::to_vec(m)?));
             for b in &m.content {
-                match b {
-                    Block::Text { text } => {
-                        self.held.insert(digest(text.as_bytes()));
-                    }
-                    Block::ToolUse { id, .. } => {
-                        self.earlier_calls.insert(id.clone());
-                    }
-                    _ => {}
+                if let Block::ToolUse { id, .. } = b {
+                    self.earlier_calls.insert(id.clone());
                 }
             }
         }
@@ -356,9 +365,18 @@ impl<'a> Walk<'a> {
     }
     /// A rewrite carries the whole current list in place of the tail: after
     /// a compaction, an eviction, or an owner's line folded into a message
-    /// that already held tool results. What it lists that the conversation
-    /// did not already hold exists nowhere else in the transcript, so it is
-    /// read here; what was held is not read twice.
+    /// that already held tool results. What it lists that is new exists
+    /// nowhere else in the transcript, so it is read here.
+    ///
+    /// Which entries are new is decided by position, never by content
+    /// alone: a reply byte-identical to an earlier one ("Done.") is still
+    /// a reply. Where the list holds this span's owner message, everything
+    /// before it is an earlier turn's and everything after is this span's,
+    /// less what the walk already read, matched in order. Where it does
+    /// not (a compaction summarised it away), the entries are matched in
+    /// order against the earlier conversation and then the walk, so a new
+    /// message identical to one the compaction dropped can still be taken
+    /// for the old one; that costs the passage, never its label.
     pub(super) fn rewrite(
         &mut self,
         line: usize,
@@ -367,10 +385,40 @@ impl<'a> Walk<'a> {
         // An owner's line folded into the tail is that message's last block.
         let folded = self.messages == 0 && self.owner.is_none();
         self.messages += 1;
-        let last = messages.len().saturating_sub(1);
+        let digests = messages
+            .iter()
+            .map(|m| Ok(digest(&serde_json::to_vec(m)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let owner_text = self.owner_text;
+        let anchor = if folded {
+            messages
+                .len()
+                .checked_sub(1)
+                .filter(|last| messages[*last].role == Role::User)
+        } else {
+            messages.iter().rposition(|m| {
+                m.role == Role::User
+                    && !m.harness
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, Block::Text { text } if text == owner_text))
+            })
+        };
+        let known: Vec<String> = match anchor {
+            Some(_) => self.walked.clone(),
+            None => self.earlier.iter().chain(&self.walked).cloned().collect(),
+        };
+        let mut cursor = 0;
         for (index, m) in messages.into_iter().enumerate() {
-            let owner_at = (folded && index == last && m.role == Role::User)
-                .then(|| m.content.len().saturating_sub(1));
+            if anchor.is_some_and(|anchor| index < anchor) {
+                continue;
+            }
+            if let Some(at) = known[cursor..].iter().position(|d| *d == digests[index]) {
+                cursor += at + 1;
+                continue;
+            }
+            let owner_at =
+                (folded && Some(index) == anchor).then(|| m.content.len().saturating_sub(1));
             self.blocks(line, format!("/messages/{index}"), m, true, owner_at)?;
         }
         Ok(())
@@ -383,11 +431,7 @@ impl<'a> Walk<'a> {
         listed: bool,
         owner_at: Option<usize>,
     ) -> Result<()> {
-        let whole = digest(&serde_json::to_vec(&m)?);
-        if listed && self.held.contains(&whole) {
-            return Ok(());
-        }
-        self.held.insert(whole);
+        self.walked.push(digest(&serde_json::to_vec(&m)?));
         // The harness's own content rule, asked of this message: a
         // user-role block it reads as untrusted is outside content no
         // tool result accounts for.
@@ -416,7 +460,6 @@ impl<'a> Walk<'a> {
                     {
                         self.owner =
                             Some(((line + 1) as u64, format!("{base}/content/{index}/text")));
-                        self.held.insert(digest(text.as_bytes()));
                         external = self.intake.owner();
                         call = None;
                         (PassageKind::UserRequest, "text", text)
@@ -425,19 +468,16 @@ impl<'a> Walk<'a> {
                         // another agent's, and never owner evidence. A
                         // notice known byte for byte is local; anything
                         // else is for the recorded taint to classify.
-                        let fresh = self.held.insert(digest(text.as_bytes()));
-                        if (fresh || !listed)
-                            && !supported_note(&text, &self.configured, &self.calls)
-                        {
+                        // (The owner's line listed again beside something
+                        // new is the line the walk already has.)
+                        let again = listed && text == self.owner_text && !m.harness;
+                        if !again && !supported_note(&text, &self.configured, &self.calls) {
                             self.intake.unplaced();
                         }
                         continue;
                     }
                 }
                 Block::Text { text } => {
-                    if !self.held.insert(digest(text.as_bytes())) && listed {
-                        continue;
-                    }
                     external = self.intake.authored();
                     call = None;
                     (PassageKind::AssistantText, "text", text)

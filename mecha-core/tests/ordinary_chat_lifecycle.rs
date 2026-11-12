@@ -3549,3 +3549,73 @@ fn a_folded_owner_line_keeps_the_turn_s_labels_by_position() {
         ]
     );
 }
+
+/// What a rewrite lists is new or not by where it stands, never by its
+/// bytes: a reply identical to an earlier turn's is still this turn's
+/// reply, whether or not the compaction kept the owner's line.
+#[test]
+fn a_compacted_turn_keeps_a_reply_identical_to_an_earlier_one() {
+    for owner_kept in [true, false] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+        open_config(&f, &s);
+        let done = || Message::assistant(vec![Block::text("Done.")]);
+        let first = open_turn(
+            &mut chat,
+            &s,
+            "First",
+            |s| s.append(&Record::Message(done())).unwrap(),
+            false,
+            None,
+        );
+        assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+        let report = open_turn(
+            &mut chat,
+            &s,
+            "Second",
+            |s| {
+                let mut messages = vec![Message::user("A summary of the conversation so far.")];
+                if owner_kept {
+                    messages.push(Message::user("First"));
+                    messages.push(done());
+                    messages.push(Message::user("Second"));
+                } else {
+                    messages.push(done());
+                }
+                messages.push(done());
+                s.append(&Record::Rewrite { messages }).unwrap();
+            },
+            false,
+            None,
+        );
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        let stored: Vec<_> = sealed(&f, &report.run_id)
+            .into_iter()
+            .map(|(kind, _, text)| (kind, text))
+            .collect();
+        assert_eq!(
+            stored,
+            [
+                ("UserRequest".to_string(), "Second".to_string()),
+                ("AssistantText".to_string(), "Done.".to_string()),
+            ],
+            "owner kept: {owner_kept}"
+        );
+    }
+}
+
+/// The web attachment is a closed profile in the library as well as in its
+/// host: its recorded tool list is the four names its strict walk admits.
+#[test]
+fn a_web_chat_keeps_the_closed_tool_list() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    assert!(!chat.is_open());
+    open_config(&f, &s);
+    assert!(chat.next_turn_ordinal().is_err());
+}
