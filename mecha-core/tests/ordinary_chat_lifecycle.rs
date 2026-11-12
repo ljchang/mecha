@@ -3933,6 +3933,7 @@ fn decide_compact(s: &Session, owner: OwnerInput, history: &[Message]) {
         true,
         0,
         history,
+        None,
     )
     .unwrap();
     s.append(&Record::GoalContextDecision {

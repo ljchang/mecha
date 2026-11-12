@@ -4981,7 +4981,12 @@ impl Agent {
                 "dynamic goal replay changed recorded trailing notes"
             );
             if binding.is_compact() {
-                if let Some(config) = &self.goal_charter {
+                // Carried forward from the decision that recorded it
+                // (`extract_transcript`); where none did, as the live run
+                // rendered it.
+                if let Some(system) = binding.system() {
+                    request.system = Some(system.to_string());
+                } else if let Some(config) = &self.goal_charter {
                     request.system = config.render(version.charter().prompt_block());
                 }
                 binding.verify_system(request.system.as_deref())?;
@@ -5054,6 +5059,7 @@ impl Agent {
                 run_start,
                 request.trailing_notes,
                 conversation_messages,
+                candidate.decisions().last(),
             )?
         } else {
             DecisionBinding::new(

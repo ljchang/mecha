@@ -985,13 +985,7 @@ pub async fn drive(
                 .copied()
                 .unwrap_or(trajectory.goal_decisions.len());
             let group = &trajectory.goal_decisions[start..end];
-            convo.messages = group[0]
-                .0
-                .conversation_messages()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("dynamic replay lacks the recorded pre-request conversation")
-                })?
-                .to_vec();
+            convo.messages = group[0].0.sent_conversation(&trajectory.conversation)?;
             convo.goal_context_replay = Some(group.iter().cloned().collect());
             convo.taint.private = true;
         } else {
@@ -1092,8 +1086,8 @@ pub async fn drive_branch(
             .enumerate()
             .filter_map(|(i, (binding, _))| {
                 binding
-                    .conversation_messages()
-                    .is_some_and(|messages| messages == convo.messages)
+                    .sent_conversation(&trajectory.conversation)
+                    .is_ok_and(|messages| messages == convo.messages)
                     .then_some(i)
             })
             .collect();

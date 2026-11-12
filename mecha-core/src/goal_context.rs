@@ -383,6 +383,12 @@ pub struct DecisionBinding {
 impl DecisionBinding {
     /// As [`DecisionBinding::new`] and `with_conversation_messages`, keeping
     /// digests in place of the copies.
+    ///
+    /// The system prompt is the one copy still kept, and only when it is
+    /// not `earlier`'s (the previous decision's): it is the same for most
+    /// of a session, so it is recorded where it changes and a replay
+    /// carries it forward ([`DecisionBinding::with_system_from`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn compact(
         ordinal: u64,
         version: u64,
@@ -391,6 +397,7 @@ impl DecisionBinding {
         run_start: bool,
         trailing_notes: usize,
         conversation_messages: &[Message],
+        earlier: Option<&Self>,
     ) -> Result<Self> {
         let bytes = serde_json::to_vec(messages)?;
         ensure!(
@@ -405,7 +412,11 @@ impl DecisionBinding {
             message_digest: digest(&bytes),
             conversation_messages: None,
             messages: Vec::new(),
-            system: None,
+            system: system
+                .filter(|system| {
+                    earlier.and_then(Self::system_digest) != Some(digest(system.as_bytes()))
+                })
+                .map(str::to_string),
             run_start,
             trailing_notes,
             request_digest: String::new(),
@@ -427,6 +438,23 @@ impl DecisionBinding {
     pub fn is_compact(&self) -> bool {
         self.compact.is_some()
     }
+    /// The digest of the system prompt this request carried.
+    pub fn system_digest(&self) -> Option<String> {
+        match &self.compact {
+            Some(compact) => compact.system_digest.clone(),
+            None => self.system.as_deref().map(|s| digest(s.as_bytes())),
+        }
+    }
+    /// A compact binding that left its system prompt out because it was the
+    /// previous decision's, given that one back.
+    pub fn with_system_from(mut self, earlier: Option<&str>) -> Self {
+        if self.compact.is_some() && self.system.is_none() {
+            self.system = earlier
+                .filter(|system| self.system_digest() == Some(digest(system.as_bytes())))
+                .map(str::to_string);
+        }
+        self
+    }
     /// A compact binding's history: how many messages it sent, and the
     /// chain head over all but the last.
     pub fn conversation_shape(&self) -> Option<(usize, &str)> {
@@ -436,6 +464,36 @@ impl DecisionBinding {
                 c.conversation_head.as_str(),
             ))
         })
+    }
+    /// The conversation as it stood when this request went out, for a
+    /// replay to start from. A full binding copied it. A compact one
+    /// recovers it from `conversation`, the session's messages as they
+    /// ended: its first messages, when the chain over all but the last and
+    /// the last one's digest are the ones recorded. They are not after a
+    /// compaction or an eviction rewrote that history, and then there is
+    /// nothing to recover it from.
+    pub fn sent_conversation(&self, conversation: &[Message]) -> Result<Vec<Message>> {
+        let Some(compact) = &self.compact else {
+            return self
+                .conversation_messages
+                .clone()
+                .context("dynamic replay lacks the recorded pre-request conversation");
+        };
+        let count = usize::try_from(compact.conversation)?;
+        let sent = conversation
+            .get(..count)
+            .context("compactly recorded history is longer than the conversation")?;
+        let tail = match sent.last() {
+            Some(tail) => Some(digest(&serde_json::to_vec(tail)?)),
+            None => None,
+        };
+        ensure!(
+            history_heads(sent)?[count.saturating_sub(1)] == compact.conversation_head
+                && tail == compact.conversation_tail,
+            "this request's history was later rewritten (a compaction or an eviction), and a \
+             compact record keeps no copy to replay it from"
+        );
+        Ok(sent.to_vec())
     }
     /// Whether `system` is what the request carried. A full binding holds
     /// the text; a compact one its digest.
@@ -571,7 +629,9 @@ impl DecisionBinding {
             ensure!(
                 self.messages.is_empty()
                     && self.conversation_messages.is_none()
-                    && self.system.is_none()
+                    && self.system.as_deref().is_none_or(|system| {
+                        compact.system_digest == Some(digest(system.as_bytes()))
+                    })
                     && hex(&self.message_digest)
                     && hex(&compact.conversation_head)
                     && compact.conversation_tail.as_deref().is_none_or(hex)
@@ -1104,7 +1164,7 @@ mod tests {
         let size = |upto: usize| {
             let sent = &conversation[..upto];
             let binding =
-                DecisionBinding::compact(1, 1, sent, Some("system"), true, 0, sent).unwrap();
+                DecisionBinding::compact(1, 1, sent, Some("system"), true, 0, sent, None).unwrap();
             binding.validate().unwrap();
             serde_json::to_vec(&binding).unwrap().len()
         };
@@ -1122,7 +1182,8 @@ mod tests {
         assert!(!full.is_compact() && full.conversation_shape().is_none());
 
         let sent = &conversation[..10];
-        let binding = DecisionBinding::compact(1, 1, sent, Some("system"), true, 0, sent).unwrap();
+        let binding =
+            DecisionBinding::compact(1, 1, sent, Some("system"), true, 0, sent, None).unwrap();
         binding.verify_messages(sent).unwrap();
         assert!(binding.verify_messages(&conversation[..9]).is_err());
         binding.verify_system(Some("system")).unwrap();
@@ -1146,6 +1207,30 @@ mod tests {
 
         // A compact binding that carries a copy after all, or whose digests
         // are not digests, does not validate.
+        // The system prompt is kept where it changes and left out where it
+        // is the previous decision's; either way the digest is the same,
+        // and a replay gives it back.
+        assert_eq!(binding.system(), Some("system"));
+        let next =
+            DecisionBinding::compact(2, 1, sent, Some("system"), false, 0, sent, Some(&binding))
+                .unwrap();
+        next.validate().unwrap();
+        assert!(next.system().is_none());
+        assert_eq!(next.system_digest(), binding.system_digest());
+        assert_eq!(
+            next.clone().with_system_from(binding.system()).system(),
+            Some("system")
+        );
+        assert!(next
+            .clone()
+            .with_system_from(Some("another"))
+            .system()
+            .is_none());
+        let changed =
+            DecisionBinding::compact(3, 1, sent, Some("revised"), false, 0, sent, Some(&next))
+                .unwrap();
+        assert_eq!(changed.system(), Some("revised"));
+
         let mut forged = binding.clone();
         forged.messages = sent.to_vec();
         forged.request_digest = forged.computed_request_digest().unwrap();

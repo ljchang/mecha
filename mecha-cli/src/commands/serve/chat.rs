@@ -3684,7 +3684,11 @@ fn begin_turn(
     cx = cx.with_cancel_handle(cancel.clone());
     cx = cx.with_owner_steering(Arc::clone(&queue));
     if dynamic_goals {
-        cx = cx.with_goal_ingress(owner_inputs, ws.session.kept().cloned());
+        // Compactly: digests in place of a copy of the request and the
+        // conversation per model request.
+        cx = cx
+            .with_goal_ingress(owner_inputs, ws.session.kept().cloned())
+            .with_compact_goal_records();
     }
     // A picture outlives the turn that asked for it (§5.4): a kept chat's
     // run hands it to the chat's slot in the queue and answers at once, and

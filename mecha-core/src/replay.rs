@@ -85,6 +85,12 @@ pub struct Trajectory {
         crate::goal_context::DecisionBinding,
         crate::goal_context::ContextVersion,
     )>,
+    /// The session's messages as they ended. A compactly recorded decision
+    /// keeps digests of the history its request sent, not a copy, and the
+    /// replay recovers that history from here
+    /// (`DecisionBinding::sent_conversation`).
+    #[serde(default)]
+    pub conversation: Vec<Message>,
 }
 
 impl Trajectory {
@@ -176,13 +182,15 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
     let historic = extract(&history);
     trajectory.calls = historic.calls;
     trajectory.harness_calls = historic.harness_calls;
+    // A compact decision records its system prompt only where it changed.
+    let mut system: Option<String> = None;
     for binding in state.decisions() {
         let version = state
             .version(binding.version())
             .ok_or_else(|| anyhow::anyhow!("missing historical goal context version"))?;
-        trajectory
-            .goal_decisions
-            .push((binding.clone(), version.clone()));
+        let binding = binding.clone().with_system_from(system.as_deref());
+        system = binding.system().map(str::to_string);
+        trajectory.goal_decisions.push((binding, version.clone()));
     }
     // A changed owner context inside one run is delivered steering. The replay
     // driver cannot reproduce its delivery timing and must not call it a turn.
@@ -191,6 +199,7 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
             trajectory.steered = true;
         }
     }
+    trajectory.conversation = transcript.convo.messages.clone();
     trajectory.ensure_replayable()?;
     Ok(trajectory)
 }
