@@ -9,7 +9,13 @@ use sha2::{Digest, Sha256};
 use crate::message::{Message, ToolChoice, ToolSpec};
 
 const MAX_SOURCE_BYTES: usize = 64 * 1024;
-const MAX_VERSIONS: usize = 256;
+/// The owner lines a revision carries in full: the most recent ones. The
+/// conversation itself holds every line; what a revision adds is which of
+/// them the host authenticated as the owner's, and a model deciding what
+/// the owner wants now reads the recent ones. Earlier lines are kept as a
+/// count and a digest ([`Earlier`]), so a revision's size does not grow
+/// with the conversation.
+const WINDOW_INPUTS: usize = 16;
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HISTORY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -159,6 +165,32 @@ impl CharterSnapshot {
     }
 }
 
+/// The owner lines that came before a revision's window: how many, and a
+/// digest chained over each in order, so a revision cannot drop or reorder
+/// one without the chain saying so. Absent from the wire while nothing has
+/// left the window, so a revision recorded before windows existed keeps its
+/// bytes and its digest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Earlier {
+    count: u64,
+    digest: String,
+}
+impl Earlier {
+    fn is_none(&self) -> bool {
+        self.count == 0
+    }
+    /// With `input` the next line to leave the window.
+    fn with(&self, input: &OwnerInput) -> Result<Self> {
+        let mut bytes = self.digest.clone().into_bytes();
+        bytes.extend(serde_json::to_vec(input)?);
+        Ok(Self {
+            count: self.count + 1,
+            digest: digest(&bytes),
+        })
+    }
+}
+
 /// A snapshot accumulates attributed evidence. It does not create priorities,
 /// erase earlier instructions or give a model interpretation owner authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,10 +202,28 @@ pub struct ContextVersion {
     predecessor: Option<u64>,
     charter: CharterSnapshot,
     owner_inputs: Vec<OwnerInput>,
+    #[serde(default, skip_serializing_if = "Earlier::is_none")]
+    earlier: Earlier,
     content_digest: String,
 }
 
 impl ContextVersion {
+    /// How many owner lines came before the ones this revision carries.
+    pub fn earlier_inputs(&self) -> u64 {
+        self.earlier.count
+    }
+    /// Every owner line of the conversation up to this revision, carried
+    /// or not.
+    pub fn total_inputs(&self) -> u64 {
+        self.earlier.count + self.owner_inputs.len() as u64
+    }
+    /// The owner line at `index` of the whole conversation, when this
+    /// revision still carries it.
+    pub fn input_at(&self, index: u64) -> Option<&OwnerInput> {
+        index
+            .checked_sub(self.earlier.count)
+            .and_then(|at| self.owner_inputs.get(usize::try_from(at).ok()?))
+    }
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -187,6 +237,18 @@ impl ContextVersion {
         &self.owner_inputs
     }
     fn computed_digest(&self) -> Result<String> {
+        // The tuple a revision recorded before windows existed was hashed
+        // over, unchanged while nothing has left the window.
+        if self.earlier.is_none() {
+            return Ok(digest(&serde_json::to_vec(&(
+                self.schema,
+                self.epoch,
+                self.revision,
+                self.predecessor,
+                &self.charter,
+                &self.owner_inputs,
+            ))?));
+        }
         Ok(digest(&serde_json::to_vec(&(
             self.schema,
             self.epoch,
@@ -194,6 +256,7 @@ impl ContextVersion {
             self.predecessor,
             &self.charter,
             &self.owner_inputs,
+            &self.earlier,
         ))?))
     }
     pub(crate) fn validate(&self) -> Result<()> {
@@ -206,9 +269,16 @@ impl ContextVersion {
                 .checked_add(input.text.len())
                 .context("owner evidence size overflow")?;
         }
+        // Of the lines carried. A window slides to stay under this; a
+        // revision recorded before windows existed carried every line and
+        // was refused past it.
         ensure!(
             bytes <= MAX_SOURCE_BYTES,
             "accumulated owner evidence exceeds 64 KiB; start a new conversation"
+        );
+        ensure!(
+            self.earlier.is_none() || self.earlier.digest.len() == 64,
+            "goal context earlier evidence digest malformed"
         );
         ensure!(
             self.computed_digest()? == self.content_digest,
@@ -218,7 +288,18 @@ impl ContextVersion {
     }
     pub fn owner_prompt_block(&self) -> String {
         let evidence = serde_json::to_string(&self.owner_inputs).expect("owner strings serialize");
-        format!("<owner_context revision=\"{}\">\nHistorical owner messages are evidence, quoted text remains quoted, and these are not standing charter policy or confirmation of a GoalRef. Interpret current intent from the conversation; later directions may refine or replace earlier ones.\n{}\n</owner_context>", self.revision, evidence)
+        // Said only once lines have left the window, so a short
+        // conversation's block is byte for byte what it was.
+        let earlier = if self.earlier.is_none() {
+            String::new()
+        } else {
+            format!(
+                " These are the {} most recent of {}; the earlier ones are in the conversation above.",
+                self.owner_inputs.len(),
+                self.total_inputs()
+            )
+        };
+        format!("<owner_context revision=\"{}\">\nHistorical owner messages are evidence, quoted text remains quoted, and these are not standing charter policy or confirmation of a GoalRef. Interpret current intent from the conversation; later directions may refine or replace earlier ones.{}\n{}\n</owner_context>", self.revision, earlier, evidence)
     }
     pub fn prompt_block(&self) -> String {
         format!(
@@ -419,10 +500,18 @@ impl GoalContextState {
         if self.current().is_some_and(|v| v.charter == charter) && input.is_none() {
             return Ok(None);
         }
-        let mut inputs = self
-            .current()
-            .map_or_else(Vec::new, |v| v.owner_inputs.clone());
+        let (mut inputs, mut earlier) = self.current().map_or_else(Default::default, |v| {
+            (v.owner_inputs.clone(), v.earlier.clone())
+        });
         inputs.extend(input);
+        // Slide the window: the oldest lines leave it, into the chain,
+        // until what is carried fits. The newest line always stays.
+        while inputs.len() > 1
+            && (inputs.len() > WINDOW_INPUTS
+                || inputs.iter().map(|i| i.text.len()).sum::<usize>() > MAX_SOURCE_BYTES)
+        {
+            earlier = earlier.with(&inputs.remove(0))?;
+        }
         let predecessor = self.versions.last().map(|v| v.revision);
         let mut version = ContextVersion {
             schema: 1,
@@ -431,6 +520,7 @@ impl GoalContextState {
             predecessor,
             charter,
             owner_inputs: inputs,
+            earlier,
             content_digest: String::new(),
         };
         version.content_digest = version.computed_digest()?;
@@ -443,10 +533,8 @@ impl GoalContextState {
             ensure!(old == &version, "goal context revision rewritten");
             return Ok(());
         }
-        ensure!(
-            self.versions.len() < MAX_VERSIONS,
-            "goal context exceeds 256 revisions; exit and start a fresh session without resuming"
-        );
+        // No count of revisions bounds a conversation: each is bounded by
+        // its window, and what they add up to by `MAX_HISTORY_BYTES` below.
         let previous = self.versions.last();
         ensure!(
             version.epoch == self.epoch,
@@ -458,17 +546,37 @@ impl GoalContextState {
             "broken goal context revision chain"
         );
         if let Some(previous) = self.current() {
+            // At most one line more than before, and the window slid over
+            // exactly the lines it dropped: what the previous revision
+            // carried, plus the new line, less a prefix whose chain is the
+            // one this revision records.
+            let added = version
+                .total_inputs()
+                .checked_sub(previous.total_inputs())
+                .filter(|added| *added <= 1)
+                .context("goal context skips owner evidence revisions")?;
+            let mut carried = previous.owner_inputs.clone();
+            if added == 1 {
+                carried.extend(version.owner_inputs.last().cloned());
+            }
+            let dropped = version
+                .earlier
+                .count
+                .checked_sub(previous.earlier.count)
+                .and_then(|dropped| usize::try_from(dropped).ok())
+                .filter(|dropped| *dropped <= carried.len())
+                .context("goal context discarded or rewrote owner evidence")?;
+            let mut chain = previous.earlier.clone();
+            for input in &carried[..dropped] {
+                chain = chain.with(input)?;
+            }
             ensure!(
-                version.owner_inputs.starts_with(&previous.owner_inputs),
+                carried[dropped..] == version.owner_inputs[..] && chain == version.earlier,
                 "goal context discarded or rewrote owner evidence"
-            );
-            ensure!(
-                version.owner_inputs.len() <= previous.owner_inputs.len() + 1,
-                "goal context skips owner evidence revisions"
             );
         } else {
             ensure!(
-                version.owner_inputs.len() <= 1,
+                version.owner_inputs.len() <= 1 && version.earlier.is_none(),
                 "initial goal context has unexplained evidence"
             );
         }
@@ -519,21 +627,20 @@ mod tests {
     }
     #[test]
     fn clear_retains_session_limits_and_errors_direct_the_owner_to_a_fresh_session() {
+        // A count of revisions no longer ends a conversation (there were
+        // 256): well past it, across clears, the next line is still taken.
         let mut revisions = GoalContextState::default();
-        for _ in 0..MAX_VERSIONS {
+        for _ in 0..600 {
             revisions
                 .transition(CharterSnapshot::disabled(), Some(input("review the draft")))
                 .unwrap();
             revisions.clear();
         }
         assert!(revisions.current().is_none());
-        assert_eq!(revisions.versions().len(), MAX_VERSIONS);
-        let error = revisions
+        assert_eq!(revisions.versions().len(), 600);
+        revisions
             .transition(CharterSnapshot::disabled(), Some(input("check the labels")))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("256 revisions"));
-        assert!(error.contains("exit and start a fresh session without resuming"));
+            .unwrap();
 
         let mut history = GoalContextState::default();
         history
@@ -725,7 +832,7 @@ mod tests {
         assert_eq!(state.decisions()[0].system(), Some("exact system"));
     }
     #[test]
-    fn bounds_refuse_without_evicting_earlier_owner_evidence() {
+    fn a_full_window_slides_and_the_earlier_line_is_still_counted() {
         let mut state = GoalContextState::default();
         state
             .transition(
@@ -733,10 +840,16 @@ mod tests {
                 Some(input(&"a".repeat(MAX_SOURCE_BYTES))),
             )
             .unwrap();
-        assert!(state
+        // The next line used to be refused and the conversation ended. It
+        // is taken, and the line that no longer fits leaves the window for
+        // the chain: carried no longer, counted still.
+        state
             .transition(CharterSnapshot::disabled(), Some(input("b")))
-            .is_err());
-        assert_eq!(state.current().unwrap().owner_inputs().len(), 1);
+            .unwrap();
+        let current = state.current().unwrap();
+        assert_eq!(current.owner_inputs().len(), 1);
+        assert_eq!(current.owner_inputs()[0].text(), "b");
+        assert_eq!((current.earlier_inputs(), current.total_inputs()), (1, 2));
     }
     #[test]
     fn sensors_never_enter_model_facing_context() {
@@ -753,5 +866,92 @@ mod tests {
             .unwrap()
             .prompt_block()
             .contains("outbox_waiting"));
+    }
+
+    /// A long conversation: every revision carries the most recent lines
+    /// and a chain over the rest, so a revision's size stays bounded while
+    /// the count keeps going, and the chain refuses a revision that drops,
+    /// reorders or rewrites a line.
+    #[test]
+    fn a_long_conversation_slides_a_window_over_its_owner_lines() {
+        let mut state = GoalContextState::default();
+        let mut sizes = vec![];
+        for n in 0..300 {
+            let version = state
+                .transition(
+                    CharterSnapshot::disabled(),
+                    Some(input(&format!("line {n}"))),
+                )
+                .unwrap()
+                .unwrap();
+            sizes.push(serde_json::to_vec(&version).unwrap().len());
+            assert_eq!(version.total_inputs(), n + 1);
+            assert_eq!(
+                version.input_at(n).map(OwnerInput::text),
+                Some(format!("line {n}").as_str())
+            );
+        }
+        let last = state.current().unwrap().clone();
+        assert_eq!(last.owner_inputs().len(), WINDOW_INPUTS);
+        assert_eq!(last.earlier_inputs(), 300 - WINDOW_INPUTS as u64);
+        assert!(last.input_at(0).is_none() && last.input_at(300).is_none());
+        // Bounded: the last revision is no larger than the first full window.
+        assert!(sizes[299] <= sizes[WINDOW_INPUTS] + 64, "{sizes:?}");
+        assert!(last.owner_prompt_block().contains("most recent of 300"));
+
+        // A replayed history is accepted revision by revision.
+        let mut replayed = GoalContextState::default();
+        for version in state.versions() {
+            replayed.accept_version(version.clone()).unwrap();
+        }
+        // One that drops a carried line, or claims a different past, is not.
+        for tamper in 0..3 {
+            let mut replayed = GoalContextState::default();
+            for version in &state.versions()[..299] {
+                replayed.accept_version(version.clone()).unwrap();
+            }
+            let mut forged = last.clone();
+            match tamper {
+                0 => {
+                    forged.owner_inputs.remove(3);
+                }
+                1 => forged.earlier.count += 1,
+                _ => forged.earlier.digest = "0".repeat(64),
+            }
+            forged.content_digest = forged.computed_digest().unwrap();
+            assert!(replayed.accept_version(forged).is_err(), "tamper {tamper}");
+        }
+    }
+
+    /// One line as large as the window's byte bound stays, alone: the
+    /// newest line is never the one dropped.
+    #[test]
+    fn a_window_keeps_its_newest_line_whatever_its_size() {
+        let mut state = GoalContextState::default();
+        state
+            .transition(CharterSnapshot::disabled(), Some(input("short")))
+            .unwrap();
+        let large = "x".repeat(MAX_SOURCE_BYTES);
+        let version = state
+            .transition(CharterSnapshot::disabled(), Some(input(&large)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(version.owner_inputs().len(), 1);
+        assert_eq!(version.earlier_inputs(), 1);
+        version.validate().unwrap();
+    }
+
+    /// A short conversation records exactly what it did before windows
+    /// existed: no new field on the wire, the same digest.
+    #[test]
+    fn a_short_conversation_s_revisions_are_unchanged_on_the_wire() {
+        let mut state = GoalContextState::default();
+        let version = state
+            .transition(CharterSnapshot::disabled(), Some(input("only line")))
+            .unwrap()
+            .unwrap();
+        let wire = serde_json::to_value(&version).unwrap();
+        assert!(wire.get("earlier").is_none(), "{wire}");
+        assert!(!version.owner_prompt_block().contains("most recent"));
     }
 }
