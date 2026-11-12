@@ -264,6 +264,11 @@ pub(super) struct Walk<'a> {
     pub(super) configured: BTreeSet<String>,
     /// Where the owner's request was found: its line and pointer.
     pub(super) owner: Option<(u64, String)>,
+    /// Lines the owner typed while the turn ran, which the host has
+    /// authenticated as owner inputs and the walk has yet to find; and
+    /// where each one found was: line, pointer, text.
+    steers: Vec<String>,
+    pub(super) steered: Vec<(u64, String, String)>,
     /// Records of this span that carried messages.
     pub(super) messages: usize,
     /// The conversation's messages before this span and the messages this
@@ -307,6 +312,8 @@ impl<'a> Walk<'a> {
             consulted,
             configured: BTreeSet::new(),
             owner: None,
+            steers: vec![],
+            steered: vec![],
             messages: 0,
             earlier: vec![],
             walked: vec![],
@@ -325,6 +332,20 @@ impl<'a> Walk<'a> {
             }
         }
         Ok(())
+    }
+    /// Owner inputs the host authenticated after the turn began: a line
+    /// typed while the model was working is folded into the message that
+    /// carries the tool results, and is the owner's as much as the first.
+    pub(super) fn expect_steers(&mut self, texts: Vec<String>) {
+        self.steers = texts;
+    }
+    /// Take back a steer passage the capture has no owner evidence for.
+    pub(super) fn forget_steer(&mut self, line: u64, pointer: &str) {
+        self.units
+            .retain(|(p, _)| !(p.line == line && p.pointer == pointer));
+        self.steered
+            .retain(|(l, p, _)| !(*l == line && p == pointer));
+        self.intake.unplaced();
     }
     /// A note carried beside the messages.
     pub(super) fn notes(&mut self, notes: &[String]) {
@@ -460,6 +481,18 @@ impl<'a> Walk<'a> {
                     {
                         self.owner =
                             Some(((line + 1) as u64, format!("{base}/content/{index}/text")));
+                        external = self.intake.owner();
+                        call = None;
+                        (PassageKind::UserRequest, "text", text)
+                    } else if let Some(at) = self
+                        .steers
+                        .iter()
+                        .position(|steer| !m.harness && *steer == text)
+                    {
+                        self.steers.remove(at);
+                        let pointer = format!("{base}/content/{index}/text");
+                        self.steered
+                            .push(((line + 1) as u64, pointer, text.clone()));
                         external = self.intake.owner();
                         call = None;
                         (PassageKind::UserRequest, "text", text)

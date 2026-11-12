@@ -3619,3 +3619,146 @@ fn a_web_chat_keeps_the_closed_tool_list() {
     open_config(&f, &s);
     assert!(chat.next_turn_ordinal().is_err());
 }
+
+/// An ordinary web chat is recorded by the open recorder, under its own
+/// version, and a line the owner typed while the turn ran is the owner's:
+/// the host authenticated it as an owner input, and it is stored as one.
+#[test]
+fn an_ordinary_web_chat_is_open_and_a_steer_is_the_owner_s() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    assert!(f
+        .memory()
+        .attach_open_web_chat(&f.session(), ChatAttachMode::Create)
+        .is_err());
+    let mut chat = f
+        .memory()
+        .attach_open_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    assert!(chat.is_open());
+    open_config(&f, &s);
+    let web = |text: &str| OwnerInput::new(OwnerSource::AuthenticatedWeb, text.into()).unwrap();
+    assert!(chat.begin_turn(&s, &web("Start")).is_err());
+    assert!(chat
+        .begin_open_web_turn(
+            &s,
+            &OwnerInput::new(OwnerSource::CliChat, "Start".into()).unwrap()
+        )
+        .is_err());
+    let turn = chat.begin_open_web_turn(&s, &web("Start")).unwrap();
+    let mut history = vec![Message::user("Start")];
+    s.append(&Record::Message(history[0].clone())).unwrap();
+    decide(&s, web("Start"), &history);
+    let asked = Message::assistant(vec![call("a", "shell")]);
+    let mut answered = results(&[("a", "a listing", false)]);
+    answered.content.push(Block::text("Actually, stop there"));
+    history.extend([asked.clone(), answered.clone()]);
+    let mut state = recorded_context(&s);
+    let version = state
+        .transition(
+            CharterSnapshot::disabled(),
+            Some(web("Actually, stop there")),
+        )
+        .unwrap()
+        .unwrap();
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &history,
+        Some(version.prompt_block()),
+        false,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&history)
+    .unwrap();
+    s.append(&Record::GoalContextDecision {
+        binding,
+        versions: vec![version],
+    })
+    .unwrap();
+    for m in [
+        asked,
+        answered,
+        Message::assistant(vec![Block::text("Stopped.")]),
+    ] {
+        s.append(&Record::Message(m)).unwrap();
+    }
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: false,
+    }))
+    .unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let stored: Vec<_> = sealed(&f, &report.run_id)
+        .into_iter()
+        .filter(|(kind, _, _)| kind != "ActionInvocation")
+        .collect();
+    let local = serde_json::json!(false);
+    assert_eq!(
+        stored,
+        [
+            (
+                "UserRequest".to_string(),
+                local.clone(),
+                "Start".to_string()
+            ),
+            (
+                "ToolResult".to_string(),
+                local.clone(),
+                "a listing".to_string()
+            ),
+            (
+                "UserRequest".to_string(),
+                local.clone(),
+                "Actually, stop there".to_string()
+            ),
+            (
+                "AssistantText".to_string(),
+                local.clone(),
+                "Stopped.".to_string()
+            ),
+        ]
+    );
+    let seal = seal_json(&f, &report.run_id);
+    assert_eq!(
+        seal["payload"]["identity"]["check_version"],
+        "ordinary-chat-observation-v5"
+    );
+    assert_eq!(
+        seal["payload"]["chat_context"]["owner_messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    // The same words in a user-role block the host did not authenticate
+    // are not the owner's: the next turn folds them in with no owner input
+    // behind them, and they are left out.
+    let next = chat.begin_open_web_turn(&s, &web("Next")).unwrap();
+    let mut history = Session::read(&s.path).unwrap().convo.messages;
+    history.push(Message::user("Next"));
+    s.append(&Record::Message(Message::user("Next"))).unwrap();
+    decide(&s, web("Next"), &history);
+    let mut delivered = results(&[]);
+    delivered.content = vec![Block::text("Actually, stop there")];
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Working.",
+    )])))
+    .unwrap();
+    s.append(&Record::Message(delivered)).unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: false,
+    }))
+    .unwrap();
+    let report = chat.finish_turn(&next);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let requests: Vec<_> = sealed(&f, &report.run_id)
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "UserRequest")
+        .map(|(_, _, text)| text)
+        .collect();
+    assert_eq!(requests, ["Next"]);
+}

@@ -351,6 +351,7 @@ impl ChatMemoryMarker {
                     | "ordinary-chat-memory-v2"
                     | "ordinary-chat-memory-v3"
                     | "ordinary-chat-memory-v4"
+                    | "ordinary-chat-memory-v5"
                     | "ordinary-chat-task-start-v1"
             ) && !self.conversation_id.is_empty()
                 && self.conversation_id.len() <= 256

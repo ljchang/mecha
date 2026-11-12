@@ -25,6 +25,10 @@ mod tracking;
 pub const CHAT_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v1";
 pub const CHAT_GRAPH_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v2";
 pub const CHAT_WEB_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v3";
+/// An ordinary web chat with memory: the web host's authenticated owner
+/// ingress, recorded by the open recorder. Distinct from v3, which is the
+/// closed profile its own host mode pins.
+pub const CHAT_OPEN_WEB_MEMORY_PROTOCOL: &str = "ordinary-chat-memory-v5";
 /// Error-report tag only. Never accepted as attachment or native marker authority.
 pub const CHAT_MEMORY_UNAVAILABLE_PROTOCOL: &str = "ordinary-chat-memory-unavailable";
 const MAX_TURNS: u64 = 256;
@@ -120,6 +124,7 @@ impl Attachment {
             CHAT_MEMORY_PROTOCOL => CHAT_MEMORY_PROTOCOL,
             CHAT_GRAPH_MEMORY_PROTOCOL => CHAT_GRAPH_MEMORY_PROTOCOL,
             CHAT_WEB_MEMORY_PROTOCOL => CHAT_WEB_MEMORY_PROTOCOL,
+            CHAT_OPEN_WEB_MEMORY_PROTOCOL => CHAT_OPEN_WEB_MEMORY_PROTOCOL,
             CHAT_TASK_MEMORY_PROTOCOL => CHAT_TASK_MEMORY_PROTOCOL,
             _ => unreachable!("attachment protocol authenticated before normalization"),
         }
@@ -134,14 +139,33 @@ impl Attachment {
             None => recording::closed_surface(names),
         }
     }
-    /// An ordinary local chat: whichever tools its configuration gives
-    /// it, recorded however a turn went. The graph, task and web
+    /// An ordinary chat, local or web: whichever tools its configuration
+    /// gives it, recorded however a turn went. The graph, task and v3 web
     /// attachments are closed profiles with a recorder that refuses what
-    /// it does not expect; the web one has a host built on those refusals
-    /// (a stopped turn blocks the conversation until an explicit resume)
-    /// and opens with that host.
+    /// it does not expect; the v3 web one has a host built on those
+    /// refusals (a stopped turn blocks the conversation until an explicit
+    /// resume).
     fn open(&self) -> bool {
-        self.task.is_none() && self.graph_surface.is_none() && self.web_ingress.is_none()
+        self.task.is_none()
+            && self.graph_surface.is_none()
+            && (self.web_ingress.is_none() || self.open_web())
+    }
+    fn open_web(&self) -> bool {
+        self.protocol == CHAT_OPEN_WEB_MEMORY_PROTOCOL
+    }
+    /// The workspace a configuration record names, against this chat's.
+    /// The web server records its producer root, under which each chat has
+    /// its own directory; a local chat records its own.
+    fn configured_in(&self, recorded: &Path) -> Result<bool> {
+        let recorded = recorded.canonicalize()?;
+        if recorded == self.workspace {
+            return Ok(true);
+        }
+        if self.open_web() && self.workspace.starts_with(&recorded) {
+            authority::exclude_workspace(&self.request, &recorded)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
     fn owner_source(&self) -> OwnerSource {
         if self.web_ingress.is_some() {
@@ -160,6 +184,11 @@ impl Attachment {
     fn observation_protocol(&self) -> (&'static str, &'static str) {
         if self.task.is_some() {
             (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION)
+        } else if self.open_web() {
+            (
+                CHAT_OPEN_WEB_OBSERVATION_PROTOCOL,
+                CHAT_OPEN_WEB_RECORDER_VERSION,
+            )
         } else if self.web_ingress.is_some() {
             (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION)
         } else if self.open() {
@@ -195,7 +224,7 @@ impl Attachment {
                 );
                 Ok(serde_json::to_vec(&wire)?)
             }
-            CHAT_WEB_MEMORY_PROTOCOL => {
+            CHAT_WEB_MEMORY_PROTOCOL | CHAT_OPEN_WEB_MEMORY_PROTOCOL => {
                 ensure!(
                     self.graph_surface.is_none(),
                     "web graph authority unsupported"
@@ -377,7 +406,7 @@ fn attachment(a: &Authority, session: &str) -> Result<(Attachment, String)> {
                 .ok_or_else(|| anyhow::anyhow!("chat graph surface missing"))?;
             Some(serde_json::from_value::<ChatGraphSurface>(graph)?)
         }
-        Some(CHAT_WEB_MEMORY_PROTOCOL) => {
+        Some(CHAT_WEB_MEMORY_PROTOCOL | CHAT_OPEN_WEB_MEMORY_PROTOCOL) => {
             ensure!(
                 wire.0.get("graph_surface").is_none(),
                 "web graph authority unsupported"
@@ -595,6 +624,15 @@ impl SessionMemory {
     ) -> Result<ChatMemory> {
         self.attach_chat_protocol(session, mode, None, CHAT_WEB_MEMORY_PROTOCOL)
     }
+    /// Host-only door for an ordinary web chat: the same authenticated
+    /// ingress, recorded by the open recorder.
+    pub fn attach_open_web_chat(
+        self,
+        session: &Session,
+        mode: ChatAttachMode,
+    ) -> Result<ChatMemory> {
+        self.attach_chat_protocol(session, mode, None, CHAT_OPEN_WEB_MEMORY_PROTOCOL)
+    }
     fn attach_chat_protocol(
         self,
         session: &Session,
@@ -603,7 +641,10 @@ impl SessionMemory {
         protocol: &str,
     ) -> Result<ChatMemory> {
         let workspace = self.execution_workspace()?.to_path_buf();
-        let web = protocol == CHAT_WEB_MEMORY_PROTOCOL;
+        let web = matches!(
+            protocol,
+            CHAT_WEB_MEMORY_PROTOCOL | CHAT_OPEN_WEB_MEMORY_PROTOCOL
+        );
         let kind = if web {
             SessionKind::Web
         } else {
@@ -867,6 +908,12 @@ impl ChatMemory {
             graph.validate_tools(names)?;
             authority::exclude_workspace(&self.memory.request, workspace)?;
             Ok(())
+        } else if !self.attachment.open() {
+            // A closed profile in the library as well as in its host: no
+            // grant at all, and the closed tool list.
+            ensure!(grants.is_empty(), "ordinary memory does not support grants");
+            recording::closed_surface(names)?;
+            self.memory.validate_surface(names, workspace, grants)
         } else {
             // A grant that reaches the store or this conversation's
             // transcript is refused; any other is the owner's exception.
@@ -1009,7 +1056,7 @@ impl ChatMemory {
                     Record::Meta(_) | Record::ChatMemory { .. } if last.is_none() => {}
                     Record::Config(c) => {
                         ensure!(
-                            c.workspace.canonicalize()? == a.workspace,
+                            a.configured_in(&c.workspace)?,
                             "chat configuration workspace changed"
                         );
                         a.validate_tools(&c.tools)?;
@@ -1067,6 +1114,19 @@ impl ChatMemory {
             "web turn requires web attachment"
         );
         self.begin_turn_for(session, owner, Some(expected_ordinal))
+    }
+    /// An ordinary web chat's turn. Its host queues and steers as any web
+    /// chat does, so there is no ordinal for a browser to have reserved.
+    pub fn begin_open_web_turn(
+        &mut self,
+        session: &Session,
+        owner: &OwnerInput,
+    ) -> Result<ChatMemoryTurn> {
+        ensure!(
+            self.attachment.open_web(),
+            "open web turn requires an open web attachment"
+        );
+        self.begin_turn_for(session, owner, None)
     }
     pub fn begin_turn(&mut self, session: &Session, owner: &OwnerInput) -> Result<ChatMemoryTurn> {
         ensure!(

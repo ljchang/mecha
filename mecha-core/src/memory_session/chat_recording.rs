@@ -691,7 +691,7 @@ fn capture_open(
         .last()
         .ok_or_else(|| anyhow::anyhow!("chat configuration missing"))?;
     ensure!(
-        config.workspace.canonicalize()? == a.workspace,
+        a.configured_in(&config.workspace)?,
         "chat workspace changed"
     );
     a.validate_tools(&config.tools)?;
@@ -720,6 +720,28 @@ fn capture_open(
     );
     walk.hold(&prior.convo.messages)?;
     walk.configured.extend(config.tools.iter().cloned());
+    // Lines the owner typed while the turn ran: the host authenticates
+    // each as an owner input, and a decision's context version lists it
+    // after the turn's first. Collected before the walk, because the
+    // decision records are written as the requests go out and the
+    // messages after the run.
+    let base = expected_owners.len();
+    let mut steers: Vec<String> = vec![];
+    for r in recording::records(bytes)?.into_iter().skip(start_line) {
+        if let Record::GoalContextDecision { binding, .. } = r {
+            if let Some(version) = transcript.convo.goal_context.version(binding.version()) {
+                let inputs = version.owner_inputs();
+                if inputs.len() > base + steers.len() {
+                    steers.extend(
+                        inputs[base + steers.len()..]
+                            .iter()
+                            .map(|input| input.text().to_string()),
+                    );
+                }
+            }
+        }
+    }
+    walk.expect_steers(steers);
     // As the host adds it: a new message, or a block folded into a tail
     // that already holds tool results.
     let mut history = prior.convo.messages;
@@ -749,10 +771,17 @@ fn capture_open(
                     .goal_context
                     .version(binding.version())
                     .ok_or_else(|| anyhow::anyhow!("chat version unavailable"))?;
+                // The owner inputs so far, and after them only further
+                // lines from the same authenticated ingress.
+                let inputs = version.owner_inputs();
                 ensure!(
-                    version.owner_inputs() == expected_owners,
+                    inputs.starts_with(&expected_owners)
+                        && inputs[expected_owners.len()..]
+                            .iter()
+                            .all(|input| input.source() == a.owner_source()),
                     "chat decision owner changed"
                 );
+                expected_owners = inputs.to_vec();
                 // The history a request sent says what was in front of the
                 // model. One that does not follow from the last by growing
                 // (a compaction, an eviction, a line folded into the tail)
@@ -791,10 +820,7 @@ fn capture_open(
                 }
             }
             Record::Config(c) => {
-                ensure!(
-                    c.workspace.canonicalize()? == a.workspace,
-                    "chat workspace changed"
-                );
+                ensure!(a.configured_in(&c.workspace)?, "chat workspace changed");
                 a.validate_tools(&c.tools)?;
                 walk.configured.extend(c.tools);
             }
@@ -850,6 +876,42 @@ fn capture_open(
         .ok_or_else(|| anyhow::anyhow!("chat owner missing"))?;
     let context = loop {
         let used: BTreeSet<_> = decisions.iter().map(|d| d.context_revision).collect();
+        // Each steer the walk found, against the owner input that backs
+        // it: a kept version that lists it after the turn's own.
+        let mut steer_locators = vec![];
+        let mut unbacked = vec![];
+        for (ordinal, (line, pointer, text)) in walk.steered.iter().enumerate() {
+            let index = base + ordinal;
+            let backing = used.iter().find(|revision| {
+                transcript
+                    .convo
+                    .goal_context
+                    .version(**revision)
+                    .is_some_and(|v| {
+                        v.owner_inputs()
+                            .get(index)
+                            .is_some_and(|input| input.text() == text)
+                    })
+            });
+            match backing {
+                Some(revision) => steer_locators.push(ChatOwnerMessageLocator {
+                    line: *line,
+                    pointer: pointer.clone(),
+                    context_revision: *revision,
+                    owner_input_index: index,
+                }),
+                None => unbacked.push((*line, pointer.clone())),
+            }
+        }
+        if !unbacked.is_empty() {
+            // The decision that listed it was cut from the sidecar, or the
+            // lines arrived in another order: the line stays in the
+            // transcript and is not stored as the owner's.
+            for (line, pointer) in unbacked {
+                walk.forget_steer(line, &pointer);
+            }
+            continue;
+        }
         let first = transcript
             .convo
             .goal_context
@@ -862,12 +924,14 @@ fn capture_open(
             prefix_start: f.prefix_start,
             prefix_length: bytes.len() as u64,
             prefix_digest: digest(bytes),
-            owner_messages: vec![ChatOwnerMessageLocator {
+            owner_messages: std::iter::once(ChatOwnerMessageLocator {
                 line: owner_line,
                 pointer: owner_pointer.clone(),
                 context_revision: first.revision(),
-                owner_input_index: first.owner_inputs().len() - 1,
-            }],
+                owner_input_index: base - 1,
+            })
+            .chain(steer_locators)
+            .collect(),
             versions: used
                 .iter()
                 .map(|revision| {
