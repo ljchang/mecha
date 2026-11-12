@@ -12725,7 +12725,18 @@ The things that decide the design:
   recovered on the next turn, after boredom's first notice named the
   repeat. So both of boredom's notices reach the model before the stop, and
   persona chats now carry boredom from the base config rather than
-  switching it off. For **both** triggers, a call the harness refused this
+  switching it off. **The persona door ends it at three**
+  (`Agent::with_refused_repeats`, held to `LoopGuard::FEWEST_REPEATS`): the
+  notices did not turn its runs around. On 2026-11-10 one refused picture
+  call was resent 31 times across three runs, each stopped at the seventh
+  with both notices read, 25 of the calls byte-identical to the one before.
+  At three the stop arrives with boredom's first notice and before its
+  second; one retry is still allowed, since a second identical failure is
+  what a server mid-restart looks like. The count keys on the error's text,
+  which an outage repeats as exactly as a deterministic refusal does, so
+  **a persona's `Loop` can mean the image server was down for three tries,
+  not that the model was stuck**; nothing in the result separates the two
+  yet. Every other door keeps seven. For **both** triggers, a call the harness refused this
   turn (the approver, a hook, a policy, the interlock: `denied` in the
   trace) never counts, because appraisal scores `Loop` against the run and
   a well-defended run must not read as a stuck one. A call refused once and

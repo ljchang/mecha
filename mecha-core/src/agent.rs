@@ -2047,6 +2047,15 @@ pub fn owner_text(message: &Message) -> String {
 /// cannot be a poll the way a changing result is: the answer did not move,
 /// and neither did the call. A call the harness refused — the approver, a
 /// hook, a policy, the interlock — never counts: that is the harness working.
+///
+/// **A door may end it sooner** (`Agent::with_refused_repeats`), and the
+/// persona door does, at [`Self::FEWEST_REPEATS`]: its runs are measured not
+/// to recover (31 resends across three runs, 2026-11-10, each stopped at the
+/// seventh with both notices read), so there the stop comes with boredom's
+/// first notice and before its second. The count keys on the error's text,
+/// which a server that is down also repeats byte for byte, so a persona's
+/// `Loop` can mean an outage that outlasted one retry, not only a stuck
+/// model.
 struct LoopGuard {
     enabled: bool,
     armed: bool,
@@ -2054,6 +2063,10 @@ struct LoopGuard {
     /// Errored call-and-result digests, with how many consecutive turns each
     /// has come back in. A turn without one ends its streak.
     refused: std::collections::HashMap<u64, u32>,
+    /// How many such turns end the run: [`Self::REFUSED_REPEATS`] unless
+    /// the agent was given its own (`Agent::with_refused_repeats`), set
+    /// only through [`Self::ending_after`].
+    refused_repeats: u32,
 }
 
 impl LoopGuard {
@@ -2074,7 +2087,28 @@ impl LoopGuard {
             armed: false,
             recent: std::collections::VecDeque::new(),
             refused: std::collections::HashMap::new(),
+            refused_repeats: Self::REFUSED_REPEATS,
         }
+    }
+
+    /// The fewest identical failures in a row that may end a run: the
+    /// first is a failure, the second is a retry (an outage that clears, a
+    /// server mid-restart), and the third is the same call sent a third time
+    /// to the same answer. Below this the guard would end a run on one
+    /// ordinary retry, or at zero on any error at all.
+    const FEWEST_REPEATS: u32 = 3;
+
+    fn floor(turns: u32) -> u32 {
+        turns.max(Self::FEWEST_REPEATS)
+    }
+
+    /// This guard, ending a refused repeat after `turns` consecutive turns
+    /// in place of [`Self::REFUSED_REPEATS`], never fewer than
+    /// [`Self::FEWEST_REPEATS`]: the one way the count is set, so the floor
+    /// holds wherever it is.
+    fn ending_after(mut self, turns: u32) -> Self {
+        self.refused_repeats = Self::floor(turns);
+        self
     }
 
     fn arm(&mut self) {
@@ -2120,7 +2154,7 @@ impl LoopGuard {
             .into_iter()
             .map(|d| (d, prior.get(&d).copied().unwrap_or(0) + 1))
             .collect();
-        self.refused.values().any(|&n| n >= Self::REFUSED_REPEATS)
+        self.refused.values().any(|&n| n >= self.refused_repeats)
     }
 
     fn digest(name: &str, input: &Value, result: &str) -> u64 {
@@ -2329,6 +2363,9 @@ pub struct Agent {
     /// Whether reasoning from before the turn being answered goes back to
     /// the model. Kept unless a driver says otherwise; see [`PriorThinking`].
     prior_thinking: PriorThinking,
+    /// Consecutive turns one identical call may fail identically before the
+    /// run ends (`LoopGuard::REFUSED_REPEATS` unless a door sets its own).
+    refused_repeats: u32,
     /// Whether earlier replies that stop mid-sentence go back to the model
     /// as they are. Kept unless a driver says otherwise; see [`PriorTails`].
     prior_tails: PriorTails,
@@ -2394,6 +2431,7 @@ impl Agent {
             cache_contended: false,
             clock: Arc::new(crate::clock::SystemClock),
             prior_thinking: PriorThinking::Keep,
+            refused_repeats: LoopGuard::REFUSED_REPEATS,
             prior_tails: PriorTails::Keep,
             prior_nudges: PriorNudges::Keep,
             code: None,
@@ -2412,6 +2450,18 @@ impl Agent {
     /// default). The transcript records it either way.
     pub fn with_prior_thinking(mut self, prior: PriorThinking) -> Self {
         self.prior_thinking = prior;
+        self
+    }
+
+    /// End a run once one identical call has failed identically in this
+    /// many consecutive turns, in place of the default seven
+    /// (`LoopGuard::REFUSED_REPEATS`), which waits for both of boredom's
+    /// notices. For a door whose runs are measured not to recover: a persona
+    /// chat resent one refused picture call 31 times across three runs, each
+    /// stopped at the seventh with both notices read (2026-11-10). Held to
+    /// the guard's floor (`LoopGuard::ending_after`).
+    pub fn with_refused_repeats(mut self, turns: u32) -> Self {
+        self.refused_repeats = LoopGuard::floor(turns);
         self
     }
 
@@ -3158,7 +3208,7 @@ impl Agent {
         // from the conversation, so a run's first request is judged against
         // the last run's final one; a surface that honestly differs across
         // runs is a verdict (`SurfaceChanged`), never a warning.
-        let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
+        let mut loop_guard = LoopGuard::new(self.cfg.loop_guard).ending_after(self.refused_repeats);
         let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
         // See `MAX_STEP_ESCALATIONS_PER_RUN`. Both carried into `RunOutcome`
         // via `emit_done`, on `boredom_notices`'s own argument: a mechanism
@@ -4138,7 +4188,7 @@ impl Agent {
                             }),
                     ) {
                         tracing::warn!(
-                            repeats = LoopGuard::REFUSED_REPEATS,
+                            repeats = self.refused_repeats,
                             "one call refused identically, turn after turn; stopping"
                         );
                         loop_detected = true;
@@ -17886,6 +17936,68 @@ justification = "echo is off on this box"
         );
         assert_eq!(outcome.stop_cause, StopCause::Loop);
         assert_eq!(outcome.tool_calls.len(), n + 1);
+    }
+
+    /// A door may end such a run sooner (`Agent::with_refused_repeats`): a
+    /// persona's stops at the third, and nothing sets fewer, since a second
+    /// identical failure is one ordinary retry (review of #869).
+    #[test]
+    fn a_door_may_end_a_refused_repeat_sooner_and_never_before_the_third() {
+        let fire = |repeats: u32, turns: usize| {
+            let mut g = LoopGuard::new(true).ending_after(repeats);
+            (0..turns)
+                .map(|_| g.observe_refusals([7u64]))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fire(3, 4), [false, false, true, true]);
+        // Zero, one and two are all held to the floor: zero never means
+        // "any error ends the run".
+        for under in [0, 1, 2] {
+            assert_eq!(fire(under, 3), [false, false, true], "asked for {under}");
+        }
+        assert_eq!(fire(5, 5), [false, false, false, false, true]);
+        // A different failure between two ends the streak.
+        let mut g = LoopGuard::new(true).ending_after(3);
+        for digest in [7u64, 7, 8, 7, 7] {
+            assert!(!g.observe_refusals([digest]));
+        }
+        assert!(g.observe_refusals([7u64]));
+    }
+
+    /// The same through a run: the third identical failure ends it as a
+    /// loop, with the closing reply, where the default would have sent four
+    /// more; one retry short of that is still the model's to work out.
+    #[tokio::test]
+    async fn a_run_given_three_ends_at_the_third_identical_failure() {
+        let mut turns = refused_calls(LoopGuard::REFUSED_REPEATS as usize);
+        turns.insert(
+            3,
+            assistant(
+                vec![Block::text("I couldn't draw it.")],
+                StopReason::EndTurn,
+            ),
+        );
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        // The builder holds the floor too.
+        let agent = agent.with_refused_repeats(1);
+        assert_eq!(agent.refused_repeats, LoopGuard::FEWEST_REPEATS);
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_cause, StopCause::Loop);
+        assert_eq!(outcome.tool_calls.len(), 3);
+        assert_eq!(outcome.text, "I couldn't draw it.");
+
+        // Two identical failures and then an answer: a retry, not a loop.
+        let mut turns = refused_calls(2);
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.registry_mut().insert(Arc::new(Refuse));
+        let agent = agent.with_refused_repeats(3);
+        let mut convo = Conversation::user("draw yourself");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_cause, StopCause::Completed);
+        assert_eq!(outcome.text, "done");
     }
 
     #[test]

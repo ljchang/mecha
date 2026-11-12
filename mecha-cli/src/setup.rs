@@ -2850,6 +2850,11 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
         .ok()
 }
 
+/// How many consecutive turns a persona's run may get one identical failure
+/// to one identical call before it ends (`Agent::with_refused_repeats`):
+/// the guard's floor, which leaves room for one retry.
+const PERSONA_REFUSED_REPEATS: u32 = 3;
+
 /// The embeddings client `file_search` and the persona file index use:
 /// `[documents] embed_url` (default `:8081`), where a `[documents]` table
 /// is configured. Without one, or with a URL refused, search works by words
@@ -2953,6 +2958,11 @@ pub fn persona_agent(
     // A persona answers the turn in front of it from what was said, not
     // from its own earlier plans, which it otherwise re-reads and re-sends.
     .with_prior_thinking(mecha_core::message::PriorThinking::Drop)
+    // A persona that keeps sending one failed call, unchanged, does not
+    // find its way out: after one retry the third identical failure ends
+    // the run, so the owner hears of it instead of waiting through four
+    // more (`Agent::with_refused_repeats`).
+    .with_refused_repeats(PERSONA_REFUSED_REPEATS)
     // Nor from earlier replies cut off mid-sentence, which it otherwise
     // learns to write: "…\n\nI", spoken as a dangling word.
     .with_prior_tails(mecha_core::message::PriorTails::Trim)
@@ -3501,6 +3511,29 @@ mod tests {
             "a tool was added to or removed from the persona's own store; \
              check it goes through `admit_own` and bump the count"
         );
+    }
+
+    /// The persona door is where a run of identical failures ends sooner
+    /// (`Agent::with_refused_repeats`), and that one line is the whole
+    /// behaviour: the guard and the builder are tested in `agent.rs`, which
+    /// builds its own agent, so deleting the line here left every test
+    /// green (review of #869). Read from the source, as the admit check
+    /// above is.
+    #[test]
+    fn persona_agent_ends_a_refused_repeat_sooner() {
+        let src = include_str!("setup.rs");
+        let start = src
+            .find("pub fn persona_agent(")
+            .expect("persona_agent is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("persona_agent ends")];
+        assert!(
+            body.contains(".with_refused_repeats(PERSONA_REFUSED_REPEATS)"),
+            "persona_agent no longer sets its own count of identical failures"
+        );
+        // Three: one retry, then the stop. Fewer is held to the guard's
+        // floor anyway; more gives back the resends this was added to end.
+        assert_eq!(super::PERSONA_REFUSED_REPEATS, 3);
     }
 
     /// A routed name under a server that did not start is that server
