@@ -5796,7 +5796,12 @@ impl Tool for ImageGenerate {
                         ctx.image_trail.as_deref(),
                     )
                     .await;
-                seg_left = left;
+                if let Some(left) = left {
+                    seg_left = Some(match seg_left.take() {
+                        Some(before) => format!("{before}; {left}"),
+                        None => left,
+                    });
+                }
                 let drawn = match image {
                     Ok(bytes) => bytes,
                     Err(Failure::Cancelled) => {
@@ -5889,7 +5894,12 @@ impl Tool for ImageGenerate {
                                 ctx.image_trail.as_deref(),
                             )
                             .await;
-                        seg_left = left;
+                        if let Some(left) = left {
+                            seg_left = Some(match seg_left.take() {
+                                Some(before) => format!("{before}; {left}"),
+                                None => left,
+                            });
+                        }
                         match got {
                             Err(Failure::Cancelled) => {
                                 seg_cancelled = true;

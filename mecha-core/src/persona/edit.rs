@@ -721,11 +721,14 @@ pub fn read_extraction_for(
             // (review of #758, passes 1 and 2). Past the cap even so, the ask
             // alone. The first clause is the shot whatever word it opens with
             // ("zoom in through John's eyes"): a move is only ever appended
-            // (pass 6), and one asked twice is said once.
+            // (pass 6), and one asked twice is said once. A first clause that
+            // is nothing but a move (what the record holds after a move asked
+            // of a picture with no camera) is a move like the rest: kept, the
+            // next one sat beside it for good (pass 9).
             let mut clauses = old.trim_end_matches(['.', ',']).split(", ");
             let shot: Vec<&str> = clauses
                 .next()
-                .filter(|first| !first.eq_ignore_ascii_case(new.trim()))
+                .filter(|first| !first.eq_ignore_ascii_case(new.trim()) && !bare_move(first))
                 .into_iter()
                 .chain(clauses.filter(|clause| !relative_camera(clause)))
                 .collect();
@@ -1155,6 +1158,26 @@ fn relative_camera(camera: &str) -> bool {
     })
 }
 
+/// Whether a camera clause is a move and nothing else ("a touch nearer",
+/// "pull back a little"): every word a move's. "Zoom in through John's
+/// eyes" opens with one and is a shot.
+fn bare_move(clause: &str) -> bool {
+    relative_camera(clause)
+        && clause
+            .to_lowercase()
+            .split(|c: char| !c.is_alphabetic())
+            .filter(|w| !w.is_empty())
+            .all(|w| {
+                [
+                    "a", "just", "and", "now", "then", "please", "zoom", "zoomed", "closer",
+                    "further", "farther", "wider", "tighter", "pull", "pulled", "push", "pushed",
+                    "move", "bit", "little", "slightly", "touch", "nearer", "in", "out", "back",
+                    "away", "forward", "more", "much", "the", "camera",
+                ]
+                .contains(&w)
+            })
+}
+
 /// One painted region from the edit panel: its colour, its words, and a
 /// picture the owner dropped on it (uploaded to the chat's `inbox/` first),
 /// whose face, or look, the region takes.
@@ -1514,6 +1537,8 @@ mod tests {
                 "pull back to John's first-person view, a touch wider",
             ),
             ("a touch nearer", "a touch nearer", "a touch nearer"),
+            // The record holds only a move: the next one takes its place.
+            ("a touch nearer", "pull back a little", "pull back a little"),
         ] {
             let record = crate::scene::Scene {
                 camera: Some(crate::scene::Field {

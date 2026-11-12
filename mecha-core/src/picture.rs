@@ -1075,7 +1075,17 @@ pub fn first_person_holder(camera: &str, names: &[String], owner: Option<&str>) 
         .iter()
         .find(|n| w.iter().any(|t| *t == format!("{n}'s")))
         .cloned()
-        .or_else(|| owner.map(str::to_string))
+        .or_else(|| {
+            // Only an unowned first person is the owner's: a possessive the
+            // library cannot back ("through Dave's eyes", someone described
+            // or not yet approved) names another's eyes, and the owner's
+            // character taken for them was left out of a picture they were
+            // in (review of #758, pass 9).
+            let other = w
+                .iter()
+                .any(|t| t.ends_with("'s") && !names.iter().any(|n| *t == format!("{n}'s")));
+            owner.filter(|_| !other).map(str::to_string)
+        })
 }
 
 /// Whether words name a shot rather than a look: framing, distance or
@@ -2583,6 +2593,15 @@ mod tests {
             Some("john")
         );
         assert_eq!(first_person_holder("a wide shot", &n(&[]), owner), None);
+        // Someone the library does not hold: their eyes, never the owner's.
+        assert_eq!(
+            first_person_holder("through Dave's eyes", &n(&[]), owner),
+            None
+        );
+        assert_eq!(
+            first_person_holder("Dave's first-person view of John", &n(&["john"]), owner),
+            None
+        );
     }
 
     /// Owner, 2026-10-28: someone whose own eyes the camera is, listed in
