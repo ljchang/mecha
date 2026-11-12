@@ -5,7 +5,9 @@
 //! record; a turn that memory cannot begin or capture is passed over and
 //! the conversation goes on. The registry is shared by every conversation,
 //! so the recall tool in it is a router that answers each call with the
-//! reader bound to the conversation's own workspace.
+//! reader bound to the call's `ToolCtx::conversation`, never its
+//! workspace, which a resumed conversation shares with the chat its
+//! directory was first made for.
 use anyhow::{Context, Result};
 use mecha_core::{
     goal_context::OwnerInput,
@@ -87,14 +89,19 @@ impl OrdinaryMemory {
     /// Before a turn starts: a grant that reaches the store, its key or
     /// the transcript refuses the turn itself, since the next tool call
     /// could read or rewrite them.
+    ///
+    /// Only a verdict on a grant refuses. Memory that cannot be consulted
+    /// at all is no verdict: that turn runs unremembered like any other
+    /// memory failure, since `begin` will fail on the same lock.
     pub(super) fn grants_may_run(&self, session: &Session, grants: &[Grant]) -> Result<()> {
-        match self.chat(session) {
-            Some(chat) => chat
-                .lock()
-                .map_err(|_| anyhow::anyhow!("web memory unavailable"))?
-                .validate_grants(grants),
-            None => Ok(()),
-        }
+        let Some(chat) = self.chat(session) else {
+            return Ok(());
+        };
+        let Ok(memory) = chat.lock() else {
+            tracing::warn!(session = %session.meta.id, "web memory unavailable; this turn will not be remembered");
+            return Ok(());
+        };
+        memory.validate_grants(grants)
     }
     /// A conversation the server has closed or forgotten: its attachment,
     /// lease and store handle go with it, so another process may attach.

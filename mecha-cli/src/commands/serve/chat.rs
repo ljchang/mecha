@@ -406,7 +406,7 @@ impl ChatState {
         )
         .await
     }
-    /// As [`ChatState::build`], with memory for ordinary chats: every
+    /// The chat state, with memory for ordinary chats when asked: every
     /// agent the follower builds carries the recall router, so the tool
     /// list is the same whichever conversation a request is for.
     pub async fn build_remembering(
@@ -3403,13 +3403,20 @@ fn begin_turn(
             if let Err(error) = memory.grants_may_run(session, &grants) {
                 ws.conversation = Some(conversation);
                 return Err(TurnError::Failed(format!(
-                    "{error:#}: revoke the grant that reaches the memory store, then send again"
+                    "this conversation's grants could not be cleared against the memory \
+                     store ({error:#}); revoke the grant it names, then send again"
                 )));
             }
             memory.begin(session, key, owner_inputs.first())
         }
         _ => None,
     };
+    // From here to the run's task, an early return leaves this turn begun
+    // and never sealed. That is safe as it stands: the next turn passes it
+    // over, and `begin` releases the reader before binding another. A
+    // return added below that could be followed by a *run* in this
+    // conversation without another `begin` would leave a stale reader
+    // answering for it.
     // Folded, not pushed, when the tail is already a user message — a
     // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
     // resubmits through here) leaves the conversation ending on the user

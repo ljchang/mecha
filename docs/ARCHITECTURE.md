@@ -13247,8 +13247,14 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   turn. Not its workspace: a resumed conversation keeps its recorded
   workspace under a new key, so two live chats can share one directory,
   and a router keyed by it had each releasing the other's reader (review
-  of #866; the 2026-10-18 `ask_user` routing bug restated). A turn
-  with no reader bound gets a tool error it can go on from. **A
+  of #866; the 2026-10-18 `ask_user` routing bug restated). The
+  router replaces the plain `goal_context` builtin in the registry
+  (`Registry::insert` keys on the name), for every conversation the agent
+  serves and not only the remembered ones, so with no reader bound it
+  answers as that builtin does, the confirmed goal and its lessons, and
+  only a request for memory itself is told there is none. Before that a
+  board task, a spoken turn and any turn whose memory could not begin
+  lost the goal tool on a remembering server (review of #866). **A
   configuration record names the producer root**, an ancestor of each
   chat's workspace, where a terminal chat's names its own
   (`Attachment::configured_in`, which holds that ancestor to what the

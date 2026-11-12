@@ -727,7 +727,9 @@ fn capture_open(
     // messages after the run.
     let base = expected_owners.len();
     let mut steers: Vec<String> = vec![];
-    for r in recording::records(bytes)?.into_iter().skip(start_line) {
+    // Parsed once for both passes.
+    let span = recording::records(bytes)?;
+    for r in span.iter().skip(start_line) {
         if let Record::GoalContextDecision { binding, .. } = r {
             if let Some(version) = transcript.convo.goal_context.version(binding.version()) {
                 let inputs = version.owner_inputs();
@@ -755,11 +757,7 @@ fn capture_open(
     // the harness's verdict on everything before it, and a record appended
     // after it is something that verdict never saw.
     let mut settled = false;
-    for (line, r) in recording::records(bytes)?
-        .into_iter()
-        .enumerate()
-        .skip(start_line)
-    {
+    for (line, r) in span.into_iter().enumerate().skip(start_line) {
         settled = matches!(r, Record::Taint(_));
         match r {
             Record::Meta(_) | Record::ChatMemory { .. } => {

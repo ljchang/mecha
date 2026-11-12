@@ -96,11 +96,20 @@ impl Tool for RecallRouter {
         });
         match reader {
             Some(reader) => reader.call(input, ctx).await,
-            // A conversation with no memory attached, or a turn its memory
-            // could not begin. Said to the model, which can go on without.
-            None => Ok(ToolOutput::err(
+            // A conversation with no memory attached (a task's, a spoken
+            // turn), or a turn its memory could not begin. This entry
+            // stands in the registry where the plain goal tool was, for
+            // every conversation the agent serves, so it answers as that
+            // tool would: the confirmed goal and its lessons. Only a
+            // request for memory itself is told there is none.
+            None if input.get("memory").is_some() => Ok(ToolOutput::err(
                 "No memory is attached to this turn; nothing can be recalled.",
             )),
+            None => {
+                crate::tool::goal_context::GoalContext
+                    .call(input, ctx)
+                    .await
+            }
         }
     }
 }
@@ -176,10 +185,29 @@ mod tests {
             asked(&router, Some("r-second"), &dir).await,
             "second's memory"
         );
+        // With nothing bound, a request for memory is told there is none,
+        // and any other request is answered as the plain goal tool answers
+        // it: this entry replaced that tool for every conversation.
         for unbound in [Some("first"), Some("third"), None] {
-            assert!(asked(&router, unbound, &dir)
+            let mut ctx = ToolCtx {
+                workspace: dir.clone(),
+                ..Default::default()
+            };
+            ctx.conversation = unbound.map(str::to_string);
+            let recall = router
+                .call(serde_json::json!({"memory": {"query": "x"}}), &ctx)
                 .await
-                .contains("No memory is attached"));
+                .unwrap();
+            assert!(recall.is_error && recall.content.contains("No memory is attached"));
+            let plain = crate::tool::goal_context::GoalContext
+                .call(serde_json::json!({}), &ctx)
+                .await
+                .unwrap();
+            let routed = router.call(serde_json::json!({}), &ctx).await.unwrap();
+            assert_eq!(
+                (routed.content, routed.is_error),
+                (plain.content, plain.is_error)
+            );
         }
     }
 
