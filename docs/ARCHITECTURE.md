@@ -13178,10 +13178,22 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   whole calls, because admission requires a receipt for every invocation and
   an invocation for every receipt (`recording::fit`). The bounds were 16
   passages and 32 KiB, which refused any run of more than about seven
-  calls. `host_capture::validate` is shared, so the same bounds now apply to
-  a chat turn's capture and to the trial paths' admission; the chat
-  recorder's own limits (128 messages, 32 calls, whole passages only) and
-  the trial bridge's sixteen-passage check are unchanged. The learning inventory (`learning_run_sources`) still lists at
+  calls. `host_capture::validate` and `validate_ordinary` are shared, so a
+  chat turn's capture moved in all four dimensions too (passages 16 to 256,
+  receipts 32 to 256, payload 32 KiB to 1 MiB, dependencies 64 to
+  `MAX_CONSULTED`), and the trial paths' admission got the payload
+  ceiling. The chat recorder's own walk still stops at 128 messages and
+  32 calls and stores whole passages only, and the trial bridge keeps its
+  sixteen-passage check. **These bounds are larger than dense recall's
+  corpus.** `hybrid` embeds the whole eligible store per invocation and
+  refuses past 256 records or 256 KiB (`HybridFallback::CorpusBounds`),
+  falling back to lexical ranking; one large run now exceeds that, where
+  it used to take about sixteen. Only the trial workflow and the native
+  recall route (`goal_memory_recall`) have a dense half; an ordinary
+  session's `goal_context` ranks lexically whatever the store's size. A
+  `CorpusBounds` fallback is therefore a property of that design, not a
+  symptom of a damaged store, and lifting it means a stored index rather
+  than a larger constant. The learning inventory (`learning_run_sources`) still lists at
   most sixteen passages of a run.
 
 - **Operational tasks have a typed authority boundary inside the memory store.**

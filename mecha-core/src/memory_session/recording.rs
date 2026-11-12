@@ -318,6 +318,10 @@ pub(super) fn capture(
             // A deferred tool's result, delivered after its turn. The record
             // says where its bytes came from, so it taints what follows as
             // any result does; the bytes themselves are not a passage yet.
+            // Nothing writes this into a one-shot's transcript today: both
+            // writers are the server's, and each follows it with a second
+            // taint record this walk still refuses. The arm is here for
+            // the chat recorder, which shares this rule.
             Record::LateResult { external, .. } => {
                 intake.result(Some(external));
             }
