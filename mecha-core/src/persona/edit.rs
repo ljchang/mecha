@@ -1449,10 +1449,6 @@ mod tests {
             .is_none());
     }
 
-    /// A shot filed as a look is the camera's: moved there when the answer
-    /// gave no camera, dropped beside one that did, and a framing look an
-    /// earlier reading joined to the setting comes off it. A real look is
-    /// untouched (owner, 2026-10-27).
     /// A panel fact gives back the call the harness dispatched, and only a
     /// scene change is one: what a replay runs again for a panel turn.
     #[test]
@@ -1490,6 +1486,10 @@ mod tests {
         );
     }
 
+    /// A shot filed as a look is the camera's: moved there when the answer
+    /// gave no camera, dropped beside one that did, and a framing look an
+    /// earlier reading joined to the setting comes off it. A real look is
+    /// untouched (owner, 2026-10-27).
     #[test]
     fn a_shot_filed_as_a_look_is_the_camera() {
         let known = |_: &str| true;

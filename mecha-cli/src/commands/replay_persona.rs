@@ -1000,7 +1000,10 @@ impl Sampler {
             build_on: None,
             owner: &branch.owner,
             history: &branch.messages,
-            panel: false,
+            // As the turn ran: a panel turn had no scene reader, and a
+            // replay that stamped one would redraw the recorded change
+            // with a second reading merged in (review of #870).
+            panel: branch.panel,
             spoken: branch.spoken,
             notes: branch.notes.clone(),
             persona: self.persona.clone(),
@@ -1281,6 +1284,7 @@ mod tests {
             }),
             calendar: None,
             call: None,
+            panel: false,
         };
         let (names, got) = recorded_tools_of(&branch(Some(&hash)), Some(&hash)).unwrap();
         assert_eq!(names, ["widget"]);
@@ -1482,5 +1486,21 @@ mod tests {
         private_file(&dir.join("made").join("c3.jsonl")).unwrap();
         assert_eq!(mode(&dir.join("made")), 0o700);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+    /// A panel turn is replayed as it ran, with no scene reader: the sampler
+    /// hands the branch's `panel` to the turn. Read from the source, since
+    /// the sampler needs a provider to run and nothing else reaches this
+    /// line: with `panel: false` here every panel replay merged a second
+    /// reading into the recorded change (review of #870).
+    #[test]
+    fn a_panel_branch_is_sampled_as_a_panel_turn() {
+        let src = include_str!("replay_persona.rs");
+        let start = src.find("async fn sample(").expect("the sampler is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n    }\n").expect("the sampler ends")];
+        assert!(
+            body.contains("panel: branch.panel,"),
+            "the sampler no longer hands the branch's panel flag to the turn"
+        );
     }
 }

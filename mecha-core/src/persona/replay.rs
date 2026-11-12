@@ -68,6 +68,10 @@ pub struct Branch {
     /// A branch inside the turn's run, after the batch holding its `n`th
     /// tool call (1-based): [`branch_at_call`].
     pub call: Option<usize>,
+    /// The turn was sent from the picture edit panel: the harness drew its
+    /// change and no scene reader was stamped for it, so a replay of it
+    /// stamps none either (`persona::turn::Turn::panel`).
+    pub panel: bool,
 }
 
 /// The calendar reference recorded for the run that a turn at `index` began:
@@ -377,6 +381,7 @@ fn branch(path: &Path, text: &str, line: usize, panel: bool) -> Result<Branch> {
     taint.arm_for_notes(&notes);
     Ok(Branch {
         call: None,
+        panel: is_panel_turn(&lines, index),
         calendar: calendar_after(&lines, index),
         line,
         spoken: notes.iter().any(|n| super::call::is_note(n)),
@@ -405,7 +410,7 @@ pub fn recorded_call(path: &Path, text: &str, line: usize, call: usize) -> Resul
         let input = panel_call(text, line).with_context(|| {
             format!(
                 "the panel turn at line {line} drew no scene change (a redraw, a retouch, \
-                 or one not understood), so there is no call to run again"
+                 painted regions, or one not understood), so there is no call to run again"
             )
         })?;
         return Ok(("image_generate".to_string(), input));
@@ -1600,6 +1605,8 @@ mod tests {
             "{why}"
         );
         let b = branch_at_panel(path, &text, 4).unwrap();
+        assert!(b.panel, "a replay of it stamps no scene reader");
+        assert!(!branch_at_panel(path, &text, 2).unwrap().panel);
         assert_eq!(b.owner, "closer, from the side");
         assert_eq!(
             b.messages.len(),
