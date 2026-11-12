@@ -28,6 +28,9 @@ ROOT.mkdir(parents=True, exist_ok=False)
 OWNER = 'fixture-owner@example.invalid'
 LOCK = threading.Lock()
 REQUESTS, QUEUE, ERRORS = [], [], []
+# Cleared to hold the provider's answer while a line is typed mid-run.
+RELEASE = threading.Event()
+RELEASE.set()
 
 
 def tool(name, arguments, call_id):
@@ -53,6 +56,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     self.send_error(500)
                     return
                 message = QUEUE.pop(0)
+            RELEASE.wait(timeout=30)
             finish = 'tool_calls' if 'tool_calls' in message else 'stop'
             chunk = {'id': 'fixture', 'model': body['model'], 'choices': [{'index': 0, 'delta': message, 'finish_reason': finish}], 'usage': {'prompt_tokens': 20, 'completion_tokens': 10, 'total_tokens': 30}}
             data = ('data: ' + json.dumps(chunk) + '\n\ndata: [DONE]\n\n').encode()
@@ -194,18 +198,40 @@ def turn(serve, key, text, script, expect):
 FIRST = 'Remember that the authored handoff code is coral.'
 SECOND = 'What was the handoff code? Check memory.'
 THIRD = 'And once more after the restart.'
+STEERED = 'List the directory for the handoff.'
+STEER = 'Actually, keep the answer short.'
 try:
     serve = Serve('first')
     try:
         turn(serve, 'fixture', FIRST, [tool('fs_list', {'path': '.'}, 'list_1'), final('Noted: coral.')], 1)
         turn(serve, 'fixture', SECOND, [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_2'), final('The code is coral.')], 2)
+        # A line typed while the model is working: the first request is held
+        # at the provider, the second send steers the live run, and both
+        # lines are stored as the owner's in the one turn.
+        RELEASE.clear()
+        with LOCK:
+            QUEUE.extend([tool('fs_list', {'path': '.'}, 'list_3'), final('Kept short.')])
+        held = len(REQUESTS)
+        status, body = serve.request('/api/chat/fixture/send', {'text': STEERED, 'request_id': 's1'})
+        assert status == 200, (status, body)
+        wait_for(lambda: len(REQUESTS) == held + 1)
+        status, body = serve.request('/api/chat/fixture/send', {'text': STEER, 'request_id': 's2'})
+        assert status == 200, (status, body)
+        RELEASE.set()
+        wait_for(lambda: len(retained()) == 3)
+        with LOCK:
+            assert not QUEUE and not ERRORS, (QUEUE, ERRORS)
+        steered = seals()[2]
+        owners = [(o['text'], o['external']) for o in steered['originals'] if o['kind'] == 'UserRequest']
+        assert owners == [(STEERED, False), (STEER, False)], owners
+        assert len(steered['chat_context']['owner_messages']) == 2
         [transcript] = transcripts()
         recorded = rows(transcript)
         session_id = recorded[0]['id']
         markers = [r for r in recorded if r['record'] == 'chat_memory']
         assert len(markers) == 1 and markers[0]['marker']['protocol'] == 'ordinary-chat-memory-v5', markers
         assert recorded[1]['record'] == 'chat_memory', 'memory attaches before the configuration record'
-        first, second = seals()
+        first, second = seals()[:2]
         for index, payload in enumerate((first, second)):
             assert payload['identity']['check_version'] == 'ordinary-chat-observation-v5', payload['identity']
             assert payload['chat_context']['turn_ordinal'] == index + 1
@@ -231,22 +257,22 @@ try:
         status, body = serve.request('/api/resume', {'id': session_id})
         assert status == 200, (status, body)
         key = json.loads(body)['key']
-        turn(serve, key, THIRD, [final('Still coral.')], 3)
-        third = seals()[2]
-        assert third['chat_context']['turn_ordinal'] == 3
+        turn(serve, key, THIRD, [final('Still coral.')], 4)
+        third = seals()[3]
+        assert third['chat_context']['turn_ordinal'] == 4
         assert [o['text'] for o in third['originals'] if o['kind'] == 'UserRequest'] == [THIRD]
         assert len(transcripts()) == 1, 'resume created a second conversation'
         # A new chat under the old key gets the directory the resumed one
         # was recorded in. Each still recalls through its own reader: the
         # recall is routed by conversation, never by workspace.
-        turn(serve, 'fixture', 'A new chat in the old directory.', [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_4'), final('Hello.')], 4)
-        turn(serve, key, 'Back to the resumed one.', [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_5'), final('Coral again.')], 5)
+        turn(serve, 'fixture', 'A new chat in the old directory.', [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_4'), final('Hello.')], 5)
+        turn(serve, key, 'Back to the resumed one.', [tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_5'), final('Coral again.')], 6)
         newer = [rows(t) for t in transcripts() if rows(t)[0]['id'] != session_id]
         assert len(newer) == 1 and newer[0][0]['workspace'] == recorded[0]['workspace'], 'the two chats do not share a workspace'
         by_session = {}
         for payload in seals():
             by_session.setdefault(payload['identity']['session_id'], []).append(payload['chat_context']['turn_ordinal'])
-        assert sorted(by_session.values()) == [[1], [1, 2, 3, 4]], by_session
+        assert sorted(by_session.values()) == [[1], [1, 2, 3, 4, 5]], by_session
         known = {session_id, newer[0][0]['id']}
         # An incognito chat on a server that remembers chats: nothing is
         # begun, sealed or retained for it, no transcript is written, and
@@ -288,11 +314,11 @@ try:
         wait_for(lambda: len(transcripts()) == 3 and any(r['record'] == 'outcome' for t in transcripts() for r in rows(t) if rows(t) and rows(t)[0]['id'] not in known))
         plain = next(t for t in transcripts() if rows(t)[0]['id'] not in known)
         assert not any(r['record'] == 'chat_memory' for r in rows(plain))
-        assert len(retained()) == 5
+        assert len(retained()) == 6
     finally:
         serve.stop()
     assert not ERRORS, ERRORS
-    summary = {'status': 'pass', 'retained_turns': 5, 'provider_requests': len(REQUESTS), 'checks': ['attach-before-config', 'open-web-recorder', 'ordinary-tool', 'recall-earlier-turn', 'no-recapture', 'ordinary-listing', 'ordinary-resume', 'chain-across-restart', 'two-chats-one-workspace', 'incognito-not-remembered', 'memory-off-refuses-resume', 'memory-off-plain-chat']}
+    summary = {'status': 'pass', 'retained_turns': 6, 'provider_requests': len(REQUESTS), 'checks': ['attach-before-config', 'open-web-recorder', 'ordinary-tool', 'recall-earlier-turn', 'steer-is-the-owners', 'no-recapture', 'ordinary-listing', 'ordinary-resume', 'chain-across-restart', 'two-chats-one-workspace', 'incognito-not-remembered', 'memory-off-refuses-resume', 'memory-off-plain-chat']}
     (ROOT / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary))
 finally:

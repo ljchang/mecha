@@ -788,8 +788,12 @@ fn capture_open(
                 // is a shape the walk does not derive, so the recorded
                 // taint classifies the turn.
                 let follows = binding.conversation_messages().is_some_and(|sent| {
-                    let grew = if decisions.is_empty() {
-                        sent == history
+                    // The turn's first request sent the history the turn
+                    // began with, or that with a line the owner typed
+                    // before it went out folded into the tail; a later one
+                    // may also have appended messages.
+                    let grew = if decisions.is_empty() && sent.len() != history.len() {
+                        false
                     } else {
                         // Everything before the tail unchanged, and the
                         // tail only added to: a notice or a steer folded in.
@@ -841,7 +845,7 @@ fn capture_open(
                 walk.intake.result(Some(external));
             }
             Record::Summary { .. } | Record::Title { .. } | Record::GoalAnchor { .. } => {}
-            Record::Extend { blocks, .. } => walk.extension(blocks),
+            Record::Extend { blocks, .. } => walk.extension(line, blocks),
             Record::Rewrite { messages } => walk.rewrite(line, messages)?,
             Record::Message(m) => walk.message(line, m)?,
             // The conversation's taint only grows, and a turn may record

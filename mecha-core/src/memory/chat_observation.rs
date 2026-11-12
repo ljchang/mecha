@@ -328,10 +328,18 @@ impl ChatObservationContext {
 /// `/content/N/text` in a message record, or `/messages/M/content/N/text`
 /// in a rewrite: an owner's line folded into a message that already held
 /// tool results is recorded only there.
-/// Only the open recorders read a rewrite, so only their records may point
-/// into one.
+/// Only the open recorders read a rewrite or an extension, so only their
+/// records may point into one: `/messages/M/content/N/text` in a rewrite,
+/// `/blocks/N/text` in an extension (a line the owner typed before the
+/// turn's first tool round, folded into the owner's own message).
 fn owner_pointer(pointer: &str, listed_ok: bool) -> bool {
     let index = |s: &str| s.parse::<usize>().is_ok_and(|n| n.to_string() == s);
+    if let Some(block) = pointer
+        .strip_prefix("/blocks/")
+        .and_then(|s| s.strip_suffix("/text"))
+    {
+        return listed_ok && index(block);
+    }
     let rest = match pointer.strip_prefix("/messages/") {
         Some(listed) => match listed.split_once('/') {
             Some((message, rest)) if listed_ok && index(message) => rest,

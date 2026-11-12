@@ -5424,6 +5424,21 @@ pub async fn resume(
         super::late::may_be_orphan(bound.agent.registry(), name)
     });
     let late = super::late::LateState::of_file(&session.path);
+    // The placeholder this replaces was a recorded chat with memory of its
+    // own attached: let go of it, or its lease is held until the server
+    // stops and that conversation can never be remembered again.
+    #[cfg(feature = "memory-prototype")]
+    if let (Some(memory), Some(squatting)) = (
+        &chat.ordinary_memory,
+        sessions
+            .get(&key)
+            .and_then(ChatSlot::ordinary)
+            .map(|ws| ws.session.id().to_string()),
+    ) {
+        if squatting != session.meta.id {
+            memory.detach(&squatting, &key);
+        }
+    }
     sessions.insert(
         key.clone(),
         ChatSlot::Ordinary(Box::new(WebSession {

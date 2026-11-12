@@ -13258,7 +13258,14 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   version lists it after the turn's first, and the walk stores the block
   that carries it as a `UserRequest` with its own locator
   (`Walk::expect_steers`); the same words in a block no owner input backs
-  are left out like any other user-role text. **Only a typed turn is
+  are left out like any other user-role text. The transcript records a
+  steer in one of two shapes and the walk reads both: typed after a tool
+  round it is a block in the message that carries the results; typed
+  before the first, it is folded into the owner's own message, which
+  `record_transition` writes as a `Record::Extend` (`Walk::extension`,
+  pointer `/blocks/N/text`), and the turn's first request already carries
+  it, so the first decision's history may be the turn's opening history
+  with its tail added to (review of #866). **Only a typed turn is
   remembered**: a spoken turn, a task's seed turn and a harness draw carry
   no authenticated owner input, run with no reader bound, and their
   records are part of what the next typed turn continues from. The turn

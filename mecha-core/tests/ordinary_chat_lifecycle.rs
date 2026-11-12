@@ -3829,3 +3829,88 @@ fn only_a_web_chat_s_configuration_may_name_the_root_above_its_workspace() {
         assert_eq!(begun.is_ok(), web, "web: {web}");
     }
 }
+
+/// A line typed before the turn's first tool round is folded into the
+/// owner's own message, and the transcript records that fold as an
+/// extension. It is the owner's there too, and the turn keeps its labels.
+#[test]
+fn a_steer_folded_into_the_owner_s_own_message_is_the_owner_s() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let mut chat = f
+        .memory()
+        .attach_open_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    open_config(&f, &s);
+    let web = |text: &str| OwnerInput::new(OwnerSource::AuthenticatedWeb, text.into()).unwrap();
+    let turn = chat.begin_open_web_turn(&s, &web("Start")).unwrap();
+    s.append(&Record::Message(Message::user("Start"))).unwrap();
+    // The steer was queued before the first request went out: the one
+    // decision's history already carries it, and its version lists it.
+    let mut first = Message::user("Start");
+    first.content.push(Block::text("And keep it short"));
+    let mut state = recorded_context(&s);
+    state
+        .transition(CharterSnapshot::disabled(), Some(web("Start")))
+        .unwrap()
+        .unwrap();
+    let version = state
+        .transition(CharterSnapshot::disabled(), Some(web("And keep it short")))
+        .unwrap()
+        .unwrap();
+    let history = vec![first];
+    let binding = DecisionBinding::new(
+        state.next_decision(),
+        version.revision(),
+        &history,
+        Some(version.prompt_block()),
+        true,
+        0,
+    )
+    .unwrap()
+    .with_conversation_messages(&history)
+    .unwrap();
+    let versions = state.versions().to_vec();
+    s.append(&Record::GoalContextDecision { binding, versions })
+        .unwrap();
+    s.append(&Record::Extend {
+        index: 0,
+        blocks: vec![Block::text("And keep it short")],
+    })
+    .unwrap();
+    for m in [
+        Message::assistant(vec![Block::text("Before."), call("out", "notes__search")]),
+        results(&[("out", "a page from elsewhere", true)]),
+        Message::assistant(vec![Block::text("After.")]),
+    ] {
+        s.append(&Record::Message(m)).unwrap();
+    }
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: true,
+    }))
+    .unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let stored: Vec<_> = sealed(&f, &report.run_id)
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "UserRequest" || kind == "AssistantText")
+        .map(|(kind, external, text)| (kind, text, external))
+        .collect();
+    let labelled = |kind: &str, text: &str, external: bool| {
+        (
+            kind.to_string(),
+            text.to_string(),
+            serde_json::json!(external),
+        )
+    };
+    assert_eq!(
+        stored,
+        [
+            labelled("UserRequest", "Start", false),
+            labelled("UserRequest", "And keep it short", false),
+            labelled("AssistantText", "Before.", false),
+            labelled("AssistantText", "After.", true),
+        ]
+    );
+}

@@ -358,7 +358,12 @@ impl<'a> Walk<'a> {
     /// Harness text folded into a message already on file: a nudge, a
     /// calendar line, a steer. Never a passage, and outside content only if
     /// the harness's own rule or the recorded taint says so.
-    pub(super) fn extension(&mut self, blocks: Vec<Block>) {
+    ///
+    /// Except a line the owner typed while the turn ran, which the host has
+    /// authenticated as an owner input (`expect_steers`): typed before the
+    /// turn's first tool round it is folded into the owner's own message,
+    /// and the transcript records that fold as an extension.
+    pub(super) fn extension(&mut self, line: usize, blocks: Vec<Block>) {
         let folded = crate::message::Message {
             role: Role::User,
             content: blocks,
@@ -369,12 +374,38 @@ impl<'a> Walk<'a> {
         if content.untrusted {
             self.intake.ambient();
         }
-        for block in &folded.content {
-            if !matches!(block, Block::Text { text }
-                if supported_note(text, &self.configured, &self.calls))
-            {
+        for (index, block) in folded.content.into_iter().enumerate() {
+            let Block::Text { text } = block else {
                 self.intake.unplaced();
-            }
+                continue;
+            };
+            let Some(at) = self.steers.iter().position(|steer| *steer == text) else {
+                if !supported_note(&text, &self.configured, &self.calls) {
+                    self.intake.unplaced();
+                }
+                continue;
+            };
+            self.steers.remove(at);
+            let pointer = format!("/blocks/{index}/text");
+            self.steered
+                .push(((line + 1) as u64, pointer.clone(), text.clone()));
+            self.units.push((
+                OriginalPassage {
+                    source: SourceKey {
+                        connector: "host-session-field-v1".into(),
+                        account: self.account.into(),
+                        id: format!("{}:{}:{pointer}", self.session_id, line + 1),
+                    },
+                    kind: PassageKind::UserRequest,
+                    line: (line + 1) as u64,
+                    pointer,
+                    text,
+                    occurred_at: None,
+                    external: self.intake.owner(),
+                    source_bytes: None,
+                },
+                None,
+            ));
         }
     }
     /// One message record. The first of a span may open with the owner's
@@ -815,7 +846,7 @@ pub(super) fn capture(
             }
             Record::Extend { blocks, .. } => {
                 ensure!(!taint, "ordinary inline extension unavailable");
-                walk.extension(blocks);
+                walk.extension(line, blocks);
             }
             Record::Message(m) => {
                 ensure!(
