@@ -161,6 +161,8 @@ impl Attachment {
             (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION)
         } else if self.web_ingress.is_some() {
             (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION)
+        } else if self.open() {
+            (CHAT_OPEN_OBSERVATION_PROTOCOL, CHAT_OPEN_RECORDER_VERSION)
         } else {
             (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION)
         }
@@ -525,8 +527,14 @@ fn seal(a: &Authority, id: &str) -> Result<(ChatSeal, String, Turn)> {
     ensure!(
         s.payload.identity.check_id == id
             && s.payload.identity.session_id == f.session_id
-            && s.payload.identity.check_version == observation
-            && s.payload.identity.evaluator_version == recorder
+            && ((s.payload.identity.check_version == observation
+                && s.payload.identity.evaluator_version == recorder)
+                // A local chat begun before the open recorder has earlier
+                // turns sealed under the strict one; they stay what they
+                // are, and say so in their version.
+                || (attachment.open()
+                    && s.payload.identity.check_version == CHAT_OBSERVATION_PROTOCOL
+                    && s.payload.identity.evaluator_version == CHAT_RECORDER_VERSION))
             && s.payload.binding.authority == a.identity
             && s.payload.binding.locator == id
             && s.payload.scopes == a.request.scopes
@@ -946,7 +954,17 @@ impl ChatMemory {
             // died in it. Its records stay in the transcript as part of
             // what the next turn continues from, and its taint with them.
             // A seal that exists and does not verify is still a refusal.
-            if a.open() && !self.memory.authority.file(&id, "chat-seal")?.try_exists()? {
+            // A turn that was retained and has since lost its seal is not
+            // one of these: its record is in the store, and the chain is
+            // verified through it or not continued.
+            if a.open()
+                && !self.memory.authority.file(&id, "chat-seal")?.try_exists()?
+                && !self
+                    .memory
+                    .authority
+                    .file(&id, "chat-retained")?
+                    .try_exists()?
+            {
                 frozen_metadata(&self.memory.authority, &id)?;
                 continue;
             }

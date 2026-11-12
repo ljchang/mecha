@@ -642,10 +642,7 @@ fn validate_decision_transition(
     Ok(())
 }
 
-/// The most decisions and context versions one turn's sidecar admits.
-const MAX_DECISIONS: usize = 128;
-const MAX_VERSIONS: usize = 16;
-const MAX_CONTEXT_BYTES: usize = 24 * 1024;
+use crate::memory::chat_observation::{MAX_CONTEXT_BYTES, MAX_DECISIONS, MAX_VERSIONS};
 
 /// One turn of an ordinary chat, however it went.
 ///
@@ -730,11 +727,16 @@ fn capture_open(
     let mut cut = false;
     let mut taint = None;
     let mut untrusted = false;
+    // Whether the last record read was the taint. The recorded taint is
+    // the harness's verdict on everything before it, and a record appended
+    // after it is something that verdict never saw.
+    let mut settled = false;
     for (line, r) in recording::records(bytes)?
         .into_iter()
         .enumerate()
         .skip(start_line)
     {
+        settled = matches!(r, Record::Taint(_));
         match r {
             Record::Meta(_) | Record::ChatMemory { .. } => {
                 anyhow::bail!("chat header repeated inside a turn")
@@ -916,7 +918,10 @@ fn capture_open(
         scopes: memory.request.scopes.clone(),
         occurred_at: None,
     };
-    let walked = walk.finish(Some(untrusted), recording::rest_of(&payload)?)?;
+    // A taint that is not the turn's last word is no verdict on the whole
+    // turn: read as unknown, which is never clean.
+    let recorded = settled.then_some(untrusted);
+    let walked = walk.finish(recorded, recording::rest_of(&payload)?)?;
     payload.originals = walked.originals;
     payload.receipts = walked.receipts;
     payload.consulted = walked.consulted;

@@ -3373,3 +3373,73 @@ fn a_turn_passed_over_cannot_be_sealed_later() {
     assert_eq!(after.status, SessionMemoryStatus::Retained, "{after:?}");
     assert_eq!(after.turn_ordinal, 3);
 }
+
+/// Passing a turn over is for one that was never captured. A turn that was
+/// retained and has since lost its seal has a record in the store, and the
+/// chain is verified through it or not continued.
+#[test]
+fn a_retained_turn_that_lost_its_seal_is_not_passed_over() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let first = open_turn(&mut chat, &s, "First", |_| {}, false, None);
+    assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+    fs::remove_file(
+        f.request
+            .authority
+            .join(format!("{}.chat-seal", first.run_id)),
+    )
+    .unwrap();
+    assert!(chat.next_turn_ordinal().is_err());
+    let owner = OwnerInput::new(OwnerSource::CliChat, "Second".into()).unwrap();
+    assert!(chat.begin_turn(&s, &owner).is_err());
+}
+
+/// The recorded taint is the harness's verdict on everything before it. A
+/// record appended after it is something that verdict never saw, so a clean
+/// taint followed by anything is not a clean turn.
+#[test]
+fn a_record_after_the_taint_leaves_nothing_stored_as_local() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let owner = OwnerInput::new(OwnerSource::CliChat, "Ask".into()).unwrap();
+    let turn = chat.begin_turn(&s, &owner).unwrap();
+    s.append(&Record::Message(Message::user("Ask"))).unwrap();
+    decide(&s, owner, &[Message::user("Ask")]);
+    s.append(&Record::Message(Message::assistant(vec![Block::text(
+        "Answered.",
+    )])))
+    .unwrap();
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: false,
+    }))
+    .unwrap();
+    s.append(&Record::Message(Message::user(
+        "Something delivered after the verdict.",
+    )))
+    .unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let stored = sealed(&f, &report.run_id);
+    assert_eq!(stored.len(), 2, "{stored:?}");
+    assert_ne!(stored[1].1, serde_json::json!(false), "{stored:?}");
+}
+
+/// The recorder version says which rules stand behind a record: an ordinary
+/// chat's turn carries its own pair, not the strict recorder's.
+#[test]
+fn an_ordinary_chat_turn_names_the_recorder_that_wrote_it() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let report = open_turn(&mut chat, &s, "First", |_| {}, false, None);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let identity = seal_json(&f, &report.run_id)["payload"]["identity"].clone();
+    assert_eq!(identity["check_version"], "ordinary-chat-observation-v4");
+    assert_eq!(identity["evaluator_version"], "ordinary-chat-recorder-v4");
+}

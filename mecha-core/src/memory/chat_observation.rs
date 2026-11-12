@@ -17,6 +17,18 @@ pub const CHAT_WEB_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v2";
 pub const CHAT_WEB_RECORDER_VERSION: &str = "ordinary-chat-recorder-v2";
 pub const CHAT_TASK_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v3";
 pub const CHAT_TASK_RECORDER_VERSION: &str = "ordinary-chat-recorder-v3";
+/// An ordinary local chat's turn, recorded by the walk that leaves out what
+/// it cannot place. Its own pair, because the version is what tells a
+/// reader which rules stand behind a record: a v1 record was bound to the
+/// exact history every request sent and to a closed tool list, and this one
+/// is not.
+pub const CHAT_OPEN_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v4";
+pub const CHAT_OPEN_RECORDER_VERSION: &str = "ordinary-chat-recorder-v4";
+/// The most decisions and context versions one turn's context names, and
+/// the most bytes it serializes to.
+pub const MAX_DECISIONS: usize = 128;
+pub const MAX_VERSIONS: usize = 16;
+pub const MAX_CONTEXT_BYTES: usize = 24 * 1024;
 
 /// The currently supported authenticated chat ingress, independent of runtime types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +191,7 @@ impl ChatObservationContext {
             identity.evaluator_version.as_str(),
         ) {
             (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION)
+            | (CHAT_OPEN_OBSERVATION_PROTOCOL, CHAT_OPEN_RECORDER_VERSION)
             | (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION) => {
                 ChatOwnerSource::CliChat
             }
@@ -214,10 +227,10 @@ impl ChatObservationContext {
             "invalid chat observation identity"
         );
         ensure!(
-            (1..=16).contains(&self.versions.len())
-                && (1..=128).contains(&self.decisions.len())
+            (1..=MAX_VERSIONS).contains(&self.versions.len())
+                && (1..=MAX_DECISIONS).contains(&self.decisions.len())
                 && (1..=64).contains(&self.owner_messages.len())
-                && serde_json::to_vec(self)?.len() <= 24 * 1024,
+                && serde_json::to_vec(self)?.len() <= MAX_CONTEXT_BYTES,
             "invalid chat observation bounds"
         );
         let mut revisions = BTreeSet::new();

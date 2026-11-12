@@ -13201,7 +13201,18 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   from, taint included, and whatever is appended between turns is read
   the same way. A passed-over turn cannot be sealed later
   (`finish_turn`), because its span would take in the turns begun since.
-  A seal that exists and does not verify still refuses. The chat recorder
+  A seal that exists and does not verify still refuses, and so does a
+  turn that was retained and has since lost its seal: passing over is for
+  a turn that was never captured, and a retained one has a record in the
+  store that the chain is verified through (review of #865). **The open
+  recorder has its own version pair** (`CHAT_OPEN_OBSERVATION_PROTOCOL`,
+  `CHAT_OPEN_RECORDER_VERSION`): the version is what tells a reader which
+  rules stand behind a record, and a v1 chat record was bound to exact
+  request histories and a closed tool list. A local chat begun under the
+  strict recorder keeps its earlier v1 seals and records its later turns
+  as v4. **The taint must be the turn's last record** to count as its
+  verdict: one followed by anything is read as unknown, which is never
+  clean. The chat recorder
   used to bind each turn to the exact history every request sent, admit
   four tools and no grant, and end the chat at the first turn it refused.
   **The sidecar still bounds a conversation**: a turn's context names at
