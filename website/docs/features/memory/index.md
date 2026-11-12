@@ -217,19 +217,11 @@ session list like any other and resumes the usual way. This is separate from
 the web memory mode described further down, which keeps its own restricted
 profile.
 
-A conversation is still bounded: an owner message of at most 2,048 bytes, 64
-owner messages and 256 turns per chat, and a 32 MiB transcript. The graph,
-task and web profiles below are closed profiles and keep their own restricted
-flags, tool lists and refusals. In both one-shot and chat capture, tool arguments above
-1,024 serialized JSON bytes retain their full-input digest, native source pointer
-and action receipt with an explicit oversized status; the memory record omits
-the argument content. This does not make omitted text factual support or prove
-the action achieved its goal. Full arguments remain in the native transcript.
-A tool result or other passage longer than 4,096 bytes is stored as its first
-4,096 bytes, marked as an excerpt with the full length.
-TUI memory attachment and automatic learning remain separate work. The distinct
-authenticated web profile is described below. SQLCipher does not encrypt the native transcript, terminal history
-or private recovery files.
+An ordinary chat can be as long as you like: every typed turn is remembered,
+and a message longer than 4,096 bytes is stored as its first 4,096. What bounds
+it is the transcript's size (32 MiB). The graph, task and web-mode profiles
+below are closed profiles and keep their own limits (256 turns, 64 owner
+messages of 2,048 bytes), restricted flags, tool lists and refusals.
 
 ### Durable todos and planning in CLI memory chat
 

@@ -2860,6 +2860,7 @@ decision = "prompt"
             steered: false,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
         let report = drive_scripted(
             vec![
@@ -2988,6 +2989,7 @@ decision = "prompt"
             steered: true,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
         // The forced prefix: the first call already made and answered.
         let seed = vec![
@@ -3082,6 +3084,7 @@ decision = "prompt"
             steered: false,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
 
         let report = drive_scripted(
@@ -3276,6 +3279,7 @@ decision = "prompt"
             steered: false,
             harness_calls: 0,
             goal_decisions: Vec::new(),
+            conversation: Vec::new(),
         };
         // The model calls `other` where the recording says `echo`; the refusal
         // comes back as a tool result, and the cancelled run ends the turn.
