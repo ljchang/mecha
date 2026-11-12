@@ -41,6 +41,10 @@ pub enum Cmd {
         input: Option<PathBuf>,
         #[arg(long, required_unless_present = "input")]
         run_id: Option<String>,
+        /// With --run-id: the original to start from. A run is listed a page
+        /// at a time; ask again from the index after the last one returned.
+        #[arg(long, default_value_t = 0, conflicts_with = "input")]
+        offset: usize,
     },
     /// Perform one explicit native induction or rumination call.
     Learn {
@@ -119,6 +123,7 @@ pub async fn execute(args: Args) -> Result<()> {
             workspace,
             input,
             run_id,
+            offset,
         } => {
             let workspace = workspace.canonicalize()?;
             manifest_outside(&workspace)?;
@@ -133,6 +138,7 @@ pub async fn execute(args: Args) -> Result<()> {
                     run_id
                         .as_deref()
                         .ok_or_else(|| anyhow::anyhow!("source run required"))?,
+                    offset,
                 )?
             };
             serde_json::json!({"protocol":LEARNING_PROTOCOL,"sources":sources})

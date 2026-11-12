@@ -163,6 +163,19 @@ impl SessionMemory {
         authority::exclude_workspace(&self.request, workspace)?;
         Ok(())
     }
+    /// A chat's surface before it is attached: the closed tool set and no
+    /// grants, refused here so nothing is started for a chat that could
+    /// not record its first turn.
+    pub fn validate_chat_surface(
+        &self,
+        names: &[String],
+        workspace: &Path,
+        grants: &[crate::grant::Grant],
+    ) -> Result<()> {
+        ensure!(grants.is_empty(), "ordinary memory does not support grants");
+        recording::chat_surface(names)?;
+        self.validate_surface(names, workspace, grants)
+    }
     fn access(&self) -> Access {
         Access {
             domain: self.request.domain.clone(),

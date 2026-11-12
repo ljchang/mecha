@@ -439,8 +439,9 @@ pub async fn execute(
             route.set_session_id(&s.meta.id);
         }
         // One-shots are their own producer, `run` — addressable, though
-        // rarely addressed. Ordinary memory uses owner-only config and
-        // requires held or disabled delivery, preserving the one-shot boundary.
+        // rarely addressed. A remembered run takes deliveries like any
+        // other: the recorder leaves a delivered message out of the capture
+        // and the recorded taint decides what that costs.
         if let Some(mb) = &prepared.mailbox {
             mb.attach("run", &s.meta.id);
         }

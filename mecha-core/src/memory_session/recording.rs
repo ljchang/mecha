@@ -57,9 +57,13 @@ fn nameable(value: &str) -> bool {
 fn fit(
     units: Vec<(OriginalPassage, Option<String>)>,
     receipts: Vec<ToolReceipt>,
+    consulted: &[crate::memory::RevisionRef],
 ) -> Result<(Vec<OriginalPassage>, Vec<ToolReceipt>)> {
-    // Room left for the identity, the criterion and the consulted list.
-    const ROOM: usize = MAX_CAPTURE_BYTES - 96 * 1024;
+    // Room left for the identity and the criterion, and for every record
+    // the run consulted: a dependency is never dropped to fit a passage.
+    let room = MAX_CAPTURE_BYTES
+        .saturating_sub(32 * 1024)
+        .saturating_sub(serde_json::to_vec(consulted)?.len());
     let last_text = units
         .iter()
         .rposition(|(p, _)| p.kind == PassageKind::AssistantText);
@@ -106,7 +110,7 @@ fn fit(
             || call.as_ref().is_some_and(|id| invoked.contains(id));
         full |= !answered
             || count + 1 > MAX_ORIGINALS
-            || bytes + cost > ROOM
+            || bytes + cost > room
             || (invocation && invoked.len() + 1 > MAX_RECEIPTS);
         if full {
             continue;
@@ -314,16 +318,16 @@ pub(super) fn capture(
             Record::LateResult { external, .. } => {
                 intake.result(Some(external));
             }
-            // Nothing here is content the model read that a message or a
-            // result does not also carry: what a run cost, a title, a
-            // rewrite of history the walk has already read line by line,
-            // the audit of a recall decision.
             // An owner-made exception to the jail is a fact about whose run
             // this is when it reaches the store or this transcript: a tool
             // could then have read the key or rewritten what is sealed.
             Record::Grants { grants } => {
                 authority::exclude_grants(&f.request, Some(&f.source), &grants)?;
             }
+            // Nothing here is content the model read that a message or a
+            // result does not also carry: what a run cost, a title, a
+            // rewrite of history the walk has already read line by line,
+            // the audit of a recall decision.
             Record::Summary { .. }
             | Record::Title { .. }
             | Record::Rewrite { .. }
@@ -577,7 +581,7 @@ pub(super) fn capture(
             });
         }
     }
-    let (originals, receipts) = fit(units, receipts)?;
+    let (originals, receipts) = fit(units, receipts, &consulted)?;
     let criterion = criterion_text(&f.prompt);
     let payload = HostCapture {
         identity: CaptureIdentity {

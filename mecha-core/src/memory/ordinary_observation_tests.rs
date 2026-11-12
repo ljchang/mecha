@@ -594,7 +594,7 @@ fn ordinary_overflow_is_refused_before_admission() {
     let mut too_many_receipts = with_invocation(valid.clone(), ReceiptStatus::Succeeded);
     too_many_receipts.receipts = vec![too_many_receipts.receipts[0].clone(); MAX_RECEIPTS + 1];
     let mut too_many_consulted = valid;
-    too_many_consulted.consulted = (0..65)
+    too_many_consulted.consulted = (0..=MAX_CONSULTED)
         .map(|n| RevisionRef {
             object: format!("object-{n}"),
             revision: format!("revision-{n}"),

@@ -200,7 +200,8 @@ fn open_memory_at(path: &Path, workspace: &Path, tools: &[String]) -> Result<Ses
     SessionMemory::validate_request_path(path, workspace)?;
     let request = SessionMemory::load_request(path)?;
     let memory = SessionMemory::open(&request, workspace)?;
-    memory.validate_surface(tools, workspace, &[])?;
+    // Every caller is a chat: refuse its surface before anything starts.
+    memory.validate_chat_surface(tools, workspace, &[])?;
     Ok(memory)
 }
 

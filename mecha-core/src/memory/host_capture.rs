@@ -125,6 +125,11 @@ pub struct OriginalPassage {
 pub const MAX_ORIGINALS: usize = 256;
 /// The most tool receipts one capture admits.
 pub const MAX_RECEIPTS: usize = 256;
+/// The most records one ordinary capture may depend on: thirty-two recalls
+/// (the most a session's authority tracks) of sixty-four records each. A
+/// dependency is never dropped to fit, because forgetting a record purges
+/// what was derived from it by following this list.
+pub const MAX_CONSULTED: usize = 32 * 64;
 /// The most bytes one passage holds; a longer field is stored as its head
 /// ([`excerpt`]).
 pub const MAX_PASSAGE_BYTES: usize = 4096;
@@ -199,8 +204,10 @@ impl Intake {
         self.outside = true;
     }
     /// The recorder met a record or block it does not place and cannot
-    /// classify: a late result, a delivered inter-agent message, a notice it
-    /// has no exact text for. Whether that was outside content is the
+    /// classify: a delivered inter-agent message, a notice it has no exact
+    /// text for, an image, a record kind it has no reading for. (A late
+    /// result is not one of these: its record carries its provenance, and
+    /// it goes through [`Intake::result`].) Whether that was outside content is the
     /// recorded taint's to say, so this only remembers that it happened and
     /// [`Intake::settle`] decides: under a taint recorded clean, nothing
     /// outside entered by any route; otherwise it is read as

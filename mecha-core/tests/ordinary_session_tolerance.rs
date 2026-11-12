@@ -507,3 +507,50 @@ fn a_prompt_that_opens_with_blank_space_still_has_a_criterion() {
         "Tidy the fixture directory"
     );
 }
+
+#[test]
+fn the_learning_inventory_pages_through_a_run_larger_than_one_page() {
+    let f = Fixture::new();
+    let (memory, session, run) = f.begin();
+    // Results near a passage's full size: sixteen of them are twice what
+    // one page of descriptors may hold, so a page must also shrink to fit.
+    let large = "r".repeat(4000);
+    for index in 0..20 {
+        call(
+            &session,
+            &format!("call-{index}"),
+            "shell",
+            Some((&large, false)),
+        );
+    }
+    say(&session, "Done.");
+    end(&session, false, StopCause::Completed);
+    assert_eq!(memory.finish(&run).status, SessionMemoryStatus::Retained);
+    let total = passages(&f.sealed(&run)).len();
+    assert_eq!(total, 1 + 20 * 2 + 1);
+
+    let mut seen = vec![];
+    let mut pages = 0;
+    loop {
+        let page = memory
+            .learning_run_sources(run.run_id(), seen.len())
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        assert!(page.len() <= 16);
+        pages += 1;
+        for descriptor in &page {
+            seen.push(
+                serde_json::to_value(descriptor).unwrap()["source"]["original_index"].clone(),
+            );
+        }
+    }
+    // Every original once, in order, and more than one page to do it.
+    assert_eq!(seen, (0..total).map(Value::from).collect::<Vec<_>>());
+    assert!(pages > 3, "{pages}");
+    assert!(memory
+        .learning_run_sources(run.run_id(), total + 5)
+        .unwrap()
+        .is_empty());
+}

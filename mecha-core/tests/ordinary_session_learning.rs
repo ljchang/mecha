@@ -424,7 +424,7 @@ async fn ordinary_learning_describes_exact_fs_read_result_and_receipt_status() {
             vec![Block::text("The fixture read was attempted.")],
         );
         assert_eq!(memory.finish(&run).status, SessionMemoryStatus::Retained);
-        let descriptors = memory.learning_run_sources(run.run_id()).unwrap();
+        let descriptors = memory.learning_run_sources(run.run_id(), 0).unwrap();
         let result = descriptors
             .iter()
             .find(|s| s.kind == mecha_core::memory::host_capture::PassageKind::ToolResult)
@@ -509,7 +509,7 @@ async fn ordinary_learning_cannot_reuse_a_concept_influenced_original_as_indepen
         vec![Block::text("Fixture conclusion after hypothesis recall.")],
     );
     assert_eq!(memory.finish(&run).status, SessionMemoryStatus::Retained);
-    let inventory = memory.learning_run_sources(run.run_id()).unwrap();
+    let inventory = memory.learning_run_sources(run.run_id(), 0).unwrap();
     let matching: Vec<_> = inventory
         .iter()
         .filter(|descriptor| {
@@ -671,7 +671,7 @@ async fn ordinary_learning_inventory_allows_evidence_only_recalled_closure() {
         )],
     );
     assert_eq!(memory.finish(&run).status, SessionMemoryStatus::Retained);
-    let inventory = memory.learning_run_sources(run.run_id()).unwrap();
+    let inventory = memory.learning_run_sources(run.run_id(), 0).unwrap();
     let matching: Vec<_> = inventory
         .iter()
         .filter(|descriptor| {

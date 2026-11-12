@@ -850,9 +850,7 @@ impl ChatMemory {
             authority::exclude_workspace(&self.memory.request, workspace)?;
             Ok(())
         } else {
-            ensure!(grants.is_empty(), "ordinary memory does not support grants");
-            recording::chat_surface(names)?;
-            self.memory.validate_surface(names, workspace, grants)
+            self.memory.validate_chat_surface(names, workspace, grants)
         }
     }
     /// Authenticates immutable private attachment bytes, without runtime I/O.
