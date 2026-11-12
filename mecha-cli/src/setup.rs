@@ -2851,8 +2851,9 @@ pub fn document_extractor(cfg: &Config) -> Option<mecha_core::document::Extracto
 }
 
 /// How many consecutive turns a persona's run may get one identical failure
-/// to one identical call before it ends (`Agent::with_refused_repeats`).
-const PERSONA_REFUSED_REPEATS: u32 = 2;
+/// to one identical call before it ends (`Agent::with_refused_repeats`):
+/// the guard's floor, which leaves room for one retry.
+const PERSONA_REFUSED_REPEATS: u32 = 3;
 
 /// The embeddings client `file_search` and the persona file index use:
 /// `[documents] embed_url` (default `:8081`), where a `[documents]` table
@@ -2957,10 +2958,10 @@ pub fn persona_agent(
     // A persona answers the turn in front of it from what was said, not
     // from its own earlier plans, which it otherwise re-reads and re-sends.
     .with_prior_thinking(mecha_core::message::PriorThinking::Drop)
-    // A persona that sends one failed call again, unchanged, does not find
-    // its way out: the second identical failure ends the run, so the owner
-    // hears of it instead of waiting through five more
-    // (`Agent::with_refused_repeats`).
+    // A persona that keeps sending one failed call, unchanged, does not
+    // find its way out: after one retry the third identical failure ends
+    // the run, so the owner hears of it instead of waiting through four
+    // more (`Agent::with_refused_repeats`).
     .with_refused_repeats(PERSONA_REFUSED_REPEATS)
     // Nor from earlier replies cut off mid-sentence, which it otherwise
     // learns to write: "…\n\nI", spoken as a dangling word.
