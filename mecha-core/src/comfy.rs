@@ -252,11 +252,21 @@ impl Client {
     /// that is there, and [`Self::await_server`] is what waits for those.
     /// Refused is retried until `wait` is up, so a restart in flight (4-10 s
     /// measured) is not taken for a stopped service.
+    ///
+    /// **Never true of a server this process has had an answer from**
+    /// ([`Self::answered`]): one that answered and now refuses is restarting
+    /// (the idle reset and every deploy close the port for the whole
+    /// window, 40 s once), and [`Self::await_server`] waits that out in
+    /// full. So only a server never seen is called stopped, which is the
+    /// case after a reboot (review of #868, pass 2).
     pub(crate) async fn refuses(
         &self,
         cancel: Option<&CancellationToken>,
         wait: Duration,
     ) -> std::result::Result<bool, Failure> {
+        if self.answered.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
         let deadline = Instant::now() + wait;
         loop {
             let attempt = self
@@ -579,6 +589,21 @@ mod tests {
             started.elapsed() >= Duration::from_millis(250),
             "answered before the server existed"
         );
+    }
+
+    /// `refuses` is true only of a server never seen with nothing listening:
+    /// one this process has had an answer from is restarting, and is the
+    /// wait's to outlast, not a stopped service (review of #868, pass 2).
+    #[tokio::test]
+    async fn only_a_server_never_seen_is_called_stopped() {
+        let wait = Duration::from_millis(300);
+        let unseen = client_at(closed_port());
+        assert!(matches!(unseen.refuses(None, wait).await, Ok(true)));
+        let seen = client_at(closed_port());
+        seen.answered.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        assert!(matches!(seen.refuses(None, wait).await, Ok(false)));
+        assert!(started.elapsed() < Duration::from_millis(200), "it waited");
     }
 
     /// The wait is bounded: a server that never comes is reported, with the

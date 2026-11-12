@@ -1218,13 +1218,15 @@ fn said_notes(notes: &[String]) -> String {
 /// [`said_notes`] after a failure, where they are said not to be its cause.
 /// Read straight after "the video server is not answering", a note about a
 /// missing `wearing` was taken for why the clip failed, and the same call
-/// was sent again (owner's chats, 2026-11-11).
+/// was sent again (owner's chats, 2026-11-11). A sentence of its own with no
+/// antecedent, so it reads the same wherever a failure puts it (review of
+/// #868, pass 2).
 fn said_notes_after_failure(notes: &[String]) -> String {
     if notes.is_empty() {
         String::new()
     } else {
         format!(
-            ". That is why it was not made. Apart from it, notes on the call itself: {}",
+            " Notes on the call itself, which are not why it was not made: {}",
             notes.join(" ")
         )
     }
@@ -2174,11 +2176,19 @@ impl Tool for VideoGenerate {
         // promised (`ASKED_WAIT`). Anything else (answering, slow, busy) is
         // the job's to wait for. A stop of the run ends the wait.
         match self.wire.refuses(ctx.cancel.as_ref(), ASKED_WAIT).await {
-            Ok(false) => {}
-            Err(Failure::Cancelled) => return Ok(ToolOutput::err("Not made: stopped")),
-            Ok(true) | Err(Failure::Other(_)) => {
+            // Answering, slow, busy, or seen before and restarting: the
+            // job's to wait for. So is an address that would not build,
+            // which the job says in its own words.
+            Ok(false) | Err(Failure::Other(_)) => {}
+            Err(Failure::Cancelled) => {
                 return Ok(ToolOutput::err(format!(
-                    "Not made: {} (nothing is listening there; if it was only just restarted it may be back within a minute). Nothing was started. Tell them, and send this again only when they say it is running or ask you to retry{}",
+                    "not made: stopped{}",
+                    said_notes(&plan.notes)
+                )))
+            }
+            Ok(true) => {
+                return Ok(ToolOutput::err(format!(
+                    "Not made: {} (nothing is listening there; if it was only just restarted it may be back within a minute). Nothing was started. Tell them, and send this again only when they say it is running or ask you to retry.{}",
                     not_answering(self.wire.base()),
                     said_notes_after_failure(&plan.notes)
                 )))
@@ -2200,7 +2210,7 @@ impl Tool for VideoGenerate {
                     ToolOutput::err(format!("not made: stopped{}", said_notes(&notes)))
                 }
                 Err(Failure::Other(e)) => ToolOutput::err(format!(
-                    "not made: {e:#}{}",
+                    "not made: {e:#}.{}",
                     said_notes_after_failure(&notes)
                 )),
             }

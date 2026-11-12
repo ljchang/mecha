@@ -1902,8 +1902,10 @@ async fn a_stopped_server_is_refused_in_the_turn_that_asked() {
 fn notes_after_a_failure_are_said_not_to_be_its_cause() {
     assert_eq!(said_notes_after_failure(&[]), "");
     let said = said_notes_after_failure(&["No `wearing` for Wren.".to_string()]);
-    assert!(said.starts_with(". That is why it was not made."), "{said}");
-    assert!(said.ends_with("No `wearing` for Wren."), "{said}");
+    assert_eq!(
+        said,
+        " Notes on the call itself, which are not why it was not made: No `wearing` for Wren."
+    );
 }
 
 /// Only a refused connect is "stopped". A server that accepts and does not
