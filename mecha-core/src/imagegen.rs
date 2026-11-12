@@ -2072,7 +2072,20 @@ pub(crate) fn edge_faces(
         image::Luma([if hit { 255 } else { 0 }])
     });
     let face = image::imageops::fast_blur(&grown, FACE_EDGE_FEATHER);
-    let kept = others.map(|hard| feather_mask(&grow_mask(hard), hard));
+    // At the paint's own size: read at another canvas's (a first pass
+    // replaces the plan, and `edit_canvas` is not idempotent at every size),
+    // a pixel read past its edge panicked in the blocking task, and the
+    // result blamed the face (review of #758, pass 10).
+    let others = others.map(|hard| {
+        if hard.dimensions() == (w, h) {
+            hard.clone()
+        } else {
+            image::imageops::resize(hard, w, h, image::imageops::FilterType::Nearest)
+        }
+    });
+    let kept = others
+        .as_ref()
+        .map(|hard| feather_mask(&grow_mask(hard), hard));
     let (mut painted, mut faced) = (0u64, 0u64);
     let out = image::GrayImage::from_fn(w, h, |x, y| {
         let s = soft.get_pixel(x, y).0[0];

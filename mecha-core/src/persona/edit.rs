@@ -471,7 +471,7 @@ impl SceneReader for ModelReader {
                         .any(|p| crate::picture::shown(&p.who).to_lowercase() == key)
                 })
         };
-        read_extraction_for(
+        let mut read = read_extraction_for(
             &text,
             &known,
             None,
@@ -482,8 +482,36 @@ impl SceneReader for ModelReader {
                 persona: shown_persona.as_deref(),
                 owner: shown_owner.as_deref(),
             },
-        )
+        )?;
+        // The reader read the persona's reply beside the owner's words, and
+        // a first person it took from the reply is the persona's, not the
+        // owner's: the owner joins a call only where their own words name
+        // them (review of #758, pass 10).
+        read.owner_named &= says_self(&self.owner);
+        Ok(read)
     }
+}
+
+/// Whether words speak of their speaker: "me", "we", "my".
+fn says_self(words: &str) -> bool {
+    words
+        .to_lowercase()
+        .split(|c: char| !c.is_alphabetic())
+        .any(|w| {
+            [
+                "i",
+                "me",
+                "my",
+                "mine",
+                "myself",
+                "we",
+                "us",
+                "our",
+                "ours",
+                "ourselves",
+            ]
+            .contains(&w)
+        })
 }
 
 /// The extraction's answer, read: the JSON object in it, with only the
@@ -1456,6 +1484,16 @@ mod tests {
         .unwrap();
         assert!(e.scene.get("people").is_none());
         assert!(e.left_out.unwrap_or_default().contains("him names no one"));
+    }
+
+    /// Only the owner's own words put the owner in a picture: a first
+    /// person the reader took from the persona's reply is the persona's.
+    #[test]
+    fn only_words_that_speak_of_their_speaker_name_the_owner() {
+        assert!(says_self("draw me beside the kiln"));
+        assert!(says_self("Us two, under the pergola"));
+        assert!(!says_self("the orchard with a ladder"));
+        assert!(!says_self("a museum of fossils"), "a word holding one");
     }
 
     /// 2026-10-28: a relative camera ask replaced a first-person camera and

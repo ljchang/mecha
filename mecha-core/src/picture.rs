@@ -197,10 +197,27 @@ fn names_any(wearing: &str, set: &[&str]) -> bool {
 /// 3. Only a removal is read so: an outfit first given as "jeans and boots"
 /// says nothing either way, and is left to the persona's words.
 pub fn removed_top(before: &str, after: &str) -> bool {
+    let words = |t: &str| -> Vec<String> {
+        t.to_lowercase()
+            .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+            .filter(|w| !w.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let was = words(before);
     covers_chest(before)
         && !covers_chest(after)
         && !bare_chest_said(after)
         && names_any(after, LOWER)
+        // A top comes off an outfit that had a bottom of its own, or one
+        // the new words still name a piece of: a dress changed for jeans is
+        // a change of clothes, which says nothing of the chest, and read as
+        // a removal it drew them bare and kept "no top" in the record
+        // (review of #758, pass 10).
+        && (names_any(before, LOWER)
+            || words(after)
+                .iter()
+                .any(|w| (LOWER.contains(&w.as_str()) || UPPER.contains(&w.as_str())) && was.contains(w)))
 }
 
 /// Whether an outfit already says the chest is bare: "topless", or a
@@ -2688,6 +2705,7 @@ mod tests {
             "a hoodie and jeans"
         ));
         assert!(!removed_top("jeans and boots", "jeans"), "no top before");
+        assert!(!removed_top("a sundress", "jeans"), "a change of clothes");
         assert!(
             !removed_top("a sundress", "barefoot"),
             "no lower garment named"
