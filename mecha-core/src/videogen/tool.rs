@@ -1215,6 +1215,36 @@ fn said_notes(notes: &[String]) -> String {
     }
 }
 
+/// [`said_notes`] after a failure, where they are said not to be its cause.
+/// Read straight after "the video server is not answering", a note about a
+/// missing `wearing` was taken for why the clip failed, and the same call
+/// was sent again (owner's chats, 2026-11-11).
+fn said_notes_after_failure(notes: &[String]) -> String {
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ". That is why it was not made. Apart from it, notes on the call itself: {}",
+            notes.join(" ")
+        )
+    }
+}
+
+/// How long a call waits for the video server before it hands the clip over
+/// as a job: long enough for a server that is up, short enough that the turn
+/// that asked hears "not answering" itself. The job waits out a restart in
+/// full ([`crate::comfy::SERVER_WAIT`]); before this a stopped server was
+/// answered "being made" and the failure arrived turns later.
+#[cfg(not(test))]
+const ASKED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const ASKED_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// What a call or a job says of a server that does not answer.
+fn not_answering(base: impl std::fmt::Display) -> String {
+    format!("the video server at {base} is not answering; it is the operator's to start")
+}
+
 /// How long a clip should take, in seconds, from this machine's own clips:
 /// the median time per frame-step-megapixel of finished clips with as many
 /// references (3 or more counted together) and the same turbo, then the
@@ -1598,11 +1628,7 @@ impl VideoGenerate {
         match self.wire.await_server(Some(cancel), SERVER_WAIT).await {
             Err(Failure::Cancelled) => return Err(Failure::Cancelled),
             Err(Failure::Other(_)) => {
-                return Err(anyhow!(
-                    "the video server at {} is not answering; it is the operator's to start",
-                    self.wire.base()
-                )
-                .into())
+                return Err(anyhow!("{}", not_answering(self.wire.base())).into())
             }
             Ok(()) => {}
         }
@@ -2139,6 +2165,19 @@ impl Tool for VideoGenerate {
             Ok(plan) => plan,
             Err(e) => return Ok(ToolOutput::err(format!("Not made: {e:#}"))),
         };
+        // Asked before the clip is handed over, so a stopped server is said
+        // in the turn that asked and nothing is promised (`ASKED_WAIT`). A
+        // stop of the run ends the wait.
+        match self.wire.await_server(ctx.cancel.as_ref(), ASKED_WAIT).await {
+            Ok(()) => {}
+            Err(Failure::Cancelled) => return Ok(ToolOutput::err("Not made: stopped")),
+            Err(Failure::Other(_)) => {
+                return Ok(ToolOutput::err(format!(
+                    "Not made: {}. Nothing was started, and calling again will not help until it is running: tell them the video server is down.",
+                    not_answering(self.wire.base())
+                )))
+            }
+        }
         let cancel = CancellationToken::new();
         let mut job_ctx = ctx.clone();
         job_ctx.cancel = Some(cancel.clone());
@@ -2154,9 +2193,10 @@ impl Tool for VideoGenerate {
                 Err(Failure::Cancelled) => {
                     ToolOutput::err(format!("not made: stopped{}", said_notes(&notes)))
                 }
-                Err(Failure::Other(e)) => {
-                    ToolOutput::err(format!("not made: {e:#}{}", said_notes(&notes)))
-                }
+                Err(Failure::Other(e)) => ToolOutput::err(format!(
+                    "not made: {e:#}{}",
+                    said_notes_after_failure(&notes)
+                )),
             }
         };
         let job = crate::jobs::DeferredJob::new(job, cancel, BUSY)
