@@ -90,9 +90,14 @@ pub(crate) fn validate_memory_config_with_graph(
 /// returned beside where it came from, and leaves out what it cannot place.
 pub(crate) fn open_run_profile(global: &GlobalOpts, path: &Path) -> Result<SessionMemory> {
     // The recorder reads a `Run` header; a session marked as a test is
-    // excluded from every corpus and is not remembered either.
+    // excluded from every corpus and is not remembered either. A run an
+    // experiment starts is remembered, in its trial home's own store: that
+    // is what a memory arm measures (`experiment::ArmMemory`).
     anyhow::ensure!(
-        SessionKind::test_override().is_none(),
+        matches!(
+            SessionKind::test_override(),
+            None | Some(SessionKind::Experiment)
+        ),
         "ordinary memory requires a fresh run without a session-kind override"
     );
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;

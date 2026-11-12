@@ -2042,6 +2042,37 @@ fn experiment_judge(
 /// grade, the stats. Everything the trial learned is on its row when this
 /// returns; a failure anywhere is the row's `error`, never a missing row.
 #[allow(clippy::too_many_arguments)]
+/// The request file naming a trial home's memory store, creating the store
+/// on the arm's first task. Outside the trial's workspace, as a request
+/// must be, and private.
+#[cfg(feature = "memory-prototype")]
+fn memory_request(home: &Path, memory: mecha_core::experiment::ArmMemory) -> Result<PathBuf> {
+    use mecha_core::memory_home;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mecha_core::experiment::ArmMemory::Everything = memory;
+    let request = if memory_home::initialized(home) {
+        memory_home::request(home)?
+    } else {
+        memory_home::initialize(home)?
+    };
+    let path = memory_home::dir(home).join("request.json");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec(&request)?)?;
+    Ok(path)
+}
+#[cfg(not(feature = "memory-prototype"))]
+fn memory_request(_home: &Path, _memory: mecha_core::experiment::ArmMemory) -> Result<PathBuf> {
+    anyhow::bail!(
+        "this build has no agent memory; a memory arm needs the `memory-prototype` feature"
+    )
+}
+
 async fn run_one(
     store: &ExperimentStore,
     manifest: &Manifest,
@@ -2157,6 +2188,20 @@ async fn run_one(
     }
     if let Some(goal) = manifest.tasks.confirmed_goals.get(&case.id) {
         cmd.arg("--goal").arg(goal.to_string());
+    }
+    // A memory arm: the trial home's own store, made once and carried with
+    // the home. The goal is the manifest's to confirm for every arm alike,
+    // so the arms differ in memory and in nothing else.
+    if let Some(memory) = arm.memory {
+        anyhow::ensure!(
+            manifest.tasks.confirmed_goals.contains_key(&case.id),
+            "arm `{}` runs with memory, which records a run against a confirmed goal: \
+             add `{}` to [tasks] confirmed_goals (it is passed to every arm)",
+            trial.arm,
+            case.id
+        );
+        cmd.arg("--episodic-memory")
+            .arg(memory_request(&home, memory)?);
     }
 
     // A case's own turn ceiling and compaction threshold are part of the

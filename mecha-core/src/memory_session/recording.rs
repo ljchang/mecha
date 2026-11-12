@@ -30,6 +30,13 @@ pub(super) fn closed_surface(names: &[String]) -> Result<()> {
     );
     Ok(())
 }
+/// A one-shot run's header: an ordinary run, or one an experiment started
+/// in a trial home. The experiment's mark hides the session from every
+/// corpus reader; the store it is remembered in is the trial home's own,
+/// which no real session shares.
+fn run_kind(kind: Option<SessionKind>) -> bool {
+    matches!(kind, Some(SessionKind::Run | SessionKind::Experiment))
+}
 /// The head of the owner's prompt that a criterion's text fields admit.
 pub(super) fn criterion_text(prompt: &str) -> String {
     // Of the trimmed prompt: admission refuses a blank criterion, and a
@@ -194,7 +201,7 @@ pub(super) fn initial(
             Record::Meta(m) => {
                 ensure!(
                     i == 0
-                        && m.kind == Some(SessionKind::Run)
+                        && run_kind(m.kind)
                         && serde_json::to_value(m)? == serde_json::to_value(&session.meta)?
                         && m.workspace.canonicalize()? == workspace,
                     "ordinary run header unavailable"
@@ -766,7 +773,7 @@ pub(super) fn capture(
             Record::Meta(m) => {
                 ensure!(
                     line == 0
-                        && m.kind == Some(SessionKind::Run)
+                        && run_kind(m.kind)
                         && m.id == f.session_id
                         && m.workspace.canonicalize()? == f.workspace,
                     "ordinary run header unavailable"
