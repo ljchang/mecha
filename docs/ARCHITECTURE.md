@@ -13270,7 +13270,14 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   since `Session::load` refuses every memory-marked transcript, and
   re-attaches); a server started without `--chat-memory` refuses to
   resume one. A chat whose memory cannot attach or re-attach goes on
-  unremembered.
+  unremembered. **An incognito chat is neither remembered nor able to
+  recall** (owner's ruling, 2026-11-12), by two independent means: it has
+  no transcript, so nothing attaches and `begin_turn` begins only a kept
+  session; and `goal_context` is not in `incognito::ALLOWED_BUILTINS`, so
+  its dispatch is withheld and no reader is ever bound to an incognito
+  key. The tool stays in the list the model is shown, as every withheld
+  tool does. A persona chat has its own routes and its own memory and
+  does not pass through this path.
   **The sidecar still bounds a conversation**: a turn's context names at
   most 128 decisions and 16 context versions in 24 KiB (later decisions
   are left to the transcript), each version repeats every owner input so

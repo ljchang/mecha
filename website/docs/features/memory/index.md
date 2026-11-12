@@ -211,7 +211,8 @@ The web app's ordinary chat is remembered the same way when the server is
 started with `serve --dynamic-goals --chat-memory "$MECHA_MEMORY_ROOT/memory.json"`.
 Each typed message is one remembered turn, with whatever tools the chat has; a
 message typed while the model is working is stored as yours too. Spoken turns
-and task seed turns are not remembered yet. A remembered chat appears in the
+and task seed turns are not remembered yet. An incognito chat is never
+remembered and cannot recall what other chats stored. A remembered chat appears in the
 session list like any other and resumes the usual way. This is separate from
 the web memory mode described further down, which keeps its own restricted
 profile.

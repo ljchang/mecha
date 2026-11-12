@@ -94,6 +94,10 @@ HOME, MECHA, WORK, STORAGE, KEYS = [ROOT / p for p in ('home', 'mecha', 'work', 
 for directory in (HOME, MECHA, WORK, STORAGE, KEYS):
     directory.mkdir(mode=0o700)
 ENV = {'HOME': str(HOME), 'MECHA_HOME': str(MECHA), 'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8', 'TERM': 'dumb'}
+# An incognito room lives on a RAM-backed directory; without one the server
+# refuses to open an incognito chat, and that step cannot be measured here.
+if os.environ.get('XDG_RUNTIME_DIR'):
+    ENV['XDG_RUNTIME_DIR'] = os.environ['XDG_RUNTIME_DIR']
 MANIFEST = ROOT / 'request.json'
 AUTHORITY = STORAGE / 'authority'
 private(MANIFEST, json.dumps({'protocol': 'ordinary-session-memory-v1', 'db': str(STORAGE / 'fixture.memory-prototype.sqlite'), 'key_file': str(KEYS / 'fixture.key'), 'authority': str(AUTHORITY), 'domain': 'fixture', 'account': 'fixture', 'scopes': []}))
@@ -130,9 +134,10 @@ class Serve:
             return self.request('/api/ping')[0] == 200
         wait_for(ready)
 
-    def request(self, path, body=None):
+    def request(self, path, body=None, raw=None):
         headers = {'Content-Type': 'application/json', 'Tailscale-User-Login': OWNER, 'X-Mecha-Request': '1'}
-        req = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', data=None if body is None else json.dumps(body).encode(), headers=headers)
+        data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', data=data, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as response:
                 return response.status, response.read().decode()
@@ -243,6 +248,31 @@ try:
             by_session.setdefault(payload['identity']['session_id'], []).append(payload['chat_context']['turn_ordinal'])
         assert sorted(by_session.values()) == [[1], [1, 2, 3, 4]], by_session
         known = {session_id, newer[0][0]['id']}
+        # An incognito chat on a server that remembers chats: nothing is
+        # begun, sealed or retained for it, no transcript is written, and
+        # a recall it attempts is refused. (The tool stays in the list the
+        # model is shown, as every withheld tool does, so the cached prefix
+        # is the same for every chat; what is withheld is the dispatch.)
+        before_files = sorted(p.name for p in AUTHORITY.iterdir())
+        before_requests = len(REQUESTS)
+        assert 'XDG_RUNTIME_DIR' in ENV, 'no RAM-backed runtime directory: the incognito step cannot run, and a skipped check is not a passed one'
+        status, body = serve.request('/api/incognito', raw=b'')
+        assert status == 200, (status, body)
+        private_key = json.loads(body)['key']
+        with LOCK:
+            QUEUE.extend([tool('goal_context', {'memory': {'query': 'coral'}}, 'recall_private'), final('Said in private.')])
+        status, body = serve.request(f'/api/chat/{private_key}/send', {'text': 'The private handoff code is umber.', 'request_id': 'private'})
+        assert status == 200, (status, body)
+        wait_for(lambda: len(REQUESTS) == before_requests + 2 and not QUEUE)
+        answers = [m for m in REQUESTS[-1]['messages'] if m['role'] == 'tool']
+        assert len(answers) == 1, answers
+        assert 'coral' not in json.dumps(answers[0]) and FIRST not in json.dumps(answers[0]), 'an incognito chat read what another chat stored'
+        (ROOT / 'incognito-recall-answer.json').write_text(json.dumps(answers[0], indent=2))
+        status, body = serve.request(f'/api/incognito/{private_key}/end', raw=b'')
+        assert status in (200, 204), (status, body)
+        assert sorted(p.name for p in AUTHORITY.iterdir()) == before_files, 'an incognito turn left something in the memory authority'
+        assert len(transcripts()) == 2 and not any('umber' in t.read_text() for t in transcripts())
+        assert not any('umber' in json.dumps(payload) for payload in seals())
     finally:
         serve.stop()
 
@@ -262,7 +292,7 @@ try:
     finally:
         serve.stop()
     assert not ERRORS, ERRORS
-    summary = {'status': 'pass', 'retained_turns': 5, 'provider_requests': len(REQUESTS), 'checks': ['attach-before-config', 'open-web-recorder', 'ordinary-tool', 'recall-earlier-turn', 'no-recapture', 'ordinary-listing', 'ordinary-resume', 'chain-across-restart', 'two-chats-one-workspace', 'memory-off-refuses-resume', 'memory-off-plain-chat']}
+    summary = {'status': 'pass', 'retained_turns': 5, 'provider_requests': len(REQUESTS), 'checks': ['attach-before-config', 'open-web-recorder', 'ordinary-tool', 'recall-earlier-turn', 'no-recapture', 'ordinary-listing', 'ordinary-resume', 'chain-across-restart', 'two-chats-one-workspace', 'incognito-not-remembered', 'memory-off-refuses-resume', 'memory-off-plain-chat']}
     (ROOT / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary))
 finally:

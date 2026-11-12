@@ -3393,6 +3393,8 @@ fn begin_turn(
     // turn's span starts at the transcript as it stands now. A grant that
     // reaches the store refuses the turn itself: the next tool call could
     // read the key. A turn memory cannot begin runs unremembered.
+    // Only a kept chat: an incognito chat has no transcript, is never
+    // attached, and is never begun.
     #[cfg(feature = "memory-prototype")]
     let remembered = match (&chat.ordinary_memory, ws.session.kept()) {
         (Some(memory), Some(session)) => {
