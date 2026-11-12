@@ -13188,7 +13188,13 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   owner's line as the host froze it at the start, the owner inputs behind
   every goal-context decision, a recall that does not reconcile, a grant
   that reaches the store or the transcript (checked against every grant
-  the conversation holds, at each recall and at capture). The history each
+  the conversation holds: by the host before each turn starts
+  (`ChatMemory::validate_grants`, which refuses the turn, not only its
+  memory, since `/grant` is allowed in an ordinary chat and `grant::admit`
+  does not know where a manifest placed a store), in `continuation`, at
+  each recall and at capture. A grant made *inside* a run by
+  `request_access` is caught at the next recall and at capture, as in a
+  one-shot, which is after a tool could have used it). The history each
   request sent is a shape: where it does not follow from the last by
   growing, the walk cannot say what was in front of the model and the
   recorded taint classifies the turn. A turn needs a taint record and at

@@ -720,8 +720,10 @@ fn capture_open(
     );
     walk.hold(&prior.convo.messages)?;
     walk.configured.extend(config.tools.iter().cloned());
+    // As the host adds it: a new message, or a block folded into a tail
+    // that already holds tool results.
     let mut history = prior.convo.messages;
-    history.push(Message::user(f.owner.text()));
+    crate::agent::append_user_text(&mut history, f.owner.text().to_string());
     let mut decisions = vec![];
     let mut versions = BTreeSet::new();
     let mut cut = false;

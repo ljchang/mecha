@@ -3443,3 +3443,109 @@ fn an_ordinary_chat_turn_names_the_recorder_that_wrote_it() {
     assert_eq!(identity["check_version"], "ordinary-chat-observation-v4");
     assert_eq!(identity["evaluator_version"], "ordinary-chat-recorder-v4");
 }
+
+/// A grant recorded in the conversation that reaches the store refuses the
+/// next turn before it begins, and one recorded inside a turn refuses that
+/// turn's capture.
+#[test]
+fn a_recorded_grant_that_reaches_the_store_refuses_the_turn() {
+    let grant = |path: PathBuf| mecha_core::grant::Grant {
+        path: path.canonicalize().unwrap(),
+        access: mecha_core::grant::Access::Read,
+        source: mecha_core::grant::Source::Owner,
+    };
+    for between in [true, false] {
+        let f = Fixture::new();
+        let s = f.session();
+        let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+        open_config(&f, &s);
+        let reaches = Record::Grants {
+            grants: vec![grant(f.root.join("keys"))],
+        };
+        assert!(chat.validate_grants(&[grant(f.root.join("db"))]).is_err());
+        let elsewhere = f.root.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        chat.validate_grants(&[grant(elsewhere)]).unwrap();
+        if between {
+            s.append(&reaches).unwrap();
+            let owner = OwnerInput::new(OwnerSource::CliChat, "Ask".into()).unwrap();
+            assert!(chat.begin_turn(&s, &owner).is_err());
+        } else {
+            let report = open_turn(
+                &mut chat,
+                &s,
+                "Ask",
+                |s| s.append(&reaches).unwrap(),
+                false,
+                None,
+            );
+            assert_eq!(report.status, SessionMemoryStatus::Unavailable);
+        }
+    }
+}
+
+/// A line folded into a cancelled tail is the history the walk expects, so
+/// the turn keeps its labels by position: what the model wrote before an
+/// outside result is local, and what it wrote after is not.
+#[test]
+fn a_folded_owner_line_keeps_the_turn_s_labels_by_position() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    open_config(&f, &s);
+    let first = open_turn(
+        &mut chat,
+        &s,
+        "Start",
+        |s| {
+            s.append(&Record::Message(Message::assistant(vec![call(
+                "cut", "shell",
+            )])))
+            .unwrap();
+            s.append(&Record::Message(results(&[(
+                "cut",
+                "half a listing",
+                false,
+            )])))
+            .unwrap();
+        },
+        false,
+        Some(StopCause::Interrupted),
+    );
+    assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
+    let owner = OwnerInput::new(OwnerSource::CliChat, "Go on".into()).unwrap();
+    let turn = chat.begin_turn(&s, &owner).unwrap();
+    let mut history = Session::read(&s.path).unwrap().convo.messages;
+    mecha_core::agent::append_user_text(&mut history, "Go on".into());
+    s.append(&Record::Rewrite {
+        messages: history.clone(),
+    })
+    .unwrap();
+    decide(&s, owner, &history);
+    for m in [
+        Message::assistant(vec![Block::text("Before."), call("out", "notes__search")]),
+        results(&[("out", "a page from elsewhere", true)]),
+        Message::assistant(vec![Block::text("After.")]),
+    ] {
+        s.append(&Record::Message(m)).unwrap();
+    }
+    s.append(&Record::Taint(Taint {
+        private: true,
+        untrusted: true,
+    }))
+    .unwrap();
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let labels: Vec<_> = sealed(&f, &report.run_id)
+        .into_iter()
+        .filter(|(kind, _, _)| kind == "AssistantText")
+        .map(|(_, external, text)| (text, external))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            ("Before.".to_string(), serde_json::json!(false)),
+            ("After.".to_string(), serde_json::json!(true)),
+        ]
+    );
+}

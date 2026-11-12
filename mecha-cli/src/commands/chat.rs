@@ -567,10 +567,30 @@ pub async fn execute(
         };
         #[cfg(feature = "memory-prototype")]
         let memory_turn = if let Some(memory) = chat_memory.as_mut() {
-            let begun = memory.begin_turn(
-                session.as_ref().expect("recorded chat"),
-                owner_input.as_ref().expect("dynamic owner input"),
-            );
+            // Before anything runs: a grant made since the last turn that
+            // reaches the store, its key or this transcript would let the
+            // next tool call read or rewrite them. The turn does not start
+            // until it is revoked; refusing only its memory afterwards
+            // would be a guard that runs after what it guards against.
+            if memory.is_open() {
+                let mut grants = prepared.agent.context().tools.grants.all();
+                grants.extend(convo.grants.iter().cloned());
+                if let Err(error) = memory.validate_grants(&grants) {
+                    eprintln!(
+                        "mecha: this turn was not started: {error:#}. `/revoke` the grant that \
+                         reaches the memory store, then send the line again."
+                    );
+                    continue;
+                }
+            }
+            // A turn that begins but cannot bind its recall tool is passed
+            // over like one that cannot begin.
+            let begun = memory
+                .begin_turn(
+                    session.as_ref().expect("recorded chat"),
+                    owner_input.as_ref().expect("dynamic owner input"),
+                )
+                .and_then(|turn| memory.goal_memory(&turn).map(|tool| (turn, tool)));
             let turn = match begun {
                 Ok(turn) => Some(turn),
                 // An ordinary chat goes on without remembering a turn its
@@ -584,8 +604,7 @@ pub async fn execute(
                 }
                 Err(error) => return Err(error),
             };
-            if let Some(turn) = turn {
-                let tool = memory.goal_memory(&turn)?;
+            if let Some((turn, tool)) = turn {
                 let old = prepared
                     .agent
                     .registry()

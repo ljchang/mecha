@@ -873,6 +873,13 @@ impl ChatMemory {
             self.memory.validate_surface(names, workspace, grants)
         }
     }
+    /// The grants a conversation holds now, against the store and this
+    /// transcript. A host asks before each turn: `/grant` may add one
+    /// between turns, and `grant::admit` does not know where a manifest
+    /// placed a store.
+    pub fn validate_grants(&self, grants: &[crate::grant::Grant]) -> Result<()> {
+        authority::exclude_grants(&self.memory.request, Some(&self.attachment.source), grants)
+    }
     /// Whether this is an ordinary chat rather than a closed profile: its
     /// host goes on without remembering a turn the recorder cannot capture.
     pub fn is_open(&self) -> bool {
@@ -926,6 +933,14 @@ impl ChatMemory {
         validate_source_ingress(&a, &bytes, &d)?;
         let records = recording::records(&bytes)?;
         let transcript = Session::parse(&a.source, std::str::from_utf8(&bytes)?)?;
+        // Every grant the transcript records, before a turn begins.
+        if a.open() {
+            authority::exclude_grants(
+                &self.memory.request,
+                Some(&a.source),
+                &transcript.convo.grants,
+            )?;
+        }
         ensure!(
             transcript.chat_memory
                 == Some(ChatMemoryMarker {
