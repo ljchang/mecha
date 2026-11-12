@@ -259,6 +259,9 @@ pub(crate) struct GoalIngress {
     #[cfg(feature = "memory-prototype")]
     pub(crate) task_recorder:
         Option<Arc<crate::memory_session::chat::task_host::TaskDecisionRecorder>>,
+    /// Record each request's decision as digests, not as a copy of the
+    /// request and the conversation (`DecisionBinding::compact`).
+    compact: bool,
 }
 
 /// What the loop consults that is properly per-*run* rather than per-agent:
@@ -1111,7 +1114,21 @@ impl RunContext {
             session,
             #[cfg(feature = "memory-prototype")]
             task_recorder: None,
+            compact: false,
         });
+        self
+    }
+
+    /// Record each request's goal decision compactly: digests of the
+    /// request and of the conversation's history in place of copies, so a
+    /// transcript grows with the conversation and not with its square. For
+    /// an ordinary chat. A host whose recorder reads the copies (the
+    /// closed memory profiles) or that wants a replay to restore the exact
+    /// recorded request leaves this off.
+    pub fn with_compact_goal_records(mut self) -> Self {
+        if let Some(ingress) = &mut self.goal_ingress {
+            ingress.compact = true;
+        }
         self
     }
 
@@ -4947,7 +4964,10 @@ impl Agent {
                 run_start || !binding.run_start(),
                 "dynamic goal replay changed a recorded run boundary"
             );
-            let evidence_bytes = if run_start {
+            // A full binding restores the request it recorded. A compact
+            // one kept no copy: the request is built as the live run built
+            // it, and the digests say whether it came out the same.
+            let evidence_bytes = if run_start && !binding.is_compact() {
                 request.messages = binding.messages().to_vec();
                 request.trailing_notes = binding.trailing_notes();
                 0
@@ -4960,7 +4980,14 @@ impl Agent {
                 request.trailing_notes == binding.trailing_notes(),
                 "dynamic goal replay changed recorded trailing notes"
             );
-            request.system = binding.system().map(str::to_string);
+            if binding.is_compact() {
+                if let Some(config) = &self.goal_charter {
+                    request.system = config.render(version.charter().prompt_block());
+                }
+                binding.verify_system(request.system.as_deref())?;
+            } else {
+                request.system = binding.system().map(str::to_string);
+            }
             *cx.tools
                 .goal_context_version
                 .lock()
@@ -5018,15 +5045,27 @@ impl Agent {
             request.system = config.render(version.charter().prompt_block());
         }
         let evidence_bytes = Self::attach_owner_evidence(request, &version);
-        let binding = DecisionBinding::new(
-            candidate.next_decision(),
-            version.revision(),
-            &request.messages,
-            request.system.clone(),
-            run_start,
-            request.trailing_notes,
-        )?
-        .with_conversation_messages(conversation_messages)?
+        let binding = if ingress.compact {
+            DecisionBinding::compact(
+                candidate.next_decision(),
+                version.revision(),
+                &request.messages,
+                request.system.as_deref(),
+                run_start,
+                request.trailing_notes,
+                conversation_messages,
+            )?
+        } else {
+            DecisionBinding::new(
+                candidate.next_decision(),
+                version.revision(),
+                &request.messages,
+                request.system.clone(),
+                run_start,
+                request.trailing_notes,
+            )?
+            .with_conversation_messages(conversation_messages)?
+        }
         .with_tool_surface(&request.tools, request.tool_choice)?;
         candidate.bind(binding.clone())?;
         let goal_stamp = crate::planning::GoalDecisionStamp::capture(&binding, &version)?;

@@ -320,6 +320,43 @@ where
     Option::<T>::deserialize(deserializer)
 }
 
+/// What a compact binding keeps of a request in place of its copy: enough
+/// to tell whether a later request is the same one, and whether the
+/// history it sent is a prefix of the conversation as recorded.
+///
+/// A full binding copies the request's messages and the conversation's on
+/// every model request, so a transcript grows with the square of the
+/// conversation. This is a few hundred bytes whatever the length.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Compact {
+    /// How many messages the conversation held when the request went out.
+    conversation: u64,
+    /// The chain over all of them but the last ([`history_heads`]).
+    conversation_head: String,
+    /// The last one's digest. A notice or a steer folded into the tail
+    /// changes this and leaves the head alone.
+    conversation_tail: Option<String>,
+    system_digest: Option<String>,
+}
+
+/// The chain over each prefix of `messages`: `heads[k]` covers the first
+/// `k`. A compact binding records the head over all but its last message,
+/// and a reader with the conversation in hand finds whether that history
+/// is a prefix of it by one comparison.
+pub fn history_heads(messages: &[Message]) -> Result<Vec<String>> {
+    let mut heads = Vec::with_capacity(messages.len() + 1);
+    let mut head = digest(b"");
+    heads.push(head.clone());
+    for message in messages {
+        let mut bytes = head.into_bytes();
+        bytes.extend(digest(&serde_json::to_vec(message)?).into_bytes());
+        head = digest(&bytes);
+        heads.push(head.clone());
+    }
+    Ok(heads)
+}
+
 /// Exact provider request boundary, independent of mutable transcript indices.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -337,9 +374,82 @@ pub struct DecisionBinding {
     request_digest: String,
     tool_surface_digest: String,
     tools_allowed: bool,
+    /// Present when the copies above were left out. Absent from the wire
+    /// otherwise, so a full binding keeps its bytes and its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compact: Option<Compact>,
 }
 
 impl DecisionBinding {
+    /// As [`DecisionBinding::new`] and `with_conversation_messages`, keeping
+    /// digests in place of the copies.
+    pub fn compact(
+        ordinal: u64,
+        version: u64,
+        messages: &[Message],
+        system: Option<&str>,
+        run_start: bool,
+        trailing_notes: usize,
+        conversation_messages: &[Message],
+    ) -> Result<Self> {
+        let bytes = serde_json::to_vec(messages)?;
+        ensure!(
+            bytes.len() + system.map_or(0, str::len) <= MAX_REQUEST_BYTES,
+            "goal context request exceeds 8 MiB recording bound"
+        );
+        let heads = history_heads(conversation_messages)?;
+        let last = conversation_messages.len().saturating_sub(1);
+        let mut binding = Self {
+            ordinal,
+            version,
+            message_digest: digest(&bytes),
+            conversation_messages: None,
+            messages: Vec::new(),
+            system: None,
+            run_start,
+            trailing_notes,
+            request_digest: String::new(),
+            tool_surface_digest: crate::surface::fingerprint(&[]),
+            tools_allowed: true,
+            compact: Some(Compact {
+                conversation: conversation_messages.len() as u64,
+                conversation_head: heads[last].clone(),
+                conversation_tail: match conversation_messages.last() {
+                    Some(tail) => Some(digest(&serde_json::to_vec(tail)?)),
+                    None => None,
+                },
+                system_digest: system.map(|s| digest(s.as_bytes())),
+            }),
+        };
+        binding.request_digest = binding.computed_request_digest()?;
+        Ok(binding)
+    }
+    pub fn is_compact(&self) -> bool {
+        self.compact.is_some()
+    }
+    /// A compact binding's history: how many messages it sent, and the
+    /// chain head over all but the last.
+    pub fn conversation_shape(&self) -> Option<(usize, &str)> {
+        self.compact.as_ref().and_then(|c| {
+            Some((
+                usize::try_from(c.conversation).ok()?,
+                c.conversation_head.as_str(),
+            ))
+        })
+    }
+    /// Whether `system` is what the request carried. A full binding holds
+    /// the text; a compact one its digest.
+    pub fn verify_system(&self, system: Option<&str>) -> Result<()> {
+        let same = match &self.compact {
+            Some(c) => c.system_digest == system.map(|s| digest(s.as_bytes())),
+            None => self.system.as_deref() == system,
+        };
+        ensure!(
+            same,
+            "dynamic goal replay system prompt diverged from recording"
+        );
+        Ok(())
+    }
     pub fn new(
         ordinal: u64,
         version: u64,
@@ -365,6 +475,7 @@ impl DecisionBinding {
             request_digest: String::new(),
             tool_surface_digest: crate::surface::fingerprint(&[]),
             tools_allowed: true,
+            compact: None,
         };
         binding.request_digest = binding.computed_request_digest()?;
         Ok(binding)
@@ -425,6 +536,18 @@ impl DecisionBinding {
         Ok(())
     }
     fn computed_request_digest(&self) -> Result<String> {
+        if let Some(compact) = &self.compact {
+            return Ok(digest(&serde_json::to_vec(&(
+                self.ordinal,
+                self.version,
+                &self.message_digest,
+                compact,
+                self.run_start,
+                self.trailing_notes,
+                &self.tool_surface_digest,
+                self.tools_allowed,
+            ))?));
+        }
         Ok(digest(&serde_json::to_vec(&(
             self.ordinal,
             self.version,
@@ -443,6 +566,21 @@ impl DecisionBinding {
             self.request_digest == self.computed_request_digest()?,
             "goal context effective request digest mismatch"
         );
+        if let Some(compact) = &self.compact {
+            let hex = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+            ensure!(
+                self.messages.is_empty()
+                    && self.conversation_messages.is_none()
+                    && self.system.is_none()
+                    && hex(&self.message_digest)
+                    && hex(&compact.conversation_head)
+                    && compact.conversation_tail.as_deref().is_none_or(hex)
+                    && compact.system_digest.as_deref().is_none_or(hex)
+                    && compact.conversation_tail.is_some() == (compact.conversation > 0),
+                "compact goal context boundary malformed"
+            );
+            return Ok(());
+        }
         self.verify_messages(&self.messages)?;
         ensure!(
             serde_json::to_vec(self)?.len() <= MAX_REQUEST_BYTES,
@@ -953,5 +1091,71 @@ mod tests {
         let wire = serde_json::to_value(&version).unwrap();
         assert!(wire.get("earlier").is_none(), "{wire}");
         assert!(!version.owner_prompt_block().contains("most recent"));
+    }
+
+    /// A compact binding is the same size whatever the conversation's
+    /// length, still tells one request from another, and says whether the
+    /// history it sent is a prefix of the conversation in hand.
+    #[test]
+    fn a_compact_binding_keeps_digests_in_place_of_copies() {
+        let conversation: Vec<Message> = (0..400)
+            .map(|n| Message::user(format!("message {n} {}", "x".repeat(200))))
+            .collect();
+        let size = |upto: usize| {
+            let sent = &conversation[..upto];
+            let binding =
+                DecisionBinding::compact(1, 1, sent, Some("system"), true, 0, sent).unwrap();
+            binding.validate().unwrap();
+            serde_json::to_vec(&binding).unwrap().len()
+        };
+        assert!(size(400) <= size(2) + 16, "{} {}", size(400), size(2));
+        let full = DecisionBinding::new(1, 1, &conversation, Some("system".into()), true, 0)
+            .unwrap()
+            .with_conversation_messages(&conversation)
+            .unwrap();
+        assert!(serde_json::to_vec(&full).unwrap().len() > 100 * size(400));
+        // A full binding's wire form has no trace of the compact one.
+        assert!(serde_json::to_value(&full)
+            .unwrap()
+            .get("compact")
+            .is_none());
+        assert!(!full.is_compact() && full.conversation_shape().is_none());
+
+        let sent = &conversation[..10];
+        let binding = DecisionBinding::compact(1, 1, sent, Some("system"), true, 0, sent).unwrap();
+        binding.verify_messages(sent).unwrap();
+        assert!(binding.verify_messages(&conversation[..9]).is_err());
+        binding.verify_system(Some("system")).unwrap();
+        assert!(binding.verify_system(Some("another")).is_err());
+        assert!(binding.verify_system(None).is_err());
+        assert!(binding.conversation_messages().is_none() && binding.messages().is_empty());
+
+        // The head is over all but the last message: the history is a
+        // prefix of the conversation, and of one whose tenth message
+        // differs (a line folded into the tail), and not of one that
+        // differs before it.
+        let (count, head) = binding.conversation_shape().unwrap();
+        assert_eq!(count, 10);
+        assert_eq!(head, history_heads(&conversation).unwrap()[9]);
+        let mut folded = conversation.clone();
+        folded[9] = Message::user("the tail with a line folded in");
+        assert_eq!(head, history_heads(&folded).unwrap()[9]);
+        let mut rewritten = conversation.clone();
+        rewritten[3] = Message::user("a different past");
+        assert_ne!(head, history_heads(&rewritten).unwrap()[9]);
+
+        // A compact binding that carries a copy after all, or whose digests
+        // are not digests, does not validate.
+        let mut forged = binding.clone();
+        forged.messages = sent.to_vec();
+        forged.request_digest = forged.computed_request_digest().unwrap();
+        assert!(forged.validate().is_err());
+        let mut forged = binding.clone();
+        forged.compact.as_mut().unwrap().conversation_head = "short".into();
+        forged.request_digest = forged.computed_request_digest().unwrap();
+        assert!(forged.validate().is_err());
+        let mut forged = binding;
+        forged.compact.as_mut().unwrap().conversation += 1;
+        assert!(forged.validate().is_err(), "the digest covers the shape");
     }
 }
