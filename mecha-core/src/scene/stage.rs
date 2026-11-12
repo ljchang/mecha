@@ -35,11 +35,27 @@ pub struct Staged {
     /// The chat's workspace as of the turn: every picture landed before it,
     /// with its manifest, and the scene's room photo.
     pub workspace: PathBuf,
+    /// The chat's own workspace, which [`Staged::bring`] copies from.
+    pub source: PathBuf,
     /// What the scene was recovered from.
     pub as_of: AsOf,
     /// Files the transcript or the scene names that could not be staged:
     /// gone from the workspace, or not the bytes the record holds.
     pub missing: Vec<String>,
+}
+
+impl Staged {
+    /// Copy one more of the chat's files into the staged workspace: an
+    /// upload a recorded call names (a painted mask, a picture dropped on a
+    /// region), which no landed picture brings with it. Whether it was
+    /// there; one that is not is added to `missing`.
+    pub fn bring(&mut self, rel: &str) -> Result<bool> {
+        let there = copy_into(&self.source, &self.workspace, rel)?.is_some();
+        if !there {
+            self.missing.push(rel.to_string());
+        }
+        Ok(there)
+    }
 }
 
 /// What the staged scene was recovered from.
@@ -187,6 +203,7 @@ pub fn stage_at(
         store: out_store,
         slot,
         workspace: out_work,
+        source: workspace,
         as_of,
         missing,
     })
@@ -611,6 +628,28 @@ mod tests {
         assert_eq!(staged.as_of, AsOf::Nothing);
         assert_eq!(staged.slot.current(), None);
         assert!(!staged.slot.chat_copy.exists());
+    }
+
+    /// An upload a recorded call names is brought from the chat's own
+    /// workspace; one that is gone, or a path that leaves the folder, is
+    /// missing and nothing is written for it.
+    #[test]
+    fn an_upload_is_brought_or_said_missing() {
+        let w = World::new("bring");
+        std::fs::create_dir_all(w.work.join("inbox")).unwrap();
+        std::fs::write(w.work.join("inbox").join("m.png"), b"a painted mask").unwrap();
+        let mut lines = header(&w, "2026-01-01T09:00:00Z");
+        lines.push(owner("hello"));
+        w.transcript(&lines);
+        let mut staged = stage_at(&w.store, "wren", CHAT, 2, &w.root.join("scratch")).unwrap();
+        assert!(staged.bring("inbox/m.png").unwrap());
+        assert_eq!(
+            std::fs::read(staged.workspace.join("inbox").join("m.png")).unwrap(),
+            b"a painted mask"
+        );
+        assert!(!staged.bring("inbox/gone.png").unwrap());
+        assert!(!staged.bring("../p-1/inbox/m.png").unwrap());
+        assert_eq!(staged.missing, ["inbox/gone.png", "../p-1/inbox/m.png"]);
     }
 
     /// The refusals: a last picture gone from the workspace, a line that is

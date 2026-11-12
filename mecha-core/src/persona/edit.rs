@@ -130,6 +130,66 @@ pub fn fact_call(text: &str) -> Option<serde_json::Value> {
     Some(serde_json::json!({"picture": picture.trim(), "scene": scene}))
 }
 
+/// The call a painted panel edit's fact drew, as the harness dispatched it:
+/// [`regions_call`] for painted regions, [`masked_call`] for one painted
+/// area. The index or mask is the one the tool's result names ("the area
+/// painted in …"), which the fact's own first line never carries, so a
+/// painted edit that drew nothing gives `None`: it left no call that can be
+/// told. What a replay runs again for such a turn (`persona::replay`).
+pub fn fact_painted_call(text: &str) -> Option<serde_json::Value> {
+    let (first, result) = text.split_once('\n')?;
+    is_fact(first).then_some(())?;
+    let (picture, change) = first
+        .split_once("The picture: ")?
+        .1
+        .split_once(". The change: ")?;
+    let change = change.strip_suffix(".)")?;
+    let mask = result
+        .split_once("the area painted in ")?
+        .1
+        .split_whitespace()
+        .next()?;
+    if let Some(words) = change.strip_prefix("retouch inside the painted area: ") {
+        return Some(masked_call(picture.trim(), mask, words));
+    }
+    let listed = change.strip_prefix("in the painted regions, ")?;
+    // Each region opens with its colour, one of the closed set, so words
+    // that hold a "; " of their own are split only where a colour follows.
+    // Words that hold "; <colour>: " themselves read as one more region:
+    // the fact is one line of prose and cannot tell the two apart.
+    fn opens(s: &str) -> Option<(&'static str, &str)> {
+        crate::picture::REGION_COLOURS
+            .iter()
+            .find_map(|(c, _)| s.strip_prefix(c)?.strip_prefix(": ").map(|rest| (*c, rest)))
+    }
+    let mut regions: Vec<PanelRegion> = Vec::new();
+    let (colour, mut rest) = opens(listed)?;
+    let mut colour = colour;
+    loop {
+        let next = rest
+            .match_indices("; ")
+            .find_map(|(i, _)| opens(&rest[i + 2..]).map(|(c, tail)| (i, c, tail)));
+        let words = next.map_or(rest, |(i, _, _)| &rest[..i]);
+        let (words, reference) = match words
+            .strip_suffix(')')
+            .and_then(|w| w.rsplit_once(" (from "))
+        {
+            Some((w, from)) => (w, Some(from.to_string())),
+            None => (words, None),
+        };
+        regions.push(PanelRegion {
+            colour: colour.to_string(),
+            words: words.to_string(),
+            reference,
+        });
+        match next {
+            Some((_, c, tail)) => (colour, rest) = (c, tail),
+            None => break,
+        }
+    }
+    Some(regions_call(picture.trim(), mask, &regions))
+}
+
 /// The picture a Regenerate's fact drew again, so the page shows the new one
 /// as a version on that picture's card (§5.4). `None` for any other fact.
 pub fn fact_redraw_of(text: &str) -> Option<&str> {
@@ -2130,6 +2190,52 @@ mod tests {
             fact_call("The picture: a. The change: {\"camera\":\"x\"}.)"),
             None
         );
+    }
+
+    /// A painted edit's fact gives back the call the harness dispatched: the
+    /// regions by their colours, a picture dropped on one, and the index the
+    /// tool's result names. One that drew nothing names no index, so it
+    /// gives no call.
+    #[test]
+    fn a_painted_fact_gives_back_the_call_it_drew() {
+        let drew = "image: images/b.png\nA retouch of images/a.png. Only the area painted in \
+                    inbox/r.png was redrawn.";
+        let regions = vec![
+            PanelRegion {
+                colour: "magenta".into(),
+                words: "a red hat; on the left".into(),
+                reference: None,
+            },
+            PanelRegion {
+                colour: "cyan".into(),
+                words: "the sign (as it was)".into(),
+                reference: Some("inbox/sign.png".into()),
+            },
+        ];
+        let f = fact("images/a.png", &regions_change(&regions), drew);
+        assert_eq!(
+            fact_painted_call(&f),
+            Some(regions_call("images/a.png", "inbox/r.png", &regions))
+        );
+        let one = fact(
+            "images/a.png",
+            "retouch inside the painted area: a tidier shelf",
+            drew,
+        );
+        assert_eq!(
+            fact_painted_call(&one),
+            Some(masked_call("images/a.png", "inbox/r.png", "a tidier shelf"))
+        );
+        // Nothing drawn: no index is named, so there is no call to tell.
+        let refused = fact(
+            "images/a.png",
+            &regions_change(&regions),
+            "Nothing was drawn.",
+        );
+        assert_eq!(fact_painted_call(&refused), None);
+        // A scene change is the other reader's.
+        let scene = fact("images/a.png", r#"{"camera":"closer"}"#, drew);
+        assert_eq!(fact_painted_call(&scene), None);
     }
 
     /// A shot filed as a look is the camera's: moved there when the answer
