@@ -2102,8 +2102,6 @@ pub(crate) fn edge_faces(
     (painted > 0 && faced * 10 >= painted).then_some(out)
 }
 
-/// What an edit whose painted regions take a face needs, in its job, to lay
-/// the new face back along the face's own edges ([`edge_faces`]).
 /// A regions edit's first pass: the painted regions that take no picture,
 /// drawn alone as a masked edit before the regions that take a face or a look
 /// (owner, 2026-10-29). A region with a picture samples the whole canvas and
@@ -2120,6 +2118,8 @@ struct PrePass {
     resolution: u32,
 }
 
+/// What an edit whose painted regions take a face needs, in its job, to lay
+/// the new face back along the face's own edges ([`edge_faces`]).
 struct FaceEdges {
     /// The hard paint of the regions with no face, which keep their own.
     others: Option<image::GrayImage>,
@@ -5832,15 +5832,17 @@ impl Tool for ImageGenerate {
                 let drawn = match image {
                     Ok(bytes) => bytes,
                     Err(Failure::Cancelled) => {
+                        me.arm_unload();
                         return ToolOutput::err(
                             "Cancelled — the generation was stopped and nothing was saved.",
-                        )
+                        );
                     }
                     Err(Failure::Other(e)) => {
+                        me.arm_unload();
                         return ToolOutput::err(format!(
                             "Image generation failed on the regions without a picture: {e:#}. \
                              Nothing was saved."
-                        ))
+                        ));
                     }
                 };
                 let PrePass {
@@ -5871,16 +5873,18 @@ impl Tool for ImageGenerate {
                         mask_plan = Some(plan);
                     }
                     Ok(Err(why)) => {
+                        me.arm_unload();
                         return ToolOutput::err(format!(
                             "The regions without a picture were drawn but could not be laid \
                              over the original: {why}. Nothing was saved."
-                        ))
+                        ));
                     }
                     Err(e) => {
+                        me.arm_unload();
                         return ToolOutput::err(format!(
                             "The regions without a picture were drawn but could not be laid \
                              over the original: {e}. Nothing was saved."
-                        ))
+                        ));
                     }
                 }
             }

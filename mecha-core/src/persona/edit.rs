@@ -756,12 +756,21 @@ pub fn read_extraction_for(
             // is nothing but a move (what the record holds after a move asked
             // of a picture with no camera) is a move like the rest: kept, the
             // next one sat beside it for good (pass 9).
-            let mut clauses = old.trim_end_matches(['.', ',']).split(", ");
-            let shot: Vec<&str> = clauses
-                .next()
-                .filter(|first| !first.eq_ignore_ascii_case(new.trim()) && !bare_move(first))
-                .into_iter()
-                .chain(clauses.filter(|clause| !relative_camera(clause)))
+            // Only the last clause is the move this appended before: one in
+            // the middle that opens with a move word ("pushed in close on the
+            // teapot") is the shot's own, and dropped whole it took what it
+            // was close on with it (pass 16).
+            let all: Vec<&str> = old.trim_end_matches(['.', ',']).split(", ").collect();
+            let last = all.len() - 1;
+            let shot: Vec<&str> = all
+                .iter()
+                .enumerate()
+                .filter(|(i, clause)| match *i {
+                    0 => !clause.eq_ignore_ascii_case(new.trim()) && !bare_move(clause),
+                    i if i == last => !relative_camera(clause),
+                    _ => true,
+                })
+                .map(|(_, clause)| *clause)
                 .collect();
             let joined = if shot.is_empty() {
                 new.clone()
@@ -1578,6 +1587,13 @@ mod tests {
                 "pull back to John's first-person view, a touch wider",
             ),
             ("a touch nearer", "a touch nearer", "a touch nearer"),
+            // A clause in the middle that opens with a move word is the
+            // shot's own.
+            (
+                "a low angle, pushed in close on the teapot, a touch nearer",
+                "a touch wider",
+                "a low angle, pushed in close on the teapot, a touch wider",
+            ),
             // The record holds only a move: the next one takes its place.
             ("a touch nearer", "pull back a little", "pull back a little"),
         ] {

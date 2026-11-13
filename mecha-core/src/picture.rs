@@ -104,6 +104,13 @@ pub fn outfit_words(wearing: &str) -> String {
 /// whole words: what [`removed_top`] reads.
 const UPPER: &[&str] = &[
     "top",
+    // Compounds as one word: a hyphen is kept so "half-top" is not "top",
+    // which hid these (review of #758, pass 16).
+    "tank-top",
+    "crop-top",
+    "tube-top",
+    "halter-top",
+    "bikini-top",
     "tops",
     "shirt",
     "t-shirt",
@@ -2749,6 +2756,7 @@ mod tests {
             "cargo shorts"
         ));
         assert!(removed_top("a grey t-shirt and jeans", "jeans"));
+        assert!(removed_top("a tank-top and jeans", "jeans"));
         assert!(!removed_top(
             "a grey t-shirt and jeans",
             "a hoodie and jeans"
