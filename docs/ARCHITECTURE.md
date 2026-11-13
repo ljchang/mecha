@@ -1299,9 +1299,9 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
     while their pose is a bend, drew a standing figure and a bending one
     at every seed and with no reference picture at all (2 of 3): three
     renders, and the result says the picture still seems to show two.
-  - **A count that cannot be made keeps the picture**: no SAM on the
-    server, or a failed job, is `stopped` in the manifest and never a
-    refusal. `[image] people_check = false` draws every picture once.
+  - **A count that cannot be made keeps the picture**: a failed job is
+    `stopped` in the manifest, no SAM on the server or no memory for the
+    count leaves `people_check` null, and none is a refusal. `[image] people_check = false` draws every picture once.
   - **The picture panel's "remove the copy" is another try.** A record
     holds each person once, so the reader can only answer by taking the
     one person out, which drew an empty room (`Extracted::removes_a_copy`:

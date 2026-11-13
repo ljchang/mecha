@@ -1977,9 +1977,10 @@ const FAR_OVER: &str = "far over the cast";
 /// lists: a crowd in the setting, or one `who` that is several. Such a
 /// picture is not counted: over the cast by design, it was drawn again
 /// twice for the same crowd and then said to be wrong (review of #874).
-fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
+fn more_than_listed(next: &crate::scene::Scene) -> bool {
     // People by a word for them: read in the place, in what they do
-    // together, in the line beside the scene, and in who each is.
+    // together, and in who each is. (A line beside the scene is a retouch,
+    // and a call with one is never counted: `Call::counts_people`.)
     const CROWD: &[&str] = &[
         "people",
         "crowd",
@@ -2021,7 +2022,6 @@ fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
     };
     place
         || next.together.as_ref().is_some_and(|f| has(&f.value, CROWD))
-        || also.is_some_and(|t| has(t, CROWD))
         || next.people.iter().any(|p| match &p.who {
             crate::scene::Who::Described(d) => has(d, CROWD) || has(d, SEVERAL),
             crate::scene::Who::Library(_) => false,
@@ -3353,7 +3353,11 @@ impl ImageGenerate {
         // SAM is charged where it can load. Asked on Linux only, as `loaded`
         // is: on a Mac the ask goes through the on-demand proxy and starts
         // ComfyUI, so a Mac is charged whenever the call may segment.
-        let can_segment = cfg!(target_os = "macos") || self.backend.segments().await;
+        // Asked only of a call that may segment or wants the count: with
+        // neither, every generation asked the server about SAM ahead of the
+        // gauge (review of #874, pass 6).
+        let can_segment = (may_segment || wants_count)
+            && (cfg!(target_os = "macos") || self.backend.segments().await);
         let may_segment = may_segment && can_segment;
         let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb, may_segment);
         let series = crate::system::db_path().ok();
@@ -7303,10 +7307,12 @@ impl Tool for ImageGenerate {
             // A crowd in the words is left uncounted, and said so in the
             // manifest: unrecorded, it could not be told from a picture
             // that was never a candidate.
+            // Only where the server can count at all: with no SAM a crowd is
+            // as uncounted as any picture, and recorded, it swelled the
+            // share the manifests are read for.
             let counts = match counts {
-                Some((expected, may_redraw))
-                    if more_than_listed(&plan.next, plan.also.as_deref()) =>
-                {
+                Some(_) if !me.backend.segments().await => None,
+                Some((expected, may_redraw)) if more_than_listed(&plan.next) => {
                     people_check = Some(PeopleCheck {
                         expected,
                         seen: Vec::new(),
@@ -7317,8 +7323,7 @@ impl Tool for ImageGenerate {
                     });
                     None
                 }
-                Some(c) if me.backend.segments().await => Some(c),
-                _ => None,
+                counts => counts,
             };
             let (image, left) = match (image, counts) {
                 (Ok(first), Some((expected, may_redraw))) => {
@@ -13044,18 +13049,15 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         // A count or a set in the place's words is its furniture.
-        assert!(!more_than_listed(
-            &crate::scene::Scene {
-                setting: Some(crate::scene::Field {
-                    value: crate::scene::Setting::Words {
-                        text: "a family kitchen, a table for two, a pair of armchairs".into()
-                    },
-                    origin: crate::scene::Origin::Clean,
-                }),
-                ..Default::default()
-            },
-            None
-        ));
+        assert!(!more_than_listed(&crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Words {
+                    text: "a family kitchen, a table for two, a pair of armchairs".into()
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        }));
     }
 
     /// What SAM found but `prepare_mask` refuses: a speck is too small to
