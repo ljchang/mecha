@@ -1832,7 +1832,14 @@ pub fn plan(
                     ["my", "viewer's"].contains(x)
                         || whose.as_ref().is_some_and(|h| *x == format!("{h}'s"))
                 });
-                possessive && w.iter().skip(1).take(3).any(|x| PARTS.contains(x))
+                // Not through someone else's possessive: "my sister's
+                // hands" is her.
+                possessive
+                    && w.iter()
+                        .skip(1)
+                        .take(3)
+                        .take_while(|x| !x.ends_with("'s"))
+                        .any(|x| PARTS.contains(x))
             };
             let part = |p: &crate::scene::Person| matches!(&p.who, Who::Described(d) if theirs(d));
             // Never the whole picture: with nobody but the viewer in it, the
@@ -1862,13 +1869,18 @@ pub fn plan(
                     let named: Vec<String> = whose.iter().cloned().collect();
                     parts.push(as_viewer(&said, &named, &[]));
                 }
+                let folded: Vec<String> = people
+                    .iter()
+                    .filter(|p| part(p))
+                    .map(|p| format!("\"{}\"", p.who.key()))
+                    .collect();
                 people.retain(|p| !part(p));
                 next.people.retain(|p| !part(p));
-                notes.push(
-                    "A part of the viewer listed as a person was read as the viewer's own body, \
-                     not one more person."
-                        .into(),
-                );
+                notes.push(format!(
+                    "{} listed as a person was read as the viewer's own body, not one more \
+                     person.",
+                    folded.join(", ")
+                ));
             }
         }
         // Counted before the fold: the holder beside only a part of
@@ -2956,6 +2968,7 @@ mod tests {
             "a stranger staring at me",
             "John's sister",
             "a waiter by my left arm",
+            "my sister's hands",
         ] {
             let r = planned(
                 &call(json!({"scene": {"setting": "a kitchen",
