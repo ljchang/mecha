@@ -67,6 +67,19 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a user-role text is something a harness handed over: this
+/// tool's delivery, the episodes', or the memory store's. None is a passage
+/// of the session it sits in.
+fn delivery(text: &str) -> bool {
+    #[cfg(feature = "memory-prototype")]
+    if text.starts_with(crate::memory_session::DELIVERY_STEM)
+        || text.contains(crate::memory_session::ERROR_STEM)
+    {
+        return true;
+    }
+    text.starts_with(DELIVERY_STEM) || text.starts_with(super::episodes::DELIVERY_STEM)
+}
+
 struct Doc {
     session: String,
     label: &'static str,
@@ -77,7 +90,7 @@ struct Doc {
 
 fn block_doc(session: &str, role: &Role, block: &Block) -> Option<Doc> {
     let (label, text) = match (role, block) {
-        (Role::User, Block::Text { text }) if text.starts_with(DELIVERY_STEM) => return None,
+        (Role::User, Block::Text { text }) if delivery(text) => return None,
         (Role::User, Block::Text { text }) => ("user text", text.clone()),
         (Role::Assistant, Block::Text { text }) => ("assistant text", text.clone()),
         (_, Block::ToolUse { name, input, .. }) => ("tool call", format!("{name} {input}")),
@@ -111,17 +124,25 @@ fn rank<'a>(docs: &'a [Doc], query: &str) -> Vec<&'a Doc> {
     }
     let n = docs.len() as f64;
     let mean = docs.iter().map(|d| d.len).sum::<usize>() as f64 / n;
+    // A term's document frequency is the corpus's, counted once: inside the
+    // loop below it was a walk of every block for every block (review of
+    // #875).
+    let idf: BTreeMap<&String, f64> = terms
+        .iter()
+        .map(|term| {
+            let df = docs.iter().filter(|d| d.counts.contains_key(term)).count() as f64;
+            (term, ((n - df + 0.5) / (df + 0.5) + 1.0).ln())
+        })
+        .collect();
     let mut scored: Vec<(f64, usize)> = docs
         .iter()
         .enumerate()
         .filter_map(|(at, doc)| {
             let mut score = 0.0;
-            for term in &terms {
-                let Some(&tf) = doc.counts.get(term) else {
+            for (term, idf) in &idf {
+                let Some(&tf) = doc.counts.get(*term) else {
                     continue;
                 };
-                let df = docs.iter().filter(|d| d.counts.contains_key(term)).count() as f64;
-                let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
                 let tf = tf as f64;
                 score += idf * tf * (K1 + 1.0) / (tf + K1 * (1.0 - B + B * doc.len as f64 / mean));
             }
@@ -196,7 +217,7 @@ impl Tool for Transcripts {
         };
         let dir = self.dir.clone();
         let current = self.current.clone();
-        let (docs, sessions) = tokio::task::spawn_blocking(move || {
+        let (hits, sessions) = tokio::task::spawn_blocking(move || {
             let mut paths: Vec<PathBuf> = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries
                     .filter_map(|e| e.ok().map(|e| e.path()))
@@ -224,10 +245,14 @@ impl Tool for Transcripts {
                     }
                 }
             }
-            (docs, sessions)
+            // Ranked here too, off the runtime's threads.
+            let hits: Vec<(String, &'static str, String)> = rank(&docs, &query)
+                .into_iter()
+                .map(|hit| (hit.session.clone(), hit.label, hit.text.clone()))
+                .collect();
+            (hits, sessions)
         })
         .await?;
-        let hits = rank(&docs, &query);
         if hits.is_empty() {
             return Ok(ToolOutput::ok(format!(
                 "no passage in {sessions} earlier session(s) matches."
@@ -237,13 +262,10 @@ impl Tool for Transcripts {
             "{} passage(s) from {sessions} earlier session(s), best match first:\n",
             hits.len()
         );
-        for hit in hits {
-            let shown = excerpt(&hit.text);
-            out.push_str(&format!(
-                "\n[session {} · {}]\n{shown}\n",
-                hit.session, hit.label
-            ));
-            if shown.len() < hit.text.len() {
+        for (session, label, text) in &hits {
+            let shown = excerpt(text);
+            out.push_str(&format!("\n[session {session} · {label}]\n{shown}\n"));
+            if shown.len() < text.len() {
                 out.push_str("[cut]\n");
             }
         }

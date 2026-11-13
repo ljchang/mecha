@@ -552,7 +552,31 @@ pub fn found(
     let messages = crate::session::Session::messages_ever(transcript);
     let mut episodes = extract(session, &messages, &novel);
     episodes.extend(outcome(session, &messages, learnable));
+    // An episode quotes the model's own arguments and words, and those can
+    // carry anything the conversation had read by then, whichever call
+    // brought it in. So the session's recorded taint decides, not the calls
+    // the episode happens to span: outside content anywhere in the run, or
+    // no record of whether there was, and every episode from it is outside
+    // content (review of #875).
+    if recorded_untrusted(transcript) != Some(false) {
+        for episode in &mut episodes {
+            episode.external = true;
+        }
+    }
     episodes
+}
+
+/// The last taint a transcript recorded: whether the conversation had read
+/// outside content. `None` when it recorded none.
+fn recorded_untrusted(transcript: &str) -> Option<bool> {
+    transcript
+        .lines()
+        .filter_map(|line| serde_json::from_str::<crate::session::Record>(line).ok())
+        .filter_map(|record| match record {
+            crate::session::Record::Taint(taint) => Some(taint.untrusted),
+            _ => None,
+        })
+        .next_back()
 }
 
 /// Read a finished run's transcript and append what it found out. Returns
@@ -605,19 +629,22 @@ fn select<'a>(
         let text = e.render().to_lowercase();
         words.iter().filter(|w| text.contains(w.as_str())).count()
     };
-    let mut hits: Vec<(usize, &Episode)> = episodes
+    let mut hits: Vec<(usize, usize, &Episode)> = episodes
         .iter()
         .enumerate()
         .filter(|(_, e)| e.concerns(available))
+        .map(|(at, e)| (overlap(e), at, e))
         .collect();
-    hits.sort_by(|(ai, a), (bi, b)| {
-        overlap(b)
-            .cmp(&overlap(a))
+    hits.sort_by(|(ao, ai, a), (bo, bi, b)| {
+        bo.cmp(ao)
             .then(a.first_use().cmp(&b.first_use()))
             .then(b.seen.cmp(&a.seen))
             .then(bi.cmp(ai))
     });
-    hits.into_iter().take(DELIVERED).map(|(_, e)| e).collect()
+    hits.into_iter()
+        .take(DELIVERED)
+        .map(|(_, _, e)| e)
+        .collect()
 }
 
 /// Where a run's episodes are read from: the home's file, or a store the
@@ -983,6 +1010,33 @@ mod tests {
             .content
             .contains("The run concluded"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn what_the_run_had_read_decides_whether_its_episodes_are_outside_content() {
+        let record =
+            |r: crate::session::Record| format!("{}\n", serde_json::to_string(&r).unwrap());
+        let calls: String = run(vec![
+            call("a", "gate_open", json!({"key": "7"}), "E9", true),
+            call("c", "gate_open", json!({"key": "red7"}), "opened", false),
+        ])
+        .into_iter()
+        .map(|m| record(crate::session::Record::Message(m)))
+        .collect();
+        let taint = |untrusted| {
+            record(crate::session::Record::Taint(crate::agent::Taint {
+                untrusted,
+                ..Default::default()
+            }))
+        };
+        let none = BTreeSet::new();
+        // Every quoted result was local, and the run recorded that it had
+        // read nothing from outside.
+        assert!(!found(&[], "s1", &format!("{calls}{}", taint(false)), &none)[0].external);
+        // It had: the refused call's own arguments may carry it.
+        assert!(found(&[], "s1", &format!("{calls}{}", taint(true)), &none)[0].external);
+        // Nobody recorded either way.
+        assert!(found(&[], "s1", &calls, &none)[0].external);
     }
 
     fn episode(tool: &str, error: &str, fixed: Option<&str>) -> Episode {

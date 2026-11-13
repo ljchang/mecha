@@ -2053,14 +2053,9 @@ fn experiment_judge(
 /// was refused with "live Mecha directories are not memory roots", because a
 /// trial home sits under the operator's.
 #[cfg(feature = "memory-prototype")]
-fn memory_request(
-    mecha: &Path,
-    home: &Path,
-    memory: mecha_core::experiment::ArmMemory,
-) -> Result<PathBuf> {
+fn memory_request(mecha: &Path, home: &Path) -> Result<PathBuf> {
     use mecha_core::memory_home;
     use std::os::unix::fs::OpenOptionsExt;
-    let _ = memory;
     if !memory_home::initialized(home) {
         let mut init = std::process::Command::new(mecha);
         init.args(["memory-session", "init"]).env_clear();
@@ -2091,11 +2086,7 @@ fn memory_request(
     Ok(path)
 }
 #[cfg(not(feature = "memory-prototype"))]
-fn memory_request(
-    _mecha: &Path,
-    _home: &Path,
-    _memory: mecha_core::experiment::ArmMemory,
-) -> Result<PathBuf> {
+fn memory_request(_mecha: &Path, _home: &Path) -> Result<PathBuf> {
     anyhow::bail!(
         "this build has no agent memory; a memory arm needs the `memory-prototype` feature"
     )
@@ -2231,11 +2222,7 @@ async fn run_one(
         );
         cmd.arg("--episodes-deliver")
             .arg("--episodic-memory")
-            .arg(memory_request(
-                mecha,
-                &home,
-                mecha_core::experiment::ArmMemory::EpisodesStore,
-            )?);
+            .arg(memory_request(mecha, &home)?);
     } else if matches!(
         arm.memory,
         Some(
@@ -2257,7 +2244,7 @@ async fn run_one(
             case.id
         );
         cmd.arg("--episodic-memory")
-            .arg(memory_request(mecha, &home, memory)?);
+            .arg(memory_request(mecha, &home)?);
         use mecha_core::experiment::ArmMemory;
         match memory {
             ArmMemory::Delivered => {
@@ -2486,6 +2473,23 @@ async fn run_one(
                 "the task's grade could not be recorded in the trial home's store: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             );
+            // No outcome kept is an answer (a run cut off concluded
+            // nothing); it is said, so a gate that had nothing to act on is
+            // told apart from one that acted.
+            let found = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                .ok()
+                .and_then(|v| v.get("outcome_found").and_then(|f| f.as_bool()));
+            anyhow::ensure!(
+                found.is_some(),
+                "`mecha memory-session appraise-episode` did not say whether it found the \
+                 task's outcome"
+            );
+            if found == Some(false) {
+                eprintln!(
+                    "  {}: no outcome was kept for this task, so its grade retired nothing",
+                    trial.id
+                );
+            }
         }
     }
     trial.checks = graded.checks;

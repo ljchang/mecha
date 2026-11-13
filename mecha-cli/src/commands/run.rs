@@ -321,7 +321,12 @@ pub async fn execute(
     #[cfg(not(feature = "memory-prototype"))]
     let invitation: Option<String> = None;
     let mut opts = GlobalOpts {
-        system_extra: invitation.or_else(|| global.system_extra.clone()),
+        // After whatever a front end already appends, never in place of
+        // it: the arm differs by this line and nothing else.
+        system_extra: match (global.system_extra.clone(), invitation) {
+            (Some(extra), Some(line)) => Some(format!("{extra}\n\n{line}")),
+            (extra, line) => extra.or(line),
+        },
         surface: Some(mecha_core::session::SessionKind::Run),
         // The owner's `--goal`, the one this run is matched toward. A
         // resume without it keeps the saved anchor (below) but declares no

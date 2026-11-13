@@ -25,6 +25,9 @@ use crate::{
 use anyhow::{ensure, Result};
 /// The source kind of an episode kept in the store (`tool::episodes`).
 const EPISODE_CONNECTOR: &str = "host-episode-v1";
+/// The most records one read of the store returns (`Memory::search`'s own
+/// ceiling). Reaching it refuses the read.
+const EPISODE_READ_LIMIT: usize = 1000;
 use authority::{Authority, Frozen, Seal};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -245,10 +248,17 @@ impl SessionMemory {
                 known_at: memory.snapshot()?,
                 valid_at: None,
                 include_possible: true,
-                limit: 1000,
+                limit: EPISODE_READ_LIMIT,
             },
             &self.access(),
         )?;
+        // The search returns the newest records of every kind up to its
+        // limit. At the limit, older episodes may be missing, and a store
+        // read in part is not one to deliver from or to judge against.
+        ensure!(
+            hits.len() < EPISODE_READ_LIMIT,
+            "the store holds too many records to read its episodes whole"
+        );
         hits.sort_by_key(|hit| hit.sequence);
         let mut unreadable = 0;
         let mut episodes = Vec::new();
