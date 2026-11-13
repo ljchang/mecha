@@ -115,12 +115,37 @@ impl ToolShape {
     }
 }
 
-/// What one run showed: a change, what had to come before it, and what came
-/// after, on one thing. Kept per run, in an append-only store, so every
-/// field a later version adds defaults.
+/// Which arrangement a pattern is. Written to an append-only store, so a
+/// kind this build does not know loads as [`Kind::Unknown`] and supports
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// On one thing: a call before the change, the change, a call after.
+    #[default]
+    Bracket,
+    /// One change made on a thing and again on a second thing that an
+    /// earlier call's result named beside the first. `enabler` is the call
+    /// whose result named them; there is no `closer`.
+    Linked,
+    #[serde(other)]
+    Unknown,
+}
+
+impl Kind {
+    fn is_bracket(&self) -> bool {
+        *self == Kind::Bracket
+    }
+}
+
+/// What one run showed: a change, and the calls that went with it
+/// ([`Kind`]). Kept per run, in an append-only store, so every field a
+/// later version adds defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pattern {
     pub session: String,
+    #[serde(default, skip_serializing_if = "Kind::is_bracket")]
+    pub kind: Kind,
     /// The call that changed the thing.
     pub change: ToolShape,
     /// The call on the same thing that came before the change worked.
@@ -156,6 +181,13 @@ impl Pattern {
     /// The structure, with every name left out: two patterns with one key
     /// are one concept.
     pub fn key(&self) -> String {
+        if self.kind == Kind::Linked {
+            return format!(
+                "change[{}] again on what [{}] named",
+                self.change.shape.join(""),
+                self.enabler.shape.join("")
+            );
+        }
         format!(
             "change[{}] after[{}] then[{}]",
             self.change.shape.join(""),
@@ -252,14 +284,8 @@ fn values(input: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The pattern in one run's calls, if it has one.
-///
-/// The thing is the argument value the most different tools were called
-/// with (at least two, and it must be clear which). The change is the tool
-/// on that thing that was refused and then worked; with no refusal, the one
-/// called with the most arguments. The enabler is the last other tool that
-/// worked on the thing before the change did; the closer, the last one
-/// after.
+/// The pattern in one run's calls, if it has one: a bracket on one thing,
+/// and failing that one change made on two linked things.
 pub fn extract(
     session: &str,
     messages: &[Message],
@@ -268,9 +294,103 @@ pub fn extract(
 ) -> Option<Pattern> {
     let by_name: BTreeMap<&str, &ToolShape> = shapes.iter().map(|s| (s.name.as_str(), s)).collect();
     let calls = calls(messages, &by_name, refused);
+    bracket(session, &calls, &by_name).or_else(|| linked(session, &calls, &by_name))
+}
+
+/// One change made twice: the same tool worked on two things, with every
+/// other argument the same, and an earlier result of another tool named
+/// both things. The first such pair in the run.
+fn linked(session: &str, calls: &[Call], by_name: &BTreeMap<&str, &ToolShape>) -> Option<Pattern> {
+    let worked: Vec<(usize, &Call)> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.is_error)
+        .collect();
+    for (nth, (_, second)) in worked.iter().enumerate() {
+        for (_, first) in &worked[..nth] {
+            if first.name != second.name {
+                continue;
+            }
+            let (Some(a), Some(b)) = (first.input.as_object(), second.input.as_object()) else {
+                continue;
+            };
+            if a.len() != b.len() || a.len() < 2 {
+                continue;
+            }
+            // Exactly one argument differs, and it is text on both sides.
+            let mut differing = a.iter().filter(|(k, v)| b.get(*k) != Some(v));
+            let (Some((key, Value::String(one))), None) = (differing.next(), differing.next())
+            else {
+                continue;
+            };
+            let Some(Value::String(other)) = b.get(key) else {
+                continue;
+            };
+            if one.len() < 2 || other.len() < 2 {
+                continue;
+            }
+            let at = worked[nth].0;
+            let Some(source) = calls[..at].iter().find(|c| {
+                !c.is_error
+                    && c.name != first.name
+                    && c.result.contains(one.as_str())
+                    && c.result.contains(other.as_str())
+            }) else {
+                continue;
+            };
+            // What the run read on the way, and what the first change
+            // answered when that was not what the second did.
+            let mut reads: Vec<&Call> = calls[..at]
+                .iter()
+                .filter(|c| !c.is_error && c.name != first.name && c.name != source.name)
+                .collect();
+            reads = reads[reads.len().saturating_sub(QUOTES)..].to_vec();
+            if first.result.trim() != second.result.trim() {
+                reads.insert(0, first);
+            }
+            let shape =
+                |name: &str| (*by_name.get(name).expect("a call's tool has a shape")).clone();
+            return Some(Pattern {
+                session: session.to_string(),
+                kind: Kind::Linked,
+                change: shape(&first.name),
+                enabler: shape(&source.name),
+                closer: None,
+                refused_with: None,
+                read: reads
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{} {} → {}",
+                            c.name,
+                            c.input,
+                            cut(c.result.trim(), QUOTE_BYTES)
+                        )
+                    })
+                    .collect(),
+                external: first.external
+                    || second.external
+                    || source.external
+                    || reads.iter().any(|c| c.external),
+                judged: None,
+            });
+        }
+    }
+    None
+}
+
+/// A bracket on one thing.
+///
+/// The thing is the argument value the most different tools were called
+/// with (at least two, and it must be clear which). The change is the tool
+/// on that thing that was refused and then worked; with no refusal, the one
+/// called with the most arguments. The enabler is the last other tool that
+/// worked on the thing before the change did; the closer, the last one
+/// after.
+fn bracket(session: &str, calls: &[Call], by_name: &BTreeMap<&str, &ToolShape>) -> Option<Pattern> {
     // Which tools were called with each value.
     let mut tools_of: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
-    for call in &calls {
+    for call in calls {
         for value in values(&call.input) {
             tools_of
                 .entry(value)
@@ -345,6 +465,7 @@ pub fn extract(
     let shape = |name: &str| (*by_name.get(name).expect("a call's tool has a shape")).clone();
     Some(Pattern {
         session: session.to_string(),
+        kind: Kind::Bracket,
         change: shape(change),
         enabler: shape(enabler),
         closer: closer.map(shape),
@@ -482,6 +603,13 @@ impl Concept {
     /// here, and the tools whose first success makes it due. `None` for an
     /// arrangement with nothing after the change.
     fn owed(&self, filled: &Filled<'_>) -> Option<Owed> {
+        if self.support[0].kind == Kind::Linked {
+            return Some(Owed {
+                after: filled.change.iter().map(|t| t.name.clone()).collect(),
+                among: String::new(),
+                kind: Kind::Linked,
+            });
+        }
         let closer = filled.closer.as_ref()?;
         let mut either: Vec<&ToolShape> = match filled.own {
             Some(_) => Vec::new(),
@@ -499,10 +627,91 @@ impl Concept {
                 .map(|t| format!("`{}`", t.name))
                 .collect::<Vec<_>>()
                 .join(", "),
+            kind: Kind::Bracket,
         })
     }
 
     fn render(&self, filled: &Filled<'_>) -> String {
+        if self.support[0].kind == Kind::Linked {
+            return self.render_linked(filled);
+        }
+        self.render_bracket(filled)
+    }
+
+    fn render_linked(&self, filled: &Filled<'_>) -> String {
+        // The support that read most on the way says why; with this run's
+        // own tools, the newest run that used them.
+        let shown = match filled.own {
+            Some(at) => &self.support[at],
+            None => self
+                .support
+                .iter()
+                .max_by_key(|p| (p.read.len(), p.read.iter().map(String::len).sum::<usize>()))
+                .expect("never empty"),
+        };
+        let gloss = |t: &ToolShape| {
+            if t.description.trim().is_empty() {
+                format!("`{}`", t.name)
+            } else {
+                format!("`{}` (\"{}\")", t.name, t.description.trim())
+            }
+        };
+        let names = |tools: &[&ToolShape]| {
+            tools
+                .iter()
+                .map(|t| format!("`{}`", t.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let judged = self
+            .support
+            .iter()
+            .filter(|p| p.judged == Some(true))
+            .count();
+        let mut out = format!(
+            "- {} {} run(s){}, one change was made twice:\n",
+            match filled.own {
+                Some(_) => "With the tools you have here or ones like them, in",
+                None => "In another service, in",
+            },
+            self.support.len(),
+            match judged {
+                0 => String::new(),
+                n if n == self.support.len() => ", each judged to have succeeded".to_string(),
+                n => format!(", {n} of them judged to have succeeded"),
+            }
+        );
+        out.push_str(&format!(
+            "    1. {} showed the thing, and what it returned named a second thing beside it;\n",
+            gloss(&shown.enabler)
+        ));
+        out.push_str(&format!(
+            "    2. the change, {}, was made on the first thing;\n",
+            gloss(&shown.change)
+        ));
+        out.push_str("    3. then the same change, with the same values, was made on the second thing. The task was not finished until this was done.\n");
+        for read in &shown.read {
+            out.push_str(&format!("  What that run had read: {read}\n"));
+        }
+        if self.tried > 0 {
+            out.push_str(&format!(
+                "  Handed to {} other run(s): {} of them then showed the same three steps.\n",
+                self.tried, self.held
+            ));
+        }
+        if filled.own.is_some() {
+            out.push_str("  Those are tools you have here: step 3 is still owed after the change has worked on the first thing.\n");
+        } else {
+            out.push_str(&format!(
+                "  If the same holds here: the change is {}, and what names the second thing is returned by one of {}. Step 3 is still owed after the change has worked on the first thing.\n",
+                names(&filled.change),
+                names(&filled.enabler)
+            ));
+        }
+        out
+    }
+
+    fn render_bracket(&self, filled: &Filled<'_>) -> String {
         // The support that says most speaks for the concept: one that met
         // the refusal, then the one that read most on the way, then the
         // newest. A run that already knew the order (an episode told it)
@@ -615,6 +824,7 @@ impl Concept {
 struct Owed {
     after: Vec<String>,
     among: String,
+    kind: Kind,
 }
 
 /// A reminder that what a look shows is still not as the run found it is
@@ -635,14 +845,28 @@ struct Watch {
     due: Option<Due>,
 }
 
-struct Due {
-    among: String,
-    /// The values the change was called with. A field that now holds one
-    /// of them is the change that was asked for, not something left over.
-    asked: Vec<String>,
-    reminded: u32,
-    /// The last look showed the thing as it was found.
-    settled: bool,
+enum Due {
+    /// A bracket's last step: something the first step left is to be put
+    /// back.
+    Restore {
+        among: String,
+        /// The values the change was called with. A field that now holds
+        /// one of them is the change that was asked for, not something left
+        /// over.
+        asked: Vec<String>,
+        reminded: u32,
+        /// The last look showed the thing as it was found.
+        settled: bool,
+    },
+    /// A linked change's second half: the same call on another thing.
+    Again {
+        tool: String,
+        /// The change's input as it was made, and the argument that named
+        /// the first thing.
+        made: serde_json::Map<String, Value>,
+        thing: Option<String>,
+        reminded: bool,
+    },
 }
 
 fn plain(value: &Value) -> Option<String> {
@@ -672,11 +896,14 @@ impl Watch {
             .position(|o| o.after.iter().any(|t| t == tool))
         {
             let owed = self.owed.remove(at);
+            if owed.kind == Kind::Linked {
+                return Some(self.again(tool, input));
+            }
             let text = format!(
                 "The change has now worked. In the arrangement you were shown at the start, this was step 2 of 3: there, the task was not finished until one more call was made on the same thing, with a different tool from the one that made the change possible. If the same holds here, that call is still owed and is one of {}. Looking the thing up again shows whether it is as you first found it, apart from the change you were asked for.\n",
                 owed.among
             );
-            self.due = Some(Due {
+            self.due = Some(Due::Restore {
                 among: owed.among,
                 asked: input
                     .as_object()
@@ -687,18 +914,56 @@ impl Watch {
             });
             return Some(text);
         }
+        if let Some(Due::Again {
+            tool: change,
+            made,
+            thing,
+            reminded,
+        }) = &mut self.due
+        {
+            // The same call with one argument different: the second half.
+            if tool == change.as_str() {
+                let same = input.as_object().is_some_and(|now| {
+                    now.len() == made.len()
+                        && now.iter().filter(|(k, v)| made.get(*k) != Some(v)).count() == 1
+                });
+                if same {
+                    self.due = None;
+                }
+                return None;
+            }
+            // Looking the first thing up again with the second half unmade:
+            // said once more.
+            let looked_again = self.first.contains_key(&key)
+                && thing.as_ref().is_some_and(|t| result.contains(t.as_str()));
+            if looked_again && !*reminded {
+                *reminded = true;
+                return Some(format!(
+                    "The change has been made on one thing only. If the arrangement from elsewhere holds here, the same `{change}` call on the second thing this record names is still owed.\n"
+                ));
+            }
+            return None;
+        }
         let seen = seen?;
         let Some(first) = self.first.get(&key) else {
             self.first.insert(key, seen);
             return None;
         };
-        let due = self.due.as_mut()?;
+        let Some(Due::Restore {
+            among,
+            asked,
+            reminded,
+            settled,
+        }) = self.due.as_mut()
+        else {
+            return None;
+        };
         let left: Vec<String> = seen
             .iter()
             .filter_map(|(field, now)| {
                 let now = plain(now)?;
                 let then = plain(first.get(field)?)?;
-                (now != then && !due.asked.contains(&now))
+                (now != then && !asked.contains(&now))
                     .then(|| format!("`{field}` is {now} and was {then} when you first looked"))
             })
             .collect();
@@ -707,28 +972,78 @@ impl Watch {
             // run had been told otherwise, so it knows to stop looking for
             // the step; a later look that shows it disturbed again is
             // answered again.
-            let told = due.reminded > 0 && !due.settled;
-            due.settled = true;
+            let told = *reminded > 0 && !*settled;
+            *settled = true;
             return told.then(|| {
                 "This is now as it was when you first looked, apart from the change you were asked for. If the arrangement from elsewhere holds here, the step after the change has been made and nothing further is owed; a further call on it may undo that.\n".to_string()
             });
         }
-        if due.reminded == REMINDERS && !due.settled {
+        if *reminded == REMINDERS && !*settled {
             return None;
         }
-        if due.settled {
-            due.settled = false;
+        if *settled {
+            *settled = false;
             return Some(format!(
                 "This was as you first found it, and a call since then has changed that: {}. The call that put it right earlier is the step after the change.\n",
                 left.join("; ")
             ));
         }
-        due.reminded += 1;
+        *reminded += 1;
         Some(format!(
             "The step after the change has not been made yet, if the arrangement from elsewhere holds here: {}, which the change you were asked for does not account for. There, the last step was a different tool from the one that made the change possible; here it would be one of {}. A call that leaves this as it is was not that step.\n",
             left.join("; "),
-            due.among
+            among
         ))
+    }
+
+    /// A linked change has worked on its first thing: what is said, and
+    /// what is then waited for. The first thing is the argument an earlier
+    /// lookup's result also held; the things that record names beside it
+    /// are listed, from this run's own results.
+    fn again(&mut self, tool: &str, input: &Value) -> String {
+        let made = input.as_object().cloned().unwrap_or_default();
+        let texts: Vec<&str> = made.values().filter_map(Value::as_str).collect();
+        let record = self.first.values().find_map(|record| {
+            let thing = record
+                .values()
+                .filter_map(Value::as_str)
+                .find(|v| texts.contains(v))?;
+            Some((thing.to_string(), record))
+        });
+        let (thing, named) = match record {
+            Some((thing, record)) => {
+                let named: Vec<String> = record
+                    .iter()
+                    .filter_map(|(field, value)| {
+                        let value = value.as_str()?;
+                        (value != thing).then(|| format!("`{field}`: {value}"))
+                    })
+                    .collect();
+                (Some(thing), named)
+            }
+            None => (None, Vec::new()),
+        };
+        let mut text = format!(
+            "The change has now worked{}. In the arrangement you were shown at the start, this was step 2 of 3: there, the task was not finished until the same change, with the same values, was made on a second thing that the first thing's own record named. If the same holds here, one more `{tool}` call is still owed.",
+            match &thing {
+                Some(thing) => format!(" on {thing}"),
+                None => String::new(),
+            }
+        );
+        if !named.is_empty() {
+            text.push_str(&format!(
+                " The record you looked up for it holds, beside itself: {}. A call that is refused was not on the second thing.",
+                named.join("; ")
+            ));
+        }
+        text.push('\n');
+        self.due = Some(Due::Again {
+            tool: tool.to_string(),
+            made,
+            thing,
+            reminded: false,
+        });
+        text
     }
 }
 
@@ -753,7 +1068,10 @@ pub fn fold(patterns: Vec<Pattern>, offers: Vec<Offer>) -> Vec<Concept> {
         }
     }
     let mut concepts: Vec<Concept> = Vec::new();
-    for pattern in latest.into_iter().filter(|p| p.judged != Some(false)) {
+    for pattern in latest
+        .into_iter()
+        .filter(|p| p.judged != Some(false) && p.kind != Kind::Unknown)
+    {
         let key = pattern.key();
         match concepts.iter_mut().find(|c| c.key == key) {
             Some(concept) => concept.support.push(pattern),
@@ -1485,5 +1803,158 @@ mod tests {
             out.content
         );
         assert_eq!(cue("quay_set", &set, "ok"), None);
+    }
+
+    fn signs() -> Vec<ToolShape> {
+        vec![
+            shape("sg_manual", "Read the manual.", &[], &["topic"]),
+            shape("sg_find", "Find a sign.", &["name"], &[]),
+            shape("sg_text", "Set a sign's text.", &["sign", "text"], &[]),
+        ]
+    }
+
+    fn valves() -> Vec<ToolShape> {
+        vec![
+            shape("vl_get", "Get a valve.", &["tag"], &[]),
+            shape("vl_aux", "Auxiliary.", &["valve"], &[]),
+            shape("vl_mode", "Set a valve's mode.", &["valve", "mode"], &[]),
+        ]
+    }
+
+    fn set_on_both() -> Vec<Message> {
+        run(vec![
+            call(
+                "a",
+                "sg_find",
+                json!({"name": "Bridge approach"}),
+                r#"{"sign": "S-3", "text": "Open", "mirror": "S-7"}"#,
+                false,
+            ),
+            call(
+                "b",
+                "sg_text",
+                json!({"sign": "S-3", "text": "Closed"}),
+                "set (M3)",
+                false,
+            ),
+            call(
+                "c",
+                "sg_manual",
+                json!({"topic": "codes"}),
+                "M3: the mirror differs; set both",
+                false,
+            ),
+            call(
+                "d",
+                "sg_text",
+                json!({"sign": "S-7", "text": "Closed"}),
+                "set",
+                false,
+            ),
+        ])
+    }
+
+    #[test]
+    fn one_change_made_on_two_things_a_result_named_together_is_a_linked_pattern() {
+        let pattern = extract("s1", &set_on_both(), &signs(), &Refused::new()).unwrap();
+        assert_eq!(pattern.kind, Kind::Linked);
+        assert_eq!(pattern.key(), "change[SS] again on what [S] named");
+        assert_eq!(pattern.change.name, "sg_text");
+        assert_eq!(pattern.enabler.name, "sg_find");
+        assert_eq!(pattern.closer, None);
+        // What the first change answered, and what was read before the
+        // second.
+        assert!(pattern.read[0].contains("set (M3)"), "{:?}", pattern.read);
+        assert!(pattern.read[1].contains("set both"), "{:?}", pattern.read);
+
+        // Two changes with different values are two changes, and two
+        // things no result named together are not linked.
+        let mut other = set_on_both();
+        other.truncate(6);
+        other.extend(call(
+            "d",
+            "sg_text",
+            json!({"sign": "S-7", "text": "Open"}),
+            "set",
+            false,
+        ));
+        assert_eq!(extract("s1", &other, &signs(), &Refused::new()), None);
+        let mut apart = set_on_both();
+        apart.truncate(6);
+        apart.extend(call(
+            "d",
+            "sg_text",
+            json!({"sign": "S-9", "text": "Closed"}),
+            "set",
+            false,
+        ));
+        assert_eq!(extract("s1", &apart, &signs(), &Refused::new()), None);
+
+        // A kind this build does not know is read, and supports nothing.
+        let mut later = serde_json::to_value(&pattern).unwrap();
+        later["kind"] = json!("a_later_kind");
+        let later: Pattern = serde_json::from_value(later).unwrap();
+        assert_eq!(later.kind, Kind::Unknown);
+        assert!(fold(vec![later], vec![]).is_empty());
+        // And a bracket's record is written as it always was.
+        let bracket = extract(
+            "s1",
+            &locked_then_changed(true),
+            &registry(),
+            &Refused::new(),
+        )
+        .unwrap();
+        assert!(serde_json::to_value(&bracket)
+            .unwrap()
+            .get("kind")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_linked_change_is_owed_on_the_second_thing_until_it_is_made_there() {
+        let pattern = extract("s1", &set_on_both(), &signs(), &Refused::new()).unwrap();
+        let loader: Loader = std::sync::Arc::new(move || {
+            Ok(Kept {
+                patterns: vec![pattern.clone()],
+                ..Default::default()
+            })
+        });
+        let tool = Concepts::from_loader(loader, valves());
+        let cue = tool.cue();
+        let out = tool.call(json!({}), &ctx()).await.unwrap();
+        let said =
+            |needle: &str| assert!(out.content.contains(needle), "{needle}: {}", out.content);
+        said("one change was made twice");
+        said("the change is `vl_mode`, and what names the second thing is returned by one of `vl_get`, `vl_aux`");
+        said("set (M3)");
+
+        let get = json!({"tag": "North feed"});
+        let record = r#"{"valve": "V-2", "mode": "open", "zone": "Z-4", "c2": "V-9", "bore": 40}"#;
+        assert_eq!(cue("vl_get", &get, record), None);
+        let owed = cue("vl_mode", &json!({"valve": "V-2", "mode": "slow"}), "ok").unwrap();
+        // The first thing by its code, and what its record names beside
+        // it: text fields only, and not the thing itself.
+        assert!(
+            owed.contains("worked on V-2")
+                && owed.contains("`c2`: V-9")
+                && owed.contains("`zone`: Z-4")
+                && !owed.contains("bore")
+                && !owed.contains("`valve`"),
+            "{owed}"
+        );
+        // Nothing the other service's run said or used.
+        for theirs in ["sg_", "M3", "mirror", "S-7"] {
+            assert!(!owed.contains(theirs), "{theirs}: {owed}");
+        }
+        // Looked up again with the second half unmade: said once more.
+        assert!(cue("vl_get", &get, record).is_some());
+        assert_eq!(cue("vl_get", &get, record), None);
+        // The same call on another thing is the second half, and then
+        // nothing is owed.
+        assert_eq!(
+            cue("vl_mode", &json!({"valve": "V-9", "mode": "slow"}), "ok"),
+            None
+        );
+        assert_eq!(cue("vl_get", &get, record), None);
     }
 }
