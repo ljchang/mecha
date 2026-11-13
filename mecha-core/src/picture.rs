@@ -67,6 +67,20 @@ impl Call {
     pub fn may_segment(&self) -> bool {
         self.mask_words.is_some() || self.regions.iter().any(|r| about_a_face(&r.words))
     }
+
+    /// Whether the picture this call draws may be counted for its people
+    /// after the render (`imagegen::PeopleCheck`): never an edit of a
+    /// picture's own pixels, and never a new picture that lists nobody.
+    /// Known before the plan, which is when the job's memory is asked for:
+    /// asked of every call, the count's model raised the floor under
+    /// pictures it could never run on (review of #874).
+    pub fn counts_people(&self) -> bool {
+        self.mask.is_none()
+            && self.mask_words.is_none()
+            && self.regions.is_empty()
+            && self.retouch.is_none()
+            && (self.picture.is_some() || self.change.people.iter().any(|p| !p.remove))
+    }
 }
 
 /// An outfit as the image model is given it: one that opens with nudity

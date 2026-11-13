@@ -1959,6 +1959,9 @@ struct PeopleCheck {
     renders: usize,
 }
 
+/// Why a count far over the cast stopped: recorded, never said.
+const FAR_OVER: &str = "far over the cast";
+
 /// Whether a scene's words put more people in the frame than its cast
 /// lists: a crowd in the setting, or one `who` that is several. Such a
 /// picture is not counted: over the cast by design, it was drawn again
@@ -2038,6 +2041,9 @@ impl PeopleCheck {
                 format!("{n} people")
             }
         };
+        if self.stopped.as_deref() == Some(FAR_OVER) {
+            return None;
+        }
         let first = *self.seen.first()?;
         let kept = *self.seen.get(self.kept)?;
         let renders = self.renders.max(self.seen.len());
@@ -3965,6 +3971,14 @@ impl ImageGenerate {
             if !over || !may_redraw || renders.len() > PEOPLE_REDRAWS {
                 break;
             }
+            // Far over the cast on the first count is a crowd the scene's
+            // words did not name, far more likely than one figure drawn
+            // twice (the measured doubling is one over): kept, recorded,
+            // and neither drawn again nor said to be wrong.
+            if renders.len() == 1 && check.seen[0] > expected + 1 {
+                check.stopped = Some(FAR_OVER.into());
+                break;
+            }
             if budget.is_zero() {
                 check.stopped = Some("the counts' time was spent".into());
                 break;
@@ -5096,8 +5110,10 @@ impl Tool for ImageGenerate {
         // The owner's LoRAs for it, from the same read of the settings.
         let (picked, lora_off) = self.picture_loras(ctx, tuning.model.unwrap_or_default());
         // A new picture is counted by SAM after it is drawn (`PeopleCheck`),
-        // and whether this call is one is not known until it is planned.
-        let may_segment = call.may_segment() || self.cfg.people_check;
+        // and whether this call is one is not known until it is planned: a
+        // call that can never be is not charged for it.
+        let counts_people = self.cfg.people_check && call.counts_people();
+        let may_segment = call.may_segment() || counts_people;
         if let Err(why) = self
             .memory_guard(tuning.model.unwrap_or_default(), may_segment)
             .await
@@ -7114,19 +7130,14 @@ impl Tool for ImageGenerate {
             // are in it, and a first-person view, are left uncounted: SAM
             // finds a person in a forearm (3 to 5 finds where the scene had
             // 2, on the three recorded pictures of that shape, 2026-11-12).
-            let counts = (me.cfg.people_check
+            let counts = (counts_people
                 && matches!(plan.render, crate::picture::Render::New)
                 && layered.is_none()
                 && !plan.people.is_empty()
                 && plan.offstage.is_empty()
                 && plan.seen_from.is_none()
                 && !more_than_listed(&plan.next, plan.also.as_deref()))
-            .then(|| {
-                (
-                    plan.people.len(),
-                    plan.seed == crate::picture::Seed::Fresh || plan.route == "redrawn",
-                )
-            });
+            .then(|| (plan.people.len(), plan.seed == crate::picture::Seed::Fresh));
             let counts = match counts {
                 Some(c) if me.backend.segments().await => Some(c),
                 _ => None,
@@ -12525,9 +12536,10 @@ mod tests {
         counts: &[usize],
         seed: Option<u64>,
     ) -> (ToolOutput, Vec<String>, std::path::PathBuf) {
-        let (first, second) = (
+        let (first, second, third) = (
             mask_png(96, 96, (4, 10, 40, 90)),
             mask_png(96, 96, (54, 10, 90, 90)),
+            mask_png(96, 96, (42, 10, 52, 90)),
         );
         let none = mask_png(96, 96, (0, 0, 0, 0));
         let mut history = Vec::new();
@@ -12538,7 +12550,11 @@ mod tests {
             views.push(picture(8 * i as u32, [240, 220, 40]));
             // Its count: a mask a find, then the graph's empty one.
             history.push(done_with(n + 1));
-            views.extend([first.clone(), second.clone()].into_iter().take(*n));
+            views.extend(
+                [first.clone(), second.clone(), third.clone()]
+                    .into_iter()
+                    .take(*n),
+            );
             views.push(none.clone());
         }
         let (url, seen) = fake_with(Fake {
@@ -12586,6 +12602,20 @@ mod tests {
             manifest["people_check"],
             json!({"expected": 1, "seen": [1], "kept": 0, "not_counted": null})
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Far over the cast on the first count is a crowd the words did not
+    /// name: kept and recorded, never drawn again or said to be wrong.
+    #[tokio::test]
+    async fn a_picture_far_over_its_cast_is_kept_and_not_said_wrong() {
+        let (out, seen, dir) = new_picture_counted(&[3], None).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(prompts(&seen).len(), 2, "render, count: {seen:?}");
+        assert!(!out.content.contains("seems to show"), "{}", out.content);
+        let check = &manifest_of(&dir, &out.content)["people_check"];
+        assert_eq!(check["seen"], json!([3]));
+        assert_eq!(check["not_counted"], json!(FAR_OVER));
         std::fs::remove_dir_all(dir).ok();
     }
 
