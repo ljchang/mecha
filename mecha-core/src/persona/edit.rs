@@ -767,7 +767,11 @@ pub fn read_extraction_for(
                 .enumerate()
                 .filter(|(i, clause)| match *i {
                     0 => !clause.eq_ignore_ascii_case(new.trim()) && !bare_move(clause),
-                    i if i == last => !relative_camera(clause),
+                    // Nothing but a move, as the first clause is read: one
+                    // that says what the shot is close on stays, and what
+                    // piles up of such is kept under the field's cap below
+                    // (pass 17).
+                    i if i == last => !bare_move(clause),
                     _ => true,
                 })
                 .map(|(_, clause)| *clause)
@@ -873,10 +877,18 @@ pub fn read_extraction_for(
                     }
                     we
                 }
-                Some(Pronoun::Group) => {
-                    not_people.push(format!("{who} names no one person"));
-                    continue;
-                }
+                // "They" on a picture of one other person is that person,
+                // as "her" and "him" are (pass 17).
+                Some(Pronoun::Group) => match sole_other.filter(|_| {
+                    ["they", "them", "themselves", "themself"]
+                        .contains(&who.trim_end_matches('.').to_lowercase().as_str())
+                }) {
+                    Some(one) => vec![one],
+                    None => {
+                        not_people.push(format!("{who} names no one person"));
+                        continue;
+                    }
+                },
             };
             let several = names.len() > 1;
             for who in names {
@@ -1132,7 +1144,9 @@ fn pronoun(who: &str) -> Option<Pronoun> {
         // owner is (review of #758, pass 3).
         "viewer" | "the viewer" => Some(Pronoun::Group),
         "we" | "us" | "ourselves" => Some(Pronoun::We),
-        "both" | "all" | "everyone" | "everybody" | "they" | "them" => Some(Pronoun::Group),
+        "both" | "all" | "everyone" | "everybody" | "they" | "them" | "themselves" | "themself" => {
+            Some(Pronoun::Group)
+        }
         _ => None,
     }
 }
@@ -1587,6 +1601,13 @@ mod tests {
                 "pull back to John's first-person view, a touch wider",
             ),
             ("a touch nearer", "a touch nearer", "a touch nearer"),
+            // A last clause that opens with a move word and says what the
+            // shot is close on is the shot's own.
+            (
+                "a low angle, pushed in close on the teapot",
+                "a touch wider",
+                "a low angle, pushed in close on the teapot, a touch wider",
+            ),
             // A clause in the middle that opens with a move word is the
             // shot's own.
             (
