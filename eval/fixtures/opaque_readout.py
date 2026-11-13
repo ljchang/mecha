@@ -28,6 +28,7 @@ STEMS = (
     "The harness searched your memory",
     "The harness searched the transcripts",
     "A call just failed. The harness searched your memory",
+    "The harness looked up what your earlier runs found out",
 )
 MEMORY_TOOLS = ("goal_context", "transcript_search", "memory_search")
 

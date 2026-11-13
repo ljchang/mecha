@@ -2220,7 +2220,10 @@ async fn run_one(
     // A memory arm: the trial home's own store, made once and carried with
     // the home. The goal is the manifest's to confirm for every arm alike,
     // so the arms differ in memory and in nothing else.
-    if arm.memory == Some(mecha_core::experiment::ArmMemory::Transcripts) {
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::Episodes) {
+        // Its own file under the home, made on the first episode kept.
+        cmd.arg("--episodes-deliver");
+    } else if arm.memory == Some(mecha_core::experiment::ArmMemory::Transcripts) {
         // No store to make: the home's own session files are the corpus.
         cmd.arg("--transcripts-deliver");
     } else if let Some(memory) = arm.memory {
@@ -2244,7 +2247,7 @@ async fn run_one(
             ArmMemory::Invited => {
                 cmd.arg("--memory-invite");
             }
-            ArmMemory::Everything | ArmMemory::Transcripts => {}
+            ArmMemory::Everything | ArmMemory::Transcripts | ArmMemory::Episodes => {}
         }
     }
 

@@ -1129,6 +1129,7 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         Some(ArmMemory::DeliveredOnError) => {
             fnv64(format!("{original}|memory=delivered_on_error").as_bytes())
         }
+        Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
     }
 }
@@ -1152,6 +1153,11 @@ pub enum ArmMemory {
     /// one system-prompt line saying the model has a memory and when to
     /// search it. Whether a model told about its memory uses it.
     Invited,
+    /// Appraisal-gated episodes: after a run, what it found out where a
+    /// call was refused, kept in a few lines with no model call; before a
+    /// run, the episodes about the tools it has, handed over
+    /// (`tool::episodes`).
+    Episodes,
     /// No store: the harness searches the home's earlier session
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.

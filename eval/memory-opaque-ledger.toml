@@ -93,3 +93,12 @@ memory = "delivered_on_error"
 [arms.delivered_on_error.prediction]
 metric = "failure"
 rationale = "A search by the task's words never returned the unit rule; a second search by the harness after a failed call, keyed by the failure's own words, returns it, and the harder probe passes more often than with delivery at the start alone."
+
+[arms.episodes]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes"
+
+[arms.episodes.prediction]
+metric = "failure"
+rationale = "Keyword recall of everything returned the unit rule on at most half the harder probes and cost 5 to 20 KB a task. An episode kept only where a call was refused holds the refusal's words and the call that worked, and is delivered to a run that has that tool: the unit rule reaches every harder probe whose lifetime met it, at under 2 KB."

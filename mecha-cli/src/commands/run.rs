@@ -69,6 +69,13 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
     pub transcripts_deliver: bool,
 
+    /// Keep what this run finds out the hard way (a refused call, and what
+    /// then worked) in the home's episode file, and before the first request
+    /// hand the model the episodes earlier runs kept about the tools it has.
+    /// Arms private data, and outside content when an episode quotes any.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images", "transcripts_deliver"])]
+    pub episodes_deliver: bool,
+
     /// Read-only synthetic memory for goal_context (experimental, unencrypted).
     #[cfg(feature = "memory-prototype")]
     #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
@@ -515,6 +522,53 @@ pub async fn execute(
         }
         _ => delivered,
     };
+    // And over the home's episodes (`--episodes-deliver`): the few lines
+    // earlier runs kept about the tools this one has. What this run finds
+    // out is kept after it ends, below.
+    let delivered = match (&session, args.episodes_deliver) {
+        (Some(_), true) => {
+            use mecha_core::tool::episodes;
+            anyhow::ensure!(
+                delivered.is_none(),
+                "--episodes-deliver is its own arm; it does not combine with another delivery"
+            );
+            let available: Vec<String> = prepared
+                .agent
+                .registry()
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect();
+            prepared
+                .agent
+                .registry_mut()
+                .insert(std::sync::Arc::new(episodes::Episodes::new(
+                    episodes::file_in(&mecha_core::work::mecha_home()?),
+                    available,
+                )));
+            let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+            let dispatched = prepared
+                .agent
+                .dispatch_one(
+                    &cx,
+                    &mut convo,
+                    episodes::NAME,
+                    episodes::delivery_input(&prompt),
+                    &None,
+                )
+                .await;
+            eprintln!(
+                "mecha: episodes delivered {} bytes{}",
+                dispatched.content.len(),
+                if dispatched.is_error {
+                    " (an error)"
+                } else {
+                    ""
+                }
+            );
+            Some(format!("{}{}", episodes::DELIVERY_STEM, dispatched.content))
+        }
+        _ => delivered,
+    };
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
@@ -725,6 +779,25 @@ pub async fn execute(
             turns: outcome.turns,
         })?;
         s.record_outcome(&outcome)?;
+        // Retention, after the outcome and from the record: what the run
+        // found out, if anything was refused. No model is asked. A failure
+        // here costs the episode, never the run.
+        if args.episodes_deliver {
+            use mecha_core::tool::episodes;
+            let kept = std::fs::read_to_string(&s.path)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| {
+                    episodes::retain(
+                        &episodes::file_in(&mecha_core::work::mecha_home()?),
+                        &s.meta.id,
+                        &text,
+                    )
+                });
+            match kept {
+                Ok(n) => eprintln!("mecha: episodes kept {n}"),
+                Err(e) => eprintln!("mecha: episodes not kept: {e:#}"),
+            }
+        }
         if let Some(mb) = &prepared.mailbox {
             mb.detach(&s.meta.id);
         }

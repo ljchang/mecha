@@ -9,6 +9,7 @@ pub mod builtin;
 pub mod code;
 pub mod document;
 pub mod effect;
+pub mod episodes;
 pub mod goal_context;
 #[cfg(feature = "memory-prototype")]
 pub mod goal_memory;
