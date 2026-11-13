@@ -620,3 +620,81 @@ and the header records them as `image_tuning`.
 
 - **cfg above 1 with turbo is allowed.** It undoes the distillation's
   point, and the page says so beside the choice.
+
+## 17. Moving the camera on a picture that continues (owner, 2026-11-12)
+
+The owner's rule: a picture that continues keeps its room and its clothes.
+A camera ask on such a picture is restaged (§5.2), and a restage cannot do
+both halves. Measured on the replay rig on recorded panel turns
+(2026-11-12, three seeds an arm, scored by eye):
+
+- **At the base seed the room holds because the frame holds.** The camera
+  did what was asked in 2 of 6 cases, and in the one where it turned, the
+  room changed with it.
+- **A fresh seed is not the lever.** The same asks failed on all three
+  fresh seeds (6 of 18), the room held in 3 of 15, and rear views doubled.
+- **Camera words first, stronger guidance, and borrowing the room back in
+  a second edit** did not change that (5 of 17; 6 of 11 with no room kept;
+  0 of 3).
+
+So the seed rule stays, and a camera-only ask takes another route.
+
+### 17.1 Shot again from the picture
+
+Where the owner's registry has a camera LoRA (`role = "camera"`,
+LORA-DESIGN §3), a restage whose only change is the camera is drawn from
+the picture itself (`picture::Plan::reshot`): the picture is the one image
+sent, at its own shape, and the words are the entry's trigger and the move
+in the entry's own phrases. Nothing else is said, since anything else is an
+edit riding along. The first measurement, straight to the image server on
+four pictures and three moves each: the camera moved 12 of 12 and the room
+and clothes were the picture's own 12 of 12, against 4 of 12 for the same
+moves said in plain words with no LoRA.
+
+What it cannot do is said plainly: the positions are a grid of eight
+places, four heights and three distances, so an ask to get one thing into
+view from an extreme place ("from under the table") comes back as the
+nearest step, and whatever the picture never showed is a guess.
+
+### 17.2 Where the picture has the camera
+
+The move is counted from the picture's own camera, so that place has to be
+known. The record's camera words are what was asked, loosely; counted from
+them a picture already seen from behind was turned half-way round and
+showed the front. The place is read from the picture
+(`camera::ShotReader`): one quarantined pass on the persona's model, a
+picture and a question in, three closed names out. A read that fails
+restages, and says so.
+
+A move said against the picture ("the other side", "closer", "higher") is
+turned into a place against that start (`camera::relative`); a place named
+outright is that place. An ask that names the place the read found is
+still shot from the picture, with no turn.
+
+Measured on the replay rig on seven recorded camera-only panel turns,
+three seeds each, scored by eye (2026-11-13; a read takes about 2 s beside
+a 45 to 60 s render):
+
+- **Counted from the record's words, a picture already seen from behind
+  was turned half-way round 3 of 3; counted from the read, 0 of 3.**
+- **The camera did what was asked in 15 of 21**, with the people and their
+  clothes the picture's own in 21 of 21 and nobody added in 21 of 21. The
+  room is the picture's where the frame still shows it; what a wider or
+  closer frame newly shows is drawn to match, not kept.
+- **The two cases that failed, each 0 of 3:** an ask for an extreme place
+  the grid has no step for, which came back as a slight lowering; and a
+  read that took a person bent double for seen from behind, so "from
+  behind" turned nothing.
+- **The same asks restaged** moved the camera as asked in none of the five
+  compared, and added or lost a person in two.
+- **Rewriting a move as its place for a restage from words** (one case,
+  not built): the camera went round 3 of 3 where the plain restage gave 0
+  of 3, but the pose was lost 3 of 3 and one render doubled the figure.
+
+### 17.3 Scope
+
+Camera-only asks were 25 of the 101 camera changes the edit panel had
+recorded by 2026-11-12, and about 14 of them plain moves. A camera ask
+beside a pose, a person or a setting is still a restage, with the limits
+above; first-person asks are the planner's (`picture::first_person_holder`).
+

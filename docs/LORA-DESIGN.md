@@ -107,6 +107,16 @@ frames = "wave_fl.safetensors"
 strength = 0.8
 ```
 
+- **An entry may be given a job** (`role = "…"`, `loras::Role`). The one
+  job so far is `camera`: a picture entry that draws a finished picture
+  again from another camera position. Such an entry carries a `trigger` and
+  a `[lora.camera]` table of its own phrases, `around` (eight, from no turn
+  round to the camera's right), `height` (four, lowest first) and `distance`
+  (three, nearest first), since a LoRA answers only to the phrases it was
+  trained on (`loras::CameraWords`). It needs no place on a chat's list: the
+  image tool looks it up by its job for a camera-only change to a picture
+  (`picture::Plan::reshot`). An entry whose table does not read is not a
+  camera entry, said on the page like any entry that does not read.
 - **`model` is written by the owner and checked against the file.** A file
   whose keys say otherwise costs that entry, with the reason on the page and
   on stderr, never the whole registry. That is the rule `loras.rs` already

@@ -628,6 +628,23 @@ pub fn parse(
             }
             change.light = text(sc.get("light"), "scene.light", field)?;
             change.camera = text(sc.get("camera"), "scene.camera", field)?;
+            // The camera's position, typed. Optional, so a view that does
+            // not read is left out and said, never a refusal (G1b).
+            change.view = match sc.get("view") {
+                None | Some(Value::Null) => None,
+                Some(v) => match Shot::of_json(v) {
+                    Ok(shot) => Some(shot).filter(|s| *s != Shot::default()),
+                    Err(why) => {
+                        notes.push(format!("The `view` was left out: {why}."));
+                        None
+                    }
+                },
+            };
+            // A view alone is still a change of camera: the record's words
+            // are the view's own.
+            if let (None, Some(view)) = (&change.camera, change.view) {
+                change.camera = Some(view.said());
+            }
             // A style longer than a library name cannot be one: clipped to
             // the field cap, never a shape refusal, so the tool leaves it out
             // and says so as it does any style the library does not hold
@@ -1380,6 +1397,184 @@ pub fn is_framing(words: &str) -> bool {
         || has_run(&w, &["point", "of", "view"])
 }
 
+pub use crate::scene::{Distance, Height, Shot};
+
+/// Where a re-shoot moves the camera to: how far round the subject from
+/// the picture's own camera, how high, and how far. Positions only: the
+/// words for each are the owner's camera LoRA's, from its registry entry
+/// (`loras::CameraWords`), never this code's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move {
+    /// Eighths of a turn to the camera's own right, 0 to 7: 0 stays, 2 is
+    /// a quarter turn right, 4 is the far side, 6 a quarter turn left.
+    pub turn: u8,
+    pub height: Height,
+    pub distance: Distance,
+}
+
+impl Height {
+    /// This height's place in a camera LoRA's four words, lowest first.
+    pub fn index(self) -> usize {
+        match self {
+            Height::Low => 0,
+            Height::Eye => 1,
+            Height::Elevated => 2,
+            Height::High => 3,
+        }
+    }
+}
+
+impl Distance {
+    /// This distance's place in a camera LoRA's three words, nearest first.
+    pub fn index(self) -> usize {
+        match self {
+            Distance::CloseUp => 0,
+            Distance::Medium => 1,
+            Distance::Wide => 2,
+        }
+    }
+}
+
+impl Shot {
+    /// What a camera's words say of where it stands. Words that say nothing
+    /// of it ("soft focus", "a candid feel") read as a `Shot` with every
+    /// part `None`.
+    pub fn read(camera: &str) -> Shot {
+        let w = camera_words(camera);
+        let has = |x: &str| w.iter().any(|t| t == x);
+        let run = |seq: &[&str]| has_run(&w, seq);
+        let left = has("left");
+        let right = has("right");
+        let quarter = run(&["three", "quarter"])
+            || has("quarter")
+            || run(&["slightly", "from", "the", "side"])
+            || run(&["at", "an", "angle"]);
+        let side = has("profile")
+            || run(&["side", "view"])
+            || run(&["side", "on"])
+            || run(&["from", "the", "side"])
+            // "From her left side": a side named with "from", never "the dog
+            // at her side", which is scenery.
+            || (has("from") && has("side") && (left || right));
+        let around = if faces_away(camera) {
+            // Behind, or behind and off to one side.
+            Some(match (quarter, left, right) {
+                (true, true, false) => 5,
+                (true, false, true) => 3,
+                _ => 4,
+            })
+        } else if quarter {
+            Some(if right && !left { 1 } else { 7 })
+        } else if side {
+            Some(if left && !right { 6 } else { 2 })
+        } else if has("frontal")
+            || run(&["front", "view"])
+            || run(&["from", "the", "front"])
+            || run(&["head", "on"])
+            || run(&["straight", "on"])
+        {
+            Some(0)
+        } else {
+            None
+        };
+        let height = if run(&["low", "angle"])
+            || run(&["from", "below"])
+            || run(&["from", "the", "floor"])
+            || run(&["from", "the", "ground"])
+            || run(&["from", "under"])
+            || run(&["from", "underneath"])
+            || run(&["from", "beneath"])
+            || run(&["looking", "up"])
+        {
+            Some(Height::Low)
+        } else if run(&["high", "angle"])
+            || run(&["from", "above"])
+            || has("overhead")
+            || run(&["bird's", "eye"])
+            || run(&["top", "down"])
+            || run(&["looking", "down", "at"])
+            || run(&["looking", "down", "on"])
+            || run(&["looking", "down", "from"])
+        {
+            Some(Height::High)
+        } else if has("elevated") || run(&["slightly", "above"]) || run(&["from", "higher"]) {
+            Some(Height::Elevated)
+        } else if run(&["eye", "level"]) {
+            Some(Height::Eye)
+        } else {
+            None
+        };
+        let distance = if run(&["close", "up"])
+            || has("closeup")
+            || has("headshot")
+            || run(&["zoom", "in"])
+            || run(&["zoomed", "in"])
+            || run(&["tight", "shot"])
+            || run(&["tight", "on"])
+        {
+            Some(Distance::CloseUp)
+        } else if has("wide")
+            || run(&["full", "body"])
+            || run(&["whole", "body"])
+            || run(&["full", "length"])
+            || run(&["long", "shot"])
+            || run(&["head", "to", "toe"])
+            || run(&["zoom", "out"])
+            || run(&["zoomed", "out"])
+            || run(&["pull", "back"])
+            || run(&["pulled", "back"])
+            || run(&["further", "back"])
+            || run(&["farther", "back"])
+        {
+            Some(Distance::Wide)
+        } else if run(&["medium", "shot"])
+            || run(&["mid", "shot"])
+            || run(&["waist", "up"])
+            || run(&["knees", "up"])
+            || run(&["half", "body"])
+        {
+            Some(Distance::Medium)
+        } else {
+            None
+        };
+        Shot {
+            around,
+            height,
+            distance,
+        }
+    }
+
+    /// The move from a picture drawn at `was` to this camera: how far
+    /// round the subject **counted from the picture's own camera**, then how
+    /// high, then how far. A part these words leave unsaid stays where the
+    /// picture has it (the front, eye level and a medium shot where its own
+    /// words were silent too). `None` when these words name no position, or
+    /// name the one the picture already has: there is then nothing to move
+    /// to.
+    pub fn from(self, was: Shot) -> Option<Move> {
+        if self == Shot::default() {
+            return None;
+        }
+        let stood = was.around.unwrap_or(0);
+        let turn = (self.around.unwrap_or(stood) + 8 - stood) % 8;
+        let height_was = was.height.unwrap_or(Height::Eye);
+        let height = self.height.unwrap_or(height_was);
+        let distance_was = was.distance.unwrap_or(Distance::Medium);
+        let distance = self.distance.unwrap_or(distance_was);
+        if turn == 0 && height == height_was && distance == distance_was {
+            return None;
+        }
+        Some(Move {
+            turn,
+            height,
+            distance,
+        })
+    }
+}
+
+/// The route of a picture drawn again from another camera ([`Plan::reshot`]).
+pub const RESHOT: &str = "reshot";
+
 /// What a person wears when nobody said and nothing is on record: drawn
 /// as the scene suits. A judge reads it as no claim about the picture
 /// (`persona::replay_judge::clauses`), since every outfit suits it.
@@ -1467,6 +1662,85 @@ pub struct Plan {
     /// Library characters named in the words but not in the picture: never
     /// drawn, and "the viewer" in what the image model reads ([`as_viewer`]).
     pub offstage: Vec<String>,
+    /// Where a re-shoot moves the camera ([`Plan::reshot`]); `None` on every
+    /// other route.
+    pub shot: Option<Move>,
+}
+
+impl Plan {
+    /// Whether this is a restage whose only change is the camera, with
+    /// nothing riding along: what a re-shoot can stand in for
+    /// ([`Plan::reshot`]).
+    pub fn camera_only(&self) -> bool {
+        let d = &self.delta;
+        self.route == "restaged"
+            && d.camera
+            && !(d.setting || d.light || d.style || d.together || d.together_cleared || d.text)
+            && d.added.is_empty()
+            && d.removed.is_empty()
+            && d.posed.is_empty()
+            && d.dressed.is_empty()
+            && d.expressed.is_empty()
+            && self.also.is_none()
+            && self.mask.is_none()
+            && self.mask_words.is_none()
+            && self.size.is_none()
+    }
+
+    /// A restage whose only change is the camera, drawn as a re-shoot of
+    /// `picture` itself: the picture is the one image sent, and the words
+    /// are where the camera goes (`Shot::from`, said in the owner's camera
+    /// LoRA's own words by the image tool). Everything else in the
+    /// frame, the room and the clothes with it, comes from the picture's own
+    /// pixels, which neither way of restaging keeps: at the base seed the
+    /// room holds and so does the frame, so the camera does not move, and at
+    /// a fresh seed the camera moves and the room is another room (the
+    /// owner, 2026-11-12: a continued picture keeps its room and clothes).
+    /// What the picture never showed (a back, the wall behind the camera) is
+    /// drawn as a guess.
+    ///
+    /// The plan is returned as it was when it is not that case: any other
+    /// route, a change beside the camera, a retouch or mask riding along, or
+    /// a camera that names no position to move to. Where the camera goes is
+    /// `to` (`camera::target`: the call's `view` or its camera words, and
+    /// what they move against the start); `was` is where the picture has it,
+    /// read from the picture where a reader is on hand (`camera::ShotReader`).
+    pub fn reshot(self, picture: &str, was: Shot, to: Option<Shot>) -> Plan {
+        if !self.camera_only() {
+            return self;
+        }
+        let Some(now) = to else {
+            return self;
+        };
+        // An ask that names where the picture already has the camera is
+        // still shot from the picture, with no turn: the read of the start
+        // is a judgement, and a route that hung on it agreeing with the ask
+        // drew one sample of three from words (replay, 2026-11-13).
+        let to = now.from(was).unwrap_or(Move {
+            turn: 0,
+            height: now.height.unwrap_or(Height::Eye),
+            distance: now.distance.unwrap_or(Distance::Medium),
+        });
+        let mut next = self.next.clone();
+        // The record keeps where the camera stands after the move, counted
+        // from where the picture had it, not from what its words once asked.
+        next.shot = Some(now);
+        Plan {
+            render: Render::Edit {
+                canvas: Canvas::Picture(picture.to_string()),
+                camera_moves: true,
+            },
+            // Nobody is drawn afresh: no portrait and no crop goes with it.
+            faces: Vec::new(),
+            instruction: String::new(),
+            keep: String::new(),
+            shot: Some(to),
+            seed: Seed::Fresh,
+            route: RESHOT,
+            next,
+            ..self
+        }
+    }
 }
 
 /// The left-to-right rank of a place in the frame; the background last.
@@ -2163,6 +2437,7 @@ pub fn plan(
             .filter(|_| call.picture.is_none() || !unchanged),
         seen_from,
         offstage,
+        shot: None,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
     let Some(picture) = call.picture.clone() else {
@@ -2851,6 +3126,85 @@ mod tests {
     /// A camera behind the people turns their faces away; one that names
     /// the front, a shoulder looked over, or a face toward the lens does
     /// not, and a back toward the lens is still from behind.
+    #[test]
+    fn a_camera_s_words_are_read_for_where_it_stands() {
+        let shot = |c: &str| Shot::read(c);
+        assert_eq!(
+            shot("looking down from her left side"),
+            Shot {
+                around: Some(6),
+                height: Some(Height::High),
+                distance: None
+            }
+        );
+        assert_eq!(shot("soft focus, a candid feel"), Shot::default());
+        assert_eq!(
+            shot("from behind, low angle, wide shot"),
+            Shot {
+                around: Some(4),
+                height: Some(Height::Low),
+                distance: Some(Distance::Wide),
+            }
+        );
+        assert_eq!(shot("a profile, at eye level").around, Some(2));
+        assert_eq!(shot("from her left side").around, Some(6));
+        assert_eq!(shot("three-quarter view from the right").around, Some(1));
+        assert_eq!(shot("three-quarter view").around, Some(7));
+        assert_eq!(
+            shot("bird's eye, looking down on the table").height,
+            Some(Height::High)
+        );
+        assert_eq!(
+            shot("from under the table, up at the lamp").height,
+            Some(Height::Low)
+        );
+        assert_eq!(
+            shot("close-up on her hands").distance,
+            Some(Distance::CloseUp)
+        );
+        assert_eq!(
+            shot("pulled back to show the whole room").distance,
+            Some(Distance::Wide)
+        );
+        // "The back wall" is a place, never a back view (`faces_away`).
+        assert_eq!(shot("medium shot against the back wall").around, None);
+    }
+
+    #[test]
+    fn a_move_is_counted_from_the_pictures_own_camera() {
+        let to = |new: &str, was: &str| {
+            Shot::read(new)
+                .from(Shot::read(was))
+                .map(|m| (m.turn, m.height, m.distance))
+        };
+        // Unsaid parts stay where the picture has them.
+        assert_eq!(
+            to("low angle", "a wide shot, head on"),
+            Some((0, Height::Low, Distance::Wide))
+        );
+        // Round the subject is counted from where the camera already is:
+        // behind, asked for from behind, is no turn at all.
+        assert_eq!(
+            to("from behind", "from behind, eye level, medium shot"),
+            None
+        );
+        assert_eq!(
+            to("head on", "from behind"),
+            Some((4, Height::Eye, Distance::Medium))
+        );
+        assert_eq!(
+            to("from behind, close-up", "a profile"),
+            Some((2, Height::Eye, Distance::CloseUp))
+        );
+        // Words that name no position are not a move.
+        assert_eq!(to("softer focus", "from behind"), None);
+        // A silent record is the front, eye level, a medium shot.
+        assert_eq!(
+            to("from above, wide", ""),
+            Some((0, Height::High, Distance::Wide))
+        );
+    }
+
     #[test]
     fn faces_away_reads_the_camera() {
         for away in [

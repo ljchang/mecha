@@ -790,6 +790,29 @@ The routes, in the result's own words and the manifest's `route`:
   the persona's call (`imagegen::add_owner`), the one person a reading adds,
   and only from the owner's own words. With none set, the owner is the
   viewer. Never a name in code.
+- **A camera-only change is shot again from the picture, where the owner
+  has a camera LoRA** (`picture::Plan::reshot`, route `reshot`; owner,
+  2026-11-12: a continued picture keeps its room and clothes). The registry
+  entry the owner marks `role = "camera"` (`loras::Role::Camera`) carries a
+  `trigger` and a `[lora.camera]` table of its own words for eight places
+  round the subject, four heights and three distances
+  (`loras::CameraWords`); code holds positions only (`scene::Shot`,
+  `picture::Move`), never a LoRA's name or vocabulary. The picture is the
+  one image sent, at its own shape, and the prompt is the trigger and the
+  move. Only a restage whose one change is the camera (`Plan::camera_only`);
+  with no such entry, or anything riding along, the route is what it was.
+- **The move is counted from where the picture has the camera, read from
+  the picture** (`camera::ShotReader`, `ToolCtx::shot_reader`): a
+  quarantined pass on the persona's model whose whole answer is three closed
+  names (`camera::read_answer`; a part left out is a failure, never a
+  default). The record's camera words are what was once asked: counted from
+  them, a picture already seen from behind was turned half-way round again
+  (replay, 2026-11-12). A read that fails restages and says so; with no
+  reader (a replay with readers off) the record is the start. A move said
+  against the picture ("the other side", "closer") has a place only against
+  that start (`camera::relative`, `camera::target`), and of a camera a panel
+  joined to the recorded one only the tail is the ask (`camera::asked`). The
+  manifest keeps `shot_was`, `shot_move` and `shot_unread`.
 - **A first-person camera's holder is the viewer** (`picture::first_person_holder`
   for what the camera says and the owner's character, `picture::plan` for
   the order and what the cast adds):

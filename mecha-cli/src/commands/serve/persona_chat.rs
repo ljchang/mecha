@@ -5378,6 +5378,7 @@ impl PersonaChats {
                 layers: mecha_core::persona::touching(&self.store, &name)
                     == mecha_core::persona::Touching::Precise,
                 layers_posed: false,
+                reshoot_from: None,
                 // The owner's picture settings, read fresh this turn.
                 image_tuning: mecha_core::persona::tuning(&self.store, &name),
                 image_loras: mecha_core::persona::loras(&self.store, &name),

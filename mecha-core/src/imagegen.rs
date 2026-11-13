@@ -3423,6 +3423,23 @@ impl ImageGenerate {
         self
     }
 
+    /// The owner's camera LoRA (`loras::Role::Camera`), where one can be
+    /// used: a registry that reads, an entry whose file checked, and a model
+    /// file LoRAs are applied to (`model_lora`). Looked up by its role, so
+    /// it needs no place on a chat's list. `None` is not a failure: a
+    /// camera-only change is then restaged as it always was.
+    fn camera_lora(
+        &self,
+        ctx: &ToolCtx,
+        model: crate::sampling::Model,
+    ) -> Option<(crate::loras::PictureLora, crate::loras::CameraWords)> {
+        // The tool's own registry, or the one a replay arm names.
+        let home = self.loras_home.as_ref().or(ctx.reshoot_from.as_ref())?;
+        model_lora(self.cfg.model_file(model)).ok()?;
+        let folders = crate::loras::Folders::of(home, Some(&self.cfg), None);
+        crate::loras::camera(&crate::loras::Loaded::read(home, None, &folders))
+    }
+
     /// What this picture's LoRA list comes to: the turn's layer over the
     /// chat's, each name resolved against the registry as it is now, and
     /// none at all on a model file LoRAs are not measured on (`model_lora`).
@@ -4124,6 +4141,9 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
 pub const SETTING_DESC: &str = "Everything in the picture except its people and its words: the \
      place and its objects, or the whole subject of a picture without people. Words, or \
      {\"photo\": <path>} to put the people in that room.";
+/// `scene.view`'s description. One home for it: the persona's schema and
+/// the panel's extraction both say it in these words.
+pub const VIEW_DESC: &str = "Where the camera stands, whenever the request is about that;      give it beside `camera`. `around` is the side of the subject the camera sees (back for      from behind, left or right for a profile, the quarters for in between); `height` is low      for looking up from below, high for looking down from above; `distance` is close, medium      or wide. Fill only the parts asked for.";
 /// `scene.people`'s description.
 pub const PEOPLE_DESC: &str = "Who is in the picture, each once. For a change, only the people \
      who change, with only what changes: for new clothes alone send only `wearing`, since a \
@@ -4823,6 +4843,11 @@ impl Tool for ImageGenerate {
                         "setting": {"description": SETTING_DESC},
                         "light": {"type": "string", "description": "Light, mood, time of day, colour tone."},
                         "camera": {"type": "string", "description": "Shot size, angle, framing."},
+                        "view": {"type": "object", "description": VIEW_DESC, "properties": {
+                            "around": {"type": "string", "enum": crate::scene::Shot::AROUND},
+                            "height": {"type": "string", "enum": crate::scene::Height::ALL.map(|h| h.id())},
+                            "distance": {"type": "string", "enum": crate::scene::Distance::ALL.map(|d| d.id())}
+                        }},
                         "style": {"type": "string", "description": "A library style's name, only when the user asks for a look; leave it out for the usual photograph. A look the library has no name for goes in words in `setting`."},
                         "people": {"type": "array", "items": person, "maxItems": crate::scene::MAX_PEOPLE, "description": PEOPLE_DESC},
                         "together": {"type": "string", "description": "What the people do with each other, once, by name."},
@@ -5346,6 +5371,60 @@ impl Tool for ImageGenerate {
         ) {
             Ok(p) => p,
             Err(why) => return Ok(refused(why)),
+        };
+        // A camera-only change to a picture is drawn from the picture
+        // itself where the owner has a camera LoRA (`picture::Plan::reshot`):
+        // the room and the clothes are then the picture's own.
+        let camera_lora = match (&call.picture, plan.route) {
+            (Some(_), "restaged") => self.camera_lora(ctx, tuning.model.unwrap_or_default()),
+            _ => None,
+        };
+        let (mut shot_was, mut shot_unread) = (None::<crate::scene::Shot>, None::<String>);
+        let plan = match (&camera_lora, &call.picture) {
+            (Some(_), Some(path)) if plan.camera_only() => {
+                let recorded = base.as_ref().and_then(|b| b.camera.as_ref());
+                // Where the picture has the camera: read from the picture
+                // (`camera::ShotReader`), since the record's words are what
+                // was once asked and not where the picture ended up. With no
+                // reader, from the record; a read that fails restages, said:
+                // a start guessed wrong turns the camera the wrong way.
+                let was = match &ctx.shot_reader {
+                    None => Ok(base
+                        .as_ref()
+                        .and_then(|b| {
+                            b.shot
+                                .or_else(|| recorded.map(|c| crate::picture::Shot::read(&c.value)))
+                        })
+                        .unwrap_or_default()),
+                    Some(reader) => match ctx.resolve(path) {
+                        Err(e) => Err(format!("{e:#}")),
+                        Ok(file) => match tokio::fs::read(&file).await {
+                            Err(e) => Err(format!("the picture could not be read ({e})")),
+                            Ok(bytes) => tokio::time::timeout(
+                                crate::camera::SHOT_READ_TIMEOUT,
+                                reader.read(&bytes),
+                            )
+                            .await
+                            .unwrap_or_else(|_| Err("the camera read took too long".into())),
+                        },
+                    },
+                };
+                match was {
+                    Ok(was) => {
+                        let words = call.change.camera.as_deref().unwrap_or_default();
+                        let ask = crate::camera::asked(words, recorded.map(|c| c.value.as_str()));
+                        let to = crate::camera::target(call.change.view, ask, was);
+                        shot_was = Some(was);
+                        plan.reshot(path, was, to)
+                    }
+                    Err(why) => {
+                        tracing::warn!("image_generate: camera read: {why}");
+                        shot_unread = Some(why);
+                        plan
+                    }
+                }
+            }
+            _ => plan,
         };
         let mut req = Request {
             prompt: String::new(),
@@ -6701,6 +6780,24 @@ impl Tool for ImageGenerate {
                 req.references.len()
             )));
         }
+        // A re-shoot sends the picture alone, at full size and in its own
+        // shape, and says only where the camera goes, after the camera
+        // LoRA's trigger: measured, the plainer the words the cleaner the
+        // move, and anything else in them is an edit riding along. The
+        // camera LoRA leads the chain; the owner's own follow while the cap
+        // allows.
+        if let (Some((camera, words)), Some(to)) = (&camera_lora, &plan.shot) {
+            let said = words.say(to);
+            req.references.truncate(1);
+            req.size = None;
+            req.reference_size = EDIT_REFERENCE_SIZE;
+            req.prompt = match camera.trigger.as_deref() {
+                Some(trigger) => format!("{trigger} {said}"),
+                None => said,
+            };
+            req.loras.insert(0, camera.clone());
+            req.loras.truncate(crate::loras::MAX_PER_PICTURE);
+        }
         // Someone named but not in the picture is never drawn: the image
         // model reads "the viewer" (the owner's ruling, 2026-10-08).
         let rendered: Vec<&str> = plan
@@ -7397,6 +7494,10 @@ impl Tool for ImageGenerate {
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
                 "roles": roles_said,
+                "shot_was": shot_was,
+                "shot_move": plan.shot.map(|m| json!({
+                    "turn": m.turn, "height": m.height.id(), "distance": m.distance.id()})),
+                "shot_unread": shot_unread,
                 // Only for the prompt that was sent: a layered picture's
                 // passes carry each person's outfit on the cutout, and the
                 // one-pass prompt this names was never drawn (review of #647).
@@ -7512,6 +7613,9 @@ impl Tool for ImageGenerate {
                                        scene's setting photo"
                         }
                         "retouched" => "A retouch of",
+                        crate::picture::RESHOT => {
+                            "The same scene from a new camera position, drawn from"
+                        }
                         _ => "An edit of",
                     };
                     format!(
@@ -7524,6 +7628,12 @@ impl Tool for ImageGenerate {
             if let Some(said) = people_check.as_ref().and_then(PeopleCheck::said) {
                 text.push(' ');
                 text.push_str(&said);
+            }
+            if let Some(why) = &shot_unread {
+                text.push_str(&format!(
+                    " (Where the picture's camera stands could not be read ({why}), so the \
+                     scene was restaged, not shot again from the picture.)"
+                ));
             }
             if let Some(mp) = &mask_plan {
                 let area = match (&plan.mask, &masked_by) {
@@ -8404,7 +8514,7 @@ mod tests {
         scene_keys.sort_unstable();
         assert_eq!(
             scene_keys,
-            ["camera", "light", "people", "setting", "style", "text", "together"]
+            ["camera", "light", "people", "setting", "style", "text", "together", "view"]
         );
     }
 
@@ -15231,6 +15341,280 @@ mod tests {
         let out = tool(&url).call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sampled(&seen).0, 1.0, "no chat layer");
+    }
+
+    /// A camera reader that answers as scripted.
+    #[derive(Debug)]
+    struct StoodAt(std::result::Result<crate::scene::Shot, String>);
+
+    #[async_trait::async_trait]
+    impl crate::camera::ShotReader for StoodAt {
+        async fn read(&self, _: &[u8]) -> std::result::Result<crate::scene::Shot, String> {
+            self.0.clone()
+        }
+    }
+
+    /// A re-shoot turns the camera from where the picture has it, read from
+    /// the picture (`camera::ShotReader`), not from the record's words: a
+    /// picture already seen from behind and asked for "from behind" is not
+    /// turned at all, and "the other side" of it is its front. A read that
+    /// fails restages, said. Fails on the tool before it, which counted
+    /// from the record ("head on") and turned half-way round.
+    #[tokio::test]
+    async fn a_reshoot_is_counted_from_where_the_picture_has_the_camera() {
+        let (url, seen) = distinct(8).await;
+        let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
+        crate::loras::write_test_lora(
+            &home.join("pics").join("orbit.safetensors"),
+            crate::loras::QWEN_KEYS,
+        );
+        std::fs::write(
+            home.join(crate::loras::FILE),
+            "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+             model = \"qwen-image\"\nfile = \"orbit.safetensors\"\n\
+             trigger = \"<orbit>\"\nrole = \"camera\"\n[lora.camera]\n\
+             around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+             height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+             distance = [\"near\", \"mid\", \"far\"]\n",
+        )
+        .unwrap();
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            loras_dir: Some(vec![home.join("pics")]),
+            ..Default::default()
+        })
+        .unwrap()
+        .with_library_dir(lib.clone())
+        .with_loras(home.clone());
+        let prompt = |seen: &Arc<Mutex<Vec<String>>>| {
+            let line = last_prompt(seen);
+            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
+            body["prompt"]["encode"]["inputs"]["prompt"].clone()
+        };
+        let behind = crate::scene::Shot {
+            around: Some(4),
+            height: Some(crate::scene::Height::Eye),
+            distance: Some(crate::scene::Distance::Medium),
+        };
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a study with a tall window",
+                       "camera": "medium shot, head on",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(behind))));
+        let close = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "a close up from behind"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!close.is_error, "{}", close.content);
+        assert_eq!(
+            prompt(&seen),
+            "<orbit> n level near",
+            "no turn: already behind"
+        );
+        let m = manifest_of(&dir, &close.content);
+        assert_eq!(m["route"], crate::picture::RESHOT);
+        assert_eq!(m["shot_was"]["around"], 4);
+        assert_eq!(m["shot_move"]["turn"], 0);
+        // A move said against the picture: the far side of behind.
+        let other = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from the other side"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!other.is_error, "{}", other.content);
+        assert_eq!(prompt(&seen), "<orbit> s level mid");
+        // A read that fails: restaged as it always was, and said.
+        cx.shot_reader = Some(Arc::new(StoodAt(Err("no answer".into()))));
+        let unread = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from the left side"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!unread.is_error, "{}", unread.content);
+        assert!(unread.content.contains("restaged"), "{}", unread.content);
+        assert!(
+            unread.content.contains("could not be read (no answer)"),
+            "{}",
+            unread.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// A camera-only change to a recorded picture is a re-shoot where the
+    /// owner's registry holds a camera LoRA (`picture::Plan::reshot`): the
+    /// picture is the one image sent, at its own shape, and the words are
+    /// the LoRA's trigger and where the camera goes, nothing else. Without
+    /// such an entry it is restaged from words as it always was, and a
+    /// change beside the camera is never a re-shoot. Before this a
+    /// camera-only restage drew the same frame again: same seed, same
+    /// references, nearly the same words (owner's chats, 2026-11-12).
+    #[tokio::test]
+    async fn a_camera_only_change_is_reshot_from_the_picture_with_the_owners_camera_lora() {
+        let (url, seen) = distinct(8).await;
+        let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
+        crate::loras::write_test_lora(
+            &home.join("pics").join("orbit.safetensors"),
+            crate::loras::QWEN_KEYS,
+        );
+        let registry = |role: &str| {
+            std::fs::write(
+                home.join(crate::loras::FILE),
+                format!(
+                    "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+                     model = \"qwen-image\"\nfile = \"orbit.safetensors\"\n\
+                     trigger = \"<orbit>\"\n{role}"
+                ),
+            )
+            .unwrap();
+        };
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            loras_dir: Some(vec![home.join("pics")]),
+            ..Default::default()
+        })
+        .unwrap()
+        .with_library_dir(lib.clone())
+        .with_loras(home.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let graph = |seen: &Arc<Mutex<Vec<String>>>| {
+            let line = last_prompt(seen);
+            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
+            body["prompt"].clone()
+        };
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a study with a tall window",
+                       "camera": "medium shot, head on",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+
+        // No camera entry: restaged from the scene's words, as before.
+        registry("");
+        let plain = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(plain.content.contains("restaged"), "{}", plain.content);
+        assert!(graph(&seen)["lora1"].is_null(), "no LoRA rode a restage");
+
+        // With one: the picture alone, and only where the camera goes.
+        registry(
+            "role = \"camera\"\n[lora.camera]\n\
+             around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+             height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+             distance = [\"near\", \"mid\", \"far\"]\n",
+        );
+        let shot = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!shot.is_error, "{}", shot.content);
+        assert!(
+            shot.content
+                .contains("The same scene from a new camera position"),
+            "{}",
+            shot.content
+        );
+        let g = graph(&seen);
+        assert_eq!(g["encode"]["inputs"]["prompt"], "<orbit> s floor mid");
+        assert_eq!(g["lora1"]["inputs"]["lora_name"], "orbit.safetensors");
+        assert!(
+            !g["ref1"].is_null() && g["ref2"].is_null(),
+            "the picture alone"
+        );
+        assert!(
+            g["latent"].is_null(),
+            "the picture's own shape, not a named size"
+        );
+        assert_eq!(g["encode"]["inputs"]["resolution"], EDIT_REFERENCE_SIZE);
+        assert_eq!(
+            manifest_of(&dir, &shot.content)["route"],
+            crate::picture::RESHOT
+        );
+
+        // A typed view is read ahead of the words, which may say nothing a
+        // word list knows; and the move is counted from where the last
+        // re-shoot left the camera (behind, low), so "the front" from there
+        // is half a turn, and the height it does not mention stays low.
+        let p2 = picture_of(&shot.content);
+        let typed = t
+            .call(
+                json!({"picture": p2, "scene": {"camera": "so we can see what she is reading",
+                       "view": {"around": "front", "distance": "close"}}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!typed.is_error, "{}", typed.content);
+        assert_eq!(
+            graph(&seen)["encode"]["inputs"]["prompt"],
+            "<orbit> s floor near"
+        );
+        // A view that does not read is left out and said; with words that
+        // name no position either, the picture is restaged as before.
+        let p3 = picture_of(&typed.content);
+        let unread = t
+            .call(
+                json!({"picture": p3, "scene": {"camera": "a dreamier feel",
+                       "view": {"around": "sideways"}}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(unread.content.contains("restaged"), "{}", unread.content);
+        assert!(
+            unread.content.contains("`view` was left out"),
+            "{}",
+            unread.content
+        );
+
+        // A change beside the camera is never a re-shoot.
+        let p2 = picture_of(&unread.content);
+        let posed = t
+            .call(
+                json!({"picture": p2, "scene": {"camera": "a profile",
+                       "people": [{"who": "maya", "doing": "standing at the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(posed.content.contains("restaged"), "{}", posed.content);
+        for d in [dir, store, lib, home] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// The owner's picture LoRAs (LORA-DESIGN.md §5): the chat's list rides

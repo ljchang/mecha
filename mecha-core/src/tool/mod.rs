@@ -972,6 +972,9 @@ pub struct ToolCtx {
     /// reply) for what a picture call left out, in a persona chat; `None`
     /// everywhere else (`persona::edit::SceneReader`).
     pub scene_reader: Option<std::sync::Arc<dyn crate::persona::edit::SceneReader>>,
+    /// Who reads where a picture's camera stood, for a camera move counted
+    /// from it (`camera::ShotReader`); `None` counts from the record.
+    pub shot_reader: Option<std::sync::Arc<dyn crate::camera::ShotReader>>,
     /// Where each picture's compiled prompt is saved, one line per render,
     /// for the owner to learn to improve prompts (the owner's ruling,
     /// 2026-10-08: "save them for now"). Beside the chat's transcript, outside
@@ -990,6 +993,11 @@ pub struct ToolCtx {
     /// neutral (`mecha replay --layers-posed`, mecha-a3's gate). Never set by
     /// a chat.
     pub layers_posed: bool,
+    /// A mecha home whose LoRA registry a replay arm draws its camera
+    /// re-shoots from (`mecha replay --reshoot`), for a tool built with no
+    /// registry of its own: an arm measures what it names. `None` everywhere
+    /// else; a chat's tool has the owner's registry already.
+    pub reshoot_from: Option<std::path::PathBuf>,
     /// How this persona's pictures are sampled (`sampling::Tuning`): the
     /// owner's settings, stamped by the host each turn like `layers`, and the
     /// reference setting everywhere else. Never the model's.
@@ -1220,10 +1228,12 @@ impl Default for ToolCtx {
             scene: None,
             role_split: None,
             scene_reader: None,
+            shot_reader: None,
             prompt_log: None,
             image_seeds: None,
             layers: false,
             layers_posed: false,
+            reshoot_from: None,
             image_tuning: crate::sampling::Tuning::default(),
             image_loras: crate::loras::Layer::Inherit,
             build_on: None,
