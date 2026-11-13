@@ -302,11 +302,7 @@ pub fn extract(
         Some(call) => call.name.as_str(),
         None => {
             let arity = |c: &&Call| c.input.as_object().map_or(0, |o| o.len());
-            let widest = thread
-                .iter()
-                .filter(|c| !c.is_error)
-                .map(|c| arity(c))
-                .max()?;
+            let widest = thread.iter().filter(|c| !c.is_error).map(&arity).max()?;
             let mut wide = thread
                 .iter()
                 .filter(|c| !c.is_error && arity(c) == widest)
@@ -830,9 +826,7 @@ impl Concepts {
     /// What to say after a call that worked, readable after this tool has
     /// moved into a registry ([`Watch::after`]). Nothing before a concept
     /// is handed over.
-    pub fn cue(
-        &self,
-    ) -> std::sync::Arc<dyn Fn(&str, &Value, &str) -> Option<String> + Send + Sync> {
+    pub fn cue(&self) -> crate::agent::SuccessCueText {
         let watch = self.watch.clone();
         std::sync::Arc::new(move |tool, input, result| {
             watch.lock().ok()?.after(tool, input, result)
