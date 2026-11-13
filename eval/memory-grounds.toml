@@ -1,0 +1,74 @@
+# Memory benchmark, held out: the third far-analog pair
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4; eval/fixtures/grounds_world.py). Two
+# tasks learn an arrangement in a greenhouse; two probes meet the same kind
+# of arrangement at a switchboard, with other tools, a number where the
+# earlier pairs had strings, seven candidates and no notes. The fixtures were
+# committed before the owed-step cue was run on anything. Run once.
+#
+#   mecha exp new eval/memory-grounds.toml
+#   mecha exp run memory-grounds
+
+name = "memory-grounds"
+kind = "lifetime"
+description = "Held out: does an arrangement carry to a third pair of services when the harness holds its last step open."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/grounds_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["greenhouse-bench", "greenhouse-long", "switchboard-harbour", "switchboard-pump"]
+
+[tasks.confirmed_goals]
+greenhouse-bench = "task:greenhouse-bench"
+greenhouse-long = "task:greenhouse-long"
+switchboard-harbour = "task:switchboard-harbour"
+switchboard-pump = "task:switchboard-pump"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "grounds"
+command = "python3"
+args = ["eval/fixtures/grounds_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Written before the run: the switchboard has none of the greenhouse's tools, so no episode is handed over on the first probe and the probes fail as the control does, each leaving the line parked: 0 of 6."
+
+[arms.concepts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts"
+
+[arms.concepts.prediction]
+metric = "failure"
+rationale = "Written before the run: the arrangement is handed over at the start and nothing is said afterwards. On the two earlier pairs that passed 4 of 6 and 0 of 6. I expect at most 2 of 6 here."
+
+[arms.concepts_cued]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts_cued"
+
+[arms.concepts_cued.prediction]
+metric = "failure"
+rationale = "Written before the run: with the last step held open by the harness, both earlier pairs passed 6 of 6 as development data, on wording and rules shaped against them. Here nothing was shaped: the change takes a number, there are seven candidates, and the lookup's fields are different. I expect at least 4 of 6, and more than the uncued concept arm."
