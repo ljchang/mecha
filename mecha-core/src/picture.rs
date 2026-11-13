@@ -1300,7 +1300,7 @@ fn a_part_of(words: &str, of: &[&str]) -> bool {
         // What follows a comma is what the part does, said as an act and of
         // nobody else: "my arms, around a woman in a red dress" and "John's
         // hand, on my shoulder" are the same two with a comma (pass 7).
-        && clauses.all(|clause| {
+        && clauses.filter(|c| !c.trim().is_empty()).all(|clause| {
             let c = camera_words(clause);
             c.first()
                 .is_some_and(|x| x.ends_with("ing") || PART_SAID.contains(&x.as_str()))
@@ -2414,8 +2414,10 @@ pub fn plan(
     // A part of the viewer folded out of the cast is still asked for: left
     // unsaid, an edit that added only "John's left arm" had no line and was
     // refused, one refusal for another (review of #872, pass 5).
-    for part in &folded_parts {
-        lines.push(format!("Show {part}, as the viewer sees their own body."));
+    if lines.is_empty() {
+        for part in &folded_parts {
+            lines.push(format!("Show {part}, as the viewer sees their own body."));
+        }
     }
     if lines.is_empty() {
         return Err(
@@ -3142,6 +3144,7 @@ mod tests {
             "my hands, carrying a lamp",
             "my left arm, raised",
             "my arms folded",
+            "my left arm,",
         ] {
             let r = planned(
                 &call(json!({"scene": {"setting": "a kitchen",
