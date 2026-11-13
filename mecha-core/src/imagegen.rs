@@ -290,6 +290,17 @@ const UPSCALE_PROMPT: &str = "Recreate this exact photograph at high resolution.
     natural skin texture with visible pores, crisp detail in the eyes and hair. Change nothing \
     else.";
 
+/// A re-shoot's second pass (`picture::Plan::reshot`): the picture the
+/// camera LoRA drew, drawn once more without it. That LoRA holds the face
+/// and softens it: skin, hair and cloth lost fine detail in every render
+/// measured (a face's Laplacian variance 0.55 to 0.85 of the original's,
+/// 2026-11-13), and this pass at the reference sampling brought it back to
+/// about the original's with the camera where the re-shoot put it
+/// (IMAGE-DESIGN §17.4). The words are what was measured.
+const DETAIL_PROMPT: &str = "Recreate this exact photograph. The same person with the identical \
+    face, hair, expression, skin tone, clothing, background, lighting and framing as <image1>. \
+    Sharp focus, fine natural skin texture, crisp detail in the eyes and hair. Change nothing else.";
+
 /// The reference size for every other edit-shaped render (placed, restaged
 /// on a photo, edited with a head crop for everyone in the picture; an edit
 /// of the picture where anyone has no crop keeps [`EDIT_REFERENCE_SIZE`],
@@ -7322,6 +7333,63 @@ impl Tool for ImageGenerate {
                 }
                 (image, _) => (image, left),
             };
+            // A re-shoot is drawn once more without the camera LoRA
+            // (`DETAIL_PROMPT`), at the reference sampling whatever the
+            // persona's own: measured at guidance 1, and an edit at 3 lost
+            // the face. A second render in the job, so a re-shoot holds its
+            // chat's slot for up to two timeouts. A pass that fails or is
+            // stopped keeps the re-shoot it was given, said: a finished
+            // picture is never thrown away for its polish.
+            let mut detailed: Option<bool> = None;
+            let (image, left) = match image {
+                Ok(shot) if plan.route == crate::picture::RESHOT => {
+                    let pass = Request {
+                        prompt: DETAIL_PROMPT.to_string(),
+                        size: None,
+                        sampling: crate::sampling::Sampling {
+                            model: req.sampling.model,
+                            ..crate::sampling::Sampling::reference(req.sampling.steps)
+                        },
+                        seed: req.seed,
+                        references: vec![Reference {
+                            path: "re-shoot".into(),
+                            bytes: shot.clone(),
+                            ext: "png",
+                        }],
+                        reference_size: EDIT_REFERENCE_SIZE,
+                        mask: None,
+                        loras: Vec::new(),
+                    };
+                    let again = me
+                        .backend
+                        .generate(
+                            &me.cfg,
+                            &pass,
+                            ctx.cancel.as_ref(),
+                            timeout,
+                            ctx.image_trail.as_deref(),
+                        )
+                        .await;
+                    let left = match (left, again.left) {
+                        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                        (a, b) => a.or(b),
+                    };
+                    match again.image {
+                        Ok(bytes) => {
+                            detailed = Some(true);
+                            (Ok(bytes), left)
+                        }
+                        Err(why) => {
+                            if let Failure::Other(e) = &why {
+                                tracing::warn!("image_generate: the detail pass failed: {e:#}");
+                            }
+                            detailed = Some(false);
+                            (Ok(shot), left)
+                        }
+                    }
+                }
+                image => (image, left),
+            };
             me.arm_unload();
             // The segmentation's own temp copies, said beside the render's.
             let left = match (left, seg_left) {
@@ -7513,6 +7581,9 @@ impl Tool for ImageGenerate {
                 "shot_move": plan.shot.map(|m| json!({
                     "turn": m.turn, "height": m.height.id(), "distance": m.distance.id()})),
                 "shot_unread": shot_unread,
+                // Whether a re-shoot's second pass drew: null for any other
+                // picture, false where it failed and the re-shoot was kept.
+                "detail": detailed,
                 // Only for the prompt that was sent: a layered picture's
                 // passes carry each person's outfit on the cutout, and the
                 // one-pass prompt this names was never drawn (review of #647).
@@ -7643,6 +7714,18 @@ impl Tool for ImageGenerate {
             if let Some(said) = people_check.as_ref().and_then(PeopleCheck::said) {
                 text.push(' ');
                 text.push_str(&said);
+            }
+            match detailed {
+                Some(true) => text.push_str(
+                    " (Drawn in two passes: the new camera position, then once more for fine \
+                     detail.)",
+                ),
+                Some(false) => text.push_str(
+                    " (The second pass, for fine detail, did not finish, so this is the first \
+                     pass alone: skin and hair may look softer than in the picture it was shot \
+                     from.)",
+                ),
+                None => {}
             }
             if let Some(why) = &shot_unread {
                 text.push_str(&format!(
@@ -13294,6 +13377,22 @@ mod tests {
     }
 
     /// The last prompt sent to the image server.
+    /// The last graph sent that is not a re-shoot's second pass
+    /// (`DETAIL_PROMPT`), which follows every re-shoot.
+    fn last_shot(seen: &Arc<Mutex<Vec<String>>>) -> Value {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .map(|l| {
+                let body: Value = serde_json::from_str(&l[l.find('{').unwrap()..]).unwrap();
+                body["prompt"].clone()
+            })
+            .find(|g| g["encode"]["inputs"]["prompt"] != DETAIL_PROMPT)
+            .unwrap()
+    }
+
     fn last_prompt(seen: &Arc<Mutex<Vec<String>>>) -> String {
         seen.lock()
             .unwrap()
@@ -15377,7 +15476,7 @@ mod tests {
     /// from the record ("head on") and turned half-way round.
     #[tokio::test]
     async fn a_reshoot_is_counted_from_where_the_picture_has_the_camera() {
-        let (url, seen) = distinct(8).await;
+        let (url, seen) = distinct(12).await;
         let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
         crate::loras::write_test_lora(
             &home.join("pics").join("orbit.safetensors"),
@@ -15403,11 +15502,8 @@ mod tests {
         .unwrap()
         .with_library_dir(lib.clone())
         .with_loras(home.clone());
-        let prompt = |seen: &Arc<Mutex<Vec<String>>>| {
-            let line = last_prompt(seen);
-            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
-            body["prompt"]["encode"]["inputs"]["prompt"].clone()
-        };
+        let prompt =
+            |seen: &Arc<Mutex<Vec<String>>>| last_shot(seen)["encode"]["inputs"]["prompt"].clone();
         let behind = crate::scene::Shot {
             around: Some(4),
             height: Some(crate::scene::Height::Eye),
@@ -15486,7 +15582,7 @@ mod tests {
     /// references, nearly the same words (owner's chats, 2026-11-12).
     #[tokio::test]
     async fn a_camera_only_change_is_reshot_from_the_picture_with_the_owners_camera_lora() {
-        let (url, seen) = distinct(9).await;
+        let (url, seen) = distinct(12).await;
         let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
         crate::loras::write_test_lora(
             &home.join("pics").join("orbit.safetensors"),
@@ -15514,7 +15610,8 @@ mod tests {
         .with_library_dir(lib.clone())
         .with_loras(home.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
-        let graph = |seen: &Arc<Mutex<Vec<String>>>| {
+        let graph = last_shot;
+        let very_last = |seen: &Arc<Mutex<Vec<String>>>| {
             let line = last_prompt(seen);
             let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
             body["prompt"].clone()
@@ -15594,6 +15691,16 @@ mod tests {
             manifest_of(&dir, &shot.content)["route"],
             crate::picture::RESHOT
         );
+        // Then once more without the camera LoRA, for the fine detail it
+        // softens: the re-shoot alone, the reference sampling, no LoRA.
+        let d = very_last(&seen);
+        assert_eq!(d["encode"]["inputs"]["prompt"], DETAIL_PROMPT);
+        assert!(d["lora1"].is_null(), "no LoRA rides the second pass");
+        assert!(!d["ref1"].is_null() && d["ref2"].is_null());
+        assert_eq!(d["sample"]["inputs"]["cfg"], 1.0);
+        assert_eq!(d["sample"]["inputs"]["sampler_name"], "euler");
+        assert_eq!(manifest_of(&dir, &shot.content)["detail"], true);
+        assert!(shot.content.contains("two passes"), "{}", shot.content);
 
         // A typed view is read ahead of the words, which may say nothing a
         // word list knows; and the move is counted from where the last

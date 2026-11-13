@@ -699,3 +699,46 @@ recorded by 2026-11-12, and about 14 of them plain moves. A camera ask
 beside a pose, a person or a setting is still a restage, with the limits
 above; first-person asks are the planner's (`picture::first_person_holder`).
 
+### 17.4 The second pass (owner, 2026-11-13)
+
+The camera LoRA softens what it draws. Measured on the same no-move
+position so the content is constant (4 pictures, 2 seeds): every render
+with the LoRA lost face detail (Laplacian variance of the face crop 0.75
+to 0.85 of the original's) and the same edit without it lost none (0.93 to
+1.23), while the LoRA held the face better than the plain edit did (ArcFace
+against the source 0.94 to 0.99, against 0.43 to 0.94). Where the camera
+really moved it was worse: 0.47 to 0.77 over ten re-shot pictures, four of
+them through the tool. A lower strength did not buy it back with nothing
+moved (0.82 at 0.7 against 0.81).
+
+So the re-shoot is drawn once more without the LoRA
+(`imagegen::DETAIL_PROMPT`). What was tried, on those ten pictures and by
+the same measure against the original (1.00 is the original's detail):
+
+| Second pass | Face detail, median [range] | Face against the re-shoot | n |
+|---|---|---|---|
+| none | 0.72 [0.47, 0.85] | 1.00 | 10 |
+| the picture's own latent, 20% to 50% noise | 0.64 to 0.72 [0.42, 0.88] | 0.92 to 0.99 | 24 |
+| the same, 70% | 0.87 [0.70, 1.07] | 0.88 to 0.97 | 6 |
+| the same, 85% | 1.03 [0.82, 1.51] | 0.81 to 0.97 | 6 |
+| the same at 35%, words only, no picture | 0.66 [0.39, 0.89] | 0.33 to 0.51 | 6 |
+| a whole edit at the persona's sampler, words asking for texture | 1.41 [1.09, 2.60] | 0.80 to 0.96 | 6 |
+| a whole edit at the persona's sampler, plain words | 1.04 [0.56, 2.05] | 0.80 to 0.99 | 9 |
+| **a whole edit at the reference sampling, "recreate this photograph"** | **1.11 [0.69, 2.20]** | **0.82 to 0.96** | **20** |
+| the same at half the steps | 0.92 [0.57, 1.10] | 0.88 to 0.97 | 6 |
+
+A light pass over the picture's own latent changes nothing: the softness is
+in the latent it starts from. A whole edit brings the detail back, and the
+sampler decides whether it is usable: at a stochastic sampler three of six
+came back harsh, grain cut into skin and hair (the 2.05 to 2.60 above), a
+seed apart from a render that changed nothing; at the reference sampling
+none of twenty did by eye. Against the original the face moved by a median
+0.03 (0.08 at most); the camera stayed where the re-shoot put it (the face
+box within 5 pixels, mean pixel change 2 to 6.5 of 255). Between seeds the
+detail figure moves by 0.06 to 0.43, so the range is wide and the median is
+what the pass buys. It costs one more render, about 40 s at 40 steps.
+
+Not measured: a face after a turn to profile or behind (ArcFace does not
+read one against a frontal source); hair and cloth by number rather than
+by eye; a second pass with the owner's own picture LoRAs in it (it runs
+with none); more than one person in the picture.

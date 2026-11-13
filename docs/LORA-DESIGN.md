@@ -121,7 +121,9 @@ strength = 0.8
   does (owner, 2026-11-13: it softens skin and hair, IMAGE-DESIGN §17, so
   it is the owner's to turn on per chat and per persona). It is never one
   of the LoRAs an ordinary picture loads, on the list or not, and it takes
-  one of the list's places. A replay reads no list: its `--reshoot` arm
+  one of the list's places. A re-shoot is then drawn once more with no LoRA
+  at all, the owner's own included, for the fine detail the camera LoRA
+  softens (IMAGE-DESIGN §17.4). A replay reads no list: its `--reshoot` arm
   names the registry and takes the entry by its job (`loras::camera`). An entry whose table does not read is not a
   camera entry, said on the page like any entry that does not read.
 - **`model` is written by the owner and checked against the file.** A file
