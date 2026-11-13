@@ -1,6 +1,8 @@
 # A benchmark for agent memory: does experience change an outcome?
 
-2026-11-12. **Plan for the owner's review; nothing here is built.** Step 1 of
+2026-11-12, status added 2026-11-13. **Plan for the owner's review.** Built so
+far: the memory axis on an arm, the opaque-service lifetimes (tool quirk and
+two lessons, two worlds), and the first four arms in §3. Step 1 of
 [MEMORY-RETENTION-DESIGN.md](MEMORY-RETENTION-DESIGN.md) §7. It is built on two
 things that exist: `mecha exp` in lifetime mode
 ([EXPERIMENT-DESIGN.md](EXPERIMENT-DESIGN.md)) and the controls of the
@@ -35,14 +37,19 @@ which is the property the benchmark wants.
 | Arm | What the agent has | Exists today |
 |---|---|---|
 | **none** | No memory of earlier tasks. | Yes |
-| **transcripts** | A search tool over its own earlier transcripts, nothing curated. The honest baseline: is plain retrieval enough. | Needs a small tool |
-| **everything** | The prototype's recorder: every passage of every run stored and recalled by keyword. | Yes (the integration slices) |
+| **transcripts** | A keyword search over its own earlier transcripts, nothing curated, made by the harness for the task and handed over beside the prompt. The honest baseline: is plain retrieval enough. | Yes (`tool::transcripts`, `mecha run --transcripts-deliver`) |
+| **everything** | The prototype's recorder: every passage of every run stored and recalled by keyword, when the model asks. | Yes (the integration slices) |
+| **delivered** | The same store, and the harness recalls for the task before the first request and hands the model what it found. | Yes (`mecha run --memory-deliver`) |
 | **episodes** | Appraisal-gated episodes only. | To build (design step 2) |
 | **concepts** | Episodes plus relational concepts, recalled first. | To build (steps 3 and 4) |
 | **recompose** | The above plus role binding across episodes. | To build (step 5) |
 
-The first three run before anything new is built, and are the baseline every
-later arm must beat. All arms get the same tools apart from memory, the same
+The first four run before anything new is built, and are the baseline every
+later arm must beat. **Recall is delivered by the harness, not left to the
+model** (owner, 2026-11-13): in the first pilot the store held every earlier
+task and the model never asked it, so an arm that waits to be asked measures
+whether the model asks. Later arms deliver too. `eval/fixtures/opaque_readout.py`
+reports, per probe, whether the rule it needed was in what was handed over. All arms get the same tools apart from memory, the same
 turn and token caps, and the same model.
 
 ## 4. Task families
