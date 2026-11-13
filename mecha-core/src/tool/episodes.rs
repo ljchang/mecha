@@ -14,6 +14,11 @@
 //!   refusal's own words, what the run read before the call worked, and the
 //!   call that worked, or that none did. A run in which nothing was refused
 //!   leaves nothing.
+//!   A second gate is novelty: the first time this home sees a server's
+//!   tool work, the call that worked is kept with what the run read just
+//!   before it. The first measured run showed why: a model that reads the
+//!   documentation first is never refused, so a refusal-only gate kept
+//!   nothing of the rule it had just learned.
 //! - **Recall is conditioned on the situation, not on wording.** An episode
 //!   is about a tool, and it is delivered to a run that has that tool. The
 //!   task's words only rank within that.
@@ -117,7 +122,23 @@ impl Episode {
         )
     }
 
+    /// A first working call rather than a refusal.
+    fn first_use(&self) -> bool {
+        self.errors.is_empty()
+    }
+
     fn render(&self) -> String {
+        if self.first_use() {
+            let mut out = format!(
+                "- {} worked the first time it was used, called with {}.",
+                self.tool,
+                self.fixed_input.as_deref().unwrap_or("{}")
+            );
+            for read in &self.read_between {
+                out.push_str(&format!("\n  Just before, the run read: {read}"));
+            }
+            return out;
+        }
         let mut out = format!(
             "- {} was refused when called with {}.",
             self.tool, self.failed_input
@@ -157,6 +178,16 @@ struct Call {
     result: String,
     is_error: bool,
     external: bool,
+}
+
+/// A read as an episode quotes it.
+fn quote(call: &Call) -> String {
+    format!(
+        "{} {} → {}",
+        call.name,
+        cut(&call.input, INPUT_BYTES),
+        cut(call.result.trim(), QUOTE_BYTES)
+    )
 }
 
 /// The run's finished calls in order, each with its result. A harness call,
@@ -209,9 +240,41 @@ fn calls(messages: &[Message]) -> Vec<Call> {
 
 /// The episodes in one run's messages: for each tool, each stretch from a
 /// refused call to that tool's next call that worked, or to the end.
-pub fn extract(session: &str, messages: &[Message]) -> Vec<Episode> {
+///
+/// And for each tool in `novel` — a server's tool this home has no working
+/// call for yet — that this run was never refused by: its first call that
+/// worked, with what the run read just before it. One that worked with
+/// nothing read first took no finding out, and is not kept.
+pub fn extract(session: &str, messages: &[Message], novel: &BTreeSet<String>) -> Vec<Episode> {
     let calls = calls(messages);
     let mut out = Vec::new();
+    for tool in novel {
+        if calls.iter().any(|c| c.name == *tool && c.is_error) {
+            continue;
+        }
+        let Some(at) = calls.iter().position(|c| c.name == *tool) else {
+            continue;
+        };
+        let reads: Vec<&Call> = calls[..at]
+            .iter()
+            .filter(|c| c.name != *tool && !c.is_error)
+            .collect();
+        if reads.is_empty() {
+            continue;
+        }
+        let reads = &reads[reads.len().saturating_sub(READS)..];
+        out.push(Episode {
+            session: session.to_string(),
+            call: calls[at].id.clone(),
+            tool: tool.clone(),
+            failed_input: String::new(),
+            errors: vec![],
+            read_between: reads.iter().map(|c| quote(c)).collect(),
+            fixed_input: Some(cut(&calls[at].input, INPUT_BYTES)),
+            external: calls[at].external || reads.iter().any(|c| c.external),
+            seen: 1,
+        });
+    }
     let mut per_tool: BTreeMap<&str, usize> = BTreeMap::new();
     let mut at = 0;
     // One pass per refusal that opens a stretch; a stretch's own later
@@ -253,17 +316,7 @@ pub fn extract(session: &str, messages: &[Message]) -> Vec<Episode> {
                 tool: tool.to_string(),
                 failed_input: cut(&first.input, INPUT_BYTES),
                 errors: errors.split_off(skip),
-                read_between: reads
-                    .iter()
-                    .map(|c| {
-                        format!(
-                            "{} {} → {}",
-                            c.name,
-                            cut(&c.input, INPUT_BYTES),
-                            cut(c.result.trim(), QUOTE_BYTES)
-                        )
-                    })
-                    .collect(),
+                read_between: reads.iter().map(|c| quote(c)).collect(),
                 fixed_input: fixed.map(|i| cut(&calls[i].input, INPUT_BYTES)),
                 external: span.iter().any(|c| c.external)
                     || fixed.is_some_and(|i| calls[i].external),
@@ -305,8 +358,28 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
 
 /// Read a finished run's transcript and append what it found out. Returns
 /// how many episodes were written. Nothing refused, nothing written.
-pub fn retain(file: &Path, session: &str, transcript: &str) -> Result<usize> {
-    let episodes = extract(session, &crate::session::Session::messages_ever(transcript));
+///
+/// `learnable` names the tools a first working call is worth keeping for:
+/// a server's tools, which only use reveals. The harness's own are
+/// described by the harness.
+pub fn retain(
+    file: &Path,
+    session: &str,
+    transcript: &str,
+    learnable: &BTreeSet<String>,
+) -> Result<usize> {
+    let known: BTreeSet<String> = load(file)
+        .0
+        .into_iter()
+        .filter(|e| e.fixed_input.is_some())
+        .map(|e| e.tool)
+        .collect();
+    let novel: BTreeSet<String> = learnable.difference(&known).cloned().collect();
+    let episodes = extract(
+        session,
+        &crate::session::Session::messages_ever(transcript),
+        &novel,
+    );
     if episodes.is_empty() {
         return Ok(0);
     }
@@ -352,6 +425,7 @@ fn select<'a>(
     hits.sort_by(|(ai, a), (bi, b)| {
         overlap(b)
             .cmp(&overlap(a))
+            .then(a.first_use().cmp(&b.first_use()))
             .then(b.seen.cmp(&a.seen))
             .then(bi.cmp(ai))
     });
@@ -498,7 +572,7 @@ mod tests {
             call("c", "gate_open", json!({"key": "red7"}), "opened", false),
             call("d", "gate_open", json!({"key": "blue2"}), "opened", false),
         ]);
-        let episodes = extract("s1", &messages);
+        let episodes = extract("s1", &messages, &BTreeSet::new());
         assert_eq!(episodes.len(), 1);
         let e = &episodes[0];
         assert_eq!((e.tool.as_str(), e.call.as_str()), ("gate_open", "a"));
@@ -518,10 +592,10 @@ mod tests {
             "opened",
             false,
         )]);
-        assert!(extract("s1", &messages).is_empty());
+        assert!(extract("s1", &messages, &BTreeSet::new()).is_empty());
         let dir = std::env::temp_dir().join(format!("mecha-episodes-{}", uuid::Uuid::new_v4()));
         let file = file_in(&dir);
-        assert_eq!(retain(&file, "s1", "").unwrap(), 0);
+        assert_eq!(retain(&file, "s1", "", &BTreeSet::new()).unwrap(), 0);
         assert!(!file.exists());
     }
 
@@ -538,7 +612,7 @@ mod tests {
                 true,
             ),
         ]);
-        let episodes = extract("s1", &messages);
+        let episodes = extract("s1", &messages, &BTreeSet::new());
         assert_eq!(episodes.len(), 1);
         assert_eq!(
             episodes[0].errors,
@@ -569,7 +643,7 @@ mod tests {
             ),
             call("harness_1", "gate_open", json!({}), "E9", true),
         ]);
-        assert!(extract("s1", &messages).is_empty());
+        assert!(extract("s1", &messages, &BTreeSet::new()).is_empty());
     }
 
     #[test]
@@ -579,7 +653,71 @@ mod tests {
             call("c", "gate_open", json!({"key": "red7"}), "opened", false),
         ]);
         messages[2].tool_provenance.clear();
-        assert!(extract("s1", &messages)[0].external);
+        assert!(extract("s1", &messages, &BTreeSet::new())[0].external);
+    }
+
+    #[test]
+    fn a_server_tool_s_first_working_call_is_kept_with_what_was_read_before_it() {
+        let messages = run(vec![
+            call(
+                "a",
+                "gate_find",
+                json!({"name": "north"}),
+                "id 7, colour red",
+                false,
+            ),
+            call(
+                "b",
+                "gate_help",
+                json!({}),
+                "A key is a colour then a digit.",
+                false,
+            ),
+            call("c", "gate_open", json!({"key": "red7"}), "opened", false),
+        ]);
+        let novel: BTreeSet<String> = ["gate_open", "gate_find"].map(String::from).into();
+        let episodes = extract("s1", &messages, &novel);
+        // `gate_find` worked with nothing read first: no finding out.
+        assert_eq!(episodes.len(), 1);
+        let e = &episodes[0];
+        assert!(e.first_use() && e.tool == "gate_open" && e.call == "c");
+        assert_eq!(e.read_between.len(), 2);
+        assert!(e
+            .render()
+            .contains("worked the first time it was used, called with {\"key\":\"red7\"}"));
+        assert!(e.render().contains("colour then a digit"));
+        // Not novel, or refused in this run: the refusal's episode, or none.
+        assert!(extract("s1", &messages, &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn a_tool_this_home_already_has_a_working_call_for_is_not_kept_again() {
+        let dir = std::env::temp_dir().join(format!("mecha-episodes-{}", uuid::Uuid::new_v4()));
+        let file = file_in(&dir);
+        let record = |m: Message| {
+            format!(
+                "{}\n",
+                serde_json::to_string(&crate::session::Record::Message(m)).unwrap()
+            )
+        };
+        let transcript: String = run(vec![
+            call(
+                "b",
+                "gate_help",
+                json!({}),
+                "A key is a colour then a digit.",
+                false,
+            ),
+            call("c", "gate_open", json!({"key": "red7"}), "opened", false),
+        ])
+        .into_iter()
+        .map(record)
+        .collect();
+        let learnable: BTreeSet<String> = ["gate_open".to_string()].into();
+        assert_eq!(retain(&file, "s1", &transcript, &learnable).unwrap(), 1);
+        assert_eq!(retain(&file, "s2", &transcript, &learnable).unwrap(), 0);
+        assert_eq!(load(&file).0.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn episode(tool: &str, error: &str, fixed: Option<&str>) -> Episode {

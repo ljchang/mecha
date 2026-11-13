@@ -525,6 +525,7 @@ pub async fn execute(
     // And over the home's episodes (`--episodes-deliver`): the few lines
     // earlier runs kept about the tools this one has. What this run finds
     // out is kept after it ends, below.
+    let mut learnable = std::collections::BTreeSet::<String>::new();
     let delivered = match (&session, args.episodes_deliver) {
         (Some(_), true) => {
             use mecha_core::tool::episodes;
@@ -536,6 +537,14 @@ pub async fn execute(
                 .agent
                 .registry()
                 .iter()
+                .map(|tool| tool.name().to_string())
+                .collect();
+            // A server's tools: only use reveals how they work.
+            learnable = prepared
+                .agent
+                .registry()
+                .iter()
+                .filter(|tool| tool.fixed_workspace().is_some())
                 .map(|tool| tool.name().to_string())
                 .collect();
             prepared
@@ -791,6 +800,7 @@ pub async fn execute(
                         &episodes::file_in(&mecha_core::work::mecha_home()?),
                         &s.meta.id,
                         &text,
+                        &learnable,
                     )
                 });
             match kept {
