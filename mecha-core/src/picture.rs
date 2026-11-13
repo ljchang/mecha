@@ -1183,24 +1183,30 @@ pub fn first_person_holder(camera: &str, names: &[String], owner: Option<&str>) 
             // Whose view or eyes, by the word after it: "the kitchen's
             // table" is nobody's eyes, and read as someone's it left the
             // owner's character in the cast (pass 12).
-            let other = w.iter().enumerate().any(|(i, t)| {
-                t.ends_with("'s")
-                    && !names.iter().any(|n| *t == format!("{n}'s"))
-                    && w.get(i + 1).is_some_and(|next| {
-                        [
-                            "first",
-                            "own",
-                            "eyes",
-                            "view",
-                            "pov",
-                            "point",
-                            "perspective",
-                        ]
-                        .contains(&next.as_str())
-                    })
-            });
+            let other = names_another(&w, names);
             owner.filter(|_| !other).map(str::to_string)
         })
+}
+
+/// Whether a camera's words give the view to someone the library does not
+/// hold: a possessive that is no library name's, by the word after it.
+fn names_another(w: &[String], names: &[String]) -> bool {
+    w.iter().enumerate().any(|(i, t)| {
+        t.ends_with("'s")
+            && !names.iter().any(|n| *t == format!("{n}'s"))
+            && w.get(i + 1).is_some_and(|next| {
+                [
+                    "first",
+                    "own",
+                    "eyes",
+                    "view",
+                    "pov",
+                    "point",
+                    "perspective",
+                ]
+                .contains(&next.as_str())
+            })
+    })
 }
 
 /// Whether a camera is someone's own eyes at all, whoever's: the test
@@ -1277,16 +1283,19 @@ const PART_SAID: &[&str] = &[
 /// is held, then the part. "My sister, arms folded" and "my sister's hands"
 /// are her (review of #872, passes 2 and 3).
 fn a_part_of(words: &str, of: &[&str]) -> bool {
-    let w = camera_words(words);
+    // The first clause names it: what follows a comma is what the part
+    // does ("my hands, holding a lamp"), as `doing` is.
+    let named = words.split(',').next().unwrap_or(words);
+    let w = camera_words(named);
     let mut w = w.iter().map(String::as_str).skip_while(|x| *x == "the");
     w.next().is_some_and(|x| of.contains(&x))
         && w.find(|x| !PART_SAID.contains(x))
             .is_some_and(|x| PARTS.contains(&x))
-        // And the part ends the words: "my lap dog" is a dog, and "my
-        // arms around a woman in a red dress" holds a second person, whom
-        // the fold took out of the record (review of #872, passes 4 and 5).
-        // What the part does is the person's `doing`.
-        && w.next().is_none()
+        // And the part ends the clause, but for how it is held ("my arms
+        // folded"): "my lap dog" is a dog, and "my arms around a woman in a
+        // red dress" holds a second person, whom the fold took out of the
+        // record (review of #872, passes 4 to 6).
+        && w.all(|x| PART_SAID.contains(&x))
 }
 
 /// Whether words name a shot rather than a look: framing, distance or
@@ -1860,7 +1869,11 @@ pub fn plan(
         // never asked (review of #872, passes 3 and 4).
         let names = named_in(camera);
         let by_part = || {
-            first_person(camera)
+            // Never where the camera gives the view to someone the library
+            // does not hold ("through Dave's eyes"): a cast member's part
+            // listed there is theirs, and they are looked at, not looked
+            // through (review of #872, pass 6).
+            (first_person(camera) && !names_another(&camera_words(camera), &names))
                 .then(|| {
                     people.iter().find_map(|p| match &p.who {
                         Who::Library(n) => people
@@ -1942,9 +1955,18 @@ pub fn plan(
                 next.people.retain(|p| !part(p));
                 folded_parts = parts.clone();
                 notes.push(format!(
-                    "{} listed as a person was read as the viewer's own body, not one more \
-                     person.",
-                    folded.join(", ")
+                    "{} listed as {} read as the viewer's own body, not {}.",
+                    folded.join(", "),
+                    if folded.len() == 1 {
+                        "a person was"
+                    } else {
+                        "people were"
+                    },
+                    if folded.len() == 1 {
+                        "one more person"
+                    } else {
+                        "more people"
+                    },
                 ));
             }
         }
@@ -3096,6 +3118,35 @@ mod tests {
         let owned = planned(&owned, None);
         let cast: Vec<String> = owned.people.iter().map(|x| x.who.key()).collect();
         assert_eq!(cast, ["maya"], "an owner set");
+        // How a part is held, or what it does after a comma, is still it.
+        for who in [
+            "my hands, carrying a lamp",
+            "my left arm, raised",
+            "my arms folded",
+        ] {
+            let r = planned(
+                &call(json!({"scene": {"setting": "a kitchen",
+                    "camera": "first-person view through my own eyes",
+                    "people": [
+                        {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                        {"who": who}]}})),
+                None,
+            );
+            assert_eq!(r.people.len(), 1, "{who}");
+        }
+        // The view given to someone the library does not hold: a cast
+        // member's part is theirs, and they stay in the picture.
+        let dave = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through Dave's eyes",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"},
+                    {"who": "John's left arm", "doing": "carrying a lamp"}]}})),
+            None,
+        );
+        assert!(dave.people.iter().any(|x| x.who.key() == "john"));
+        assert!(dave.seen_from.is_none(), "{:?}", dave.seen_from);
         // On a picture already drawn, the part alone is still drawn: an
         // edit with a line for it, never one with nothing to draw.
         let drawn = planned(
