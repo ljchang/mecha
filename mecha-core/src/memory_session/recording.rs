@@ -267,6 +267,8 @@ pub(super) struct Walk<'a> {
     receipts: Vec<ToolReceipt>,
     calls: BTreeMap<String, (String, serde_json::Value, bool)>,
     matched: BTreeSet<usize>,
+    /// Of those, the ones the harness delivered.
+    delivered: BTreeSet<usize>,
     pub(super) consulted: Vec<crate::memory::RevisionRef>,
     pub(super) configured: BTreeSet<String>,
     /// Where the owner's request was found: its line and pointer.
@@ -316,6 +318,7 @@ impl<'a> Walk<'a> {
             receipts: vec![],
             calls: BTreeMap::new(),
             matched: BTreeSet::new(),
+            delivered: BTreeSet::new(),
             consulted,
             configured: BTreeSet::new(),
             owner: None,
@@ -534,6 +537,8 @@ impl<'a> Walk<'a> {
                         external = self.intake.owner();
                         call = None;
                         (PassageKind::UserRequest, "text", text)
+                    } else if self.delivery(&text)? {
+                        continue;
                     } else {
                         // Any other user-role text is the harness's or
                         // another agent's, and never owner evidence. A
@@ -622,8 +627,11 @@ impl<'a> Walk<'a> {
                             .attempts
                             .iter()
                             .enumerate()
-                            .filter(|(_, a)| {
-                                a.input == *input
+                            .filter(|(at, a)| {
+                                // A recall the harness delivered is spent;
+                                // a model's identical call is its own.
+                                !self.delivered.contains(at)
+                                    && a.input == *input
                                     && a.is_error == is_error
                                     && recall::exact_output(&a.output, &content, a.external)
                             })
@@ -697,6 +705,44 @@ impl<'a> Walk<'a> {
             ));
         }
         Ok(())
+    }
+    /// A recall the harness made before the run, delivered as text beside
+    /// the owner's words (`recall::DELIVERY_STEM`). It is reconciled with its
+    /// tracked attempt as a model's call is with its result, counted as a
+    /// result that entered the conversation, and never read as a passage.
+    /// Text under the stem that matches no attempt is not a delivery.
+    fn delivery(&mut self, text: &str) -> Result<bool> {
+        let Some(content) = text.strip_prefix(recall::DELIVERY_STEM) else {
+            return Ok(false);
+        };
+        let Some((at, a)) = self.attempts.iter().enumerate().find(|(at, a)| {
+            !self.matched.contains(at)
+                && recall::delivery_shaped(&a.input)
+                && recall::exact_output(&a.output, content, a.external)
+        }) else {
+            return Ok(false);
+        };
+        self.matched.insert(at);
+        self.delivered.insert(at);
+        self.intake.result(Some(a.external));
+        let refs = if a.is_error {
+            ensure!(!a.external, "ordinary failed recall delivery unknown");
+            vec![]
+        } else {
+            crate::memory_experience_bridge::memory_packet_references_checked(
+                content,
+                Some((self.memory, self.access)),
+            )?
+        };
+        ensure!(refs == a.references, "ordinary recall dependencies changed");
+        self.memory
+            .validate_delivered_context(&refs, &[], self.access)?;
+        for r in refs {
+            if !self.consulted.contains(&r) {
+                self.consulted.push(r);
+            }
+        }
+        Ok(true)
     }
     /// Every recall the tool served must have been found in the transcript.
     pub(super) fn reconciled(&self) -> bool {

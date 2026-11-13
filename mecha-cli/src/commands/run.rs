@@ -44,6 +44,12 @@ pub struct Args {
     )]
     pub episodic_memory: Option<std::path::PathBuf>,
 
+    /// Have the harness search memory for this task before the first request
+    /// and hand the model what it found, beside the prompt.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory")]
+    pub memory_deliver: bool,
+
     /// Read-only synthetic memory for goal_context (experimental, unencrypted).
     #[cfg(feature = "memory-prototype")]
     #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
@@ -400,6 +406,40 @@ pub async fn execute(
             Ok::<_, anyhow::Error>((memory, run))
         })
         .transpose()?;
+    // The harness's own recall, made for the task before the model is asked
+    // anything (`--memory-deliver`). Through `dispatch_one`, so it meets the
+    // gates a model's call meets and arms the conversation with what it
+    // returned; through the run's tracked tool, so the recorder holds the
+    // attempt and finds it again in the owner's message. Delivered whatever
+    // it returned: an empty packet or a refusal is what memory had.
+    #[cfg(feature = "memory-prototype")]
+    let delivered = match (&ordinary_run, args.memory_deliver) {
+        (Some(_), true) => match mecha_core::memory_session::delivery_input(&prompt) {
+            Some(input) => {
+                let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+                let dispatched = prepared
+                    .agent
+                    .dispatch_one(&cx, &mut convo, "goal_context", input, &None)
+                    .await;
+                eprintln!(
+                    "mecha: memory delivered {} bytes{}",
+                    dispatched.content.len(),
+                    if dispatched.is_error {
+                        " (an error)"
+                    } else {
+                        ""
+                    }
+                );
+                Some(mecha_core::memory_session::delivery_text(
+                    &dispatched.content,
+                ))
+            }
+            None => None,
+        },
+        _ => None,
+    };
+    #[cfg(not(feature = "memory-prototype"))]
+    let delivered: Option<String> = None;
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
@@ -477,10 +517,11 @@ pub async fn execute(
     }
 
     // Text first, images after — the order both provider families document.
-    let user = if images.is_empty() {
+    let user = if images.is_empty() && delivered.is_none() {
         Message::user(&prompt)
     } else {
         let mut content = vec![mecha_core::message::Block::text(&prompt)];
+        content.extend(delivered.map(mecha_core::message::Block::text));
         content.extend(images);
         Message {
             harness: false,

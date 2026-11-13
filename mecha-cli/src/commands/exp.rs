@@ -2060,7 +2060,7 @@ fn memory_request(
 ) -> Result<PathBuf> {
     use mecha_core::memory_home;
     use std::os::unix::fs::OpenOptionsExt;
-    let mecha_core::experiment::ArmMemory::Everything = memory;
+    let _ = memory;
     if !memory_home::initialized(home) {
         let mut init = std::process::Command::new(mecha);
         init.args(["memory-session", "init"]).env_clear();
@@ -2230,6 +2230,9 @@ async fn run_one(
         );
         cmd.arg("--episodic-memory")
             .arg(memory_request(mecha, &home, memory)?);
+        if memory == mecha_core::experiment::ArmMemory::Delivered {
+            cmd.arg("--memory-deliver");
+        }
     }
 
     // A case's own turn ceiling and compaction threshold are part of the

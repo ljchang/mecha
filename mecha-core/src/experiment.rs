@@ -1124,6 +1124,7 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
     match memory {
         None => original,
         Some(ArmMemory::Everything) => fnv64(format!("{original}|memory=everything").as_bytes()),
+        Some(ArmMemory::Delivered) => fnv64(format!("{original}|memory=delivered").as_bytes()),
     }
 }
 
@@ -1134,8 +1135,11 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
 #[serde(rename_all = "snake_case")]
 pub enum ArmMemory {
     /// Every passage of every run is stored and recalled by keyword: the
-    /// recorder as it stands.
+    /// recorder as it stands. The model recalls when it chooses to.
     Everything,
+    /// The same store, and the harness recalls for the task before the
+    /// first request and hands the model what it found.
+    Delivered,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

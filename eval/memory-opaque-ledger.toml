@@ -57,3 +57,12 @@ memory = "everything"
 [arms.everything.prediction]
 metric = "failure"
 rationale = "The probes cannot find the token rule or the unit rule again in their turns; an arm that recalls the earlier tasks' tool results passes probes the control fails."
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "The model does not ask its memory; with the same store searched by the harness for the task and handed over beside the prompt, the probes have the earlier tasks' tool results in front of them and pass where the control fails."
