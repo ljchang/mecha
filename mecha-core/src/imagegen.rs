@@ -3960,7 +3960,12 @@ impl ImageGenerate {
             left.extend(kept_copies);
             match count {
                 Ok(n) => check.seen.push(n),
-                Err(Failure::Cancelled) => return (Err(Failure::Cancelled), check),
+                // Stopped while counting or drawing again: a finished render
+                // is in hand, and it is kept, not thrown away with the stop.
+                Err(Failure::Cancelled) => {
+                    check.stopped = Some("stopped".into());
+                    break;
+                }
                 Err(Failure::Other(e)) => {
                     tracing::warn!("image_generate: the people count failed: {e:#}");
                     check.stopped = Some("the count failed".into());
@@ -3968,15 +3973,16 @@ impl ImageGenerate {
                 }
             }
             let over = check.seen.last().is_some_and(|n| *n > expected);
-            if !over || !may_redraw || renders.len() > PEOPLE_REDRAWS {
-                break;
-            }
             // Far over the cast on the first count is a crowd the scene's
             // words did not name, far more likely than one figure drawn
             // twice (the measured doubling is one over): kept, recorded,
-            // and neither drawn again nor said to be wrong.
-            if renders.len() == 1 && check.seen[0] > expected + 1 {
+            // and neither drawn again nor said to be wrong, whether or not
+            // it could have been drawn again.
+            if renders.len() == 1 && check.seen.first().is_some_and(|n| *n > expected + 1) {
                 check.stopped = Some(FAR_OVER.into());
+                break;
+            }
+            if !over || !may_redraw || renders.len() > PEOPLE_REDRAWS {
                 break;
             }
             if budget.is_zero() {
@@ -3997,7 +4003,12 @@ impl ImageGenerate {
             left.extend(again.left);
             match again.image {
                 Ok(bytes) => renders.push((bytes, req.seed)),
-                Err(Failure::Cancelled) => return (Err(Failure::Cancelled), check),
+                // Stopped while counting or drawing again: a finished render
+                // is in hand, and it is kept, not thrown away with the stop.
+                Err(Failure::Cancelled) => {
+                    check.stopped = Some("stopped".into());
+                    break;
+                }
                 Err(Failure::Other(e)) => {
                     tracing::warn!("image_generate: drawing again failed: {e:#}");
                     check.stopped = Some("drawing again failed".into());
@@ -5112,12 +5123,17 @@ impl Tool for ImageGenerate {
         // A new picture is counted by SAM after it is drawn (`PeopleCheck`),
         // and whether this call is one is not known until it is planned: a
         // call that can never be is not charged for it.
-        let counts_people = self.cfg.people_check && call.counts_people();
-        let may_segment = call.may_segment() || counts_people;
-        if let Err(why) = self
-            .memory_guard(tuning.model.unwrap_or_default(), may_segment)
-            .await
-        {
+        let mut counts_people = self.cfg.people_check && call.counts_people();
+        let may_segment = call.may_segment();
+        // The count is asked for only where the memory is there for it: a
+        // picture is never refused for a check it can be drawn without
+        // (review of #874, pass 3). Short of it, the picture is admitted as
+        // it was before the count existed, and is not counted.
+        let model = tuning.model.unwrap_or_default();
+        if counts_people && !may_segment && self.memory_guard(model, true).await.is_err() {
+            counts_people = false;
+        }
+        if let Err(why) = self.memory_guard(model, may_segment || counts_people).await {
             return Ok(refused(why));
         }
         // The picture being changed, read once: its bytes key its record and
@@ -12693,6 +12709,10 @@ mod tests {
             out.content
         );
         assert!(out.content.contains("seed 7"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        // Far over the cast at a seed it keeps: a crowd, said by nobody.
+        let (out, _, dir) = new_picture_counted(&[3], Some(7)).await;
+        assert!(!out.content.contains("seems to show"), "{}", out.content);
         std::fs::remove_dir_all(dir).ok();
     }
 

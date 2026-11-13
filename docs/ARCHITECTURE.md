@@ -1149,8 +1149,11 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   with the thing still there (0.1%, 0.3% and 4.4% of the area changed),
   and replayed, a second figure entwined with the first came back 0 of 3
   at cfg 1 and 0 of 3 at cfg 3. So where a painted area's words ask for
-  something to be taken out (`picture::about_removal`, a closed list of
-  plain verbs; "replace" names what comes instead and is not one), the
+  something to be taken out (`picture::only_removal` for one painted area,
+  whose words are the owner's whole sentence and may ask for more than the
+  removal, and `picture::about_removal` for a region, whose words are its
+  own; a closed list of plain verbs, and "replace" names what comes
+  instead and is not one), the
   area, grown as the mask is, is filled from what surrounds it
   (`fill_from_around`) in the canvas and the outlined copy the model is
   shown: the same turn at the same seeds, 3 of 3 at cfg 1, and a second
@@ -1189,9 +1192,12 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   model the admission gauge assumes. A call that may segment asks for
   `SEGMENT_NEED_MB` on top, where the server can segment (a Mac, which is
   not asked, always). A call may segment when `mask` is words or a painted
-  region's words are about a face, and any call may while `[image]
-  people_check` is on, since whether it draws a new picture is not known
-  until it is planned.
+  region's words are about a face. The count below is asked for beside it
+  only for a call that may be counted (`picture::Call::counts_people`: no
+  mask, regions or retouch, and a picture named or someone listed) and
+  only where the memory is there: short of it the picture is admitted as
+  it was before the count existed and is not counted, never refused for
+  it.
   - **S1: words in `mask`** become the mask SAM finds for them, prepared as
     paint is. Anything that keeps them from being one (not installed, an
     error, nothing found, too small) draws the whole picture and says why;
