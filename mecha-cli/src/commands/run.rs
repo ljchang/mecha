@@ -47,13 +47,13 @@ pub struct Args {
     /// Have the harness search memory for this task before the first request
     /// and hand the model what it found, beside the prompt.
     #[cfg(feature = "memory-prototype")]
-    #[arg(long, requires = "episodic_memory")]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["transcripts_deliver", "episodes_deliver"])]
     pub memory_deliver: bool,
 
     /// After a turn in which a call failed, have the harness search memory
     /// for that failure and hand the model what it found, with the results.
     #[cfg(feature = "memory-prototype")]
-    #[arg(long, requires = "episodic_memory")]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["transcripts_deliver", "episodes_deliver"])]
     pub memory_on_error: bool,
 
     /// Offer the model its memory as `memory_search`, withhold the same

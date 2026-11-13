@@ -2056,6 +2056,26 @@ pub(crate) const BUDGET_NOTICE_ONE: &str = "Run budget: one model turn remains, 
 /// since each interpolates something (a tool name and a count; a message id
 /// and a sender; a step's own text); the two turn-level nudges are constants
 /// and are matched whole.
+/// Whether `text` opens with one of the lines a recall is delivered under.
+fn is_recall_delivery(text: &str) -> bool {
+    #[cfg(feature = "memory-prototype")]
+    if [
+        crate::memory_session::DELIVERY_STEM,
+        crate::memory_session::ERROR_STEM,
+    ]
+    .iter()
+    .any(|stem| text.starts_with(stem.trim_end()))
+    {
+        return true;
+    }
+    [
+        crate::tool::transcripts::DELIVERY_STEM,
+        crate::tool::episodes::DELIVERY_STEM,
+    ]
+    .iter()
+    .any(|stem| text.starts_with(stem.trim_end()))
+}
+
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     completion::is_notice(text)
@@ -2098,6 +2118,13 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona's memory, folded into a chat's first turn (§9.7): the
         // harness's notes, never the owner's words.
         || crate::persona::recall::stem_of(text).is_some()
+        // What a harness search of earlier work handed over, beside the
+        // owner's first words or beside a failed call's results
+        // (`tool::transcripts`, `tool::episodes`, `memory_session`). Records
+        // of other runs under the harness's line: unregistered, the first
+        // read as part of the owner's request and the last mined as the
+        // owner's steer (review of #875).
+        || is_recall_delivery(text)
         // A persona's scene (IMAGE-SCENE-DESIGN.md §5.5): the harness's note
         // of what her last picture showed, never the owner's words.
         || crate::scene::stem_of(text).is_some()
@@ -11602,6 +11629,34 @@ mod tests {
     /// calls of a background tool in one batch, in the assistant's chat,
     /// never tell the model or the owner a picture is coming (review of
     /// #666, pass 3). The picture's measured lines stay the picture's.
+    /// A recall the harness hands over is the harness speaking: never part
+    /// of the owner's request, and never the owner's steer.
+    #[test]
+    fn a_delivered_recall_is_the_harness_s_voice_wherever_it_lands() {
+        let stems = [
+            crate::tool::transcripts::DELIVERY_STEM,
+            crate::tool::episodes::DELIVERY_STEM,
+            #[cfg(feature = "memory-prototype")]
+            crate::memory_session::DELIVERY_STEM,
+            #[cfg(feature = "memory-prototype")]
+            crate::memory_session::ERROR_STEM,
+        ];
+        for stem in stems {
+            assert!(is_harness_voice(&format!("{stem}what was found")), "{stem}");
+            assert!(is_harness_voice(stem), "{stem}");
+            // Beside the owner's words, only the owner's words are theirs.
+            let first = Message {
+                content: vec![
+                    Block::text("do the task"),
+                    Block::text(format!("{stem}what was found")),
+                ],
+                ..Message::user("")
+            };
+            assert_eq!(owner_text(&first), "do the task", "{stem}");
+        }
+        assert!(!is_harness_voice("The harness is slow today."));
+    }
+
     #[tokio::test]
     async fn a_job_that_is_not_a_picture_closes_on_its_own_lines() {
         let go = Arc::new(tokio::sync::Notify::new());

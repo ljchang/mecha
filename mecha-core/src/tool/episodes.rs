@@ -465,9 +465,12 @@ pub fn appraise(file: &Path, session: &str, passed: bool) -> Result<()> {
     let line =
         serde_json::to_string(&json!({"verdict": Verdict { session: session.into(), passed }}))?;
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Owner-only, as every private store here is: it quotes tool results.
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(file)
         .and_then(|mut f| writeln!(f, "{line}"))
         .with_context(|| format!("writing {}", file.display()))
@@ -603,9 +606,12 @@ pub fn retain(
         lines.push('\n');
     }
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Owner-only, as every private store here is: it quotes tool results.
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(file)
         .and_then(|mut f| f.write_all(lines.as_bytes()))
         .with_context(|| format!("writing {}", file.display()))?;
