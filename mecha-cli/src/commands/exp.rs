@@ -2045,16 +2045,40 @@ fn experiment_judge(
 /// The request file naming a trial home's memory store, creating the store
 /// on the arm's first task. Outside the trial's workspace, as a request
 /// must be, and private.
+///
+/// The store is made by a child whose `MECHA_HOME` is the trial home, never
+/// by this process: a store under a mecha home is admitted only to the
+/// process whose own home it is (`memory_session::authority::admit_home`),
+/// and the driver's home is the operator's. Made here, the first real run
+/// was refused with "live Mecha directories are not memory roots", because a
+/// trial home sits under the operator's.
 #[cfg(feature = "memory-prototype")]
-fn memory_request(home: &Path, memory: mecha_core::experiment::ArmMemory) -> Result<PathBuf> {
+fn memory_request(
+    mecha: &Path,
+    home: &Path,
+    memory: mecha_core::experiment::ArmMemory,
+) -> Result<PathBuf> {
     use mecha_core::memory_home;
     use std::os::unix::fs::OpenOptionsExt;
     let mecha_core::experiment::ArmMemory::Everything = memory;
-    let request = if memory_home::initialized(home) {
-        memory_home::request(home)?
-    } else {
-        memory_home::initialize(home)?
-    };
+    if !memory_home::initialized(home) {
+        let mut init = std::process::Command::new(mecha);
+        init.args(["memory-session", "init"]).env_clear();
+        for (k, v) in mecha_core::sandbox::Sandbox::child_env(&[]) {
+            init.env(k, v);
+        }
+        let made = init
+            .env("MECHA_HOME", home)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .context("starting `mecha memory-session init` for the trial home")?;
+        anyhow::ensure!(
+            made.status.success() && memory_home::initialized(home),
+            "the trial home's memory store could not be made: {}",
+            String::from_utf8_lossy(&made.stderr).trim()
+        );
+    }
+    let request = memory_home::request(home)?;
     let path = memory_home::dir(home).join("request.json");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -2067,7 +2091,11 @@ fn memory_request(home: &Path, memory: mecha_core::experiment::ArmMemory) -> Res
     Ok(path)
 }
 #[cfg(not(feature = "memory-prototype"))]
-fn memory_request(_home: &Path, _memory: mecha_core::experiment::ArmMemory) -> Result<PathBuf> {
+fn memory_request(
+    _mecha: &Path,
+    _home: &Path,
+    _memory: mecha_core::experiment::ArmMemory,
+) -> Result<PathBuf> {
     anyhow::bail!(
         "this build has no agent memory; a memory arm needs the `memory-prototype` feature"
     )
@@ -2201,7 +2229,7 @@ async fn run_one(
             case.id
         );
         cmd.arg("--episodic-memory")
-            .arg(memory_request(&home, memory)?);
+            .arg(memory_request(mecha, &home, memory)?);
     }
 
     // A case's own turn ceiling and compaction threshold are part of the
