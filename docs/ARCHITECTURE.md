@@ -1113,9 +1113,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   every picture this tool made, that canvas is the picture's own size. A
   larger photo is edited and returned at its canvas size, as a plain edit
   already is, and the result says so. A dab too small to survive the grow
-  step is refused rather than silently changing nothing. The near-copy check
-  reads only the painted cells (`layout_similarity_painted`), or every
-  masked edit would look unchanged. It landed 8 of 8 local edits in
+  step is refused rather than silently changing nothing. It landed 8 of 8 local edits in
   `IMAGE-REGION-EDIT-RESEARCH.md` §4 (the seam caveat is above). It
   under-edits a pose,
   which is left to a plain edit or a library redraw. A mask that marks
@@ -1125,6 +1123,40 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   local model read the refusal as the mask being at fault and retried
   without the mask: a whole-picture edit of a picture the owner had painted
   a region on.
+- **What a masked edit did is read from the pictures, never assumed**
+  (`read_masked`, `MaskRead`; `IMAGE-REGION-EDIT-RESEARCH.md` §8). Once the
+  result is laid back, the share of painted pixels that visibly changed
+  against the picture as it was before any pass of the edit (`paint_read`)
+  is read under the whole mask and under each region's own paint. Below
+  `PAINT_UNCHANGED` an area "came back as it was", and a result in which
+  every area did is never called redrawn; below `PAINT_BARELY` it "came
+  back almost as it was", said with its share as a change that may not
+  show; a region that failed is named beside the ones that took. The
+  layout line of an unmasked edit (`NEAR_COPY_LAYOUT`) is not said on a
+  masked one: over the recorded painted edits it called two that worked
+  near-copies (0.79 and 0.82), since a change inside a stroke keeps the
+  stroke's layout. The manifest keeps the numbers (`mask_read`), with
+  `layout_similarity` beside them. Before this a painted removal that
+  returned the original pixel for pixel was reported as "Only the area …
+  was redrawn", and the persona's reply said the change was made.
+- **What is to be taken out is hidden from the model** (`MaskPlan::fill`,
+  `fill_request`; §8 of the same document). A model shown the thing it is
+  asked to remove often draws it again under the mask. Of the six removals
+  among the recorded painted edits whose files remain, three came back
+  with the thing still there (0.1%, 0.3% and 4.4% of the area changed),
+  and replayed, a second figure entwined with the first came back 0 of 3
+  at cfg 1 and 0 of 3 at cfg 3. So where a painted area's words ask for
+  something to be taken out (`picture::about_removal`, a closed list of
+  plain verbs; "replace" names what comes instead and is not one), the
+  area, grown as the mask is, is filled from what surrounds it
+  (`fill_from_around`) in the canvas and the outlined copy the model is
+  shown: the same turn at the same seeds, 3 of 3 at cfg 1, and a second
+  turn 3 of 3, one of them with the fill copied into the result as a
+  blocky patch. Only what is
+  shown changes. The plan's own picture stays the original, so the
+  lay-back, the read and everything the mask keeps are as before, and the
+  result says the area was hidden. A mask named in words (S1) is found
+  inside the job and is not hidden yet.
 - **Several coloured regions, each with its own words, go in one masked
   edit** (the owner's ruling, 2026-10-10: M2 of
   `IMAGE-REGION-EDIT-RESEARCH.md` §7). The persona chat's edit panel paints

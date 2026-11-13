@@ -276,6 +276,77 @@ pub fn about_a_face(words: &str) -> bool {
         .any(|w| matches!(w.to_lowercase().as_str(), "face" | "faces"))
 }
 
+/// Whether words ask only for a removal: [`about_removal`] with nothing
+/// asked beside it. One painted area's words are the owner's whole
+/// sentence, and "remove the lamp and repaint the wall" over one stroke
+/// hid the wall it was to repaint (review of #873); a region's words are
+/// its own, so regions use the wider test.
+pub fn only_removal(words: &str) -> bool {
+    about_removal(words)
+        && !words
+            .split(|c: char| !c.is_alphanumeric())
+            .map(str::to_lowercase)
+            .any(|w| {
+                matches!(
+                    w.as_str(),
+                    "and"
+                        | "then"
+                        | "also"
+                        | "but"
+                        | "instead"
+                        | "add"
+                        | "put"
+                        | "make"
+                        | "change"
+                        | "turn"
+                        | "paint"
+                        | "repaint"
+                        | "recolour"
+                        | "recolor"
+                )
+            })
+}
+
+/// Whether a painted area's words ask for what is there to be taken out,
+/// with nothing put in its place: the one kind of masked edit whose area
+/// is hidden from the model (`imagegen::MaskPlan::fill`), since a model
+/// shown the thing draws it again. A closed list of plain verbs; "replace"
+/// and "swap" are not on it, because they name what comes instead.
+pub fn about_removal(words: &str) -> bool {
+    let w: Vec<String> = words
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let one = |t: &str| {
+        matches!(
+            t,
+            "remove"
+                | "removes"
+                | "removed"
+                | "removing"
+                | "erase"
+                | "erased"
+                | "delete"
+                | "deleted"
+        )
+    };
+    // "take the lamp out", "take out the lamp", "get rid of it": the verb,
+    // then its particle within the next few words.
+    let split = |verb: &[&str], particle: &[&str]| {
+        w.iter().enumerate().any(|(i, t)| {
+            verb.contains(&t.as_str())
+                && w[i + 1..]
+                    .iter()
+                    .take(4)
+                    .any(|p| particle.contains(&p.as_str()))
+        })
+    };
+    w.iter().any(|t| one(t))
+        || split(&["take", "takes", "taken"], &["out", "away"])
+        || split(&["get", "gets"], &["rid"])
+}
+
 /// The legend the model reads for regions, in the measured M2 form: the
 /// outlines are in `<image2>`, the picture is `<image1>`, and each colour's
 /// words follow it (mecha-a3, 2026-10-09: 0 of 24 wrong targets).
@@ -2148,6 +2219,33 @@ pub fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Words that take something out, against words that change it or put
+    /// something else there.
+    #[test]
+    fn removal_is_told_from_a_change() {
+        for yes in [
+            "remove the cup",
+            "Removed, please",
+            "erase the sign on the wall",
+            "take the lamp out",
+            "take out the lamp",
+            "get rid of the chair",
+            "delete this",
+        ] {
+            assert!(about_removal(yes), "{yes}");
+        }
+        for no in [
+            "make it red",
+            "replace the cup with a vase",
+            "a taller lamp",
+            "take a step back",
+            "getting dark outside",
+            "",
+        ] {
+            assert!(!about_removal(no), "{no}");
+        }
+    }
     use crate::scene::Origin;
     use serde_json::json;
 

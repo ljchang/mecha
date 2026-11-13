@@ -315,8 +315,9 @@ pub fn branch_at_panel(path: &Path, text: &str, line: usize) -> Result<Branch> {
 }
 
 /// The call a picture-panel turn's harness drew, from the fact it recorded:
-/// `None` where `line` is not such a turn or its change was not a scene
-/// change (`edit::fact_call`).
+/// a scene change (`edit::fact_call`) or a painted edit that drew
+/// (`edit::fact_painted_call`). `None` where `line` is not such a turn or
+/// its change was neither.
 pub fn panel_call(text: &str, line: usize) -> Option<Value> {
     let lines = non_empty(text);
     let index = line.checked_sub(1)?;
@@ -328,7 +329,7 @@ pub fn panel_call(text: &str, line: usize) -> Option<Value> {
         .as_array()?
         .iter()
         .filter_map(|b| b.get("text").and_then(Value::as_str))
-        .find_map(super::edit::fact_call)
+        .find_map(|t| super::edit::fact_call(t).or_else(|| super::edit::fact_painted_call(t)))
 }
 
 fn branch(path: &Path, text: &str, line: usize, panel: bool) -> Result<Branch> {
@@ -409,8 +410,9 @@ pub fn recorded_call(path: &Path, text: &str, line: usize, call: usize) -> Resul
         }
         let input = panel_call(text, line).with_context(|| {
             format!(
-                "the panel turn at line {line} drew no scene change (a redraw, a retouch, \
-                 painted regions, or one not understood), so there is no call to run again"
+                "the panel turn at line {line} drew no scene change and no painted edit (a \
+                 redraw, a retouch in words, or one not understood or not drawn), so there is \
+                 no call to run again"
             )
         })?;
         return Ok(("image_generate".to_string(), input));
