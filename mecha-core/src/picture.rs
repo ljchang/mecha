@@ -1221,10 +1221,29 @@ pub fn first_person(camera: &str) -> bool {
     has_run(&w, &["first", "person"]) || through_eyes
 }
 
-/// The one name `as_viewer` is to read as the viewer, as its list.
-fn names_of(whose: &Option<String>) -> Vec<String> {
-    whose.iter().cloned().collect()
-}
+/// A part of a body someone sees of themselves, as a first-person picture's
+/// words name it.
+const PARTS: &[&str] = &[
+    "hand",
+    "hands",
+    "arm",
+    "arms",
+    "finger",
+    "fingers",
+    "wrist",
+    "wrists",
+    "leg",
+    "legs",
+    "knee",
+    "knees",
+    "foot",
+    "feet",
+    "lap",
+    "shoulder",
+    "shoulders",
+    "forearm",
+    "forearms",
+];
 
 /// Whether words name a shot rather than a look: framing, distance or
 /// angle. A reader that filed a framing word as a `look` had it joined to
@@ -1794,40 +1813,68 @@ pub fn plan(
         // words join the viewer's line, and neither the cast nor the record
         // keeps them.
         let mut parts: Vec<String> = Vec::new();
+        let before = people.len();
         if first_person(camera) {
+            // A part, by how it is said: the viewer's possessive first, then
+            // a part of a body within a word or two ("John's left arm", "my
+            // hands"). Someone whole who only mentions the viewer ("a
+            // stranger staring at me", "John's sister") is a person, and
+            // folded they left the picture and its record unsaid (review of
+            // #872).
             let theirs = |d: &str| {
-                whose
-                    .as_ref()
-                    .is_some_and(|h| named_in(d).iter().any(|n| n == h))
-                    || camera_words(d)
-                        .iter()
-                        .any(|w| ["me", "my", "myself", "viewer", "viewer's"].contains(&w.as_str()))
+                let w = camera_words(d);
+                let w: Vec<&str> = w
+                    .iter()
+                    .map(String::as_str)
+                    .skip_while(|x| *x == "the")
+                    .collect();
+                let possessive = w.first().is_some_and(|x| {
+                    ["my", "viewer's"].contains(x)
+                        || whose.as_ref().is_some_and(|h| *x == format!("{h}'s"))
+                });
+                possessive && w.iter().skip(1).take(3).any(|x| PARTS.contains(x))
             };
+            let part = |p: &crate::scene::Person| matches!(&p.who, Who::Described(d) if theirs(d));
+            // Never the whole picture: with nobody but the viewer in it, the
+            // part is what it shows.
             let others = people
                 .iter()
-                .filter(|p| !matches!(&p.who, Who::Described(d) if theirs(d)))
+                .filter(|p| !part(p))
+                .filter(|p| !matches!((&p.who, &whose), (Who::Library(n), Some(h)) if n == h))
                 .count();
-            // Never the whole picture: with nobody else in it, the hands are
-            // what it shows.
-            if others >= 1 {
-                people.retain(|p| match &p.who {
-                    Who::Described(d) if theirs(d) => {
-                        let said = [d.trim(), p.doing.trim()]
-                            .into_iter()
-                            .filter(|x| !x.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        parts.push(as_viewer(&said, &names_of(&whose), &[]));
-                        false
-                    }
-                    _ => true,
-                });
-                next.people
-                    .retain(|p| !matches!(&p.who, Who::Described(d) if theirs(d)));
+            if others >= 1 && people.iter().any(|p| part(p)) {
+                for p in people.iter().filter(|p| part(p)) {
+                    let worn = outfit_words(&p.wearing);
+                    let key = p.who.key();
+                    let said = [
+                        key.as_str(),
+                        p.doing.trim(),
+                        if worn == WEARING_UNSAID {
+                            ""
+                        } else {
+                            worn.trim()
+                        },
+                    ]
+                    .into_iter()
+                    .filter(|x| !x.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                    let named: Vec<String> = whose.iter().cloned().collect();
+                    parts.push(as_viewer(&said, &named, &[]));
+                }
+                people.retain(|p| !part(p));
+                next.people.retain(|p| !part(p));
+                notes.push(
+                    "A part of the viewer listed as a person was read as the viewer's own body, \
+                     not one more person."
+                        .into(),
+                );
             }
         }
+        // Counted before the fold: the holder beside only a part of
+        // themselves is still the holder, never cast again.
         let holder = whose.clone().filter(|h| {
-            people.len() >= 2
+            before >= 2
                 && people
                     .iter()
                     .any(|p| matches!(&p.who, Who::Library(n) if n == h))
@@ -1838,7 +1885,13 @@ pub fn plan(
                  only their body as they see it ({}).",
                 parts.join(", ")
             ));
-            if let Some(h) = &whose {
+            // Never a name still in the cast: read as "the viewer" there,
+            // every word about them would be.
+            if let Some(h) = whose.as_ref().filter(|h| {
+                !people
+                    .iter()
+                    .any(|p| matches!(&p.who, Who::Library(n) if n == *h))
+            }) {
                 if !offstage.contains(h) {
                     offstage.push(h.clone());
                 }
@@ -2874,6 +2927,7 @@ mod tests {
         assert_eq!(cast, ["maya"]);
         let kept: Vec<String> = p.next.people.iter().map(|q| q.who.key()).collect();
         assert_eq!(kept, ["maya", "john"], "the record keeps him, not his arm");
+        assert!(!p.faces.contains(&"john".to_string()), "{:?}", p.faces);
         let seen = p.seen_from.as_deref().unwrap_or("");
         assert!(
             seen.contains("the viewer's left arm, carrying a lamp"),
@@ -2897,6 +2951,49 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("carrying a lamp"));
+        // Someone whole who mentions the viewer is a person, and stays.
+        for who in [
+            "a stranger staring at me",
+            "John's sister",
+            "a waiter by my left arm",
+        ] {
+            let r = planned(
+                &call(json!({"scene": {"setting": "a kitchen",
+                    "camera": "first-person view through John's eyes",
+                    "people": [
+                        {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                        {"who": who, "doing": "waiting"}]}})),
+                None,
+            );
+            assert_eq!(r.people.len(), 2, "{who}");
+            assert_eq!(r.next.people.len(), 2, "{who}");
+        }
+        // The holder beside only a part of themselves is still the holder:
+        // never cast, no portrait.
+        let h = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through John's eyes",
+                "people": [
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"},
+                    {"who": "John's left arm", "doing": "carrying a lamp"}]}})),
+            None,
+        );
+        assert!(!h.faces.contains(&"john".to_string()), "{:?}", h.faces);
+        assert!(!h.people.iter().any(|x| x.who.key() == "john"));
+        // What a part wears is kept.
+        let worn = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through my own eyes",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "my left arm", "wearing": "a silver watch"}]}})),
+            None,
+        );
+        assert!(worn
+            .seen_from
+            .as_deref()
+            .unwrap_or("")
+            .contains("a silver watch"));
         // Not first person: a described person is a person.
         let wide = planned(
             &call(
