@@ -421,7 +421,7 @@ pub struct Concept {
     pub key: String,
     /// The supporting runs' patterns, oldest first. Never empty.
     pub support: Vec<Pattern>,
-    /// Runs with other tools that were handed this concept, and how many of
+    /// Runs that were handed this concept, and how many of
     /// them went on to show the same structure in a task not judged to have
     /// failed. The difference is the concept's counterexamples: handed
     /// over, and not borne out or not acted on.
@@ -438,19 +438,32 @@ impl Concept {
         self.support.iter().any(|p| p.external)
     }
 
-    /// The tools here that could fill each role, by input shape; `None`
-    /// when a role has none, or when this run has the tools the concept was
-    /// learned on.
+    /// The tools here that fill each role: the very tools of a supporting
+    /// run when this run has them, and otherwise every tool of the role's
+    /// input shape. `None` when a role has none.
     fn fill<'a>(&self, here: &'a [ToolShape]) -> Option<Filled<'a>> {
-        let first = &self.support[0];
-        let known: BTreeSet<&str> = self
-            .support
-            .iter()
-            .map(|p| p.change.name.as_str())
-            .collect();
-        if here.iter().any(|t| known.contains(t.name.as_str())) {
-            return None;
+        // A run that has the very tools a supporting run used: each role is
+        // that tool, and the newest such run speaks.
+        let named = |role: &ToolShape| here.iter().find(|t| t.name == role.name);
+        for (at, own) in self.support.iter().enumerate().rev() {
+            let (Some(change), Some(enabler)) = (named(&own.change), named(&own.enabler)) else {
+                continue;
+            };
+            let closer = match &own.closer {
+                Some(closer) => match named(closer) {
+                    Some(tool) => Some(vec![tool]),
+                    None => continue,
+                },
+                None => None,
+            };
+            return Some(Filled {
+                change: vec![change],
+                enabler: vec![enabler],
+                closer,
+                own: Some(at),
+            });
         }
+        let first = &self.support[0];
         let like = |role: &ToolShape| -> Vec<&'a ToolShape> {
             here.iter().filter(|t| t.shape == role.shape).collect()
         };
@@ -465,6 +478,7 @@ impl Concept {
             change,
             enabler,
             closer,
+            own: None,
         })
     }
 
@@ -473,7 +487,10 @@ impl Concept {
     /// arrangement with nothing after the change.
     fn owed(&self, filled: &Filled<'_>) -> Option<Owed> {
         let closer = filled.closer.as_ref()?;
-        let mut either: Vec<&ToolShape> = filled.enabler.clone();
+        let mut either: Vec<&ToolShape> = match filled.own {
+            Some(_) => Vec::new(),
+            None => filled.enabler.clone(),
+        };
         for tool in closer {
             if !either.iter().any(|t| t.name == tool.name) {
                 either.push(tool);
@@ -496,17 +513,20 @@ impl Concept {
         // was never refused and read no documentation, and quoted alone it
         // gives the steps without the reason for them. The counts say how
         // many agree.
-        let shown = self
-            .support
-            .iter()
-            .max_by_key(|p| {
-                (
-                    p.refused_with.is_some(),
-                    p.read.len(),
-                    p.read.iter().map(String::len).sum::<usize>(),
-                )
-            })
-            .expect("never empty");
+        let shown = match filled.own {
+            Some(at) => &self.support[at],
+            None => self
+                .support
+                .iter()
+                .max_by_key(|p| {
+                    (
+                        p.refused_with.is_some(),
+                        p.read.len(),
+                        p.read.iter().map(String::len).sum::<usize>(),
+                    )
+                })
+                .expect("never empty"),
+        };
         let names = |tools: &[&ToolShape]| {
             tools
                 .iter()
@@ -527,7 +547,11 @@ impl Concept {
             .filter(|p| p.judged == Some(true))
             .count();
         let mut out = format!(
-            "- In another service, in {} run(s){}, these calls went together on one thing:\n",
+            "- {} {} run(s){}, these calls went together on one thing:\n",
+            match filled.own {
+                Some(_) => "With the tools you have here or ones like them, in",
+                None => "In another service, in",
+            },
             self.support.len(),
             match judged {
                 0 => String::new(),
@@ -559,6 +583,12 @@ impl Concept {
                 "  Handed to {} other run(s) with tools unlike those: {} of them then showed the same three steps.\n",
                 self.tried, self.held
             ));
+        }
+        if filled.own.is_some() {
+            out.push_str(
+                "  Those are tools you have here: step 3 is still owed after the change has worked.\n",
+            );
+            return out;
         }
         out.push_str(&format!(
             "  If the same holds here: the change is {}.",
@@ -592,7 +622,8 @@ struct Owed {
 }
 
 /// A reminder that what a look shows is still not as the run found it is
-/// given this many times for one owed step.
+/// given this many times for one owed step, before it has once been put
+/// right.
 const REMINDERS: u32 = 2;
 
 /// What a run's host watches so that a handed concept's last step is held
@@ -614,6 +645,8 @@ struct Due {
     /// of them is the change that was asked for, not something left over.
     asked: Vec<String>,
     reminded: u32,
+    /// The last look showed the thing as it was found.
+    settled: bool,
 }
 
 fn plain(value: &Value) -> Option<String> {
@@ -654,6 +687,7 @@ impl Watch {
                     .map(|o| o.values().filter_map(plain).collect())
                     .unwrap_or_default(),
                 reminded: 0,
+                settled: false,
             });
             return Some(text);
         }
@@ -673,12 +707,25 @@ impl Watch {
             })
             .collect();
         if left.is_empty() {
-            // As it was found, but for what was asked: nothing is owed.
-            self.due = None;
+            // As it was found, but for what was asked. Said once when the
+            // run had been told otherwise, so it knows to stop looking for
+            // the step; a later look that shows it disturbed again is
+            // answered again.
+            let told = due.reminded > 0 && !due.settled;
+            due.settled = true;
+            return told.then(|| {
+                "This is now as it was when you first looked, apart from the change you were asked for. If the arrangement from elsewhere holds here, the step after the change has been made and nothing further is owed; a further call on it may undo that.\n".to_string()
+            });
+        }
+        if due.reminded == REMINDERS && !due.settled {
             return None;
         }
-        if due.reminded == REMINDERS {
-            return None;
+        if due.settled {
+            due.settled = false;
+            return Some(format!(
+                "This was as you first found it, and a call since then has changed that: {}. The call that put it right earlier is the step after the change.\n",
+                left.join("; ")
+            ));
         }
         due.reminded += 1;
         Some(format!(
@@ -693,6 +740,9 @@ struct Filled<'a> {
     change: Vec<&'a ToolShape>,
     enabler: Vec<&'a ToolShape>,
     closer: Option<Vec<&'a ToolShape>>,
+    /// The supporting run whose own tools these are, when this run has
+    /// them.
+    own: Option<usize>,
 }
 
 /// Patterns in the order they were kept, to concepts: one per structure,
@@ -1126,7 +1176,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_concept_is_handed_to_tools_of_the_same_shape_and_not_to_its_own() {
+    async fn a_concept_is_handed_to_tools_of_the_same_shape_and_exactly_to_its_own() {
         let pattern = extract(
             "s1",
             &locked_then_changed(true),
@@ -1160,14 +1210,21 @@ mod tests {
         said("3. then `reg_unlock` (\"Unlock a record.\") on the same thing. The task was not finished until this was done.");
         said("unlock when done");
 
-        // Its own service: the episodes' to serve.
+        // Its own service: each role is the tool that filled it there.
         let home = Concepts::from_loader(loader(kept.clone()), registry());
-        assert!(home
-            .call(json!({}), &ctx())
-            .await
-            .unwrap()
-            .content
-            .starts_with("No arrangement"));
+        let cue = home.cue();
+        let out = home.call(json!({}), &ctx()).await.unwrap();
+        assert!(
+            out.content.contains("Those are tools you have here")
+                && !out.content.contains("If the same holds here"),
+            "{}",
+            out.content
+        );
+        let owed = cue("reg_update", &json!({"id": "R-1"}), "ok").unwrap();
+        assert!(
+            owed.contains("is one of `reg_unlock`.") && !owed.contains("reg_lock"),
+            "{owed}"
+        );
         // No tool of the change's shape: no fit.
         let narrow = Concepts::from_loader(loader(kept), vec![shape("x", "", &["a"], &[])]);
         assert!(narrow
@@ -1396,7 +1453,20 @@ mod tests {
         assert!(cue("quay_find", &look, changed).is_some());
         assert_eq!(cue("quay_find", &look, changed), None);
 
-        // Put back: nothing is said, then or afterwards.
+        // Put back after being told: said once, so the run stops looking,
+        // and said again if a later call disturbs it.
+        let back = r#"{"id": "Q-1", "depth": 6, "held": false}"#;
+        let done = cue("quay_find", &look, back).unwrap();
+        assert!(done.contains("nothing further is owed"), "{done}");
+        assert_eq!(cue("quay_find", &look, back), None);
+        let again = cue("quay_find", &look, changed).unwrap();
+        assert!(
+            again.contains("a call since then has changed that"),
+            "{again}"
+        );
+        assert!(cue("quay_find", &look, back).is_some());
+
+        // Put back before anything was said: nothing is said.
         let tool = Concepts::from_loader(loader(vec![pattern.clone()]), quay());
         let cue = tool.cue();
         tool.call(json!({}), &ctx()).await.unwrap();
@@ -1410,7 +1480,6 @@ mod tests {
             ),
             None
         );
-        assert_eq!(cue("quay_find", &look, changed), None);
 
         // An arrangement with nothing after the change owes nothing.
         let tool = Concepts::from_loader(loader(vec![open]), quay());
