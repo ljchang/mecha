@@ -2439,7 +2439,7 @@ async fn run_one(
     if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesAppraised) {
         if let Some(id) = &trial.session_id {
             mecha_core::tool::episodes::appraise(
-                &mecha_core::tool::episodes::file_in(home),
+                &mecha_core::tool::episodes::file_in(&home),
                 id,
                 graded.passed,
             )?;
