@@ -10872,6 +10872,29 @@ mod tests {
         })
     }
 
+    /// The other regions' paint read at another canvas's size (a first pass
+    /// replaces the plan) is brought to the soft mask's: read as it came, a
+    /// pixel past its edge panicked in the blocking task.
+    #[test]
+    fn the_other_regions_paint_is_read_at_the_soft_masks_size() {
+        let face_paint = square(100, (20, 20, 70, 70));
+        let others = square(100, (82, 82, 92, 92));
+        let union = image::GrayImage::from_fn(100, 100, |x, y| {
+            image::Luma([face_paint.get_pixel(x, y).0[0].max(others.get_pixel(x, y).0[0])])
+        });
+        let soft = feather_mask(&grow_mask(&union), &union);
+        let face = square(100, (40, 40, 60, 60));
+        // The same paint, as a smaller canvas held it.
+        let small = image::imageops::resize(&others, 64, 64, image::imageops::FilterType::Nearest);
+        let out = edge_faces(&soft, Some(&small), &face).unwrap();
+        assert_eq!(out.dimensions(), (100, 100));
+        assert_eq!(
+            out.get_pixel(87, 87).0[0],
+            255,
+            "the no-face region keeps its paint"
+        );
+    }
+
     #[test]
     fn a_face_region_is_laid_back_along_the_face_found_inside_its_paint() {
         let soft = square(100, (20, 20, 96, 96));
