@@ -1715,6 +1715,42 @@ file = "gone.safetensors"
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The page has no field for an entry's role or that role's words, so
+    /// an edit from it keeps both: without them the entry stops being the
+    /// camera and every camera-only change restages with nothing said.
+    #[test]
+    fn an_edit_from_the_page_keeps_an_entrys_role_and_its_words() {
+        let home = scratch();
+        std::fs::write(
+            home.join(FILE),
+            "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+             model = \"qwen-image\"\nfile = \"orbit.safetensors\"\ntrigger = \"<orbit>\"\n\
+             role = \"camera\"\n[lora.camera]\n\
+             around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+             height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+             distance = [\"near\", \"mid\", \"far\"]\n",
+        )
+        .unwrap();
+        let (before, _) = parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert_eq!(before[0].role, Some(Role::Camera));
+        let edited = EntryInput {
+            name: "circle".into(),
+            about: "the same mover, renamed".into(),
+            file: Some("orbit.safetensors".into()),
+            strength: Some(serde_json::json!(0.9)),
+            trigger: Some("<orbit>".into()),
+            ..Default::default()
+        };
+        write_entry(&home, Family::QwenImage, &edited, Some("orbit")).unwrap();
+        let (after, skipped) =
+            parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(after[0].name, "circle");
+        assert_eq!(after[0].role, Some(Role::Camera));
+        assert_eq!(after[0].camera, before[0].camera);
+        assert!(after[0].camera.is_some());
+    }
+
     #[test]
     fn the_page_writes_through_the_parser_and_keeps_the_owners_file() {
         let home = scratch();

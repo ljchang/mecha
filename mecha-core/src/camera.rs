@@ -190,7 +190,9 @@ pub fn relative(words: &str, was: Shot) -> Option<Shot> {
 /// the call's typed `view`) name, then what they move against `was`, then
 /// `was` for the rest. `None` when the ask names no place and no move.
 pub fn target(view: Option<Shot>, words: &str, was: Shot) -> Option<Shot> {
-    let named = view.unwrap_or_else(|| Shot::read(words));
+    // The view leads its words where it speaks; a part it leaves out is the
+    // words' to name (a typed side beside "a close-up").
+    let named = view.unwrap_or_default().over(Shot::read(words));
     let moved = relative(words, was).unwrap_or_default();
     let said = named.over(moved);
     (said != Shot::default()).then(|| said.over(was))
@@ -261,6 +263,18 @@ mod tests {
         assert_eq!(
             target(None, "a close up from behind", front),
             Some(at(4, Height::Eye, Distance::CloseUp))
+        );
+        // A typed view that names one part leaves the rest to the words.
+        assert_eq!(
+            target(
+                Some(Shot {
+                    around: Some(2),
+                    ..Default::default()
+                }),
+                "a close up from the side",
+                front
+            ),
+            Some(at(2, Height::Eye, Distance::CloseUp))
         );
         // The call's typed view leads its words.
         assert_eq!(

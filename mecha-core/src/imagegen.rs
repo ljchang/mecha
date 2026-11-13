@@ -4221,7 +4221,11 @@ pub const SETTING_DESC: &str = "Everything in the picture except its people and 
      {\"photo\": <path>} to put the people in that room.";
 /// `scene.view`'s description. One home for it: the persona's schema and
 /// the panel's extraction both say it in these words.
-pub const VIEW_DESC: &str = "Where the camera stands, whenever the request is about that;      give it beside `camera`. `around` is the side of the subject the camera sees (back for      from behind, left or right for a profile, the quarters for in between); `height` is low      for looking up from below, high for looking down from above; `distance` is close, medium      or wide. Fill only the parts asked for.";
+pub const VIEW_DESC: &str = "Where the camera stands, whenever the request is about that; \
+     give it beside `camera`. `around` is the side of the subject the camera sees (back for \
+     from behind, left or right for a profile, the quarters for in between); `height` is low \
+     for looking up from below, high for looking down from above; `distance` is close, medium \
+     or wide. Fill only the parts asked for.";
 /// `scene.people`'s description.
 pub const PEOPLE_DESC: &str = "Who is in the picture, each once. For a change, only the people \
      who change, with only what changes: for new clothes alone send only `wearing`, since a \
