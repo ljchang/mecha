@@ -1098,9 +1098,25 @@ pub fn first_person_holder(camera: &str, names: &[String], owner: Option<&str>) 
             // or not yet approved) names another's eyes, and the owner's
             // character taken for them was left out of a picture they were
             // in (review of #758, pass 9).
-            let other = w
-                .iter()
-                .any(|t| t.ends_with("'s") && !names.iter().any(|n| *t == format!("{n}'s")));
+            // Whose view or eyes, by the word after it: "the kitchen's
+            // table" is nobody's eyes, and read as someone's it left the
+            // owner's character in the cast (pass 12).
+            let other = w.iter().enumerate().any(|(i, t)| {
+                t.ends_with("'s")
+                    && !names.iter().any(|n| *t == format!("{n}'s"))
+                    && w.get(i + 1).is_some_and(|next| {
+                        [
+                            "first",
+                            "own",
+                            "eyes",
+                            "view",
+                            "pov",
+                            "point",
+                            "perspective",
+                        ]
+                        .contains(&next.as_str())
+                    })
+            });
             owner.filter(|_| !other).map(str::to_string)
         })
 }
@@ -2633,6 +2649,16 @@ mod tests {
             Some("john")
         );
         assert_eq!(first_person_holder("a wide shot", &n(&[]), owner), None);
+        assert_eq!(
+            first_person_holder(
+                "a first-person view across the kitchen's table",
+                &n(&[]),
+                owner
+            )
+            .as_deref(),
+            Some("wren"),
+            "a thing's possessive is nobody's eyes"
+        );
         // Someone the library does not hold: their eyes, never the owner's.
         assert_eq!(
             first_person_holder("through Dave's eyes", &n(&[]), owner),

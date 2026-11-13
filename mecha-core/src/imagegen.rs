@@ -3514,6 +3514,12 @@ fn add_owner(
     else {
         return false;
     };
+    // Named to be left out ("that, without me in it"): never added. Someone
+    // not in the picture has nobody to take out, so there is no change to
+    // make of it (review of #758, pass 12).
+    if r["remove"].as_bool() == Some(true) {
+        return false;
+    }
     let text = |k: &str| {
         r[k].as_str()
             .map(str::trim)
@@ -12676,6 +12682,15 @@ mod tests {
         assert!(!add_owner(
             &mut change,
             none.as_object().unwrap(),
+            "wren",
+            None,
+            false
+        ));
+        // Named to be left out: never added.
+        let out = json!({"people": [{"who": "Wren", "remove": true}]});
+        assert!(!add_owner(
+            &mut change,
+            out.as_object().unwrap(),
             "wren",
             None,
             false
