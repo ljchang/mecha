@@ -33,7 +33,7 @@ TASKS = [
      "prompt": "Change the owner of the record named 'Marlow ledger' to 'Hale' with the registry tools. The tools have their own documentation; read it if a call is refused.",
      "thing": "R-7", "field": "owner", "value": "Hale"},
     {"id": "registry-tier", "tags": ["protocol", "experience"], "max_turns": LEARN_TURNS, "world": "registry",
-     "prompt": "With the registry tools, the record named 'Juniper deed' should have tier 3.",
+     "prompt": "With the registry tools, the record named 'Juniper deed' should have tier 3. If a call is refused, the tools' documentation says why.",
      "thing": "R-12", "field": "tier", "value": 3},
     {"id": "quay-draft", "tags": ["protocol", "probe"], "max_turns": PROBE_TURNS, "world": "quay",
      "prompt": "Using the quay tools, the berth named 'North pier three' needs its draft at 9.",

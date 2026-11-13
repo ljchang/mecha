@@ -28,8 +28,11 @@ REGISTRY = {
     "topics": {
         "": "Topics: update, records. Ask for one by name.",
         "records": "A record is addressed by its id. reg_find turns a name into an id and shows the record.",
-        "update": "reg_update changes one field of a record. It is refused with E4 unless the record is locked. See the topic 'locks'.",
-        "locks": "reg_lock takes a record's id. Always reg_unlock when you are done: a record left locked blocks everyone else and fails the nightly audit.",
+        # Both halves in the one topic a refused update sends a reader to. In
+        # the first baseline they were two topics, the model read one, and
+        # half the experience tasks never met the second half: nothing to
+        # carry, which is a different measurement.
+        "update": "reg_update changes one field of a record. It is refused with E4 unless the record is locked with reg_lock first. Always reg_unlock when you are done: a record left locked blocks everyone else and fails the nightly audit.",
     },
 }
 
