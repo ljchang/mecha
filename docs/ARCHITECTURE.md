@@ -826,7 +826,17 @@ The routes, in the result's own words and the manifest's `route`:
   (IMAGE-DESIGN §17.4). So a re-shoot holds its chat's picture slot for up
   to two render timeouts. A second pass that fails or is stopped keeps the
   first pass's picture and says so; the manifest's `detail` is `true`,
-  `false`, or null for any other picture.
+  `false`, or null for any other picture. **The second pass is kept by what
+  it shows** (`imagegen::detail_verdict`, IMAGE-DESIGN §17.5): the two
+  passes' faces are read side by side (`face::FaceAnchors::beside`), and a
+  pass that shows a face the first did not, or a face unlike the first's
+  (`DETAIL_ALIKE`), is thrown away and the first kept, said, with
+  `detail_dropped` in the manifest; one drew a stranger's profile on someone
+  seen from behind (owner, 2026-11-13). Where the faces cannot be compared
+  it is kept only for a view from in front, and a view from beside or
+  behind is asked in words with no face in them (`DETAIL_PROMPT_AWAY`).
+  Never on a first-person picture (`Plan::camera_only`), and never counted
+  for its people (an edit of one picture, not a new one).
 - **A first-person camera's holder is the viewer** (`picture::first_person_holder`
   for what the camera says and the owner's character, `picture::plan` for
   the order and what the cast adds):

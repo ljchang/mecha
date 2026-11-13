@@ -697,7 +697,12 @@ a 45 to 60 s render):
 Camera-only asks were 25 of the 101 camera changes the edit panel had
 recorded by 2026-11-12, and about 14 of them plain moves. A camera ask
 beside a pose, a person or a setting is still a restage, with the limits
-above; first-person asks are the planner's (`picture::first_person_holder`).
+above; first-person asks are the planner's (`picture::first_person_holder`),
+and a picture seen through someone's eyes, before the change or after it, is
+never shot again (`Plan::camera_only`): that camera is no place round the
+subject. A re-shoot is an edit of one picture, so the count of its people
+after the render (`imagegen::PeopleCheck`, a new picture's) does not run on
+it and cannot draw it again at another seed.
 
 ### 17.4 The second pass (owner, 2026-11-13)
 
@@ -738,7 +743,50 @@ box within 5 pixels, mean pixel change 2 to 6.5 of 255). Between seeds the
 detail figure moves by 0.06 to 0.43, so the range is wide and the median is
 what the pass buys. It costs one more render, about 40 s at 40 steps.
 
-Not measured: a face after a turn to profile or behind (ArcFace does not
-read one against a frontal source); hair and cloth by number rather than
-by eye; a second pass with the owner's own picture LoRAs in it (it runs
-with none); more than one person in the picture.
+Not measured: a face after a turn to profile or behind against the picture
+it was shot from (ArcFace does not read one against a frontal source); hair
+and cloth by number rather than by eye; a second pass with the owner's own
+picture LoRAs in it (it runs with none); more than one person in the
+picture.
+
+### 17.5 What the second pass may not do (owner, 2026-11-13)
+
+The "camera stayed" figure above was the face's box, on pictures that had
+a face. On a re-shoot to a view from behind the second pass drew a face in
+profile where the first pass showed the back of a head, and not that
+person's (the owner, of the final build's sheet: "added in a new face that
+wasn't there in the first pass … definitely bad"). Its words asked for "the
+identical face" and "crisp detail in the eyes" of someone who showed
+neither.
+
+Twelve first passes from beside and behind (two pictures, one of each of
+two personas; back, back quarter and side; two seeds), each drawn once more
+three ways, a face found by the detector in each (`face::FaceAnchors`) and
+checked by eye on a sheet:
+
+| Second pass's words | A face where the first pass had none | A face lost | Face against the first pass | Detail against the original, whole picture, median [range] |
+|---|---|---|---|---|
+| none (the first pass) | | | | 0.45 [0.35, 0.84] |
+| as §17.4, naming the face and the eyes | 2 of 3 | 0 of 9 | 0.72 to 0.94 | 1.21 [0.52, 1.60] |
+| **no word of a face or eyes, "seen from the same side and angle"** | **0 of 3** | **0 of 9** | **0.80 to 0.95** | **1.12 [0.46, 1.55]** |
+| the same, and where the person is seen from said outright | 0 of 3 | 1 of 9 | 0.80 to 0.95 | 1.10 [0.44, 1.46] |
+
+Said outright ("seen from behind, stays turned away"), one back-quarter
+picture was turned further round and lost the face it had. So a re-shoot
+whose move ends beside or behind the subject (`Shot::around` 2 to 6, by the
+ask, else by where the picture was read to stand) is drawn again in the
+words without a face (`imagegen::DETAIL_PROMPT_AWAY`), and one from in
+front in the words measured there.
+
+Three pictures are no proof, so the artifact is graded whatever the words
+(`imagegen::detail_verdict`): the two passes' faces are read side by side
+(`face::FaceAnchors::beside`: how many each holds, and the least likeness
+of the second's to the first's), and the second pass is thrown away, the
+first kept, where it shows a face the first did not, or a face under 0.6
+like the first's (kept pairs scored 0.72 to 0.96 over 28; two people score
+under 0.3). Where the faces cannot be compared (no detector, or a face in
+both and no identity weights) the second pass is kept only for a view from
+in front. The result says which pass it is and why, and the manifest keeps
+`detail`, `detail_dropped` and `detail_alike`. A first pass kept this way
+has the softness §17.4 measured: the price of never showing a face that was
+not there.

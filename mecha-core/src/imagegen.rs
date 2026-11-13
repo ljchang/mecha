@@ -7404,6 +7404,9 @@ impl Tool for ImageGenerate {
             // the first pass's its face was where that was read.
             let mut detail_dropped: Option<String> = None;
             let mut detail_alike: Option<f32> = None;
+            // The faces found in each pass, where they could be: what the
+            // verdict was read from, kept so it can be checked afterwards.
+            let mut detail_faces: Option<(usize, usize)> = None;
             // From beside or behind the subject, by where the move ends:
             // the ask's place, else where the picture was read to stand.
             let away = plan
@@ -7460,6 +7463,7 @@ impl Tool for ImageGenerate {
                                     .unwrap_or_else(|e| {
                                         Err(format!("the face read did not finish ({e})"))
                                     });
+                            detail_faces = read.as_ref().ok().map(|f| (f.first, f.second));
                             match detail_verdict(read, away) {
                                 Ok(alike) => {
                                     detailed = Some(true);
@@ -7682,6 +7686,7 @@ impl Tool for ImageGenerate {
                 // picture, false where it failed and the re-shoot was kept.
                 "detail": detailed,
                 "detail_dropped": detail_dropped,
+                "detail_faces": detail_faces.map(|(a, b)| json!([a, b])),
                 "detail_alike": detail_alike.map(|a| (f64::from(a) * 1000.0).round() / 1000.0),
                 // Only for the prompt that was sent: a layered picture's
                 // passes carry each person's outfit on the cutout, and the
@@ -15819,6 +15824,9 @@ mod tests {
             let m = manifest_of(&dir, &shot.content);
             assert_eq!(m["route"], crate::picture::RESHOT);
             assert_eq!(m["detail"], false, "{said}");
+            if said.contains("a face") {
+                assert_eq!(m["detail_faces"], json!([0, 1]));
+            }
             // The first pass's picture is the one saved.
             assert_eq!(
                 std::fs::read(dir.join(picture_of(&shot.content))).unwrap(),
