@@ -242,7 +242,7 @@ impl SessionMemory {
     /// the episode kind could not be read as one.
     fn episode_records(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
         let memory = self.memory()?;
-        let mut hits = memory.search(
+        let (mut hits, stopped_at_limit) = memory.search_reporting(
             &crate::memory::Query {
                 text: String::new(),
                 known_at: memory.snapshot()?,
@@ -255,8 +255,10 @@ impl SessionMemory {
         // The search returns the newest records of every kind up to its
         // limit. At the limit, older episodes may be missing, and a store
         // read in part is not one to deliver from or to judge against.
+        // Asked of the search itself: its second authority pass can drop a
+        // hit, so a full read can come back one short (review of #875).
         ensure!(
-            hits.len() < EPISODE_READ_LIMIT,
+            !stopped_at_limit,
             "the store holds too many records to read its episodes whole"
         );
         hits.sort_by_key(|hit| hit.sequence);

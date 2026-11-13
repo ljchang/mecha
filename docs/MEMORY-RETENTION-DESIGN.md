@@ -395,3 +395,23 @@ Prediction precision against a label-only ablation; the share of useful
 matches whose label similarity was low (reminding across domains); agreement
 between two extractions of one episode; concepts per episode and the fraction
 ever reused.
+
+## 10. Built so far (2026-11-13)
+
+`tool::episodes` is the first form of §3 to §5, measured on the benchmark's
+four families (the numbers are in PR #875 and are not repeated here, where
+they would go stale). An episode is kept after a run from its own record with
+no model call: a refused call and what fixed it, a server tool's first
+working call, and the task's outcome in the run's own last words. It is
+handed by the harness to a later run that has the tool. A grade given after
+the run retires a failed task's conclusion.
+
+Two things to keep in step, because only `episodes::fold` is shared between
+them: the file-backed verdict is a line `episodes::load` applies when it
+reads, and the store-backed verdict is a revision of the outcome record with
+`judged` set (`SessionMemory::appraise_episode`).
+
+Not built: goal- and state-based appraisal, reappraisal from later runs,
+fragments and concepts (§9), `memory_recompose`, and consolidation in
+downtime. A verdict retires a conclusion and not the call episodes kept from
+the same failed task; whether it should is open.

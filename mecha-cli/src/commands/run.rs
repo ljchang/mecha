@@ -60,7 +60,7 @@ pub struct Args {
     /// tool's older name, and tell it in the system prompt that it has a
     /// memory and when to search it. Hands it nothing.
     #[cfg(feature = "memory-prototype")]
-    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["memory_deliver", "memory_on_error"])]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["memory_deliver", "memory_on_error", "episodes_deliver", "transcripts_deliver"])]
     pub memory_invite: bool,
 
     /// Have the harness search this home's earlier session transcripts for
@@ -559,7 +559,7 @@ pub async fn execute(
                 .agent
                 .registry()
                 .iter()
-                .filter(|tool| tool.fixed_workspace().is_some())
+                .filter(|tool| tool.provided_by_a_server())
                 .map(|tool| tool.name().to_string())
                 .collect();
             #[cfg(feature = "memory-prototype")]

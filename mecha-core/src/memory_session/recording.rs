@@ -36,8 +36,16 @@ pub(super) fn closed_surface(names: &[String]) -> Result<()> {
 /// in a trial home. The experiment's mark hides the session from every
 /// corpus reader; the store it is remembered in is the trial home's own,
 /// which no real session shares.
+///
+/// The mark is not proof of a trial: it can be set by hand. An experiment's
+/// header is admitted only in a process the driver started, which carries
+/// the trial's reference (`experiment::EXPERIMENT_REF_ENV`).
 fn run_kind(kind: Option<SessionKind>) -> bool {
-    matches!(kind, Some(SessionKind::Run | SessionKind::Experiment))
+    match kind {
+        Some(SessionKind::Run) => true,
+        Some(SessionKind::Experiment) => crate::experiment::ExperimentRef::from_env().is_some(),
+        _ => false,
+    }
 }
 /// The head of the owner's prompt that a criterion's text fields admit.
 pub(super) fn criterion_text(prompt: &str) -> String {

@@ -30,7 +30,13 @@ STEMS = (
     "A call just failed. The harness searched your memory",
     "The harness looked up what your earlier runs found out",
 )
-MEMORY_TOOLS = ("goal_context", "transcript_search", "memory_search")
+# Every tool a model could reach memory through, as `tool/episodes.rs` lists
+# them: one left out reads as "the model never asked" for the arm that has it.
+MEMORY_TOOLS = ("goal_context", "transcript_search", "memory_search", "episode_recall", "recall")
+# Arms whose harness hands something over at the start of every task. A probe
+# of one with nothing found means the lines above have drifted from the
+# harness's, not that nothing was delivered.
+DELIVERING = ("delivered", "delivered_on_error", "transcripts", "episodes", "episodes_appraised", "episodes_store")
 
 
 def strings(node):
@@ -95,6 +101,7 @@ def read_trial(root, row):
         "unit_rule": None,
         "own_recalls": None,
         "after_error": None,
+        "harness_delivered": False,
     }
     records = transcript(home, row.get("session_id") or "")
     if records is None:
@@ -111,6 +118,7 @@ def read_trial(root, row):
         if b.get("tool_use_id") in own
     }
     out["own_recalls"] = len(own)
+    out["harness_delivered"] = bool(handed)
     out["after_error"] = sum(1 for s in handed if s.startswith(STEMS[2]))
     seen = handed | answers
     if seen:
@@ -162,6 +170,8 @@ def main(roots):
                 both = [r for r in handed if r["task"] == "probe-both"]
                 with_unit = [r for r in both if r["unit_rule"]]
                 line += f" · unit rule in packet {len(with_unit)}/{len(both)} of probe-both (passed {rate(with_unit)})"
+            if arm in DELIVERING and probes and not any(r["harness_delivered"] for r in probes):
+                sys.exit(f"{arm}: no probe shows a delivery. The delivery lines in STEMS no longer match the harness's; this is not a result.")
             line += f" · model's own memory calls {sum(r['own_recalls'] or 0 for r in probes)}"
             line += f" · harness recalls after a failure {sum(r['after_error'] or 0 for r in probes)}"
             print(line)

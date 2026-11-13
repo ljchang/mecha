@@ -202,9 +202,11 @@ impl Tool for SearchTool {
         self.inner.effect()
     }
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        if !input.get("query").is_some_and(Value::is_string) {
-            return Ok(ToolOutput::err("missing required argument `query`"));
-        }
+        // Forwarded whatever it holds: a call with no usable `query` is
+        // refused by the tracked tool, so the attempt is tracked and the
+        // recorder finds it. Refused here, the transcript held a result with
+        // no attempt behind it, and the run's whole capture was lost to one
+        // malformed call (review of #875).
         self.inner.call(search_as_recall(&input), ctx).await
     }
 }
@@ -264,6 +266,48 @@ mod delivery_tests {
             .to_string();
         assert_eq!(query.split(' ').count(), 32);
         assert!(delivery_input("a of — ?").is_none());
+    }
+
+    /// A tool that keeps what it was called with, standing in for the
+    /// tracked tool.
+    struct Kept(std::sync::Mutex<Vec<Value>>);
+    #[async_trait]
+    impl Tool for Kept {
+        fn name(&self) -> &str {
+            "goal_context"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({})
+        }
+        async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.0.lock().unwrap().push(input);
+            Ok(ToolOutput::err("invalid memory request"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_search_with_no_usable_query_still_reaches_the_tracked_tool() {
+        let kept = Arc::new(Kept(Default::default()));
+        let search = SearchTool {
+            inner: kept.clone(),
+        };
+        let ctx = ToolCtx::default().with_workspace(std::env::temp_dir());
+        for input in [
+            serde_json::json!({}),
+            serde_json::json!({"query": 7}),
+            serde_json::json!({"query": "the rule"}),
+        ] {
+            search.call(input.clone(), &ctx).await.unwrap();
+            // What the tracked tool saw is what the recorder will look for.
+            assert_eq!(
+                kept.0.lock().unwrap().last(),
+                Some(&search_as_recall(&input))
+            );
+        }
+        assert_eq!(kept.0.lock().unwrap().len(), 3);
     }
 
     #[test]

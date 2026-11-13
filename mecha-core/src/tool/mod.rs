@@ -494,6 +494,16 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// Whether a server outside the harness provides this tool (an MCP
+    /// server's). Asked by a front end deciding what only use can reveal
+    /// about a tool (`tool::episodes`: a server's first working call is
+    /// worth keeping; the harness's own tools are described by the harness).
+    /// Never asked by the loop, which does not learn where a tool came
+    /// from.
+    fn provided_by_a_server(&self) -> bool {
+        false
+    }
+
     /// Whether this tool's calls answer `being made: …` and finish later, as a
     /// job (`ToolOutput::deferred`). The hosts key two things on it, by the
     /// call and never the words: the restart repair of an orphaned result,

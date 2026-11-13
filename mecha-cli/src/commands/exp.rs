@@ -2038,10 +2038,6 @@ fn experiment_judge(
     ))
 }
 
-/// One trial: the arm's home and config, a fresh workspace, the child, the
-/// grade, the stats. Everything the trial learned is on its row when this
-/// returns; a failure anywhere is the row's `error`, never a missing row.
-#[allow(clippy::too_many_arguments)]
 /// The request file naming a trial home's memory store, creating the store
 /// on the arm's first task. Outside the trial's workspace, as a request
 /// must be, and private.
@@ -2092,6 +2088,9 @@ fn memory_request(_mecha: &Path, _home: &Path) -> Result<PathBuf> {
     )
 }
 
+/// One trial: the arm's home and config, a fresh workspace, the child, the
+/// grade, the stats. Everything the trial learned is on its row when this
+/// returns; a failure anywhere is the row's `error`, never a missing row.
 #[allow(clippy::too_many_arguments)]
 async fn run_one(
     store: &ExperimentStore,

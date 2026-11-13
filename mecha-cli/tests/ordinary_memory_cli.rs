@@ -892,9 +892,12 @@ async fn invalid_manifest_and_session_kind_fail_before_any_provider_startup() {
         cmd.args(["--provider", "fixture"]);
         cmd
     };
-    // An experiment's trial is admitted: its store is the trial home's own
-    // (`memory_profile::open_run_profile`).
-    for kind in ["test", "driven"] {
+    // The experiment mark set by hand is refused like the others: a trial is
+    // the mark and the driver's reference together
+    // (`memory_profile::open_run_profile`), and this process has no
+    // reference. The admitted path is driven by `mecha exp`
+    // (`prototypes/memory/delivered_recall_smoke.py`).
+    for kind in ["test", "experiment", "driven"] {
         let mut cmd = pinned();
         cmd.env("MECHA_SESSION_KIND", kind);
         failure(&f.output(cmd, kind).await, "session-kind override");

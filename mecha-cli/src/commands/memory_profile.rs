@@ -93,11 +93,16 @@ pub(crate) fn open_run_profile(global: &GlobalOpts, path: &Path) -> Result<Sessi
     // excluded from every corpus and is not remembered either. A run an
     // experiment starts is remembered, in its trial home's own store: that
     // is what a memory arm measures (`experiment::ArmMemory`).
+    // The mark alone can be set by hand, which would hide a session from
+    // every corpus while it wrote into the operator's own store. A trial is
+    // the mark and the driver's reference together (review of #875).
     anyhow::ensure!(
-        matches!(
-            SessionKind::test_override(),
-            None | Some(SessionKind::Experiment)
-        ),
+        match SessionKind::test_override() {
+            None => true,
+            Some(SessionKind::Experiment) =>
+                mecha_core::experiment::ExperimentRef::from_env().is_some(),
+            Some(_) => false,
+        },
         "ordinary memory requires a fresh run without a session-kind override"
     );
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
