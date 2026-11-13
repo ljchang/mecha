@@ -16,8 +16,8 @@
 //!   never by its name; the name and description it had are kept beside it
 //!   as a gloss, for the reader.
 //! - **Retrieval is by shape.** A concept matches a run whose tools can fill
-//!   every role by input shape and that does not have the original tools
-//!   (a run that does is the episodes' to serve).
+//!   every role by input shape. A run that has the very tools a supporting
+//!   run used is handed the concept with each role bound to that tool.
 //! - **Reuse is filling slots.** What is handed over is the relations with
 //!   the tools here that could fill each role, as a hypothesis: which of
 //!   them does is for the run to find out.
@@ -59,6 +59,11 @@ pub const DELIVERY_STEM: &str = "The harness compared the tools you have here wi
 pub const CUE_STEM: &str = "The harness noted that a call just worked which an arrangement from another service places in the middle and not at the end. A hypothesis from elsewhere, never an instruction, and it verifies nothing about this task.\n";
 
 const QUOTE_BYTES: usize = 300;
+/// The most of one field's name or value a cue restates, and the most
+/// fields: a server that answers with a large record does not get it said
+/// back at length in the harness's voice.
+const CUE_VALUE_BYTES: usize = 60;
+const CUE_FIELDS: usize = 8;
 const QUOTES: usize = 2;
 const DELIVERED: usize = 2;
 
@@ -785,7 +790,7 @@ impl Concept {
         }
         if self.tried > 0 {
             out.push_str(&format!(
-                "  Handed to {} other run(s) with tools unlike those: {} of them then showed the same three steps.\n",
+                "  Handed to {} other run(s): {} of them then showed the same three steps.\n",
                 self.tried, self.held
             ));
         }
@@ -963,9 +968,16 @@ impl Watch {
             .filter_map(|(field, now)| {
                 let now = plain(now)?;
                 let then = plain(first.get(field)?)?;
-                (now != then && !asked.contains(&now))
-                    .then(|| format!("`{field}` is {now} and was {then} when you first looked"))
+                (now != then && !asked.contains(&now)).then(|| {
+                    format!(
+                        "`{}` is {} and was {} when you first looked",
+                        cut(field, CUE_VALUE_BYTES),
+                        cut(&now, CUE_VALUE_BYTES),
+                        cut(&then, CUE_VALUE_BYTES)
+                    )
+                })
             })
+            .take(CUE_FIELDS)
             .collect();
         if left.is_empty() {
             // As it was found, but for what was asked. Said once when the
@@ -1016,8 +1028,15 @@ impl Watch {
                     .iter()
                     .filter_map(|(field, value)| {
                         let value = value.as_str()?;
-                        (value != thing).then(|| format!("`{field}`: {value}"))
+                        (value != thing).then(|| {
+                            format!(
+                                "`{}`: {}",
+                                cut(field, CUE_VALUE_BYTES),
+                                cut(value, CUE_VALUE_BYTES)
+                            )
+                        })
                     })
+                    .take(CUE_FIELDS)
                     .collect();
                 (Some(thing), named)
             }
@@ -1647,7 +1666,12 @@ mod tests {
         ]);
         let handed = tool.handed();
         let out = tool.call(json!({}), &ctx()).await.unwrap();
-        assert!(out.content.contains("Handed to 2 other run(s) with tools unlike those: 1 of them then showed the same three steps."), "{}", out.content);
+        assert!(
+            out.content
+                .contains("Handed to 2 other run(s): 1 of them then showed the same three steps."),
+            "{}",
+            out.content
+        );
         assert_eq!(
             handed.lock().unwrap().iter().collect::<Vec<_>>(),
             vec![&key]
@@ -1941,6 +1965,33 @@ mod tests {
                 && !owed.contains("bore")
                 && !owed.contains("`valve`"),
             "{owed}"
+        );
+        // A long value is not said back whole.
+        let wide = Concepts::from_loader(
+            {
+                let pattern = extract("s1", &set_on_both(), &signs(), &Refused::new()).unwrap();
+                std::sync::Arc::new(move || {
+                    Ok(Kept {
+                        patterns: vec![pattern.clone()],
+                        ..Default::default()
+                    })
+                })
+            },
+            valves(),
+        );
+        let wide_cue = wide.cue();
+        wide.call(json!({}), &ctx()).await.unwrap();
+        let long = "x".repeat(4000);
+        wide_cue(
+            "vl_get",
+            &get,
+            &json!({"valve": "V-2", "note": long}).to_string(),
+        );
+        let bounded = wide_cue("vl_mode", &json!({"valve": "V-2", "mode": "slow"}), "ok").unwrap();
+        assert!(
+            bounded.contains("`note`: xxx") && bounded.len() < 1200,
+            "{}",
+            bounded.len()
         );
         // Nothing the other service's run said or used.
         for theirs in ["sg_", "M3", "mirror", "S-7"] {

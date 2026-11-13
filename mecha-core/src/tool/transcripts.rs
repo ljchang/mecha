@@ -68,7 +68,8 @@ fn words(text: &str) -> Vec<String> {
 }
 
 /// Whether a user-role text is something a harness handed over: this
-/// tool's delivery, the episodes', or the memory store's. None is a passage
+/// tool's delivery, the episodes', the concepts' (at the start, and a cue
+/// after a call), or the memory store's. None is a passage
 /// of the session it sits in.
 fn delivery(text: &str) -> bool {
     #[cfg(feature = "memory-prototype")]
@@ -80,6 +81,7 @@ fn delivery(text: &str) -> bool {
     text.starts_with(DELIVERY_STEM)
         || text.starts_with(super::episodes::DELIVERY_STEM)
         || text.starts_with(super::concepts::DELIVERY_STEM)
+        || text.starts_with(super::concepts::CUE_STEM)
 }
 
 /// Whether a transcript is one this tool may quote: a one-shot run's, or a
@@ -388,9 +390,19 @@ mod tests {
 
     #[test]
     fn an_earlier_delivery_is_not_a_passage() {
-        let delivered = Block::text(format!("{DELIVERY_STEM}the quartz rule"));
-        assert!(block_doc("a", &Role::User, &delivered).is_none());
-        assert!(block_doc("a", &Role::Assistant, &delivered).is_some());
+        for stem in [
+            DELIVERY_STEM,
+            crate::tool::episodes::DELIVERY_STEM,
+            crate::tool::concepts::DELIVERY_STEM,
+            // Said in the middle of a run, after a call's result: the
+            // harness's hypothesis, never the owner's words (review of
+            // #877).
+            crate::tool::concepts::CUE_STEM,
+        ] {
+            let delivered = Block::text(format!("{stem}the quartz rule"));
+            assert!(block_doc("a", &Role::User, &delivered).is_none(), "{stem}");
+            assert!(block_doc("a", &Role::Assistant, &delivered).is_some());
+        }
     }
 
     #[test]

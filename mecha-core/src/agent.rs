@@ -4781,27 +4781,35 @@ impl Agent {
                         _ => None,
                     };
                     // A call that worked, and a host waiting on it: the
-                    // host's line for that moment, after the results. Every
-                    // call that worked is asked about, in order, and the
-                    // first answer is the one delivered; a closing run is
-                    // told nothing it could no longer act on.
+                    // host's lines for that moment, after the results. Every
+                    // call that worked is asked about, in order, whatever an
+                    // earlier one was answered: a host keeps what each call
+                    // returned, and a turn of several calls must not hide
+                    // the later ones from it (review of #877). A closing run
+                    // is told nothing it could no longer act on, and its
+                    // host is not asked.
                     let cued = match &cx.cue_on_success {
                         Some(cue) if closing.is_none() => {
                             let uses = response.message.tool_uses();
-                            results.iter().find_map(|block| {
-                                let Block::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error: false,
-                                } = block
-                                else {
-                                    return None;
-                                };
-                                let (_, name, input) =
-                                    uses.iter().find(|(id, _, _)| *id == tool_use_id.as_str())?;
-                                (cue.text)(name, input, content)
-                                    .map(|text| Block::text(format!("{}{text}", cue.stem)))
-                            })
+                            let said: Vec<String> = results
+                                .iter()
+                                .filter_map(|block| {
+                                    let Block::ToolResult {
+                                        tool_use_id,
+                                        content,
+                                        is_error: false,
+                                    } = block
+                                    else {
+                                        return None;
+                                    };
+                                    let (_, name, input) = uses
+                                        .iter()
+                                        .find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                    (cue.text)(name, input, content)
+                                })
+                                .collect();
+                            (!said.is_empty())
+                                .then(|| Block::text(format!("{}{}", cue.stem, said.concat())))
                         }
                         _ => None,
                     };
@@ -18752,10 +18760,22 @@ justification = "echo is off on this box"
                 StopReason::ToolUse,
             )
         };
+        let both = assistant(
+            ["t3", "t4"]
+                .iter()
+                .map(|id| Block::ToolUse {
+                    id: (*id).into(),
+                    name: "echo".into(),
+                    input: json!({"value": id}),
+                })
+                .collect(),
+            StopReason::ToolUse,
+        );
         let turns = vec![
             failing_call("t0", "fs_edit"),
             echo("t1"),
             echo("t2"),
+            both,
             assistant(vec![Block::text("Done.")], StopReason::EndTurn),
         ];
         let (mut agent, provider) = agent_with_tools(
@@ -18774,7 +18794,13 @@ justification = "echo is off on this box"
                 Arc::new(move |tool, input, result| {
                     let mut asked = asked.lock().unwrap();
                     asked.push(format!("{tool} {} {result}", input["value"]));
-                    (asked.len() == 1).then(|| "one more step is owed".to_string())
+                    match asked.len() {
+                        1 => Some("one more step is owed".to_string()),
+                        // The first call of a turn of two is answered,
+                        // and the second is still asked about.
+                        3 => Some("and another".to_string()),
+                        _ => None,
+                    }
                 })
             },
             stem: CUED.into(),
@@ -18784,7 +18810,12 @@ justification = "echo is off on this box"
 
         assert_eq!(
             *asked.lock().unwrap(),
-            vec!["echo \"t1\" t1", "echo \"t2\" t2"]
+            vec![
+                "echo \"t1\" t1",
+                "echo \"t2\" t2",
+                "echo \"t3\" t3",
+                "echo \"t4\" t4"
+            ]
         );
         let cued: Vec<bool> = convo
             .messages
@@ -18797,10 +18828,10 @@ justification = "echo is off on this box"
             .map(|m| {
                 // After the results, never among them.
                 matches!(m.content.last(), Some(Block::Text { text })
-                    if text == &format!("{CUED}one more step is owed"))
+                    if text.starts_with(CUED))
             })
             .collect();
-        assert_eq!(cued, vec![false, true, false]);
+        assert_eq!(cued, vec![false, true, false, true]);
         // The model saw it in the request after the call that worked.
         let seen = provider.seen.lock().unwrap();
         let said = |at: usize| {
