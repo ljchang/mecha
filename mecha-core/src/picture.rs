@@ -1243,7 +1243,46 @@ const PARTS: &[&str] = &[
     "shoulders",
     "forearm",
     "forearms",
+    "torso",
+    "chest",
+    "stomach",
+    "thigh",
+    "thighs",
+    "body",
 ];
+
+/// What may stand between whose it is and the part: how it is held or
+/// which one, never a noun of its own.
+const PART_SAID: &[&str] = &[
+    "left",
+    "right",
+    "own",
+    "bare",
+    "upper",
+    "lower",
+    "outstretched",
+    "open",
+    "both",
+    "two",
+    "gloved",
+    "free",
+    "other",
+    "raised",
+    "folded",
+    "crossed",
+];
+
+/// Whether words name a part of someone's body as theirs: one of `of`
+/// first (a possessive: "my", "John's"), then only words for how the part
+/// is held, then the part. "My sister, arms folded" and "my sister's hands"
+/// are her (review of #872, passes 2 and 3).
+fn a_part_of(words: &str, of: &[&str]) -> bool {
+    let w = camera_words(words);
+    let mut w = w.iter().map(String::as_str).skip_while(|x| *x == "the");
+    w.next().is_some_and(|x| of.contains(&x))
+        && w.find(|x| !PART_SAID.contains(x))
+            .is_some_and(|x| PARTS.contains(&x))
+}
 
 /// Whether words name a shot rather than a look: framing, distance or
 /// angle. A reader that filed a framing word as a `look` had it joined to
@@ -1804,7 +1843,27 @@ pub fn plan(
         .map(|f| f.value.as_str())
         .filter(|_| drawn_from_scene)
     {
-        let whose = first_person_holder(camera, &named_in(camera), call.me.owner.as_deref());
+        let whose = first_person_holder(camera, &named_in(camera), call.me.owner.as_deref())
+            // A first person that names nobody, beside a cast member's own
+            // part ("John's left arm" with John listed): the part says whose
+            // eyes. Left unread, he stayed in the cast beside his arm, which
+            // the library refuses (review of #872, pass 3).
+            .or_else(|| {
+                first_person(camera)
+                    .then(|| {
+                        people.iter().find_map(|p| match &p.who {
+                            Who::Library(n) => people
+                                .iter()
+                                .any(|q| {
+                                    matches!(&q.who, Who::Described(d)
+                                        if a_part_of(d, &[format!("{n}'s").as_str()]))
+                                })
+                                .then(|| n.clone()),
+                            Who::Described(_) => None,
+                        })
+                    })
+                    .flatten()
+            });
         // Someone described who is only a part of the viewer ("John's hands"
         // under John's eyes, "my hands") is not one more person: counted as
         // one, the head count rose by a pair of hands, and beside the holder
@@ -1821,25 +1880,11 @@ pub fn plan(
             // stranger staring at me", "John's sister") is a person, and
             // folded they left the picture and its record unsaid (review of
             // #872).
+            let holders = whose.as_ref().map(|h| format!("{h}'s"));
             let theirs = |d: &str| {
-                let w = camera_words(d);
-                let w: Vec<&str> = w
-                    .iter()
-                    .map(String::as_str)
-                    .skip_while(|x| *x == "the")
-                    .collect();
-                let possessive = w.first().is_some_and(|x| {
-                    ["my", "viewer's"].contains(x)
-                        || whose.as_ref().is_some_and(|h| *x == format!("{h}'s"))
-                });
-                // Not through someone else's possessive: "my sister's
-                // hands" is her.
-                possessive
-                    && w.iter()
-                        .skip(1)
-                        .take(3)
-                        .take_while(|x| !x.ends_with("'s"))
-                        .any(|x| PARTS.contains(x))
+                let mut of = vec!["my", "viewer's"];
+                of.extend(holders.as_deref());
+                a_part_of(d, &of)
             };
             let part = |p: &crate::scene::Person| matches!(&p.who, Who::Described(d) if theirs(d));
             // Never the whole picture: with nobody but the viewer in it, the
@@ -1867,6 +1912,11 @@ pub fn plan(
                     .collect::<Vec<_>>()
                     .join(", ");
                     let named: Vec<String> = whose.iter().cloned().collect();
+                    // "My" is the viewer's, as a holder's name is read.
+                    let said = match said.strip_prefix("my ") {
+                        Some(rest) => format!("the viewer's {rest}"),
+                        None => said,
+                    };
                     parts.push(as_viewer(&said, &named, &[]));
                 }
                 let folded: Vec<String> = people
@@ -2969,6 +3019,7 @@ mod tests {
             "John's sister",
             "a waiter by my left arm",
             "my sister's hands",
+            "my sister, arms folded",
         ] {
             let r = planned(
                 &call(json!({"scene": {"setting": "a kitchen",
@@ -2993,6 +3044,23 @@ mod tests {
         );
         assert!(!h.faces.contains(&"john".to_string()), "{:?}", h.faces);
         assert!(!h.people.iter().any(|x| x.who.key() == "john"));
+        // A first person that names nobody: the part says whose eyes.
+        let bare = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view, across the kitchen",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"},
+                    {"who": "John's left arm", "doing": "carrying a lamp"}]}})),
+            None,
+        );
+        let cast: Vec<String> = bare.people.iter().map(|x| x.who.key()).collect();
+        assert_eq!(cast, ["maya"]);
+        assert!(
+            !bare.faces.contains(&"john".to_string()),
+            "{:?}",
+            bare.faces
+        );
         // What a part wears is kept.
         let worn = planned(
             &call(json!({"scene": {"setting": "a kitchen",
