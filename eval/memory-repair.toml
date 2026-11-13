@@ -1,0 +1,73 @@
+# Memory benchmark, Tier B, held out: split repair
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4). Two tasks each read why a job failed;
+# two later tasks must fix the same fault on another job after every log is
+# gone. Written before any memory arm ran on it; not for tuning.
+#
+#   mecha exp new eval/memory-repair.toml
+#   mecha exp run memory-repair
+
+name = "memory-repair"
+kind = "lifetime"
+description = "Does a cause one task observed carry to a later task that must act on it and can no longer observe it."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/repair_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["repair-observe-validate", "repair-observe-connect", "repair-probe-validate", "repair-probe-connect"]
+
+[tasks.confirmed_goals]
+repair-observe-validate = "task:repair-observe-validate"
+repair-observe-connect = "task:repair-observe-connect"
+repair-probe-validate = "task:repair-probe-validate"
+repair-probe-connect = "task:repair-probe-connect"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "jobs"
+command = "python3"
+args = ["eval/fixtures/repair_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.transcripts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "transcripts"
+
+[arms.transcripts.prediction]
+metric = "failure"
+rationale = "The cause is in an earlier transcript as a tool result; a keyword search by the probe's words may return it."
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "The log line is a stored passage; recall by the probe's words returns it for some probes and those pass."
+
+[arms.episodes]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes"
+
+[arms.episodes.prediction]
+metric = "failure"
+rationale = "Written before the run: episodes keep how a tool was called and what was read before it, not what an observation said, and no call is refused in the experience tasks. The log line is not kept, so the probes fail as the control does."
