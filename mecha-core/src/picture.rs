@@ -1842,7 +1842,7 @@ pub fn plan(
                 .filter(|p| !part(p))
                 .filter(|p| !matches!((&p.who, &whose), (Who::Library(n), Some(h)) if n == h))
                 .count();
-            if others >= 1 && people.iter().any(|p| part(p)) {
+            if others >= 1 && people.iter().any(&part) {
                 for p in people.iter().filter(|p| part(p)) {
                     let worn = outfit_words(&p.wearing);
                     let key = p.who.key();
