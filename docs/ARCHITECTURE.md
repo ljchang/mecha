@@ -791,7 +791,8 @@ The routes, in the result's own words and the manifest's `route`:
   and only from the owner's own words. With none set, the owner is the
   viewer. Never a name in code.
 - **A first-person camera's holder is the viewer** (`picture::first_person_holder`):
-  the name the camera gives a possessive; else, for a first person
+  the name the camera gives a possessive; else the owner's character when
+  they are in the picture; else, for a first person
   (`picture::first_person`) that names nobody, the cast member whose own
   part is listed beside them; else the owner's character; never a name
   alone, which the camera looks at, and never anyone where the camera gives
@@ -800,8 +801,9 @@ The routes, in the result's own words and the manifest's `route`:
   the viewer's eyes see (`Plan::seen_from`, apart from `also`); a retouch
   keeps them. **A described part of the viewer is not one more person**
   (`picture::a_part_of`: the viewer's possessive, how the part is held, the
-  part, and after a comma only what it does, of nobody else): it leaves the
-  cast and the record, and `Plan::seen_from` carries its words. Listed as a
+  part, and after a comma only what it does, of nobody else): beside
+  anyone else it leaves the cast and the record, and `Plan::seen_from`
+  carries its words; alone it is what the picture shows. Listed as a
   person beside the holder, the library refused the call, and a persona
   sent it again until the run was ended (2026-11-12).
 - **An outfit is said outright** (2026-10-28, replay rig): a nude one is

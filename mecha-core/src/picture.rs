@@ -1905,7 +1905,17 @@ pub fn plan(
                 })
                 .flatten()
         };
+        // The owner's character listed in the picture is the viewer before
+        // any part says otherwise: a part of someone else beside them took
+        // the view from them, and their portrait was sent (review of #872,
+        // pass 9).
+        let owner_listed = call.me.owner.as_deref().filter(|o| {
+            people
+                .iter()
+                .any(|p| matches!(&p.who, Who::Library(n) if n == o))
+        });
         let whose = first_person_holder(camera, &names, None)
+            .or_else(|| first_person_holder(camera, &names, owner_listed))
             .or_else(by_part)
             .or_else(|| first_person_holder(camera, &names, call.me.owner.as_deref()));
         // Someone described who is only a part of the viewer ("John's hands"
@@ -3139,6 +3149,22 @@ mod tests {
         let owned = planned(&owned, None);
         let cast: Vec<String> = owned.people.iter().map(|x| x.who.key()).collect();
         assert_eq!(cast, ["maya"], "an owner set");
+        // The owner's character in the picture is the viewer, whoever's
+        // part is listed beside them.
+        let mut theirs = call(json!({"scene": {"setting": "a kitchen",
+            "camera": "first-person view, across the kitchen",
+            "people": [
+                {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"},
+                {"who": "John's left arm", "doing": "carrying a lamp"}]}}));
+        theirs.me.owner = Some("maya".into());
+        let theirs = planned(&theirs, None);
+        assert!(
+            !theirs.faces.contains(&"maya".to_string()),
+            "{:?}",
+            theirs.faces
+        );
+        assert!(theirs.people.iter().any(|x| x.who.key() == "john"));
         // How a part is held, or what it does after a comma, is still it.
         for who in [
             "my hands, carrying a lamp",
