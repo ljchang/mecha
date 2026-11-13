@@ -618,6 +618,11 @@ pub async fn execute(
     // here by name.
     #[cfg(feature = "memory-prototype")]
     let mut shapes: Vec<mecha_core::tool::concepts::ToolShape> = Vec::new();
+    // What the concept tool hands over in this run, for the offer below.
+    #[cfg(feature = "memory-prototype")]
+    let mut concepts_handed: Option<
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    > = None;
     #[cfg(feature = "memory-prototype")]
     let delivered_concepts = match (&episode_store, args.concepts_deliver) {
         (Some(store), true) => {
@@ -632,10 +637,13 @@ pub async fn execute(
                 })
                 .collect();
             let store = store.clone();
-            let loader: concepts::Loader = std::sync::Arc::new(move || store.patterns());
-            prepared.agent.registry_mut().insert(std::sync::Arc::new(
-                concepts::Concepts::from_loader(loader, shapes.clone()),
-            ));
+            let loader: concepts::Loader = std::sync::Arc::new(move || store.concepts_kept());
+            let tool = concepts::Concepts::from_loader(loader, shapes.clone());
+            concepts_handed = Some(tool.handed());
+            prepared
+                .agent
+                .registry_mut()
+                .insert(std::sync::Arc::new(tool));
             let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
             let dispatched = prepared
                 .agent
@@ -908,12 +916,30 @@ pub async fn execute(
                 use mecha_core::tool::concepts;
                 let kept = std::fs::read_to_string(&s.path)
                     .map_err(anyhow::Error::from)
-                    .and_then(
-                        |text| match concepts::found(&s.meta.id, &text, &shapes, &refused) {
-                            Some(pattern) => store.retain_pattern(&pattern).map(|()| pattern.key()),
-                            None => Ok("none".to_string()),
-                        },
-                    );
+                    .and_then(|text| {
+                        let pattern = concepts::found(&s.meta.id, &text, &shapes, &refused);
+                        if let Some(pattern) = &pattern {
+                            store.retain_pattern(pattern)?;
+                        }
+                        let key = pattern.map(|p| p.key());
+                        // A run that was handed concepts is recorded
+                        // against them, whatever it then showed.
+                        let offered: Vec<String> = concepts_handed
+                            .as_ref()
+                            .and_then(|handed| {
+                                handed.lock().ok().map(|h| h.iter().cloned().collect())
+                            })
+                            .unwrap_or_default();
+                        if !offered.is_empty() {
+                            store.retain_offer(&concepts::Offer {
+                                session: s.meta.id.clone(),
+                                offered,
+                                showed: key.clone(),
+                                judged: None,
+                            })?;
+                        }
+                        Ok(key.unwrap_or_else(|| "none".to_string()))
+                    });
                 match kept {
                     Ok(key) => eprintln!("mecha: pattern kept: {key}"),
                     Err(e) => eprintln!("mecha: pattern not kept: {e:#}"),

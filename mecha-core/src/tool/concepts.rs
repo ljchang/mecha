@@ -27,8 +27,12 @@
 //!   nothing. A later run that follows a delivered concept shows the
 //!   structure itself and is counted like any other.
 //!
-//! Not here yet: a counterexample (a concept delivered and not borne out) is
-//! not recorded, patterns are not compared pairwise to find what a success
+//! A concept is also counted against the runs it was handed to
+//! ([`Offer`]): how many, and how many then showed the structure in a task
+//! not judged to have failed. Handed over three times and never borne out,
+//! it is not handed over again.
+//!
+//! Not here yet: patterns are not compared pairwise to find what a success
 //! had that a failure lacked, there is one kind of pattern, and nothing
 //! names a concept.
 //!
@@ -386,13 +390,44 @@ pub fn found(
     Some(pattern)
 }
 
+/// A run that was handed concepts, and what it then showed: the record a
+/// concept is counted against. Kept whether or not the run showed anything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Offer {
+    pub session: String,
+    /// The keys of the concepts the run was handed.
+    pub offered: Vec<String>,
+    /// The key of the pattern the run itself showed, if it showed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub showed: Option<String>,
+    /// How the run's task was judged, once someone has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged: Option<bool>,
+}
+
+impl Offer {
+    pub fn source_id(&self) -> String {
+        format!("{}:offer", self.session)
+    }
+}
+
 /// Runs that showed one structure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Concept {
     pub key: String,
     /// The supporting runs' patterns, oldest first. Never empty.
     pub support: Vec<Pattern>,
+    /// Runs with other tools that were handed this concept, and how many of
+    /// them went on to show the same structure in a task not judged to have
+    /// failed. The difference is the concept's counterexamples: handed
+    /// over, and not borne out or not acted on.
+    pub tried: usize,
+    pub held: usize,
 }
+
+/// A concept handed to this many runs without once holding is not handed
+/// to another.
+const RETIRED_AFTER: usize = 3;
 
 impl Concept {
     fn external(&self) -> bool {
@@ -431,12 +466,21 @@ impl Concept {
 
     fn render(&self, filled: &Filled<'_>) -> String {
         // The support that says most speaks for the concept: one that met
-        // the refusal, then one that read something on the way, then the
-        // newest. The counts say how many agree.
+        // the refusal, then the one that read most on the way, then the
+        // newest. A run that already knew the order (an episode told it)
+        // was never refused and read no documentation, and quoted alone it
+        // gives the steps without the reason for them. The counts say how
+        // many agree.
         let shown = self
             .support
             .iter()
-            .max_by_key(|p| (p.refused_with.is_some(), !p.read.is_empty()))
+            .max_by_key(|p| {
+                (
+                    p.refused_with.is_some(),
+                    p.read.len(),
+                    p.read.iter().map(String::len).sum::<usize>(),
+                )
+            })
             .expect("never empty");
         let names = |tools: &[&ToolShape]| {
             tools
@@ -485,6 +529,12 @@ impl Concept {
         for read in &shown.read {
             out.push_str(&format!("  What that run had read: {read}\n"));
         }
+        if self.tried > 0 {
+            out.push_str(&format!(
+                "  Handed to {} other run(s) with tools unlike those: {} of them then showed the same three steps.\n",
+                self.tried, self.held
+            ));
+        }
         out.push_str(&format!(
             "  If the same holds here: the change is {}.",
             names(&filled.change)
@@ -517,7 +567,7 @@ struct Filled<'a> {
 /// Patterns in the order they were kept, to concepts: one per structure,
 /// supported by the runs that showed it. A run judged to have failed
 /// supports nothing, and a session's latest record is the one that counts.
-pub fn fold(patterns: Vec<Pattern>) -> Vec<Concept> {
+pub fn fold(patterns: Vec<Pattern>, offers: Vec<Offer>) -> Vec<Concept> {
     let mut latest: Vec<Pattern> = Vec::new();
     for pattern in patterns {
         match latest.iter_mut().find(|p| p.session == pattern.session) {
@@ -533,25 +583,64 @@ pub fn fold(patterns: Vec<Pattern>) -> Vec<Concept> {
             None => concepts.push(Concept {
                 key,
                 support: vec![pattern],
+                tried: 0,
+                held: 0,
             }),
+        }
+    }
+    let mut latest: Vec<Offer> = Vec::new();
+    for offer in offers {
+        match latest.iter_mut().find(|o| o.session == offer.session) {
+            Some(known) => *known = offer,
+            None => latest.push(offer),
+        }
+    }
+    for concept in &mut concepts {
+        for offer in latest.iter().filter(|o| o.offered.contains(&concept.key)) {
+            concept.tried += 1;
+            if offer.showed.as_deref() == Some(concept.key.as_str()) && offer.judged != Some(false)
+            {
+                concept.held += 1;
+            }
         }
     }
     concepts
 }
 
-/// Where a run's patterns are read from: what the store holds, and how many
-/// records could not be read.
-pub type Loader = std::sync::Arc<dyn Fn() -> Result<(Vec<Pattern>, usize)> + Send + Sync>;
+/// What the store holds for concepts: every run's pattern and every offer,
+/// oldest first, and how many records could not be read.
+#[derive(Debug, Clone, Default)]
+pub struct Kept {
+    pub patterns: Vec<Pattern>,
+    pub offers: Vec<Offer>,
+    pub unreadable: usize,
+}
+
+/// Where a run's concepts are read from.
+pub type Loader = std::sync::Arc<dyn Fn() -> Result<Kept> + Send + Sync>;
 
 pub struct Concepts {
     loader: Loader,
     /// The server tools this run has, as shapes.
     here: Vec<ToolShape>,
+    /// The keys of the concepts this tool has handed over, for the offer
+    /// the caller records when the run ends.
+    handed: std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>,
 }
 
 impl Concepts {
     pub fn from_loader(loader: Loader, here: Vec<ToolShape>) -> Self {
-        Concepts { loader, here }
+        Concepts {
+            loader,
+            here,
+            handed: Default::default(),
+        }
+    }
+
+    /// A handle on what this tool hands over, readable after it has moved
+    /// into a registry.
+    pub fn handed(&self) -> std::sync::Arc<std::sync::Mutex<BTreeSet<String>>> {
+        self.handed.clone()
     }
 }
 
@@ -585,11 +674,18 @@ impl Tool for Concepts {
 
     async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let loader = self.loader.clone();
-        let (patterns, unreadable) = match tokio::task::spawn_blocking(move || loader()).await? {
+        let Kept {
+            patterns,
+            offers,
+            unreadable,
+        } = match tokio::task::spawn_blocking(move || loader()).await? {
             Ok(loaded) => loaded,
             Err(error) => return Ok(ToolOutput::err(format!("concepts unavailable: {error:#}"))),
         };
-        let mut concepts = fold(patterns);
+        let mut concepts = fold(patterns, offers);
+        // Handed over three times to tools unlike its own and never borne
+        // out: not handed over again.
+        concepts.retain(|c| !(c.tried >= RETIRED_AFTER && c.held == 0));
         // The best supported first; a concept with a closer before one
         // without, since it says more.
         concepts.sort_by(|a, b| {
@@ -609,6 +705,9 @@ impl Tool for Concepts {
             };
             out.push_str(&concept.render(&filled));
             external |= concept.external();
+            if let Ok(mut handed) = self.handed.lock() {
+                handed.insert(concept.key.clone());
+            }
             shown += 1;
             if shown == DELIVERED {
                 break;
@@ -861,16 +960,16 @@ mod tests {
         )
         .unwrap();
         failed.judged = Some(false);
-        let concepts = fold(vec![first.clone(), second, failed.clone()]);
+        let concepts = fold(vec![first.clone(), second, failed.clone()], vec![]);
         assert_eq!(concepts.len(), 1);
         assert_eq!(concepts[0].support.len(), 2);
         // A later record for a session replaces its earlier one: the grade.
         let mut regraded = first.clone();
         regraded.judged = Some(false);
-        assert!(fold(vec![first, regraded]).is_empty());
+        assert!(fold(vec![first, regraded], vec![]).is_empty());
         // Not judged, the open pattern is its own concept.
         failed.judged = None;
-        assert_eq!(fold(vec![failed]).len(), 1);
+        assert_eq!(fold(vec![failed], vec![]).len(), 1);
     }
 
     #[tokio::test]
@@ -884,7 +983,12 @@ mod tests {
         .unwrap();
         let kept = vec![pattern];
         let loader = |patterns: Vec<Pattern>| -> Loader {
-            std::sync::Arc::new(move || Ok((patterns.clone(), 0)))
+            std::sync::Arc::new(move || {
+                Ok(Kept {
+                    patterns: patterns.clone(),
+                    ..Default::default()
+                })
+            })
         };
 
         let elsewhere = Concepts::from_loader(loader(kept.clone()), quay());
@@ -946,7 +1050,12 @@ mod tests {
         let mut first = refused;
         first.judged = Some(true);
         let kept = vec![first, later];
-        let loader: Loader = std::sync::Arc::new(move || Ok((kept.clone(), 0)));
+        let loader: Loader = std::sync::Arc::new(move || {
+            Ok(Kept {
+                patterns: kept.clone(),
+                ..Default::default()
+            })
+        });
         let out = Concepts::from_loader(loader, quay())
             .call(json!({}), &ctx())
             .await
@@ -966,6 +1075,76 @@ mod tests {
             out.content
         );
         assert!(out.content.contains("unlock when done"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn a_concept_is_counted_against_the_runs_it_was_handed_to() {
+        let pattern = extract(
+            "s1",
+            &locked_then_changed(true),
+            &registry(),
+            &Refused::new(),
+        )
+        .unwrap();
+        let key = pattern.key();
+        let offer = |session: &str, showed: Option<&str>, judged: Option<bool>| Offer {
+            session: session.into(),
+            offered: vec![key.clone()],
+            showed: showed.map(str::to_string),
+            judged,
+        };
+        // One run followed it and passed, one followed it and failed, one
+        // showed something else, one showed nothing; and a later record for
+        // a session replaces its earlier one.
+        let concepts = fold(
+            vec![pattern.clone()],
+            vec![
+                offer("q1", Some(&key), None),
+                offer("q1", Some(&key), Some(true)),
+                offer("q2", Some(&key), Some(false)),
+                offer("q3", Some("change[SS] after[S] then[-]"), Some(true)),
+                offer("q4", None, None),
+            ],
+        );
+        assert_eq!((concepts[0].tried, concepts[0].held), (4, 1));
+
+        let handed_over = |offers: Vec<Offer>| {
+            let patterns = vec![pattern.clone()];
+            let loader: Loader = std::sync::Arc::new(move || {
+                Ok(Kept {
+                    patterns: patterns.clone(),
+                    offers: offers.clone(),
+                    unreadable: 0,
+                })
+            });
+            Concepts::from_loader(loader, quay())
+        };
+        let tool = handed_over(vec![
+            offer("q1", Some(&key), Some(true)),
+            offer("q4", None, None),
+        ]);
+        let handed = tool.handed();
+        let out = tool.call(json!({}), &ctx()).await.unwrap();
+        assert!(out.content.contains("Handed to 2 other run(s) with tools unlike those: 1 of them then showed the same three steps."), "{}", out.content);
+        assert_eq!(
+            handed.lock().unwrap().iter().collect::<Vec<_>>(),
+            vec![&key]
+        );
+
+        // Three runs, never borne out: retired.
+        let tool = handed_over(vec![
+            offer("q2", None, None),
+            offer("q3", None, None),
+            offer("q4", None, None),
+        ]);
+        let handed = tool.handed();
+        assert!(tool
+            .call(json!({}), &ctx())
+            .await
+            .unwrap()
+            .content
+            .starts_with("No arrangement"));
+        assert!(handed.lock().unwrap().is_empty());
     }
 
     #[test]

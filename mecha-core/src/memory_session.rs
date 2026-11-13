@@ -27,6 +27,8 @@ use anyhow::{ensure, Result};
 const EPISODE_CONNECTOR: &str = "host-episode-v1";
 /// The source kind of a pattern kept in the store (`tool::concepts`).
 const PATTERN_CONNECTOR: &str = "host-pattern-v1";
+/// The source kind of an offer kept in the store (`tool::concepts`).
+const OFFER_CONNECTOR: &str = "host-offer-v1";
 /// The most records one read of the store returns (`Memory::search`'s own
 /// ceiling). Reaching it refuses the read.
 const EPISODE_READ_LIMIT: usize = 1000;
@@ -293,7 +295,7 @@ impl SessionMemory {
     }
     /// Keep what a run showed (`tool::concepts::Pattern`): one record a
     /// session, of its own kind, beside the episodes and read like them.
-    /// The same rule holds: only [`Self::patterns`] may read these.
+    /// The same rule holds: only [`Self::concepts_kept`] may read these.
     pub fn retain_pattern(&self, pattern: &crate::tool::concepts::Pattern) -> Result<()> {
         self.memory()?.capture(crate::memory::Capture {
             source: crate::memory::SourceKey {
@@ -308,10 +310,26 @@ impl SessionMemory {
         })?;
         Ok(())
     }
-    /// Every pattern the store holds, oldest first, and how many records of
-    /// that kind could not be read as one. Folded into concepts by the
-    /// reader (`tool::concepts::fold`).
-    pub fn patterns(&self) -> Result<(Vec<crate::tool::concepts::Pattern>, usize)> {
+    /// Keep the record of a run that was handed concepts
+    /// (`tool::concepts::Offer`).
+    pub fn retain_offer(&self, offer: &crate::tool::concepts::Offer) -> Result<()> {
+        self.memory()?.capture(crate::memory::Capture {
+            source: crate::memory::SourceKey {
+                connector: OFFER_CONNECTOR.into(),
+                account: self.request.account.clone(),
+                id: offer.source_id(),
+            },
+            text: serde_json::to_string(offer)?,
+            occurred_at: None,
+            scopes: self.request.scopes.clone(),
+            transcript: None,
+        })?;
+        Ok(())
+    }
+    /// Every pattern and every offer the store holds, oldest first, and how
+    /// many records of those kinds could not be read. Folded into concepts
+    /// by the reader (`tool::concepts::fold`).
+    pub fn concepts_kept(&self) -> Result<crate::tool::concepts::Kept> {
         let memory = self.memory()?;
         let (mut hits, stopped_at_limit) = memory.search_reporting(
             &crate::memory::Query {
@@ -325,38 +343,45 @@ impl SessionMemory {
         )?;
         ensure!(
             !stopped_at_limit,
-            "the store holds too many records to read its patterns whole"
+            "the store holds too many records to read its concepts whole"
         );
         hits.sort_by_key(|hit| hit.sequence);
-        let mut unreadable = 0;
-        let mut patterns = Vec::new();
+        let mut kept = crate::tool::concepts::Kept::default();
         for hit in hits {
             let crate::memory::Record::Evidence(capture) = hit.record else {
                 continue;
             };
-            if capture.source.connector != PATTERN_CONNECTOR {
-                continue;
-            }
-            match serde_json::from_str(&capture.text) {
-                Ok(pattern) => patterns.push(pattern),
-                Err(_) => unreadable += 1,
+            if capture.source.connector == PATTERN_CONNECTOR {
+                match serde_json::from_str(&capture.text) {
+                    Ok(pattern) => kept.patterns.push(pattern),
+                    Err(_) => kept.unreadable += 1,
+                }
+            } else if capture.source.connector == OFFER_CONNECTOR {
+                match serde_json::from_str(&capture.text) {
+                    Ok(offer) => kept.offers.push(offer),
+                    Err(_) => kept.unreadable += 1,
+                }
             }
         }
-        Ok((patterns, unreadable))
+        Ok(kept)
     }
     /// Record how the task run in `session` was judged, as a revision of its
     /// outcome record and of the pattern it showed. `false` when the session
     /// kept no outcome.
     pub fn appraise_episode(&self, session: &str, passed: bool) -> Result<bool> {
-        if let Some(mut pattern) = self
-            .patterns()?
-            .0
+        let kept = self.concepts_kept()?;
+        if let Some(mut pattern) = kept
+            .patterns
             .into_iter()
             .rev()
             .find(|p| p.session == session)
         {
             pattern.judged = Some(passed);
             self.retain_pattern(&pattern)?;
+        }
+        if let Some(mut offer) = kept.offers.into_iter().rev().find(|o| o.session == session) {
+            offer.judged = Some(passed);
+            self.retain_offer(&offer)?;
         }
         let Some(mut outcome) = self
             .episode_records()?
