@@ -19,6 +19,14 @@
 //!   before it. The first measured run showed why: a model that reads the
 //!   documentation first is never refused, so a refusal-only gate kept
 //!   nothing of the rule it had just learned.
+//!   A third record is the task's outcome: what the run was asked and what
+//!   it concluded, in its own last words, when it relied on a server's
+//!   tools. The held-out family showed why: a run that read a cause from a
+//!   log and wrote it down was refused nothing and learned no call, and the
+//!   cause itself was not kept. No model is asked for a summary; the run's
+//!   final answer is one. **A verdict can retire it**: `appraise` records
+//!   whether the task was judged to have succeeded, after the run, and a
+//!   conclusion from a run judged to have failed is not delivered.
 //! - **Recall is conditioned on the situation, not on wording.** An episode
 //!   is about a tool, and it is delivered to a run that has that tool. The
 //!   task's words only rank within that.
@@ -54,6 +62,7 @@ const DELIVERY_BYTES: usize = 4_000;
 /// The most of one quoted input, error or result.
 const INPUT_BYTES: usize = 300;
 const QUOTE_BYTES: usize = 400;
+const OUTCOME_BYTES: usize = 600;
 /// Distinct refusals and in-between reads kept per episode, and episodes
 /// per tool per run.
 const ERRORS: usize = 3;
@@ -99,6 +108,14 @@ pub struct Episode {
     /// recorded.
     #[serde(default = "yes")]
     pub external: bool,
+    /// A task outcome and not a call: what the run was asked, what it
+    /// concluded, and the server tools it relied on. `tool` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concluded: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relied_on: Vec<String>,
     /// Runs this was seen in. A line that repeats an earlier one's key adds
     /// to it when the file is read.
     #[serde(default = "one")]
@@ -116,6 +133,9 @@ impl Episode {
     /// Two episodes are one finding when the same tool refused in the same
     /// words.
     fn key(&self) -> (String, String) {
+        if self.outcome() {
+            return (self.session.clone(), "outcome".into());
+        }
         (
             self.tool.clone(),
             self.errors.last().cloned().unwrap_or_default(),
@@ -124,10 +144,28 @@ impl Episode {
 
     /// A first working call rather than a refusal.
     fn first_use(&self) -> bool {
-        self.errors.is_empty()
+        self.errors.is_empty() && !self.outcome()
+    }
+
+    /// A task's outcome rather than a call's.
+    fn outcome(&self) -> bool {
+        self.concluded.is_some()
+    }
+
+    /// Whether this is about something a run with `available` has.
+    fn concerns(&self, available: &BTreeSet<String>) -> bool {
+        available.contains(&self.tool) || self.relied_on.iter().any(|t| available.contains(t))
     }
 
     fn render(&self) -> String {
+        if let Some(concluded) = &self.concluded {
+            return format!(
+                "- An earlier task asked: {}\n  The run concluded: {}\n  (it used {})",
+                self.asked.as_deref().unwrap_or("(not recorded)"),
+                concluded,
+                self.relied_on.join(", ")
+            );
+        }
         if self.first_use() {
             let mut out = format!(
                 "- {} worked the first time it was used, called with {}.",
@@ -273,6 +311,9 @@ pub fn extract(session: &str, messages: &[Message], novel: &BTreeSet<String>) ->
             fixed_input: Some(cut(&calls[at].input, INPUT_BYTES)),
             external: calls[at].external || reads.iter().any(|c| c.external),
             seen: 1,
+            asked: None,
+            concluded: None,
+            relied_on: vec![],
         });
     }
     let mut per_tool: BTreeMap<&str, usize> = BTreeMap::new();
@@ -321,11 +362,97 @@ pub fn extract(session: &str, messages: &[Message], novel: &BTreeSet<String>) ->
                 external: span.iter().any(|c| c.external)
                     || fixed.is_some_and(|i| calls[i].external),
                 seen: 1,
+                asked: None,
+                concluded: None,
+                relied_on: vec![],
             });
         }
         at += 1;
     }
     out
+}
+
+/// The run's outcome: what it was asked and its last words, when it used a
+/// server's tool that worked. A run that said nothing at the end, or used
+/// only the harness's own tools, has none.
+pub fn outcome(
+    session: &str,
+    messages: &[Message],
+    learnable: &BTreeSet<String>,
+) -> Option<Episode> {
+    use crate::message::Role;
+    let text_of = |m: &Message| {
+        m.content.iter().find_map(|b| match b {
+            Block::Text { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
+            _ => None,
+        })
+    };
+    let asked = messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .and_then(text_of)?;
+    // The last message must be the model's, in words: a run cut off after a
+    // tool call concluded nothing.
+    let last = messages.last().filter(|m| m.role == Role::Assistant)?;
+    if last
+        .content
+        .iter()
+        .any(|b| matches!(b, Block::ToolUse { .. }))
+    {
+        return None;
+    }
+    let concluded = text_of(last)?;
+    let calls = calls(messages);
+    let mut relied_on: Vec<String> = Vec::new();
+    for call in calls
+        .iter()
+        .filter(|c| !c.is_error && learnable.contains(&c.name))
+    {
+        if !relied_on.contains(&call.name) {
+            relied_on.push(call.name.clone());
+        }
+    }
+    if relied_on.is_empty() {
+        return None;
+    }
+    Some(Episode {
+        session: session.to_string(),
+        call: String::new(),
+        tool: String::new(),
+        failed_input: String::new(),
+        errors: vec![],
+        read_between: vec![],
+        fixed_input: None,
+        // What a run concluded rests on everything it read.
+        external: calls.iter().any(|c| c.external),
+        seen: 1,
+        asked: Some(cut(&asked, QUOTE_BYTES)),
+        concluded: Some(cut(&concluded, OUTCOME_BYTES)),
+        relied_on,
+    })
+}
+
+/// A judgement of a task, made after its run: by a grader, or by the owner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Verdict {
+    session: String,
+    passed: bool,
+}
+
+/// Record whether the task run in `session` was judged to have succeeded.
+/// Appended, like everything here; the last verdict for a session stands.
+pub fn appraise(file: &Path, session: &str, passed: bool) -> Result<()> {
+    let dir = file.parent().context("episode file has no directory")?;
+    crate::create_private_dir(dir)?;
+    let line =
+        serde_json::to_string(&json!({"verdict": Verdict { session: session.into(), passed }}))?;
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .and_then(|mut f| writeln!(f, "{line}"))
+        .with_context(|| format!("writing {}", file.display()))
 }
 
 /// The file's episodes, one per finding: a repeated key adds to `seen`, and
@@ -337,7 +464,20 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
     };
     let mut unreadable = 0;
     let mut folded: Vec<Episode> = Vec::new();
+    let mut failed: BTreeSet<String> = BTreeSet::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        if let Some(verdict) = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|v| v.get("verdict").cloned())
+            .and_then(|v| serde_json::from_value::<Verdict>(v).ok())
+        {
+            if verdict.passed {
+                failed.remove(&verdict.session);
+            } else {
+                failed.insert(verdict.session);
+            }
+            continue;
+        }
         let Ok(episode) = serde_json::from_str::<Episode>(line) else {
             unreadable += 1;
             continue;
@@ -353,6 +493,9 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
             None => folded.push(episode),
         }
     }
+    // A conclusion from a task judged to have failed is not knowledge. What
+    // a call did is a fact about the tool whatever became of the task.
+    folded.retain(|e| !(e.outcome() && failed.contains(&e.session)));
     (folded, unreadable)
 }
 
@@ -375,11 +518,9 @@ pub fn retain(
         .map(|e| e.tool)
         .collect();
     let novel: BTreeSet<String> = learnable.difference(&known).cloned().collect();
-    let episodes = extract(
-        session,
-        &crate::session::Session::messages_ever(transcript),
-        &novel,
-    );
+    let messages = crate::session::Session::messages_ever(transcript);
+    let mut episodes = extract(session, &messages, &novel);
+    episodes.extend(outcome(session, &messages, learnable));
     if episodes.is_empty() {
         return Ok(0);
     }
@@ -420,7 +561,7 @@ fn select<'a>(
     let mut hits: Vec<(usize, &Episode)> = episodes
         .iter()
         .enumerate()
-        .filter(|(_, e)| available.contains(&e.tool))
+        .filter(|(_, e)| e.concerns(available))
         .collect();
     hits.sort_by(|(ai, a), (bi, b)| {
         overlap(b)
@@ -720,6 +861,70 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn a_run_s_last_words_are_its_outcome_when_it_relied_on_a_server_s_tool() {
+        let mut messages = run(vec![call(
+            "a",
+            "gate_log",
+            json!({}),
+            "the hinge is seized",
+            false,
+        )]);
+        let learnable: BTreeSet<String> = ["gate_log".to_string()].into();
+        // Cut off after a call: nothing concluded.
+        assert!(outcome("s1", &messages, &learnable).is_none());
+        messages.push(Message::assistant(vec![Block::text(
+            "The gate failed because the hinge is seized.",
+        )]));
+        let e = outcome("s1", &messages, &learnable).unwrap();
+        assert_eq!(e.asked.as_deref(), Some("do the task"));
+        assert_eq!(e.relied_on, vec!["gate_log"]);
+        assert!(e
+            .render()
+            .contains("The run concluded: The gate failed because the hinge is seized."));
+        assert!(e.outcome() && !e.first_use());
+        // Only the harness's own tools: no outcome kept.
+        assert!(outcome("s1", &messages, &BTreeSet::new()).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_conclusion_from_a_task_judged_failed_is_not_delivered_and_a_call_s_episode_still_is()
+    {
+        let dir = std::env::temp_dir().join(format!("mecha-episodes-{}", uuid::Uuid::new_v4()));
+        let file = file_in(&dir);
+        let record = |m: Message| {
+            format!(
+                "{}\n",
+                serde_json::to_string(&crate::session::Record::Message(m)).unwrap()
+            )
+        };
+        let mut messages = run(vec![
+            call("a", "gate_open", json!({"key": "7"}), "E9", true),
+            call("b", "gate_open", json!({"key": "red7"}), "opened", false),
+        ]);
+        messages.push(Message::assistant(vec![Block::text(
+            "The key is always red7.",
+        )]));
+        let transcript: String = messages.into_iter().map(record).collect();
+        let learnable: BTreeSet<String> = ["gate_open".to_string()].into();
+        assert_eq!(retain(&file, "s1", &transcript, &learnable).unwrap(), 2);
+        let tool = Episodes::new(file.clone(), ["gate_open".to_string()]);
+        let before = tool.call(json!({}), &ctx()).await.unwrap().content;
+        assert!(before.contains("The run concluded: The key is always red7."));
+        appraise(&file, "s1", false).unwrap();
+        let after = tool.call(json!({}), &ctx()).await.unwrap().content;
+        assert!(!after.contains("The run concluded") && after.contains("gate_open was refused"));
+        // The last verdict stands.
+        appraise(&file, "s1", true).unwrap();
+        assert!(tool
+            .call(json!({}), &ctx())
+            .await
+            .unwrap()
+            .content
+            .contains("The run concluded"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn episode(tool: &str, error: &str, fixed: Option<&str>) -> Episode {
         Episode {
             session: "s".into(),
@@ -731,6 +936,9 @@ mod tests {
             fixed_input: fixed.map(str::to_string),
             external: false,
             seen: 1,
+            asked: None,
+            concluded: None,
+            relied_on: vec![],
         }
     }
 

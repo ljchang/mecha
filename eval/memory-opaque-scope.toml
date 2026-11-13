@@ -102,3 +102,12 @@ memory = "episodes"
 [arms.episodes.prediction]
 metric = "failure"
 rationale = "Keyword recall of everything returned the unit rule on at most half the harder probes and cost 5 to 20 KB a task. An episode kept only where a call was refused holds the refusal's words and the call that worked, and is delivered to a run that has that tool: the unit rule reaches every harder probe whose lifetime met it, at under 2 KB."
+
+[arms.episodes_appraised]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_appraised"
+
+[arms.episodes_appraised.prediction]
+metric = "failure"
+rationale = "A run's conclusion is kept as its outcome, and retired when the task was graded a failure. Where an experience task fails, its wrong conclusion is not handed to the probes; where it passes, this arm equals episodes."

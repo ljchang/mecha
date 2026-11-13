@@ -71,3 +71,12 @@ memory = "episodes"
 [arms.episodes.prediction]
 metric = "failure"
 rationale = "Written before the run: episodes keep how a tool was called and what was read before it, not what an observation said, and no call is refused in the experience tasks. The log line is not kept, so the probes fail as the control does."
+
+[arms.episodes_appraised]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_appraised"
+
+[arms.episodes_appraised.prediction]
+metric = "failure"
+rationale = "A run's conclusion is kept as its outcome, and retired when the task was graded a failure. Where an experience task fails, its wrong conclusion is not handed to the probes; where it passes, this arm equals episodes."

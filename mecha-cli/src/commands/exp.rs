@@ -2220,7 +2220,13 @@ async fn run_one(
     // A memory arm: the trial home's own store, made once and carried with
     // the home. The goal is the manifest's to confirm for every arm alike,
     // so the arms differ in memory and in nothing else.
-    if arm.memory == Some(mecha_core::experiment::ArmMemory::Episodes) {
+    if matches!(
+        arm.memory,
+        Some(
+            mecha_core::experiment::ArmMemory::Episodes
+                | mecha_core::experiment::ArmMemory::EpisodesAppraised
+        )
+    ) {
         // Its own file under the home, made on the first episode kept.
         cmd.arg("--episodes-deliver");
     } else if arm.memory == Some(mecha_core::experiment::ArmMemory::Transcripts) {
@@ -2247,7 +2253,10 @@ async fn run_one(
             ArmMemory::Invited => {
                 cmd.arg("--memory-invite");
             }
-            ArmMemory::Everything | ArmMemory::Transcripts | ArmMemory::Episodes => {}
+            ArmMemory::Everything
+            | ArmMemory::Transcripts
+            | ArmMemory::Episodes
+            | ArmMemory::EpisodesAppraised => {}
         }
     }
 
@@ -2424,6 +2433,18 @@ async fn run_one(
         }
     }
     trial.passed = Some(graded.passed);
+    // The grade is an appraisal that arrives after the run: recorded against
+    // the session, where the arm asked for it, so what the run concluded is
+    // kept or retired by how the task came out.
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesAppraised) {
+        if let Some(id) = &trial.session_id {
+            mecha_core::tool::episodes::appraise(
+                &mecha_core::tool::episodes::file_in(home),
+                id,
+                graded.passed,
+            )?;
+        }
+    }
     trial.checks = graded.checks;
     trial.stats = match &trial.session_id {
         Some(id) => mecha_core::session::Session::episode_stats(

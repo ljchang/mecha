@@ -1129,6 +1129,9 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         Some(ArmMemory::DeliveredOnError) => {
             fnv64(format!("{original}|memory=delivered_on_error").as_bytes())
         }
+        Some(ArmMemory::EpisodesAppraised) => {
+            fnv64(format!("{original}|memory=episodes_appraised").as_bytes())
+        }
         Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
     }
@@ -1158,6 +1161,10 @@ pub enum ArmMemory {
     /// run, the episodes about the tools it has, handed over
     /// (`tool::episodes`).
     Episodes,
+    /// The same, and the driver records each task's grade against its
+    /// session after grading: a conclusion from a task that failed is not
+    /// delivered to a later one.
+    EpisodesAppraised,
     /// No store: the harness searches the home's earlier session
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.
