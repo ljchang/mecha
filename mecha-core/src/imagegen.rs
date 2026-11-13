@@ -2000,19 +2000,19 @@ fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
         "pair",
         "family",
     ];
-    fn strings(v: &Value, out: &mut Vec<String>) {
-        match v {
-            Value::String(t) => out.push(t.to_lowercase()),
-            Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
-            Value::Object(o) => o.values().for_each(|x| strings(x, out)),
-            _ => {}
-        }
+    // Only the words that can put someone unlisted in the frame: where it
+    // is, what they do together, who each is, and the line beside the scene.
+    // A camera's "two-shot" or a "pair of boots" is nobody (review of #874,
+    // pass 4).
+    let mut words: Vec<String> = Vec::new();
+    if let Some(crate::scene::Setting::Words { text }) = next.setting.as_ref().map(|f| &f.value) {
+        words.push(text.to_lowercase());
     }
-    let mut words = Vec::new();
-    strings(
-        &serde_json::to_value(next).unwrap_or(Value::Null),
-        &mut words,
-    );
+    words.extend(next.together.as_ref().map(|f| f.value.to_lowercase()));
+    words.extend(next.people.iter().filter_map(|p| match &p.who {
+        crate::scene::Who::Described(d) => Some(d.to_lowercase()),
+        crate::scene::Who::Library(_) => None,
+    }));
     words.extend(also.map(str::to_lowercase));
     words.iter().any(|t| {
         t.split(|c: char| !c.is_alphabetic())
@@ -3308,13 +3308,20 @@ impl ImageGenerate {
     /// need below plus the reserve, refused under memory pressure, and
     /// refused when the gauge cannot be read. Only the operator's own
     /// `min_available_mb = 0` switches it off.
+    ///
+    /// `wants_count` asks, of the same reading of what is loaded, whether
+    /// the count after the render (`PeopleCheck`) fits as well: the answer
+    /// is the `Ok`'s, never a refusal and never the operator's log, since a
+    /// picture is drawn without the count where the memory for it is short
+    /// (review of #874, passes 3 and 4).
     async fn memory_guard(
         &self,
         model: crate::sampling::Model,
         may_segment: bool,
-    ) -> std::result::Result<(), String> {
+        wants_count: bool,
+    ) -> std::result::Result<bool, String> {
         if self.cfg.min_available_mb == 0 {
-            return Ok(());
+            return Ok(wants_count);
         }
         // A switch of model unloads the one held and loads the other: cold.
         // Not asked on a Mac: `loaded_from_stats` reads any device but CUDA
@@ -3334,8 +3341,8 @@ impl ImageGenerate {
         // SAM is charged where it can load. Asked on Linux only, as `loaded`
         // is: on a Mac the ask goes through the on-demand proxy and starts
         // ComfyUI, so a Mac is charged whenever the call may segment.
-        let may_segment =
-            may_segment && (cfg!(target_os = "macos") || self.backend.segments().await);
+        let can_segment = cfg!(target_os = "macos") || self.backend.segments().await;
+        let may_segment = may_segment && can_segment;
         let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb, may_segment);
         let series = crate::system::db_path().ok();
         let verdict = crate::system::floor::admit_now(
@@ -3344,7 +3351,19 @@ impl ImageGenerate {
             series.as_deref(),
         );
         match verdict.sentence("a generation") {
-            None => Ok(()),
+            // Admitted. The count is one more ask, where SAM is not already
+            // in this one: of the same floor, answered quietly.
+            None => Ok(wants_count
+                && (may_segment
+                    || (can_segment
+                        && crate::system::floor::admit_now(
+                            memory_need_mb(loaded, self.cfg.min_available_mb, true)
+                                .saturating_mul(1024 * 1024),
+                            &self.floor,
+                            series.as_deref(),
+                        )
+                        .sentence("a generation")
+                        .is_none()))),
             Some(why) => {
                 // The off switch is the operator's, said in the operator's
                 // log and never to the model: told it, a model retried six
@@ -3874,7 +3893,7 @@ impl ImageGenerate {
                 "it is already {w}×{h}; a redraw at about a megapixel adds nothing"
             ));
         }
-        self.memory_guard(crate::sampling::Model::Standard, false)
+        self.memory_guard(crate::sampling::Model::Standard, false, false)
             .await?;
         let req = Request {
             prompt: UPSCALE_PROMPT.to_string(),
@@ -5123,19 +5142,22 @@ impl Tool for ImageGenerate {
         // A new picture is counted by SAM after it is drawn (`PeopleCheck`),
         // and whether this call is one is not known until it is planned: a
         // call that can never be is not charged for it.
-        let mut counts_people = self.cfg.people_check && call.counts_people();
-        let may_segment = call.may_segment();
         // The count is asked for only where the memory is there for it: a
-        // picture is never refused for a check it can be drawn without
-        // (review of #874, pass 3). Short of it, the picture is admitted as
-        // it was before the count existed, and is not counted.
-        let model = tuning.model.unwrap_or_default();
-        if counts_people && !may_segment && self.memory_guard(model, true).await.is_err() {
-            counts_people = false;
-        }
-        if let Err(why) = self.memory_guard(model, may_segment || counts_people).await {
-            return Ok(refused(why));
-        }
+        // picture is never refused for a check it can be drawn without.
+        // Short of it, the picture is admitted as it was before the count
+        // existed, and is not counted.
+        let wants_count = self.cfg.people_check && call.counts_people();
+        let counts_people = match self
+            .memory_guard(
+                tuning.model.unwrap_or_default(),
+                call.may_segment(),
+                wants_count,
+            )
+            .await
+        {
+            Ok(counted) => counted,
+            Err(why) => return Ok(refused(why)),
+        };
         // The picture being changed, read once: its bytes key its record and
         // are the canvas.
         let picture = match &call.picture {

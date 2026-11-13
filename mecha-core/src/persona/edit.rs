@@ -965,16 +965,16 @@ pub fn read_extraction_for(
                 // takes someone out is a removal whatever else it says, and
                 // "remove the one who is sitting" read as a pose made them
                 // sit (review of #874).
-                let twice = list
-                    .iter()
-                    .filter(|q| {
-                        q["who"].as_str().is_some_and(|w| {
+                // Twice: beside another entry for them that does not take
+                // them out. Two removals of one person are a removal.
+                let twice = list.iter().any(|q| {
+                    !std::ptr::eq(q, p)
+                        && q["remove"].as_bool() != Some(true)
+                        && q["who"].as_str().is_some_and(|w| {
                             w.trim()
                                 .eq_ignore_ascii_case(p["who"].as_str().unwrap_or("").trim())
                         })
-                    })
-                    .count()
-                    > 1;
+                });
                 let removes = p["remove"].as_bool() == Some(true) && !(described && twice);
                 // Someone named twice (by name and by "we") is read once, the
                 // first time. Unless the first took them out and this one
@@ -1507,6 +1507,15 @@ mod tests {
                 r#"{"people": [{"who": "Maya", "remove": true}, {"who": "maya", "remove": true}]}"#
             ),
             serde_json::json!([{"who": "Maya", "remove": true}])
+        );
+        // Two entries that both take them out are a removal, whatever one
+        // of them also says.
+        assert_eq!(
+            read(
+                r#"{"people": [{"who": "Maya", "doing": "sitting", "remove": true},
+                    {"who": "maya", "remove": true}]}"#
+            ),
+            serde_json::json!([{"who": "Maya", "doing": "sitting", "remove": true}])
         );
         // Described first, then taken out: the first reading stands.
         assert_eq!(
