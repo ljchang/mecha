@@ -1685,6 +1685,16 @@ impl Plan {
             && self.mask.is_none()
             && self.mask_words.is_none()
             && self.size.is_none()
+            // Never a first-person picture, before or after the change: its
+            // camera is someone's eyes, which no place round the subject
+            // names, and whoever holds it is out of the frame by rule
+            // (`Plan::seen_from`), not by where the camera stands.
+            && self.seen_from.is_none()
+            && !self
+                .next
+                .camera
+                .as_ref()
+                .is_some_and(|f| first_person(&f.value))
     }
 
     /// A restage whose only change is the camera, drawn as a re-shoot of
@@ -3913,6 +3923,50 @@ mod tests {
             again.faces
         );
         assert!(again.seen_from.is_some());
+    }
+
+    /// A camera-only change is what a re-shoot stands in for, and never on
+    /// a first-person picture: that camera is someone's eyes.
+    #[test]
+    fn a_camera_only_change_under_a_first_person_camera_is_restaged() {
+        let wide = planned(
+            &call(
+                json!({"scene": {"setting": "a kitchen", "camera": "a wide shot",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}}),
+            ),
+            None,
+        );
+        let moved = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"camera": "from behind"}})),
+            Some(&landed(&wide, 7)),
+        );
+        assert_eq!(moved.route, "restaged");
+        assert!(moved.camera_only(), "the case a re-shoot is for");
+        // Into first person: restaged, with the holder out of the cast.
+        let into = planned(
+            &call(json!({"picture": "images/a.png",
+                "scene": {"camera": "first-person view through John's eyes"}})),
+            Some(&landed(&wide, 7)),
+        );
+        assert_eq!(into.route, "restaged");
+        assert!(!into.camera_only());
+        // And a move on a picture already in first person.
+        let first = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through John's eyes",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}})),
+            None,
+        );
+        let closer = planned(
+            &call(json!({"picture": "images/a.png", "scene": {
+                "camera": "first-person view through John's eyes, from a low angle"}})),
+            Some(&landed(&first, 7)),
+        );
+        assert!(!closer.camera_only());
     }
 
     /// A new picture naming library characters with nobody in `people`
