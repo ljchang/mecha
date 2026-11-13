@@ -37,13 +37,17 @@ pub(super) fn closed_surface(names: &[String]) -> Result<()> {
 /// corpus reader; the store it is remembered in is the trial home's own,
 /// which no real session shares.
 ///
-/// The mark is not proof of a trial: it can be set by hand. An experiment's
-/// header is admitted only in a process the driver started, which carries
-/// the trial's reference (`experiment::EXPERIMENT_REF_ENV`).
+/// The mark is not proof of a trial: it is environment, and can be set by
+/// hand. An experiment's header is admitted only where the store is a
+/// trial's own, which is a fact about the home this process runs in: it
+/// carries the runner's marker (`experiment::in_experiment_home`).
 fn run_kind(kind: Option<SessionKind>) -> bool {
+    run_kind_in(kind, crate::experiment::in_experiment_home())
+}
+fn run_kind_in(kind: Option<SessionKind>, experiment_home: bool) -> bool {
     match kind {
         Some(SessionKind::Run) => true,
-        Some(SessionKind::Experiment) => crate::experiment::ExperimentRef::from_env().is_some(),
+        Some(SessionKind::Experiment) => experiment_home,
         _ => false,
     }
 }
@@ -1001,4 +1005,17 @@ fn supported_note(
         .collect();
     let completed = calls.values().filter(|(_, _, complete)| *complete).count();
     super::inline_notes::supported(text, &observed, completed)
+}
+#[cfg(test)]
+mod run_kind_tests {
+    use super::*;
+    #[test]
+    fn an_experiment_s_run_is_remembered_only_in_a_trial_home() {
+        assert!(run_kind_in(Some(SessionKind::Run), false));
+        assert!(run_kind_in(Some(SessionKind::Experiment), true));
+        assert!(!run_kind_in(Some(SessionKind::Experiment), false));
+        for kind in [Some(SessionKind::Test), Some(SessionKind::Chat), None] {
+            assert!(!run_kind_in(kind, true), "{kind:?}");
+        }
+    }
 }

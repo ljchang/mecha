@@ -18475,6 +18475,210 @@ justification = "echo is off on this box"
         assert!(!head.contains("fix the port"), "{head}");
     }
 
+    /// The tool an `ErrorRecall` names: counts its calls, answers from
+    /// outside, or fails when told to.
+    struct Remembers {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        fails: bool,
+    }
+
+    #[async_trait]
+    impl Tool for Remembers {
+        fn name(&self) -> &str {
+            "remembers"
+        }
+        fn description(&self) -> &str {
+            "Search what earlier runs found."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> crate::tool::Capabilities {
+            crate::tool::Capabilities::default().private().untrusted()
+        }
+        async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fails {
+                return Ok(ToolOutput::err("the store is down"));
+            }
+            Ok(ToolOutput::ok(format!("found for {input}")).from_outside())
+        }
+    }
+
+    const RECALLED: &str = "The harness searched for that failure.\n";
+
+    fn recall_on_error(limit: u32) -> ErrorRecall {
+        ErrorRecall {
+            tool: "remembers".into(),
+            input: Arc::new(|tool, error| Some(json!({"tool": tool, "error": error}))),
+            stem: RECALLED.into(),
+            limit,
+        }
+    }
+
+    fn failing_call(id: &str, name: &str) -> CompletionResponse {
+        assistant(
+            vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                // A different input each time, so the loop guard sees no
+                // repeat.
+                input: json!({"path": id}),
+            }],
+            StopReason::ToolUse,
+        )
+    }
+
+    /// The recalls a run's result messages carry: for each message holding a
+    /// tool result, whether a recall block follows the results.
+    fn recalls_after_results(convo: &Conversation) -> Vec<bool> {
+        convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .map(|m| {
+                let first_text = m
+                    .content
+                    .iter()
+                    .position(|b| matches!(b, Block::Text { text } if text.starts_with(RECALLED)));
+                let last_result = m
+                    .content
+                    .iter()
+                    .rposition(|b| matches!(b, Block::ToolResult { .. }))
+                    .unwrap();
+                // Never before a result: the API wants results first, and
+                // plan results are indexed by position.
+                assert!(
+                    first_text.is_none_or(|at| at > last_result),
+                    "{:?}",
+                    m.content
+                );
+                first_text.is_some()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_failed_call_is_followed_by_one_harness_recall_up_to_the_limit() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            failing_call("t0", "fs_edit"),
+            failing_call("t1", "fs_edit"),
+            failing_call("t2", "fs_edit"),
+            assistant(
+                vec![Block::text("I could not fix it.")],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(FailingTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_error = Some(recall_on_error(2));
+        let mut convo = Conversation::user("fix the call site");
+        assert!(!convo.taint.untrusted);
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        // Two recalls for three failed turns: the limit holds.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(recalls_after_results(&convo), vec![true, true, false]);
+        // Keyed by the failed call: its tool and the error's own words.
+        let delivered = convo
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .find_map(|b| match b {
+                Block::Text { text } if text.starts_with(RECALLED) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            delivered.contains("fs_edit") && delivered.contains("does not appear"),
+            "{delivered}"
+        );
+        // What it returned came from outside, and the conversation knows.
+        assert!(convo.taint.untrusted && convo.taint.private);
+        // No call was forged: the model was never shown a `remembers` call of
+        // its own, and every request stayed well formed to the end.
+        assert_eq!(provider.seen.lock().unwrap().len(), 4);
+        assert!(!convo.messages.iter().any(|m| m
+            .tool_uses()
+            .iter()
+            .any(|(_, name, _)| *name == "remembers")));
+    }
+
+    #[tokio::test]
+    async fn the_recall_s_own_failure_and_a_refused_call_are_not_triggers() {
+        // The model calls the recall tool itself and it fails: no harness
+        // call follows, or a store that is down would be asked every turn.
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            failing_call("t0", "remembers"),
+            assistant(vec![Block::text("Nothing found.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(Remembers {
+                calls: calls.clone(),
+                fails: true,
+            })],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_error = Some(recall_on_error(3));
+        let mut convo = Conversation::user("look it up");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recalls_after_results(&convo), vec![false]);
+
+        // A write the harness refused is the harness working, not the model
+        // finding something out.
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let turns = vec![
+            failing_call("t0", "fs_write"),
+            assistant(
+                vec![Block::text("I cannot write here.")],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![
+                Arc::new(WriteTool),
+                Arc::new(Remembers {
+                    calls: calls.clone(),
+                    fails: false,
+                }),
+            ],
+            PermissionMode::ReadOnly,
+        );
+        agent.cfg.force_final_answer = false;
+        let mut cx = RunContext::clone(agent.context());
+        cx.recall_on_error = Some(recall_on_error(3));
+        let mut convo = Conversation::user("write the file");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(recalls_after_results(&convo), vec![false]);
+        assert!(!convo.taint.untrusted);
+    }
+
     #[tokio::test]
     async fn a_run_that_answers_straight_after_a_failed_call_says_so() {
         // The silent-failure shape: the edit failed, the model stopped on its

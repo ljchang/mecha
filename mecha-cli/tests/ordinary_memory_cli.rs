@@ -892,15 +892,22 @@ async fn invalid_manifest_and_session_kind_fail_before_any_provider_startup() {
         cmd.args(["--provider", "fixture"]);
         cmd
     };
-    // The experiment mark set by hand is refused like the others: a trial is
-    // the mark and the driver's reference together
-    // (`memory_profile::open_run_profile`), and this process has no
-    // reference. The admitted path is driven by `mecha exp`
-    // (`prototypes/memory/delivered_recall_smoke.py`).
+    // The experiment mark set by hand is refused like the others
+    // (`memory_profile::open_run_profile`): this home is not a trial's.
     for kind in ["test", "experiment", "driven"] {
         let mut cmd = pinned();
         cmd.env("MECHA_SESSION_KIND", kind);
         failure(&f.output(cmd, kind).await, "session-kind override");
+    }
+    // Nor does a reference beside the mark admit it: both are environment,
+    // and whoever set one can set the other.
+    {
+        let mut cmd = pinned();
+        cmd.env("MECHA_SESSION_KIND", "experiment").env(
+            "MECHA_EXPERIMENT_REF",
+            r#"{"exp_id":"x","trial_id":"x","arm":"x","actor":"x","task":"x","repetition":1,"condition_hash":"x"}"#,
+        );
+        failure(&f.output(cmd, "forged-ref").await, "session-kind override");
     }
 
     // What the run is configured with (a project file, a hook, a fallback,

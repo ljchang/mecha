@@ -93,14 +93,17 @@ pub(crate) fn open_run_profile(global: &GlobalOpts, path: &Path) -> Result<Sessi
     // excluded from every corpus and is not remembered either. A run an
     // experiment starts is remembered, in its trial home's own store: that
     // is what a memory arm measures (`experiment::ArmMemory`).
-    // The mark alone can be set by hand, which would hide a session from
-    // every corpus while it wrote into the operator's own store. A trial is
-    // the mark and the driver's reference together (review of #875).
+    // The mark can be set by hand, and so can the driver's reference: both
+    // are environment. What makes the store a trial's own is where it is, so
+    // that is what is checked — this process's home carries the marker the
+    // runner writes into a trial home (`experiment::HOME_MARKER`, the key
+    // `runlog::Scan` already admits an experiment's sessions by). The
+    // operator's home does not, and a session hidden from every corpus is
+    // refused there as it always was (review of #875, passes 3 and 4).
     anyhow::ensure!(
         match SessionKind::test_override() {
             None => true,
-            Some(SessionKind::Experiment) =>
-                mecha_core::experiment::ExperimentRef::from_env().is_some(),
+            Some(SessionKind::Experiment) => mecha_core::experiment::in_experiment_home(),
             Some(_) => false,
         },
         "ordinary memory requires a fresh run without a session-kind override"
