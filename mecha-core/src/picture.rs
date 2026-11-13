@@ -276,6 +276,37 @@ pub fn about_a_face(words: &str) -> bool {
         .any(|w| matches!(w.to_lowercase().as_str(), "face" | "faces"))
 }
 
+/// Whether words ask only for a removal: [`about_removal`] with nothing
+/// asked beside it. One painted area's words are the owner's whole
+/// sentence, and "remove the lamp and repaint the wall" over one stroke
+/// hid the wall it was to repaint (review of #873); a region's words are
+/// its own, so regions use the wider test.
+pub fn only_removal(words: &str) -> bool {
+    about_removal(words)
+        && !words
+            .split(|c: char| !c.is_alphanumeric())
+            .map(str::to_lowercase)
+            .any(|w| {
+                matches!(
+                    w.as_str(),
+                    "and"
+                        | "then"
+                        | "also"
+                        | "but"
+                        | "instead"
+                        | "add"
+                        | "put"
+                        | "make"
+                        | "change"
+                        | "turn"
+                        | "paint"
+                        | "repaint"
+                        | "recolour"
+                        | "recolor"
+                )
+            })
+}
+
 /// Whether a painted area's words ask for what is there to be taken out,
 /// with nothing put in its place: the one kind of masked edit whose area
 /// is hidden from the model (`imagegen::MaskPlan::fill`), since a model

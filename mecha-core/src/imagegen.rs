@@ -1878,18 +1878,18 @@ pub(crate) async fn read_references(
 pub const NEAR_COPY_LAYOUT: f64 = 0.78;
 
 /// A painted area in which less than this share of the pixels visibly
-/// changed came back as it was. Measured 2026-11-12 over the 14 recorded
-/// painted edits whose files remain and six replayed ones: the areas that
-/// came back the same by eye read 0.1% to 0.3% (n = 8), one that was drawn
-/// again to the same content 4.4%, and every one that changed 24.7% or more
-/// (IMAGE-REGION-EDIT-RESEARCH.md §8).
+/// changed came back as it was. Measured 2026-11-12 over the recorded
+/// painted edits whose files remain and replayed ones: the areas that came
+/// back the same by eye read 0.1% to 0.3%, well under this, and the least
+/// of any other group 2.3% (IMAGE-REGION-EDIT-RESEARCH.md §8.1 holds the
+/// table and its counts).
 pub const PAINT_UNCHANGED: f64 = 0.02;
 
 /// Below this share, and at or above [`PAINT_UNCHANGED`], an area came back
 /// almost as it was: said with its share, as a change that may not show,
-/// never as one that did not. The one measured case between the two groups
-/// (4.4%) was the same content drawn again; a small change inside a wide
-/// stroke could read as low, so the wording does not claim to know.
+/// never as one that did not. The areas measured in this band (2.3% to
+/// 5.8%, §8.1) were the same content drawn again; a small change inside a
+/// wide stroke could read as low, so the wording does not claim to know.
 pub const PAINT_BARELY: f64 = 0.10;
 
 /// The path a face anchor's crop is listed under in `Request::references`:
@@ -2568,13 +2568,17 @@ impl MaskRead {
     /// The readings that decide what is said: each region's, or the whole
     /// mask's where there are no regions.
     fn areas(&self) -> Vec<(Option<&str>, PaintRead)> {
-        if self.regions.is_empty() {
-            return self.whole.map(|r| (None, r)).into_iter().collect();
-        }
-        self.regions
+        let each: Vec<(Option<&str>, PaintRead)> = self
+            .regions
             .iter()
             .filter_map(|(c, r)| r.map(|r| (Some(c.as_str()), r)))
-            .collect()
+            .collect();
+        // No region could be read: the whole mask's reading is still one,
+        // and dropped it said "redrawn" of an edit that was not.
+        if each.is_empty() {
+            return self.whole.map(|r| (None, r)).into_iter().collect();
+        }
+        each
     }
 
     /// Whether every area that could be read came back as it was. False
@@ -5595,7 +5599,7 @@ impl Tool for ImageGenerate {
                     let take_out = call
                         .retouch
                         .as_deref()
-                        .is_some_and(crate::picture::about_removal);
+                        .is_some_and(crate::picture::only_removal);
                     let prepared = tokio::task::spawn_blocking(move || {
                         // With regions the mask is their index, and their
                         // outlines ride as `<image2>` (M2).
@@ -11380,6 +11384,55 @@ mod tests {
         assert_eq!(read["outside"], 0.0, "{read}");
         assert_eq!(read["outside_alike"], 1.0, "{read}");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// One painted area whose words only take something out is hidden from
+    /// the model and said; words that also ask for something there are not,
+    /// since the fill would hide what they ask to change.
+    #[tokio::test]
+    async fn one_painted_area_is_hidden_only_for_a_removal_alone() {
+        for (retouch, hidden) in [
+            ("Remove the lamp.", true),
+            ("Remove the lamp and paint the wall blue.", false),
+        ] {
+            let original = picture(8, [240, 220, 40]);
+            let (url, _) = fake_with(Fake {
+                history: vec![done()],
+                views: vec![original.clone()],
+                ..Fake::default()
+            })
+            .await;
+            let dir = tempdir();
+            std::fs::create_dir_all(dir.join("images")).unwrap();
+            std::fs::create_dir_all(dir.join("inbox")).unwrap();
+            std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+            std::fs::write(
+                dir.join("inbox/mask.png"),
+                mask_png(64, 64, (0, 16, 16, 56)),
+            )
+            .unwrap();
+            let out = tool(&url)
+                .call(
+                    json!({"picture": "images/orig.png", "retouch": retouch,
+                           "mask": "inbox/mask.png"}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(
+                out.content.contains("was hidden from the image model"),
+                hidden,
+                "{retouch}: {}",
+                out.content
+            );
+            assert_eq!(
+                manifest_of(&dir, &out.content)["hidden"],
+                json!(hidden),
+                "{retouch}"
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     /// Each painted region is read under its own paint: one that came back
