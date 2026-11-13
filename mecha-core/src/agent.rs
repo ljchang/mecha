@@ -458,18 +458,18 @@ pub struct RunContext {
     pub cue_on_success: Option<SuccessCue>,
 }
 
-/// A tool that just worked, by name, to the line the host holds for that
-/// moment; `None` says nothing. The host decides how often: the loop asks
-/// once per call that worked.
-pub type SuccessCueText = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// A call that just worked — its tool, its input and what it returned — to
+/// the line the host holds for that moment; `None` says nothing. The host
+/// decides how often: the loop asks once per call that worked.
+pub type SuccessCueText = Arc<dyn Fn(&str, &Value, &str) -> Option<String> + Send + Sync>;
 
 /// A line the harness adds when a call works that the run's host was
 /// waiting on: a step some remembered arrangement puts before another, said
 /// at the point the next one falls due. The loop knows only this shape — a
-/// tool's name in, text out, and the line it is delivered under — and never
-/// what the host remembers. No call is made and nothing is read, so the text
-/// is the host's own words: a host must put nothing in it that came from
-/// outside.
+/// call that worked in, text out, and the line it is delivered under — and
+/// never what the host remembers. No call is made and nothing is read, so the text
+/// is the host's own words about the call it was just shown: a host must put
+/// nothing in it that this conversation has not already received.
 #[derive(Clone)]
 pub struct SuccessCue {
     pub text: SuccessCueText,
@@ -4791,15 +4791,15 @@ impl Agent {
                             results.iter().find_map(|block| {
                                 let Block::ToolResult {
                                     tool_use_id,
+                                    content,
                                     is_error: false,
-                                    ..
                                 } = block
                                 else {
                                     return None;
                                 };
-                                let (_, name, _) =
+                                let (_, name, input) =
                                     uses.iter().find(|(id, _, _)| *id == tool_use_id.as_str())?;
-                                (cue.text)(name)
+                                (cue.text)(name, input, content)
                                     .map(|text| Block::text(format!("{}{text}", cue.stem)))
                             })
                         }
@@ -18771,9 +18771,9 @@ justification = "echo is off on this box"
         cx.cue_on_success = Some(SuccessCue {
             text: {
                 let asked = asked.clone();
-                Arc::new(move |tool| {
+                Arc::new(move |tool, input, result| {
                     let mut asked = asked.lock().unwrap();
-                    asked.push(tool.to_string());
+                    asked.push(format!("{tool} {} {result}", input["value"]));
                     (asked.len() == 1).then(|| "one more step is owed".to_string())
                 })
             },
@@ -18782,7 +18782,10 @@ justification = "echo is off on this box"
         let mut convo = Conversation::user("do the task");
         agent.run_in(&cx, &mut convo, None).await.unwrap();
 
-        assert_eq!(*asked.lock().unwrap(), vec!["echo", "echo"]);
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec!["echo \"t1\" t1", "echo \"t2\" t2"]
+        );
         let cued: Vec<bool> = convo
             .messages
             .iter()

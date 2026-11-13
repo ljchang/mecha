@@ -468,11 +468,9 @@ impl Concept {
         })
     }
 
-    /// What is said when one of the tools filling the change role first
-    /// works: the step the arrangement still owes, in the harness's words
-    /// and the names of tools here. Nothing a run elsewhere said or read is
-    /// in it, so it carries nothing from outside. `None` for an arrangement
-    /// with nothing after the change.
+    /// The step this arrangement still owes once its change has been made
+    /// here, and the tools whose first success makes it due. `None` for an
+    /// arrangement with nothing after the change.
     fn owed(&self, filled: &Filled<'_>) -> Option<Owed> {
         let closer = filled.closer.as_ref()?;
         let mut either: Vec<&ToolShape> = filled.enabler.clone();
@@ -481,16 +479,13 @@ impl Concept {
                 either.push(tool);
             }
         }
-        let names = either
-            .iter()
-            .map(|t| format!("`{}`", t.name))
-            .collect::<Vec<_>>()
-            .join(", ");
         Some(Owed {
             after: filled.change.iter().map(|t| t.name.clone()).collect(),
-            text: format!(
-                "The change has now worked. In the arrangement you were shown at the start, this was step 2 of 3: there, the task was not finished until one more call was made on the same thing, with a different tool from the one that made the change possible. If the same holds here, that call is still owed and is one of {names}. The thing's state after a call shows what that call did, and whether anything is still held.\n"
-            ),
+            among: either
+                .iter()
+                .map(|t| format!("`{}`", t.name))
+                .collect::<Vec<_>>()
+                .join(", "),
         })
     }
 
@@ -588,12 +583,110 @@ impl Concept {
     }
 }
 
-/// A step an arrangement handed to this run still owes, and the tools
-/// whose first success makes it due.
+/// A step an arrangement handed to this run still owes: the tools whose
+/// first success makes it due, and the tools here it could be.
 #[derive(Debug, Clone, PartialEq)]
 struct Owed {
     after: Vec<String>,
-    text: String,
+    among: String,
+}
+
+/// A reminder that what a look shows is still not as the run found it is
+/// given this many times for one owed step.
+const REMINDERS: u32 = 2;
+
+/// What a run's host watches so that a handed concept's last step is held
+/// open until it is made ([`Concepts::cue`]). Everything here is this run's
+/// own: its calls and what they returned.
+#[derive(Default)]
+struct Watch {
+    owed: Vec<Owed>,
+    /// What each lookup first returned, by the call that made it: the
+    /// thing as the run found it.
+    first: std::collections::BTreeMap<(String, String), serde_json::Map<String, Value>>,
+    /// The step that has fallen due: the change has worked.
+    due: Option<Due>,
+}
+
+struct Due {
+    among: String,
+    /// The values the change was called with. A field that now holds one
+    /// of them is the change that was asked for, not something left over.
+    asked: Vec<String>,
+    reminded: u32,
+}
+
+fn plain(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(_) | Value::Bool(_) | Value::Null => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+impl Watch {
+    /// A call that worked, to what the harness says after it. Three
+    /// moments: nothing until the change works; then, once, that a step is
+    /// still owed; then, each time the same look that was made earlier
+    /// shows a field the change did not ask for still differing from what
+    /// that look first showed, that it does. The words are the harness's
+    /// and the names and values are this run's own tools and results, so
+    /// nothing a run elsewhere said or read is in them.
+    fn after(&mut self, tool: &str, input: &Value, result: &str) -> Option<String> {
+        let seen = serde_json::from_str::<Value>(result)
+            .ok()
+            .and_then(|v| v.as_object().cloned());
+        let key = (tool.to_string(), input.to_string());
+        if let Some(at) = self
+            .owed
+            .iter()
+            .position(|o| o.after.iter().any(|t| t == tool))
+        {
+            let owed = self.owed.remove(at);
+            let text = format!(
+                "The change has now worked. In the arrangement you were shown at the start, this was step 2 of 3: there, the task was not finished until one more call was made on the same thing, with a different tool from the one that made the change possible. If the same holds here, that call is still owed and is one of {}. Looking the thing up again shows whether it is as you first found it, apart from the change you were asked for.\n",
+                owed.among
+            );
+            self.due = Some(Due {
+                among: owed.among,
+                asked: input
+                    .as_object()
+                    .map(|o| o.values().filter_map(plain).collect())
+                    .unwrap_or_default(),
+                reminded: 0,
+            });
+            return Some(text);
+        }
+        let seen = seen?;
+        let Some(first) = self.first.get(&key) else {
+            self.first.insert(key, seen);
+            return None;
+        };
+        let due = self.due.as_mut()?;
+        let left: Vec<String> = seen
+            .iter()
+            .filter_map(|(field, now)| {
+                let now = plain(now)?;
+                let then = plain(first.get(field)?)?;
+                (now != then && !due.asked.contains(&now))
+                    .then(|| format!("`{field}` is {now} and was {then} when you first looked"))
+            })
+            .collect();
+        if left.is_empty() {
+            // As it was found, but for what was asked: nothing is owed.
+            self.due = None;
+            return None;
+        }
+        if due.reminded == REMINDERS {
+            return None;
+        }
+        due.reminded += 1;
+        Some(format!(
+            "The step after the change has not been made yet, if the arrangement from elsewhere holds here: {}, which the change you were asked for does not account for. There, the last step was a different tool from the one that made the change possible; here it would be one of {}. A call that leaves this as it is was not that step.\n",
+            left.join("; "),
+            due.among
+        ))
+    }
 }
 
 struct Filled<'a> {
@@ -664,8 +757,8 @@ pub struct Concepts {
     /// The keys of the concepts this tool has handed over, for the offer
     /// the caller records when the run ends.
     handed: std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>,
-    /// The steps those concepts still owe, each said once.
-    owed: std::sync::Arc<std::sync::Mutex<Vec<Owed>>>,
+    /// The steps those concepts still owe, held open until they are made.
+    watch: std::sync::Arc<std::sync::Mutex<Watch>>,
 }
 
 impl Concepts {
@@ -674,29 +767,26 @@ impl Concepts {
             loader,
             here,
             handed: Default::default(),
-            owed: Default::default(),
+            watch: Default::default(),
         }
-    }
-
-    /// What to say when a named tool has just worked, readable after this
-    /// tool has moved into a registry: the step a handed concept still owes
-    /// once its change has been made, said once per concept. Nothing before
-    /// the concept is handed over, and nothing for any other tool.
-    pub fn cue(&self) -> std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync> {
-        let owed = self.owed.clone();
-        std::sync::Arc::new(move |tool| {
-            let mut owed = owed.lock().ok()?;
-            let at = owed
-                .iter()
-                .position(|o| o.after.iter().any(|t| t == tool))?;
-            Some(owed.remove(at).text)
-        })
     }
 
     /// A handle on what this tool hands over, readable after it has moved
     /// into a registry.
     pub fn handed(&self) -> std::sync::Arc<std::sync::Mutex<BTreeSet<String>>> {
         self.handed.clone()
+    }
+
+    /// What to say after a call that worked, readable after this tool has
+    /// moved into a registry ([`Watch::after`]). Nothing before a concept
+    /// is handed over.
+    pub fn cue(
+        &self,
+    ) -> std::sync::Arc<dyn Fn(&str, &Value, &str) -> Option<String> + Send + Sync> {
+        let watch = self.watch.clone();
+        std::sync::Arc::new(move |tool, input, result| {
+            watch.lock().ok()?.after(tool, input, result)
+        })
     }
 }
 
@@ -765,8 +855,9 @@ impl Tool for Concepts {
                 // Handed over once, owed once: a second call of this tool
                 // in one run does not make the step due again.
                 if handed.insert(concept.key.clone()) {
-                    if let (Some(step), Ok(mut owed)) = (concept.owed(&filled), self.owed.lock()) {
-                        owed.push(step);
+                    if let (Some(step), Ok(mut watch)) = (concept.owed(&filled), self.watch.lock())
+                    {
+                        watch.owed.push(step);
                     }
                 }
             }
@@ -1239,7 +1330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_step_a_handed_concept_owes_is_said_once_when_its_change_works() {
+    async fn the_step_a_handed_concept_owes_is_held_open_until_the_thing_is_as_it_was_found() {
         let pattern = extract(
             "s1",
             &locked_then_changed(true),
@@ -1264,15 +1355,22 @@ mod tests {
         };
         let tool = Concepts::from_loader(loader(vec![pattern.clone()]), quay());
         let cue = tool.cue();
+        let look = json!({"name": "Draft 9"});
+        let found = r#"{"id": "Q-1", "depth": 4, "held": false}"#;
+        let taken = r#"{"id": "Q-1", "depth": 4, "held": true}"#;
+        let set = json!({"id": "Q-1", "field": "depth", "value": 6});
+        let one = json!({"id": "Q-1"});
         // Nothing is owed before the concept has been handed over.
-        assert_eq!(cue("quay_set"), None);
+        assert_eq!(cue("quay_set", &set, "ok"), None);
         tool.call(json!({}), &ctx()).await.unwrap();
         // Looked up twice in one run: still owed once.
         tool.call(json!({}), &ctx()).await.unwrap();
-        // Not on the step before the change, nor on a lookup.
-        assert_eq!(cue("quay_op_a"), None);
-        assert_eq!(cue("quay_find"), None);
-        let said = cue("quay_set").unwrap();
+        // Not on a look, nor on the step before the change, nor on the
+        // look that shows what that step did.
+        assert_eq!(cue("quay_find", &look, found), None);
+        assert_eq!(cue("quay_op_a", &one, "ok"), None);
+        assert_eq!(cue("quay_find", &look, taken), None);
+        let said = cue("quay_set", &set, "ok").unwrap();
         assert!(
             said.contains("step 2 of 3")
                 && said.contains("`quay_find`, `quay_op_a`, `quay_op_b`, `quay_op_c`"),
@@ -1283,7 +1381,36 @@ mod tests {
         for theirs in ["reg_", "E4", "Unlock", "unlock when done"] {
             assert!(!said.contains(theirs), "{theirs}: {said}");
         }
-        assert_eq!(cue("quay_set"), None);
+        assert_eq!(cue("quay_set", &set, "ok"), None);
+        // A call that was not the step, and a look that shows it: what the
+        // earlier step left is named, and what was asked for is not.
+        assert_eq!(cue("quay_op_c", &one, "ok"), None);
+        let changed = r#"{"id": "Q-1", "depth": 6, "held": true}"#;
+        let still = cue("quay_find", &look, changed).unwrap();
+        assert!(
+            still.contains("`held` is true and was false when you first looked")
+                && !still.contains("depth"),
+            "{still}"
+        );
+        // Twice at most, however often it looks.
+        assert!(cue("quay_find", &look, changed).is_some());
+        assert_eq!(cue("quay_find", &look, changed), None);
+
+        // Put back: nothing is said, then or afterwards.
+        let tool = Concepts::from_loader(loader(vec![pattern.clone()]), quay());
+        let cue = tool.cue();
+        tool.call(json!({}), &ctx()).await.unwrap();
+        assert_eq!(cue("quay_find", &look, found), None);
+        assert!(cue("quay_set", &set, "ok").is_some());
+        assert_eq!(
+            cue(
+                "quay_find",
+                &look,
+                r#"{"id": "Q-1", "depth": 6, "held": false}"#
+            ),
+            None
+        );
+        assert_eq!(cue("quay_find", &look, changed), None);
 
         // An arrangement with nothing after the change owes nothing.
         let tool = Concepts::from_loader(loader(vec![open]), quay());
@@ -1294,6 +1421,6 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(cue("quay_set"), None);
+        assert_eq!(cue("quay_set", &set, "ok"), None);
     }
 }
