@@ -4571,18 +4571,26 @@ impl Tool for ImageGenerate {
                 let style = plan.next.style.as_ref().map(|s| s.value.clone());
                 // A cast of one sends their face crop in the portrait's slot
                 // (`imagelib::CastMember::face`), unless the camera is behind
-                // them, where no portrait goes at all. A crop that cannot be
-                // had sends the whole portrait, said.
+                // them and they have a full figure, where no portrait goes at
+                // all: with none, the portrait still goes from behind, and
+                // whole it brought its outfit (review of #758, pass 15). A
+                // crop that cannot be had sends the whole portrait, said.
                 let behind = plan
                     .next
                     .camera
                     .as_ref()
                     .is_some_and(|f| crate::picture::faces_away(&f.value));
                 let solo = match people.as_slice() {
-                    [p] if !behind => match &p.who {
+                    [p] => match &p.who {
                         crate::scene::Who::Library(n) => lib
                             .get(crate::imagelib::Kind::Character, n)
                             .filter(|e| e.status == crate::imagelib::Status::Approved)
+                            .filter(|e| {
+                                !(behind
+                                    && e.sendable_references()
+                                        .iter()
+                                        .any(|r| r.kind == crate::imagelib::RefKind::FullBody))
+                            })
                             .cloned()
                             .map(|e| (n.clone(), e)),
                         crate::scene::Who::Described(_) => None,
@@ -12368,7 +12376,7 @@ mod tests {
     /// old tool, which never asked.
     #[tokio::test]
     async fn a_cast_of_one_sends_their_face_crop() {
-        let (url, seen) = distinct(4).await;
+        let (url, seen) = distinct(5).await;
         let lib = library_with(&["maya", "john"]);
         let dir = tempdir();
         let crop = picture(4, [200, 150, 120]);
@@ -12393,17 +12401,27 @@ mod tests {
             .unwrap();
         assert!(!two.is_error, "{}", two.content);
         assert_eq!(faces.asked.load(Ordering::SeqCst), 1);
-        // Seen from behind: no portrait goes, so no crop is asked.
-        let behind = t
-            .call(
-                json!({"scene": {"setting": "a park", "camera": "from behind",
-                    "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
-                &ctx(&dir),
-            )
-            .await
-            .unwrap();
+        // Seen from behind with a full figure: no portrait goes, so no crop
+        // is asked. With none the portrait still goes, as its crop.
+        let from_behind = json!({"scene": {"setting": "a park", "camera": "from behind",
+            "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}});
+        let behind = t.call(from_behind.clone(), &ctx(&dir)).await.unwrap();
         assert!(!behind.is_error, "{}", behind.content);
-        assert_eq!(faces.asked.load(Ordering::SeqCst), 1);
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 2, "no full figure");
+        let figure = image::RgbImage::from_pixel(2, 3, image::Rgb([9, 90, 9]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        figure.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::add_reference(
+            &lib,
+            "maya",
+            crate::imagelib::RefKind::FullBody,
+            &png.into_inner(),
+            None,
+        )
+        .unwrap();
+        let behind = t.call(from_behind, &ctx(&dir)).await.unwrap();
+        assert!(!behind.is_error, "{}", behind.content);
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 2, "a full figure");
         // No detector: the whole portrait, said.
         let none = tool(&url)
             .with_library_dir(lib.clone())
