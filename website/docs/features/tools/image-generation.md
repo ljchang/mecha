@@ -216,6 +216,13 @@ If an edit was meant to move things and the new picture's composition
 barely differs from the old one, the model is told plainly; a retouch of a
 colour or a detail is expected to keep the composition.
 
+A painted edit is checked against the picture it changed. If a painted
+area comes back as it was, the result says the change does not show there
+rather than that the area was redrawn, and with several regions it names
+the ones that did not take. Words that ask for something to be taken out
+("remove the cup") hide that area from the image model first, so it has
+nothing there to draw again.
+
 **In a persona chat, mecha draws the panel's edit itself and the persona
 only answers.** A quick one-shot pass reads your words and what the picture
 was drawn as into a typed change; a painted area skips that reading and is
