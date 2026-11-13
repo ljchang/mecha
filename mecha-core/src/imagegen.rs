@@ -2805,8 +2805,10 @@ pub fn fill_from_around(picture: &image::RgbImage, hole: &image::GrayImage) -> i
         }
     }
     // The pyramid's cells show as blocks; a blur inside the hole only
-    // leaves a smooth field.
-    let soft = image::imageops::blur(&out, 6.0);
+    // leaves a smooth field. Wide enough for the coarse cells a large hole
+    // is filled from: at a few pixels' blur the model was shown a mosaic,
+    // and one render in three drew it back.
+    let soft = image::imageops::fast_blur(&out, (w.min(h) as f32 / 16.0).max(6.0));
     for (x, y, m) in hole.enumerate_pixels() {
         if m.0[0] > 127 {
             out.put_pixel(x, y, *soft.get_pixel(x, y));
