@@ -892,7 +892,9 @@ async fn invalid_manifest_and_session_kind_fail_before_any_provider_startup() {
         cmd.args(["--provider", "fixture"]);
         cmd
     };
-    for kind in ["test", "experiment", "driven"] {
+    // An experiment's trial is admitted: its store is the trial home's own
+    // (`memory_profile::open_run_profile`).
+    for kind in ["test", "driven"] {
         let mut cmd = pinned();
         cmd.env("MECHA_SESSION_KIND", kind);
         failure(&f.output(cmd, kind).await, "session-kind override");

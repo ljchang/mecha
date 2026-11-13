@@ -453,6 +453,10 @@ pub struct RunContext {
     pub recall_on_error: Option<ErrorRecall>,
 }
 
+/// A failed call's tool name and error text, to the input of the harness's
+/// own call; `None` makes none.
+pub type ErrorRecallInput = Arc<dyn Fn(&str, &str) -> Option<Value> + Send + Sync>;
+
 /// A call the harness makes for the run when one of the model's calls
 /// failed: a search of what the run's host remembers, keyed by the failure.
 /// The loop knows only this shape — a tool's name, how to build its input
@@ -465,7 +469,7 @@ pub struct ErrorRecall {
     pub tool: String,
     /// The failed call's tool name and its error text, to an input; `None`
     /// makes no call.
-    pub input: Arc<dyn Fn(&str, &str) -> Option<Value> + Send + Sync>,
+    pub input: ErrorRecallInput,
     /// What the result is delivered under, in a text block after the turn's
     /// results.
     pub stem: String,
