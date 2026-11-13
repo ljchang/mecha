@@ -1,0 +1,73 @@
+# Memory benchmark, held out: misleading experience
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4). One task comes away with a fix that
+# only looked like one; a second fixes the same fault for real; two probes
+# meet the fault again with room for one attempt. Run once; not for tuning.
+#
+#   mecha exp new eval/memory-relay.toml
+#   mecha exp run memory-relay
+
+name = "memory-relay"
+kind = "lifetime"
+description = "Given two earlier conclusions about one fault, one of them wrong, does the agent act on the one that held."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/relay_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["relay-fix-guess", "relay-fix-vendor", "relay-probe-north", "relay-probe-south"]
+
+[tasks.confirmed_goals]
+relay-fix-guess = "task:relay-fix-guess"
+relay-fix-vendor = "task:relay-fix-vendor"
+relay-probe-north = "task:relay-probe-north"
+relay-probe-south = "task:relay-probe-south"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "relay"
+command = "python3"
+args = ["eval/fixtures/relay_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "Written before the run: the store holds both notes and both conclusions with nothing to tell them apart; some probes act on the wrong one and run out of turns."
+
+[arms.episodes]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes"
+
+[arms.episodes.prediction]
+metric = "failure"
+rationale = "Written before the run: both conclusions are delivered. The vendor fix is the later record and its conclusion says the test delivered, so most probes pass, but a probe that tries the guess first fails."
+
+[arms.episodes_appraised]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_appraised"
+
+[arms.episodes_appraised.prediction]
+metric = "failure"
+rationale = "Written before the run: the first task is graded a failure, so its conclusion is retired and only the fix that held is delivered. Probes pass at least as often as episodes, in fewer turns."
