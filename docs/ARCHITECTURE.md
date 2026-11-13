@@ -1209,17 +1209,18 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   people than its scene has is drawn again at a fresh seed, at most twice
   more (`PEOPLE_REDRAWS`); the render with the fewest over is kept and its
   seed is the record's.
-  - **Bodies, then heads, and over only when both say so**
-    (`imagegen::Counted`). "person" alone returns two people who touch as
-    one find and a forearm reaching into the frame as a person; "head"
-    alone finds two heads in many faces seen from the front. So the bodies
-    are counted, and only when they are over the scene's count are the
-    heads, and the picture's count is the fewer.
+  - **"person" is what SAM is asked for.** It returns two people who
+    touch as one find, and a forearm reaching into the frame as a person.
+    "head" finds the touching copy but calls two heads in many faces seen
+    from the front (6 of 45 clean pictures), and acting only when both
+    words are over lost a copy whose head was out of sight, live. "torso"
+    was wrong both ways.
   - **Which pictures:** one drawn new in one pass (`Render::New`: new,
     restaged or redrawn) whose scene lists its people, with nobody named
     out of frame (`Plan::offstage`) and no first-person view
-    (`Plan::seen_from`), where how much of that person the image model
-    shows was never measured. An edit and a layered build are not counted.
+    (`Plan::seen_from`): there a hand or an arm of the person not drawn
+    is in the frame, and SAM counts it (3 to 5 finds where the scene had
+    2). An edit and a layered build are not counted.
   - **Only a picture at a seed of its own is drawn again.** A restage
     keeps the scene's seed, which keeps its room, and a caller's seed is
     the caller's: those are counted and what was found is said.
@@ -1231,17 +1232,13 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
     body, so too few means nothing; that is also how the count misses a
     copy that touches the original.
   - **Measured on recorded pictures**, by eye against the counts
-    (2026-11-12). Of 31 drawn from behind: the 16 doubled ones with only
-    the cast in the scene counted over in 14 (the 2 missed are touching
-    copies, which heads alone found), none of the 10 clean ones did, and
-    the 3 with a second person's hands in the frame counted two or three
-    bodies and one head, so they stand. Of 54 more of every kind since
-    2026-11-08 (one to three people): 8 of the 9 with a person too many
-    counted over (the one missed is a third body with no head in the
-    frame), and none of the 45 clean ones; heads alone would have called 6
-    of the 45 over. A count takes 1.5 s on
-    a warm server (the first in a process 4.5 s), twice that when the
-    heads are asked too, against a 30–60 s render.
+    (2026-11-12). Of 31 drawn from behind, 26 had only the cast in the
+    scene: the 16 doubled ones counted over in 14 (the 2 missed are copies
+    touching the original), and none of the 10 clean ones did. Of 54 more
+    of every kind since 2026-11-08 (one to three people): all 9 with a
+    person too many counted over, and none of the 45 clean ones. A count
+    takes 1.5 s on a warm server (the first in a process 4.5 s) against a
+    30–60 s render.
   - **A redraw does not fix a scene that asks for two.** One recorded
     call, whose camera frames the person standing from the waist down
     while their pose is a bend, drew a standing figure and a bending one
