@@ -301,6 +301,60 @@ const DETAIL_PROMPT: &str = "Recreate this exact photograph. The same person wit
     face, hair, expression, skin tone, clothing, background, lighting and framing as <image1>. \
     Sharp focus, fine natural skin texture, crisp detail in the eyes and hair. Change nothing else.";
 
+/// The second pass's words for a re-shoot seen from beside or behind the
+/// subject: [`DETAIL_PROMPT`] without a word about a face or eyes, and with
+/// the side it is seen from held. Asked for "the identical face" and "crisp
+/// detail in the eyes" of someone seen from behind, the pass drew a face in
+/// profile where the first pass showed none (2 of 3 such pictures; with
+/// these words 0 of 3, and no face lost or changed in 9 that had one;
+/// 2026-11-13, IMAGE-DESIGN §17.5).
+const DETAIL_PROMPT_AWAY: &str = "Recreate this exact photograph. The same person in the \
+    identical pose, seen from the same side and angle as <image1>, with the same hair, skin \
+    tone, clothing, background, lighting and framing. Sharp focus, fine natural texture in \
+    skin, hair and fabric. Change nothing else.";
+
+/// The least a second pass's face may be like the first pass's and be kept
+/// ([`detail_verdict`]; ArcFace cosine). The two passes are one frame, so a
+/// kept face scores high: 0.72 to 0.96 over 28 pairs that the eye called
+/// the same person (2026-11-13), where two different people score under
+/// 0.3 and one person at two angles about 0.5.
+const DETAIL_ALIKE: f32 = 0.6;
+
+/// Whether a re-shoot's second pass is kept, by the faces of the two passes
+/// side by side (`face::FaceAnchors::beside`), or why not. The second pass
+/// is asked to recreate the first, and the artifact is what is graded: it
+/// has drawn a face on someone seen from behind, and not theirs (owner,
+/// 2026-11-13). So it is never kept where it shows a face the first pass
+/// did not, or a face unlike the first pass's; and where the faces cannot
+/// be compared it is kept only for a view from in front (`away` is a view
+/// from beside or behind the subject), where there is a face for the first
+/// pass to have held. `Ok` carries the likeness read, when one was.
+fn detail_verdict(
+    read: std::result::Result<crate::face::Beside, String>,
+    away: bool,
+) -> std::result::Result<Option<f32>, String> {
+    match read {
+        Err(why) if away => Err(format!(
+            "its faces could not be compared with the first pass's ({why}), and the view is \
+             not from in front"
+        )),
+        Err(_) => Ok(None),
+        Ok(f) if f.second > f.first => Err("it showed a face the first pass did not".to_string()),
+        Ok(f) => match f.alike {
+            Some(alike) if alike < DETAIL_ALIKE => {
+                Err("its face was not the first pass's".to_string())
+            }
+            Some(alike) => Ok(Some(alike)),
+            // A face in both and no reading of whose: as with no detector.
+            None if f.second > 0 && away => Err(
+                "whose face it shows could not be read, and the view is not from in front"
+                    .to_string(),
+            ),
+            None => Ok(None),
+        },
+    }
+}
+
 /// The reference size for every other edit-shaped render (placed, restaged
 /// on a photo, edited with a head crop for everyone in the picture; an edit
 /// of the picture where anyone has no crop keeps [`EDIT_REFERENCE_SIZE`],
@@ -7346,10 +7400,27 @@ impl Tool for ImageGenerate {
             // stopped keeps the re-shoot it was given, said: a finished
             // picture is never thrown away for its polish.
             let mut detailed: Option<bool> = None;
+            // Why a second pass that was drawn was not kept, and how like
+            // the first pass's its face was where that was read.
+            let mut detail_dropped: Option<String> = None;
+            let mut detail_alike: Option<f32> = None;
+            // From beside or behind the subject, by where the move ends:
+            // the ask's place, else where the picture was read to stand.
+            let away = plan
+                .next
+                .shot
+                .and_then(|s| s.around)
+                .or(shot_was.and_then(|s| s.around))
+                .is_some_and(|a| (2..=6).contains(&a));
             let (image, left) = match image {
                 Ok(shot) if plan.route == crate::picture::RESHOT => {
                     let pass = Request {
-                        prompt: DETAIL_PROMPT.to_string(),
+                        prompt: if away {
+                            DETAIL_PROMPT_AWAY
+                        } else {
+                            DETAIL_PROMPT
+                        }
+                        .to_string(),
                         size: None,
                         sampling: crate::sampling::Sampling {
                             model: req.sampling.model,
@@ -7381,8 +7452,29 @@ impl Tool for ImageGenerate {
                     };
                     match again.image {
                         Ok(bytes) => {
-                            detailed = Some(true);
-                            (Ok(bytes), left)
+                            let faces = Arc::clone(&me.faces);
+                            let (one, two) = (shot.clone(), bytes.clone());
+                            let read =
+                                tokio::task::spawn_blocking(move || faces.beside(&one, &two))
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        Err(format!("the face read did not finish ({e})"))
+                                    });
+                            match detail_verdict(read, away) {
+                                Ok(alike) => {
+                                    detailed = Some(true);
+                                    detail_alike = alike;
+                                    (Ok(bytes), left)
+                                }
+                                Err(why) => {
+                                    tracing::info!(
+                                        "image_generate: the detail pass was not kept: {why}"
+                                    );
+                                    detailed = Some(false);
+                                    detail_dropped = Some(why);
+                                    (Ok(shot), left)
+                                }
+                            }
                         }
                         Err(why) => {
                             if let Failure::Other(e) = &why {
@@ -7589,6 +7681,8 @@ impl Tool for ImageGenerate {
                 // Whether a re-shoot's second pass drew: null for any other
                 // picture, false where it failed and the re-shoot was kept.
                 "detail": detailed,
+                "detail_dropped": detail_dropped,
+                "detail_alike": detail_alike.map(|a| (f64::from(a) * 1000.0).round() / 1000.0),
                 // Only for the prompt that was sent: a layered picture's
                 // passes carry each person's outfit on the cutout, and the
                 // one-pass prompt this names was never drawn (review of #647).
@@ -7720,17 +7814,22 @@ impl Tool for ImageGenerate {
                 text.push(' ');
                 text.push_str(&said);
             }
-            match detailed {
-                Some(true) => text.push_str(
+            match (detailed, &detail_dropped) {
+                (Some(true), _) => text.push_str(
                     " (Drawn in two passes: the new camera position, then once more for fine \
                      detail.)",
                 ),
-                Some(false) => text.push_str(
+                (Some(false), Some(why)) => text.push_str(&format!(
+                    " (A second pass, for fine detail, was drawn and not kept: {why}. This is \
+                     the first pass alone: skin and hair may look softer than in the picture it \
+                     was shot from.)"
+                )),
+                (Some(false), None) => text.push_str(
                     " (The second pass, for fine detail, did not finish, so this is the first \
                      pass alone: skin and hair may look softer than in the picture it was shot \
                      from.)",
                 ),
-                None => {}
+                (None, _) => {}
             }
             if let Some(why) = &shot_unread {
                 text.push_str(&format!(
@@ -13352,6 +13451,24 @@ mod tests {
         }
     }
 
+    /// A detector that answers [`crate::face::FaceAnchors::beside`] as it is
+    /// told, for a re-shoot's two passes; no anchor crop.
+    struct BesideFaces(Mutex<std::result::Result<crate::face::Beside, String>>);
+
+    impl crate::face::FaceAnchors for BesideFaces {
+        fn anchor(
+            &self,
+            _: &crate::imagelib::Library,
+            _: &crate::imagelib::Entry,
+        ) -> crate::face::Anchor {
+            crate::face::Anchor::Unavailable("no face detector here".into())
+        }
+
+        fn beside(&self, _: &[u8], _: &[u8]) -> std::result::Result<crate::face::Beside, String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
     fn stub_faces(answer: crate::face::Anchor) -> Arc<StubFaces> {
         Arc::new(StubFaces {
             answer,
@@ -13391,7 +13508,10 @@ mod tests {
                 let body: Value = serde_json::from_str(&l[l.find('{').unwrap()..]).unwrap();
                 body["prompt"].clone()
             })
-            .find(|g| g["encode"]["inputs"]["prompt"] != DETAIL_PROMPT)
+            .find(|g| {
+                let p = &g["encode"]["inputs"]["prompt"];
+                p != DETAIL_PROMPT && p != DETAIL_PROMPT_AWAY
+            })
             .unwrap()
     }
 
@@ -15503,7 +15623,13 @@ mod tests {
         })
         .unwrap()
         .with_library_dir(lib.clone())
-        .with_loras(home.clone());
+        .with_loras(home.clone())
+        // No machine's detector: nobody's face in either pass.
+        .with_faces(Arc::new(BesideFaces(Mutex::new(Ok(crate::face::Beside {
+            first: 0,
+            second: 0,
+            alike: None,
+        })))));
         let prompt =
             |seen: &Arc<Mutex<Vec<String>>>| last_shot(seen)["encode"]["inputs"]["prompt"].clone();
         let behind = crate::scene::Shot {
@@ -15574,6 +15700,137 @@ mod tests {
         std::fs::remove_dir_all(home).ok();
     }
 
+    /// A second pass is kept by what it shows, never by having been drawn
+    /// (owner, 2026-11-13: one drew a face on someone seen from behind, and
+    /// not theirs). Fails without the verdict, which kept every pass.
+    #[test]
+    fn a_second_pass_is_kept_only_where_its_faces_are_the_first_passs() {
+        let b = |first, second, alike| {
+            Ok(crate::face::Beside {
+                first,
+                second,
+                alike,
+            })
+        };
+        // A face the first pass did not show: never kept, from any side.
+        for away in [true, false] {
+            let why = detail_verdict(b(0, 1, None), away).unwrap_err();
+            assert!(why.contains("a face the first pass did not"), "{why}");
+            assert!(detail_verdict(b(1, 2, Some(0.9)), away).is_err());
+        }
+        // Someone else's face: never kept.
+        let why = detail_verdict(b(1, 1, Some(0.2)), false).unwrap_err();
+        assert!(why.contains("not the first pass's"), "{why}");
+        // The same face, and nobody's face in either: kept.
+        assert_eq!(detail_verdict(b(1, 1, Some(0.9)), false), Ok(Some(0.9)));
+        assert_eq!(detail_verdict(b(0, 0, None), true), Ok(None));
+        assert_eq!(detail_verdict(b(1, 0, None), true), Ok(None));
+        // Faces that cannot be compared: kept only for a view from in front.
+        assert_eq!(detail_verdict(Err("no detector".into()), false), Ok(None));
+        assert!(detail_verdict(Err("no detector".into()), true).is_err());
+        assert_eq!(detail_verdict(b(1, 1, None), false), Ok(None));
+        assert!(detail_verdict(b(1, 1, None), true).is_err());
+    }
+
+    /// A re-shoot whose second pass shows a face the first did not is the
+    /// first pass's picture, said and recorded; so is one whose second pass
+    /// fails. Fails on the tool before it, which saved whatever the second
+    /// pass drew.
+    #[tokio::test]
+    async fn a_reshoot_keeps_its_first_pass_when_the_second_is_not_to_be_kept() {
+        let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
+            "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
+        for (history, answer, said) in [
+            (
+                vec![done(), done(), done()],
+                Ok(crate::face::Beside {
+                    first: 0,
+                    second: 1,
+                    alike: None,
+                }),
+                "a face the first pass did not",
+            ),
+            (
+                vec![done(), done(), failed],
+                Err("never asked".to_string()),
+                "did not finish",
+            ),
+        ] {
+            let views: Vec<Vec<u8>> = (0..3u8)
+                .map(|i| picture(8, [40 + 60 * i, 90, 200]))
+                .collect();
+            let (url, _) = fake_with(Fake {
+                history,
+                views: views.clone(),
+                ..Fake::default()
+            })
+            .await;
+            let (dir, store, lib, home) =
+                (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
+            crate::loras::write_test_lora(
+                &home.join("pics").join("orbit.safetensors"),
+                crate::loras::QWEN_KEYS,
+            );
+            std::fs::write(
+                home.join(crate::loras::FILE),
+                "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+                 model = \"qwen-image\"\nfile = \"orbit.safetensors\"\n\
+                 trigger = \"<orbit>\"\nrole = \"camera\"\n[lora.camera]\n\
+                 around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+                 height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+                 distance = [\"near\", \"mid\", \"far\"]\n",
+            )
+            .unwrap();
+            let t = ImageGenerate::new(ImageConfig {
+                url: url.clone(),
+                min_available_mb: 0,
+                unload_after_secs: 0,
+                loras_dir: Some(vec![home.join("pics")]),
+                ..Default::default()
+            })
+            .unwrap()
+            .polling_every(Duration::from_millis(10))
+            .with_library_dir(lib.clone())
+            .with_loras(home.clone())
+            .with_faces(Arc::new(BesideFaces(Mutex::new(answer))));
+            let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+            cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
+            let first = t
+                .call(
+                    json!({"scene": {"setting": "a study with a tall window",
+                           "camera": "medium shot, head on",
+                           "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(!first.is_error, "{}", first.content);
+            let shot = t
+                .call(
+                    json!({"picture": picture_of(&first.content),
+                           "scene": {"camera": "from behind, low angle"}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(!shot.is_error, "{}", shot.content);
+            assert!(shot.content.contains(said), "{}", shot.content);
+            assert!(!shot.content.contains("two passes"), "{}", shot.content);
+            let m = manifest_of(&dir, &shot.content);
+            assert_eq!(m["route"], crate::picture::RESHOT);
+            assert_eq!(m["detail"], false, "{said}");
+            // The first pass's picture is the one saved.
+            assert_eq!(
+                std::fs::read(dir.join(picture_of(&shot.content))).unwrap(),
+                views[1],
+                "{said}"
+            );
+            for d in [dir, store, lib, home] {
+                std::fs::remove_dir_all(d).ok();
+            }
+        }
+    }
+
     /// A camera-only change to a recorded picture is a re-shoot where the
     /// owner's registry holds a camera LoRA (`picture::Plan::reshot`): the
     /// picture is the one image sent, at its own shape, and the words are
@@ -15610,7 +15867,13 @@ mod tests {
         })
         .unwrap()
         .with_library_dir(lib.clone())
-        .with_loras(home.clone());
+        .with_loras(home.clone())
+        // Nobody's face in either pass: a view from behind, kept.
+        .with_faces(Arc::new(BesideFaces(Mutex::new(Ok(crate::face::Beside {
+            first: 0,
+            second: 0,
+            alike: None,
+        })))));
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
         let graph = last_shot;
         let very_last = |seen: &Arc<Mutex<Vec<String>>>| {
@@ -15696,7 +15959,8 @@ mod tests {
         // Then once more without the camera LoRA, for the fine detail it
         // softens: the re-shoot alone, the reference sampling, no LoRA.
         let d = very_last(&seen);
-        assert_eq!(d["encode"]["inputs"]["prompt"], DETAIL_PROMPT);
+        // From behind: the words that ask for no face.
+        assert_eq!(d["encode"]["inputs"]["prompt"], DETAIL_PROMPT_AWAY);
         assert!(d["lora1"].is_null(), "no LoRA rides the second pass");
         assert!(!d["ref1"].is_null() && d["ref2"].is_null());
         assert_eq!(d["sample"]["inputs"]["cfg"], 1.0);
@@ -15721,6 +15985,11 @@ mod tests {
         assert_eq!(
             graph(&seen)["encode"]["inputs"]["prompt"],
             "<orbit> s floor near"
+        );
+        // From in front: the words measured there.
+        assert_eq!(
+            very_last(&seen)["encode"]["inputs"]["prompt"],
+            DETAIL_PROMPT
         );
         // A view that does not read is left out and said; with words that
         // name no position either, the picture is restaged as before.
