@@ -412,10 +412,12 @@ reads, and the store-backed verdict is a revision of the outcome record with
 `judged` set (`SessionMemory::appraise_episode`).
 
 `tool::concepts` is the first form of §9, with no model call anywhere in it.
-After a run, `concepts::extract` reads the run's own calls for one
-arrangement: the thing most tools were called on, the change that was made to
-it, the last other call that worked on it before the change, and the last one
-after. A tool is kept as a role by the types of its arguments and never their
+After a run, `concepts::extract` reads the run's own calls for an arrangement
+of one of two kinds (`concepts::Kind`). A bracket: the thing most tools were
+called on, the change that was made to it, the last other call that worked on
+it before the change, and the last one after. A linked change: one tool that
+worked on two things with every other argument the same, where an earlier
+call's result named both. A tool is kept as a role by the types of its arguments and never their
 names (`ToolShape`), so two services that share no word can show one
 structure. Runs with the same structure fold into one concept, a run judged
 to have failed supports none, and a concept handed to three runs without once
@@ -430,12 +432,17 @@ step is still owed; when the run repeats an earlier lookup and a field
 differs from what that lookup first showed, other than the change that was
 asked for, it names the field; and when the thing is back as it was found it
 says so, because a run told only that a step is owed keeps searching after
-it has made it. Everything said after the start is the harness's words and
+it has made it. For a linked change it says, when the change has worked on
+one thing, that the same call on a second is owed, and lists what the first
+thing's record names beside itself. Everything said after the start is the harness's words and
 this run's own tool names and results.
 
-What this form does not do: it knows one kind of arrangement (before, change,
-after, on one thing), it reads what a step left behind only from lookups that
-return a flat object, and it neither names a concept nor compares two.
+What this form does not do: it knows two kinds of arrangement and each is
+code, so a third is a third extractor; it reads a thing's record only from
+lookups that return a flat object; it neither names a concept nor compares
+two; and it learns only from a run that got the arrangement right, so a
+service whose rule the model never notices teaches it nothing, however many
+failed runs show the same omission.
 
 Not built: goal- and state-based appraisal, reappraisal from later runs,
 fragments and the model-proposed stage of concepts (§9.1), `memory_recompose`,
