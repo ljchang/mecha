@@ -1285,7 +1285,8 @@ const PART_SAID: &[&str] = &[
 fn a_part_of(words: &str, of: &[&str]) -> bool {
     // The first clause names it: what follows a comma is what the part
     // does ("my hands, holding a lamp"), as `doing` is.
-    let named = words.split(',').next().unwrap_or(words);
+    let mut clauses = words.split(',');
+    let named = clauses.next().unwrap_or(words);
     let w = camera_words(named);
     let mut w = w.iter().map(String::as_str).skip_while(|x| *x == "the");
     w.next().is_some_and(|x| of.contains(&x))
@@ -1296,6 +1297,22 @@ fn a_part_of(words: &str, of: &[&str]) -> bool {
         // red dress" holds a second person, whom the fold took out of the
         // record (review of #872, passes 4 to 6).
         && w.all(|x| PART_SAID.contains(&x))
+        // What follows a comma is what the part does, said as an act and of
+        // nobody else: "my arms, around a woman in a red dress" and "John's
+        // hand, on my shoulder" are the same two with a comma (pass 7).
+        && clauses.all(|clause| {
+            let c = camera_words(clause);
+            c.first()
+                .is_some_and(|x| x.ends_with("ing") || PART_SAID.contains(&x.as_str()))
+                && !c.iter().any(|x| {
+                    x.ends_with("'s")
+                        || matches!(
+                            x.as_str(),
+                            "my" | "me" | "her" | "his" | "him" | "them" | "their" | "woman"
+                                | "man" | "girl" | "boy" | "person" | "someone" | "people"
+                        )
+                })
+        })
 }
 
 /// Whether words name a shot rather than a look: framing, distance or
@@ -3066,6 +3083,8 @@ mod tests {
             "my lap dog",
             "my hand puppet",
             "my arms around a woman in a red dress",
+            "my arms, around a woman in a red dress",
+            "my hands, holding a woman's coat",
         ] {
             let r = planned(
                 &call(json!({"scene": {"setting": "a kitchen",
