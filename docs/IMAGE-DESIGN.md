@@ -790,3 +790,12 @@ in front. The result says which pass it is and why, and the manifest keeps
 `detail`, `detail_dropped` and `detail_alike`. A first pass kept this way
 has the softness §17.4 measured: the price of never showing a face that was
 not there.
+
+Through the tool on the build with both (replay, five recorded camera-only
+turns of two personas, two seeds each): ten re-shoots, all kept in two
+passes. The turn to a view from behind that had drawn the stranger's face
+showed no face in either pass at both seeds, and so did four more pictures
+from behind; the four that held a face in the first pass held one in the
+second, 0.80 to 0.98 like it. The verdict threw none away there, so what it
+does on a real picture is known only from the three second passes above
+that it would have refused.
