@@ -480,7 +480,10 @@ impl SceneReader for ModelReader {
                 record,
                 library: Some(&lib),
                 persona: shown_persona.as_deref(),
-                owner: shown_owner.as_deref(),
+                // The owner's character only where the owner's own words
+                // speak of them: a first person lifted from the reply is the
+                // persona's, in a field's words as in `people` (pass 14).
+                owner: shown_owner.as_deref().filter(|_| says_self(&self.owner)),
             },
         )?;
         // The reader read the persona's reply beside the owner's words, and
