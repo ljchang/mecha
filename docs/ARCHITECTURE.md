@@ -799,8 +799,11 @@ The routes, in the result's own words and the manifest's `route`:
   (`loras::CameraWords`); code holds positions only (`scene::Shot`,
   `picture::Move`), never a LoRA's name or vocabulary. The picture is the
   one image sent, at its own shape, and the prompt is the trigger and the
-  move. Only a restage whose one change is the camera (`Plan::camera_only`);
-  with no such entry, or anything riding along, the route is what it was.
+  move. Only a restage whose one change is the camera (`Plan::camera_only`),
+  and only where that entry is on the picture's LoRA list, the chat's or
+  the persona's, as any LoRA is switched (`loras::Picked::camera`): with no
+  such entry, with it off the list, or with anything riding along, the
+  route is what it was. The entry never rides an ordinary picture's chain.
 - **The move is counted from where the picture has the camera, read from
   the picture** (`camera::ShotReader`, `ToolCtx::shot_reader`): a
   quarantined pass on the persona's model whose whole answer is three closed

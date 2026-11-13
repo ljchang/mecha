@@ -3423,18 +3423,18 @@ impl ImageGenerate {
         self
     }
 
-    /// The owner's camera LoRA (`loras::Role::Camera`), where one can be
-    /// used: a registry that reads, an entry whose file checked, and a model
-    /// file LoRAs are applied to (`model_lora`). Looked up by its role, so
-    /// it needs no place on a chat's list. `None` is not a failure: a
-    /// camera-only change is then restaged as it always was.
+    /// A replay arm's camera LoRA (`ToolCtx::reshoot_from`,
+    /// `loras::Role::Camera`): the registry the arm names, by role, since a
+    /// replay reads no chat's or persona's list. A live picture's is its
+    /// list's (`loras::Picked::camera`), switched as any LoRA is. `None` is
+    /// not a failure: a camera-only change is then restaged as it always
+    /// was.
     fn camera_lora(
         &self,
         ctx: &ToolCtx,
         model: crate::sampling::Model,
     ) -> Option<(crate::loras::PictureLora, crate::loras::CameraWords)> {
-        // The tool's own registry, or the one a replay arm names.
-        let home = self.loras_home.as_ref().or(ctx.reshoot_from.as_ref())?;
+        let home = ctx.reshoot_from.as_ref()?;
         model_lora(self.cfg.model_file(model)).ok()?;
         let folders = crate::loras::Folders::of(home, Some(&self.cfg), None);
         crate::loras::camera(&crate::loras::Loaded::read(home, None, &folders))
@@ -3507,11 +3507,20 @@ impl ImageGenerate {
             Err(why) if !picked.applied.is_empty() => (
                 crate::loras::Picked {
                     applied: Vec::new(),
+                    camera: None,
                     ..picked
                 },
                 Some(why),
             ),
-            Err(_) => (picked, None),
+            // A camera entry alone is not said as switched off: it rides
+            // only a re-shoot, which is then a restage.
+            Err(_) => (
+                crate::loras::Picked {
+                    camera: None,
+                    ..picked
+                },
+                None,
+            ),
         }
     }
 
@@ -5375,8 +5384,14 @@ impl Tool for ImageGenerate {
         // A camera-only change to a picture is drawn from the picture
         // itself where the owner has a camera LoRA (`picture::Plan::reshot`):
         // the room and the clothes are then the picture's own.
+        // The camera LoRA is the one on this picture's list, switched for
+        // the chat or the persona as any LoRA is; off the list the change is
+        // restaged, as with none registered. A replay arm names its own.
         let camera_lora = match (&call.picture, plan.route) {
-            (Some(_), "restaged") => self.camera_lora(ctx, tuning.model.unwrap_or_default()),
+            (Some(_), "restaged") => picked
+                .camera
+                .clone()
+                .or_else(|| self.camera_lora(ctx, tuning.model.unwrap_or_default())),
             _ => None,
         };
         let (mut shot_was, mut shot_unread) = (None::<crate::scene::Shot>, None::<String>);
@@ -15399,6 +15414,7 @@ mod tests {
             distance: Some(crate::scene::Distance::Medium),
         };
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
         let first = t
             .call(
                 json!({"scene": {"setting": "a study with a tall window",
@@ -15470,7 +15486,7 @@ mod tests {
     /// references, nearly the same words (owner's chats, 2026-11-12).
     #[tokio::test]
     async fn a_camera_only_change_is_reshot_from_the_picture_with_the_owners_camera_lora() {
-        let (url, seen) = distinct(8).await;
+        let (url, seen) = distinct(9).await;
         let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
         crate::loras::write_test_lora(
             &home.join("pics").join("orbit.safetensors"),
@@ -15497,7 +15513,7 @@ mod tests {
         .unwrap()
         .with_library_dir(lib.clone())
         .with_loras(home.clone());
-        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
         let graph = |seen: &Arc<Mutex<Vec<String>>>| {
             let line = last_prompt(seen);
             let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
@@ -15527,13 +15543,27 @@ mod tests {
         assert!(plain.content.contains("restaged"), "{}", plain.content);
         assert!(graph(&seen)["lora1"].is_null(), "no LoRA rode a restage");
 
-        // With one: the picture alone, and only where the camera goes.
+        // With one, and off this picture's list: restaged all the same. The
+        // list is the owner's switch for a chat or a persona, as for any
+        // LoRA; registered alone it changed every camera-only picture.
         registry(
             "role = \"camera\"\n[lora.camera]\n\
              around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
              height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
              distance = [\"near\", \"mid\", \"far\"]\n",
         );
+        let off = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(off.content.contains("restaged"), "{}", off.content);
+        assert!(graph(&seen)["lora1"].is_null(), "off the list, no re-shoot");
+
+        // On the list: the picture alone, and only where the camera goes.
+        cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
         let shot = t
             .call(
                 json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
@@ -15612,6 +15642,10 @@ mod tests {
             .await
             .unwrap();
         assert!(posed.content.contains("restaged"), "{}", posed.content);
+        // And the camera LoRA never rides an ordinary picture's chain, on
+        // the list or not.
+        assert!(graph(&seen)["lora1"].is_null(), "not in a restage's chain");
+        assert!(!posed.content.contains("LoRA"), "{}", posed.content);
         for d in [dir, store, lib, home] {
             std::fs::remove_dir_all(d).ok();
         }

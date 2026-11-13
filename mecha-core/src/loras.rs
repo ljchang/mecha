@@ -1217,6 +1217,12 @@ pub struct Picked {
     /// The registry did not read and none had been read before, so nothing
     /// applied: said as that, never as entries the owner deleted.
     pub unreadable: bool,
+    /// The list's camera entry ([`Role::Camera`]), usable: never one of
+    /// `applied`, since it rides no ordinary picture, only a re-shoot
+    /// (`picture::Plan::reshot`). On the list is how the owner switches the
+    /// re-shoot on for a chat or a persona, as any LoRA is switched; off it,
+    /// a camera-only change is restaged as if the registry held none.
+    pub camera: Option<(PictureLora, CameraWords)>,
 }
 
 /// The picture entries `names` resolve to in `loaded`, in list order.
@@ -1227,6 +1233,22 @@ pub fn for_picture(names: &[String], damaged: bool, loaded: &Loaded) -> Picked {
     };
     for n in names {
         match loaded.entries.iter().find(|(e, _)| &e.name == n) {
+            // By its role, never in the chain: the first usable one listed.
+            Some((e, st)) if e.model == Family::QwenImage && e.role == Some(Role::Camera) => {
+                match (&e.file, &e.camera, st.is_checked()) {
+                    (Some(file), Some(words), true) => {
+                        out.camera.get_or_insert((
+                            PictureLora {
+                                file: file.clone(),
+                                strength: e.strength,
+                                trigger: e.trigger.clone(),
+                            },
+                            words.clone(),
+                        ));
+                    }
+                    _ => out.refused += 1,
+                }
+            }
             Some((e, st)) if e.model == Family::QwenImage => match (&e.file, st.is_checked()) {
                 (Some(file), true) => out.applied.push(PictureLora {
                     file: file.clone(),
@@ -1242,9 +1264,10 @@ pub fn for_picture(names: &[String], damaged: bool, loaded: &Loaded) -> Picked {
 }
 
 /// The owner's camera LoRA and its words, if the registry holds a usable
-/// one: the first picture entry with `role = "camera"` whose file checked.
-/// It is used by its role and needs no place on a chat's or a persona's
-/// list.
+/// one: the first picture entry with `role = "camera"` whose file checked,
+/// whatever list it is on. A replay's arm (`ToolCtx::reshoot_from`): a
+/// replay reads no chat's or persona's list, and the arm says what it
+/// measures. A live picture asks its own list ([`Picked::camera`]).
 pub fn camera(loaded: &Loaded) -> Option<(PictureLora, CameraWords)> {
     loaded
         .entries
@@ -1486,6 +1509,21 @@ file = "w2.safetensors"
         assert_eq!(words.say(&to), "s floor far");
         let (entries, _) = parse(&entry("qwen-image", "trigger = \"<orbit>\"\n"), false).unwrap();
         assert_eq!((entries[0].role, entries[0].camera.clone()), (None, None));
+        // On a picture's list it is the list's camera, never one of the
+        // LoRAs the picture loads; off the list it is nothing.
+        let (entries, _) = parse(&good, false).unwrap();
+        let loaded = Loaded {
+            entries: entries.into_iter().map(|e| (e, Status::Checked)).collect(),
+            source: Source::None,
+            ignored: None,
+            skipped: Vec::new(),
+            unreadable: None,
+        };
+        let on = for_picture(&["orbit".to_string()], false, &loaded);
+        assert!(on.applied.is_empty() && on.camera.is_some(), "{on:?}");
+        assert_eq!((on.gone, on.refused), (0, 0));
+        let off = for_picture(&[], false, &loaded);
+        assert!(off.camera.is_none());
         let short = WORDS.replace(", \"nw\"", "");
         for (bad, why) in [
             (format!("role = \"camera\"\n{WORDS}"), "needs a `trigger`"),

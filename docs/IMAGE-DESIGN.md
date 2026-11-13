@@ -642,7 +642,8 @@ So the seed rule stays, and a camera-only ask takes another route.
 ### 17.1 Shot again from the picture
 
 Where the owner's registry has a camera LoRA (`role = "camera"`,
-LORA-DESIGN §3), a restage whose only change is the camera is drawn from
+LORA-DESIGN §3) and it is on the picture's LoRA list, the chat's or the
+persona's, a restage whose only change is the camera is drawn from
 the picture itself (`picture::Plan::reshot`): the picture is the one image
 sent, at its own shape, and the words are the entry's trigger and the move
 in the entry's own phrases. Nothing else is said, since anything else is an
