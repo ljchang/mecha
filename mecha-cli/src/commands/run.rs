@@ -247,6 +247,16 @@ pub async fn execute(
     #[cfg(not(feature = "memory-prototype"))]
     let prompt = read_prompt(args.prompt.as_deref())?;
     anyhow::ensure!(!prompt.trim().is_empty(), "no prompt given");
+    // With `--episodes-deliver`, the store named by `--episodic-memory` is
+    // where episodes are kept and read, and the recorder that captures every
+    // passage of the run does not start: the two are different memories of
+    // one run, and this arm is the episodes alone.
+    #[cfg(feature = "memory-prototype")]
+    let (ordinary_memory, episode_store) = if args.episodes_deliver {
+        (None, ordinary_memory.map(std::sync::Arc::new))
+    } else {
+        (ordinary_memory, None)
+    };
 
     // Validate the owner-supplied path/scope before provider/setup work. No
     // database path, scope or snapshot is exposed in the tool's input schema.
@@ -547,13 +557,24 @@ pub async fn execute(
                 .filter(|tool| tool.fixed_workspace().is_some())
                 .map(|tool| tool.name().to_string())
                 .collect();
+            #[cfg(feature = "memory-prototype")]
+            let stored = episode_store.clone().map(|store| {
+                let loader: episodes::Loader = std::sync::Arc::new(move || store.episodes());
+                episodes::Episodes::from_loader(loader, available.clone())
+            });
+            #[cfg(not(feature = "memory-prototype"))]
+            let stored: Option<episodes::Episodes> = None;
+            let tool = match stored {
+                Some(tool) => tool,
+                None => episodes::Episodes::new(
+                    episodes::file_in(&mecha_core::work::mecha_home()?),
+                    available,
+                ),
+            };
             prepared
                 .agent
                 .registry_mut()
-                .insert(std::sync::Arc::new(episodes::Episodes::new(
-                    episodes::file_in(&mecha_core::work::mecha_home()?),
-                    available,
-                )));
+                .insert(std::sync::Arc::new(tool));
             let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
             let dispatched = prepared
                 .agent
@@ -796,6 +817,13 @@ pub async fn execute(
             let kept = std::fs::read_to_string(&s.path)
                 .map_err(anyhow::Error::from)
                 .and_then(|text| {
+                    #[cfg(feature = "memory-prototype")]
+                    if let Some(store) = &episode_store {
+                        let (held, _) = store.episodes()?;
+                        return store.retain_episodes(&episodes::found(
+                            &held, &s.meta.id, &text, &learnable,
+                        ));
+                    }
                     episodes::retain(
                         &episodes::file_in(&mecha_core::work::mecha_home()?),
                         &s.meta.id,

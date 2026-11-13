@@ -116,6 +116,11 @@ pub struct Episode {
     pub concluded: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relied_on: Vec<String>,
+    /// How the task this outcome came from was judged, once someone has:
+    /// `Some(false)` retires the conclusion. Set by a later revision of the
+    /// record where the store keeps revisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged: Option<bool>,
     /// Runs this was seen in. A line that repeats an earlier one's key adds
     /// to it when the file is read.
     #[serde(default = "one")]
@@ -142,13 +147,23 @@ impl Episode {
         )
     }
 
+    /// What names this record in a store that keeps one object per source:
+    /// the session, and the call or `outcome`.
+    pub fn source_id(&self) -> String {
+        if self.outcome() {
+            format!("{}:outcome", self.session)
+        } else {
+            format!("{}:{}", self.session, self.call)
+        }
+    }
+
     /// A first working call rather than a refusal.
     fn first_use(&self) -> bool {
         self.errors.is_empty() && !self.outcome()
     }
 
     /// A task's outcome rather than a call's.
-    fn outcome(&self) -> bool {
+    pub fn outcome(&self) -> bool {
         self.concluded.is_some()
     }
 
@@ -314,6 +329,7 @@ pub fn extract(session: &str, messages: &[Message], novel: &BTreeSet<String>) ->
             asked: None,
             concluded: None,
             relied_on: vec![],
+            judged: None,
         });
     }
     let mut per_tool: BTreeMap<&str, usize> = BTreeMap::new();
@@ -365,6 +381,7 @@ pub fn extract(session: &str, messages: &[Message], novel: &BTreeSet<String>) ->
                 asked: None,
                 concluded: None,
                 relied_on: vec![],
+                judged: None,
             });
         }
         at += 1;
@@ -429,6 +446,7 @@ pub fn outcome(
         asked: Some(cut(&asked, QUOTE_BYTES)),
         concluded: Some(cut(&concluded, OUTCOME_BYTES)),
         relied_on,
+        judged: None,
     })
 }
 
@@ -463,7 +481,7 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
         return (vec![], 0);
     };
     let mut unreadable = 0;
-    let mut folded: Vec<Episode> = Vec::new();
+    let mut raw: Vec<Episode> = Vec::new();
     let mut failed: BTreeSet<String> = BTreeSet::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         if let Some(verdict) = serde_json::from_str::<Value>(line)
@@ -482,6 +500,21 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
             unreadable += 1;
             continue;
         };
+        raw.push(episode);
+    }
+    let mut folded = fold(raw);
+    folded.retain(|e| !(e.outcome() && failed.contains(&e.session)));
+    (folded, unreadable)
+}
+
+/// Episodes in the order they were kept, to one per finding: a repeated key
+/// adds to `seen`, and a later record that found the fix replaces an
+/// earlier one that had not. A conclusion from a task judged to have failed
+/// is dropped: it is not knowledge. What a call did is a fact about the
+/// tool whatever became of the task.
+pub fn fold(episodes: Vec<Episode>) -> Vec<Episode> {
+    let mut folded: Vec<Episode> = Vec::new();
+    for episode in episodes {
         match folded.iter_mut().find(|e| e.key() == episode.key()) {
             Some(known) => {
                 let seen = known.seen + episode.seen;
@@ -493,10 +526,33 @@ pub fn load(file: &Path) -> (Vec<Episode>, usize) {
             None => folded.push(episode),
         }
     }
-    // A conclusion from a task judged to have failed is not knowledge. What
-    // a call did is a fact about the tool whatever became of the task.
-    folded.retain(|e| !(e.outcome() && failed.contains(&e.session)));
-    (folded, unreadable)
+    folded.retain(|e| !(e.outcome() && e.judged == Some(false)));
+    folded
+}
+
+/// What a finished run found out, given what is already `kept`: its
+/// refusals, the first working call of each learnable tool `kept` has none
+/// for, and its outcome. Where they are written is the caller's.
+pub fn found(
+    kept: &[Episode],
+    session: &str,
+    transcript: &str,
+    learnable: &BTreeSet<String>,
+) -> Vec<Episode> {
+    let known: BTreeSet<&str> = kept
+        .iter()
+        .filter(|e| e.fixed_input.is_some())
+        .map(|e| e.tool.as_str())
+        .collect();
+    let novel: BTreeSet<String> = learnable
+        .iter()
+        .filter(|tool| !known.contains(tool.as_str()))
+        .cloned()
+        .collect();
+    let messages = crate::session::Session::messages_ever(transcript);
+    let mut episodes = extract(session, &messages, &novel);
+    episodes.extend(outcome(session, &messages, learnable));
+    episodes
 }
 
 /// Read a finished run's transcript and append what it found out. Returns
@@ -511,16 +567,7 @@ pub fn retain(
     transcript: &str,
     learnable: &BTreeSet<String>,
 ) -> Result<usize> {
-    let known: BTreeSet<String> = load(file)
-        .0
-        .into_iter()
-        .filter(|e| e.fixed_input.is_some())
-        .map(|e| e.tool)
-        .collect();
-    let novel: BTreeSet<String> = learnable.difference(&known).cloned().collect();
-    let messages = crate::session::Session::messages_ever(transcript);
-    let mut episodes = extract(session, &messages, &novel);
-    episodes.extend(outcome(session, &messages, learnable));
+    let episodes = found(&load(file).0, session, transcript, learnable);
     if episodes.is_empty() {
         return Ok(0);
     }
@@ -573,16 +620,25 @@ fn select<'a>(
     hits.into_iter().take(DELIVERED).map(|(_, e)| e).collect()
 }
 
+/// Where a run's episodes are read from: the home's file, or a store the
+/// caller opens. The second returns what [`fold`] made of the store's
+/// records and how many it could not read.
+pub type Loader = std::sync::Arc<dyn Fn() -> Result<(Vec<Episode>, usize)> + Send + Sync>;
+
 pub struct Episodes {
-    file: PathBuf,
+    loader: Loader,
     /// The tools this run has, by name, when the tool was made.
     available: BTreeSet<String>,
 }
 
 impl Episodes {
     pub fn new(file: PathBuf, available: impl IntoIterator<Item = String>) -> Self {
+        Self::from_loader(std::sync::Arc::new(move || Ok(load(&file))), available)
+    }
+
+    pub fn from_loader(loader: Loader, available: impl IntoIterator<Item = String>) -> Self {
         Episodes {
-            file,
+            loader,
             available: available.into_iter().collect(),
         }
     }
@@ -633,8 +689,12 @@ impl Tool for Episodes {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let file = self.file.clone();
-        let (episodes, unreadable) = tokio::task::spawn_blocking(move || load(&file)).await?;
+        let loader = self.loader.clone();
+        let (episodes, unreadable) = match tokio::task::spawn_blocking(move || loader()).await? {
+            Ok(loaded) => loaded,
+            // A store that cannot be read is a finding, never an empty one.
+            Err(error) => return Ok(ToolOutput::err(format!("episodes unavailable: {error:#}"))),
+        };
         let hits = select(&episodes, &self.available, &query);
         let mut out = String::new();
         let mut shown = 0;
@@ -939,6 +999,7 @@ mod tests {
             asked: None,
             concluded: None,
             relied_on: vec![],
+            judged: None,
         }
     }
 

@@ -29,6 +29,15 @@ pub enum Cmd {
         #[arg(long, value_name = "TASK_JSON")]
         task: PathBuf,
     },
+    /// Record how the task run in a session was judged, against the outcome
+    /// episode that session kept: a failed task's conclusion is not handed
+    /// to later runs.
+    AppraiseEpisode {
+        session_id: String,
+        /// The task was judged to have failed. Without it, to have passed.
+        #[arg(long)]
+        failed: bool,
+    },
     /// Retry capture from an existing finalized recording.
     Retry { run_id: String },
     /// Withdraw a capture and its retained dependents.
@@ -110,6 +119,11 @@ pub async fn execute(args: Args) -> Result<()> {
             } else {
                 serde_json::to_value(memory.retry(&run_id))?
             }
+        }
+        Cmd::AppraiseEpisode { session_id, failed } => {
+            let memory = SessionMemory::open_for_recovery(&request)?;
+            let found = memory.appraise_episode(&session_id, !failed)?;
+            serde_json::json!({"protocol":SESSION_MEMORY_PROTOCOL,"session":session_id,"passed":!failed,"outcome_found":found})
         }
         Cmd::Forget { run_id } => {
             let memory = SessionMemory::open_for_recovery(&request)?;

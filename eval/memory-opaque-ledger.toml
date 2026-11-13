@@ -111,3 +111,12 @@ memory = "episodes_appraised"
 [arms.episodes_appraised.prediction]
 metric = "failure"
 rationale = "A run's conclusion is kept as its outcome, and retired when the task was graded a failure. Where an experience task fails, its wrong conclusion is not handed to the probes; where it passes, this arm equals episodes."
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "The same episodes and the same verdict as episodes_appraised, kept in the agent memory store: the probes pass as often, since only where the records live has changed."

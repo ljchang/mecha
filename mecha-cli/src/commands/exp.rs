@@ -2101,6 +2101,7 @@ fn memory_request(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_one(
     store: &ExperimentStore,
     manifest: &Manifest,
@@ -2220,7 +2221,22 @@ async fn run_one(
     // A memory arm: the trial home's own store, made once and carried with
     // the home. The goal is the manifest's to confirm for every arm alike,
     // so the arms differ in memory and in nothing else.
-    if matches!(
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesStore) {
+        anyhow::ensure!(
+            manifest.tasks.confirmed_goals.contains_key(&case.id),
+            "arm `{}` keeps episodes in the agent store, which a run opens against a \
+             confirmed goal: add `{}` to [tasks] confirmed_goals",
+            trial.arm,
+            case.id
+        );
+        cmd.arg("--episodes-deliver")
+            .arg("--episodic-memory")
+            .arg(memory_request(
+                mecha,
+                &home,
+                mecha_core::experiment::ArmMemory::EpisodesStore,
+            )?);
+    } else if matches!(
         arm.memory,
         Some(
             mecha_core::experiment::ArmMemory::Episodes
@@ -2256,7 +2272,8 @@ async fn run_one(
             ArmMemory::Everything
             | ArmMemory::Transcripts
             | ArmMemory::Episodes
-            | ArmMemory::EpisodesAppraised => {}
+            | ArmMemory::EpisodesAppraised
+            | ArmMemory::EpisodesStore => {}
         }
     }
 
@@ -2443,6 +2460,32 @@ async fn run_one(
                 id,
                 graded.passed,
             )?;
+        }
+    }
+    // The same grade for a home whose episodes are in the agent store. The
+    // store admits only the process whose home it is, so a child records it.
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesStore) {
+        if let Some(id) = &trial.session_id {
+            let mut appraise = std::process::Command::new(mecha);
+            appraise
+                .args(["memory-session", "appraise-episode", id])
+                .env_clear();
+            if !graded.passed {
+                appraise.arg("--failed");
+            }
+            for (k, v) in mecha_core::sandbox::Sandbox::child_env(&[]) {
+                appraise.env(k, v);
+            }
+            let out = appraise
+                .env("MECHA_HOME", &home)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .context("starting `mecha memory-session appraise-episode`")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "the task's grade could not be recorded in the trial home's store: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
     }
     trial.checks = graded.checks;

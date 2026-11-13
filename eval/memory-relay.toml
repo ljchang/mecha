@@ -71,3 +71,12 @@ memory = "episodes_appraised"
 [arms.episodes_appraised.prediction]
 metric = "failure"
 rationale = "Written before the run: the first task is graded a failure, so its conclusion is retired and only the fix that held is delivered. Probes pass at least as often as episodes, in fewer turns."
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "The same episodes and the same verdict as episodes_appraised, kept in the agent memory store: the probes pass as often, since only where the records live has changed."
