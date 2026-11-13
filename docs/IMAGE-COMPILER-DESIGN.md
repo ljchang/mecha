@@ -628,9 +628,11 @@ kind is derived from its directory (`Entry.kind`).
   second head and the face away as before. The earlier second head was
   measured while the expression and the eye clause were still sent. The 3
   left are one call whose camera asks for the figure from the waist down
-  while its pose is a bend: the image model draws the standing reference
-  and the pose as two people. What is left is caught after the render
-  (`ARCHITECTURE.md` §Image generation, "counted after it is drawn").
+  while its pose is a bend: the image model draws a standing figure and a
+  bending one, with no reference picture at all too (2 of 3), so that one
+  is the scene's words and not the references. A person too many is
+  counted after the render (`ARCHITECTURE.md` §Image generation, "counted
+  after it is drawn").
 
   Without a `full_body` the portrait still goes, and for a cast of one a
   sentence carries the turn (a camera behind one of a group names that

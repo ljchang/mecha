@@ -645,19 +645,50 @@ pub fn sam_graph(uploaded: &str, words: &str) -> Value {
     })
 }
 
-/// The most people a count asks SAM for. The text encoder reads `words:N`
+/// The most finds a count asks SAM for. The text encoder reads `words:N`
 /// as "at most N of these" and a bare word as at most one, so a count has
 /// to say its cap (ComfyUI's `comfy/text_encoders/sam3_clip.py`).
 const PEOPLE_CAP: usize = 8;
 
+/// What a count of people looks for. Neither is right alone
+/// (`ARCHITECTURE.md` §Image generation, "counted after it is drawn"): two
+/// people who touch come back as one body and a forearm reaching into the
+/// frame as a body of its own, while a face seen from the front is often
+/// two heads. A picture is over its scene's count only when both say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Counted {
+    Bodies,
+    Heads,
+}
+
+impl Counted {
+    /// The words SAM is asked for.
+    fn words(self) -> &'static str {
+        match self {
+            Counted::Bodies => "person",
+            Counted::Heads => "head",
+        }
+    }
+
+    /// The least a find must be to count: one part in this many of the
+    /// picture, and this many hundredths of the largest find. Under that
+    /// it is a passer-by far back or a speck at an edge.
+    fn floor(self) -> (usize, usize) {
+        match self {
+            Counted::Bodies => (50, 10),
+            Counted::Heads => (500, 15),
+        }
+    }
+}
+
 /// ComfyUI's graph for counting the people in a picture: [`sam_graph`] with
-/// one mask out for each person found, up to [`PEOPLE_CAP`], instead of
-/// their union, and one empty mask after them. The empty one is there
-/// because a picture with nobody in it gives the preview node nothing, and
-/// the server fails that job (an index error in `PreviewImage`, seen
-/// 2026-11-12): with it, "nobody" is a job that finished.
-pub fn people_graph(uploaded: &str) -> Value {
-    let mut graph = sam_graph(uploaded, &format!("person:{PEOPLE_CAP}"));
+/// one mask out for each find, up to [`PEOPLE_CAP`], instead of their
+/// union, and one empty mask after them. The empty one is there because a
+/// picture with nobody in it gives the preview node nothing, and the server
+/// fails that job (an index error in `PreviewImage`, seen 2026-11-12): with
+/// it, "nobody" is a job that finished.
+pub(crate) fn people_graph(uploaded: &str, what: Counted) -> Value {
+    let mut graph = sam_graph(uploaded, &format!("{}:{PEOPLE_CAP}", what.words()));
     graph["sam"]["inputs"]["individual_masks"] = json!(true);
     graph["none"] = json!({"class_type": "SolidMask", "inputs": {
         "value": 0.0, "width": 64, "height": 64}});
@@ -669,15 +700,9 @@ pub fn people_graph(uploaded: &str) -> Value {
 }
 
 /// How many people a count's masks show, one mask a find: two finds that
-/// are mostly one area count once (the detector can find a person twice),
-/// and a find is left out when it is under a fiftieth of the picture or a
-/// tenth of the largest find, which is a passer-by in a background or a
-/// hand at an edge. Measured on 31 recorded pictures drawn from behind
-/// (2026-11-12): of 26 with nobody but the cast in the scene, it counted
-/// two or more in 14 of the 16 a person was drawn twice in and in none of
-/// the 10 clean ones; the two it missed had the copies touching, which SAM
-/// returns as one find.
-pub(crate) fn people_in(masks: &[image::GrayImage]) -> usize {
+/// are mostly one area count once (the detector can find a thing twice),
+/// and a find under `what`'s floor is left out.
+pub(crate) fn people_in(masks: &[image::GrayImage], what: Counted) -> usize {
     // On a coarse grid: the question is how many, never where the edge is.
     const GRID: u32 = 96;
     let grids: Vec<Vec<bool>> = masks
@@ -702,8 +727,9 @@ pub(crate) fn people_in(masks: &[image::GrayImage]) -> usize {
     }
     let largest = kept.iter().map(|g| size(g)).max().unwrap_or(0);
     let cells = (GRID * GRID) as usize;
+    let (of_picture, of_largest) = what.floor();
     kept.iter()
-        .filter(|g| size(g) * 50 >= cells && size(g) * 10 >= largest)
+        .filter(|g| size(g) * of_picture >= cells && size(g) * 100 >= largest * of_largest)
         .count()
 }
 
@@ -1523,22 +1549,48 @@ impl ComfyUi {
     }
 
     /// How many people `picture` shows ([`people_graph`], [`people_in`]):
-    /// asked of a picture this job has just drawn, so SAM never loads
-    /// without the image model (`docs/SEGMENTATION-DESIGN.md` §3). Its temp
-    /// copies are deleted as a render's are; what could not be is the
-    /// second value, said.
+    /// its bodies, and when those are more than `expected`, the fewer of
+    /// its bodies and its heads, so a picture is over only when both
+    /// counts say so ([`Counted`]). Asked of a picture this job has just
+    /// drawn, so SAM never loads without the image model
+    /// (`docs/SEGMENTATION-DESIGN.md` §3). Its temp copies are deleted as a
+    /// render's are; what could not be is the second value, said.
     async fn people(
         &self,
         cfg: &ImageConfig,
         picture: &Reference,
+        expected: usize,
         cancel: Option<&CancellationToken>,
         timeout: Duration,
         trail: Option<&std::path::Path>,
     ) -> (std::result::Result<usize, Failure>, Option<String>) {
-        let (got, left) = self
-            .segmented(cfg, picture, &people_graph, cancel, timeout, trail)
-            .await;
-        (got.map(|masks| people_in(&masks)), left)
+        let mut left = Vec::new();
+        let mut count = 0;
+        for what in [Counted::Bodies, Counted::Heads] {
+            let (got, kept) = self
+                .segmented(
+                    cfg,
+                    picture,
+                    &|filed| people_graph(filed, what),
+                    cancel,
+                    timeout,
+                    trail,
+                )
+                .await;
+            left.extend(kept);
+            let found = match got {
+                Ok(masks) => people_in(&masks, what),
+                Err(e) => return (Err(e), (!left.is_empty()).then(|| left.join("; "))),
+            };
+            count = match what {
+                Counted::Bodies => found,
+                Counted::Heads => count.min(found),
+            };
+            if count <= expected {
+                break;
+            }
+        }
+        (Ok(count), (!left.is_empty()).then(|| left.join("; ")))
     }
 
     /// One segmentation job's masks: `picture` uploaded, the graph `graph`
@@ -3868,6 +3920,7 @@ impl ImageGenerate {
                 .people(
                     &self.cfg,
                     &picture,
+                    expected,
                     ctx.cancel.as_ref(),
                     SEGMENT_BUDGET.min(timeout),
                     ctx.image_trail.as_deref(),
@@ -7027,10 +7080,9 @@ impl Tool for ImageGenerate {
                 }
             };
             // Counted after it is drawn: a new picture of the scene's
-            // people alone, in one pass. Someone out of frame whose hands
-            // are in it, and a first-person view, are left uncounted: SAM
-            // finds a person in a forearm (3 to 5 finds where the scene had
-            // 2, on the three recorded pictures of that shape, 2026-11-12).
+            // people alone, in one pass. A scene with someone named out of
+            // frame, and a first-person view, are left uncounted: how much
+            // of that person the image model shows was never measured.
             let counts = (me.cfg.people_check
                 && matches!(plan.render, crate::picture::Render::New)
                 && layered.is_none()
@@ -12341,8 +12393,8 @@ mod tests {
     }
 
     /// A count's finds, one mask each: two apart are two people, the same
-    /// person found twice is one, and a find far smaller than the picture
-    /// or than the largest is nobody.
+    /// thing found twice is one, and a find far smaller than the largest is
+    /// nobody. Heads are small, so their floor against the picture is lower.
     #[test]
     fn people_in_counts_finds_that_are_apart_and_of_a_size() {
         let mask = |area| {
@@ -12351,32 +12403,36 @@ mod tests {
                 .to_luma8()
         };
         let (left, right) = (mask((4, 10, 40, 90)), mask((54, 10, 90, 90)));
-        assert_eq!(people_in(&[]), 0);
-        assert_eq!(
-            people_in(&[mask((0, 0, 0, 0))]),
-            0,
-            "the graph's empty mask"
-        );
-        assert_eq!(people_in(std::slice::from_ref(&left)), 1);
-        assert_eq!(people_in(&[left.clone(), right.clone()]), 2);
+        let bodies = |m: &[image::GrayImage]| people_in(m, Counted::Bodies);
+        assert_eq!(bodies(&[]), 0);
+        assert_eq!(bodies(&[mask((0, 0, 0, 0))]), 0, "the graph's empty mask");
+        assert_eq!(bodies(std::slice::from_ref(&left)), 1);
+        assert_eq!(bodies(&[left.clone(), right.clone()]), 2);
         // Found twice: the second lies almost wholly inside the first.
-        assert_eq!(people_in(&[left.clone(), mask((6, 12, 38, 88))]), 1);
-        // A passer-by far back, under a fiftieth of the picture.
-        assert_eq!(people_in(&[left.clone(), mask((80, 40, 88, 60))]), 1);
-        // A small copy standing behind still counts: a twentieth of it.
-        assert_eq!(people_in(&[left, right, mask((44, 30, 52, 86))]), 3);
+        assert_eq!(bodies(&[left.clone(), mask((6, 12, 38, 88))]), 1);
+        // A passer-by far back, a twentieth of the largest.
+        assert_eq!(bodies(&[left.clone(), mask((80, 40, 88, 60))]), 1);
+        // A small copy standing behind still counts: a sixth of it.
+        assert_eq!(bodies(&[left, right, mask((44, 30, 52, 86))]), 3);
+        // Two heads a hundredth of the picture each are under the bodies'
+        // floor and over the heads'.
+        let heads = [mask((10, 10, 20, 20)), mask((60, 10, 70, 20))];
+        assert_eq!(people_in(&heads, Counted::Bodies), 0);
+        assert_eq!(people_in(&heads, Counted::Heads), 2);
     }
 
-    /// The count asks for more than one person, each as its own mask, and
+    /// The count asks for more than one find, each as its own mask, and
     /// a picture of nobody is still a job that writes a picture.
     #[test]
-    fn people_graph_asks_for_each_person_and_always_writes_a_mask() {
-        let g = people_graph("up.png");
+    fn people_graph_asks_for_each_find_and_always_writes_a_mask() {
+        let g = people_graph("up.png", Counted::Bodies);
         assert_eq!(g["text"]["inputs"]["text"], "person:8");
         assert_eq!(g["sam"]["inputs"]["individual_masks"], true);
         assert_eq!(g["out"]["inputs"]["images"], json!(["all", 0]));
         assert_eq!(g["all"]["inputs"]["image1"], json!(["toimg", 0]));
         assert_eq!(g["none"]["class_type"], "SolidMask");
+        let g = people_graph("up.png", Counted::Heads);
+        assert_eq!(g["text"]["inputs"]["text"], "head:8");
         // The union graph an edit's mask uses is unchanged.
         let s = sam_graph("up.png", "the sky");
         assert_eq!(s["sam"]["inputs"]["individual_masks"], false);
@@ -12428,9 +12484,10 @@ mod tests {
     }
 
     /// A new picture of one described person on a server that can segment:
-    /// `counts` is how many people each render's count finds, in turn.
+    /// `counts` is how many bodies and heads each render's count finds, in
+    /// turn. Heads are asked only of a render with more bodies than one.
     async fn new_picture_counted(
-        counts: &[usize],
+        counts: &[(usize, usize)],
         seed: Option<u64>,
     ) -> (ToolOutput, Vec<String>, std::path::PathBuf) {
         let (first, second) = (
@@ -12440,14 +12497,16 @@ mod tests {
         let none = mask_png(96, 96, (0, 0, 0, 0));
         let mut history = Vec::new();
         let mut views = Vec::new();
-        for (i, n) in counts.iter().enumerate() {
+        for (i, (bodies, heads)) in counts.iter().enumerate() {
             // The render, told apart by where its figure stands.
             history.push(done());
             views.push(picture(8 * i as u32, [240, 220, 40]));
-            // Its count: a mask a find, then the graph's empty one.
-            history.push(done_with(n + 1));
-            views.extend([first.clone(), second.clone()].into_iter().take(*n));
-            views.push(none.clone());
+            // Each count: a mask a find, then the graph's empty one.
+            for n in std::iter::once(bodies).chain((*bodies > 1).then_some(heads)) {
+                history.push(done_with(n + 1));
+                views.extend([first.clone(), second.clone()].into_iter().take(*n));
+                views.push(none.clone());
+            }
         }
         let (url, seen) = fake_with(Fake {
             history,
@@ -12482,10 +12541,10 @@ mod tests {
     /// drawn once, and the result says nothing of it.
     #[tokio::test]
     async fn a_new_picture_with_the_right_number_of_people_is_drawn_once() {
-        let (out, seen, dir) = new_picture_counted(&[1], None).await;
+        let (out, seen, dir) = new_picture_counted(&[(1, 1)], None).await;
         assert!(!out.is_error, "{}", out.content);
         let prompts = prompts(&seen);
-        assert_eq!(prompts.len(), 2, "the render, then its count");
+        assert_eq!(prompts.len(), 2, "the render, then its bodies counted");
         assert!(prompts[0].contains("KSampler"), "{}", prompts[0]);
         assert!(prompts[1].contains("SAM3_Detect") && prompts[1].contains("person:8"));
         assert!(!out.content.contains("seem"), "{}", out.content);
@@ -12501,11 +12560,16 @@ mod tests {
     /// second render is the picture saved, and the result says so.
     #[tokio::test]
     async fn a_new_picture_with_a_person_too_many_is_drawn_again() {
-        let (out, seen, dir) = new_picture_counted(&[2, 1], None).await;
+        let (out, seen, dir) = new_picture_counted(&[(2, 2), (1, 1)], None).await;
         assert!(!out.is_error, "{}", out.content);
         let prompts = prompts(&seen);
-        assert_eq!(prompts.len(), 4, "render, count, render, count: {seen:?}");
-        let (one, two) = (seed_sent(prompts[0]), seed_sent(prompts[2]));
+        assert_eq!(
+            prompts.len(),
+            5,
+            "render, bodies, heads, render, bodies: {seen:?}"
+        );
+        assert!(prompts[2].contains("head:8"), "{}", prompts[2]);
+        let (one, two) = (seed_sent(prompts[0]), seed_sent(prompts[3]));
         assert_ne!(one, two, "drawn again at a seed of its own");
         assert!(
             out.content
@@ -12541,10 +12605,14 @@ mod tests {
     /// closest.
     #[tokio::test]
     async fn a_picture_still_over_after_its_redraws_is_kept_and_said() {
-        let (out, seen, dir) = new_picture_counted(&[2, 2, 2], None).await;
+        let (out, seen, dir) = new_picture_counted(&[(2, 2), (2, 2), (2, 2)], None).await;
         assert!(!out.is_error, "{}", out.content);
         let prompts = prompts(&seen);
-        assert_eq!(prompts.len(), 6, "three renders, each counted: {seen:?}");
+        assert_eq!(
+            prompts.len(),
+            9,
+            "three renders, each counted twice: {seen:?}"
+        );
         assert!(
             out.content.contains(
                 "The picture seems to show 2 people where the scene has 1, after 3 renders"
@@ -12558,13 +12626,28 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// Two bodies and one head is a second person's arm in the frame, not
+    /// a second person: the picture stands, drawn once, and nothing is said.
+    #[tokio::test]
+    async fn a_second_body_without_a_second_head_is_not_a_person_too_many() {
+        let (out, seen, dir) = new_picture_counted(&[(2, 1)], None).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(prompts(&seen).len(), 3, "render, bodies, heads: {seen:?}");
+        assert!(!out.content.contains("seem"), "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["people_check"]["seen"],
+            json!([1])
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// A seed the caller gave is the caller's: the picture is counted and
     /// what the count found is said, but it is not drawn again.
     #[tokio::test]
     async fn a_picture_at_a_given_seed_is_counted_but_never_drawn_again() {
-        let (out, seen, dir) = new_picture_counted(&[2], Some(7)).await;
+        let (out, seen, dir) = new_picture_counted(&[(2, 2)], Some(7)).await;
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(prompts(&seen).len(), 2, "{seen:?}");
+        assert_eq!(prompts(&seen).len(), 3, "{seen:?}");
         assert!(
             out.content.contains("was not drawn again"),
             "{}",
