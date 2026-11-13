@@ -1,0 +1,59 @@
+# Memory benchmark, Tier B: a service whose calling rule and units are learned
+# only by using it (docs/MEMORY-BENCHMARK-DESIGN.md §4; the "scope" surface).
+# Two experience tasks with turns to spare, then two probes on another
+# scope target with too few turns to find either rule again.
+#
+#   mecha exp new eval/memory-opaque-scope.toml
+#   mecha exp run memory-opaque-scope
+#   mecha exp report memory-opaque-scope
+
+name = "memory-opaque-scope"
+kind = "lifetime"
+description = "Does what two tasks showed about an opaque service carry to two later tasks that cannot rediscover it."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/opaque_source.py", "scope"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["scope-learn-rule", "scope-learn-units", "scope-probe-rule", "scope-probe-both"]
+
+# One confirmed goal per task, passed to every arm: a memory arm records a
+# run against a goal, and the arms must differ in memory and nothing else.
+[tasks.confirmed_goals]
+scope-learn-rule = "task:scope-learn-rule"
+scope-learn-units = "task:scope-learn-units"
+scope-probe-rule = "task:scope-probe-rule"
+scope-probe-both = "task:scope-probe-both"
+
+[fixtures]
+# Nothing in this world is sent anywhere, so nothing is staged.
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "scope"
+command = "python3"
+args = ["eval/fixtures/opaque_server.py", "--world", "scope"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.everything]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "everything"
+
+[arms.everything.prediction]
+metric = "failure"
+rationale = "The probes cannot find the token rule or the unit rule again in their turns; an arm that recalls the earlier tasks' tool results passes probes the control fails."
