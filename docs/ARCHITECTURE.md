@@ -783,6 +783,33 @@ The routes, in the result's own words and the manifest's `route`:
   refusal. On a picture with no record the names are left as written: its
   people are unknown. A character whose entry did not load, named anywhere
   in the call, is still refused (`broken_named_in`, review of #383).
+- **"Me" and "we" are the owner's character only when the library says
+  which** (`Library::owner`, `owner.toml`, written by `mecha imagelib
+  set-owner`; owner, 2026-10-29): the readers map the owner's my/me/I to it
+  and "we" to it and the persona, and a persona turn's reading may add it to
+  the persona's call (`imagegen::add_owner`), the one person a reading adds,
+  and only from the owner's own words. With none set, the owner is the
+  viewer. Never a name in code.
+- **A first-person camera's holder is the viewer** (`picture::first_person_holder`):
+  the name the camera gives a possessive, else the owner's character; never
+  a name alone, which the camera looks at. Left out of the cast beside
+  anyone else on a picture drawn from the scene, their act one line of what
+  the viewer's eyes see (`Plan::seen_from`, apart from `also`); a retouch
+  keeps them.
+- **An outfit is said outright** (2026-10-28, replay rig): a nude one is
+  spelled out (`picture::outfit_words`, clothed 3/3 before, 0/3 after), and
+  a change that takes the top off says "no top", into the record
+  (`picture::removed_top`, the portrait's top 3/3 before, 0/3 after). A
+  picture of one person sends the face crop in the portrait's slot, and
+  close-ups go to a cast of one only (`IMAGE-COMPILER-DESIGN.md` §9.4).
+- **The panel reader** never reads a pronoun as a name, rewrites the
+  owner's first person, joins a relative camera ask to the recorded camera,
+  and passes a retouch beside a scene change on with it (`Plan::also`). That
+  retouch keeps a picture out of layers, said in the result.
+- **A regions edit that mixes regions with and without a picture runs in two
+  passes** (`imagegen::PrePass`): the regions without one first, masked, then
+  the face and look regions on that, each laying back only its own paint. In
+  one pass a removal beside a face region removed nothing (0/6).
 - **At most five people with faces** (`picture::MAX_FACES`, the owner's
   provisional C5 ruling). More are refused, naming them, never trimmed.
   `EDIT_REFERENCE_BUDGET` is the canvas plus five crops, and `call` refuses
