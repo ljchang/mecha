@@ -221,6 +221,12 @@ impl SessionMemory {
     /// by its session and call, in the store's own scopes. Kept again under
     /// the same name, a record gains a revision; that is how a verdict
     /// reaches an outcome ([`Self::appraise_episode`]).
+    ///
+    /// Whether an episode quotes outside content is in its own JSON
+    /// (`Episode::external`), not in the store's provenance for the record.
+    /// So only [`Self::episodes`] may read these: it hands them to
+    /// `tool::episodes`, which labels what it delivers. A reader that served
+    /// the record's text as evidence would serve it unlabelled.
     pub fn retain_episodes(&self, episodes: &[crate::tool::episodes::Episode]) -> Result<usize> {
         let mut memory = self.memory()?;
         for episode in episodes {

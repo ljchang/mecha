@@ -265,9 +265,23 @@ impl Tool for Transcripts {
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
+                // A search of memory is not a passage, whoever made it: the
+                // call holds an earlier task's words and the result holds
+                // earlier hits, and indexed they would be found for every
+                // later task and crowd out what they quote (review of #875).
+                let mut searches: BTreeSet<String> = BTreeSet::new();
                 for message in crate::session::Session::messages_ever(&text) {
                     for block in &message.content {
-                        docs.extend(block_doc(&session, &message.role, block));
+                        match block {
+                            Block::ToolUse { id, name, .. }
+                                if super::episodes::MEMORY_TOOLS.contains(&name.as_str()) =>
+                            {
+                                searches.insert(id.clone());
+                            }
+                            Block::ToolResult { tool_use_id, .. }
+                                if searches.contains(tool_use_id) => {}
+                            _ => docs.extend(block_doc(&session, &message.role, block)),
+                        }
                     }
                 }
             }
@@ -433,11 +447,35 @@ mod tests {
             "{}",
             out.content
         );
+        // A search the model made itself, in an earlier run: neither its
+        // words nor what it returned is a passage.
+        let searched = [
+            crate::message::Message::assistant(vec![Block::ToolUse {
+                id: "c1".into(),
+                name: NAME.into(),
+                input: json!({"query": "the obsidian rule"}),
+            }]),
+            crate::message::Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "the obsidian rule is twelve".into(),
+                is_error: false,
+            }]),
+        ];
+        let mut transcript = session(Some(SessionKind::Run), "another task");
+        for message in searched {
+            let record = crate::session::Record::Message(message);
+            transcript.push_str(&format!("{}\n", serde_json::to_string(&record).unwrap()));
+        }
+        std::fs::write(dir.join("searched.jsonl"), transcript).unwrap();
         let none = tool
             .call(json!({"query": "obsidian"}), &ctx())
             .await
             .unwrap();
-        assert!(none.content.starts_with("no passage in 1 earlier session"));
+        assert!(
+            none.content.starts_with("no passage in 2 earlier session"),
+            "{}",
+            none.content
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

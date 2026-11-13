@@ -69,7 +69,7 @@ const ERRORS: usize = 3;
 const READS: usize = 3;
 const PER_TOOL: usize = 2;
 /// Tools whose calls are the harness's memory, never an episode's subject.
-const MEMORY_TOOLS: [&str; 5] = [
+pub(crate) const MEMORY_TOOLS: [&str; 5] = [
     NAME,
     "goal_context",
     "memory_search",
@@ -243,10 +243,29 @@ fn quote(call: &Call) -> String {
     )
 }
 
-/// The run's finished calls in order, each with its result. A harness call,
-/// a memory tool's call and a call the harness itself refused are not the
-/// model finding anything out.
-fn calls(messages: &[Message]) -> Vec<Call> {
+/// The calls of a run that the harness refused, as its trace recorded them:
+/// each by tool name and input. The approver, a hook, a rule, the interlock,
+/// the leak guard, a phase gate — whatever said no before the tool ran.
+pub type Refused = BTreeSet<(String, String)>;
+
+/// [`Refused`] from a run's own trace. The fact is on the trace
+/// (`ToolCallTrace::denied`) and is read from there: most of the harness's
+/// refusals carry no prefix to know them by, and one kept as an episode
+/// would be the harness's own guard handed to a later run as something a
+/// tool does (review of #875).
+pub fn refused_by_harness(trace: &[crate::agent::ToolCallTrace]) -> Refused {
+    trace
+        .iter()
+        .filter(|call| call.denied)
+        .map(|call| (call.name.clone(), call.input.to_string()))
+        .collect()
+}
+
+/// The run's finished calls in order, each with its result. A memory tool's
+/// call and a call the harness itself refused are not the model finding
+/// anything out: the second by the run's trace where the caller has it, and
+/// by the two prefixed refusals where only the transcript is left.
+fn calls(messages: &[Message], refused: &Refused) -> Vec<Call> {
     let mut pending: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut out = Vec::new();
     for message in messages {
@@ -263,10 +282,10 @@ fn calls(messages: &[Message]) -> Vec<Call> {
                     let Some((name, input)) = pending.remove(tool_use_id) else {
                         continue;
                     };
-                    if crate::agent::is_harness_call(tool_use_id)
-                        || MEMORY_TOOLS.contains(&name.as_str())
+                    if MEMORY_TOOLS.contains(&name.as_str())
                         || content.starts_with("Blocked by")
                         || content.starts_with("Denied by the user")
+                        || refused.contains(&(name.clone(), input.clone()))
                     {
                         continue;
                     }
@@ -298,8 +317,13 @@ fn calls(messages: &[Message]) -> Vec<Call> {
 /// call for yet — that this run was never refused by: its first call that
 /// worked, with what the run read just before it. One that worked with
 /// nothing read first took no finding out, and is not kept.
-pub fn extract(session: &str, messages: &[Message], novel: &BTreeSet<String>) -> Vec<Episode> {
-    let calls = calls(messages);
+pub fn extract(
+    session: &str,
+    messages: &[Message],
+    novel: &BTreeSet<String>,
+    refused: &Refused,
+) -> Vec<Episode> {
+    let calls = calls(messages, refused);
     let mut out = Vec::new();
     for tool in novel {
         if calls.iter().any(|c| c.name == *tool && c.is_error) {
@@ -396,6 +420,7 @@ pub fn outcome(
     session: &str,
     messages: &[Message],
     learnable: &BTreeSet<String>,
+    refused: &Refused,
 ) -> Option<Episode> {
     use crate::message::Role;
     let text_of = |m: &Message| {
@@ -419,7 +444,7 @@ pub fn outcome(
         return None;
     }
     let concluded = text_of(last)?;
-    let calls = calls(messages);
+    let calls = calls(messages, refused);
     let mut relied_on: Vec<String> = Vec::new();
     for call in calls
         .iter()
@@ -541,6 +566,7 @@ pub fn found(
     session: &str,
     transcript: &str,
     learnable: &BTreeSet<String>,
+    refused: &Refused,
 ) -> Vec<Episode> {
     let known: BTreeSet<&str> = kept
         .iter()
@@ -553,8 +579,8 @@ pub fn found(
         .cloned()
         .collect();
     let messages = crate::session::Session::messages_ever(transcript);
-    let mut episodes = extract(session, &messages, &novel);
-    episodes.extend(outcome(session, &messages, learnable));
+    let mut episodes = extract(session, &messages, &novel, refused);
+    episodes.extend(outcome(session, &messages, learnable, refused));
     // An episode quotes the model's own arguments and words, and those can
     // carry anything the conversation had read by then, whichever call
     // brought it in. So the session's recorded taint decides, not the calls
@@ -593,8 +619,9 @@ pub fn retain(
     session: &str,
     transcript: &str,
     learnable: &BTreeSet<String>,
+    refused: &Refused,
 ) -> Result<usize> {
-    let episodes = found(&load(file).0, session, transcript, learnable);
+    let episodes = found(&load(file).0, session, transcript, learnable, refused);
     if episodes.is_empty() {
         return Ok(0);
     }
@@ -806,7 +833,7 @@ mod tests {
             call("c", "gate_open", json!({"key": "red7"}), "opened", false),
             call("d", "gate_open", json!({"key": "blue2"}), "opened", false),
         ]);
-        let episodes = extract("s1", &messages, &BTreeSet::new());
+        let episodes = extract("s1", &messages, &BTreeSet::new(), &Refused::new());
         assert_eq!(episodes.len(), 1);
         let e = &episodes[0];
         assert_eq!((e.tool.as_str(), e.call.as_str()), ("gate_open", "a"));
@@ -826,10 +853,13 @@ mod tests {
             "opened",
             false,
         )]);
-        assert!(extract("s1", &messages, &BTreeSet::new()).is_empty());
+        assert!(extract("s1", &messages, &BTreeSet::new(), &Refused::new()).is_empty());
         let dir = std::env::temp_dir().join(format!("mecha-episodes-{}", uuid::Uuid::new_v4()));
         let file = file_in(&dir);
-        assert_eq!(retain(&file, "s1", "", &BTreeSet::new()).unwrap(), 0);
+        assert_eq!(
+            retain(&file, "s1", "", &BTreeSet::new(), &Refused::new()).unwrap(),
+            0
+        );
         assert!(!file.exists());
     }
 
@@ -846,7 +876,7 @@ mod tests {
                 true,
             ),
         ]);
-        let episodes = extract("s1", &messages, &BTreeSet::new());
+        let episodes = extract("s1", &messages, &BTreeSet::new(), &Refused::new());
         assert_eq!(episodes.len(), 1);
         assert_eq!(
             episodes[0].errors,
@@ -875,9 +905,47 @@ mod tests {
                 "memory context unavailable",
                 true,
             ),
-            call("harness_1", "gate_open", json!({}), "E9", true),
         ]);
-        assert!(extract("s1", &messages, &BTreeSet::new()).is_empty());
+        assert!(extract("s1", &messages, &BTreeSet::new(), &Refused::new()).is_empty());
+    }
+
+    #[test]
+    fn a_call_the_harness_refused_is_not_a_finding_whatever_its_refusal_says() {
+        // The interlock's refusal wears no prefix. Only the trace says the
+        // harness, not the tool, said no.
+        let messages = run(vec![
+            call(
+                "a",
+                "web_post",
+                json!({"to": "x"}),
+                "`web_post` can send data outside this machine, and this conversation already contains both private data and third-party content.",
+                true,
+            ),
+            call("b", "gate_open", json!({"key": "7"}), "E9", true),
+        ]);
+        let trace = |name: &str, input: Value, denied: bool| crate::agent::ToolCallTrace {
+            name: name.into(),
+            input,
+            is_error: true,
+            denied,
+            blocked: denied,
+            unknown: false,
+            staged: false,
+            in_program: false,
+            program: None,
+        };
+        let refused = refused_by_harness(&[
+            trace("web_post", json!({"to": "x"}), true),
+            trace("gate_open", json!({"key": "7"}), false),
+        ]);
+        let episodes = extract("s1", &messages, &BTreeSet::new(), &refused);
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].tool, "gate_open");
+        // Without the trace the refusal reads as the tool's own.
+        assert_eq!(
+            extract("s1", &messages, &BTreeSet::new(), &Refused::new()).len(),
+            2
+        );
     }
 
     #[test]
@@ -887,7 +955,7 @@ mod tests {
             call("c", "gate_open", json!({"key": "red7"}), "opened", false),
         ]);
         messages[2].tool_provenance.clear();
-        assert!(extract("s1", &messages, &BTreeSet::new())[0].external);
+        assert!(extract("s1", &messages, &BTreeSet::new(), &Refused::new())[0].external);
     }
 
     #[test]
@@ -910,7 +978,7 @@ mod tests {
             call("c", "gate_open", json!({"key": "red7"}), "opened", false),
         ]);
         let novel: BTreeSet<String> = ["gate_open", "gate_find"].map(String::from).into();
-        let episodes = extract("s1", &messages, &novel);
+        let episodes = extract("s1", &messages, &novel, &Refused::new());
         // `gate_find` worked with nothing read first: no finding out.
         assert_eq!(episodes.len(), 1);
         let e = &episodes[0];
@@ -921,7 +989,7 @@ mod tests {
             .contains("worked the first time it was used, called with {\"key\":\"red7\"}"));
         assert!(e.render().contains("colour then a digit"));
         // Not novel, or refused in this run: the refusal's episode, or none.
-        assert!(extract("s1", &messages, &BTreeSet::new()).is_empty());
+        assert!(extract("s1", &messages, &BTreeSet::new(), &Refused::new()).is_empty());
     }
 
     #[test]
@@ -948,8 +1016,14 @@ mod tests {
         .map(record)
         .collect();
         let learnable: BTreeSet<String> = ["gate_open".to_string()].into();
-        assert_eq!(retain(&file, "s1", &transcript, &learnable).unwrap(), 1);
-        assert_eq!(retain(&file, "s2", &transcript, &learnable).unwrap(), 0);
+        assert_eq!(
+            retain(&file, "s1", &transcript, &learnable, &Refused::new()).unwrap(),
+            1
+        );
+        assert_eq!(
+            retain(&file, "s2", &transcript, &learnable, &Refused::new()).unwrap(),
+            0
+        );
         assert_eq!(load(&file).0.len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -965,11 +1039,11 @@ mod tests {
         )]);
         let learnable: BTreeSet<String> = ["gate_log".to_string()].into();
         // Cut off after a call: nothing concluded.
-        assert!(outcome("s1", &messages, &learnable).is_none());
+        assert!(outcome("s1", &messages, &learnable, &Refused::new()).is_none());
         messages.push(Message::assistant(vec![Block::text(
             "The gate failed because the hinge is seized.",
         )]));
-        let e = outcome("s1", &messages, &learnable).unwrap();
+        let e = outcome("s1", &messages, &learnable, &Refused::new()).unwrap();
         assert_eq!(e.asked.as_deref(), Some("do the task"));
         assert_eq!(e.relied_on, vec!["gate_log"]);
         assert!(e
@@ -977,7 +1051,7 @@ mod tests {
             .contains("The run concluded: The gate failed because the hinge is seized."));
         assert!(e.outcome() && !e.first_use());
         // Only the harness's own tools: no outcome kept.
-        assert!(outcome("s1", &messages, &BTreeSet::new()).is_none());
+        assert!(outcome("s1", &messages, &BTreeSet::new(), &Refused::new()).is_none());
     }
 
     #[tokio::test]
@@ -1000,7 +1074,10 @@ mod tests {
         )]));
         let transcript: String = messages.into_iter().map(record).collect();
         let learnable: BTreeSet<String> = ["gate_open".to_string()].into();
-        assert_eq!(retain(&file, "s1", &transcript, &learnable).unwrap(), 2);
+        assert_eq!(
+            retain(&file, "s1", &transcript, &learnable, &Refused::new()).unwrap(),
+            2
+        );
         let tool = Episodes::new(file.clone(), ["gate_open".to_string()]);
         let before = tool.call(json!({}), &ctx()).await.unwrap().content;
         assert!(before.contains("The run concluded: The key is always red7."));
@@ -1038,11 +1115,29 @@ mod tests {
         let none = BTreeSet::new();
         // Every quoted result was local, and the run recorded that it had
         // read nothing from outside.
-        assert!(!found(&[], "s1", &format!("{calls}{}", taint(false)), &none)[0].external);
+        assert!(
+            !found(
+                &[],
+                "s1",
+                &format!("{calls}{}", taint(false)),
+                &none,
+                &Refused::new()
+            )[0]
+            .external
+        );
         // It had: the refused call's own arguments may carry it.
-        assert!(found(&[], "s1", &format!("{calls}{}", taint(true)), &none)[0].external);
+        assert!(
+            found(
+                &[],
+                "s1",
+                &format!("{calls}{}", taint(true)),
+                &none,
+                &Refused::new()
+            )[0]
+            .external
+        );
         // Nobody recorded either way.
-        assert!(found(&[], "s1", &calls, &none)[0].external);
+        assert!(found(&[], "s1", &calls, &none, &Refused::new())[0].external);
     }
 
     fn episode(tool: &str, error: &str, fixed: Option<&str>) -> Episode {

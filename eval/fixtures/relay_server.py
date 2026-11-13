@@ -110,8 +110,10 @@ def main():
     parser.add_argument("--store", help="the state directory (default: $MECHA_FIXTURE_DIR)")
     opts = parser.parse_args()
     store = opts.store or os.environ.get("MECHA_FIXTURE_DIR")
-    if store and not os.path.isdir(store):
-        store = None
+    if not store or not os.path.isdir(store):
+        # A world with no state is a different measurement, not this one.
+        print("relay_server.py: no store directory. Set MECHA_FIXTURE_DIR (`mecha exp` does) or pass --store; without it no note is ever cleared and the maintenance window never opens.", file=sys.stderr)
+        return 2
     tools, handlers = build(store)
     serve(tools, handlers, "relay")
     return 0

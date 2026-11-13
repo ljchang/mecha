@@ -471,7 +471,9 @@ pub struct ErrorRecall {
     /// makes no call.
     pub input: ErrorRecallInput,
     /// What the result is delivered under, in a text block after the turn's
-    /// results.
+    /// results. **A second place to edit:** the line is the harness speaking
+    /// in a user message, so it must also be one `is_recall_delivery`
+    /// knows, or its delivery is mined as the owner's steer.
     pub stem: String,
     /// The most calls in one run.
     pub limit: u32,

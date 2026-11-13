@@ -819,6 +819,8 @@ pub async fn execute(
         // here costs the episode, never the run.
         if args.episodes_deliver {
             use mecha_core::tool::episodes;
+            // What the harness refused, from the run's own trace.
+            let refused = episodes::refused_by_harness(&outcome.tool_calls);
             let kept = std::fs::read_to_string(&s.path)
                 .map_err(anyhow::Error::from)
                 .and_then(|text| {
@@ -826,7 +828,7 @@ pub async fn execute(
                     if let Some(store) = &episode_store {
                         let (held, _) = store.episodes()?;
                         return store.retain_episodes(&episodes::found(
-                            &held, &s.meta.id, &text, &learnable,
+                            &held, &s.meta.id, &text, &learnable, &refused,
                         ));
                     }
                     episodes::retain(
@@ -834,6 +836,7 @@ pub async fn execute(
                         &s.meta.id,
                         &text,
                         &learnable,
+                        &refused,
                     )
                 });
             match kept {
