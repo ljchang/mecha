@@ -1282,17 +1282,12 @@ fn a_part_of(words: &str, of: &[&str]) -> bool {
     w.next().is_some_and(|x| of.contains(&x))
         && w.find(|x| !PART_SAID.contains(x))
             .is_some_and(|x| PARTS.contains(&x))
-        // And nothing it is only the first half of: "my lap dog", "my hand
-        // puppet" are a dog and a puppet. What may follow says where the
-        // part is or what it does.
-        && w.next().is_none_or(|x| PART_THEN.contains(&x) || x.ends_with("ing"))
+        // And the part ends the words: "my lap dog" is a dog, and "my
+        // arms around a woman in a red dress" holds a second person, whom
+        // the fold took out of the record (review of #872, passes 4 and 5).
+        // What the part does is the person's `doing`.
+        && w.next().is_none()
 }
-
-/// What may follow a part in the words that name it.
-const PART_THEN: &[&str] = &[
-    "on", "in", "at", "around", "over", "under", "with", "and", "against", "near", "by", "across",
-    "up", "down", "out", "to", "from", "of",
-];
 
 /// Whether words name a shot rather than a look: framing, distance or
 /// angle. A reader that filed a framing word as a `look` had it joined to
@@ -1840,6 +1835,9 @@ pub fn plan(
     // in it, and a painted region may name the holder on purpose, to take
     // their face.
     let mut seen_from: Option<String> = None;
+    // The viewer's own parts folded out of the cast below, as an edit says
+    // them: with nothing else changed they are all the edit draws.
+    let mut folded_parts: Vec<String> = Vec::new();
     let drawn_from_scene = call.regions.is_empty()
         && call.mask.is_none()
         && call.mask_words.is_none()
@@ -1942,6 +1940,7 @@ pub fn plan(
                     .collect();
                 people.retain(|p| !part(p));
                 next.people.retain(|p| !part(p));
+                folded_parts = parts.clone();
                 notes.push(format!(
                     "{} listed as a person was read as the viewer's own body, not one more \
                      person.",
@@ -2373,6 +2372,12 @@ pub fn plan(
     // An edit with no line would send the keep sentence alone, the shape
     // that returns the picture unchanged (#408): refused, saying what would
     // draw (review of #597).
+    // A part of the viewer folded out of the cast is still asked for: left
+    // unsaid, an edit that added only "John's left arm" had no line and was
+    // refused, one refusal for another (review of #872, pass 5).
+    for part in &folded_parts {
+        lines.push(format!("Show {part}, as the viewer sees their own body."));
+    }
     if lines.is_empty() {
         return Err(
             "This change gives the picture nothing to draw: say who is in it, or put the change \
@@ -3038,6 +3043,7 @@ mod tests {
             "my sister, arms folded",
             "my lap dog",
             "my hand puppet",
+            "my arms around a woman in a red dress",
         ] {
             let r = planned(
                 &call(json!({"scene": {"setting": "a kitchen",
@@ -3090,6 +3096,26 @@ mod tests {
         let owned = planned(&owned, None);
         let cast: Vec<String> = owned.people.iter().map(|x| x.who.key()).collect();
         assert_eq!(cast, ["maya"], "an owner set");
+        // On a picture already drawn, the part alone is still drawn: an
+        // edit with a line for it, never one with nothing to draw.
+        let drawn = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through John's eyes",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}})),
+            None,
+        );
+        let added = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "John's left arm", "doing": "carrying a lamp"}]}})),
+            Some(&landed(&drawn, 5)),
+        );
+        assert!(
+            added.instruction.contains("the viewer's left arm"),
+            "{}",
+            added.instruction
+        );
         // What a part wears is kept.
         let worn = planned(
             &call(json!({"scene": {"setting": "a kitchen",
