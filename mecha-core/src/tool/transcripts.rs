@@ -80,6 +80,28 @@ fn delivery(text: &str) -> bool {
     text.starts_with(DELIVERY_STEM) || text.starts_with(super::episodes::DELIVERY_STEM)
 }
 
+/// Whether a transcript is one this tool may quote: a one-shot run's, or a
+/// trial's in the trial's own home. A closed list, read from the session's
+/// own header, and anything else is left out — a front-door conversation is
+/// a stranger's prose that a privileged run is never shown, a session marked
+/// as a test is not experience, and a header that cannot be read names no
+/// kind at all (review of #875).
+fn searchable(transcript: &str, experiment_home: bool) -> bool {
+    use crate::session::{Record, SessionKind};
+    let Some(Ok(Record::Meta(meta))) = transcript
+        .lines()
+        .next()
+        .map(serde_json::from_str::<Record>)
+    else {
+        return false;
+    };
+    match meta.kind {
+        Some(SessionKind::Run) => true,
+        Some(SessionKind::Experiment) => experiment_home,
+        _ => false,
+    }
+}
+
 struct Doc {
     session: String,
     label: &'static str,
@@ -217,6 +239,7 @@ impl Tool for Transcripts {
         };
         let dir = self.dir.clone();
         let current = self.current.clone();
+        let experiment_home = crate::experiment::in_experiment_home();
         let (hits, sessions) = tokio::task::spawn_blocking(move || {
             let mut paths: Vec<PathBuf> = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries
@@ -234,6 +257,9 @@ impl Tool for Transcripts {
                 let Ok(text) = std::fs::read_to_string(&path) else {
                     continue;
                 };
+                if !searchable(&text, experiment_home) {
+                    continue;
+                }
                 sessions += 1;
                 let session = path
                     .file_stem()
@@ -281,6 +307,36 @@ mod tests {
 
     fn ctx() -> ToolCtx {
         ToolCtx::default().with_workspace(std::env::temp_dir())
+    }
+
+    use crate::session::SessionKind;
+
+    /// A transcript: a header of `kind`, then one owner message.
+    fn session(kind: Option<SessionKind>, text: &str) -> String {
+        let meta = crate::session::Record::Meta(crate::session::SessionMeta {
+            id: "s".into(),
+            created_at: chrono::Utc::now(),
+            provider: "fixture".into(),
+            model: "fixture".into(),
+            workspace: std::env::temp_dir(),
+            title: None,
+            kind,
+        });
+        let message = crate::session::Record::Message(crate::message::Message::user(text));
+        format!(
+            "{}\n{}\n",
+            serde_json::to_string(&meta).unwrap(),
+            serde_json::to_string(&message).unwrap()
+        )
+    }
+
+    #[test]
+    fn a_trial_s_sessions_are_searched_only_in_a_trial_home() {
+        let trial = session(Some(SessionKind::Experiment), "x");
+        assert!(searchable(&trial, true) && !searchable(&trial, false));
+        assert!(searchable(&session(Some(SessionKind::Run), "x"), false));
+        assert!(!searchable(&session(None, "x"), true));
+        assert!(!searchable("", true) && !searchable("not json", true));
     }
 
     fn doc(session: &str, text: &str) -> Doc {
@@ -332,13 +388,32 @@ mod tests {
     async fn it_reads_other_sessions_and_never_the_current_one() {
         let dir = std::env::temp_dir().join(format!("mecha-transcripts-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let line = |text: &str| {
-            let record = crate::session::Record::Message(crate::message::Message::user(text));
-            format!("{}\n", serde_json::to_string(&record).unwrap())
-        };
+        let line = |text: &str| session(Some(SessionKind::Run), text);
         std::fs::write(dir.join("old.jsonl"), line("the quartz rule is seven")).unwrap();
         let current = dir.join("now.jsonl");
         std::fs::write(&current, line("the quartz rule is nine")).unwrap();
+        // A stranger's conversation, a test, a chat, and a file with no
+        // header: none is a one-shot run's record.
+        for (name, kind) in [
+            ("door", Some(SessionKind::Frontdoor)),
+            ("test", Some(SessionKind::Test)),
+            ("chat", Some(SessionKind::Chat)),
+            ("experiment", Some(SessionKind::Experiment)),
+        ] {
+            std::fs::write(
+                dir.join(format!("{name}.jsonl")),
+                session(kind, &format!("the quartz rule is {name}")),
+            )
+            .unwrap();
+        }
+        let bare = crate::session::Record::Message(crate::message::Message::user(
+            "the quartz rule is headless",
+        ));
+        std::fs::write(
+            dir.join("bare.jsonl"),
+            format!("{}\n", serde_json::to_string(&bare).unwrap()),
+        )
+        .unwrap();
         let tool = Transcripts::new(dir.clone(), current);
         let out = tool
             .call(json!({"query": "quartz rule"}), &ctx())
@@ -346,6 +421,18 @@ mod tests {
             .unwrap();
         assert!(out.external && !out.is_error);
         assert!(out.content.contains("seven") && !out.content.contains("nine"));
+        for left_out in ["door", "test", "chat", "experiment", "headless"] {
+            assert!(
+                !out.content.contains(left_out),
+                "{left_out}: {}",
+                out.content
+            );
+        }
+        assert!(
+            out.content.contains("from 1 earlier session"),
+            "{}",
+            out.content
+        );
         let none = tool
             .call(json!({"query": "obsidian"}), &ctx())
             .await
