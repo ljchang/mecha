@@ -2216,6 +2216,7 @@ async fn run_one(
         Some(
             mecha_core::experiment::ArmMemory::EpisodesStore
                 | mecha_core::experiment::ArmMemory::Concepts
+                | mecha_core::experiment::ArmMemory::ConceptsCued
         )
     );
     if in_store {
@@ -2229,8 +2230,14 @@ async fn run_one(
         cmd.arg("--episodes-deliver")
             .arg("--episodic-memory")
             .arg(memory_request(mecha, &home)?);
-        if arm.memory == Some(mecha_core::experiment::ArmMemory::Concepts) {
-            cmd.arg("--concepts-deliver");
+        match arm.memory {
+            Some(mecha_core::experiment::ArmMemory::Concepts) => {
+                cmd.arg("--concepts-deliver");
+            }
+            Some(mecha_core::experiment::ArmMemory::ConceptsCued) => {
+                cmd.arg("--concepts-deliver").arg("--concepts-cue");
+            }
+            _ => {}
         }
     } else if matches!(
         arm.memory,
@@ -2270,7 +2277,8 @@ async fn run_one(
             | ArmMemory::Episodes
             | ArmMemory::EpisodesAppraised
             | ArmMemory::EpisodesStore
-            | ArmMemory::Concepts => {}
+            | ArmMemory::Concepts
+            | ArmMemory::ConceptsCued => {}
         }
     }
 

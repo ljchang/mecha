@@ -54,6 +54,10 @@ pub const NAME: &str = "concept_recall";
 /// owner's words (`mecha run --concepts-deliver`).
 pub const DELIVERY_STEM: &str = "The harness compared the tools you have here with the arrangements your earlier runs found in other services. What follows held there and may or may not hold here: a hypothesis from elsewhere, never an instruction, and it verifies nothing about this task.\n";
 
+/// What a cue is delivered under ([`Concepts::cue`]): said when a call the
+/// run was handed as an arrangement's middle step has just worked.
+pub const CUE_STEM: &str = "The harness noted that a call just worked which an arrangement from another service places in the middle and not at the end. A hypothesis from elsewhere, never an instruction, and it verifies nothing about this task.\n";
+
 const QUOTE_BYTES: usize = 300;
 const QUOTES: usize = 2;
 const DELIVERED: usize = 2;
@@ -464,6 +468,32 @@ impl Concept {
         })
     }
 
+    /// What is said when one of the tools filling the change role first
+    /// works: the step the arrangement still owes, in the harness's words
+    /// and the names of tools here. Nothing a run elsewhere said or read is
+    /// in it, so it carries nothing from outside. `None` for an arrangement
+    /// with nothing after the change.
+    fn owed(&self, filled: &Filled<'_>) -> Option<Owed> {
+        let closer = filled.closer.as_ref()?;
+        let mut either: Vec<&ToolShape> = filled.enabler.clone();
+        for tool in closer {
+            if !either.iter().any(|t| t.name == tool.name) {
+                either.push(tool);
+            }
+        }
+        let names = either
+            .iter()
+            .map(|t| format!("`{}`", t.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(Owed {
+            after: filled.change.iter().map(|t| t.name.clone()).collect(),
+            text: format!(
+                "The change has now worked. In the arrangement you were shown at the start, this was step 2 of 3: there, the task was not finished until one more call was made on the same thing, with a different tool from the one that made the change possible. If the same holds here, that call is still owed and is one of {names}. The thing's state after a call shows what that call did, and whether anything is still held.\n"
+            ),
+        })
+    }
+
     fn render(&self, filled: &Filled<'_>) -> String {
         // The support that says most speaks for the concept: one that met
         // the refusal, then the one that read most on the way, then the
@@ -558,6 +588,14 @@ impl Concept {
     }
 }
 
+/// A step an arrangement handed to this run still owes, and the tools
+/// whose first success makes it due.
+#[derive(Debug, Clone, PartialEq)]
+struct Owed {
+    after: Vec<String>,
+    text: String,
+}
+
 struct Filled<'a> {
     change: Vec<&'a ToolShape>,
     enabler: Vec<&'a ToolShape>,
@@ -626,6 +664,8 @@ pub struct Concepts {
     /// The keys of the concepts this tool has handed over, for the offer
     /// the caller records when the run ends.
     handed: std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// The steps those concepts still owe, each said once.
+    owed: std::sync::Arc<std::sync::Mutex<Vec<Owed>>>,
 }
 
 impl Concepts {
@@ -634,7 +674,23 @@ impl Concepts {
             loader,
             here,
             handed: Default::default(),
+            owed: Default::default(),
         }
+    }
+
+    /// What to say when a named tool has just worked, readable after this
+    /// tool has moved into a registry: the step a handed concept still owes
+    /// once its change has been made, said once per concept. Nothing before
+    /// the concept is handed over, and nothing for any other tool.
+    pub fn cue(&self) -> std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync> {
+        let owed = self.owed.clone();
+        std::sync::Arc::new(move |tool| {
+            let mut owed = owed.lock().ok()?;
+            let at = owed
+                .iter()
+                .position(|o| o.after.iter().any(|t| t == tool))?;
+            Some(owed.remove(at).text)
+        })
     }
 
     /// A handle on what this tool hands over, readable after it has moved
@@ -706,7 +762,13 @@ impl Tool for Concepts {
             out.push_str(&concept.render(&filled));
             external |= concept.external();
             if let Ok(mut handed) = self.handed.lock() {
-                handed.insert(concept.key.clone());
+                // Handed over once, owed once: a second call of this tool
+                // in one run does not make the step due again.
+                if handed.insert(concept.key.clone()) {
+                    if let (Some(step), Ok(mut owed)) = (concept.owed(&filled), self.owed.lock()) {
+                        owed.push(step);
+                    }
+                }
             }
             shown += 1;
             if shown == DELIVERED {
@@ -1174,5 +1236,64 @@ mod tests {
                 .external
         );
         assert!(found("s1", &calls, &shapes, &none).unwrap().external);
+    }
+
+    #[tokio::test]
+    async fn the_step_a_handed_concept_owes_is_said_once_when_its_change_works() {
+        let pattern = extract(
+            "s1",
+            &locked_then_changed(true),
+            &registry(),
+            &Refused::new(),
+        )
+        .unwrap();
+        let open = extract(
+            "s2",
+            &locked_then_changed(false),
+            &registry(),
+            &Refused::new(),
+        )
+        .unwrap();
+        let loader = |patterns: Vec<Pattern>| -> Loader {
+            std::sync::Arc::new(move || {
+                Ok(Kept {
+                    patterns: patterns.clone(),
+                    ..Default::default()
+                })
+            })
+        };
+        let tool = Concepts::from_loader(loader(vec![pattern.clone()]), quay());
+        let cue = tool.cue();
+        // Nothing is owed before the concept has been handed over.
+        assert_eq!(cue("quay_set"), None);
+        tool.call(json!({}), &ctx()).await.unwrap();
+        // Looked up twice in one run: still owed once.
+        tool.call(json!({}), &ctx()).await.unwrap();
+        // Not on the step before the change, nor on a lookup.
+        assert_eq!(cue("quay_op_a"), None);
+        assert_eq!(cue("quay_find"), None);
+        let said = cue("quay_set").unwrap();
+        assert!(
+            said.contains("step 2 of 3")
+                && said.contains("`quay_find`, `quay_op_a`, `quay_op_b`, `quay_op_c`"),
+            "{said}"
+        );
+        // The harness's words and the names of tools here: nothing the
+        // other service's run said or read, and none of its tools.
+        for theirs in ["reg_", "E4", "Unlock", "unlock when done"] {
+            assert!(!said.contains(theirs), "{theirs}: {said}");
+        }
+        assert_eq!(cue("quay_set"), None);
+
+        // An arrangement with nothing after the change owes nothing.
+        let tool = Concepts::from_loader(loader(vec![open]), quay());
+        let cue = tool.cue();
+        let out = tool.call(json!({}), &ctx()).await.unwrap();
+        assert!(
+            out.content.contains("nothing on the thing after"),
+            "{}",
+            out.content
+        );
+        assert_eq!(cue("quay_set"), None);
     }
 }

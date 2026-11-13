@@ -1136,6 +1136,9 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
             fnv64(format!("{original}|memory=episodes_store").as_bytes())
         }
         Some(ArmMemory::Concepts) => fnv64(format!("{original}|memory=concepts").as_bytes()),
+        Some(ArmMemory::ConceptsCued) => {
+            fnv64(format!("{original}|memory=concepts_cued").as_bytes())
+        }
         Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
     }
@@ -1177,6 +1180,9 @@ pub enum ArmMemory {
     /// showed is kept by structure, and handed to a run whose tools have
     /// the same shapes under other names (`tool::concepts`).
     Concepts,
+    /// `concepts`, and the harness says once, when a handed arrangement's
+    /// change has worked, that the step after it is still owed.
+    ConceptsCued,
     /// No store: the harness searches the home's earlier session
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.

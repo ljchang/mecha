@@ -451,6 +451,33 @@ pub struct RunContext {
     /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
     /// never inherited by a subagent.
     pub recall_on_error: Option<ErrorRecall>,
+    /// After a turn in which a named tool worked, fold a line the run's
+    /// host holds for that moment into the message carrying the results
+    /// ([`SuccessCue`]). `None` everywhere but a run that asked for it, and
+    /// never inherited by a subagent.
+    pub cue_on_success: Option<SuccessCue>,
+}
+
+/// A tool that just worked, by name, to the line the host holds for that
+/// moment; `None` says nothing. The host decides how often: the loop asks
+/// once per call that worked.
+pub type SuccessCueText = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// A line the harness adds when a call works that the run's host was
+/// waiting on: a step some remembered arrangement puts before another, said
+/// at the point the next one falls due. The loop knows only this shape — a
+/// tool's name in, text out, and the line it is delivered under — and never
+/// what the host remembers. No call is made and nothing is read, so the text
+/// is the host's own words: a host must put nothing in it that came from
+/// outside.
+#[derive(Clone)]
+pub struct SuccessCue {
+    pub text: SuccessCueText,
+    /// What the text is delivered under, in a text block after the turn's
+    /// results. **A second place to edit:** the line is the harness speaking
+    /// in a user message, so it must also be one `is_recall_delivery`
+    /// knows, or its delivery is mined as the owner's steer.
+    pub stem: String,
 }
 
 /// A failed call's tool name and error text, to the input of the harness's
@@ -1006,6 +1033,7 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
             recall_on_error: None,
+            cue_on_success: None,
         }
     }
 
@@ -2160,6 +2188,7 @@ fn is_recall_delivery(text: &str) -> bool {
         crate::tool::transcripts::DELIVERY_STEM,
         crate::tool::episodes::DELIVERY_STEM,
         crate::tool::concepts::DELIVERY_STEM,
+        crate::tool::concepts::CUE_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -4751,8 +4780,34 @@ impl Agent {
                         }
                         _ => None,
                     };
+                    // A call that worked, and a host waiting on it: the
+                    // host's line for that moment, after the results. Every
+                    // call that worked is asked about, in order, and the
+                    // first answer is the one delivered; a closing run is
+                    // told nothing it could no longer act on.
+                    let cued = match &cx.cue_on_success {
+                        Some(cue) if closing.is_none() => {
+                            let uses = response.message.tool_uses();
+                            results.iter().find_map(|block| {
+                                let Block::ToolResult {
+                                    tool_use_id,
+                                    is_error: false,
+                                    ..
+                                } = block
+                                else {
+                                    return None;
+                                };
+                                let (_, name, _) =
+                                    uses.iter().find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                (cue.text)(name)
+                                    .map(|text| Block::text(format!("{}{text}", cue.stem)))
+                            })
+                        }
+                        _ => None,
+                    };
                     let mut result_message = Message::tool_results(results);
                     result_message.content.extend(recalled);
+                    result_message.content.extend(cued);
                     result_message.tool_provenance = provenance;
                     plan_batch.attach(&mut result_message);
                     messages.push(result_message);
@@ -11636,6 +11691,7 @@ mod tests {
             crate::tool::transcripts::DELIVERY_STEM,
             crate::tool::episodes::DELIVERY_STEM,
             crate::tool::concepts::DELIVERY_STEM,
+            crate::tool::concepts::CUE_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
@@ -18680,6 +18736,79 @@ justification = "echo is off on this box"
         agent.run_in(&cx, &mut convo, None).await.unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(recalls_after_results(&convo), vec![false]);
+        assert!(!convo.taint.untrusted);
+    }
+
+    #[tokio::test]
+    async fn a_call_that_worked_is_followed_by_the_host_s_line_and_a_failed_one_is_not() {
+        const CUED: &str = "The harness was waiting on that call.\n";
+        let echo = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "echo".into(),
+                    input: json!({"value": id}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let turns = vec![
+            failing_call("t0", "fs_edit"),
+            echo("t1"),
+            echo("t2"),
+            assistant(vec![Block::text("Done.")], StopReason::EndTurn),
+        ];
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(FailingTool), Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        // The host answers once for `echo`, and is asked about every call
+        // that worked and about none that failed.
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut cx = RunContext::clone(agent.context());
+        cx.cue_on_success = Some(SuccessCue {
+            text: {
+                let asked = asked.clone();
+                Arc::new(move |tool| {
+                    let mut asked = asked.lock().unwrap();
+                    asked.push(tool.to_string());
+                    (asked.len() == 1).then(|| "one more step is owed".to_string())
+                })
+            },
+            stem: CUED.into(),
+        });
+        let mut convo = Conversation::user("do the task");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(*asked.lock().unwrap(), vec!["echo", "echo"]);
+        let cued: Vec<bool> = convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .map(|m| {
+                // After the results, never among them.
+                matches!(m.content.last(), Some(Block::Text { text })
+                    if text == &format!("{CUED}one more step is owed"))
+            })
+            .collect();
+        assert_eq!(cued, vec![false, true, false]);
+        // The model saw it in the request after the call that worked.
+        let seen = provider.seen.lock().unwrap();
+        let said = |at: usize| {
+            seen[at]
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .any(|b| matches!(b, Block::Text { text } if text.starts_with(CUED)))
+        };
+        assert!(!said(1) && said(2));
+        // No call was made for it and nothing entered from outside.
         assert!(!convo.taint.untrusted);
     }
 
