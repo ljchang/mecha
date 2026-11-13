@@ -411,7 +411,33 @@ them: the file-backed verdict is a line `episodes::load` applies when it
 reads, and the store-backed verdict is a revision of the outcome record with
 `judged` set (`SessionMemory::appraise_episode`).
 
+`tool::concepts` is the first form of §9, with no model call anywhere in it.
+After a run, `concepts::extract` reads the run's own calls for one
+arrangement: the thing most tools were called on, the change that was made to
+it, the last other call that worked on it before the change, and the last one
+after. A tool is kept as a role by the types of its arguments and never their
+names (`ToolShape`), so two services that share no word can show one
+structure. Runs with the same structure fold into one concept, a run judged
+to have failed supports none, and a concept handed to three runs without once
+being borne out is not handed to a fourth.
+
+It comes back in two ways, and the measurements say the second is the one
+that matters. At the start of a run whose tools fit the roles by shape, the
+harness hands the arrangement over as a hypothesis with the candidate tools
+for each role. Then the harness holds the last step open
+(`agent::SuccessCue`, `concepts::Watch`): when the change works it says a
+step is still owed; when the run repeats an earlier lookup and a field
+differs from what that lookup first showed, other than the change that was
+asked for, it names the field; and when the thing is back as it was found it
+says so, because a run told only that a step is owed keeps searching after
+it has made it. Everything said after the start is the harness's words and
+this run's own tool names and results.
+
+What this form does not do: it knows one kind of arrangement (before, change,
+after, on one thing), it reads what a step left behind only from lookups that
+return a flat object, and it neither names a concept nor compares two.
+
 Not built: goal- and state-based appraisal, reappraisal from later runs,
-fragments and concepts (§9), `memory_recompose`, and consolidation in
-downtime. A verdict retires a conclusion and not the call episodes kept from
+fragments and the model-proposed stage of concepts (§9.1), `memory_recompose`,
+and consolidation in downtime. A verdict retires a conclusion and not the call episodes kept from
 the same failed task; whether it should is open.
