@@ -2233,8 +2233,18 @@ async fn run_one(
         );
         cmd.arg("--episodic-memory")
             .arg(memory_request(mecha, &home, memory)?);
-        if memory == mecha_core::experiment::ArmMemory::Delivered {
-            cmd.arg("--memory-deliver");
+        use mecha_core::experiment::ArmMemory;
+        match memory {
+            ArmMemory::Delivered => {
+                cmd.arg("--memory-deliver");
+            }
+            ArmMemory::DeliveredOnError => {
+                cmd.arg("--memory-deliver").arg("--memory-on-error");
+            }
+            ArmMemory::Invited => {
+                cmd.arg("--memory-invite");
+            }
+            ArmMemory::Everything | ArmMemory::Transcripts => {}
         }
     }
 

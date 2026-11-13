@@ -11,9 +11,11 @@ use std::collections::BTreeMap;
 /// recorder stores what each returned beside where it came from.
 pub(super) fn surface(names: &[String]) -> Result<()> {
     ensure!(
-        names.iter().any(|n| n == "goal_context")
+        names
+            .iter()
+            .any(|n| n == "goal_context" || n == recall::SEARCH_NAME)
             && names.iter().collect::<BTreeSet<_>>().len() == names.len(),
-        "ordinary memory requires goal_context among uniquely named tools"
+        "ordinary memory requires its recall tool among uniquely named tools"
     );
     Ok(())
 }
@@ -622,7 +624,24 @@ impl<'a> Walk<'a> {
                             ReceiptStatus::Succeeded
                         },
                     });
-                    if name == "goal_context" {
+                    // The same tool under its plain name: the tracked
+                    // attempt holds what it forwarded.
+                    let searched =
+                        (name == recall::SEARCH_NAME).then(|| recall::search_as_recall(input));
+                    let input: &serde_json::Value = searched.as_ref().unwrap_or(&*input);
+                    if name == "goal_context" || searched.is_some() {
+                        // An outside result is wrapped under the name of the
+                        // tool that was called; the packet's readers know
+                        // the tracked tool's.
+                        let content = match content
+                            .strip_prefix("<untrusted-content source=\"memory_search\">")
+                            .filter(|_| searched.is_some())
+                        {
+                            Some(rest) => {
+                                format!("<untrusted-content source=\"goal_context\">{rest}")
+                            }
+                            None => content.clone(),
+                        };
                         let candidates: Vec<_> = self
                             .attempts
                             .iter()
@@ -712,7 +731,10 @@ impl<'a> Walk<'a> {
     /// result that entered the conversation, and never read as a passage.
     /// Text under the stem that matches no attempt is not a delivery.
     fn delivery(&mut self, text: &str) -> Result<bool> {
-        let Some(content) = text.strip_prefix(recall::DELIVERY_STEM) else {
+        let Some(content) = text
+            .strip_prefix(recall::DELIVERY_STEM)
+            .or_else(|| text.strip_prefix(recall::ERROR_STEM))
+        else {
             return Ok(false);
         };
         let Some((at, a)) = self.attempts.iter().enumerate().find(|(at, a)| {

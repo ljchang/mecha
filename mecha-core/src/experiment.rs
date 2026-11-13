@@ -1125,6 +1125,10 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         None => original,
         Some(ArmMemory::Everything) => fnv64(format!("{original}|memory=everything").as_bytes()),
         Some(ArmMemory::Delivered) => fnv64(format!("{original}|memory=delivered").as_bytes()),
+        Some(ArmMemory::Invited) => fnv64(format!("{original}|memory=invited").as_bytes()),
+        Some(ArmMemory::DeliveredOnError) => {
+            fnv64(format!("{original}|memory=delivered_on_error").as_bytes())
+        }
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
     }
 }
@@ -1141,6 +1145,13 @@ pub enum ArmMemory {
     /// The same store, and the harness recalls for the task before the
     /// first request and hands the model what it found.
     Delivered,
+    /// The same store, handed over at the start and searched again by the
+    /// harness after a turn in which a call failed.
+    DeliveredOnError,
+    /// The same store, nothing handed over: the tool under a plain name and
+    /// one system-prompt line saying the model has a memory and when to
+    /// search it. Whether a model told about its memory uses it.
+    Invited,
     /// No store: the harness searches the home's earlier session
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.

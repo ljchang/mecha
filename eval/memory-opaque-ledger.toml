@@ -75,3 +75,21 @@ memory = "transcripts"
 [arms.transcripts.prediction]
 metric = "failure"
 rationale = "The rules the probes need are in the earlier tasks' transcripts as tool results; a keyword search of those transcripts for the task's words, handed over beside the prompt, passes probes the control fails, with no store built."
+
+[arms.invited]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "invited"
+
+[arms.invited.prediction]
+metric = "failure"
+rationale = "The model never searched a memory offered as goal_context and never mentioned to it; offered as memory_search, with one system-prompt line saying it has a memory and when to search it, it searches on the probes and passes some the control fails."
+
+[arms.delivered_on_error]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered_on_error"
+
+[arms.delivered_on_error.prediction]
+metric = "failure"
+rationale = "A search by the task's words never returned the unit rule; a second search by the harness after a failed call, keyed by the failure's own words, returns it, and the harder probe passes more often than with delivery at the start alone."

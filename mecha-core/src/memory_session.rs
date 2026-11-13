@@ -6,7 +6,10 @@ mod inline_notes;
 pub mod learning;
 pub(crate) mod native_writer;
 mod recall;
-pub use recall::{delivery_input, delivery_text, DELIVERY_STEM};
+pub use recall::{
+    delivery_input, delivery_text, error_input, SearchTool, DELIVERY_STEM, ERROR_STEM, INVITATION,
+    SEARCH_NAME,
+};
 mod recording;
 pub mod router;
 pub mod surface;

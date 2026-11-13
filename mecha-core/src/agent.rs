@@ -446,6 +446,31 @@ pub struct RunContext {
     /// as any closing reply is. The edit panel's reply after the harness drew
     /// the owner's change (`persona::edit::DONE`, IMAGE-DESIGN.md §5.3).
     pub close_with: Option<Closing>,
+    /// After a turn in which a call failed, make one read-only call for the
+    /// run and fold its result into the message carrying the results
+    /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
+    /// never inherited by a subagent.
+    pub recall_on_error: Option<ErrorRecall>,
+}
+
+/// A call the harness makes for the run when one of the model's calls
+/// failed: a search of what the run's host remembers, keyed by the failure.
+/// The loop knows only this shape — a tool's name, how to build its input
+/// from the failed call, and the line its result is delivered under — and
+/// never which store answers.
+#[derive(Clone)]
+pub struct ErrorRecall {
+    /// The registered tool to call. A failure of this tool itself is never
+    /// a trigger.
+    pub tool: String,
+    /// The failed call's tool name and its error text, to an input; `None`
+    /// makes no call.
+    pub input: Arc<dyn Fn(&str, &str) -> Option<Value> + Send + Sync>,
+    /// What the result is delivered under, in a text block after the turn's
+    /// results.
+    pub stem: String,
+    /// The most calls in one run.
+    pub limit: u32,
 }
 
 /// A closing request's last note, and what the owner sees in place of a
@@ -974,6 +999,7 @@ impl RunContext {
             jobs: None,
             end_after_deferral: false,
             close_with: None,
+            recall_on_error: None,
         }
     }
 
@@ -3478,6 +3504,8 @@ impl Agent {
         // The closing request's line, when the next request closes the run;
         // from the start, for a run the caller opens closing.
         let mut closing: Option<Closing> = cx.close_with;
+        // Harness recalls made after a failed call, against `ErrorRecall::limit`.
+        let mut error_recalls = 0u32;
 
         // Carried in from the transcript, not started fresh. Everything the
         // conversation has already seen still applies — this is the whole
@@ -4618,7 +4646,79 @@ impl Agent {
                         },
                     ));
 
+                    // A failed call, and a host that asked to be searched
+                    // when one fails: the harness's own call, through the one
+                    // dispatch a model's call takes, its result folded in
+                    // after the results as a steer is. The first failure of
+                    // the turn is the key; a failure of the search itself
+                    // never is, and a harness refusal is not the model's
+                    // failure.
+                    let recalled = match &cx.recall_on_error {
+                        Some(cue) if error_recalls < cue.limit && closing.is_none() => {
+                            let refused: std::collections::HashSet<&str> = trace
+                                [traced.min(trace.len())..]
+                                .iter()
+                                .filter(|t| t.denied)
+                                .map(|t| t.name.as_str())
+                                .collect();
+                            let uses = response.message.tool_uses();
+                            let input = results.iter().find_map(|block| {
+                                let Block::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error: true,
+                                } = block
+                                else {
+                                    return None;
+                                };
+                                let (_, name, _) =
+                                    uses.iter().find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                (*name != cue.tool && !refused.contains(name))
+                                    .then(|| (cue.input)(name, content))
+                                    .flatten()
+                            });
+                            match input {
+                                Some(input) => {
+                                    error_recalls += 1;
+                                    let call_id =
+                                        format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
+                                    let (blocks, _, reads, _) = self
+                                        .dispatch(
+                                            cx,
+                                            vec![(call_id.clone(), cue.tool.clone(), input)],
+                                            &events,
+                                            &mut Vec::new(),
+                                            &mut taint,
+                                            &mut blocked_sends,
+                                            &mut RunPictures::default(),
+                                            cx.tools.output_budget_bytes,
+                                            None,
+                                            false,
+                                        )
+                                        .await;
+                                    convo.taint = taint;
+                                    crate::tool::code::record::extend_bounded(
+                                        &mut convo.program_calls,
+                                        reads,
+                                    );
+                                    blocks.into_iter().find_map(|b| match b {
+                                        Block::ToolResult {
+                                            tool_use_id,
+                                            content,
+                                            ..
+                                        } if tool_use_id == call_id => {
+                                            Some(Block::text(format!("{}{content}", cue.stem)))
+                                        }
+                                        _ => None,
+                                    })
+                                }
+                                None => None,
+                            }
+                        }
+                        _ => None,
+                    };
                     let mut result_message = Message::tool_results(results);
+                    result_message.content.extend(recalled);
                     result_message.tool_provenance = provenance;
                     plan_batch.attach(&mut result_message);
                     messages.push(result_message);

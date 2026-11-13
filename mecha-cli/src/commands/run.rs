@@ -50,6 +50,19 @@ pub struct Args {
     #[arg(long, requires = "episodic_memory")]
     pub memory_deliver: bool,
 
+    /// After a turn in which a call failed, have the harness search memory
+    /// for that failure and hand the model what it found, with the results.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory")]
+    pub memory_on_error: bool,
+
+    /// Offer the model its memory as `memory_search`, withhold the same
+    /// tool's older name, and tell it in the system prompt that it has a
+    /// memory and when to search it. Hands it nothing.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "episodic_memory", conflicts_with_all = ["memory_deliver", "memory_on_error"])]
+    pub memory_invite: bool,
+
     /// Have the harness search this home's earlier session transcripts for
     /// this task before the first request and hand the model what it found,
     /// beside the prompt. Arms private data and outside content.
@@ -284,7 +297,14 @@ pub async fn execute(
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
+    #[cfg(feature = "memory-prototype")]
+    let invitation = args
+        .memory_invite
+        .then(|| mecha_core::memory_session::INVITATION.to_string());
+    #[cfg(not(feature = "memory-prototype"))]
+    let invitation: Option<String> = None;
     let mut opts = GlobalOpts {
+        system_extra: invitation.or_else(|| global.system_extra.clone()),
         surface: Some(mecha_core::session::SessionKind::Run),
         // The owner's `--goal`, the one this run is matched toward. A
         // resume without it keeps the saved anchor (below) but declares no
@@ -405,10 +425,18 @@ pub async fn execute(
                     .as_ref()
                     .context("ordinary memory requires a confirmed goal")?,
             )?;
-            prepared
-                .agent
-                .registry_mut()
-                .insert(memory.goal_memory(&run)?);
+            // One tool under one name. Invited, it is the plain name and
+            // the older one leaves the registry: a withheld tool is still
+            // listed, and two names for one memory is not the test.
+            let tool = memory.goal_memory(&run)?;
+            if args.memory_invite {
+                prepared.agent.registry_mut().remove("goal_context");
+                prepared.agent.registry_mut().insert(std::sync::Arc::new(
+                    mecha_core::memory_session::SearchTool { inner: tool },
+                ));
+            } else {
+                prepared.agent.registry_mut().insert(tool);
+            }
             Ok::<_, anyhow::Error>((memory, run))
         })
         .transpose()?;
@@ -611,6 +639,18 @@ pub async fn execute(
     // record nobody keeps. A person may be at the terminal, so there the
     // board gets the interactive deadline.
     let mut cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+    #[cfg(feature = "memory-prototype")]
+    if ordinary_run.is_some() {
+        use mecha_core::memory_session as ms;
+        if args.memory_on_error {
+            cx.recall_on_error = Some(mecha_core::agent::ErrorRecall {
+                tool: "goal_context".into(),
+                input: std::sync::Arc::new(ms::error_input),
+                stem: ms::ERROR_STEM.into(),
+                limit: 3,
+            });
+        }
+    }
     if session.is_some() || prepared.agent.config().situation_brief {
         setup::brief_run(
             &prepared.agent,
