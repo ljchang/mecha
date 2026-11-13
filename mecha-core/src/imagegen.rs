@@ -1967,12 +1967,13 @@ const FAR_OVER: &str = "far over the cast";
 /// picture is not counted: over the cast by design, it was drawn again
 /// twice for the same crowd and then said to be wrong (review of #874).
 fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
-    const SEVERAL: &[&str] = &[
+    // People by a word for them: read in the place, in what they do
+    // together, in the line beside the scene, and in who each is.
+    const CROWD: &[&str] = &[
         "people",
         "crowd",
         "crowded",
         "crowds",
-        "busy",
         "others",
         "guests",
         "customers",
@@ -1991,34 +1992,34 @@ fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
         "commuters",
         "shoppers",
         "tourists",
-        "two",
-        "three",
-        "four",
-        "several",
-        "group",
-        "couple",
-        "pair",
-        "family",
     ];
-    // Only the words that can put someone unlisted in the frame: where it
-    // is, what they do together, who each is, and the line beside the scene.
-    // A camera's "two-shot" or a "pair of boots" is nobody (review of #874,
-    // pass 4).
-    let mut words: Vec<String> = Vec::new();
-    if let Some(crate::scene::Setting::Words { text }) = next.setting.as_ref().map(|f| &f.value) {
-        words.push(text.to_lowercase());
-    }
-    words.extend(next.together.as_ref().map(|f| f.value.to_lowercase()));
-    words.extend(next.people.iter().filter_map(|p| match &p.who {
-        crate::scene::Who::Described(d) => Some(d.to_lowercase()),
-        crate::scene::Who::Library(_) => None,
-    }));
-    words.extend(also.map(str::to_lowercase));
-    words.iter().any(|t| {
-        t.split(|c: char| !c.is_alphabetic())
-            .any(|w| SEVERAL.contains(&w))
-    })
+    // A count or a set: only in who someone is ("two gardeners", "a group
+    // of walkers"). In a place they are its furniture: "a table for two",
+    // "a pair of armchairs", "a family kitchen" (review of #874, pass 5).
+    const SEVERAL: &[&str] = &[
+        "two", "three", "four", "several", "group", "couple", "pair", "family",
+    ];
+    let has = |text: &str, set: &[&str]| {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphabetic())
+            .any(|w| set.contains(&w))
+    };
+    let place = match next.setting.as_ref().map(|f| &f.value) {
+        Some(crate::scene::Setting::Words { text }) => has(text, CROWD),
+        _ => false,
+    };
+    place
+        || next.together.as_ref().is_some_and(|f| has(&f.value, CROWD))
+        || also.is_some_and(|t| has(t, CROWD))
+        || next.people.iter().any(|p| match &p.who {
+            crate::scene::Who::Described(d) => has(d, CROWD) || has(d, SEVERAL),
+            crate::scene::Who::Library(_) => false,
+        })
 }
+
+/// Why a picture whose words name more than its cast was left uncounted:
+/// recorded, so the manifests say how often.
+const MORE_SAID: &str = "the scene's words name more people than its cast";
 
 impl PeopleCheck {
     /// The manifest's row: counts only.
@@ -2027,7 +2028,7 @@ impl PeopleCheck {
             "expected": self.expected,
             "seen": self.seen,
             "kept": self.kept,
-            "not_counted": self.stopped,
+            "stopped": self.stopped,
         })
     }
 
@@ -7173,14 +7174,29 @@ impl Tool for ImageGenerate {
                 && layered.is_none()
                 && !plan.people.is_empty()
                 && plan.offstage.is_empty()
-                && plan.seen_from.is_none()
-                && !more_than_listed(&plan.next, plan.also.as_deref()))
+                && plan.seen_from.is_none())
             .then(|| (plan.people.len(), plan.seed == crate::picture::Seed::Fresh));
+            let mut people_check: Option<PeopleCheck> = None;
+            // A crowd in the words is left uncounted, and said so in the
+            // manifest: unrecorded, it could not be told from a picture
+            // that was never a candidate.
             let counts = match counts {
+                Some((expected, may_redraw))
+                    if more_than_listed(&plan.next, plan.also.as_deref()) =>
+                {
+                    people_check = Some(PeopleCheck {
+                        expected,
+                        seen: Vec::new(),
+                        kept: 0,
+                        may_redraw,
+                        stopped: Some(MORE_SAID.into()),
+                        renders: 1,
+                    });
+                    None
+                }
                 Some(c) if me.backend.segments().await => Some(c),
                 _ => None,
             };
-            let mut people_check: Option<PeopleCheck> = None;
             let (image, left) = match (image, counts) {
                 (Ok(first), Some((expected, may_redraw))) => {
                     let mut kept: Vec<String> = left.into_iter().collect();
@@ -12553,7 +12569,7 @@ mod tests {
         assert!(pinned.contains("was not drawn again"), "{pinned}");
         assert_eq!(
             check(&[2, 1], 1, true).row(),
-            json!({"expected": 1, "seen": [2, 1], "kept": 1, "not_counted": null})
+            json!({"expected": 1, "seen": [2, 1], "kept": 1, "stopped": null})
         );
     }
 
@@ -12638,7 +12654,7 @@ mod tests {
         let manifest = manifest_of(&dir, &out.content);
         assert_eq!(
             manifest["people_check"],
-            json!({"expected": 1, "seen": [1], "kept": 0, "not_counted": null})
+            json!({"expected": 1, "seen": [1], "kept": 0, "stopped": null})
         );
         std::fs::remove_dir_all(dir).ok();
     }
@@ -12653,7 +12669,7 @@ mod tests {
         assert!(!out.content.contains("seems to show"), "{}", out.content);
         let check = &manifest_of(&dir, &out.content)["people_check"];
         assert_eq!(check["seen"], json!([3]));
-        assert_eq!(check["not_counted"], json!(FAR_OVER));
+        assert_eq!(check["stopped"], json!(FAR_OVER));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -12788,9 +12804,50 @@ mod tests {
             let out = tool(&url).call(crowd, &ctx(&dir)).await.unwrap();
             assert!(!out.is_error, "{}", out.content);
             assert_eq!(prompts(&seen.lock().unwrap()).len(), 1);
-            assert_eq!(manifest_of(&dir, &out.content)["people_check"], Value::Null);
+            assert_eq!(
+                manifest_of(&dir, &out.content)["people_check"]["stopped"],
+                json!(MORE_SAID)
+            );
             std::fs::remove_dir_all(dir).ok();
         }
+        // A count whose job fails keeps the picture, and says nothing.
+        let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
+            "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), failed],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"scene": {"setting": "a rooftop garden", "people": [
+                    {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("seems to show"), "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["people_check"]["stopped"],
+            json!("the count failed")
+        );
+        std::fs::remove_dir_all(dir).ok();
+        // A count or a set in the place's words is its furniture.
+        assert!(!more_than_listed(
+            &crate::scene::Scene {
+                setting: Some(crate::scene::Field {
+                    value: crate::scene::Setting::Words {
+                        text: "a family kitchen, a table for two, a pair of armchairs".into()
+                    },
+                    origin: crate::scene::Origin::Clean,
+                }),
+                ..Default::default()
+            },
+            None
+        ));
     }
 
     /// What SAM found but `prepare_mask` refuses: a speck is too small to

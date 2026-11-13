@@ -70,16 +70,17 @@ impl Call {
 
     /// Whether the picture this call draws may be counted for its people
     /// after the render (`imagegen::PeopleCheck`): never an edit of a
-    /// picture's own pixels, and never a new picture that lists nobody.
-    /// Known before the plan, which is when the job's memory is asked for:
-    /// asked of every call, the count's model raised the floor under
-    /// pictures it could never run on (review of #874).
+    /// picture's own pixels. Known before the plan, which is when the
+    /// job's memory is asked for: asked of every call, the count's model
+    /// raised the floor under pictures it could never run on (review of
+    /// #874). Not by who is listed: a new picture may name its people in
+    /// its words alone (`draw_named`), which is read after the memory is
+    /// asked for, and those are the pictures most worth counting.
     pub fn counts_people(&self) -> bool {
         self.mask.is_none()
             && self.mask_words.is_none()
             && self.regions.is_empty()
             && self.retouch.is_none()
-            && (self.picture.is_some() || self.change.people.iter().any(|p| !p.remove))
     }
 }
 

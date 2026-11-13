@@ -1194,7 +1194,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   not asked, always). A call may segment when `mask` is words or a painted
   region's words are about a face. The count below is asked for beside it
   only for a call that may be counted (`picture::Call::counts_people`: no
-  mask, regions or retouch, and a picture named or someone listed) and
+  mask, regions or retouch) and
   only where the memory is there: short of it the picture is admitted as
   it was before the count existed and is not counted, never refused for
   it.
@@ -1251,7 +1251,7 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
     at every seed and with no reference picture at all (2 of 3): three
     renders, and the result says the picture still seems to show two.
   - **A count that cannot be made keeps the picture**: no SAM on the
-    server, or a failed job, is `not_counted` in the manifest and never a
+    server, or a failed job, is `stopped` in the manifest and never a
     refusal. `[image] people_check = false` draws every picture once.
   - **The picture panel's "remove the copy" is another try.** A record
     holds each person once, so the reader can only answer by taking the
