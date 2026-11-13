@@ -417,8 +417,15 @@ fn bracket(session: &str, calls: &[Call], by_name: &BTreeMap<&str, &ToolShape>) 
         .iter()
         .filter(|c| values(&c.input).contains(thing))
         .collect();
+    let arity = |c: &&Call| c.input.as_object().map_or(0, |o| o.len());
+    let widest = thread.iter().filter(|c| !c.is_error).map(&arity).max()?;
+    // The change is a call that carries the most arguments. A last step the
+    // run tried before it knew the order, and a first step that failed
+    // once, were each "refused and then worked" too, and neither may take
+    // the change's role (review of #877).
     let refused_then_worked = thread.iter().find(|c| {
         c.is_error
+            && arity(c) == widest
             && thread
                 .iter()
                 .any(|later| later.name == c.name && !later.is_error)
@@ -426,8 +433,6 @@ fn bracket(session: &str, calls: &[Call], by_name: &BTreeMap<&str, &ToolShape>) 
     let change = match refused_then_worked {
         Some(call) => call.name.as_str(),
         None => {
-            let arity = |c: &&Call| c.input.as_object().map_or(0, |o| o.len());
-            let widest = thread.iter().filter(|c| !c.is_error).map(&arity).max()?;
             let mut wide = thread
                 .iter()
                 .filter(|c| !c.is_error && arity(c) == widest)
@@ -585,6 +590,9 @@ impl Concept {
                 own: Some(at),
             });
         }
+        // Any support stands for all of them here: one key is one shape for
+        // every role (`Pattern::key` writes each role's shape whole), so a
+        // change to the key's format must keep that true.
         let first = &self.support[0];
         let like = |role: &ToolShape| -> Vec<&'a ToolShape> {
             here.iter().filter(|t| t.shape == role.shape).collect()
@@ -895,10 +903,14 @@ impl Watch {
             .ok()
             .and_then(|v| v.as_object().cloned());
         let key = (tool.to_string(), input.to_string());
+        // One step is held open at a time, on purpose: while one is due, a
+        // second concept whose change is the same tool waits its turn and
+        // never overwrites what is being waited for (review of #877).
         if let Some(at) = self
             .owed
             .iter()
             .position(|o| o.after.iter().any(|t| t == tool))
+            .filter(|_| self.due.is_none())
         {
             let owed = self.owed.remove(at);
             if owed.kind == Kind::Linked {
@@ -1210,8 +1222,8 @@ impl Tool for Concepts {
             Err(error) => return Ok(ToolOutput::err(format!("concepts unavailable: {error:#}"))),
         };
         let mut concepts = fold(patterns, offers);
-        // Handed over three times to tools unlike its own and never borne
-        // out: not handed over again.
+        // Handed over three times, to its own tools or others, and never
+        // borne out: not handed over again.
         concepts.retain(|c| !(c.tried >= RETIRED_AFTER && c.held == 0));
         // The best supported first; a concept with a closer before one
         // without, since it says more.
@@ -1450,6 +1462,61 @@ mod tests {
         );
         assert_eq!(pattern.refused_with, None);
         assert_eq!(pattern.key(), "change[SSS] after[S] then[S]");
+    }
+
+    #[test]
+    fn one_owed_step_is_held_at_a_time_and_a_second_waits_for_it() {
+        let mut watch = Watch::default();
+        for kind in [Kind::Linked, Kind::Bracket] {
+            watch.owed.push(Owed {
+                after: vec!["quay_set".into()],
+                among: "`quay_op_a`".into(),
+                kind,
+            });
+        }
+        let on = |id: &str| json!({"id": id, "value": 6});
+        assert!(watch
+            .after("quay_set", &on("Q-1"), "ok")
+            .unwrap()
+            .contains("made on a second thing"));
+        // The second half of the linked change is not the bracket's cue:
+        // it closes the step that was due, and the other is still owed.
+        assert_eq!(watch.after("quay_set", &on("Q-2"), "ok"), None);
+        assert!(watch.due.is_none() && watch.owed.len() == 1);
+    }
+
+    #[test]
+    fn a_step_tried_out_of_order_or_refused_once_does_not_take_the_change_s_role() {
+        let id = json!({"id": "R-12"});
+        let update = json!({"id": "R-12", "field": "owner", "value": "Ada"});
+        let rest = |first: [Message; 2]| {
+            run(vec![
+                call("a", "reg_find", json!({"name": "Draft 9"}), "R-12", false),
+                first,
+                call("c", "reg_lock", id.clone(), "locked", false),
+                call("d", "reg_update", update.clone(), "updated", false),
+                call("e", "reg_unlock", id.clone(), "unlocked", false),
+            ])
+        };
+        // The last step tried first, and the first step refused once: the
+        // arrangement is the same one either way.
+        for early in [
+            call("b", "reg_unlock", id.clone(), "not locked", true),
+            call("b", "reg_lock", id.clone(), "busy", true),
+        ] {
+            let pattern = extract("s1", &rest(early), &registry(), &Refused::new()).unwrap();
+            assert_eq!(pattern.key(), "change[SSS] after[S] then[S]");
+            assert_eq!(
+                (
+                    pattern.change.name.as_str(),
+                    pattern.enabler.name.as_str(),
+                    pattern.closer.as_ref().map(|c| c.name.as_str()),
+                ),
+                ("reg_update", "reg_lock", Some("reg_unlock"))
+            );
+            // Its refusal was not the change's.
+            assert_eq!(pattern.refused_with, None);
+        }
     }
 
     #[test]

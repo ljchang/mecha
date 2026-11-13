@@ -761,7 +761,7 @@ pub async fn execute(
     }
 
     // Text first, images after — the order both provider families document.
-    let user = if images.is_empty() && delivered.is_none() {
+    let user = if images.is_empty() && delivered.is_none() && delivered_concepts.is_none() {
         Message::user(&prompt)
     } else {
         let mut content = vec![mecha_core::message::Block::text(&prompt)];

@@ -366,8 +366,13 @@ impl SessionMemory {
         Ok(kept)
     }
     /// Record how the task run in `session` was judged, as a revision of its
-    /// outcome record and of the pattern it showed. `false` when the session
-    /// kept no outcome.
+    /// outcome record and of the pattern and the offer it left. `false` when
+    /// the session kept no outcome: its pattern and offer, which do not
+    /// depend on one, have been graded all the same by then.
+    ///
+    /// A pattern of a kind this build does not know is left as it was
+    /// written: read into this build's type and written back, it would lose
+    /// its kind and any field a later build added (review of #877).
     pub fn appraise_episode(&self, session: &str, passed: bool) -> Result<bool> {
         let kept = self.concepts_kept()?;
         if let Some(mut pattern) = kept
@@ -375,6 +380,7 @@ impl SessionMemory {
             .into_iter()
             .rev()
             .find(|p| p.session == session)
+            .filter(|p| p.kind != crate::tool::concepts::Kind::Unknown)
         {
             pattern.judged = Some(passed);
             self.retain_pattern(&pattern)?;
