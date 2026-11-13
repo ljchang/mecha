@@ -610,7 +610,7 @@ kind is derived from its directory (`Entry.kind`).
   2026-10-28). When the camera reads as from behind (`picture::faces_away`:
   behind, rear, a back view, a face turned away; never with a front, a
   shoulder looked over, or a face toward the camera), a person with a
-  `full_body` is drawn from it in both identity slots, with no portrait,
+  `full_body` is drawn from it alone, sent once, with no portrait,
   and the prompt says their face is turned away. The person's expression
   and the style's clauses about eyes are left out for that picture.
   Measured on a rear-view Continue:
@@ -620,6 +620,19 @@ kind is derived from its directory (`Entry.kind`).
     drawn 2 of 5;
   - in both slots: 4 of 5; with the expression and the eye clause gone
     too: 5 of 5, no second head, base seed included.
+
+  **One slot since 2026-11-12.** Two copies of one standing figure drew
+  the person twice: 17 of the 31 pictures recorded in that shape, 4 of the
+  8 drawn new. On the replay rig, seven recorded calls at three seeds
+  each, seed for seed: both slots 6 of 21, one slot 3 of 21, with no
+  second head and the face away as before. The earlier second head was
+  measured while the expression and the eye clause were still sent. The 3
+  left are one call whose camera asks for the figure from the waist down
+  while its pose is a bend: the image model draws a standing figure and a
+  bending one, with no reference picture at all too (2 of 3), so that one
+  is the scene's words and not the references. A person too many is
+  counted after the render (`ARCHITECTURE.md` §Image generation, "counted
+  after it is drawn").
 
   Without a `full_body` the portrait still goes, and for a cast of one a
   sentence carries the turn (a camera behind one of a group names that

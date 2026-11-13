@@ -129,6 +129,10 @@ pub struct ImageConfig {
     /// `models/loras`; any other server's picture LoRAs are left out until
     /// it is set.
     pub loras_dir: Option<Vec<std::path::PathBuf>>,
+    /// Count the people in a new picture after it is drawn and draw it
+    /// again when it shows more than the scene has ([`PeopleCheck`]). On by
+    /// default; `false` draws every picture once, as before.
+    pub people_check: bool,
 }
 
 impl ImageConfig {
@@ -170,6 +174,7 @@ impl Default for ImageConfig {
             unload_after_secs: 900,
             server_temp_dir: None,
             loras_dir: None,
+            people_check: true,
         }
     }
 }
@@ -638,6 +643,75 @@ pub fn sam_graph(uploaded: &str, words: &str) -> Value {
         "toimg": {"class_type": "MaskToImage", "inputs": {"mask": ["sam", 0]}},
         "out": {"class_type": "PreviewImage", "inputs": {"images": ["toimg", 0]}},
     })
+}
+
+/// The most people a count asks SAM for. The text encoder reads `words:N`
+/// as "at most N of these" and a bare word as at most one, so a count has
+/// to say its cap (ComfyUI's `comfy/text_encoders/sam3_clip.py`).
+const PEOPLE_CAP: usize = 8;
+
+/// ComfyUI's graph for counting the people in a picture: [`sam_graph`] with
+/// one mask out for each person found, up to [`PEOPLE_CAP`], instead of
+/// their union, and one empty mask after them.
+///
+/// "person" is the word that measured best (2026-11-12, by eye on 85
+/// recorded pictures). "head" finds a copy that touches the original, which
+/// "person" returns as one find, but calls two heads in many faces seen
+/// from the front (6 of 45 clean pictures). Asking both and acting only
+/// when both are over lost a copy whose head was out of sight, on the
+/// first live picture it was tried on. "torso" was wrong both ways. The empty one is there
+/// because a picture with nobody in it gives the preview node nothing, and
+/// the server fails that job (an index error in `PreviewImage`, seen
+/// 2026-11-12): with it, "nobody" is a job that finished.
+pub fn people_graph(uploaded: &str) -> Value {
+    let mut graph = sam_graph(uploaded, &format!("person:{PEOPLE_CAP}"));
+    graph["sam"]["inputs"]["individual_masks"] = json!(true);
+    graph["none"] = json!({"class_type": "SolidMask", "inputs": {
+        "value": 0.0, "width": 64, "height": 64}});
+    graph["noneimg"] = json!({"class_type": "MaskToImage", "inputs": {"mask": ["none", 0]}});
+    graph["all"] = json!({"class_type": "ImageBatch", "inputs": {
+        "image1": ["toimg", 0], "image2": ["noneimg", 0]}});
+    graph["out"]["inputs"]["images"] = json!(["all", 0]);
+    graph
+}
+
+/// How many people a count's masks show, one mask a find: two finds that
+/// are mostly one area count once (the detector can find a person twice),
+/// and a find is left out when it is under a fiftieth of the picture or a
+/// tenth of the largest find, which is a passer-by in a background or a
+/// hand at an edge. Measured on 31 recorded pictures drawn from behind
+/// (2026-11-12): of 26 with nobody but the cast in the scene, it counted
+/// two or more in 14 of the 16 a person was drawn twice in and in none of
+/// the 10 clean ones; the two it missed had the copies touching, which SAM
+/// returns as one find.
+pub(crate) fn people_in(masks: &[image::GrayImage]) -> usize {
+    // On a coarse grid: the question is how many, never where the edge is.
+    const GRID: u32 = 96;
+    let grids: Vec<Vec<bool>> = masks
+        .iter()
+        .map(|m| {
+            image::imageops::resize(m, GRID, GRID, image::imageops::FilterType::Triangle)
+                .pixels()
+                .map(|p| p.0[0] > 127)
+                .collect()
+        })
+        .collect();
+    let size = |g: &Vec<bool>| g.iter().filter(|on| **on).count();
+    let mut kept: Vec<&Vec<bool>> = Vec::new();
+    for g in grids.iter().filter(|g| size(g) > 0) {
+        let again = kept.iter().any(|k| {
+            let both = g.iter().zip(k.iter()).filter(|(a, b)| **a && **b).count();
+            both * 10 > size(g).min(size(k)) * 6
+        });
+        if !again {
+            kept.push(g);
+        }
+    }
+    let largest = kept.iter().map(|g| size(g)).max().unwrap_or(0);
+    let cells = (GRID * GRID) as usize;
+    kept.iter()
+        .filter(|g| size(g) * 50 >= cells && size(g) * 10 >= largest)
+        .count()
 }
 
 /// How many separate areas a segmentation found: the 4-connected white
@@ -1438,6 +1512,56 @@ impl ComfyUi {
         std::result::Result<Option<image::GrayImage>, Failure>,
         Option<String>,
     ) {
+        let (got, left) = self
+            .segmented(
+                cfg,
+                picture,
+                &|filed| sam_graph(filed, words),
+                cancel,
+                timeout,
+                trail,
+            )
+            .await;
+        let got = got.map(|mut masks| {
+            let mask = masks.swap_remove(0);
+            mask.pixels().any(|p| p.0[0] > 127).then_some(mask)
+        });
+        (got, left)
+    }
+
+    /// How many people `picture` shows ([`people_graph`], [`people_in`]):
+    /// asked of a picture this job has just drawn, so SAM never loads
+    /// without the image model (`docs/SEGMENTATION-DESIGN.md` §3). Its temp
+    /// copies are deleted as a render's are; what could not be is the
+    /// second value, said.
+    async fn people(
+        &self,
+        cfg: &ImageConfig,
+        picture: &Reference,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        trail: Option<&std::path::Path>,
+    ) -> (std::result::Result<usize, Failure>, Option<String>) {
+        let (got, left) = self
+            .segmented(cfg, picture, &people_graph, cancel, timeout, trail)
+            .await;
+        (got.map(|masks| people_in(&masks)), left)
+    }
+
+    /// One segmentation job's masks: `picture` uploaded, the graph `graph`
+    /// builds over its filed name run, and every picture it wrote decoded.
+    async fn segmented(
+        &self,
+        cfg: &ImageConfig,
+        picture: &Reference,
+        graph: &(dyn Fn(&str) -> Value + Sync),
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        trail: Option<&std::path::Path>,
+    ) -> (
+        std::result::Result<Vec<image::GrayImage>, Failure>,
+        Option<String>,
+    ) {
         // The job's segmentation budget is spent: nothing is uploaded.
         if timeout.is_zero() {
             return (
@@ -1475,13 +1599,18 @@ impl ComfyUi {
                     Failure::Other(e.context("the segmentation could not be recorded for cleanup"))
                 })?;
             }
-            let png = self
-                .submit_and_wait(sam_graph(&filed, words), cancel, timeout, trail, &mut held)
+            let pngs = self
+                .submit_and_wait_all(graph(&filed), cancel, timeout, trail, &mut held)
                 .await?;
-            let mask = image::load_from_memory(&png)
-                .map_err(|e| Failure::Other(anyhow!("the segmentation did not decode: {e}")))?
-                .to_luma8();
-            Ok(mask.pixels().any(|p| p.0[0] > 127).then_some(mask))
+            pngs.iter()
+                .map(|png| {
+                    image::load_from_memory(png)
+                        .map(|m| m.to_luma8())
+                        .map_err(|e| {
+                            Failure::Other(anyhow!("the segmentation did not decode: {e}"))
+                        })
+                })
+                .collect()
         }
         .await;
         let dir = cfg.server_temp_dir.as_deref();
@@ -1593,6 +1722,23 @@ impl ComfyUi {
         trail: Option<&std::path::Path>,
         held: &mut Held,
     ) -> std::result::Result<Vec<u8>, Failure> {
+        let mut all = self
+            .submit_and_wait_all(graph, cancel, timeout, trail, held)
+            .await?;
+        // Never empty: a job with no image is a failure there.
+        Ok(all.swap_remove(0))
+    }
+
+    /// [`ComfyUi::submit_and_wait`] for a job that writes several images:
+    /// every one, in the server's order, and never none.
+    async fn submit_and_wait_all(
+        &self,
+        graph: Value,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        trail: Option<&std::path::Path>,
+        held: &mut Held,
+    ) -> std::result::Result<Vec<Vec<u8>>, Failure> {
         let record = |entry: TrailEntry| {
             note(trail, &entry).map_err(|e| {
                 Failure::Other(e.context("the image job could not be recorded for cleanup"))
@@ -1644,7 +1790,7 @@ impl ComfyUi {
 
         let started = Instant::now();
         let mut failed_polls = 0u32;
-        let image = loop {
+        let images = loop {
             let tick = tokio::time::sleep(self.wire.poll);
             match cancel {
                 Some(token) => tokio::select! {
@@ -1713,34 +1859,45 @@ impl ComfyUi {
                     .unwrap_or_default();
                 return Err(anyhow!("the image server failed the job: {why}").into());
             }
-            let found = entry
+            // The first output node's images: a render writes one, a count
+            // one for each thing found.
+            let found: Vec<Value> = entry
                 .get("outputs")
                 .and_then(Value::as_object)
                 .into_iter()
                 .flat_map(|o| o.values())
-                .filter_map(|out| out.get("images")?.as_array()?.first().cloned())
-                .next();
-            match found {
-                Some(image) => break image,
-                // Recorded without an image: finished with nothing to show.
-                None if entry.pointer("/status/completed").and_then(Value::as_bool)
-                    == Some(true) =>
-                {
-                    self.wire.forget(&id).await;
-                    return Err(
-                        anyhow!("the image server finished the job without an image").into(),
-                    );
-                }
-                None => continue,
+                .filter_map(|out| out.get("images")?.as_array().cloned())
+                .find(|images| !images.is_empty())
+                .unwrap_or_default();
+            if !found.is_empty() {
+                break found;
+            }
+            // Recorded without an image: finished with nothing to show.
+            if entry.pointer("/status/completed").and_then(Value::as_bool) == Some(true) {
+                self.wire.forget(&id).await;
+                return Err(anyhow!("the image server finished the job without an image").into());
             }
         };
 
         // Forgotten whether or not the fetch works: the server keeps every
         // job's prompt and file names in memory until it restarts, and the
         // copy that matters is the one in the workspace (or none at all).
-        let fetched = self.fetch(&image).await;
+        let mut fetched = Vec::with_capacity(images.len());
+        let mut failed = None;
+        for image in &images {
+            match self.fetch(image).await {
+                Ok(bytes) => fetched.push(bytes),
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+        }
         self.wire.forget(&id).await;
-        Ok(fetched?)
+        match failed {
+            Some(e) => Err(e.into()),
+            None => Ok(fetched),
+        }
     }
 
     /// The finished image's bytes, checked to be a PNG.
@@ -1778,6 +1935,151 @@ impl ComfyUi {
 /// return the workspace-relative path. Never overwrites: the name is new or
 /// the write fails, so a generation cannot replace an earlier one or follow a
 /// link planted where its file will go.
+/// The most times a new picture is drawn again because it showed more
+/// people than its scene has: three renders at worst.
+const PEOPLE_REDRAWS: usize = 2;
+
+/// What counting the people in a new picture found
+/// (`ARCHITECTURE.md` §Image generation, "counted after it is drawn").
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeopleCheck {
+    /// How many people the scene has.
+    expected: usize,
+    /// How many each render showed, in the order drawn.
+    seen: Vec<usize>,
+    /// Which render was kept, by its place in `seen`.
+    kept: usize,
+    /// Whether a picture over the count could be drawn again: only one at a
+    /// seed of its own. A restage's seed is what keeps its room, and a
+    /// caller's seed is the caller's.
+    may_redraw: bool,
+    /// Why counting stopped before an answer, when it did.
+    stopped: Option<String>,
+    /// How many renders were drawn, counted or not.
+    renders: usize,
+}
+
+/// Why a count far over the cast stopped: recorded, never said.
+const FAR_OVER: &str = "far over the cast";
+
+/// Whether a scene's words put more people in the frame than its cast
+/// lists: a crowd in the setting, or one `who` that is several. Such a
+/// picture is not counted: over the cast by design, it was drawn again
+/// twice for the same crowd and then said to be wrong (review of #874).
+fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
+    // People by a word for them: read in the place, in what they do
+    // together, in the line beside the scene, and in who each is.
+    const CROWD: &[&str] = &[
+        "people",
+        "crowd",
+        "crowded",
+        "crowds",
+        "others",
+        "guests",
+        "customers",
+        "patrons",
+        "audience",
+        "onlookers",
+        "passersby",
+        "strangers",
+        "children",
+        "kids",
+        "men",
+        "women",
+        "friends",
+        "couples",
+        "dancers",
+        "commuters",
+        "shoppers",
+        "tourists",
+    ];
+    // A count or a set: only in who someone is ("two gardeners", "a group
+    // of walkers"). In a place they are its furniture: "a table for two",
+    // "a pair of armchairs", "a family kitchen" (review of #874, pass 5).
+    const SEVERAL: &[&str] = &[
+        "two", "three", "four", "several", "group", "couple", "pair", "family",
+    ];
+    let has = |text: &str, set: &[&str]| {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphabetic())
+            .any(|w| set.contains(&w))
+    };
+    let place = match next.setting.as_ref().map(|f| &f.value) {
+        Some(crate::scene::Setting::Words { text }) => has(text, CROWD),
+        _ => false,
+    };
+    place
+        || next.together.as_ref().is_some_and(|f| has(&f.value, CROWD))
+        || also.is_some_and(|t| has(t, CROWD))
+        || next.people.iter().any(|p| match &p.who {
+            crate::scene::Who::Described(d) => has(d, CROWD) || has(d, SEVERAL),
+            crate::scene::Who::Library(_) => false,
+        })
+}
+
+/// Why a picture whose words name more than its cast was left uncounted:
+/// recorded, so the manifests say how often.
+const MORE_SAID: &str = "the scene's words name more people than its cast";
+
+impl PeopleCheck {
+    /// The manifest's row: counts only.
+    fn row(&self) -> Value {
+        json!({
+            "expected": self.expected,
+            "seen": self.seen,
+            "kept": self.kept,
+            "stopped": self.stopped,
+        })
+    }
+
+    /// What the result says, as facts: nothing for a picture that counted
+    /// right the first time or was never counted.
+    fn said(&self) -> Option<String> {
+        let people = |n: usize| {
+            if n == 1 {
+                "1 person".to_string()
+            } else {
+                format!("{n} people")
+            }
+        };
+        if self.stopped.as_deref() == Some(FAR_OVER) {
+            return None;
+        }
+        let first = *self.seen.first()?;
+        let kept = *self.seen.get(self.kept)?;
+        let renders = self.renders.max(self.seen.len());
+        if kept <= self.expected {
+            return (renders > 1).then(|| {
+                format!(
+                    "A first render seemed to show {} where the scene has {}, so the picture \
+                     was drawn again ({renders} renders in all).",
+                    people(first),
+                    self.expected
+                )
+            });
+        }
+        Some(if !self.may_redraw {
+            format!(
+                "The picture seems to show {} where the scene has {}. It was drawn at a seed \
+                 it was asked to keep, so it was not drawn again.",
+                people(kept),
+                self.expected
+            )
+        } else {
+            let after = if renders > 1 {
+                format!(", after {renders} renders; it is the closest of those counted")
+            } else {
+                String::new()
+            };
+            format!(
+                "The picture seems to show {} where the scene has {}{after}.",
+                people(kept),
+                self.expected
+            )
+        })
+    }
+}
+
 async fn save(ctx: &ToolCtx, stamp: &str, seed: u64, bytes: &[u8]) -> Result<String> {
     use tokio::io::AsyncWriteExt;
     for n in 0..100u32 {
@@ -3007,13 +3309,20 @@ impl ImageGenerate {
     /// need below plus the reserve, refused under memory pressure, and
     /// refused when the gauge cannot be read. Only the operator's own
     /// `min_available_mb = 0` switches it off.
+    ///
+    /// `wants_count` asks, of the same reading of what is loaded, whether
+    /// the count after the render (`PeopleCheck`) fits as well: the answer
+    /// is the `Ok`'s, never a refusal and never the operator's log, since a
+    /// picture is drawn without the count where the memory for it is short
+    /// (review of #874, passes 3 and 4).
     async fn memory_guard(
         &self,
         model: crate::sampling::Model,
         may_segment: bool,
-    ) -> std::result::Result<(), String> {
+        wants_count: bool,
+    ) -> std::result::Result<bool, String> {
         if self.cfg.min_available_mb == 0 {
-            return Ok(());
+            return Ok(wants_count);
         }
         // A switch of model unloads the one held and loads the other: cold.
         // Not asked on a Mac: `loaded_from_stats` reads any device but CUDA
@@ -3033,8 +3342,8 @@ impl ImageGenerate {
         // SAM is charged where it can load. Asked on Linux only, as `loaded`
         // is: on a Mac the ask goes through the on-demand proxy and starts
         // ComfyUI, so a Mac is charged whenever the call may segment.
-        let may_segment =
-            may_segment && (cfg!(target_os = "macos") || self.backend.segments().await);
+        let can_segment = cfg!(target_os = "macos") || self.backend.segments().await;
+        let may_segment = may_segment && can_segment;
         let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb, may_segment);
         let series = crate::system::db_path().ok();
         let verdict = crate::system::floor::admit_now(
@@ -3043,7 +3352,19 @@ impl ImageGenerate {
             series.as_deref(),
         );
         match verdict.sentence("a generation") {
-            None => Ok(()),
+            // Admitted. The count is one more ask, where SAM is not already
+            // in this one: of the same floor, answered quietly.
+            None => Ok(wants_count
+                && (may_segment
+                    || (can_segment
+                        && crate::system::floor::admit_now(
+                            memory_need_mb(loaded, self.cfg.min_available_mb, true)
+                                .saturating_mul(1024 * 1024),
+                            &self.floor,
+                            series.as_deref(),
+                        )
+                        .sentence("a generation")
+                        .is_none()))),
             Some(why) => {
                 // The off switch is the operator's, said in the operator's
                 // log and never to the model: told it, a model retried six
@@ -3573,7 +3894,7 @@ impl ImageGenerate {
                 "it is already {w}×{h}; a redraw at about a megapixel adds nothing"
             ));
         }
-        self.memory_guard(crate::sampling::Model::Standard, false)
+        self.memory_guard(crate::sampling::Model::Standard, false, false)
             .await?;
         let req = Request {
             prompt: UPSCALE_PROMPT.to_string(),
@@ -3605,6 +3926,130 @@ impl ImageGenerate {
             Err(Failure::Cancelled) => Err("cancelled".into()),
             Err(Failure::Other(e)) => Err(format!("{e:#}")),
         }
+    }
+
+    /// A new picture counted after it is drawn, and drawn again at a fresh
+    /// seed while it shows more people than `expected`, at most
+    /// [`PEOPLE_REDRAWS`] times; the render with the fewest over is kept,
+    /// the first on a tie, and `req.seed` is left as that one's. A count
+    /// that cannot be made keeps the picture in hand and says why in the
+    /// record. Every render and count's uncleared temp copies go to `left`.
+    #[allow(clippy::too_many_arguments)]
+    async fn counted(
+        &self,
+        ctx: &ToolCtx,
+        req: &mut Request,
+        first: Vec<u8>,
+        expected: usize,
+        may_redraw: bool,
+        timeout: Duration,
+        left: &mut Vec<String>,
+    ) -> (std::result::Result<Vec<u8>, Failure>, PeopleCheck) {
+        let mut check = PeopleCheck {
+            expected,
+            seen: Vec::new(),
+            kept: 0,
+            may_redraw,
+            stopped: None,
+            renders: 1,
+        };
+        let mut renders = vec![(first, req.seed)];
+        // One budget for every count of this job, apart from the earlier
+        // segmentations' and from the renders' timeouts: a wedged count
+        // holds the chat's picture slot for at most this much more.
+        let mut budget = SEGMENT_BUDGET.min(timeout);
+        loop {
+            let (bytes, _) = renders.last().expect("a render is in hand");
+            let picture = Reference {
+                path: String::new(),
+                bytes: bytes.clone(),
+                ext: "png",
+            };
+            let asked = Instant::now();
+            let (count, kept_copies) = self
+                .backend
+                .people(
+                    &self.cfg,
+                    &picture,
+                    ctx.cancel.as_ref(),
+                    budget,
+                    ctx.image_trail.as_deref(),
+                )
+                .await;
+            budget = budget.saturating_sub(asked.elapsed());
+            left.extend(kept_copies);
+            match count {
+                Ok(n) => check.seen.push(n),
+                // Stopped while counting or drawing again: a finished render
+                // is in hand, and it is kept, not thrown away with the stop.
+                Err(Failure::Cancelled) => {
+                    check.stopped = Some("stopped".into());
+                    break;
+                }
+                Err(Failure::Other(e)) => {
+                    tracing::warn!("image_generate: the people count failed: {e:#}");
+                    check.stopped = Some("the count failed".into());
+                    break;
+                }
+            }
+            let over = check.seen.last().is_some_and(|n| *n > expected);
+            // Far over the cast on the first count is a crowd the scene's
+            // words did not name, far more likely than one figure drawn
+            // twice (the measured doubling is one over): kept, recorded,
+            // and neither drawn again nor said to be wrong, whether or not
+            // it could have been drawn again.
+            if renders.len() == 1 && check.seen.first().is_some_and(|n| *n > expected + 1) {
+                check.stopped = Some(FAR_OVER.into());
+                break;
+            }
+            if !over || !may_redraw || renders.len() > PEOPLE_REDRAWS {
+                break;
+            }
+            if budget.is_zero() {
+                check.stopped = Some("the counts' time was spent".into());
+                break;
+            }
+            req.seed = draw_seed(ctx);
+            let again = self
+                .backend
+                .generate(
+                    &self.cfg,
+                    req,
+                    ctx.cancel.as_ref(),
+                    timeout,
+                    ctx.image_trail.as_deref(),
+                )
+                .await;
+            left.extend(again.left);
+            match again.image {
+                Ok(bytes) => renders.push((bytes, req.seed)),
+                // Stopped while counting or drawing again: a finished render
+                // is in hand, and it is kept, not thrown away with the stop.
+                Err(Failure::Cancelled) => {
+                    check.stopped = Some("stopped".into());
+                    break;
+                }
+                Err(Failure::Other(e)) => {
+                    tracing::warn!("image_generate: drawing again failed: {e:#}");
+                    check.stopped = Some("drawing again failed".into());
+                    break;
+                }
+            }
+        }
+        // The fewest people among the renders that were counted; a render
+        // never counted (the count failed on it) is kept only when it is
+        // the only one.
+        check.kept = check
+            .seen
+            .iter()
+            .enumerate()
+            .min_by_key(|(i, n)| (**n, *i))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        check.renders = renders.len();
+        let (bytes, seed) = renders.swap_remove(check.kept);
+        req.seed = seed;
+        (Ok(bytes), check)
     }
 
     fn arm_unload(&self) {
@@ -4695,13 +5140,25 @@ impl Tool for ImageGenerate {
         let tuning = self.tuning(ctx);
         // The owner's LoRAs for it, from the same read of the settings.
         let (picked, lora_off) = self.picture_loras(ctx, tuning.model.unwrap_or_default());
-        let may_segment = call.may_segment();
-        if let Err(why) = self
-            .memory_guard(tuning.model.unwrap_or_default(), may_segment)
+        // A new picture is counted by SAM after it is drawn (`PeopleCheck`),
+        // and whether this call is one is not known until it is planned: a
+        // call that can never be is not charged for it.
+        // The count is asked for only where the memory is there for it: a
+        // picture is never refused for a check it can be drawn without.
+        // Short of it, the picture is admitted as it was before the count
+        // existed, and is not counted.
+        let wants_count = self.cfg.people_check && call.counts_people();
+        let counts_people = match self
+            .memory_guard(
+                tuning.model.unwrap_or_default(),
+                call.may_segment(),
+                wants_count,
+            )
             .await
         {
-            return Ok(refused(why));
-        }
+            Ok(counted) => counted,
+            Err(why) => return Ok(refused(why)),
+        };
         // The picture being changed, read once: its bytes key its record and
         // are the canvas.
         let picture = match &call.picture {
@@ -6707,6 +7164,52 @@ impl Tool for ImageGenerate {
                     }
                 }
             };
+            // Counted after it is drawn: a new picture of the scene's
+            // people alone, in one pass. Someone out of frame whose hands
+            // are in it, and a first-person view, are left uncounted: SAM
+            // finds a person in a forearm (3 to 5 finds where the scene had
+            // 2, on the three recorded pictures of that shape, 2026-11-12).
+            let counts = (counts_people
+                && matches!(plan.render, crate::picture::Render::New)
+                && layered.is_none()
+                && !plan.people.is_empty()
+                && plan.offstage.is_empty()
+                && plan.seen_from.is_none())
+            .then(|| (plan.people.len(), plan.seed == crate::picture::Seed::Fresh));
+            let mut people_check: Option<PeopleCheck> = None;
+            // A crowd in the words is left uncounted, and said so in the
+            // manifest: unrecorded, it could not be told from a picture
+            // that was never a candidate.
+            let counts = match counts {
+                Some((expected, may_redraw))
+                    if more_than_listed(&plan.next, plan.also.as_deref()) =>
+                {
+                    people_check = Some(PeopleCheck {
+                        expected,
+                        seen: Vec::new(),
+                        kept: 0,
+                        may_redraw,
+                        stopped: Some(MORE_SAID.into()),
+                        renders: 1,
+                    });
+                    None
+                }
+                Some(c) if me.backend.segments().await => Some(c),
+                _ => None,
+            };
+            let (image, left) = match (image, counts) {
+                (Ok(first), Some((expected, may_redraw))) => {
+                    let mut kept: Vec<String> = left.into_iter().collect();
+                    let (image, check) = me
+                        .counted(
+                            ctx, &mut req, first, expected, may_redraw, timeout, &mut kept,
+                        )
+                        .await;
+                    people_check = Some(check);
+                    (image, (!kept.is_empty()).then(|| kept.join("; ")))
+                }
+                (image, _) => (image, left),
+            };
             me.arm_unload();
             // The segmentation's own temp copies, said beside the render's.
             let left = match (left, seg_left) {
@@ -6903,6 +7406,9 @@ impl Tool for ImageGenerate {
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
                 "mask_read": mask_read.as_ref().map(MaskRead::json),
                 "hidden": hidden,
+                // How many people each render showed against the scene's
+                // count, and which was kept: null for a picture not counted.
+                "people_check": people_check.as_ref().map(PeopleCheck::row),
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
                 "model": {
                     "backend": "comfyui",
@@ -7015,6 +7521,10 @@ impl Tool for ImageGenerate {
                     )
                 }
             };
+            if let Some(said) = people_check.as_ref().and_then(PeopleCheck::said) {
+                text.push(' ');
+                text.push_str(&said);
+            }
             if let Some(mp) = &mask_plan {
                 let area = match (&plan.mask, &masked_by) {
                     (Some(m), _) => format!("the area painted in {m}"),
@@ -9731,7 +10241,11 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
         let sent = last();
-        assert!(sent.contains("are both John's full figure"), "{sent}");
+        assert!(
+            sent.contains("<image1> shows one person, John: John's full figure"),
+            "{sent}"
+        );
+        assert!(!sent.contains("<image2>"), "the figure goes once: {sent}");
         assert!(sent.contains("John is seen from behind"), "{sent}");
         assert!(!sent.contains("portrait"), "{sent}");
         assert!(!sent.contains("grinning"), "{sent}");
@@ -11973,6 +12487,367 @@ mod tests {
         assert_eq!(asks, 1, "a yes is kept");
         let (url, _) = fake_with(Fake::default()).await;
         assert!(!tool(&url).backend.segments().await);
+    }
+
+    /// A count's finds, one mask each: two apart are two people, the same
+    /// person found twice is one, and a find far smaller than the picture
+    /// or than the largest is nobody.
+    #[test]
+    fn people_in_counts_finds_that_are_apart_and_of_a_size() {
+        let mask = |area| {
+            image::load_from_memory(&mask_png(96, 96, area))
+                .unwrap()
+                .to_luma8()
+        };
+        let (left, right) = (mask((4, 10, 40, 90)), mask((54, 10, 90, 90)));
+        assert_eq!(people_in(&[]), 0);
+        assert_eq!(
+            people_in(&[mask((0, 0, 0, 0))]),
+            0,
+            "the graph's empty mask"
+        );
+        assert_eq!(people_in(std::slice::from_ref(&left)), 1);
+        assert_eq!(people_in(&[left.clone(), right.clone()]), 2);
+        // Found twice: the second lies almost wholly inside the first.
+        assert_eq!(people_in(&[left.clone(), mask((6, 12, 38, 88))]), 1);
+        // A passer-by far back, under a fiftieth of the picture.
+        assert_eq!(people_in(&[left.clone(), mask((80, 40, 88, 60))]), 1);
+        // A small copy standing behind still counts: a twentieth of it.
+        assert_eq!(people_in(&[left, right, mask((44, 30, 52, 86))]), 3);
+    }
+
+    /// The count asks for more than one person, each as its own mask, and
+    /// a picture of nobody is still a job that writes a picture.
+    #[test]
+    fn people_graph_asks_for_each_person_and_always_writes_a_mask() {
+        let g = people_graph("up.png");
+        assert_eq!(g["text"]["inputs"]["text"], "person:8");
+        assert_eq!(g["sam"]["inputs"]["individual_masks"], true);
+        assert_eq!(g["out"]["inputs"]["images"], json!(["all", 0]));
+        assert_eq!(g["all"]["inputs"]["image1"], json!(["toimg", 0]));
+        assert_eq!(g["none"]["class_type"], "SolidMask");
+        // The union graph an edit's mask uses is unchanged.
+        let s = sam_graph("up.png", "the sky");
+        assert_eq!(s["sam"]["inputs"]["individual_masks"], false);
+        assert_eq!(s["out"]["inputs"]["images"], json!(["toimg", 0]));
+    }
+
+    /// What the result says of a count: nothing when the first render was
+    /// right, the redraw when one fixed it, and plainly when none did.
+    #[test]
+    fn a_people_check_says_only_what_went_wrong() {
+        let check = |seen: &[usize], kept, may_redraw| PeopleCheck {
+            expected: 1,
+            seen: seen.to_vec(),
+            kept,
+            may_redraw,
+            stopped: None,
+            renders: seen.len().max(1),
+        };
+        assert_eq!(check(&[1], 0, true).said(), None);
+        // Two drawn, one counted: the renders are said, not the counts.
+        let mut cut = check(&[2], 0, true);
+        cut.renders = 2;
+        let cut = cut.said().unwrap();
+        assert!(cut.contains("after 2 renders"), "{cut}");
+        let one = check(&[2], 0, true).said().unwrap();
+        assert!(!one.contains("renders"), "{one}");
+        assert_eq!(check(&[], 0, true).said(), None, "never counted");
+        let fixed = check(&[2, 1], 1, true).said().unwrap();
+        assert!(
+            fixed.contains("seemed to show 2 people where the scene has 1"),
+            "{fixed}"
+        );
+        assert!(fixed.contains("2 renders in all"), "{fixed}");
+        let still = check(&[3, 2, 2], 1, true).said().unwrap();
+        assert!(
+            still.contains("seems to show 2 people where the scene has 1"),
+            "{still}"
+        );
+        assert!(still.contains("after 3 renders"), "{still}");
+        let pinned = check(&[2], 0, false).said().unwrap();
+        assert!(pinned.contains("was not drawn again"), "{pinned}");
+        assert_eq!(
+            check(&[2, 1], 1, true).row(),
+            json!({"expected": 1, "seen": [2, 1], "kept": 1, "stopped": null})
+        );
+    }
+
+    /// A finished job that wrote `n` pictures.
+    fn done_with(n: usize) -> Value {
+        let images: Vec<Value> = (0..n)
+            .map(|i| json!({"filename": format!("m_{i}.png"), "subfolder": "", "type": "temp"}))
+            .collect();
+        json!({"job-1": {
+            "status": {"status_str": "success", "completed": true},
+            "outputs": {"out": {"images": images}}
+        }})
+    }
+
+    /// A new picture of one described person on a server that can segment:
+    /// `counts` is how many people each render's count finds, in turn.
+    async fn new_picture_counted(
+        counts: &[usize],
+        seed: Option<u64>,
+    ) -> (ToolOutput, Vec<String>, std::path::PathBuf) {
+        let (first, second, third) = (
+            mask_png(96, 96, (4, 10, 40, 90)),
+            mask_png(96, 96, (54, 10, 90, 90)),
+            mask_png(96, 96, (42, 10, 52, 90)),
+        );
+        let none = mask_png(96, 96, (0, 0, 0, 0));
+        let mut history = Vec::new();
+        let mut views = Vec::new();
+        for (i, n) in counts.iter().enumerate() {
+            // The render, told apart by where its figure stands.
+            history.push(done());
+            views.push(picture(8 * i as u32, [240, 220, 40]));
+            // Its count: a mask a find, then the graph's empty one.
+            history.push(done_with(n + 1));
+            views.extend(
+                [first.clone(), second.clone(), third.clone()]
+                    .into_iter()
+                    .take(*n),
+            );
+            views.push(none.clone());
+        }
+        let (url, seen) = fake_with(Fake {
+            history,
+            views,
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let mut call = json!({"scene": {"setting": "a rooftop garden", "people": [
+            {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}});
+        if let Some(seed) = seed {
+            call["seed"] = json!(seed);
+        }
+        let out = tool(&url).call(call, &ctx(&dir)).await.unwrap();
+        let seen = seen.lock().unwrap().clone();
+        (out, seen, dir)
+    }
+
+    /// The seed a render's graph was sent with.
+    fn seed_sent(prompt: &str) -> u64 {
+        let at = prompt.find("\"seed\":").expect("a sampler seed") + 7;
+        prompt[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    }
+
+    /// A new picture that shows the scene's people is counted once and
+    /// drawn once, and the result says nothing of it.
+    #[tokio::test]
+    async fn a_new_picture_with_the_right_number_of_people_is_drawn_once() {
+        let (out, seen, dir) = new_picture_counted(&[1], None).await;
+        assert!(!out.is_error, "{}", out.content);
+        let prompts = prompts(&seen);
+        assert_eq!(prompts.len(), 2, "the render, then its count");
+        assert!(prompts[0].contains("KSampler"), "{}", prompts[0]);
+        assert!(prompts[1].contains("SAM3_Detect") && prompts[1].contains("person:8"));
+        assert!(!out.content.contains("seem"), "{}", out.content);
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(
+            manifest["people_check"],
+            json!({"expected": 1, "seen": [1], "kept": 0, "stopped": null})
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Far over the cast on the first count is a crowd the words did not
+    /// name: kept and recorded, never drawn again or said to be wrong.
+    #[tokio::test]
+    async fn a_picture_far_over_its_cast_is_kept_and_not_said_wrong() {
+        let (out, seen, dir) = new_picture_counted(&[3], None).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(prompts(&seen).len(), 2, "render, count: {seen:?}");
+        assert!(!out.content.contains("seems to show"), "{}", out.content);
+        let check = &manifest_of(&dir, &out.content)["people_check"];
+        assert_eq!(check["seen"], json!([3]));
+        assert_eq!(check["stopped"], json!(FAR_OVER));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// One that shows a person twice is drawn again at another seed, the
+    /// second render is the picture saved, and the result says so.
+    #[tokio::test]
+    async fn a_new_picture_with_a_person_too_many_is_drawn_again() {
+        let (out, seen, dir) = new_picture_counted(&[2, 1], None).await;
+        assert!(!out.is_error, "{}", out.content);
+        let prompts = prompts(&seen);
+        assert_eq!(prompts.len(), 4, "render, count, render, count: {seen:?}");
+        let (one, two) = (seed_sent(prompts[0]), seed_sent(prompts[2]));
+        assert_ne!(one, two, "drawn again at a seed of its own");
+        assert!(
+            out.content
+                .contains("A first render seemed to show 2 people where the scene has 1"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains(&format!("seed {two}")),
+            "{}",
+            out.content
+        );
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["seed"], json!(two));
+        assert_eq!(manifest["people_check"]["seen"], json!([2, 1]));
+        assert_eq!(manifest["people_check"]["kept"], json!(1));
+        // The second render's bytes, not the first's.
+        let name = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches("image: ");
+        assert_eq!(
+            std::fs::read(dir.join(name)).unwrap(),
+            picture(8, [240, 220, 40])
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Three renders at most: when each shows too many, the one with the
+    /// fewest is kept, the first of equals, and the result says it is the
+    /// closest.
+    #[tokio::test]
+    async fn a_picture_still_over_after_its_redraws_is_kept_and_said() {
+        let (out, seen, dir) = new_picture_counted(&[2, 2, 2], None).await;
+        assert!(!out.is_error, "{}", out.content);
+        let prompts = prompts(&seen);
+        assert_eq!(prompts.len(), 6, "three renders, each counted: {seen:?}");
+        assert!(
+            out.content.contains(
+                "The picture seems to show 2 people where the scene has 1, after 3 renders"
+            ),
+            "{}",
+            out.content
+        );
+        let manifest = manifest_of(&dir, &out.content);
+        assert_eq!(manifest["people_check"]["kept"], json!(0));
+        assert_eq!(manifest["seed"], json!(seed_sent(prompts[0])));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A seed the caller gave is the caller's: the picture is counted and
+    /// what the count found is said, but it is not drawn again.
+    #[tokio::test]
+    async fn a_picture_at_a_given_seed_is_counted_but_never_drawn_again() {
+        let (out, seen, dir) = new_picture_counted(&[2], Some(7)).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(prompts(&seen).len(), 2, "{seen:?}");
+        assert!(
+            out.content.contains("was not drawn again"),
+            "{}",
+            out.content
+        );
+        assert!(out.content.contains("seed 7"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+        // Far over the cast at a seed it keeps: a crowd, said by nobody.
+        let (out, _, dir) = new_picture_counted(&[3], Some(7)).await;
+        assert!(!out.content.contains("seems to show"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Switched off, or on a server with no SAM, a picture is drawn once
+    /// and never counted, as before.
+    #[tokio::test]
+    async fn a_picture_is_not_counted_when_the_check_is_off_or_cannot_run() {
+        let call = json!({"scene": {"setting": "a rooftop garden", "people": [
+            {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}});
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let mut off = tool(&url);
+        off.cfg.people_check = false;
+        let out = off.call(call.clone(), &ctx(&dir)).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(prompts(&seen.lock().unwrap()).len(), 1);
+        assert_eq!(manifest_of(&dir, &out.content)["people_check"], Value::Null);
+        std::fs::remove_dir_all(dir).ok();
+
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url).call(call, &ctx(&dir)).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(prompts(&seen.lock().unwrap()).len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+
+        // A crowd in the setting's words, or a `who` that is several: more
+        // in the frame than the cast lists, so not counted.
+        for crowd in [
+            json!({"scene": {"setting": "a market, shoppers at every stall", "people": [
+                {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}}),
+            json!({"scene": {"setting": "a rooftop garden", "people": [
+                {"who": "two gardeners", "wearing": "overalls", "doing": "watering"}]}}),
+        ] {
+            let (url, seen) = fake_with(Fake {
+                history: vec![done()],
+                sam: true,
+                ..Fake::default()
+            })
+            .await;
+            let dir = tempdir();
+            let out = tool(&url).call(crowd, &ctx(&dir)).await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(prompts(&seen.lock().unwrap()).len(), 1);
+            assert_eq!(
+                manifest_of(&dir, &out.content)["people_check"]["stopped"],
+                json!(MORE_SAID)
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
+        // A count whose job fails keeps the picture, and says nothing.
+        let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
+            "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), failed],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"scene": {"setting": "a rooftop garden", "people": [
+                    {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("seems to show"), "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["people_check"]["stopped"],
+            json!("the count failed")
+        );
+        std::fs::remove_dir_all(dir).ok();
+        // A count or a set in the place's words is its furniture.
+        assert!(!more_than_listed(
+            &crate::scene::Scene {
+                setting: Some(crate::scene::Field {
+                    value: crate::scene::Setting::Words {
+                        text: "a family kitchen, a table for two, a pair of armchairs".into()
+                    },
+                    origin: crate::scene::Origin::Clean,
+                }),
+                ..Default::default()
+            },
+            None
+        ));
     }
 
     /// What SAM found but `prepare_mask` refuses: a speck is too small to

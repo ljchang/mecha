@@ -1058,6 +1058,9 @@ advances it.
 - `image` and `tool_use_id`, for orphan repair;
 - `seed` and `cast[].name`, for save-to-library;
 - `route`, `picture`, `mask`, `crops` and `layout_similarity`;
+- `people_check`: how many people the scene has, how many each render
+  showed, which was kept, and why a count was not made; null for a picture
+  not counted;
 - `roles`: whether the people's parts were split (`applied`, or `fell back:`
   and why), since the split is prompt-only and its fallback silent;
 - `reader`: what the scene reader merged into the call, or why it fell back;
@@ -1146,8 +1149,11 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   with the thing still there (0.1%, 0.3% and 4.4% of the area changed),
   and replayed, a second figure entwined with the first came back 0 of 3
   at cfg 1 and 0 of 3 at cfg 3. So where a painted area's words ask for
-  something to be taken out (`picture::about_removal`, a closed list of
-  plain verbs; "replace" names what comes instead and is not one), the
+  something to be taken out (`picture::only_removal` for one painted area,
+  whose words are the owner's whole sentence and may ask for more than the
+  removal, and `picture::about_removal` for a region, whose words are its
+  own; a closed list of plain verbs, and "replace" names what comes
+  instead and is not one), the
   area, grown as the mask is, is filled from what surrounds it
   (`fill_from_around`) in the canvas and the outlined copy the model is
   shown: the same turn at the same seeds, 3 of 3 at cfg 1, and a second
@@ -1181,11 +1187,17 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   (`docs/SEGMENTATION-DESIGN.md`; owner, 2026-10-16). SAM 3.1 is ComfyUI's
   own node (`sam_graph`), installed with the image slot
   (`recommend::SAM_SOURCE`), and runs only after the job is admitted and
-  only ahead of that job's render, so SAM never loads without the image
+  only beside that job's render (ahead of it for a mask, after it for the
+  count below), so SAM never loads without the image
   model the admission gauge assumes. A call that may segment asks for
   `SEGMENT_NEED_MB` on top, where the server can segment (a Mac, which is
   not asked, always). A call may segment when `mask` is words or a painted
-  region's words are about a face.
+  region's words are about a face. The count below is asked for beside it
+  only for a call that may be counted (`picture::Call::counts_people`: no
+  mask, regions or retouch) and
+  only where the memory is there: short of it the picture is admitted as
+  it was before the count existed and is not counted, never refused for
+  it.
   - **S1: words in `mask`** become the mask SAM finds for them, prepared as
     paint is. Anything that keeps them from being one (not installed, an
     error, nothing found, too small) draws the whole picture and says why;
@@ -1196,6 +1208,57 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
     SAM's face (and hair, when the words name it), so the photo keeps its
     own hairline; other regions keep their own paint, and nothing goes past
     the paint's edge. No face inside the paint keeps the paint, said.
+
+- **A new picture is counted after it is drawn** (`imagegen::PeopleCheck`,
+  2026-11-12). The finished picture goes back to SAM in the same job, one
+  mask a find (`people_graph`, `people_in`), and a picture showing more
+  people than its scene has is drawn again at a fresh seed, at most twice
+  more (`PEOPLE_REDRAWS`); the render with the fewest over is kept and its
+  seed is the record's.
+  - **"person" is what SAM is asked for.** It returns two people who
+    touch as one find, and a forearm reaching into the frame as a person.
+    "head" finds the touching copy but calls two heads in many faces seen
+    from the front (6 of 45 clean pictures), and acting only when both
+    words are over lost a copy whose head was out of sight, live. "torso"
+    was wrong both ways.
+  - **Which pictures:** one drawn new in one pass (`Render::New`: new,
+    restaged or redrawn) whose scene lists its people, with nobody named
+    out of frame (`Plan::offstage`) and no first-person view
+    (`Plan::seen_from`): there a hand or an arm of the person not drawn
+    is in the frame, and SAM counts it (3 to 5 finds where the scene had
+    2). An edit and a layered build are not counted.
+  - **Only a picture at a seed of its own is drawn again.** A restage
+    keeps the scene's seed, which keeps its room, and a caller's seed is
+    the caller's: those are counted and what was found is said.
+  - **What the result says:** nothing when the first render counted right;
+    that it was drawn again when a redraw fixed it; and, when none did or
+    none was allowed, how many people the picture seems to show against
+    the scene's. The manifest's `people_check` holds the counts.
+  - **Only too many is acted on.** Two people touching come back as one
+    body, so too few means nothing; that is also how the count misses a
+    copy that touches the original.
+  - **Measured on recorded pictures**, by eye against the counts
+    (2026-11-12). Of 31 drawn from behind, 26 had only the cast in the
+    scene: the 16 doubled ones counted over in 14 (the 2 missed are copies
+    touching the original), and none of the 10 clean ones did. Of 54 more
+    of every kind since 2026-11-08 (one to three people): all 9 with a
+    person too many counted over, and none of the 45 clean ones. A count
+    takes 1.5 s on a warm server (the first in a process 4.5 s) against a
+    30–60 s render.
+  - **A redraw does not fix a scene that asks for two.** One recorded
+    call, whose camera frames the person standing from the waist down
+    while their pose is a bend, drew a standing figure and a bending one
+    at every seed and with no reference picture at all (2 of 3): three
+    renders, and the result says the picture still seems to show two.
+  - **A count that cannot be made keeps the picture**: no SAM on the
+    server, or a failed job, is `stopped` in the manifest and never a
+    refusal. `[image] people_check = false` draws every picture once.
+  - **The picture panel's "remove the copy" is another try.** A record
+    holds each person once, so the reader can only answer by taking the
+    one person out, which drew an empty room (`Extracted::removes_a_copy`:
+    the record's only person, removed alone, by words that count two).
+    And a person taken out and described in the same answer stays
+    (`read_extraction_for`).
 
 - **A touching scene is built in layers when the persona's switch says
   so** (IMAGE-DESIGN.md §15; owner, 2026-10-10). The switch is
