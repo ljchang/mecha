@@ -62,3 +62,12 @@ memory = "episodes_store"
 [arms.episodes_store.prediction]
 metric = "failure"
 rationale = "Written before the run: episodes are handed to a run that has the tool, and the quay has none of the registry's tools. Nothing is delivered and the probes fail as the control does."
+
+[arms.concepts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts"
+
+[arms.concepts.prediction]
+metric = "failure"
+rationale = "Written before the arm ran: where the registry tasks passed, the store holds locked-before-changed-then-unlocked as a structure, the quay's tools fit it by shape, and the probe is told that elsewhere a further call on the same thing followed the change. A probe that is told gives the berth back, by trying the operations and checking; the control has no reason to."

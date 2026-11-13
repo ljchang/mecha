@@ -25,6 +25,8 @@ use crate::{
 use anyhow::{ensure, Result};
 /// The source kind of an episode kept in the store (`tool::episodes`).
 const EPISODE_CONNECTOR: &str = "host-episode-v1";
+/// The source kind of a pattern kept in the store (`tool::concepts`).
+const PATTERN_CONNECTOR: &str = "host-pattern-v1";
 /// The most records one read of the store returns (`Memory::search`'s own
 /// ceiling). Reaching it refuses the read.
 const EPISODE_READ_LIMIT: usize = 1000;
@@ -289,9 +291,73 @@ impl SessionMemory {
         let (episodes, unreadable) = self.episode_records()?;
         Ok((crate::tool::episodes::fold(episodes), unreadable))
     }
+    /// Keep what a run showed (`tool::concepts::Pattern`): one record a
+    /// session, of its own kind, beside the episodes and read like them.
+    /// The same rule holds: only [`Self::patterns`] may read these.
+    pub fn retain_pattern(&self, pattern: &crate::tool::concepts::Pattern) -> Result<()> {
+        self.memory()?.capture(crate::memory::Capture {
+            source: crate::memory::SourceKey {
+                connector: PATTERN_CONNECTOR.into(),
+                account: self.request.account.clone(),
+                id: pattern.source_id(),
+            },
+            text: serde_json::to_string(pattern)?,
+            occurred_at: None,
+            scopes: self.request.scopes.clone(),
+            transcript: None,
+        })?;
+        Ok(())
+    }
+    /// Every pattern the store holds, oldest first, and how many records of
+    /// that kind could not be read as one. Folded into concepts by the
+    /// reader (`tool::concepts::fold`).
+    pub fn patterns(&self) -> Result<(Vec<crate::tool::concepts::Pattern>, usize)> {
+        let memory = self.memory()?;
+        let (mut hits, stopped_at_limit) = memory.search_reporting(
+            &crate::memory::Query {
+                text: String::new(),
+                known_at: memory.snapshot()?,
+                valid_at: None,
+                include_possible: true,
+                limit: EPISODE_READ_LIMIT,
+            },
+            &self.access(),
+        )?;
+        ensure!(
+            !stopped_at_limit,
+            "the store holds too many records to read its patterns whole"
+        );
+        hits.sort_by_key(|hit| hit.sequence);
+        let mut unreadable = 0;
+        let mut patterns = Vec::new();
+        for hit in hits {
+            let crate::memory::Record::Evidence(capture) = hit.record else {
+                continue;
+            };
+            if capture.source.connector != PATTERN_CONNECTOR {
+                continue;
+            }
+            match serde_json::from_str(&capture.text) {
+                Ok(pattern) => patterns.push(pattern),
+                Err(_) => unreadable += 1,
+            }
+        }
+        Ok((patterns, unreadable))
+    }
     /// Record how the task run in `session` was judged, as a revision of its
-    /// outcome record. `false` when the session kept no outcome.
+    /// outcome record and of the pattern it showed. `false` when the session
+    /// kept no outcome.
     pub fn appraise_episode(&self, session: &str, passed: bool) -> Result<bool> {
+        if let Some(mut pattern) = self
+            .patterns()?
+            .0
+            .into_iter()
+            .rev()
+            .find(|p| p.session == session)
+        {
+            pattern.judged = Some(passed);
+            self.retain_pattern(&pattern)?;
+        }
         let Some(mut outcome) = self
             .episode_records()?
             .0

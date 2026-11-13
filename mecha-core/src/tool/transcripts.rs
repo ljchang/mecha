@@ -77,7 +77,9 @@ fn delivery(text: &str) -> bool {
     {
         return true;
     }
-    text.starts_with(DELIVERY_STEM) || text.starts_with(super::episodes::DELIVERY_STEM)
+    text.starts_with(DELIVERY_STEM)
+        || text.starts_with(super::episodes::DELIVERY_STEM)
+        || text.starts_with(super::concepts::DELIVERY_STEM)
 }
 
 /// Whether a transcript is one this tool may quote: a one-shot run's, or a

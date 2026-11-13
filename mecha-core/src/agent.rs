@@ -2159,6 +2159,7 @@ fn is_recall_delivery(text: &str) -> bool {
     [
         crate::tool::transcripts::DELIVERY_STEM,
         crate::tool::episodes::DELIVERY_STEM,
+        crate::tool::concepts::DELIVERY_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -11634,6 +11635,7 @@ mod tests {
         let stems = [
             crate::tool::transcripts::DELIVERY_STEM,
             crate::tool::episodes::DELIVERY_STEM,
+            crate::tool::concepts::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]

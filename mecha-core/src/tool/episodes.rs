@@ -69,8 +69,9 @@ const ERRORS: usize = 3;
 const READS: usize = 3;
 const PER_TOOL: usize = 2;
 /// Tools whose calls are the harness's memory, never an episode's subject.
-pub(crate) const MEMORY_TOOLS: [&str; 5] = [
+pub(crate) const MEMORY_TOOLS: [&str; 6] = [
     NAME,
+    super::concepts::NAME,
     "goal_context",
     "memory_search",
     "transcript_search",

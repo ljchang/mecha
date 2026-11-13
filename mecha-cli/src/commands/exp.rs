@@ -2211,7 +2211,14 @@ async fn run_one(
     // A memory arm: the trial home's own store, made once and carried with
     // the home. The goal is the manifest's to confirm for every arm alike,
     // so the arms differ in memory and in nothing else.
-    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesStore) {
+    let in_store = matches!(
+        arm.memory,
+        Some(
+            mecha_core::experiment::ArmMemory::EpisodesStore
+                | mecha_core::experiment::ArmMemory::Concepts
+        )
+    );
+    if in_store {
         anyhow::ensure!(
             manifest.tasks.confirmed_goals.contains_key(&case.id),
             "arm `{}` keeps episodes in the agent store, which a run opens against a \
@@ -2222,6 +2229,9 @@ async fn run_one(
         cmd.arg("--episodes-deliver")
             .arg("--episodic-memory")
             .arg(memory_request(mecha, &home)?);
+        if arm.memory == Some(mecha_core::experiment::ArmMemory::Concepts) {
+            cmd.arg("--concepts-deliver");
+        }
     } else if matches!(
         arm.memory,
         Some(
@@ -2259,7 +2269,8 @@ async fn run_one(
             | ArmMemory::Transcripts
             | ArmMemory::Episodes
             | ArmMemory::EpisodesAppraised
-            | ArmMemory::EpisodesStore => {}
+            | ArmMemory::EpisodesStore
+            | ArmMemory::Concepts => {}
         }
     }
 
@@ -2450,7 +2461,7 @@ async fn run_one(
     }
     // The same grade for a home whose episodes are in the agent store. The
     // store admits only the process whose home it is, so a child records it.
-    if arm.memory == Some(mecha_core::experiment::ArmMemory::EpisodesStore) {
+    if in_store {
         if let Some(id) = &trial.session_id {
             let mut appraise = std::process::Command::new(mecha);
             appraise

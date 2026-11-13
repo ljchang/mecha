@@ -1135,6 +1135,7 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         Some(ArmMemory::EpisodesStore) => {
             fnv64(format!("{original}|memory=episodes_store").as_bytes())
         }
+        Some(ArmMemory::Concepts) => fnv64(format!("{original}|memory=concepts").as_bytes()),
         Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
         Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
     }
@@ -1172,6 +1173,10 @@ pub enum ArmMemory {
     /// store and not in a file of its own: one record per episode, and the
     /// grade as a revision of the outcome record.
     EpisodesStore,
+    /// `episodes_store`, and concepts: the arrangement of calls each run
+    /// showed is kept by structure, and handed to a run whose tools have
+    /// the same shapes under other names (`tool::concepts`).
+    Concepts,
     /// No store: the harness searches the home's earlier session
     /// transcripts for the task and hands the model what it found. The
     /// plain-retrieval baseline.
