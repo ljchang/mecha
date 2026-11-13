@@ -1955,6 +1955,66 @@ struct PeopleCheck {
     may_redraw: bool,
     /// Why counting stopped before an answer, when it did.
     stopped: Option<String>,
+    /// How many renders were drawn, counted or not.
+    renders: usize,
+}
+
+/// Whether a scene's words put more people in the frame than its cast
+/// lists: a crowd in the setting, or one `who` that is several. Such a
+/// picture is not counted: over the cast by design, it was drawn again
+/// twice for the same crowd and then said to be wrong (review of #874).
+fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
+    const SEVERAL: &[&str] = &[
+        "people",
+        "crowd",
+        "crowded",
+        "crowds",
+        "busy",
+        "others",
+        "guests",
+        "customers",
+        "patrons",
+        "audience",
+        "onlookers",
+        "passersby",
+        "strangers",
+        "children",
+        "kids",
+        "men",
+        "women",
+        "friends",
+        "couples",
+        "dancers",
+        "commuters",
+        "shoppers",
+        "tourists",
+        "two",
+        "three",
+        "four",
+        "several",
+        "group",
+        "couple",
+        "pair",
+        "family",
+    ];
+    fn strings(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(t) => out.push(t.to_lowercase()),
+            Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            Value::Object(o) => o.values().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+    let mut words = Vec::new();
+    strings(
+        &serde_json::to_value(next).unwrap_or(Value::Null),
+        &mut words,
+    );
+    words.extend(also.map(str::to_lowercase));
+    words.iter().any(|t| {
+        t.split(|c: char| !c.is_alphabetic())
+            .any(|w| SEVERAL.contains(&w))
+    })
 }
 
 impl PeopleCheck {
@@ -1980,7 +2040,7 @@ impl PeopleCheck {
         };
         let first = *self.seen.first()?;
         let kept = *self.seen.get(self.kept)?;
-        let renders = self.seen.len();
+        let renders = self.renders.max(self.seen.len());
         if kept <= self.expected {
             return (renders > 1).then(|| {
                 format!(
@@ -1999,9 +2059,13 @@ impl PeopleCheck {
                 self.expected
             )
         } else {
+            let after = if renders > 1 {
+                format!(", after {renders} renders; it is the closest of those counted")
+            } else {
+                String::new()
+            };
             format!(
-                "The picture seems to show {} where the scene has {}, after {renders} \
-                 renders; it is the closest of them.",
+                "The picture seems to show {} where the scene has {}{after}.",
                 people(kept),
                 self.expected
             )
@@ -3861,8 +3925,13 @@ impl ImageGenerate {
             kept: 0,
             may_redraw,
             stopped: None,
+            renders: 1,
         };
         let mut renders = vec![(first, req.seed)];
+        // One budget for every count of this job, apart from the earlier
+        // segmentations' and from the renders' timeouts: a wedged count
+        // holds the chat's picture slot for at most this much more.
+        let mut budget = SEGMENT_BUDGET.min(timeout);
         loop {
             let (bytes, _) = renders.last().expect("a render is in hand");
             let picture = Reference {
@@ -3870,16 +3939,18 @@ impl ImageGenerate {
                 bytes: bytes.clone(),
                 ext: "png",
             };
+            let asked = Instant::now();
             let (count, kept_copies) = self
                 .backend
                 .people(
                     &self.cfg,
                     &picture,
                     ctx.cancel.as_ref(),
-                    SEGMENT_BUDGET.min(timeout),
+                    budget,
                     ctx.image_trail.as_deref(),
                 )
                 .await;
+            budget = budget.saturating_sub(asked.elapsed());
             left.extend(kept_copies);
             match count {
                 Ok(n) => check.seen.push(n),
@@ -3892,6 +3963,10 @@ impl ImageGenerate {
             }
             let over = check.seen.last().is_some_and(|n| *n > expected);
             if !over || !may_redraw || renders.len() > PEOPLE_REDRAWS {
+                break;
+            }
+            if budget.is_zero() {
+                check.stopped = Some("the counts' time was spent".into());
                 break;
             }
             req.seed = draw_seed(ctx);
@@ -3926,6 +4001,7 @@ impl ImageGenerate {
             .min_by_key(|(i, n)| (**n, *i))
             .map(|(i, _)| i)
             .unwrap_or(0);
+        check.renders = renders.len();
         let (bytes, seed) = renders.swap_remove(check.kept);
         req.seed = seed;
         (Ok(bytes), check)
@@ -7043,7 +7119,8 @@ impl Tool for ImageGenerate {
                 && layered.is_none()
                 && !plan.people.is_empty()
                 && plan.offstage.is_empty()
-                && plan.seen_from.is_none())
+                && plan.seen_from.is_none()
+                && !more_than_listed(&plan.next, plan.also.as_deref()))
             .then(|| {
                 (
                     plan.people.len(),
@@ -12400,8 +12477,16 @@ mod tests {
             kept,
             may_redraw,
             stopped: None,
+            renders: seen.len().max(1),
         };
         assert_eq!(check(&[1], 0, true).said(), None);
+        // Two drawn, one counted: the renders are said, not the counts.
+        let mut cut = check(&[2], 0, true);
+        cut.renders = 2;
+        let cut = cut.said().unwrap();
+        assert!(cut.contains("after 2 renders"), "{cut}");
+        let one = check(&[2], 0, true).said().unwrap();
+        assert!(!one.contains("renders"), "{one}");
         assert_eq!(check(&[], 0, true).said(), None, "never counted");
         let fixed = check(&[2, 1], 1, true).said().unwrap();
         assert!(
@@ -12612,6 +12697,28 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(prompts(&seen.lock().unwrap()).len(), 1);
         std::fs::remove_dir_all(dir).ok();
+
+        // A crowd in the setting's words, or a `who` that is several: more
+        // in the frame than the cast lists, so not counted.
+        for crowd in [
+            json!({"scene": {"setting": "a market, shoppers at every stall", "people": [
+                {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}}),
+            json!({"scene": {"setting": "a rooftop garden", "people": [
+                {"who": "two gardeners", "wearing": "overalls", "doing": "watering"}]}}),
+        ] {
+            let (url, seen) = fake_with(Fake {
+                history: vec![done()],
+                sam: true,
+                ..Fake::default()
+            })
+            .await;
+            let dir = tempdir();
+            let out = tool(&url).call(crowd, &ctx(&dir)).await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(prompts(&seen.lock().unwrap()).len(), 1);
+            assert_eq!(manifest_of(&dir, &out.content)["people_check"], Value::Null);
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     /// What SAM found but `prepare_mask` refuses: a speck is too small to
