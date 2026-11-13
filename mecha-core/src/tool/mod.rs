@@ -22,6 +22,7 @@ pub mod request_access;
 pub mod skill;
 pub mod system_read;
 pub mod todo;
+pub mod transcripts;
 
 use crate::config::{PermissionMode, SecurityConfig, ToolsConfig};
 use crate::message::ToolSpec;

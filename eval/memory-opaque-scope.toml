@@ -66,3 +66,12 @@ memory = "delivered"
 [arms.delivered.prediction]
 metric = "failure"
 rationale = "The model does not ask its memory; with the same store searched by the harness for the task and handed over beside the prompt, the probes have the earlier tasks' tool results in front of them and pass where the control fails."
+
+[arms.transcripts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "transcripts"
+
+[arms.transcripts.prediction]
+metric = "failure"
+rationale = "The rules the probes need are in the earlier tasks' transcripts as tool results; a keyword search of those transcripts for the task's words, handed over beside the prompt, passes probes the control fails, with no store built."

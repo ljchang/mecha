@@ -1125,6 +1125,7 @@ fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
         None => original,
         Some(ArmMemory::Everything) => fnv64(format!("{original}|memory=everything").as_bytes()),
         Some(ArmMemory::Delivered) => fnv64(format!("{original}|memory=delivered").as_bytes()),
+        Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
     }
 }
 
@@ -1140,6 +1141,10 @@ pub enum ArmMemory {
     /// The same store, and the harness recalls for the task before the
     /// first request and hands the model what it found.
     Delivered,
+    /// No store: the harness searches the home's earlier session
+    /// transcripts for the task and hands the model what it found. The
+    /// plain-retrieval baseline.
+    Transcripts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

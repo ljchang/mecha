@@ -2220,7 +2220,10 @@ async fn run_one(
     // A memory arm: the trial home's own store, made once and carried with
     // the home. The goal is the manifest's to confirm for every arm alike,
     // so the arms differ in memory and in nothing else.
-    if let Some(memory) = arm.memory {
+    if arm.memory == Some(mecha_core::experiment::ArmMemory::Transcripts) {
+        // No store to make: the home's own session files are the corpus.
+        cmd.arg("--transcripts-deliver");
+    } else if let Some(memory) = arm.memory {
         anyhow::ensure!(
             manifest.tasks.confirmed_goals.contains_key(&case.id),
             "arm `{}` runs with memory, which records a run against a confirmed goal: \

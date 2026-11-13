@@ -50,6 +50,12 @@ pub struct Args {
     #[arg(long, requires = "episodic_memory")]
     pub memory_deliver: bool,
 
+    /// Have the harness search this home's earlier session transcripts for
+    /// this task before the first request and hand the model what it found,
+    /// beside the prompt. Arms private data and outside content.
+    #[arg(long, conflicts_with_all = ["resume", "no_session", "images"])]
+    pub transcripts_deliver: bool,
+
     /// Read-only synthetic memory for goal_context (experimental, unencrypted).
     #[cfg(feature = "memory-prototype")]
     #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
@@ -440,6 +446,47 @@ pub async fn execute(
     };
     #[cfg(not(feature = "memory-prototype"))]
     let delivered: Option<String> = None;
+    // The same, over the transcripts this home already holds and no store
+    // (`--transcripts-deliver`): the plain-retrieval baseline. The tool is
+    // inserted before the config record, so the recorded surface has it.
+    let delivered = match (&session, args.transcripts_deliver) {
+        (Some(recorded), true) => {
+            use mecha_core::tool::transcripts;
+            anyhow::ensure!(
+                delivered.is_none(),
+                "--transcripts-deliver and --memory-deliver are two arms; choose one"
+            );
+            prepared.agent.registry_mut().insert(std::sync::Arc::new(
+                transcripts::Transcripts::new(session_dir.clone(), recorded.path.clone()),
+            ));
+            let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+            let dispatched = prepared
+                .agent
+                .dispatch_one(
+                    &cx,
+                    &mut convo,
+                    transcripts::NAME,
+                    transcripts::delivery_input(&prompt),
+                    &None,
+                )
+                .await;
+            eprintln!(
+                "mecha: transcripts delivered {} bytes{}",
+                dispatched.content.len(),
+                if dispatched.is_error {
+                    " (an error)"
+                } else {
+                    ""
+                }
+            );
+            Some(format!(
+                "{}{}",
+                transcripts::DELIVERY_STEM,
+                dispatched.content
+            ))
+        }
+        _ => delivered,
+    };
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
