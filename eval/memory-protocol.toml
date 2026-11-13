@@ -1,0 +1,64 @@
+# Memory benchmark, held out for the concept work: far analog
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4). Two tasks learn a protocol in one
+# service; two probes meet the same arrangement in a service that shares no
+# tool, parameter or wording with it, and has no documentation.
+#
+#   mecha exp new eval/memory-protocol.toml
+#   mecha exp run memory-protocol
+
+name = "memory-protocol"
+kind = "lifetime"
+description = "Does an arrangement learned in one service carry to a service that shares nothing with it but the arrangement."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/protocol_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["registry-owner", "registry-tier", "quay-draft", "quay-crane"]
+
+[tasks.confirmed_goals]
+registry-owner = "task:registry-owner"
+registry-tier = "task:registry-tier"
+quay-draft = "task:quay-draft"
+quay-crane = "task:quay-crane"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "desk"
+command = "python3"
+args = ["eval/fixtures/protocol_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.delivered]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "delivered"
+
+[arms.delivered.prediction]
+metric = "failure"
+rationale = "Written before the run: the probes share no content word with the experience tasks, so a search by the task's words returns little of use and the probes fail as the control does."
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Written before the run: episodes are handed to a run that has the tool, and the quay has none of the registry's tools. Nothing is delivered and the probes fail as the control does."
