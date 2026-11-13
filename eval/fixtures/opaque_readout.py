@@ -24,8 +24,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import opaque_world  # noqa: E402
 
-STEMS = ("The harness searched your memory", "The harness searched the transcripts")
-MEMORY_TOOLS = ("goal_context", "transcript_search")
+STEMS = (
+    "The harness searched your memory",
+    "The harness searched the transcripts",
+    "A call just failed. The harness searched your memory",
+)
+MEMORY_TOOLS = ("goal_context", "transcript_search", "memory_search")
 
 
 def strings(node):
@@ -48,6 +52,17 @@ def tool_uses(node):
     elif isinstance(node, list):
         for value in node:
             yield from tool_uses(value)
+
+
+def blocks(node, kind):
+    if isinstance(node, dict):
+        if node.get("type") == kind:
+            yield node
+        for value in node.values():
+            yield from blocks(value, kind)
+    elif isinstance(node, list):
+        for value in node:
+            yield from blocks(value, kind)
 
 
 def transcript(home, session_id):
@@ -78,17 +93,31 @@ def read_trial(root, row):
         "token_rule": None,
         "unit_rule": None,
         "own_recalls": None,
+        "after_error": None,
     }
     records = transcript(home, row.get("session_id") or "")
     if records is None:
         return out
-    delivery = next((s for r in records for s in strings(r) if s.startswith(STEMS)), None)
-    out["own_recalls"] = sum(1 for r in records for name in tool_uses(r) if name in MEMORY_TOOLS)
-    if delivery is not None:
+    # Everything memory put in front of the model: what the harness handed
+    # over, at the start or after a failed call, and what the model's own
+    # searches returned. Each distinct text once (a rewrite lists it again).
+    handed = {s for r in records for s in strings(r) if s.startswith(STEMS)}
+    own = {b["id"] for r in records for b in blocks(r, "tool_use") if b.get("name") in MEMORY_TOOLS}
+    answers = {
+        b.get("content") if isinstance(b.get("content"), str) else json.dumps(b.get("content"))
+        for r in records
+        for b in blocks(r, "tool_result")
+        if b.get("tool_use_id") in own
+    }
+    out["own_recalls"] = len(own)
+    out["after_error"] = sum(1 for s in handed if s.startswith(STEMS[2]))
+    seen = handed | answers
+    if seen:
         # The rule may be JSON-escaped inside a packet; compare unescaped.
-        plain = delivery.replace('\\"', '"').replace("\\'", "'")
-        out["delivered_bytes"] = len(delivery.encode())
-        out["token_rule"] = token_rule in plain or token_rule in delivery
+        whole = "\n".join(sorted(seen))
+        plain = whole.replace('\\"', '"').replace("\\'", "'")
+        out["delivered_bytes"] = len(whole.encode())
+        out["token_rule"] = token_rule in plain or token_rule in whole
         out["unit_rule"] = unit_rule in plain
     return out
 
@@ -114,17 +143,17 @@ def main(roots):
                 rows.append(read_trial(root, row))
         print(f"\n{os.path.basename(root)}: {len(rows)} finished trial(s)")
         tasks = ["learn-rule", "learn-units", "probe-rule", "probe-both"]
-        print(f"{'arm':<12} " + " ".join(f"{t:>11}" for t in tasks) + f" {'probes':>7} {'tokens/task':>11} {'turns':>5}")
+        print(f"{'arm':<18} " + " ".join(f"{t:>11}" for t in tasks) + f" {'probes':>7} {'tokens/task':>11} {'turns':>5}")
         for arm in sorted({r["arm"] for r in rows}):
             mine = [r for r in rows if r["arm"] == arm]
             cells = " ".join(f"{rate([r for r in mine if r['task'] == t]):>11}" for t in tasks)
             probes = rate([r for r in mine if r["task"].startswith("probe")])
-            print(f"{arm:<12} {cells} {probes:>7} {mean([r['tokens'] for r in mine]):>11} {mean([r['turns'] for r in mine]):>5}")
+            print(f"{arm:<18} {cells} {probes:>7} {mean([r['tokens'] for r in mine]):>11} {mean([r['turns'] for r in mine]):>5}")
         print("probes, by what was handed over (pass/of):")
         for arm in sorted({r["arm"] for r in rows}):
             probes = [r for r in rows if r["arm"] == arm and r["task"].startswith("probe")]
             handed = [r for r in probes if r["delivered_bytes"] is not None]
-            line = f"  {arm:<12} delivered to {len(handed)}/{len(probes)}"
+            line = f"  {arm:<18} memory reached {len(handed)}/{len(probes)}"
             if handed:
                 line += f" · mean {mean([r['delivered_bytes'] for r in handed])} bytes"
                 with_token = [r for r in handed if r["token_rule"]]
@@ -133,6 +162,7 @@ def main(roots):
                 with_unit = [r for r in both if r["unit_rule"]]
                 line += f" · unit rule in packet {len(with_unit)}/{len(both)} of probe-both (passed {rate(with_unit)})"
             line += f" · model's own memory calls {sum(r['own_recalls'] or 0 for r in probes)}"
+            line += f" · harness recalls after a failure {sum(r['after_error'] or 0 for r in probes)}"
             print(line)
 
 
