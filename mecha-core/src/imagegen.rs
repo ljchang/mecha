@@ -1877,6 +1877,21 @@ pub(crate) async fn read_references(
 /// never "the edit failed": only the model knows which it asked for.
 pub const NEAR_COPY_LAYOUT: f64 = 0.78;
 
+/// A painted area in which less than this share of the pixels visibly
+/// changed came back as it was. Measured 2026-11-12 over the 14 recorded
+/// painted edits whose files remain and six replayed ones: the areas that
+/// came back the same by eye read 0.1% to 0.3% (n = 8), one that was drawn
+/// again to the same content 4.4%, and every one that changed 24.7% or more
+/// (IMAGE-REGION-EDIT-RESEARCH.md §8).
+pub const PAINT_UNCHANGED: f64 = 0.02;
+
+/// Below this share, and at or above [`PAINT_UNCHANGED`], an area came back
+/// almost as it was: said with its share, as a change that may not show,
+/// never as one that did not. The one measured case between the two groups
+/// (4.4%) was the same content drawn again; a small change inside a wide
+/// stroke could read as low, so the wording does not claim to know.
+pub const PAINT_BARELY: f64 = 0.10;
+
 /// The path a face anchor's crop is listed under in `Request::references`:
 /// never a workspace file, and left out of what the result says was edited.
 const FACE_REFERENCE: &str = "library:face:";
@@ -1990,6 +2005,11 @@ pub struct MaskPlan {
     pub source: (u32, u32),
     pub soft: image::GrayImage,
     pub bounds: (u32, u32, u32, u32),
+    /// The part whose content is to be taken out, when the words ask for
+    /// that ([`removal_hole`]): hidden from the model in what it is shown
+    /// ([`fill_request`]), never in `picture`, which the result is laid
+    /// over.
+    pub fill: Option<image::GrayImage>,
 }
 
 /// A painted mask at the canvas's size, hard-edged. Any real coverage
@@ -2138,6 +2158,15 @@ fn regions_named(regions: &[crate::picture::Region], one: &str, many: &str) -> S
     }
 }
 
+/// Colours listed for a result line: "magenta region", "magenta and cyan
+/// regions".
+fn colours_named(colours: &[&str], one: &str, many: &str) -> String {
+    match colours {
+        [c] => format!("{c} {one}"),
+        cs => format!("{} {many}", cs.join(" and ")),
+    }
+}
+
 /// What a face region's note adds when its character's face could not be
 /// had on a picture whose people are known: the name is read as the viewer
 /// there, so "its words alone" are not the words as given (review of #706).
@@ -2250,6 +2279,7 @@ pub fn prepare_mask(
         source: (pw, ph),
         soft,
         bounds,
+        fill: None,
     })
 }
 
@@ -2270,6 +2300,7 @@ pub fn prepare_regions(
     regions: &[crate::picture::Region],
     resolution: u32,
 ) -> std::result::Result<(MaskPlan, image::RgbImage), String> {
+    let index_bytes = index;
     let index = crate::image::decode(index, "the regions")
         .map_err(|e| format!("{e:#}"))?
         .to_rgb8();
@@ -2291,8 +2322,9 @@ pub fn prepare_regions(
         }
     }
     let union = png_bytes(&image::DynamicImage::ImageLuma8(union).to_rgb8())?;
-    let plan = prepare_mask(picture, &union, resolution)?;
+    let mut plan = prepare_mask(picture, &union, resolution)?;
     let (cw, ch) = plan.picture.dimensions();
+    plan.fill = removal_hole(index_bytes, regions, cw, ch);
     let mut outlined = plan.picture.clone();
     // About 6 px on a 1024 canvas, as measured.
     let radius = (cw.max(ch) / 340).max(2) as i64;
@@ -2366,9 +2398,15 @@ where
 /// back exactly as it was. The result is sized to the canvas first, should
 /// the server have answered at another size.
 pub fn composite_masked(result: &[u8], plan: &MaskPlan) -> std::result::Result<Vec<u8>, String> {
+    png_bytes(&laid_over(&drawn_at_canvas(result, plan)?, plan))
+}
+
+/// The server's result at the plan's canvas size, resized should it have
+/// answered at another.
+fn drawn_at_canvas(result: &[u8], plan: &MaskPlan) -> std::result::Result<image::RgbImage, String> {
     let (w, h) = plan.picture.dimensions();
     let result = crate::image::decode(result, "the result").map_err(|e| format!("{e:#}"))?;
-    let result = if (result.width(), result.height()) == (w, h) {
+    Ok(if (result.width(), result.height()) == (w, h) {
         result.to_rgb8()
     } else {
         image::imageops::resize(
@@ -2377,15 +2415,255 @@ pub fn composite_masked(result: &[u8], plan: &MaskPlan) -> std::result::Result<V
             h,
             image::imageops::FilterType::Lanczos3,
         )
-    };
-    let out = image::RgbImage::from_fn(w, h, |x, y| {
+    })
+}
+
+/// [`composite_masked`]'s blend, on decoded pictures.
+fn laid_over(result: &image::RgbImage, plan: &MaskPlan) -> image::RgbImage {
+    let (w, h) = plan.picture.dimensions();
+    image::RgbImage::from_fn(w, h, |x, y| {
         let m = u16::from(plan.soft.get_pixel(x, y).0[0]);
         let (o, r) = (plan.picture.get_pixel(x, y).0, result.get_pixel(x, y).0);
         image::Rgb(std::array::from_fn(|c| {
             ((u16::from(o[c]) * (255 - m) + u16::from(r[c]) * m + 127) / 255) as u8
         }))
-    });
-    png_bytes(&out)
+    })
+}
+
+/// How far one pixel moved between two pictures: the mean of its three
+/// channels' differences, on a 0–255 scale.
+fn pixel_moved(a: &image::Rgb<u8>, b: &image::Rgb<u8>) -> f64 {
+    let d: u32 = (0..3).map(|c| u32::from(a.0[c].abs_diff(b.0[c]))).sum();
+    f64::from(d) / 3.0
+}
+
+/// A pixel that moved by more than this shows a change: above what the
+/// decoder's own round trip leaves on a redrawn area that came back the
+/// same (see [`PAINT_UNCHANGED`]).
+const VISIBLE_STEP: f64 = 12.0;
+
+/// What an edit left of a painted area, read from the two pictures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintRead {
+    /// The share of the painted pixels that visibly changed, 0 to 1.
+    pub changed: f64,
+    /// The mean difference over the painted pixels, on a 0–255 scale.
+    pub mean: f64,
+}
+
+/// Read what changed under `paint` (its pixels above half) between the
+/// picture as it was and as it is now. `None` when the three differ in size
+/// or fewer than 64 pixels are painted: no reading, not an unchanged one.
+pub fn paint_read(
+    was: &image::RgbImage,
+    now: &image::RgbImage,
+    paint: &image::GrayImage,
+) -> Option<PaintRead> {
+    if was.dimensions() != now.dimensions() || was.dimensions() != paint.dimensions() {
+        return None;
+    }
+    let (mut n, mut changed, mut sum) = (0u64, 0u64, 0.0f64);
+    for ((a, b), m) in was.pixels().zip(now.pixels()).zip(paint.pixels()) {
+        if m.0[0] > 127 {
+            let d = pixel_moved(a, b);
+            n += 1;
+            sum += d;
+            changed += u64::from(d > VISIBLE_STEP);
+        }
+    }
+    (n >= 64).then(|| PaintRead {
+        changed: changed as f64 / n as f64,
+        mean: sum / n as f64,
+    })
+}
+
+/// How far the picture the server drew differs from the canvas where the
+/// mask keeps the canvas (the soft mask at zero): the mean difference there,
+/// on a 0–255 scale. The lay-back hides it, so it is read before: a drawing
+/// that moved outside the paint was laid into it out of place. `None` for
+/// sizes that differ or fewer than 64 kept pixels.
+pub fn outside_moved(
+    canvas: &image::RgbImage,
+    drawn: &image::RgbImage,
+    soft: &image::GrayImage,
+) -> Option<f64> {
+    if canvas.dimensions() != drawn.dimensions() || canvas.dimensions() != soft.dimensions() {
+        return None;
+    }
+    let (mut n, mut sum) = (0u64, 0.0f64);
+    for ((a, b), m) in canvas.pixels().zip(drawn.pixels()).zip(soft.pixels()) {
+        if m.0[0] == 0 {
+            n += 1;
+            sum += pixel_moved(a, b);
+        }
+    }
+    (n >= 64).then(|| sum / n as f64)
+}
+
+/// How alike the drawing and the canvas are laid out where the mask keeps
+/// the canvas: the correlation of their 48×48 grayscale thumbnails over the
+/// cells the mask leaves alone, as [`layout_similarity`] reads a whole
+/// picture. A drawing that was only drawn again scores near 1 however its
+/// pixels differ; one whose frame moved does not, and what is laid back
+/// from it is out of place. `None` for sizes that differ, fewer than 64
+/// kept cells, or a flat tone.
+pub fn outside_alike(
+    canvas: &image::RgbImage,
+    drawn: &image::RgbImage,
+    soft: &image::GrayImage,
+) -> Option<f64> {
+    use image::imageops::{resize, FilterType};
+    if canvas.dimensions() != drawn.dimensions() || canvas.dimensions() != soft.dimensions() {
+        return None;
+    }
+    let thumb = |img: &image::RgbImage| -> Vec<f64> {
+        let luma = image::DynamicImage::ImageRgb8(img.clone()).to_luma8();
+        resize(&luma, 48, 48, FilterType::Triangle)
+            .pixels()
+            .map(|p| f64::from(p.0[0]))
+            .collect()
+    };
+    let cover = resize(soft, 48, 48, FilterType::Triangle);
+    let (ta, tb) = (thumb(canvas), thumb(drawn));
+    let (x, y): (Vec<f64>, Vec<f64>) = cover
+        .pixels()
+        .zip(ta.iter().zip(&tb))
+        .filter(|(c, _)| c.0[0] == 0)
+        .map(|(_, (a, b))| (*a, *b))
+        .unzip();
+    if x.len() < 64 {
+        return None;
+    }
+    let n = x.len() as f64;
+    let (mx, my) = (x.iter().sum::<f64>() / n, y.iter().sum::<f64>() / n);
+    let (mut cov, mut vx, mut vy) = (0.0, 0.0, 0.0);
+    for (a, b) in x.iter().zip(&y) {
+        cov += (a - mx) * (b - my);
+        vx += (a - mx) * (a - mx);
+        vy += (b - my) * (b - my);
+    }
+    (vx > 0.0 && vy > 0.0).then(|| cov / (vx * vy).sqrt())
+}
+
+/// What a masked edit did, read from its pictures rather than assumed
+/// ([`read_masked`]): each painted area's change, and how far the server's
+/// drawing strayed outside them before it was laid back.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MaskRead {
+    /// Everything the mask redrew, taken together.
+    pub whole: Option<PaintRead>,
+    /// Each painted region by its colour, for a regions edit.
+    pub regions: Vec<(String, Option<PaintRead>)>,
+    /// How far the drawing's pixels differ where the mask keeps the canvas
+    /// ([`outside_moved`]), and how alike the two are laid out there
+    /// ([`outside_alike`]). Recorded in the manifest and not said: a
+    /// drawing sampled whole and laid back through the paint (a face
+    /// region) can come back out of place, but no such result has been
+    /// measured yet to set the line it would be said at.
+    pub outside: Option<f64>,
+    pub outside_alike: Option<f64>,
+}
+
+impl MaskRead {
+    /// The readings that decide what is said: each region's, or the whole
+    /// mask's where there are no regions.
+    fn areas(&self) -> Vec<(Option<&str>, PaintRead)> {
+        if self.regions.is_empty() {
+            return self.whole.map(|r| (None, r)).into_iter().collect();
+        }
+        self.regions
+            .iter()
+            .filter_map(|(c, r)| r.map(|r| (Some(c.as_str()), r)))
+            .collect()
+    }
+
+    /// Whether every area that could be read came back as it was. False
+    /// with nothing read: no reading is not an unchanged one.
+    pub fn all_unchanged(&self) -> bool {
+        let areas = self.areas();
+        !areas.is_empty() && areas.iter().all(|(_, r)| r.changed < PAINT_UNCHANGED)
+    }
+
+    /// The regions that came back as they were, by colour, when some but
+    /// not all did.
+    pub fn unchanged_regions(&self) -> Vec<&str> {
+        if self.all_unchanged() {
+            return Vec::new();
+        }
+        self.areas()
+            .into_iter()
+            .filter(|(_, r)| r.changed < PAINT_UNCHANGED)
+            .filter_map(|(c, _)| c)
+            .collect()
+    }
+
+    /// The areas that came back almost as they were, each with the share
+    /// of it that differs: a region by its colour, the whole mask by none.
+    pub fn barely_changed(&self) -> Vec<(Option<&str>, f64)> {
+        self.areas()
+            .into_iter()
+            .filter(|(_, r)| (PAINT_UNCHANGED..PAINT_BARELY).contains(&r.changed))
+            .map(|(c, r)| (c, r.changed))
+            .collect()
+    }
+
+    /// The manifest's copy: numbers only.
+    fn json(&self) -> Value {
+        let round = |v: f64| (v * 1000.0).round() / 1000.0;
+        let one = |r: &Option<PaintRead>| {
+            r.map(|r| json!({"changed": round(r.changed), "mean": round(r.mean)}))
+        };
+        json!({
+            "whole": one(&self.whole),
+            "regions": self.regions.iter()
+                .map(|(c, r)| json!({"colour": c, "read": one(r)}))
+                .collect::<Vec<_>>(),
+            "outside": self.outside.map(round),
+            "outside_alike": self.outside_alike.map(round),
+        })
+    }
+}
+
+/// Lay a masked edit's result over its canvas and read what it did:
+/// against `original`, the picture before any pass of this edit, under the
+/// whole mask and under each region's own paint (`regions`: the index and
+/// the regions the call named).
+fn read_masked(
+    result: &[u8],
+    plan: &MaskPlan,
+    original: &image::RgbImage,
+    regions: Option<&(Vec<u8>, Vec<crate::picture::Region>)>,
+) -> std::result::Result<(Vec<u8>, MaskRead), String> {
+    let drawn = drawn_at_canvas(result, plan)?;
+    let laid = laid_over(&drawn, plan);
+    let (cw, ch) = laid.dimensions();
+    let mut read = MaskRead {
+        whole: paint_read(original, &laid, &plan.soft),
+        regions: Vec::new(),
+        outside: outside_moved(&plan.picture, &drawn, &plan.soft),
+        outside_alike: outside_alike(&plan.picture, &drawn, &plan.soft),
+    };
+    if let Some((index, named)) = regions {
+        for r in named {
+            // Its paint, where the lay-back took the drawing: a face region
+            // is laid back along the face found (`edge_faces`), and the
+            // rest of its stroke is the original by design, not a change
+            // that failed.
+            let paint = regions_hard(index, &[r], cw, ch)
+                .ok()
+                .flatten()
+                .map(|hard| {
+                    image::GrayImage::from_fn(cw, ch, |x, y| {
+                        image::Luma([hard.get_pixel(x, y).0[0].min(plan.soft.get_pixel(x, y).0[0])])
+                    })
+                });
+            read.regions.push((
+                r.colour.clone(),
+                paint.and_then(|p| paint_read(original, &laid, &p)),
+            ));
+        }
+    }
+    Ok((png_bytes(&laid)?, read))
 }
 
 /// [`layout_similarity`] over what was painted only: both pictures and the
@@ -2447,6 +2725,180 @@ pub fn layout_similarity_painted(
         vy += (b - my) * (b - my);
     }
     (vx > 0.0 && vy > 0.0).then(|| cov / (vx * vy).sqrt())
+}
+
+/// The area a removal hides from the model: the regions whose words ask
+/// for something to be taken out ([`crate::picture::about_removal`]), grown
+/// as the mask is, so no rim of the thing is left in view. `None` when no
+/// region asks for that.
+fn removal_hole(
+    index: &[u8],
+    regions: &[crate::picture::Region],
+    cw: u32,
+    ch: u32,
+) -> Option<image::GrayImage> {
+    let out: Vec<&crate::picture::Region> = regions
+        .iter()
+        .filter(|r| crate::picture::about_removal(&r.words))
+        .collect();
+    let hard = regions_hard(index, &out, cw, ch).ok().flatten()?;
+    Some(grow_mask(&hard))
+}
+
+/// `picture` with `hole` (its pixels above half) filled from what is
+/// around it: each level of a pyramid averages the known pixels beneath
+/// it, and a hidden pixel takes the finest level that knows anything
+/// there. Smooth, with no content of its own: something for the model to
+/// draw over, not a finished patch.
+pub fn fill_from_around(picture: &image::RgbImage, hole: &image::GrayImage) -> image::RgbImage {
+    let (w, h) = picture.dimensions();
+    if hole.dimensions() != (w, h) {
+        return picture.clone();
+    }
+    // Each level: its size and, per cell, the summed colour and the weight.
+    type Level = (usize, usize, Vec<[f32; 4]>);
+    let (w0, h0) = (w as usize, h as usize);
+    let mut base = vec![[0.0f32; 4]; w0 * h0];
+    for (i, (p, m)) in picture.pixels().zip(hole.pixels()).enumerate() {
+        if m.0[0] <= 127 {
+            base[i] = [f32::from(p.0[0]), f32::from(p.0[1]), f32::from(p.0[2]), 1.0];
+        }
+    }
+    let mut levels: Vec<Level> = vec![(w0, h0, base)];
+    while let Some((lw, lh, cells)) = levels.last() {
+        if (*lw == 1 && *lh == 1) || cells.iter().all(|c| c[3] > 0.0) {
+            break;
+        }
+        let (nw, nh) = (lw.div_ceil(2), lh.div_ceil(2));
+        let mut next = vec![[0.0f32; 4]; nw * nh];
+        for y in 0..*lh {
+            for x in 0..*lw {
+                let (c, n) = (cells[y * lw + x], &mut next[(y / 2) * nw + x / 2]);
+                for k in 0..4 {
+                    n[k] += c[k];
+                }
+            }
+        }
+        levels.push((nw, nh, next));
+    }
+    let mut out = picture.clone();
+    for (x, y, m) in hole.enumerate_pixels() {
+        if m.0[0] <= 127 {
+            continue;
+        }
+        let (mut cx, mut cy) = (x as usize, y as usize);
+        for (lw, _, cells) in &levels {
+            let c = cells[cy * lw + cx];
+            if c[3] > 0.0 {
+                out.put_pixel(
+                    x,
+                    y,
+                    image::Rgb([
+                        (c[0] / c[3]).round() as u8,
+                        (c[1] / c[3]).round() as u8,
+                        (c[2] / c[3]).round() as u8,
+                    ]),
+                );
+                break;
+            }
+            (cx, cy) = (cx / 2, cy / 2);
+        }
+    }
+    // The pyramid's cells show as blocks; a blur inside the hole only
+    // leaves a smooth field.
+    let soft = image::imageops::blur(&out, 6.0);
+    for (x, y, m) in hole.enumerate_pixels() {
+        if m.0[0] > 127 {
+            out.put_pixel(x, y, *soft.get_pixel(x, y));
+        }
+    }
+    out
+}
+
+/// A masked request with the plan's `fill` hidden from the model: the
+/// canvas it is shown filled from around the hole, and the regions'
+/// outlined copy the same, its outlines kept. The plan's own picture is
+/// untouched, so the result is still laid over the original.
+fn fill_request(req: &Request, plan: &MaskPlan) -> std::result::Result<Request, String> {
+    let Some(hole) = &plan.fill else {
+        return Ok(req.clone());
+    };
+    let filled = fill_from_around(&plan.picture, hole);
+    let mut out = req.clone();
+    let Some(canvas) = out.references.first_mut() else {
+        return Err("a masked edit has no canvas".into());
+    };
+    canvas.bytes = png_bytes(&filled)?;
+    canvas.ext = "png";
+    for r in out.references.iter_mut().skip(1) {
+        if r.path == REGIONS_OUTLINED {
+            let outlined = crate::image::decode(&r.bytes, "the regions, outlined")
+                .map_err(|e| format!("{e:#}"))?
+                .to_rgb8();
+            if outlined.dimensions() != filled.dimensions() {
+                return Err("the regions' outlines are not the canvas's size".into());
+            }
+            // An outline is wherever the copy differs from the picture.
+            let kept = image::RgbImage::from_fn(filled.width(), filled.height(), |x, y| {
+                let o = outlined.get_pixel(x, y);
+                if o == plan.picture.get_pixel(x, y) {
+                    *filled.get_pixel(x, y)
+                } else {
+                    *o
+                }
+            });
+            r.bytes = png_bytes(&kept)?;
+            r.ext = "png";
+        }
+    }
+    Ok(out)
+}
+
+/// The path the regions' outlined copy is listed under in
+/// `Request::references`.
+const REGIONS_OUTLINED: &str = "the regions, outlined";
+
+impl ImageGenerate {
+    /// One render of a masked edit, with what is to be taken out hidden
+    /// from the model first ([`fill_request`]), and whether it was. An
+    /// area that cannot be hidden is drawn as the request stands, as every
+    /// masked edit was before.
+    async fn generate_masked(
+        &self,
+        ctx: &ToolCtx,
+        req: &Request,
+        plan: Option<&MaskPlan>,
+        timeout: Duration,
+    ) -> (Outcome, bool) {
+        let shown = match plan.filter(|p| p.fill.is_some() && req.mask.is_some()) {
+            Some(plan) => {
+                let (whole, plan) = (req.clone(), plan.clone());
+                match tokio::task::spawn_blocking(move || fill_request(&whole, &plan)).await {
+                    Ok(Ok(shown)) => Some(shown),
+                    Ok(Err(e)) => {
+                        tracing::warn!("image_generate: the area was not hidden: {e}");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("image_generate: the area was not hidden: {e}");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let out = self
+            .backend
+            .generate(
+                &self.cfg,
+                shown.as_ref().unwrap_or(req),
+                ctx.cancel.as_ref(),
+                timeout,
+                ctx.image_trail.as_deref(),
+            )
+            .await;
+        (out, shown.is_some())
+    }
 }
 
 /// Cheap to clone: every piece of state a call shares with the next is
@@ -5115,11 +5567,31 @@ impl Tool for ImageGenerate {
                     let pic = req.references[0].bytes.clone();
                     let resolution = req.reference_size;
                     let regions = call.regions.clone();
+                    let take_out = call
+                        .retouch
+                        .as_deref()
+                        .is_some_and(crate::picture::about_removal);
                     let prepared = tokio::task::spawn_blocking(move || {
                         // With regions the mask is their index, and their
                         // outlines ride as `<image2>` (M2).
                         let (plan, outlined) = if regions.is_empty() {
-                            (prepare_mask(&pic, &mask.bytes, resolution)?, None)
+                            let mut plan = prepare_mask(&pic, &mask.bytes, resolution)?;
+                            // One painted area whose words take something
+                            // out: all of what the mask redraws is hidden.
+                            if take_out {
+                                plan.fill = Some(image::GrayImage::from_fn(
+                                    plan.soft.width(),
+                                    plan.soft.height(),
+                                    |x, y| {
+                                        image::Luma([if plan.soft.get_pixel(x, y).0[0] > 127 {
+                                            255
+                                        } else {
+                                            0
+                                        }])
+                                    },
+                                ));
+                            }
+                            (plan, None)
                         } else {
                             let (plan, outlined) =
                                 prepare_regions(&pic, &mask.bytes, &regions, resolution)?;
@@ -5145,7 +5617,7 @@ impl Tool for ImageGenerate {
                         req.references.insert(
                             1,
                             Reference {
-                                path: "the regions, outlined".into(),
+                                path: REGIONS_OUTLINED.into(),
                                 bytes,
                                 ext: "png",
                             },
@@ -5648,7 +6120,7 @@ impl Tool for ImageGenerate {
                                 ..req.references[0].clone()
                             },
                             Reference {
-                                path: "the regions, outlined".into(),
+                                path: REGIONS_OUTLINED.into(),
                                 bytes: outlined,
                                 ext: "png",
                             },
@@ -5797,6 +6269,12 @@ impl Tool for ImageGenerate {
                     }
                 )
         });
+        // What the result is read against once it is laid back
+        // (`read_masked`): the regions by their own paint.
+        let read_regions = region_index
+            .clone()
+            .filter(|_| !call.regions.is_empty())
+            .map(|index| (index, call.regions.clone()));
         // Its line in the chat's queue, taken before the job owns the plan.
         let label = queue_label(&plan.next);
         let job = async move {
@@ -5810,19 +6288,18 @@ impl Tool for ImageGenerate {
             // segmentation is followed by this job's render (§3).
             let mut seg_left: Option<String> = None;
             let mut seg_cancelled = false;
+            // The picture before any pass of this edit: what the result is
+            // read against, where a first pass replaces the canvas below.
+            let mut original = mask_plan.as_ref().map(|m| m.picture.clone());
+            // Whether any pass hid what was to be taken out from the model.
+            let mut hidden = false;
             // The regions without a picture first (`PrePass`): its result is
             // the canvas, outline and lay-back base of the pass with them.
             if let Some(first) = pre_pass {
-                let Outcome { image, left } = me
-                    .backend
-                    .generate(
-                        &me.cfg,
-                        &first.req,
-                        ctx.cancel.as_ref(),
-                        timeout,
-                        ctx.image_trail.as_deref(),
-                    )
+                let (Outcome { image, left }, hid) = me
+                    .generate_masked(ctx, &first.req, Some(&first.plan), timeout)
                     .await;
+                hidden |= hid;
                 if let Some(left) = left {
                     seg_left = Some(match seg_left.take() {
                         Some(before) => format!("{before}; {left}"),
@@ -6190,15 +6667,11 @@ impl Tool for ImageGenerate {
                         }
                     },
                     None => {
-                        me.backend
-                            .generate(
-                                &me.cfg,
-                                &req,
-                                ctx.cancel.as_ref(),
-                                timeout,
-                                ctx.image_trail.as_deref(),
-                            )
-                            .await
+                        let (out, hid) = me
+                            .generate_masked(ctx, &req, mask_plan.as_ref(), timeout)
+                            .await;
+                        hidden |= hid;
+                        out
                     }
                 }
             };
@@ -6244,13 +6717,25 @@ impl Tool for ImageGenerate {
                     ));
                 }
             };
-            // A masked edit keeps everything the owner did not paint.
+            // A masked edit keeps everything the owner did not paint, and
+            // what it did inside the paint is read, not assumed.
+            let mut mask_read: Option<MaskRead> = None;
             let bytes = match &mask_plan {
                 None => bytes,
                 Some(mp) => {
                     let mp = mp.clone();
-                    match tokio::task::spawn_blocking(move || composite_masked(&bytes, &mp)).await {
-                        Ok(Ok(bytes)) => bytes,
+                    // A mask found in the job (S1) has no earlier canvas.
+                    let original = original.take().unwrap_or_else(|| mp.picture.clone());
+                    let regions = read_regions.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        read_masked(&bytes, &mp, &original, regions.as_ref())
+                    })
+                    .await
+                    {
+                        Ok(Ok((bytes, read))) => {
+                            mask_read = Some(read);
+                            bytes
+                        }
                         Ok(Err(why)) => {
                             return ToolOutput::err(format!(
                                 "The image was made but could not be laid over the original: \
@@ -6383,6 +6868,8 @@ impl Tool for ImageGenerate {
                 "clothes_in_act_others": clothes_others,
                 "reader": reader_said,
                 "layout_similarity": similarity.map(|r| (r * 1000.0).round() / 1000.0),
+                "mask_read": mask_read.as_ref().map(MaskRead::json),
+                "hidden": hidden,
                 "scene": landed.as_ref().map(|(_, s)| json!({"picture": s.picture})),
                 "model": {
                     "backend": "comfyui",
@@ -6509,20 +6996,61 @@ impl Tool for ImageGenerate {
                     );
                 }
                 let (cw, ch) = mp.picture.dimensions();
-                text.push_str(&if mp.source == (cw, ch) {
+                // Said from the pictures: an area that came back as it was
+                // is never called redrawn.
+                let unchanged = mask_read.as_ref().is_some_and(MaskRead::all_unchanged);
+                let did = if unchanged {
                     format!(
-                        " Only {area} was redrawn, blended over a narrow \
-                         edge around it; everything beyond that edge is the original, pixel for \
-                         pixel."
+                        " The change does not show: {area} came back as it was, so the new \
+                         picture is the original again but for a few pixels."
                     )
                 } else {
-                    let (pw, ph) = mp.source;
-                    format!(
-                        " Only {area} was redrawn. The picture is \
-                         {pw}×{ph} and was edited at {cw}×{ch}, its edit size, as any edit of it \
-                         is; outside that area the result is the original at that size."
-                    )
+                    format!(" Only {area} was redrawn")
+                };
+                text.push_str(&did);
+                text.push_str(&match (unchanged, mp.source == (cw, ch)) {
+                    (true, true) => String::new(),
+                    (false, true) => ", blended over a narrow edge around it; everything beyond \
+                                      that edge is the original, pixel for pixel."
+                        .to_string(),
+                    (unchanged, false) => {
+                        let (pw, ph) = mp.source;
+                        format!(
+                            "{} The picture is {pw}×{ph} and was edited at {cw}×{ch}, its edit \
+                             size, as any edit of it is; outside that area the result is the \
+                             original at that size.",
+                            if unchanged { "" } else { "." }
+                        )
+                    }
                 });
+                if hidden {
+                    text.push_str(
+                        " What was to be taken out was hidden from the image model, filled \
+                         in from what is around it, so it had nothing there to draw again.",
+                    );
+                }
+                if let Some(read) = &mask_read {
+                    let same = read.unchanged_regions();
+                    if !same.is_empty() {
+                        text.push_str(&format!(
+                            " The {} came back as {} was: the change asked for there does not \
+                             show.",
+                            colours_named(&same, "region", "regions"),
+                            if same.len() == 1 { "it" } else { "each" }
+                        ));
+                    }
+                    for (colour, share) in read.barely_changed() {
+                        let which = match colour {
+                            Some(c) => format!("The {c} region"),
+                            None => "It".to_string(),
+                        };
+                        text.push_str(&format!(
+                            " {which} came back almost as it was ({:.0}% of it differs from \
+                             the original), so the change asked for there may not show.",
+                            share * 100.0
+                        ));
+                    }
+                }
             }
             if layered.is_some() {
                 text.push_str(
@@ -6562,7 +7090,12 @@ impl Tool for ImageGenerate {
                 text.push(' ');
                 text.push_str(d);
             }
-            if let Some(r) = similarity.filter(|r| *r >= NEAR_COPY_LAYOUT) {
+            // A masked edit is read under its paint above (`MaskRead`): the
+            // layout there stays alike through an edit that worked.
+            if let Some(r) = similarity
+                .filter(|r| *r >= NEAR_COPY_LAYOUT)
+                .filter(|_| mask_read.is_none())
+            {
                 text.push_str(&format!(
                     " The new picture's layout came back nearly the same as {of}'s (similarity \
                      {r:.2})."
@@ -10759,6 +11292,352 @@ mod tests {
         assert_eq!(saved.get_pixel(128, 576).0, [10, 200, 30]);
         assert_eq!(manifest_of(&dir, &out.content)["mask"], "inbox/mask.png");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A masked edit whose painted area comes back as it was says so, and is
+    /// never called redrawn: the result is read from the pictures. Before,
+    /// the same result said "Only the area … was redrawn".
+    #[tokio::test]
+    async fn a_masked_edit_that_changed_nothing_says_so() {
+        let original = picture(8, [240, 220, 40]);
+        let (url, _) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![original.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(
+            dir.join("inbox/mask.png"),
+            mask_png(64, 64, (0, 16, 16, 56)),
+        )
+        .unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/orig.png", "retouch": "Make her dress green.",
+                       "mask": "inbox/mask.png"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "The change does not show: the area painted in inbox/mask.png came back as it was"
+            ) && !out.content.contains("was redrawn"),
+            "{}",
+            out.content
+        );
+        let read = &manifest_of(&dir, &out.content)["mask_read"];
+        assert_eq!(read["whole"]["changed"], 0.0, "{read}");
+        assert_eq!(read["outside"], 0.0, "{read}");
+        assert_eq!(read["outside_alike"], 1.0, "{read}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Each painted region is read under its own paint: one that came back
+    /// as it was is named beside one that changed, and the edit is still
+    /// an edit.
+    #[tokio::test]
+    async fn a_region_that_came_back_as_it_was_is_named() {
+        let original = picture(8, [240, 220, 40]);
+        // The result: the original, with the cyan region's place repainted.
+        let mut drawn = image::load_from_memory(&original).unwrap().to_rgb8();
+        for y in 16..56 {
+            for x in 40..56 {
+                drawn.put_pixel(x, y, image::Rgb([200, 20, 20]));
+            }
+        }
+        let mut result = std::io::Cursor::new(Vec::new());
+        drawn
+            .write_to(&mut result, image::ImageFormat::Png)
+            .unwrap();
+        let (url, _) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(
+                64,
+                64,
+                &[
+                    ([255, 0, 255], (0, 16, 16, 56)),
+                    ([0, 255, 255], (40, 16, 56, 56)),
+                ],
+            ),
+        )
+        .unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "take the hat off"},
+                                   {"colour": "cyan", "words": "make the sign red"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("Only the area painted in inbox/regions.png was redrawn")
+                && out.content.contains(
+                    "The magenta region came back as it was: the change asked for there does \
+                     not show."
+                ),
+            "{}",
+            out.content
+        );
+        let read = &manifest_of(&dir, &out.content)["mask_read"];
+        assert_eq!(read["regions"][0]["colour"], "magenta", "{read}");
+        assert_eq!(read["regions"][0]["read"]["changed"], 0.0, "{read}");
+        assert!(
+            read["regions"][1]["read"]["changed"].as_f64().unwrap() > 0.9,
+            "{read}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// What is said follows each area's own reading: one that came back as
+    /// it was, one that came back almost so, one that changed. A region
+    /// with no reading is none of them, and no reading at all is never
+    /// "unchanged".
+    #[test]
+    fn a_read_sorts_each_area_by_how_much_of_it_changed() {
+        let r = |changed| Some(PaintRead { changed, mean: 1.0 });
+        let read = MaskRead {
+            whole: r(0.3),
+            regions: vec![
+                ("magenta".into(), r(0.001)),
+                ("cyan".into(), r(0.044)),
+                ("blue".into(), r(0.45)),
+                ("green".into(), None),
+            ],
+            ..MaskRead::default()
+        };
+        assert!(!read.all_unchanged());
+        assert_eq!(read.unchanged_regions(), ["magenta"]);
+        assert_eq!(read.barely_changed(), [(Some("cyan"), 0.044)]);
+        let same = MaskRead {
+            whole: r(0.001),
+            ..MaskRead::default()
+        };
+        assert!(same.all_unchanged());
+        assert!(same.unchanged_regions().is_empty() && same.barely_changed().is_empty());
+        let barely = MaskRead {
+            whole: r(0.05),
+            ..MaskRead::default()
+        };
+        assert!(!barely.all_unchanged());
+        assert_eq!(barely.barely_changed(), [(None, 0.05)]);
+        let unread = MaskRead::default();
+        assert!(!unread.all_unchanged() && unread.barely_changed().is_empty());
+    }
+
+    /// A hole is filled from what is around it: nothing of what was there
+    /// is left, nothing outside it moves, and the fill is the surroundings'
+    /// own colours.
+    #[test]
+    fn a_hole_is_filled_from_what_is_around_it() {
+        let mut picture = image::RgbImage::from_fn(64, 64, |_, y| {
+            let g = 60 + (y / 2) as u8;
+            image::Rgb([g / 2, g, g / 2 + 30])
+        });
+        for y in 20..40 {
+            for x in 20..40 {
+                picture.put_pixel(x, y, image::Rgb([230, 10, 10]));
+            }
+        }
+        let hole = image::GrayImage::from_fn(64, 64, |x, y| {
+            image::Luma([if (16..44).contains(&x) && (16..44).contains(&y) {
+                255
+            } else {
+                0
+            }])
+        });
+        let filled = fill_from_around(&picture, &hole);
+        for (x, y, p) in filled.enumerate_pixels() {
+            if hole.get_pixel(x, y).0[0] > 0 {
+                // No red, and within the background's own range.
+                assert!(p.0[0] < 60 && (50..110).contains(&p.0[1]), "{x},{y}: {p:?}");
+            } else {
+                assert_eq!(p, picture.get_pixel(x, y), "{x},{y}");
+            }
+        }
+        // A hole of another size is no hole.
+        assert_eq!(
+            fill_from_around(&picture, &image::GrayImage::new(8, 8)),
+            picture
+        );
+    }
+
+    /// What the model is shown of a removal: the canvas with the area
+    /// filled, and the outlined copy the same with its outlines kept. The
+    /// plan's picture, which the result is laid over, is the original.
+    #[test]
+    fn a_removal_hides_the_area_in_what_the_model_is_shown() {
+        let original = picture(8, [240, 220, 40]);
+        let index = index_png(64, 64, &[([255, 0, 255], (4, 12, 28, 60))]);
+        let take = [region("magenta", "remove the figure")];
+        let (plan, outlined) = prepare_regions(&original, &index, &take, 1024).unwrap();
+        let hole = plan.fill.clone().expect("a removal's region is hidden");
+        let req = Request {
+            prompt: "x".into(),
+            sampling: crate::sampling::Sampling::reference(40),
+            size: None,
+            seed: 7,
+            references: vec![
+                Reference {
+                    path: "images/orig.png".into(),
+                    bytes: png_bytes(&plan.picture).unwrap(),
+                    ext: "png",
+                },
+                Reference {
+                    path: REGIONS_OUTLINED.into(),
+                    bytes: png_bytes(&outlined).unwrap(),
+                    ext: "png",
+                },
+            ],
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+            loras: Vec::new(),
+        };
+        let shown = fill_request(&req, &plan).unwrap();
+        let canvas = image::load_from_memory(&shown.references[0].bytes)
+            .unwrap()
+            .to_rgb8();
+        let lines = image::load_from_memory(&shown.references[1].bytes)
+            .unwrap()
+            .to_rgb8();
+        // The figure (yellow) is gone from both, inside the hole.
+        let yellow = |p: &image::Rgb<u8>| p.0[0] > 200 && p.0[1] > 180 && p.0[2] < 90;
+        assert!(plan.picture.pixels().any(yellow));
+        for (x, y, m) in hole.enumerate_pixels() {
+            if m.0[0] > 0 {
+                assert!(!yellow(canvas.get_pixel(x, y)), "canvas {x},{y}");
+                assert!(!yellow(lines.get_pixel(x, y)), "outlined {x},{y}");
+            }
+        }
+        // The outline is still drawn, in the region's colour.
+        assert!(lines.pixels().any(|p| p.0 == [255, 0, 255]));
+        assert!(!canvas.pixels().any(|p| p.0 == [255, 0, 255]));
+        // Words that change something rather than take it out hide nothing.
+        let change = [region("magenta", "make the figure red")];
+        let (plain, _) = prepare_regions(&original, &index, &change, 1024).unwrap();
+        assert_eq!(plain.fill, None);
+        assert_eq!(
+            fill_request(&req, &plain).unwrap().references[0].bytes,
+            req.references[0].bytes
+        );
+    }
+
+    /// A regions edit whose words take something out says the area was
+    /// hidden, and its manifest keeps that; one that changes something does
+    /// neither.
+    #[tokio::test]
+    async fn a_removal_in_a_region_is_said_and_recorded() {
+        for (words, hidden) in [("remove the figure", true), ("make the figure red", false)] {
+            let green = image::RgbImage::from_pixel(64, 64, image::Rgb([10, 200, 30]));
+            let mut result = std::io::Cursor::new(Vec::new());
+            green
+                .write_to(&mut result, image::ImageFormat::Png)
+                .unwrap();
+            let (url, _) = fake_with(Fake {
+                history: vec![done()],
+                views: vec![result.into_inner()],
+                ..Fake::default()
+            })
+            .await;
+            let dir = tempdir();
+            std::fs::create_dir_all(dir.join("images")).unwrap();
+            std::fs::create_dir_all(dir.join("inbox")).unwrap();
+            std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+            std::fs::write(
+                dir.join("inbox/regions.png"),
+                index_png(64, 64, &[([255, 0, 255], (4, 12, 28, 60))]),
+            )
+            .unwrap();
+            let out = tool(&url)
+                .call(
+                    json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                           "regions": [{"colour": "magenta", "words": words}]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(
+                out.content.contains("was hidden from the image model"),
+                hidden,
+                "{words}: {}",
+                out.content
+            );
+            assert_eq!(manifest_of(&dir, &out.content)["hidden"], hidden, "{words}");
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    /// The reads themselves: the share of painted pixels that visibly
+    /// changed, how far a drawing strayed where the mask keeps the canvas,
+    /// and no reading where there is too little to read.
+    #[test]
+    fn a_painted_area_is_read_by_the_pixels_that_changed() {
+        let was = image::RgbImage::from_pixel(32, 32, image::Rgb([100, 100, 100]));
+        let mut now = was.clone();
+        // The left half of the paint moves far; the right half by a step
+        // too small to show.
+        for y in 0..16 {
+            for x in 0..8 {
+                now.put_pixel(x, y, image::Rgb([200, 100, 40]));
+            }
+            for x in 8..16 {
+                now.put_pixel(x, y, image::Rgb([104, 100, 100]));
+            }
+        }
+        let paint = image::GrayImage::from_fn(32, 32, |x, y| {
+            image::Luma([if x < 16 && y < 16 { 255 } else { 0 }])
+        });
+        let read = paint_read(&was, &now, &paint).unwrap();
+        assert!((read.changed - 0.5).abs() < 1e-9, "{read:?}");
+        assert!(read.mean > 20.0, "{read:?}");
+        assert_eq!(paint_read(&was, &was, &paint).unwrap().changed, 0.0);
+        // Where the mask keeps the canvas nothing moved here.
+        assert_eq!(outside_moved(&was, &now, &paint), Some(0.0));
+        let shifted = image::RgbImage::from_pixel(32, 32, image::Rgb([130, 130, 130]));
+        assert_eq!(outside_moved(&was, &shifted, &paint), Some(30.0));
+        // Laid out alike: a scene drawn again a little lighter is, the same
+        // scene moved sideways is not.
+        let scene = image::RgbImage::from_fn(96, 96, |x, y| {
+            let v = if (x / 12 + y / 24) % 2 == 0 { 40 } else { 200 };
+            image::Rgb([v, v, v])
+        });
+        let lighter = image::RgbImage::from_fn(96, 96, |x, y| {
+            image::Rgb(scene.get_pixel(x, y).0.map(|c| c.saturating_add(20)))
+        });
+        let moved = image::RgbImage::from_fn(96, 96, |x, y| *scene.get_pixel((x + 12) % 96, y));
+        let keep = image::GrayImage::from_fn(96, 96, |x, y| {
+            image::Luma([if x < 24 && y < 24 { 255 } else { 0 }])
+        });
+        assert!(outside_alike(&scene, &lighter, &keep).unwrap() > 0.99);
+        assert!(outside_alike(&scene, &moved, &keep).unwrap() < 0.5);
+        assert_eq!(outside_alike(&was, &now, &paint), None, "one flat tone");
+        // Too little painted, or pictures of another size: no reading.
+        let dab = image::GrayImage::from_fn(32, 32, |x, y| {
+            image::Luma([if x < 4 && y < 4 { 255 } else { 0 }])
+        });
+        assert_eq!(paint_read(&was, &now, &dab), None);
+        let small = image::RgbImage::new(16, 16);
+        assert_eq!(paint_read(&small, &now, &paint), None);
+        assert_eq!(outside_moved(&small, &now, &paint), None);
     }
 
     #[tokio::test]
