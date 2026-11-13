@@ -790,7 +790,9 @@ The routes, in the result's own words and the manifest's `route`:
   the persona's call (`imagegen::add_owner`), the one person a reading adds,
   and only from the owner's own words. With none set, the owner is the
   viewer. Never a name in code.
-- **A first-person camera's holder is the viewer** (`picture::first_person_holder`):
+- **A first-person camera's holder is the viewer** (`picture::first_person_holder`
+  for what the camera says and the owner's character, `picture::plan` for
+  the order and what the cast adds):
   the name the camera gives a possessive; else the owner's character when
   they are in the picture; else, for a first person
   (`picture::first_person`) that names nobody, the cast member whose own
