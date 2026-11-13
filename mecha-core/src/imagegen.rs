@@ -2633,12 +2633,30 @@ fn read_masked(
     plan: &MaskPlan,
     original: &image::RgbImage,
     regions: Option<&(Vec<u8>, Vec<crate::picture::Region>)>,
+    earlier: Option<&image::GrayImage>,
 ) -> std::result::Result<(Vec<u8>, MaskRead), String> {
     let drawn = drawn_at_canvas(result, plan)?;
     let laid = laid_over(&drawn, plan);
     let (cw, ch) = laid.dimensions();
+    // Everything any pass of this edit drew through: after a first pass the
+    // plan's own mask covers only the regions the second drew, and read
+    // under that alone a first pass that worked was said not to show
+    // (review of #873). `earlier` is that pass's mask.
+    let through = match earlier {
+        None => plan.soft.clone(),
+        Some(first) => {
+            let first = if first.dimensions() == (cw, ch) {
+                first.clone()
+            } else {
+                image::imageops::resize(first, cw, ch, image::imageops::FilterType::Triangle)
+            };
+            image::GrayImage::from_fn(cw, ch, |x, y| {
+                image::Luma([plan.soft.get_pixel(x, y).0[0].max(first.get_pixel(x, y).0[0])])
+            })
+        }
+    };
     let mut read = MaskRead {
-        whole: paint_read(original, &laid, &plan.soft),
+        whole: paint_read(original, &laid, &through),
         regions: Vec::new(),
         outside: outside_moved(&plan.picture, &drawn, &plan.soft),
         outside_alike: outside_alike(&plan.picture, &drawn, &plan.soft),
@@ -2654,7 +2672,7 @@ fn read_masked(
                 .flatten()
                 .map(|hard| {
                     image::GrayImage::from_fn(cw, ch, |x, y| {
-                        image::Luma([hard.get_pixel(x, y).0[0].min(plan.soft.get_pixel(x, y).0[0])])
+                        image::Luma([hard.get_pixel(x, y).0[0].min(through.get_pixel(x, y).0[0])])
                     })
                 });
             read.regions.push((
@@ -2825,6 +2843,11 @@ fn fill_request(req: &Request, plan: &MaskPlan) -> std::result::Result<Request, 
     let Some(hole) = &plan.fill else {
         return Ok(req.clone());
     };
+    // Nothing around it to fill from: the picture would be shown as it is,
+    // and said to have been hidden.
+    if hole.pixels().all(|p| p.0[0] > 127) {
+        return Err("the area to take out is the whole picture".into());
+    }
     let filled = fill_from_around(&plan.picture, hole);
     let mut out = req.clone();
     let Some(canvas) = out.references.first_mut() else {
@@ -6295,6 +6318,8 @@ impl Tool for ImageGenerate {
             let mut original = mask_plan.as_ref().map(|m| m.picture.clone());
             // Whether any pass hid what was to be taken out from the model.
             let mut hidden = false;
+            // A first pass's mask, for the read of the whole edit.
+            let mut earlier: Option<image::GrayImage> = None;
             // The regions without a picture first (`PrePass`): its result is
             // the canvas, outline and lay-back base of the pass with them.
             if let Some(first) = pre_pass {
@@ -6331,6 +6356,7 @@ impl Tool for ImageGenerate {
                     resolution,
                     ..
                 } = first;
+                earlier = Some(plan.soft.clone());
                 let next = tokio::task::spawn_blocking(move || {
                     let laid = composite_masked(&drawn, &plan)?;
                     let (plan, outlined) = prepare_regions(&laid, &index, &kept, resolution)?;
@@ -6729,8 +6755,9 @@ impl Tool for ImageGenerate {
                     // A mask found in the job (S1) has no earlier canvas.
                     let original = original.take().unwrap_or_else(|| mp.picture.clone());
                     let regions = read_regions.clone();
+                    let earlier = earlier.take();
                     match tokio::task::spawn_blocking(move || {
-                        read_masked(&bytes, &mp, &original, regions.as_ref())
+                        read_masked(&bytes, &mp, &original, regions.as_ref(), earlier.as_ref())
                     })
                     .await
                     {
@@ -10717,6 +10744,15 @@ mod tests {
         let (w, h) = saved.dimensions();
         assert_eq!(saved.get_pixel(w * 3 / 4, h * 5 / 8).0, [20, 20, 200]);
         assert_eq!(saved.get_pixel(w / 8, h / 2).0, [200, 20, 20]);
+        // Both passes are read: the first pass's region has a reading, and a
+        // change that shows is never said not to.
+        let read = &manifest_of(&dir, &out.content)["mask_read"];
+        let regions = read["regions"].as_array().expect("regions read");
+        assert!(
+            regions.iter().all(|r| !r["read"].is_null()),
+            "every region read: {read}"
+        );
+        assert!(!out.content.contains("does not show"), "{}", out.content);
         // Between the two regions, untouched.
         let canvas = prepare_mask(&original, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
         assert_eq!(
@@ -11334,6 +11370,12 @@ mod tests {
             out.content
         );
         let read = &manifest_of(&dir, &out.content)["mask_read"];
+        // One sentence for it, not the layout's as well.
+        assert!(
+            !out.content.contains("came back nearly the same"),
+            "{}",
+            out.content
+        );
         assert_eq!(read["whole"]["changed"], 0.0, "{read}");
         assert_eq!(read["outside"], 0.0, "{read}");
         assert_eq!(read["outside_alike"], 1.0, "{read}");
