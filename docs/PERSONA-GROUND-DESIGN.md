@@ -186,7 +186,7 @@ An item:
 |---|---|
 | `kind` | A closed set: a person, a place, an event, a running joke, a coined term, an unfinished thread, a stated plan |
 | `handle` | The pair's forms for it, longest first. Each form carries the chat it was first used in, as its own deletion key, and its own `origin` |
-| `meaning` | What an outsider would need to be told. Never put in a prompt as text to say |
+| `meaning` | What an outsider would need to be told. It may ride as background, so the persona understands a handle the owner used (§5.2); it is never given as words to say |
 | `coined_by` | The owner, the persona, or both |
 | `source` | Chat and turn range, as memory rows carry it: the deletion key. One chat; see §7 on forgetting |
 | `origin` | Memory's three values: the owner's (an item, meaning or form the owner wrote or edited, which no later pass may write over), model-written from a clean stretch, or model-written from an untrusted one, by the recorded taint of the stretch. A turn no checkpoint covers is unknown, and unknown loads as untrusted, as memory's does |
@@ -238,7 +238,9 @@ are curated.
 said, across restarts and chats, from the `said` events. An item already said and acknowledged
 is not offered as news again. Where the record is uncertain (said, and no sign it was taken
 in), the persona may ask whether it has mentioned it, which is what people do with their own
-poor memory for whom they told (§2.1).
+poor memory for whom they told (§2.1). That question reads only `said` events from clean
+chats: a mark from a tainted chat silences and never prompts the persona to speak, or outside
+content could choose which shared item it asks about.
 
 ### 5.2 Cued
 
@@ -360,6 +362,14 @@ curves do.
 - **Lock is `PERSONA-DESIGN` §9.9's, unchanged.** Locking hides the chat; the writer still
   reads it, and its items behave in other chats as its memory rows do.
 
+### Out of scope
+
+- Moving personas onto memory v2, and anything in the assistant's own chats.
+- Voice calls: the ground is read there as in any chat, and no behaviour here is tuned for speech.
+- Anything shared between personas, and anything written to the knowledge graph.
+- Changing how memory rows are ranked (D28's default stands for ranking).
+- A model that learns to compress; the form is chosen by the harness.
+
 ## 8. The instrument
 
 ### 8.1 What can be read from the log
@@ -398,7 +408,7 @@ notes at the branch point.
 
 ## 9. Build order
 
-1. **Record only.** The store, the event log, `introduced`/`cued`/`said`/`taken_up` derived
+1. **Record only.** The store, the event log, `introduced`/`cued`/`offered`/`said`/`taken_up` derived
    from chats as they happen, and the nightly item pass. No prompt changes. Read the baseline:
    today's re-telling rate, reference lengths, insider rate, and how often the open threads
    that already ride in recall are raised. This is D28 as ruled (§6) and the typed shown set,
