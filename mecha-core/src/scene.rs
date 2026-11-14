@@ -323,9 +323,10 @@ pub enum Distance {
 }
 
 /// A camera's position as far as it is known: each part `None` where
-/// nothing says. `around` counts eighths of a turn round the subject to the
-/// camera's own right, from the front (0) round to the back (4) and on to
-/// the front left (7).
+/// nothing says. `around` counts eighths of a turn round the subject in the
+/// order of [`Shot::AROUND`], each named by the side of the subject the
+/// camera sees: the front (0), the subject's right (2), the back (4), the
+/// subject's left (6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Shot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -420,31 +421,36 @@ impl Shot {
     /// Words for the record's `camera` when a call gave a `view` and no
     /// words of its own: plain, and only what the view says.
     pub fn said(self) -> String {
-        let mut parts: Vec<String> = Vec::new();
+        // Each phrase is one `picture::Shot::read` and `picture::faces_away`
+        // read back as the part it says: the planner sees only the words.
+        const AROUND_SAID: [&str; 8] = [
+            "from the front",
+            "a three quarter view from the right",
+            "a side view from the right",
+            "a rear quarter view from the right",
+            "from behind",
+            "a rear quarter view from the left",
+            "a side view from the left",
+            "a three quarter view from the left",
+        ];
+        let mut parts: Vec<&str> = Vec::new();
         if let Some(a) = self.around {
-            let side = Self::AROUND[usize::from(a % 8)].replace('_', " ");
-            parts.push(format!("seen from the {side}"));
+            parts.push(AROUND_SAID[usize::from(a % 8)]);
         }
         if let Some(h) = self.height {
-            parts.push(
-                match h {
-                    Height::Low => "the camera low",
-                    Height::Eye => "the camera level with the eyes",
-                    Height::Elevated => "the camera a little above",
-                    Height::High => "the camera high above",
-                }
-                .to_string(),
-            );
+            parts.push(match h {
+                Height::Low => "the camera at a low angle",
+                Height::Eye => "the camera at eye level",
+                Height::Elevated => "the camera slightly above",
+                Height::High => "the camera at a high angle",
+            });
         }
         if let Some(d) = self.distance {
-            parts.push(
-                match d {
-                    Distance::CloseUp => "close in",
-                    Distance::Medium => "at a middle distance",
-                    Distance::Wide => "from well back",
-                }
-                .to_string(),
-            );
+            parts.push(match d {
+                Distance::CloseUp => "a close up",
+                Distance::Medium => "a medium shot",
+                Distance::Wide => "a wide shot",
+            });
         }
         parts.join(", ")
     }
@@ -1841,8 +1847,31 @@ mod tests {
             distance: None,
         }
         .said();
-        assert_eq!(said, "seen from the back, the camera low");
-        // What it says of itself reads back as itself, as far as words go.
-        assert_eq!(Shot::read(&said).around, Some(4));
+        assert_eq!(said, "from behind, the camera at a low angle");
+        // What a view says of itself reads back as itself, at every
+        // position: the planner turns the cast by these words alone.
+        for around in 0..8u8 {
+            for height in Height::ALL {
+                for distance in Distance::ALL {
+                    let shot = Shot {
+                        around: Some(around),
+                        height: Some(height),
+                        distance: Some(distance),
+                    };
+                    let said = shot.said();
+                    assert_eq!(Shot::read(&said), shot, "{said}");
+                    assert_eq!(
+                        crate::picture::faces_away(&said),
+                        (3..=5).contains(&around),
+                        "{said}"
+                    );
+                }
+            }
+            let only = Shot {
+                around: Some(around),
+                ..Default::default()
+            };
+            assert_eq!(Shot::read(&only.said()), only);
+        }
     }
 }

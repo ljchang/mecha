@@ -1405,8 +1405,9 @@ pub use crate::scene::{Distance, Height, Shot};
 /// (`loras::CameraWords`), never this code's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Move {
-    /// Eighths of a turn to the camera's own right, 0 to 7: 0 stays, 2 is
-    /// a quarter turn right, 4 is the far side, 6 a quarter turn left.
+    /// Eighths of a turn round the subject in `Shot::AROUND`'s order, 0 to
+    /// 7: 0 stays, 2 is a quarter turn toward the subject's own right, 4 is
+    /// the far side, 6 a quarter turn toward the subject's left.
     pub turn: u8,
     pub height: Height,
     pub distance: Distance,

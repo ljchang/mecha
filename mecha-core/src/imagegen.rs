@@ -6884,7 +6884,8 @@ impl Tool for ImageGenerate {
         // LoRA's trigger: measured, the plainer the words the cleaner the
         // move, and anything else in them is an edit riding along. The
         // camera LoRA leads the chain; the owner's own follow while the cap
-        // allows.
+        // allows, and their triggers ride the prompt as on any picture
+        // (unmeasured on a styled chat).
         if let (Some((camera, words)), Some(to)) = (&camera_lora, &plan.shot) {
             let said = words.say(to);
             req.references.truncate(1);
