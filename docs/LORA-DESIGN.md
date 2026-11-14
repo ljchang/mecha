@@ -110,8 +110,9 @@ strength = 0.8
 - **An entry may be given a job** (`role = "…"`, `loras::Role`). The one
   job so far is `camera`: a picture entry that draws a finished picture
   again from another camera position. Such an entry carries a `trigger` and
-  a `[lora.camera]` table of its own phrases, `around` (eight, from no turn
-  round to the camera's right), `height` (four, lowest first) and `distance`
+  a `[lora.camera]` table of its own phrases, `around` (eight, by eighths of
+  a turn from where the picture's camera stands: no turn first, each step
+  round toward the subject's own right, so the fifth is the far side), `height` (four, lowest first) and `distance`
   (three, nearest first), since a LoRA answers only to the phrases it was
   trained on (`loras::CameraWords`). It is switched as any picture LoRA is: named
   on a chat's list or a persona's (§5), a camera-only change to a picture

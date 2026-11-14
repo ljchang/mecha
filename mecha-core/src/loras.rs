@@ -269,8 +269,10 @@ pub enum Role {
 /// trained on and those are no more this code's to hold than its trigger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CameraWords {
-    /// Eight, from no turn round to seven eighths of one, to the camera's
-    /// own right (`picture::Move::turn`).
+    /// Eight, by eighths of a turn from where the picture's camera stands
+    /// (`picture::Move::turn`): 0 is no turn, and each step goes round
+    /// toward the subject's own right, `scene::Shot::AROUND`'s direction,
+    /// so 4 is the far side.
     pub around: Vec<String>,
     /// Four, lowest first (`picture::Height::index`).
     pub height: Vec<String>,

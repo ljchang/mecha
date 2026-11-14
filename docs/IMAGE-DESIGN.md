@@ -667,7 +667,9 @@ showed the front. The place is read from the picture
 picture and a question in, three closed names out. A read that fails
 restages, and says so; so does a surface with no reader (the assistant's
 own chat, a replay with readers off), since the only start left there is
-the record's words.
+the record's words. The read is asked only for an ask that names a place or
+a move: one about the camera's look alone is restaged from any start, so it
+is not read (`camera::moved_to` against a default start).
 
 A move said against the picture ("the other side", "closer", "higher") is
 turned into a place against that start (`camera::relative`); a place named

@@ -986,7 +986,7 @@ pub struct ToolCtx {
     /// everywhere else (`persona::edit::SceneReader`).
     pub scene_reader: Option<std::sync::Arc<dyn crate::persona::edit::SceneReader>>,
     /// Who reads where a picture's camera stood, for a camera move counted
-    /// from it (`camera::ShotReader`); `None` counts from the record.
+    /// from it (`camera::ShotReader`); with `None` the move is restaged, and said.
     pub shot_reader: Option<std::sync::Arc<dyn crate::camera::ShotReader>>,
     /// Where each picture's compiled prompt is saved, one line per render,
     /// for the owner to learn to improve prompts (the owner's ruling,

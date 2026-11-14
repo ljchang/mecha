@@ -266,8 +266,9 @@ pub struct Scene {
     /// drawn in one pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layers: Option<Layers>,
-    /// Where the camera stood for this picture, as far as its calls said:
-    /// what the next camera move is counted from (`picture::Plan::reshot`).
+    /// Where the camera stood for this picture, as far as its calls said.
+    /// A camera move is counted from a read of the picture, never from this
+    /// (`camera::ShotReader`); it says which side a re-shoot ends on.
     /// `None` on a record from before the field, and where no call said.
     #[serde(
         default,
