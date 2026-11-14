@@ -665,7 +665,9 @@ them a picture already seen from behind was turned half-way round and
 showed the front. The place is read from the picture
 (`camera::ShotReader`): one quarantined pass on the persona's model, a
 picture and a question in, three closed names out. A read that fails
-restages, and says so.
+restages, and says so; so does a surface with no reader (the assistant's
+own chat, a replay with readers off), since the only start left there is
+the record's words.
 
 A move said against the picture ("the other side", "closer", "higher") is
 turned into a place against that start (`camera::relative`); a place named

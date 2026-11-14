@@ -4222,8 +4222,7 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
 pub const SETTING_DESC: &str = "Everything in the picture except its people and its words: the \
      place and its objects, or the whole subject of a picture without people. Words, or \
      {\"photo\": <path>} to put the people in that room.";
-/// `scene.view`'s description. One home for it: the persona's schema and
-/// the panel's extraction both say it in these words.
+/// `scene.view`'s description in the image tool's schema.
 pub const VIEW_DESC: &str = "Where the camera stands, whenever the request is about that; \
      give it beside `camera`. `around` is the side of the subject the camera sees (back for \
      from behind, left or right for a profile, the quarters for in between); `height` is low \
@@ -5477,21 +5476,12 @@ impl Tool for ImageGenerate {
                 // Where the picture has the camera: read from the picture
                 // (`camera::ShotReader`), since the record's words are what
                 // was once asked and not where the picture ended up. With no
-                // reader, from the record; a read that fails restages, said:
-                // a start guessed wrong turns the camera the wrong way.
+                // reader (the assistant's own chat, a replay with readers
+                // off) or a read that fails, the change is restaged and the
+                // result says so: a start guessed from the record turns the
+                // camera the wrong way, and nothing in the picture says it.
                 let was = match &ctx.shot_reader {
-                    None => Ok(base
-                        .as_ref()
-                        .map(|b| {
-                            // The record's typed place, and its words for
-                            // any part that place leaves out.
-                            b.shot.unwrap_or_default().over(
-                                recorded
-                                    .map(|c| crate::picture::Shot::read(&c.value))
-                                    .unwrap_or_default(),
-                            )
-                        })
-                        .unwrap_or_default()),
+                    None => Err("no camera reader on this surface".to_string()),
                     // The bytes already read for the canvas and the record:
                     // one read, behind the same guards, of the one picture.
                     Some(reader) => match picture.as_ref() {
@@ -15736,6 +15726,26 @@ mod tests {
             "{}",
             unread.content
         );
+        // No reader at all (a chat that is not a persona's): the record's
+        // words say head on and the picture is from behind, so the start is
+        // not guessed from them. Restaged, and said.
+        cx.shot_reader = None;
+        let none = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from the left side"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!none.is_error, "{}", none.content);
+        let m = manifest_of(&dir, &none.content);
+        assert_ne!(m["route"], crate::picture::RESHOT);
+        assert!(m["shot_was"].is_null(), "{m}");
+        assert!(
+            none.content.contains("could not be read (no camera reader"),
+            "{}",
+            none.content
+        );
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
@@ -15841,6 +15851,12 @@ mod tests {
             .with_faces(Arc::new(BesideFaces(Mutex::new(answer))));
             let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
             cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
+            // The picture's camera as its scene asked for it: head on.
+            cx.shot_reader = Some(Arc::new(StoodAt(Ok(crate::scene::Shot {
+                around: Some(0),
+                height: Some(crate::scene::Height::Eye),
+                distance: Some(crate::scene::Distance::Medium),
+            }))));
             let first = t
                 .call(
                     json!({"scene": {"setting": "a study with a tall window",
@@ -15975,6 +15991,12 @@ mod tests {
 
         // On the list: the picture alone, and only where the camera goes.
         cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
+        // The picture's camera as its scene asked for it: head on.
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(crate::scene::Shot {
+            around: Some(0),
+            height: Some(crate::scene::Height::Eye),
+            distance: Some(crate::scene::Distance::Medium),
+        }))));
         let shot = t
             .call(
                 json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
@@ -16018,10 +16040,16 @@ mod tests {
         assert!(shot.content.contains("two passes"), "{}", shot.content);
 
         // A typed view is read ahead of the words, which may say nothing a
-        // word list knows; and the move is counted from where the last
-        // re-shoot left the camera (behind, low), so "the front" from there
-        // is half a turn, and the height it does not mention stays low.
+        // word list knows; and the move is counted from where the picture
+        // has the camera (behind, low, as the reader finds it), so "the
+        // front" from there is half a turn, and the height it does not
+        // mention stays low.
         let p2 = picture_of(&shot.content);
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(crate::scene::Shot {
+            around: Some(4),
+            height: Some(crate::scene::Height::Low),
+            distance: Some(crate::scene::Distance::Medium),
+        }))));
         let typed = t
             .call(
                 json!({"picture": p2, "scene": {"camera": "so we can see what she is reading",
