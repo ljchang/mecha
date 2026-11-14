@@ -431,6 +431,37 @@ pub struct Kept {
     pub unreadable: usize,
 }
 
+/// What the file says, in counts and the latest judgements: for the owner,
+/// who is reading their own store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Readout {
+    /// Turns kept as attempts.
+    pub attempts: usize,
+    /// Attempts with at least one verdict against them, with only good
+    /// ones, and with none. They sum to `attempts`.
+    pub judged_against: usize,
+    pub judged_good: usize,
+    pub unjudged: usize,
+    /// Verdicts against an attempt that carry the owner's words, or the
+    /// fields they changed.
+    pub with_a_reason: usize,
+    /// Times something was handed to a run.
+    pub handed: usize,
+    pub unreadable: usize,
+    /// The latest verdicts against an attempt, newest first.
+    pub recent: Vec<Judged>,
+}
+
+/// One verdict against an attempt, as the readout shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Judged {
+    pub when: String,
+    pub session: String,
+    pub asked: String,
+    pub source: Source,
+    pub why: Option<String>,
+}
+
 /// An attempt the owner judged against, with that verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
@@ -460,6 +491,45 @@ impl Kept {
             .collect();
         out.reverse();
         out
+    }
+
+    /// The file in counts, with the `recent` latest verdicts against an
+    /// attempt.
+    pub fn readout(&self, recent: usize) -> Readout {
+        let verdicts_on = |a: &Attempt| {
+            let (session, turn) = (a.session.clone(), a.turn);
+            self.verdicts
+                .iter()
+                .filter(move |v| v.session == session && v.turn == turn)
+        };
+        let against = |a: &&Attempt| verdicts_on(a).any(|v| !v.good);
+        let judged_against = self.attempts.iter().filter(against).count();
+        let judged_good = self
+            .attempts
+            .iter()
+            .filter(|a| !against(a) && verdicts_on(a).next().is_some())
+            .count();
+        let failures = self.failures();
+        Readout {
+            attempts: self.attempts.len(),
+            judged_against,
+            judged_good,
+            unjudged: self.attempts.len() - judged_against - judged_good,
+            with_a_reason: failures.iter().filter(|f| f.verdict.why.is_some()).count(),
+            handed: self.handed,
+            unreadable: self.unreadable,
+            recent: failures
+                .into_iter()
+                .take(recent)
+                .map(|f| Judged {
+                    when: f.verdict.when,
+                    session: f.attempt.session,
+                    asked: f.attempt.asked,
+                    source: f.verdict.source,
+                    why: f.verdict.why,
+                })
+                .collect(),
+        }
     }
 
     /// Whether this exact verdict is already the one on file for what it is
@@ -929,6 +999,18 @@ mod tests {
             (kept.attempts.len(), kept.verdicts.len(), kept.unreadable),
             (1, 1, 0)
         );
+        let readout = kept.readout(5);
+        assert_eq!(
+            (
+                readout.attempts,
+                readout.judged_against,
+                readout.judged_good,
+                readout.unjudged,
+                readout.with_a_reason,
+            ),
+            (1, 1, 0, 0, 1)
+        );
+        assert_eq!(readout.recent[0].why.as_deref(), Some("wrong person"));
         assert_eq!(
             kept.failures()[0].verdict.why.as_deref(),
             Some("wrong person")
