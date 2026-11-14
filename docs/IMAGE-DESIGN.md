@@ -790,8 +790,11 @@ under 0.3). Where the faces cannot be compared (no detector, or a face in
 both and no identity weights) the second pass is kept only for a view from
 in front. A second pass that loses a face the first held is thrown
 away too (none of nine did), and a view whose side nobody knows is treated
-as one from behind. The result says which pass it is and why, and the manifest keeps
-`detail`, `detail_dropped` and `detail_alike`. A first pass kept this way
+as one from behind. With no detector on the machine a view from beside or
+behind draws no second pass at all, since it could only be thrown away
+(`detail_skipped`). The result says which pass it is and why, and the manifest keeps
+`detail`, `detail_dropped` and `detail_alike`; its `loras.camera` is true
+for every re-shoot, the camera LoRA being no part of `loras.applied`. A first pass kept this way
 has the softness §17.4 measured: the price of never showing a face that was
 not there.
 

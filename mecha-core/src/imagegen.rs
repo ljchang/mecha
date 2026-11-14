@@ -982,8 +982,13 @@ pub fn loras_said(p: &crate::loras::Picked, off: Option<&str>, triggers: bool) -
 }
 
 /// The manifest's `loras`: the same counts, or null when settings list none.
-fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
-    if p.applied.is_empty()
+///
+/// `camera` is whether the owner's camera LoRA drew this picture (a
+/// re-shoot): it is never one of `applied`, and a count of the pictures a
+/// LoRA drew would otherwise miss every one of them.
+fn loras_counted(p: &crate::loras::Picked, off: Option<&str>, camera: bool) -> Value {
+    if !camera
+        && p.applied.is_empty()
         && off.is_none()
         && p.refused == 0
         && p.gone == 0
@@ -994,6 +999,7 @@ fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
     }
     json!({
         "applied": p.applied.len(),
+        "camera": camera,
         "left_out": off,
         "refused": p.refused,
         "gone": p.gone,
@@ -7413,6 +7419,8 @@ impl Tool for ImageGenerate {
             // The faces found in each pass, where they could be: what the
             // verdict was read from, kept so it can be checked afterwards.
             let mut detail_faces: Option<(usize, usize)> = None;
+            // Why no second pass was drawn at all.
+            let mut detail_skipped: Option<&'static str> = None;
             // From beside or behind the subject, by where the move ends:
             // the ask's place, else where the picture was read to stand.
             let away = plan
@@ -7424,6 +7432,17 @@ impl Tool for ImageGenerate {
                 // words and the strict verdict.
                 .is_none_or(|a| (2..=6).contains(&a));
             let (image, left) = match image {
+                // A pass that could only be thrown away is not drawn: from
+                // beside or behind it is kept only on a face comparison
+                // (`detail_verdict`), and with no detector there is none. It
+                // was a second render's wait for the picture already in hand.
+                Ok(shot)
+                    if plan.route == crate::picture::RESHOT && away && !me.faces.compares() =>
+                {
+                    detailed = Some(false);
+                    detail_skipped = Some("no face detector here");
+                    (Ok(shot), left)
+                }
                 Ok(shot) if plan.route == crate::picture::RESHOT => {
                     let pass = Request {
                         prompt: if away {
@@ -7694,6 +7713,7 @@ impl Tool for ImageGenerate {
                 // picture, false where it failed and the re-shoot was kept.
                 "detail": detailed,
                 "detail_dropped": detail_dropped,
+                "detail_skipped": detail_skipped,
                 "detail_faces": detail_faces.map(|(a, b)| json!([a, b])),
                 "detail_alike": detail_alike.map(|a| (f64::from(a) * 1000.0).round() / 1000.0),
                 // Only for the prompt that was sent: a layered picture's
@@ -7726,7 +7746,11 @@ impl Tool for ImageGenerate {
                 },
                 // The owner's LoRAs, by count: the model had no say in them,
                 // and the manifest names none (`docs/LORA-DESIGN.md` §4).
-                "loras": loras_counted(&picked, lora_off),
+                "loras": loras_counted(
+                    &picked,
+                    lora_off,
+                    plan.route == crate::picture::RESHOT,
+                ),
             });
             // The prompt, for the owner only, outside the jail (the manifest
             // never carries it): a line that cannot be written costs the
@@ -7828,6 +7852,12 @@ impl Tool for ImageGenerate {
                 text.push_str(&said);
             }
             match (detailed, &detail_dropped) {
+                (Some(false), _) if detail_skipped.is_some() => text.push_str(&format!(
+                    " (No second pass, for fine detail, was drawn: its faces could not be \
+                     checked against this picture's ({}), and the view is not from in front. \
+                     Skin and hair may look softer than in the picture it was shot from.)",
+                    detail_skipped.unwrap_or_default()
+                )),
                 (Some(true), _) => text.push_str(
                     " (Drawn in two passes: the new camera position, then once more for fine \
                      detail.)",
@@ -13499,6 +13529,10 @@ mod tests {
         fn beside(&self, _: &[u8], _: &[u8]) -> std::result::Result<crate::face::Beside, String> {
             self.0.lock().unwrap().clone()
         }
+
+        fn compares(&self) -> bool {
+            true
+        }
     }
 
     fn stub_faces(answer: crate::face::Anchor) -> Arc<StubFaces> {
@@ -15799,17 +15833,24 @@ mod tests {
         for (history, answer, said) in [
             (
                 vec![done(), done(), done()],
-                Ok(crate::face::Beside {
+                Some(Ok(crate::face::Beside {
                     first: 0,
                     second: 1,
                     alike: None,
-                }),
+                })),
                 "a face the first pass did not",
             ),
             (
                 vec![done(), done(), failed],
-                Err("never asked".to_string()),
+                Some(Err("never asked".to_string())),
                 "did not finish",
+            ),
+            // No detector on the machine: from behind the pass could only be
+            // thrown away, so it is not drawn, and that is what is said.
+            (
+                vec![done(), done(), done()],
+                None,
+                "No second pass, for fine detail, was drawn",
             ),
         ] {
             let views: Vec<Vec<u8>> = (0..3u8)
@@ -15848,7 +15889,12 @@ mod tests {
             .polling_every(Duration::from_millis(10))
             .with_library_dir(lib.clone())
             .with_loras(home.clone())
-            .with_faces(Arc::new(BesideFaces(Mutex::new(answer))));
+            .with_faces(match answer {
+                Some(answer) => {
+                    Arc::new(BesideFaces(Mutex::new(answer))) as Arc<dyn crate::face::FaceAnchors>
+                }
+                None => stub_faces(crate::face::Anchor::Unavailable("none here".into())),
+            });
             let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
             cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
             // The picture's camera as its scene asked for it: head on.
@@ -15881,6 +15927,13 @@ mod tests {
             let m = manifest_of(&dir, &shot.content);
             assert_eq!(m["route"], crate::picture::RESHOT);
             assert_eq!(m["detail"], false, "{said}");
+            // The camera LoRA drew it, and the manifest's LoRA row says so.
+            assert_eq!(m["loras"]["camera"], true, "{m}");
+            assert_eq!(
+                m["detail_skipped"].is_null(),
+                !said.starts_with("No second pass"),
+                "{m}"
+            );
             if said.contains("a face") {
                 assert_eq!(m["detail_faces"], json!([0, 1]));
             }

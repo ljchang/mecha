@@ -268,6 +268,12 @@ pub trait FaceAnchors: Send + Sync {
     fn beside(&self, _first: &[u8], _second: &[u8]) -> std::result::Result<Beside, String> {
         Err("no face detector here".into())
     }
+
+    /// Whether [`FaceAnchors::beside`] can run here at all: asked before a
+    /// render whose only use is to be compared.
+    fn compares(&self) -> bool {
+        false
+    }
 }
 
 /// Two pictures' faces, side by side ([`FaceAnchors::beside`]).
@@ -304,6 +310,10 @@ pub fn cache_paths(library_dir: &Path, blob: &str) -> (PathBuf, PathBuf) {
 }
 
 impl FaceAnchors for CachedRetinaFace {
+    fn compares(&self) -> bool {
+        matches!(weights(), Ok(Some(_)))
+    }
+
     fn beside(&self, first: &[u8], second: &[u8]) -> std::result::Result<Beside, String> {
         // With the identity weights, one reader finds and embeds; without
         // them the faces are still counted, and their likeness is unread.
