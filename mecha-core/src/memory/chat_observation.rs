@@ -17,6 +17,18 @@ pub const CHAT_WEB_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v2";
 pub const CHAT_WEB_RECORDER_VERSION: &str = "ordinary-chat-recorder-v2";
 pub const CHAT_TASK_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v3";
 pub const CHAT_TASK_RECORDER_VERSION: &str = "ordinary-chat-recorder-v3";
+/// An ordinary local chat's turn, recorded by the walk that leaves out what
+/// it cannot place. Its own pair, because the version is what tells a
+/// reader which rules stand behind a record: a v1 record was bound to the
+/// exact history every request sent and to a closed tool list, and this one
+/// is not.
+pub const CHAT_OPEN_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v4";
+pub const CHAT_OPEN_RECORDER_VERSION: &str = "ordinary-chat-recorder-v4";
+/// The most decisions and context versions one turn's context names, and
+/// the most bytes it serializes to.
+pub const MAX_DECISIONS: usize = 128;
+pub const MAX_VERSIONS: usize = 16;
+pub const MAX_CONTEXT_BYTES: usize = 24 * 1024;
 
 /// The currently supported authenticated chat ingress, independent of runtime types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +191,7 @@ impl ChatObservationContext {
             identity.evaluator_version.as_str(),
         ) {
             (CHAT_OBSERVATION_PROTOCOL, CHAT_RECORDER_VERSION)
+            | (CHAT_OPEN_OBSERVATION_PROTOCOL, CHAT_OPEN_RECORDER_VERSION)
             | (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION) => {
                 ChatOwnerSource::CliChat
             }
@@ -198,21 +211,26 @@ impl ChatObservationContext {
                 && self.prefix_length <= 64 * 1024 * 1024
                 && digest(&self.prefix_digest)
                 && self.prefix_digest == identity.prefix_digest
-                && if self.turn_ordinal == 1 {
-                    self.previous_turn.is_none() && self.prefix_start == 0
-                } else {
-                    self.previous_turn
-                        .as_ref()
-                        .is_some_and(|s| digest(s) && s != &identity.check_id)
-                        && self.prefix_start > 0
+                // A turn the recorder could not capture is passed over, so
+                // the first turn retained need not be the first begun: what
+                // must agree is that a turn names a predecessor exactly when
+                // a sealed prefix lies before it.
+                && match &self.previous_turn {
+                    None => self.prefix_start == 0,
+                    Some(previous) => {
+                        self.turn_ordinal > 1
+                            && digest(previous)
+                            && previous != &identity.check_id
+                            && self.prefix_start > 0
+                    }
                 },
             "invalid chat observation identity"
         );
         ensure!(
-            (1..=16).contains(&self.versions.len())
-                && (1..=128).contains(&self.decisions.len())
+            (1..=MAX_VERSIONS).contains(&self.versions.len())
+                && (1..=MAX_DECISIONS).contains(&self.decisions.len())
                 && (1..=64).contains(&self.owner_messages.len())
-                && serde_json::to_vec(self)?.len() <= 24 * 1024,
+                && serde_json::to_vec(self)?.len() <= MAX_CONTEXT_BYTES,
             "invalid chat observation bounds"
         );
         let mut revisions = BTreeSet::new();
@@ -298,12 +316,22 @@ impl ChatObservationContext {
         Ok(())
     }
 }
+/// `/content/N/text` in a message record, or `/messages/M/content/N/text`
+/// in a rewrite: an owner's line folded into a message that already held
+/// tool results is recorded only there.
 fn owner_pointer(pointer: &str) -> bool {
-    let Some(index) = pointer
-        .strip_prefix("/content/")
-        .and_then(|s| s.strip_suffix("/text"))
-    else {
-        return false;
+    let index = |s: &str| s.parse::<usize>().is_ok_and(|n| n.to_string() == s);
+    let rest = match pointer.strip_prefix("/messages/") {
+        Some(listed) => match listed.split_once('/') {
+            Some((message, rest)) if index(message) => rest,
+            _ => return false,
+        },
+        None => match pointer.strip_prefix('/') {
+            Some(rest) => rest,
+            None => return false,
+        },
     };
-    index.parse::<usize>().is_ok_and(|n| n.to_string() == index)
+    rest.strip_prefix("content/")
+        .and_then(|s| s.strip_suffix("/text"))
+        .is_some_and(index)
 }

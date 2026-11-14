@@ -1,4 +1,6 @@
-//! Strict capture of one new span, retaining native absolute source pointers.
+//! Capture of one new span, retaining native absolute source pointers. An
+//! ordinary chat's turn is read by the walk the one-shot recorder uses
+//! (`capture_open`); the graph and task profiles keep the strict walk below.
 use super::*;
 use crate::memory::SourceKey;
 use crate::memory_session::inline_notes;
@@ -40,6 +42,9 @@ fn capture_impl(
     id: &str,
     task_recovery: bool,
 ) -> Result<HostCapture> {
+    if a.open() {
+        return capture_open(memory, f, a, bytes, attempts, id);
+    }
     ensure!(
         bytes.len() > f.start_length as usize
             && digest(&bytes[..f.start_length as usize]) == f.start_digest,
@@ -635,4 +640,293 @@ fn validate_decision_transition(
         }
     }
     Ok(())
+}
+
+use crate::memory::chat_observation::{MAX_CONTEXT_BYTES, MAX_DECISIONS, MAX_VERSIONS};
+
+/// One turn of an ordinary chat, however it went.
+///
+/// What still refuses is whose turn this is: the prefix the turn began
+/// from, the attachment and its ingress, the workspace, the owner's line
+/// as frozen at the start, the owner inputs behind every goal-context
+/// decision, a recall that does not reconcile, a grant that reaches the
+/// store or this transcript. Everything about the turn's shape is left to
+/// the shared walk: which tools ran, how it stopped, whether it compacted,
+/// what else was delivered into it.
+fn capture_open(
+    memory: &SessionMemory,
+    f: &Turn,
+    a: &Attachment,
+    bytes: &[u8],
+    attempts: &[Attempt],
+    id: &str,
+) -> Result<HostCapture> {
+    let start = f.start_length as usize;
+    ensure!(
+        bytes.len() > start && digest(&bytes[..start]) == f.start_digest,
+        "chat begin prefix changed"
+    );
+    validate_source_ingress(a, bytes, &f.attachment)?;
+    ensure!(
+        f.owner.source() == a.owner_source(),
+        "chat owner ingress changed"
+    );
+    let transcript = Session::parse(&a.source, std::str::from_utf8(bytes)?)?;
+    let prior = Session::parse(&a.source, std::str::from_utf8(&bytes[..start])?)?;
+    let mut expected_owners = prior
+        .convo
+        .goal_context
+        .current()
+        .map(|v| v.owner_inputs().to_vec())
+        .unwrap_or_default();
+    ensure!(
+        expected_owners
+            .iter()
+            .all(|input| input.source() == a.owner_source()),
+        "chat prior owner ingress changed"
+    );
+    expected_owners.push(f.owner.clone());
+    let config = transcript
+        .configs
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("chat configuration missing"))?;
+    ensure!(
+        config.workspace.canonicalize()? == a.workspace,
+        "chat workspace changed"
+    );
+    a.validate_tools(&config.tools)?;
+    ensure!(
+        !transcript.convo.goal_context.has_cleared(),
+        "chat clear unsupported"
+    );
+    // Every grant the conversation holds, whichever turn made it.
+    authority::exclude_grants(&memory.request, Some(&a.source), &transcript.convo.grants)?;
+    let start_line = bytes[..start].iter().filter(|b| **b == b'\n').count();
+    let db = memory.memory()?;
+    let access = memory.access();
+    db.validate_dependency_roots(&f.dependencies, &access)?;
+    // This turn continues a conversation: it begins with whatever the
+    // earlier turns' recorded taint says they took in, and none of their
+    // messages is its own.
+    let mut walk = recording::Walk::new(
+        &memory.request.account,
+        &f.session_id,
+        f.owner.text(),
+        attempts,
+        &db,
+        &access,
+        Intake::starting(prior.convo.taint.untrusted),
+        f.dependencies.clone(),
+    );
+    walk.hold(&prior.convo.messages)?;
+    walk.configured.extend(config.tools.iter().cloned());
+    // As the host adds it: a new message, or a block folded into a tail
+    // that already holds tool results.
+    let mut history = prior.convo.messages;
+    crate::agent::append_user_text(&mut history, f.owner.text().to_string());
+    let mut decisions = vec![];
+    let mut versions = BTreeSet::new();
+    let mut cut = false;
+    let mut taint = None;
+    let mut untrusted = false;
+    // Whether the last record read was the taint. The recorded taint is
+    // the harness's verdict on everything before it, and a record appended
+    // after it is something that verdict never saw.
+    let mut settled = false;
+    for (line, r) in recording::records(bytes)?
+        .into_iter()
+        .enumerate()
+        .skip(start_line)
+    {
+        settled = matches!(r, Record::Taint(_));
+        match r {
+            Record::Meta(_) | Record::ChatMemory { .. } => {
+                anyhow::bail!("chat header repeated inside a turn")
+            }
+            Record::GoalContextDecision { binding, .. } => {
+                let version = transcript
+                    .convo
+                    .goal_context
+                    .version(binding.version())
+                    .ok_or_else(|| anyhow::anyhow!("chat version unavailable"))?;
+                ensure!(
+                    version.owner_inputs() == expected_owners,
+                    "chat decision owner changed"
+                );
+                // The history a request sent says what was in front of the
+                // model. One that does not follow from the last by growing
+                // (a compaction, an eviction, a line folded into the tail)
+                // is a shape the walk does not derive, so the recorded
+                // taint classifies the turn.
+                let follows = binding.conversation_messages().is_some_and(|sent| {
+                    let grew = if decisions.is_empty() {
+                        sent == history
+                    } else {
+                        // Everything before the tail unchanged, and the
+                        // tail only added to: a notice or a steer folded in.
+                        let kept = history.len().saturating_sub(1);
+                        sent.len() >= history.len()
+                            && sent[..kept] == history[..kept]
+                            && history.last().is_none_or(|tail| {
+                                sent[kept].role == tail.role
+                                    && sent[kept].content.starts_with(&tail.content)
+                            })
+                    };
+                    history = sent.to_vec();
+                    grew
+                });
+                if !follows || binding.run_start() != decisions.is_empty() {
+                    walk.intake.unplaced();
+                }
+                // The sidecar is bounded; the transcript keeps every
+                // decision, and the capture names the first of them.
+                cut |= decisions.len() == MAX_DECISIONS
+                    || (versions.len() == MAX_VERSIONS && !versions.contains(&binding.version()));
+                if !cut {
+                    versions.insert(binding.version());
+                    decisions.push(ChatDecisionLocator::from_binding(
+                        (line + 1) as u64,
+                        &binding,
+                    )?);
+                }
+            }
+            Record::Config(c) => {
+                ensure!(
+                    c.workspace.canonicalize()? == a.workspace,
+                    "chat workspace changed"
+                );
+                a.validate_tools(&c.tools)?;
+                walk.configured.extend(c.tools);
+            }
+            // An owner-made exception to the jail is a fact about whose
+            // turn this is when it reaches the store or this transcript.
+            Record::Grants { grants } => {
+                authority::exclude_grants(&memory.request, Some(&a.source), &grants)?;
+            }
+            Record::Notes { notes } => walk.notes(&notes),
+            Record::PendingNote { note } => {
+                walk.notes(std::slice::from_ref(&note));
+                walk.intake.unplaced();
+            }
+            // A deferred tool's result, delivered after its turn. The
+            // record says where its bytes came from, so it taints what
+            // follows as any result does; the bytes are not a passage yet.
+            Record::LateResult { external, .. } => {
+                walk.intake.result(Some(external));
+            }
+            Record::Summary { .. } | Record::Title { .. } | Record::GoalAnchor { .. } => {}
+            Record::Extend { blocks, .. } => walk.extension(blocks),
+            Record::Rewrite { messages } => walk.rewrite(line, messages)?,
+            Record::Message(m) => walk.message(line, m)?,
+            // The conversation's taint only grows, and a turn may record
+            // it more than once (a late result writes its own).
+            Record::Taint(recorded) => {
+                untrusted |= recorded.untrusted;
+                taint = Some(recorded);
+            }
+            // However the turn stopped, and whether it recorded that at
+            // all: a turn the provider failed has no outcome and is still
+            // what happened.
+            Record::Outcome(_) => {}
+            _ => walk.intake.unplaced(),
+        }
+    }
+    let taint = taint.ok_or_else(|| anyhow::anyhow!("chat taint unavailable"))?;
+    ensure!(
+        attempts.is_empty() || taint.private,
+        "ordinary private recall taint missing"
+    );
+    ensure!(
+        !attempts.iter().any(|a| a.external) || untrusted,
+        "ordinary external recall taint missing"
+    );
+    ensure!(
+        !decisions.is_empty() && walk.reconciled(),
+        "ordinary recording incomplete"
+    );
+    let (owner_line, owner_pointer) = walk
+        .owner
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("chat owner missing"))?;
+    let context = loop {
+        let used: BTreeSet<_> = decisions.iter().map(|d| d.context_revision).collect();
+        let first = transcript
+            .convo
+            .goal_context
+            .version(decisions[0].context_revision)
+            .expect("validated version");
+        let context = ChatObservationContext {
+            conversation_id: f.session_id.clone(),
+            turn_ordinal: f.ordinal,
+            previous_turn: f.previous.clone(),
+            prefix_start: f.prefix_start,
+            prefix_length: bytes.len() as u64,
+            prefix_digest: digest(bytes),
+            owner_messages: vec![ChatOwnerMessageLocator {
+                line: owner_line,
+                pointer: owner_pointer.clone(),
+                context_revision: first.revision(),
+                owner_input_index: first.owner_inputs().len() - 1,
+            }],
+            versions: used
+                .iter()
+                .map(|revision| {
+                    let version = transcript
+                        .convo
+                        .goal_context
+                        .version(*revision)
+                        .expect("validated version");
+                    if a.web_ingress.is_some() {
+                        ChatContextVersion::from_authenticated_web_version(version)
+                    } else {
+                        ChatContextVersion::from_version(version)
+                    }
+                })
+                .collect::<Result<_>>()?,
+            decisions: decisions.clone(),
+        };
+        // A long turn's later decisions are dropped from the sidecar
+        // before the turn is refused for its size.
+        if decisions.len() == 1 || serde_json::to_vec(&context)?.len() <= MAX_CONTEXT_BYTES {
+            break context;
+        }
+        decisions.truncate(decisions.len() / 2);
+    };
+    let (observation, recorder) = a.observation_protocol();
+    let mut payload = HostCapture {
+        identity: CaptureIdentity {
+            domain: memory.request.domain.clone(),
+            account: memory.request.account.clone(),
+            session_id: f.session_id.clone(),
+            prefix_digest: digest(bytes),
+            check_id: id.into(),
+            check_version: observation.into(),
+            evaluator_version: recorder.into(),
+        },
+        binding: ExternalBinding {
+            authority: memory.authority.identity.clone(),
+            locator: id.into(),
+            revision: "0".repeat(64),
+        },
+        criterion: None,
+        chat_context: Some(context),
+        originals: vec![],
+        receipts: vec![],
+        artifact: ArtifactCheck {
+            artifact_digest: None,
+            verdict: CheckVerdict::Unavailable,
+        },
+        consulted: walk.consulted.clone(),
+        scopes: memory.request.scopes.clone(),
+        occurred_at: None,
+    };
+    // A taint that is not the turn's last word is no verdict on the whole
+    // turn: read as unknown, which is never clean.
+    let recorded = settled.then_some(untrusted);
+    let walked = walk.finish(recorded, recording::rest_of(&payload)?)?;
+    payload.originals = walked.originals;
+    payload.receipts = walked.receipts;
+    payload.consulted = walked.consulted;
+    OrdinaryObservationCapture::try_from_host(payload.clone())?;
+    Ok(payload)
 }

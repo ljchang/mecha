@@ -83,11 +83,11 @@ pub(crate) fn validate_memory_config_with_graph(
     Ok(())
 }
 
-/// A one-shot run's memory: the store named by the manifest, opened for the
-/// workspace this run will use. Which tools, servers, hooks and messages the
-/// run has is its own configuration and no condition of remembering it; the
-/// recorder stores what each tool returned beside where it came from, and
-/// leaves out what it cannot place.
+/// An ordinary session's memory, a one-shot run's or a chat's: the store
+/// named by the manifest, opened for the workspace the session will use.
+/// Which tools, servers, hooks and messages it has is its own configuration
+/// and no condition of remembering it; the recorder stores what each tool
+/// returned beside where it came from, and leaves out what it cannot place.
 pub(crate) fn open_run_profile(global: &GlobalOpts, path: &Path) -> Result<SessionMemory> {
     // The recorder reads a `Run` header; a session marked as a test is
     // excluded from every corpus and is not remembered either.
@@ -122,7 +122,14 @@ pub(crate) fn open_chat_profile(
     graph_server: Option<&str>,
     task: bool,
 ) -> Result<ChatProfilePreparation> {
-    // Check the merged options before configuration or provider startup.
+    if graph_server.is_none() && !task {
+        return Ok(ChatProfilePreparation {
+            memory: open_run_profile(global, path)?,
+            graph: None,
+        });
+    }
+    // The graph and task profiles are closed: check the merged options
+    // before configuration or provider startup.
     anyhow::ensure!(
         global.no_code_tool && global.no_grants && !global.tools.is_empty(),
         "ordinary memory requires --no-code-tool, --no-grants, and explicit --tool selection"
@@ -200,8 +207,7 @@ fn open_memory_at(path: &Path, workspace: &Path, tools: &[String]) -> Result<Ses
     SessionMemory::validate_request_path(path, workspace)?;
     let request = SessionMemory::load_request(path)?;
     let memory = SessionMemory::open(&request, workspace)?;
-    // Every caller is a chat: refuse its surface before anything starts.
-    memory.validate_chat_surface(tools, workspace, &[])?;
+    memory.validate_surface(tools, workspace, &[])?;
     Ok(memory)
 }
 
@@ -211,6 +217,26 @@ pub(crate) fn validate_memory_runtime(
     memory: &mecha_core::memory_session::chat::ChatMemory,
     graph_names: &[String],
 ) -> Result<()> {
+    if memory.is_open() {
+        // An ordinary chat: its tools are its own configuration. What is
+        // checked is that the workspace is the one the store was opened
+        // for and that no grant reaches the store or the transcript. The
+        // recall tool is installed after this, whether or not selected.
+        let mut names: Vec<String> = prepared
+            .agent
+            .registry()
+            .iter()
+            .map(|tool| tool.name().into())
+            .collect();
+        if !names.iter().any(|name| name == "goal_context") {
+            names.push("goal_context".into());
+        }
+        return memory.validate_surface(
+            &names,
+            &prepared.workspace,
+            &prepared.agent.context().tools.grants.all(),
+        );
+    }
     validate_memory_config_with_graph(opts, &prepared.config, graph_names)?;
     let cx = prepared.agent.context();
     anyhow::ensure!(

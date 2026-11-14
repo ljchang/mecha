@@ -13300,15 +13300,17 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   own record is trusted only when every passage it admitted was. The field is absent
   from the wire when unknown, so earlier captures keep their digests and
   read as untrusted.
-- **A one-shot run's recorder leaves out what it cannot place; it does not
-  refuse the run** (`memory_session::recording::capture`). Two kinds of
+- **A recorder leaves out what it cannot place; it does not refuse the run
+  or the turn** (`memory_session::recording::Walk`, shared by the one-shot
+  recorder `recording::capture` and an ordinary chat's
+  `chat_recording::capture_open` so the two cannot disagree on what a
+  passage is). Two kinds of
   check, kept apart: one on *whose run this is* (the header, the workspace,
   the goal, a recall that does not reconcile with what the tool returned)
   still refuses the capture; one on a record's or block's *shape* does
   not. Three things happen to a shape. A tool the recorder has no list
-  for, a cancelled run and a compaction's rewrite cost nothing: the calls
-  and results are passages like any other, and the walk has already read
-  the rewritten history line by line. A late result is classified exactly,
+  for and a cancelled run cost nothing: the calls and results are passages
+  like any other. A late result is classified exactly,
   from the provenance its record carries (`Intake::result`). And content
   the walk can neither place nor classify (a delivered inter-agent
   message, a notice it has no exact text for, an image, a record kind it
@@ -13317,7 +13319,23 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   under a taint recorded clean nothing outside entered by any route, and
   otherwise everything the model wrote in that capture is stored as
   outside. So a restriction that used to cost the whole memory now costs
-  at most the "local" label. **A grant may not reach the store**
+  at most the "local" label. **A rewrite record is read, not skipped**
+  (`Walk::rewrite`): `record_transition` writes the whole current list in
+  place of the tail after a compaction, an eviction, or an owner's line
+  folded into a message that already held tool results, so what follows
+  the cut exists nowhere else in the transcript. A one-shot records its
+  messages once, at the end, so a run that compacted had a memory of its
+  request and nothing else while the walk skipped that record. What a
+  rewrite lists again is not read twice, and an earlier turn's messages
+  are never a later turn's passages. Which entries are new is decided by
+  position, never by bytes alone, because a reply identical to an earlier
+  one is still a reply (review of #865): where the list holds the span's
+  owner message, everything before it is an earlier turn's and everything
+  after is the span's, less what the walk already read, matched in order;
+  where a compaction summarised that message away, entries are matched in
+  order against the earlier conversation (`Walk::hold`) and then the walk,
+  which can still take a new message for an identical one the compaction
+  dropped. That costs the passage, never its label. **A grant may not reach the store**
   (`authority::exclude_grants`): one that contains the database, the key,
   the authority directory or the transcript, or sits inside the store, is
   refused at the start (`validate_surface` for the store,
@@ -13326,9 +13344,56 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   place a store elsewhere (review of #864). The recorder used to admit `fs_read`, `fs_write`,
   `fs_list` and `goal_context` and refuse any run with a hook, a server, a
   grant, a subagent, an inbound message or a compaction (owner's rulings,
-  2026-11-11). **The chat recorder is still the closed profile**
-  (`recording::chat_surface`): it binds each turn to the exact history every
-  request sent, and a refused chat turn ends the chat.
+  2026-11-11).
+- **An ordinary chat's turn is recorded by the same rule**
+  (`chat_recording::capture_open`, for the local attachment; the graph,
+  task and web attachments are closed profiles and keep the strict walk,
+  `Attachment::open`. The web host is built on the strict walk's refusals,
+  a stopped turn blocking the conversation until an explicit resume, and
+  opens with that host; its recorded tool list is still the closed four
+  in the library, `recording::closed_surface`, not only in its host). What still refuses a turn is whose it is: the
+  prefix it began from, the attachment and its ingress, the workspace, the
+  owner's line as the host froze it at the start, the owner inputs behind
+  every goal-context decision, a recall that does not reconcile, a grant
+  that reaches the store or the transcript (checked against every grant
+  the conversation holds: by the host before each turn starts
+  (`ChatMemory::validate_grants`, which refuses the turn, not only its
+  memory, since `/grant` is allowed in an ordinary chat and `grant::admit`
+  does not know where a manifest placed a store), in `continuation`, at
+  each recall and at capture. A grant made *inside* a run by
+  `request_access` is caught at the next recall and at capture, as in a
+  one-shot, which is after a tool could have used it). The history each
+  request sent is a shape: where it does not follow from the last by
+  growing, the walk cannot say what was in front of the model and the
+  recorded taint classifies the turn. A turn needs a taint record and at
+  least one decision, and no outcome: a turn the provider failed is still
+  what happened. **A turn the recorder cannot capture is passed over, not
+  fatal** (`ChatMemory::continuation`): an ordinary chat skips a turn that
+  began and never sealed, takes the next ordinal after every turn begun,
+  and chains the next turn to the last one retained; the skipped turn's
+  records stay in the transcript as part of what the next turn continues
+  from, taint included, and whatever is appended between turns is read
+  the same way. A passed-over turn cannot be sealed later
+  (`finish_turn`), because its span would take in the turns begun since.
+  A seal that exists and does not verify still refuses, and so does a
+  turn that was retained and has since lost its seal: passing over is for
+  a turn that was never captured, and a retained one has a record in the
+  store that the chain is verified through (review of #865). **The open
+  recorder has its own version pair** (`CHAT_OPEN_OBSERVATION_PROTOCOL`,
+  `CHAT_OPEN_RECORDER_VERSION`): the version is what tells a reader which
+  rules stand behind a record, and a v1 chat record was bound to exact
+  request histories and a closed tool list. A local chat begun under the
+  strict recorder keeps its earlier v1 seals and records its later turns
+  as v4. **The taint must be the turn's last record** to count as its
+  verdict: one followed by anything is read as unknown, which is never
+  clean. The chat recorder
+  used to bind each turn to the exact history every request sent, admit
+  four tools and no grant, and end the chat at the first turn it refused.
+  **The sidecar still bounds a conversation**: a turn's context names at
+  most 128 decisions and 16 context versions in 24 KiB (later decisions
+  are left to the transcript), each version repeats every owner input so
+  far, an owner's line is at most 2,048 bytes and a conversation holds 64
+  of them and 256 turns. Those are the next limits a long chat meets.
 - **A capture's bounds are constants in one place** (`host_capture`):
   `MAX_ORIGINALS` and `MAX_RECEIPTS` (256), `MAX_CAPTURE_BYTES` (1 MiB),
   `MAX_PASSAGE_BYTES` (4,096). A field longer than a passage is stored as
@@ -13343,9 +13408,12 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   chat turn's capture moved in all four dimensions too (passages 16 to 256,
   receipts 32 to 256, payload 32 KiB to 1 MiB, dependencies 64 to
   `MAX_CONSULTED`), and the trial paths' admission got the payload
-  ceiling. The chat recorder's own walk still stops at 128 messages and
+  ceiling. The closed chat profiles' walk still stops at 128 messages and
   32 calls and stores whole passages only, and the trial bridge keeps its
-  sixteen-passage check. **These bounds are larger than dense recall's
+  sixteen-passage check. `recording::fit` measures what the rest of the
+  capture serializes to (identity, criterion or chat context, scopes,
+  dependencies) rather than reserving a constant, so a store with a
+  maximal manifest cannot pass the start and lose a long run at the end. **These bounds are larger than dense recall's
   corpus.** `hybrid` embeds the whole eligible store per invocation and
   refuses past 256 records or 256 KiB (`HybridFallback::CorpusBounds`),
   falling back to lexical ranking; one large run now exceeds that, where
