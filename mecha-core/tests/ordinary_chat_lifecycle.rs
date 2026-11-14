@@ -2245,6 +2245,49 @@ fn web_record_turn(
     turn
 }
 
+/// A closed profile authenticates its whole chain of turns at every turn,
+/// in the attachment that sealed them as in a new one: a sealed turn whose
+/// receipt has gone since is a refusal at the next turn, not at the next
+/// attachment.
+#[test]
+fn a_closed_chat_reads_its_whole_chain_again_at_every_turn() {
+    let f = Fixture::new();
+    let s = web_session(&f);
+    let mut chat = f
+        .memory()
+        .attach_authenticated_web_chat(&s, ChatAttachMode::Create)
+        .unwrap();
+    f.config(&s);
+    let mut reports = vec![];
+    for (n, text) in ["Keep synthetic folders blue", "Use green ones instead"]
+        .into_iter()
+        .enumerate()
+    {
+        let turn = web_record_turn(
+            &mut chat,
+            &s,
+            text,
+            n as u64 + 1,
+            OwnerSource::AuthenticatedWeb,
+        );
+        let report = chat.finish_turn(&turn);
+        assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+        reports.push(report);
+    }
+    assert_eq!(chat.next_turn_ordinal().unwrap(), 3);
+    fs::remove_file(
+        f.request
+            .authority
+            .join(format!("{}.chat-retained", reports[0].run_id)),
+    )
+    .unwrap();
+    let owner = OwnerInput::new(OwnerSource::AuthenticatedWeb, "And a third".into()).unwrap();
+    assert!(
+        chat.begin_authenticated_web_turn(&s, &owner, 3).is_err(),
+        "the first turn's receipt is gone and the same attachment began another turn"
+    );
+}
+
 #[test]
 fn web_ingress_retains_two_turns_and_resumes_only_through_its_host_door() {
     let f = Fixture::new();

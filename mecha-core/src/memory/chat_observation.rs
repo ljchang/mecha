@@ -186,7 +186,8 @@ impl ChatDecisionLocator {
 
 /// Host-produced sidecar. Native source validation must additionally prove these
 /// locators/digests match the sealed prefix; a deserialized DTO is not authority.
-/// Bounds: 16 used versions, 128 decisions, 64 owner locators, 24 KiB total.
+/// Bounds: 16 used versions, 128 decisions, 64 owner locators, 96 KiB total
+/// (`MAX_CONTEXT_BYTES`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatObservationContext {
