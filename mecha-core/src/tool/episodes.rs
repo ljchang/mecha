@@ -69,8 +69,9 @@ const ERRORS: usize = 3;
 const READS: usize = 3;
 const PER_TOOL: usize = 2;
 /// Tools whose calls are the harness's memory, never an episode's subject.
-pub(crate) const MEMORY_TOOLS: [&str; 5] = [
+pub(crate) const MEMORY_TOOLS: [&str; 6] = [
     NAME,
+    super::concepts::NAME,
     "goal_context",
     "memory_search",
     "transcript_search",
@@ -256,7 +257,9 @@ pub type Refused = BTreeSet<(String, String)>;
 pub fn refused_by_harness(trace: &[crate::agent::ToolCallTrace]) -> Refused {
     trace
         .iter()
-        .filter(|call| call.denied)
+        // A call staged in the outbox was not refused, and did not run
+        // either: its notice is the harness's, and nothing was found out.
+        .filter(|call| call.denied || call.staged)
         .map(|call| (call.name.clone(), call.input.to_string()))
         .collect()
 }

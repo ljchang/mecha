@@ -1,0 +1,74 @@
+# Memory benchmark, held out: the second far-analog pair
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4; eval/fixtures/works_world.py). Two
+# tasks learn an arrangement in an archive; two probes meet the same kind of
+# arrangement at a kiln, with other tools, other shapes and no guide. Run
+# once, with the concept arm as it stood after the first pair.
+#
+#   mecha exp new eval/memory-works.toml
+#   mecha exp run memory-works
+
+name = "memory-works"
+kind = "lifetime"
+description = "Held out: does the arrangement carry between a second pair of services the concept arm was not shaped on."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/works_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["archive-survey", "archive-accounts", "kiln-bowl", "kiln-vase"]
+
+[tasks.confirmed_goals]
+archive-survey = "task:archive-survey"
+archive-accounts = "task:archive-accounts"
+kiln-bowl = "task:kiln-bowl"
+kiln-vase = "task:kiln-vase"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "works"
+command = "python3"
+args = ["eval/fixtures/works_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Written before the run: the kiln has none of the archive's tools, so no episode is handed over and the probes fail as the control does, each leaving the piece racked."
+
+[arms.concepts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts"
+
+[arms.concepts.prediction]
+metric = "failure"
+rationale = "Written before the run: on the first pair the arm passed 4 of 6 probes. Here the shapes differ (a two-argument change, six candidates) and nothing was tuned, so I expect it to pass more probes than the control and fewer than all: at least 2 of 6, with the first kiln probe of a lifetime served by the concept and the second by episodes from the first."
+
+[arms.concepts_cued]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts_cued"
+
+[arms.concepts_cued.prediction]
+metric = "failure"
+rationale = "Written after the fact: this arm did not exist when the pair was first run held out. With the cue, as development data on a mechanism shaped against this pair, it passed 6 of 6."

@@ -1,0 +1,74 @@
+# Memory benchmark, held out: the second linked-change pair
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4; eval/fixtures/twins_world.py). Two
+# tasks learn on accounts that a limit must also be set on the contra
+# account; two probes meet lamps whose records name a peer among more
+# fields, with a number for the change. The fixtures were committed before
+# the linked kind was run on anything. Run once.
+#
+#   mecha exp new eval/memory-twins-held.toml
+#   mecha exp run memory-twins-held
+
+name = "memory-twins-held"
+kind = "lifetime"
+description = "Held out: does a change that must be made twice, on a thing and on the twin its record names, carry between two services that share no tool or field name."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/twins_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["accounts-harbour", "accounts-mill", "lamps-quay", "lamps-ferry"]
+
+[tasks.confirmed_goals]
+accounts-harbour = "task:accounts-harbour"
+accounts-mill = "task:accounts-mill"
+lamps-quay = "task:lamps-quay"
+lamps-ferry = "task:lamps-ferry"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "twins"
+command = "python3"
+args = ["eval/fixtures/twins_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Written before the run: the lamps have none of the accounts' tools, and a change on one lamp is answered as a success, so nothing is kept that says a second is owed: 0 of 6."
+
+[arms.concepts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts"
+
+[arms.concepts.prediction]
+metric = "failure"
+rationale = "Written before the run: on the development pair this arm passed 6 of 6 probes, though the experience tasks themselves passed only 4 of 6, so a seed can reach its probes with one supporting run. Here the record has more fields and the change takes a number. I expect at least 4 of 6."
+
+[arms.concepts_cued]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts_cued"
+
+[arms.concepts_cued.prediction]
+metric = "failure"
+rationale = "Written before the run: 6 of 6 on the development pair. I expect at least 4 of 6 here, no fewer than the uncued arm, in fewer turns."

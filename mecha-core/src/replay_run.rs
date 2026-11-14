@@ -1748,6 +1748,12 @@ mod tests {
                 WRITES,
             ),
             (
+                "mecha-core/src/tool/concepts.rs",
+                "Concepts",
+                None, // named by a const
+                PURE, // reads the store's patterns through a loader the caller made
+            ),
+            (
                 "mecha-core/src/tool/episodes.rs",
                 "Episodes",
                 None, // named by a const
