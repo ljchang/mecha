@@ -3988,30 +3988,40 @@ fn begin_turn(
                 // An outbox that cannot be read is said, as the attempts
                 // file is: no drafts and an unreadable store are opposite
                 // findings.
-                let drafts: Vec<attempts::Draft> = OutboxStore::open(&outbox_root)
-                    .and_then(|outbox| outbox.items())
+                // The newest drafts only: a person is waiting on this turn,
+                // and a verdict on an older draft was joined at an earlier
+                // one. One that could not be read is said, not skipped.
+                let (items, unread) = OutboxStore::open(&outbox_root)
+                    .and_then(|outbox| outbox.items_newest(attempts::DRAFTS_READ))
                     .unwrap_or_else(|e| {
                         tracing::warn!("corrections could not read the outbox: {e:#}");
-                        Vec::new()
-                    })
-                    .iter()
-                    .filter_map(attempts::Draft::of)
-                    .collect();
+                        (Vec::new(), 0)
+                    });
+                if unread > 0 {
+                    tracing::warn!("corrections could not read {unread} recent outbox item(s)");
+                }
+                let drafts: Vec<attempts::Draft> =
+                    items.iter().filter_map(attempts::Draft::of).collect();
                 let now = chrono::Utc::now().to_rfc3339();
                 if store.judge(&attempts::of_drafts(&kept.attempts, &drafts, &now))? > 0 {
                     kept = store.load()?;
                 }
                 Ok(attempts::Watch::new(kept.failures(), &ask))
-            })
-            .await;
+            });
+            // Under the deadline the brief's reads above have, for their
+            // reason: the turn does not wait on a slow store. A read that
+            // runs out hands nothing over this turn and says so.
+            let built =
+                tokio::time::timeout(crate::setup::BRIEF_BOARD_TIMEOUT_INTERACTIVE, built).await;
             match built {
-                Ok(Ok(found)) if !found.is_empty() => {
+                Ok(Ok(Ok(found))) if !found.is_empty() => {
                     watch = Some(Arc::new(std::sync::Mutex::new(found)));
                 }
-                Ok(Ok(_)) => {}
+                Ok(Ok(Ok(_))) => {}
                 // A store that cannot be read hands nothing over, and says so.
-                Ok(Err(e)) => tracing::warn!("corrections could not be read: {e:#}"),
-                Err(e) => tracing::warn!("corrections could not be read: {e}"),
+                Ok(Ok(Err(e))) => tracing::warn!("corrections could not be read: {e:#}"),
+                Ok(Err(e)) => tracing::warn!("corrections could not be read: {e}"),
+                Err(_) => tracing::warn!("corrections were not read in time; none handed over"),
             }
         }
         if let Some(watch) = &watch {

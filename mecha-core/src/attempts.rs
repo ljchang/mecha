@@ -62,6 +62,9 @@ pub const CUE_STEM: &str = "The harness noted that this run has now used the too
 
 /// The most of an ask or of the owner's words kept.
 const WORDS_BYTES: usize = 400;
+/// The most recent outbox items a turn reads for the owner's acts on
+/// drafts. A person is waiting on the turn, so it does not walk the store.
+pub const DRAFTS_READ: usize = 200;
 /// The most judged attempts watched for in one run.
 const WATCHED: usize = 3;
 /// The fewest words an ask must share with an earlier one to be like it.
@@ -689,6 +692,9 @@ impl Store {
     /// Keep verdicts that arrived later; those already on file are skipped.
     /// How many were written.
     pub fn judge(&self, verdicts: &[Verdict]) -> Result<usize> {
+        if verdicts.is_empty() {
+            return Ok(0);
+        }
         let kept = self.load()?;
         let new: Vec<Line> = verdicts
             .iter()
@@ -1370,6 +1376,109 @@ mod tests {
         let mut taint = crate::agent::Taint::default();
         taint.arm_for_content(&[Message::user("an ask with no correction in it")]);
         assert!(!taint.private);
+    }
+
+    /// The gate on whose act a draft's fate is. Only the owner's own
+    /// release, edit and rejection are verdicts; a run's shell behind the
+    /// approver, an act nobody stamped and a draft still pending are not,
+    /// and neither is a draft with no call or no session to join it by.
+    #[test]
+    fn only_the_owner_s_own_act_on_a_draft_is_read_as_a_verdict() {
+        use crate::closure::Actor;
+        use crate::outbox::{OutboxKind, OutboxStore, Provenance};
+        let root = std::env::temp_dir().join(format!("attempts-drafts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = OutboxStore::open(&root).unwrap();
+        let args = || json!({"to": "office@harbour.example", "body": "Dear office,"});
+        let stage = |call: Option<&str>, session: Option<&str>, untrusted: bool| {
+            store
+                .stage(
+                    "mail_send",
+                    OutboxKind::Message,
+                    args(),
+                    crate::agent::Taint {
+                        private: true,
+                        untrusted,
+                    },
+                    Provenance {
+                        session_id: session.map(str::to_string),
+                        call_id: call.map(str::to_string),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .id
+        };
+        let sent = |id: &str, by| store.resolve(id, "sent", None, by).unwrap();
+        let rejected = |id: &str, why: Option<&str>, by| {
+            store
+                .resolve(id, "rejected", why.map(str::to_string), by)
+                .unwrap()
+        };
+        let edit = |id: &str, by| {
+            store
+                .update_args(
+                    id,
+                    json!({"to": "office@harbour.example", "body": "Hello,"}),
+                    by,
+                )
+                .unwrap()
+        };
+        let staged = || stage(Some("c1"), Some("s"), false);
+
+        // The owner's three acts.
+        let act = |item: &crate::outbox::OutboxItem| Draft::of(item).map(|d| d.act);
+        assert_eq!(
+            act(&sent(&staged(), Actor::Owner)),
+            Some(Act::SentUnchanged)
+        );
+        let id = staged();
+        edit(&id, Actor::Owner);
+        assert_eq!(
+            act(&sent(&id, Actor::Owner)),
+            Some(Act::Edited(vec!["body".into()]))
+        );
+        assert_eq!(
+            act(&rejected(&staged(), Some("too formal"), Actor::Owner)),
+            Some(Act::Rejected(Some("too formal".into())))
+        );
+        // The same edit of a draft staged after something from outside had
+        // been read: the act counts, the field's name is not repeated.
+        let id = stage(Some("c1"), Some("s"), true);
+        edit(&id, Actor::Owner);
+        assert_eq!(act(&sent(&id, Actor::Owner)), Some(Act::Edited(vec![])));
+
+        // Not the owner's hand, or nobody's on record.
+        for by in [Actor::OwnerApproved, Actor::Unknown] {
+            assert_eq!(act(&sent(&staged(), by)), None, "{by:?} released");
+            assert_eq!(
+                act(&rejected(&staged(), Some("no"), by)),
+                None,
+                "{by:?} rejected"
+            );
+            let id = staged();
+            edit(&id, by);
+            assert_eq!(act(&sent(&id, Actor::Owner)), None, "{by:?} edited");
+            let id = staged();
+            edit(&id, Actor::Owner);
+            assert_eq!(act(&sent(&id, by)), None, "{by:?} released an edit");
+        }
+        // Still pending.
+        assert_eq!(act(&store.item(&staged()).unwrap()), None);
+        // Nothing to join it by.
+        assert_eq!(
+            act(&sent(&stage(None, Some("s"), false), Actor::Owner)),
+            None
+        );
+        assert_eq!(
+            act(&sent(&stage(Some(""), Some("s"), false), Actor::Owner)),
+            None
+        );
+        assert_eq!(
+            act(&sent(&stage(Some("c1"), None, false), Actor::Owner)),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
