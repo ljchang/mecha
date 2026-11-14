@@ -310,7 +310,9 @@ pub type Refused = BTreeSet<(String, String)>;
 pub fn refused_by_harness(trace: &[crate::agent::ToolCallTrace]) -> Refused {
     trace
         .iter()
-        .filter(|call| call.denied)
+        // A call staged in the outbox was not refused, and did not run
+        // either: its notice is the harness's, and nothing was found out.
+        .filter(|call| call.denied || call.staged)
         .map(|call| (call.name.clone(), call.input.to_string()))
         .collect()
 }
