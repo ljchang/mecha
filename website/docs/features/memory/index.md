@@ -229,6 +229,9 @@ This does not make omitted text factual support or prove the action achieved
 its goal. Full arguments remain in the native transcript. A tool result or
 other passage longer than 4,096 bytes is stored as its first 4,096 bytes,
 marked as an excerpt with the full length.
+TUI memory attachment and automatic learning remain separate work. The distinct
+authenticated web profile is described below. SQLCipher does not encrypt the
+native transcript, terminal history or private recovery files.
 
 ### Durable todos and planning in CLI memory chat
 
