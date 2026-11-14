@@ -190,7 +190,7 @@ An item:
 | `coined_by` | The owner, the persona, or both |
 | `source` | Chat and turn range, as memory rows carry it: the deletion key. One chat; see §7 on forgetting |
 | `origin` | Memory's three values: the owner's (an item, meaning or form the owner wrote or edited, which no later pass may write over), model-written from a clean stretch, or model-written from an untrusted one, by the recorded taint of the stretch. A turn no checkpoint covers is unknown, and unknown loads as untrusted, as memory's does |
-| `due_at` | For a thread or a plan: the time the introducing chat gave for it, if it gave one |
+| `due_at` | For a thread or a plan: the time the introducing chat gave for it, if it gave one. Resolved by code from a typed date the pass returns, against the turn's clock (`clock.rs`) in the owner's IANA zone; a date the pass cannot type leaves it empty |
 
 An event is about a **subject**: an item, or a memory record by its `uid` where no item covers
 it. An item names the memory `uid`s it was made from, so a row and its item are one subject.
@@ -212,6 +212,12 @@ Activation is a pure function of the event log and the clock:
 it rises with a mention or a cue and falls with turns and with days. Because it is a function,
 changing its shape re-reads the same log rather than migrating a store, and a replay can compare
 two shapes on one recorded chat.
+
+**A turn's events land with its reply.** A persona turn can fail after its notes were built,
+and today the ledger is put back (`told_before`) so that an offer nobody read is not an offer
+spent. A durable log cannot be put back, so a turn's `cued` and `offered` are appended only
+once its reply is recorded, in the same write. A turn that is rolled back leaves no event, and
+no fold or readout counts an offer nobody saw.
 
 **A closed set on an append-only store is a wire format.** An item kind or an event the code
 does not know loads as unknown and is skipped by every fold; it never fails the record.
@@ -340,7 +346,11 @@ curves do.
   with no uptake, the folds that lengthen an item's rest, retire it or raise its activation
   ignore a `said` from a tainted chat: such a mark quiets the item in that chat and nowhere
   else, and never moves the form it is referred to by. In a clean chat any item whose form the reply uses is marked
-  said, offered or not, so a spontaneous re-telling is seen. In a tainted stretch marking said
+  said, offered or not, so a spontaneous re-telling is seen. That match needs the floor the cue
+  gate has, since a short form will collide with ordinary wording and a false mark is durable,
+  crosses chats and feeds the folds that rest and retire: a form counts only if it is
+  distinctive (it reaches this item and no other, and is not made of common words alone); for
+  an item that was not offered this turn only its longer forms count. In a tainted stretch marking said
   is a way to silence an item, so there it is bounded as
   `PERSONA-LIFE-DESIGN` §4.5 bounds `told`: only a subject this chat's notes recorded as
   offered or as background, matched against that recorded id list and never against a note's
@@ -424,8 +434,11 @@ the nightly pass writes items, and the owner sees them where memories are curate
 4. **Human-like forgetting.** People forget most of a conversation and hedge. Should a persona
    hedge about what it told the owner, or use its exact record? Proposed: exact for what it
    knows, hedged only where the record is itself uncertain (§5.1).
-5. **Where the instrument's readouts live.** Counts through `mecha persona measures`
-   (proposed), with the graph view a later page.
+5. **Where the instrument's readouts live.** D28 named `mecha persona memory report` and the
+   curation page for its log. Proposed: D28's report stays there for memory records, and the
+   ground's readouts go through `mecha persona measures` beside the repetition measures they
+   extend, with the graph view a later page. That is a second surface over one log, and is the
+   owner's to accept or fold into the first.
 6. **Memory v2.** Build on persona memory as it is (proposed), or wait for personas to move.
 7. **Who authors a handle.** The writer's pass choosing among spans of wording the chat
    actually used (proposed: §2.2 says which words survive, and it keeps a model from coining
