@@ -1215,6 +1215,42 @@ fn said_notes(notes: &[String]) -> String {
     }
 }
 
+/// [`said_notes`] after a failure, where they are said not to be its cause.
+/// Read straight after "the video server is not answering", a note about a
+/// missing `wearing` was taken for why the clip failed, and the same call
+/// was sent again (owner's chats, 2026-11-11). A sentence of its own with no
+/// antecedent, so it reads the same wherever a failure puts it (review of
+/// #868, pass 2).
+fn said_notes_after_failure(notes: &[String]) -> String {
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Notes on the call itself, which are not why it was not made: {}",
+            notes.join(" ")
+        )
+    }
+}
+
+/// How long a call keeps finding nothing listening at the video server's
+/// address before it says so itself, in place of handing the clip over as a
+/// job. Past the usual restart (4-10 s measured, `comfy::SERVER_WAIT`'s
+/// doc), so one in flight is waited out here; the one 40 s restart on record
+/// would be refused, which is why the refusal says it may be restarting.
+/// Only a refused connect counts (`comfy::Client::refuses`): a server that
+/// accepts and is slow is there, and the job waits for it in full. Before
+/// this a stopped server was answered "being made" and the failure arrived
+/// turns later.
+#[cfg(not(test))]
+const ASKED_WAIT: std::time::Duration = std::time::Duration::from_secs(12);
+#[cfg(test)]
+const ASKED_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// What a call or a job says of a server that does not answer.
+fn not_answering(base: impl std::fmt::Display) -> String {
+    format!("the video server at {base} is not answering; it is the operator's to start")
+}
+
 /// How long a clip should take, in seconds, from this machine's own clips:
 /// the median time per frame-step-megapixel of finished clips with as many
 /// references (3 or more counted together) and the same turbo, then the
@@ -1598,11 +1634,7 @@ impl VideoGenerate {
         match self.wire.await_server(Some(cancel), SERVER_WAIT).await {
             Err(Failure::Cancelled) => return Err(Failure::Cancelled),
             Err(Failure::Other(_)) => {
-                return Err(anyhow!(
-                    "the video server at {} is not answering; it is the operator's to start",
-                    self.wire.base()
-                )
-                .into())
+                return Err(anyhow!("{}", not_answering(self.wire.base())).into())
             }
             Ok(()) => {}
         }
@@ -2139,6 +2171,29 @@ impl Tool for VideoGenerate {
             Ok(plan) => plan,
             Err(e) => return Ok(ToolOutput::err(format!("Not made: {e:#}"))),
         };
+        // Asked before the clip is handed over, so a server nothing is
+        // listening for is said in the turn that asked and nothing is
+        // promised (`ASKED_WAIT`). Anything else (answering, slow, busy) is
+        // the job's to wait for. A stop of the run ends the wait.
+        match self.wire.refuses(ctx.cancel.as_ref(), ASKED_WAIT).await {
+            // Answering, slow, busy, or seen before and restarting: the
+            // job's to wait for. So is an address that would not build,
+            // which the job says in its own words.
+            Ok(false) | Err(Failure::Other(_)) => {}
+            Err(Failure::Cancelled) => {
+                return Ok(ToolOutput::err(format!(
+                    "not made: stopped{}",
+                    said_notes(&plan.notes)
+                )))
+            }
+            Ok(true) => {
+                return Ok(ToolOutput::err(format!(
+                    "Not made: {} (nothing is listening there; if it was only just restarted it may be back within a minute). Nothing was started. Tell them, and send this again only when they say it is running or ask you to retry.{}",
+                    not_answering(self.wire.base()),
+                    said_notes_after_failure(&plan.notes)
+                )))
+            }
+        }
         let cancel = CancellationToken::new();
         let mut job_ctx = ctx.clone();
         job_ctx.cancel = Some(cancel.clone());
@@ -2155,7 +2210,18 @@ impl Tool for VideoGenerate {
                     ToolOutput::err(format!("not made: stopped{}", said_notes(&notes)))
                 }
                 Err(Failure::Other(e)) => {
-                    ToolOutput::err(format!("not made: {e:#}{}", said_notes(&notes)))
+                    // A reason that ends its own sentence gets no second
+                    // full stop.
+                    let why = format!("{e:#}");
+                    let stop = if why.trim_end().ends_with(['.', '!', '?']) {
+                        ""
+                    } else {
+                        "."
+                    };
+                    ToolOutput::err(format!(
+                        "not made: {why}{stop}{}",
+                        said_notes_after_failure(&notes)
+                    ))
                 }
             }
         };

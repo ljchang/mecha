@@ -136,8 +136,18 @@ pub fn extract_transcript(transcript: &crate::session::Transcript) -> anyhow::Re
     let mut seen_uses = std::collections::HashSet::new();
     let mut seen_results = std::collections::HashSet::new();
     // History predating activation is already in the first frozen seed, not
-    // work the replay will execute. Never put those calls on its cursor.
-    for message in state.decisions()[0].messages() {
+    // work the replay will execute. Never put those calls on its cursor. A
+    // compact first decision copied no seed: its history is the session's
+    // own first messages, checked against the digests it recorded, and a
+    // session whose history was rewritten since has no seed to read and is
+    // refused here, where the driver would refuse it anyway.
+    let first = &state.decisions()[0];
+    let seed = if first.is_compact() {
+        first.sent_conversation(&transcript.convo.messages)?
+    } else {
+        first.messages().to_vec()
+    };
+    for message in &seed {
         for block in &message.content {
             match block {
                 Block::ToolUse { id, .. } => {

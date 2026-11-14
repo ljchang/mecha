@@ -465,6 +465,15 @@ impl DecisionBinding {
             ))
         })
     }
+    /// Whether `message` is the last message a compact binding's request
+    /// sent, by the digest it recorded. A full binding answers no: it has a
+    /// copy to compare.
+    pub fn sent_tail_is(&self, message: &Message) -> bool {
+        self.compact.as_ref().is_some_and(|c| {
+            serde_json::to_vec(message)
+                .is_ok_and(|bytes| c.conversation_tail.as_deref() == Some(digest(&bytes).as_str()))
+        })
+    }
     /// The conversation as it stood when this request went out, for a
     /// replay to start from. A full binding copied it. A compact one
     /// recovers it from `conversation`, the session's messages as they
