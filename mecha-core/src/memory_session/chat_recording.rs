@@ -68,7 +68,8 @@ fn capture_impl(
         "chat prior owner ingress changed"
     );
     expected_owners.push(f.owner.clone());
-    let mut external_results = a.graph_surface.is_some() && prior.convo.taint.untrusted;
+    let prior_untrusted = prior.convo.taint.untrusted;
+    let mut external_results = a.graph_surface.is_some() && prior_untrusted;
     let prior_messages = prior.convo.messages.len();
     let mut expected_history = prior.convo.messages;
     expected_history.push(crate::message::Message::user(f.owner.text()));
@@ -113,6 +114,9 @@ fn capture_impl(
     let mut owner = 0;
     let mut messages = 0;
     let mut taint = false;
+    // This turn continues a conversation: it begins with whatever the
+    // earlier turns' recorded taint says they took in.
+    let mut intake = Intake::starting(prior_untrusted);
     let mut ended = false;
     let mut final_assistant = false;
     for (line, r) in recording::records(bytes)?
@@ -189,6 +193,11 @@ fn capture_impl(
                     notes.len() <= 32 && notes.iter().all(|n| n.len() <= 8192),
                     "ordinary notes oversized"
                 );
+                let mut carried = crate::agent::Taint::default();
+                carried.arm_for_notes(&notes);
+                if carried.untrusted {
+                    intake.ambient();
+                }
             }
             Record::Summary { .. } => {}
             Record::Taint(recorded) => {
@@ -203,6 +212,8 @@ fn capture_impl(
                     "ordinary taint unavailable"
                 );
                 taint = true;
+                // No message follows this record, so every passage is in.
+                intake.settle(Some(recorded.untrusted), &mut originals);
             }
             Record::Outcome(s) => {
                 ensure!(
@@ -215,7 +226,7 @@ fn capture_impl(
                 );
                 ended = true;
             }
-            Record::Message(m) => {
+            Record::Message(mut m) => {
                 ensure!(
                     !ended
                         && messages < 128
@@ -252,7 +263,19 @@ fn capture_impl(
                     .iter()
                     .take_while(|block| matches!(block, Block::ToolResult { .. }))
                     .count();
+                // What the loop recorded beside each result: whether its bytes
+                // came from outside. Read before the blocks are consumed.
+                // The harness's own content rule, asked of this message: a
+                // user-role block it reads as untrusted is outside content no
+                // tool result accounts for.
+                let mut content = crate::agent::Taint::default();
+                content.arm_for_content(std::slice::from_ref(&m));
+                if content.untrusted {
+                    intake.ambient();
+                }
+                let provenance = std::mem::take(&mut m.tool_provenance);
                 for (index, b) in m.content.into_iter().enumerate() {
+                    let external: Option<bool>;
                     let (kind, field, text) = match b {
                         // The full native transcript stays bound by the seal.
                         // Reasoning and its opaque signature are audit data.
@@ -266,6 +289,7 @@ fn capture_impl(
                                     );
                                     owner += 1;
                                     owner_line = Some((line + 1) as u64);
+                                    external = intake.owner();
                                     (PassageKind::UserRequest, "text", text)
                                 } else {
                                     let observed_tools = observed_names.clone();
@@ -284,6 +308,7 @@ fn capture_impl(
                                     continue;
                                 }
                             } else {
+                                external = intake.authored();
                                 (PassageKind::AssistantText, "text", text)
                             }
                         }
@@ -315,6 +340,7 @@ fn capture_impl(
                                 calls.insert(call_id, (name, input, false));
                                 continue;
                             }
+                            external = intake.authored();
                             let action = recording::action_invocation(&call_id, &name, &input)?;
                             // Recall reconciliation needs the complete native input, even
                             // when the reader-facing invocation omits its contents.
@@ -330,6 +356,7 @@ fn capture_impl(
                             content,
                             is_error,
                         } => {
+                            external = intake.result(provenance.get(&tool_use_id).copied());
                             ensure!(m.role == Role::User, "ordinary result unsupported");
                             let (name, input, complete) = calls
                                 .get_mut(&tool_use_id)
@@ -341,7 +368,7 @@ fn capture_impl(
                                 continue;
                             }
                             let external = if a.graph_surface.is_some() {
-                                m.tool_provenance.get(&tool_use_id).copied()
+                                provenance.get(&tool_use_id).copied()
                             } else {
                                 None
                             };
@@ -424,6 +451,7 @@ fn capture_impl(
                         pointer,
                         text,
                         occurred_at: None,
+                        external,
                     });
                 }
             }

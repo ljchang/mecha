@@ -54,6 +54,94 @@ fn transcript() -> String {
         .map(|r| serde_json::to_string(r).unwrap() + "\n")
         .collect()
 }
+/// A delivered inter-agent message arms the conversation's taint from its
+/// sender, not from anything in its text, and this walk keeps it out of the
+/// capture. What the model wrote after it is still recorded as outside —
+/// including text written before a later outside tool result, which on its
+/// own would have looked like the explanation for the recorded taint.
+#[test]
+fn content_the_walk_does_not_place_marks_what_the_model_wrote_as_outside() {
+    let walk = |delivery: bool| {
+        let mut first = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "write-1".into(),
+            content: "wrote out.json".into(),
+            is_error: false,
+        }]);
+        first.tool_provenance.insert("write-1".into(), false);
+        if delivery {
+            first.content.push(Block::text(format!(
+                "[message m1 from peer {}]\nAn authored relayed line.",
+                crate::mailbox::DELIVERY_STEM
+            )));
+        }
+        let mut second = Message::tool_results(vec![Block::ToolResult {
+            tool_use_id: "fetch-1".into(),
+            content: "an authored page".into(),
+            is_error: false,
+        }]);
+        second.tool_provenance.insert("fetch-1".into(), true);
+        let records = [
+            Record::Meta(SessionMeta {
+                id: "synthetic-session".into(),
+                created_at: chrono::Utc::now(),
+                provider: "authored".into(),
+                model: "fixture".into(),
+                workspace: PathBuf::from("/tmp"),
+                title: None,
+                kind: Some(SessionKind::Test),
+            }),
+            Record::GoalAnchor {
+                goal: Some("task:convert".parse().unwrap()),
+            },
+            Record::Message(Message::user("Convert the fixture")),
+            Record::Message(Message::assistant(vec![Block::ToolUse {
+                id: "write-1".into(),
+                name: "fs_write".into(),
+                input: serde_json::json!({"path":"out.json","content":"[]"}),
+            }])),
+            Record::Message(first),
+            Record::Message(Message::assistant(vec![
+                Block::text("Written between the two."),
+                Block::ToolUse {
+                    id: "fetch-1".into(),
+                    name: "http_fetch".into(),
+                    input: serde_json::json!({"url":"https://example.invalid/"}),
+                },
+            ])),
+            Record::Message(second),
+            Record::GoalAnchor {
+                goal: Some("task:convert".parse().unwrap()),
+            },
+            Record::Taint(Taint {
+                private: true,
+                untrusted: true,
+            }),
+            Record::Outcome(RunStats::default()),
+        ];
+        let text: String = records
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap() + "\n")
+            .collect();
+        let events = events(&text, &criterion(), "synthetic").unwrap();
+        let find = |needle: &str| {
+            events
+                .originals
+                .iter()
+                .find(|p| p.text == needle)
+                .unwrap_or_else(|| panic!("missing passage {needle}"))
+                .external
+        };
+        (
+            find("Convert the fixture"),
+            find("Written between the two."),
+            find("an authored page"),
+        )
+    };
+    // The walk alone places the outside result, so earlier text is local.
+    assert_eq!(walk(false), (Some(false), Some(false), Some(true)));
+    assert_eq!(walk(true), (Some(false), Some(true), Some(true)));
+}
+
 #[test]
 fn native_receipt_and_original_field_positions_come_from_same_bytes() {
     let e = events(&transcript(), &criterion(), "synthetic").unwrap();

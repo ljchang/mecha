@@ -136,6 +136,22 @@ impl Fixture {
         charter: &str,
         outcome: RunStats,
     ) -> mecha_core::memory_session::chat::ChatMemoryTurn {
+        self.record_turn_tainted(chat, s, prompt, charter, outcome, false, &[])
+    }
+    /// A turn whose recorded taint the caller chooses. No tool ran in it, so
+    /// `untrusted` models something entering the conversation that the
+    /// recorder's walk over tool results cannot see.
+    #[allow(clippy::too_many_arguments)]
+    fn record_turn_tainted(
+        &self,
+        chat: &mut ChatMemory,
+        s: &Session,
+        prompt: &str,
+        charter: &str,
+        outcome: RunStats,
+        untrusted: bool,
+        notes: &[String],
+    ) -> mecha_core::memory_session::chat::ChatMemoryTurn {
         let owner = OwnerInput::new(OwnerSource::CliChat, prompt.into()).unwrap();
         let turn = chat.begin_turn(s, &owner).unwrap();
         let mut transcript = Session::read(&s.path).unwrap();
@@ -173,10 +189,16 @@ impl Fixture {
             "Authored response.",
         )])))
         .unwrap();
+        if !notes.is_empty() {
+            s.append(&Record::Notes {
+                notes: notes.to_vec(),
+            })
+            .unwrap();
+        }
         s.append(&Record::Outcome(outcome)).unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: false,
+            untrusted,
         }))
         .unwrap();
         turn
@@ -397,7 +419,9 @@ async fn per_turn_recall_uses_current_owner_context_and_retains_exact_delivery()
     let input = serde_json::json!({"memory":{"query":"coral"}});
     let output = tool.call(input.clone(), &context).await.unwrap();
     assert!(!output.is_error, "{}", output.content);
-    assert!(output.external, "{}", output.content);
+    // The first turn kept the owner's words and a reply written before
+    // anything from outside arrived, so the recall is private and local.
+    assert!(!output.external, "{}", output.content);
     let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
     assert!(packet["confirmed_goal"].is_null());
     assert_eq!(packet["goal_context_revision"], 2);
@@ -447,7 +471,7 @@ async fn per_turn_recall_uses_current_owner_context_and_retains_exact_delivery()
     .unwrap();
     s.append(&Record::Taint(Taint {
         private: true,
-        untrusted: true,
+        untrusted: false,
     }))
     .unwrap();
     let second = chat.finish_turn(&turn);
@@ -1870,9 +1894,74 @@ fn unauthenticated_report_protocol_never_becomes_attachment_authority() {
     assert!(Session::parse(&s.path, &text).is_err());
 }
 
+/// A note the harness's content rule reads as untrusted is outside content
+/// no tool result accounts for, and a notes record has no position among
+/// the messages. So everything the model wrote in that turn is stored as
+/// outside, and the owner's own words stay local.
+#[test]
+fn a_note_read_as_untrusted_marks_what_the_model_wrote_as_outside() {
+    let f = Fixture::new();
+    let s = f.session();
+    let mut chat = f.memory().attach_chat(&s, ChatAttachMode::Create).unwrap();
+    f.config(&s);
+    let turn = f.record_turn_tainted(
+        &mut chat,
+        &s,
+        "The authored label is coral",
+        "Keep records",
+        RunStats {
+            stop_cause: Some(StopCause::Completed),
+            turns: 1,
+            context_overflows: Some(0),
+            ..Default::default()
+        },
+        true,
+        &[format!(
+            "{}\n- an authored line",
+            mecha_core::diagnose::DIGEST_STEM
+        )],
+    );
+    let report = chat.finish_turn(&turn);
+    assert_eq!(report.status, SessionMemoryStatus::Retained, "{report:?}");
+    let seal: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.request
+                .authority
+                .join(format!("{}.chat-seal", report.run_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let stored: Vec<_> = seal["payload"]["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["kind"].as_str().unwrap().to_string(),
+                p["external"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            ("UserRequest".to_string(), serde_json::json!(false)),
+            ("AssistantText".to_string(), serde_json::json!(true)),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
-    for provenance in [true, false] {
+    // Two first turns: one that took in nothing from outside, and one whose
+    // recorded taint says something did. The second seals no passage as
+    // local, so recalling it is genuinely external. Either way the native
+    // record of the recall must say what the recall was — and the case that
+    // matters is the last: an outside recall recorded as local is refused.
+    for (first_untrusted, provenance) in
+        [(false, false), (false, true), (true, true), (true, false)]
+    {
         let f = Fixture::new();
         let s = f.session();
         let mut chat = f
@@ -1880,7 +1969,21 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
             .attach_chat_with_graph(&s, ChatAttachMode::Create, Some(authored_graph_surface(&f)))
             .unwrap();
         graph_config(&f, &s);
-        let first = f.turn(&mut chat, &s, "The authored label is coral", "Keep records");
+        let first = f.record_turn_tainted(
+            &mut chat,
+            &s,
+            "The authored label is coral",
+            "Keep records",
+            RunStats {
+                stop_cause: Some(StopCause::Completed),
+                turns: 1,
+                context_overflows: Some(0),
+                ..Default::default()
+            },
+            first_untrusted,
+            &[],
+        );
+        let first = chat.finish_turn(&first);
         assert_eq!(first.status, SessionMemoryStatus::Retained, "{first:?}");
         let owner =
             OwnerInput::new(OwnerSource::CliChat, "Find the prior coral label".into()).unwrap();
@@ -1919,7 +2022,9 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
         let input = serde_json::json!({"memory":{"query":"coral"}});
         let output = tool.call(input.clone(), &context).await.unwrap();
         assert!(!output.is_error, "{}", output.content);
-        assert!(output.external, "{}", output.content);
+        // A recall of the owner's words and a clean reply is local. The same
+        // words from a turn recorded as untrusted are of unknown origin.
+        assert_eq!(output.external, first_untrusted, "{}", output.content);
         let packet: serde_json::Value = serde_json::from_str(&output.content).unwrap();
         assert!(packet["confirmed_goal"].is_null());
         assert_eq!(packet["goal_context_revision"], 2);
@@ -1970,11 +2075,11 @@ async fn graph_goal_context_native_provenance_must_match_the_tracked_attempt() {
         .unwrap();
         s.append(&Record::Taint(Taint {
             private: true,
-            untrusted: true,
+            untrusted: first_untrusted || provenance,
         }))
         .unwrap();
         let second = chat.finish_turn(&turn);
-        if !provenance {
+        if provenance != first_untrusted {
             assert_eq!(second.status, SessionMemoryStatus::Unavailable);
             continue;
         }

@@ -396,15 +396,7 @@ impl Memory {
                     continue;
                 }
             }
-            hits.push(Hit {
-                required_scopes: required_scopes(&tx, &reference.revision)?,
-                reference,
-                sequence: seq,
-                record,
-                possible_time: possible,
-                private_data: true,
-                untrusted_input: true,
-            });
+            hits.push(Hit::read(&tx, reference, seq, record, possible)?);
             if hits.len() == query.limit {
                 break;
             }

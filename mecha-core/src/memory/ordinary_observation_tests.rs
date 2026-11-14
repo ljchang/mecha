@@ -72,6 +72,7 @@ fn passage(
         pointer: pointer.into(),
         text: text.into(),
         occurred_at: None,
+        external: None,
     }
 }
 
@@ -260,6 +261,203 @@ fn successful_tool_and_assistant_claim_still_yield_not_evaluated() {
         .db
         .capture_semantic_assessment(&forged, &f.access)
         .is_err());
+}
+
+/// What the transcript recorded about where a result came from is stored
+/// with the passage and read back unchanged — outside, local, and unknown
+/// kept apart, because unknown is never read as local.
+#[test]
+fn where_a_result_came_from_survives_admission_and_the_canonical_reader() {
+    let mut f = Fixture::new(Memory::create_supported_situated);
+    let mut input = with_invocation(
+        capture("provenance", "a", "Read the fixture record"),
+        ReceiptStatus::Succeeded,
+    );
+    for (pointer, text, external) in [
+        (
+            "/content/2/content",
+            "fetched from a third party",
+            Some(true),
+        ),
+        ("/content/3/content", "read from the workspace", Some(false)),
+        ("/content/4/content", "recorded before provenance", None),
+    ] {
+        let mut result = passage(
+            "provenance",
+            PassageKind::ToolResult,
+            "test-host",
+            pointer,
+            text,
+        );
+        result.external = external;
+        input.originals.push(result);
+    }
+    let receipt = admit(&mut f, input);
+    let Some(Record::Evidence(projection)) = f.db.read(&receipt.projection, &f.access).unwrap()
+    else {
+        panic!("missing ordinary projection");
+    };
+    let canonical = projection_input(&f.db.conn, &projection).unwrap();
+    let stored: Vec<_> = canonical
+        .originals
+        .iter()
+        .filter(|p| p.kind == PassageKind::ToolResult)
+        .map(|p| (p.text.as_str(), p.external))
+        .collect();
+    assert_eq!(
+        stored,
+        [
+            ("fetched from a third party", Some(true)),
+            ("read from the workspace", Some(false)),
+            ("recorded before provenance", None),
+        ]
+    );
+    // And it is part of what the store authenticates: the same passages with
+    // a different answer are a different capture.
+    let wire = serde_json::to_string(&canonical).unwrap();
+    assert!(wire.contains(r#""external":true"#) && wire.contains(r#""external":false"#));
+}
+
+/// Recall labels each passage from what its capture recorded, and nothing
+/// else: local is trusted, outside and unknown are not, and the capture's
+/// own record is trusted only when every passage in it was.
+#[test]
+fn recall_derives_trust_from_the_recorded_origin_and_reads_unknown_as_outside() {
+    let mut f = Fixture::new(Memory::create_supported_situated);
+    let mut mixed = with_invocation(
+        capture("mixed", "a", "Read the fixture record"),
+        ReceiptStatus::Succeeded,
+    );
+    let mut clean = with_invocation(
+        capture("clean", "b", "Read the other fixture record"),
+        ReceiptStatus::Succeeded,
+    );
+    for p in mixed.originals.iter_mut().chain(clean.originals.iter_mut()) {
+        p.external = Some(false);
+    }
+    for (pointer, text, external) in [
+        ("/content/2/content", "quince fetched abroad", Some(true)),
+        ("/content/3/content", "quince read at home", Some(false)),
+        ("/content/4/content", "quince of no record", None),
+    ] {
+        let mut result = passage("mixed", PassageKind::ToolResult, "test-host", pointer, text);
+        result.external = external;
+        mixed.originals.push(result);
+    }
+    let mixed = admit(&mut f, mixed);
+    let clean = admit(&mut f, clean);
+    let read = |f: &Fixture, reference: &RevisionRef| {
+        let record = f.db.read(reference, &f.access).unwrap().unwrap();
+        Hit::read(&f.db.conn, reference.clone(), 0, record, false).unwrap()
+    };
+    let mut seen = Vec::new();
+    for reference in &mixed.originals {
+        let hit = read(&f, reference);
+        let Record::Evidence(e) = &hit.record else {
+            panic!("an original is evidence")
+        };
+        assert!(hit.private_data);
+        if let Some(origin) = &hit.origin {
+            assert_eq!(origin.capture, mixed.projection);
+            assert_eq!(hit.untrusted_input, origin.external != Some(false));
+        }
+        if e.text.starts_with("quince") {
+            let origin = hit
+                .origin
+                .as_ref()
+                .expect("a captured passage has an origin");
+            assert_eq!(origin.kind, PassageKind::ToolResult);
+            seen.push((e.text.clone(), origin.external, hit.untrusted_input));
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            ("quince fetched abroad".to_string(), Some(true), true),
+            ("quince read at home".to_string(), Some(false), false),
+            ("quince of no record".to_string(), None, true),
+        ]
+    );
+    // One outside passage makes the capture's own record untrusted; a
+    // capture whose every passage was local is trusted with all of them.
+    assert!(read(&f, &mixed.projection).untrusted_input);
+    assert!(!read(&f, &clean.projection).untrusted_input);
+    assert!(clean.originals.iter().all(|r| !read(&f, r).untrusted_input));
+    // And the origin travels with the record a reader is handed.
+    let wire = serde_json::to_value(read(&f, &clean.originals[0])).unwrap();
+    assert_eq!(wire["untrusted_input"], false);
+    assert_eq!(wire["external"], false);
+    assert!(wire.get("origin").is_none());
+}
+
+/// The walk places a tool result in order, so text written before the first
+/// outside result is local. Outside content it cannot place, a note, may
+/// have been there from the first word: with one, text written before that
+/// result is outside too, and the owner's words and the results keep their
+/// own answers.
+#[test]
+fn outside_content_with_no_position_taints_what_the_model_wrote_before_any_result() {
+    let walk = |ambient: bool| {
+        let mut intake = Intake::starting(false);
+        if ambient {
+            intake.ambient();
+        }
+        let mut originals = Vec::new();
+        for (index, kind) in [
+            PassageKind::UserRequest,
+            PassageKind::AssistantText,
+            PassageKind::ToolResult,
+            PassageKind::AssistantText,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let external = match kind {
+                PassageKind::UserRequest => intake.owner(),
+                PassageKind::ToolResult => intake.result(Some(true)),
+                _ => intake.authored(),
+            };
+            let mut p = passage(
+                "walk",
+                kind,
+                "test-host",
+                &format!("/content/{index}/text"),
+                "x",
+            );
+            p.external = external;
+            originals.push(p);
+        }
+        intake.settle(Some(true), &mut originals);
+        originals
+            .into_iter()
+            .map(|p| p.external)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        walk(false),
+        [Some(false), Some(false), Some(true), Some(true)]
+    );
+    assert_eq!(
+        walk(true),
+        [Some(false), Some(true), Some(true), Some(true)]
+    );
+    // A recorded taint nothing accounts for seals nothing as local, and a
+    // missing taint record is the same case.
+    for recorded in [Some(true), None] {
+        let mut intake = Intake::starting(false);
+        let mut p = passage(
+            "walk",
+            PassageKind::UserRequest,
+            "test-host",
+            "/content/0/text",
+            "x",
+        );
+        p.external = intake.owner();
+        let mut originals = vec![p];
+        intake.settle(recorded, &mut originals);
+        assert_eq!(originals[0].external, None);
+        assert_eq!(intake.authored(), Some(true));
+    }
 }
 
 #[test]

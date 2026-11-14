@@ -131,9 +131,22 @@ pub struct Hit {
     pub record: Record,
     pub possible_time: bool,
     pub required_scopes: BTreeSet<String>,
-    /// Conservative fixture output labels; never instruction authority.
+    /// Output labels, never instruction authority. Everything recalled is
+    /// private; `untrusted_input` is derived from `origin` by the one rule in
+    /// `Origin::untrusted`, so unknown reads as untrusted.
     pub private_data: bool,
     pub untrusted_input: bool,
+    /// Whether an evidence passage's bytes came from outside the harness,
+    /// when a live capture says: the one field of `origin` a reader of the
+    /// packet is shown, absent when unknown. The passage's own source id
+    /// already names its session, line and field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external: Option<bool>,
+    /// The whole origin, for a caller in this process. Never on the wire: a
+    /// packet is cut to a byte budget, and the capture's own record carries
+    /// the same descriptors when it is delivered.
+    #[serde(skip)]
+    pub origin: Option<super::host_capture::Origin>,
 }
 
 #[derive(Debug, Serialize)]

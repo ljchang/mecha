@@ -135,6 +135,18 @@ JSONL withholds its memory, but is not a substitute for explicitly purging store
 copies. Keep the selected key and authority for recovery. Failed partial
 initialization preserves created files for explicit reconciliation.
 
+**What a recall does to the interlock.** Each stored passage records where
+it came from: your own words, a local tool result, or something read from
+outside mecha. Recalling memory always counts as private data. It counts as
+untrusted content only when the recall includes something from outside,
+something whose origin was never recorded (every passage stored before this
+was recorded, and imported transcripts), or something a model derived, such
+as a concept. What the model wrote after outside content entered its
+conversation is stored as outside too. So a session that recalls only your
+own notes and local results can still make an outbound call, and one that
+recalls a fetched page cannot. Records returned with `"external": false`
+are the ones stored as local.
+
 SQLCipher encrypts the database. Source JSONL, private recovery payloads, task
 artifacts and retained copies are separate filesystem protection surfaces.
 Current qualification uses authored data; it does not establish general learning

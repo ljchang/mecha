@@ -86,6 +86,7 @@ fn input() -> HostCapture {
             pointer: "/message/content/0/text".into(),
             text: "convert synthetic CSV to JSON".into(),
             occurred_at: None,
+            external: None,
         }],
         receipts: vec![ToolReceipt {
             call_id: "call1".into(),
@@ -171,6 +172,7 @@ fn rich_input() -> HostCapture {
             pointer: pointer.into(),
             text,
             occurred_at: None,
+            external: None,
         });
     }
     value

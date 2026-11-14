@@ -309,7 +309,11 @@ fn add(conn: &Connection, packet: &mut ContextPacket, hits: &[Hit], budget: usiz
     let before = packet.records.len();
     for hit in hits {
         if !packet.records.iter().any(|h| h.reference == hit.reference) {
-            packet.records.push(hit.clone());
+            // The one door into a packet: a record is labelled here, before
+            // the budget is measured and the reader bytes are prepared.
+            let mut hit = hit.clone();
+            hit.label(conn)?;
+            packet.records.push(hit);
         }
     }
     packet.prepare(conn)?;
@@ -498,15 +502,8 @@ fn knowledge_bundle(
             Record::Concept(_) => {}
             Record::Interpretation(_) | Record::Task(_) | Record::Plan(_) => return Ok(None),
         }
-        bundle.push(Hit {
-            required_scopes: required_scopes(conn, &input.revision)?,
-            reference: input,
-            sequence: seq,
-            record,
-            possible_time: possible,
-            private_data: true,
-            untrusted_input: true,
-        });
+        // Labelled once, at `add`, the one door into a packet.
+        bundle.push(Hit::unlabelled(conn, input, seq, record, possible)?);
     }
     Ok(Some(bundle))
 }

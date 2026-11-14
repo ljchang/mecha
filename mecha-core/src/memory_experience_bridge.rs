@@ -17,7 +17,7 @@
 //! unsupported and refused; nested program-read provenance is not reconstructed.
 use crate::memory::{
     host_capture::{
-        ActionInvocation, ConfirmedCriterion, InputStatus, OriginalPassage, PassageKind,
+        ActionInvocation, ConfirmedCriterion, InputStatus, Intake, OriginalPassage, PassageKind,
         ReceiptStatus, ToolReceipt, EVIDENCE_CHECK_VERSION,
     },
     SourceKey,
@@ -34,6 +34,9 @@ struct Events {
     receipts: Vec<ToolReceipt>,
     consulted: Vec<RevisionRef>,
     memory_packets: Vec<String>,
+    /// What the conversation had taken in by its end, for a passage the
+    /// host adds after the walk.
+    intake: Intake,
 }
 
 // This is only the currently supported native GoalMemory wire packet. Unknown
@@ -115,6 +118,8 @@ pub(crate) fn memory_packet_references_checked(
         _required_scopes: BTreeSet<String>,
         private_data: bool,
         untrusted_input: bool,
+        #[serde(default)]
+        external: Option<bool>,
     }
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -217,11 +222,36 @@ pub(crate) fn memory_packet_references_checked(
     let mut references = Vec::new();
     let mut native_readers = Vec::new();
     for hit in packet.records {
-        ensure!(hit.private_data && hit.untrusted_input, "capture refused");
+        // Everything recalled is private. Whether a record is also untrusted
+        // is derived, so the label must agree with what the same record says
+        // about its origin: a passage with its recorded origin, a capture
+        // with every descriptor it shows, and anything else is untrusted.
+        ensure!(hit.private_data, "capture refused");
         let reference = RevisionRef {
             object: hit.reference.object,
             revision: hit.reference.revision,
         };
+        let untrusted = match &hit.record {
+            PacketRecord::Reader(
+                crate::memory::interpretation_reader::ReaderRecord::NativeCapture(reader),
+            ) => {
+                reader.originals.is_empty()
+                    || reader.originals.iter().any(|d| d.external != Some(false))
+            }
+            PacketRecord::Canonical(crate::memory::Record::Evidence(_)) => {
+                hit.external != Some(false)
+            }
+            _ => true,
+        };
+        ensure!(
+            hit.untrusted_input == untrusted
+                && (hit.external.is_none()
+                    || matches!(
+                        hit.record,
+                        PacketRecord::Canonical(crate::memory::Record::Evidence(_))
+                    )),
+            "capture refused"
+        );
         if let PacketRecord::Reader(
             crate::memory::interpretation_reader::ReaderRecord::NativeCapture(reader),
         ) = hit.record
@@ -341,6 +371,11 @@ fn events_mode(
     let mut order = Vec::new();
     let mut meta = 0;
     let mut completed = false;
+    // The transcript is read from its header, so the conversation starts
+    // having taken in nothing.
+    let mut intake = Intake::starting(false);
+    // The transcript's own recorded taint, merged over every record of it.
+    let mut recorded_untrusted = None;
     for (line, raw) in text.lines().enumerate() {
         ensure!(!raw.trim().is_empty(), "capture refused");
         let record = strict_record(raw)?;
@@ -361,10 +396,31 @@ fn events_mode(
             | Record::LateResult { .. }
             | Record::LateFailure { .. } => anyhow::bail!("capture refused"),
             Record::Outcome(_) => completed = true,
-            Record::Message(message) => {
+            Record::Taint(recorded) => {
+                recorded_untrusted = Some(recorded_untrusted.unwrap_or(false) | recorded.untrusted);
+            }
+            Record::Notes { notes } => {
+                let mut carried = crate::agent::Taint::default();
+                carried.arm_for_notes(&notes);
+                if carried.untrusted {
+                    intake.ambient();
+                }
+            }
+            Record::Message(mut message) => {
+                // The harness's own content rule, asked of this message: a
+                // user-role block it reads as untrusted is outside content no
+                // tool result accounts for.
+                let mut content = crate::agent::Taint::default();
+                content.arm_for_content(std::slice::from_ref(&message));
+                if content.untrusted {
+                    intake.ambient();
+                }
+                let provenance = std::mem::take(&mut message.tool_provenance);
                 for (index, block) in message.content.into_iter().enumerate() {
+                    let external;
                     let passage = match block {
                         Block::ToolUse { id, name, input } => {
+                            external = intake.authored();
                             ensure!(
                                 message.role == Role::Assistant && !calls.contains_key(&id),
                                 "capture refused"
@@ -406,6 +462,7 @@ fn events_mode(
                             is_error,
                         } => {
                             ensure!(message.role == Role::User, "capture refused");
+                            external = intake.result(provenance.get(&tool_use_id).copied());
                             let call = calls
                                 .get_mut(&tool_use_id)
                                 .ok_or_else(|| anyhow::anyhow!("capture refused"))?;
@@ -456,12 +513,29 @@ fn events_mode(
                                 && !message.harness
                                 && !crate::agent::is_harness_voice(&text) =>
                         {
+                            external = intake.owner();
                             Some((PassageKind::UserRequest, "text", text))
                         }
                         Block::Text { text } if message.role == Role::Assistant => {
+                            external = intake.authored();
                             Some((PassageKind::AssistantText, "text", text))
                         }
-                        _ => None,
+                        // User-role content this walk does not place: a
+                        // harness voice (a delivered inter-agent message, a
+                        // resumed question, a notice) or a picture. It is
+                        // kept out of the capture, but it was in front of
+                        // the model and may carry a sender's text, so what
+                        // the model wrote is recorded as outside. Refusing
+                        // by stem would miss the next voice added.
+                        Block::Text { .. } | Block::Image { .. } if message.role == Role::User => {
+                            intake.ambient();
+                            external = None;
+                            None
+                        }
+                        _ => {
+                            external = None;
+                            None
+                        }
                     };
                     if let Some((kind, field, mut text)) = passage {
                         if text.is_empty() {
@@ -490,6 +564,7 @@ fn events_mode(
                             pointer,
                             text,
                             occurred_at: None,
+                            external,
                         });
                     }
                 }
@@ -497,6 +572,7 @@ fn events_mode(
             _ => {}
         }
     }
+    intake.settle(recorded_untrusted, &mut originals);
     ensure!(
         meta == 1
             && !originals.is_empty()
@@ -521,6 +597,7 @@ fn events_mode(
         receipts,
         consulted,
         memory_packets,
+        intake,
     })
 }
 
@@ -960,6 +1037,8 @@ impl LocalAuthority {
                 pointer: "/artifact_observation".into(),
                 text: serde_json::to_string(observation)?,
                 occurred_at: None,
+                // Bytes the model wrote, read back by the host.
+                external: projected.intake.authored(),
             });
             ensure!(projected.originals.len() <= 16, "capture refused");
             ArtifactCheck {

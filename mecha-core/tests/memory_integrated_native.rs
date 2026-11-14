@@ -500,6 +500,33 @@ async fn authored_lifecycle(full_citations: bool) -> Result<()> {
     assert!(reuse.taint.private && reuse.taint.untrusted);
     let db = fixture.open()?;
     let (influenced, _) = episode(&db, &reuse, &access, READY, CheckVerdict::Passed)?;
+    // What each run kept says where it came from. The first run saw only
+    // the owner's prompt and local results. The reuse run recalled a concept,
+    // which no capture vouches for, so what the model wrote after that
+    // recall is recorded as outside while the owner's prompt is not.
+    let origins = |capture: &Value| -> Vec<(String, Value)> {
+        capture["originals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                (
+                    d["kind"].as_str().unwrap().to_string(),
+                    d["external"].clone(),
+                )
+            })
+            .collect()
+    };
+    assert!(origins(&projection(&db, &first, &access)?)
+        .iter()
+        .all(|(_, external)| external == false));
+    let reused = origins(&influenced);
+    assert!(reused
+        .iter()
+        .all(|(kind, external)| kind != "UserRequest" || external == false));
+    assert!(reused
+        .iter()
+        .any(|(kind, external)| kind == "AssistantText" && external == true));
     let consulted: Vec<RevisionRef> = serde_json::from_value(influenced["consulted"].clone())?;
     assert!(visible
         .iter()

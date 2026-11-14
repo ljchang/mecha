@@ -654,6 +654,7 @@ mod tests {
                             pointer: "/observation".into(),
                             text: text.into(),
                             occurred_at: None,
+                            external: None,
                         },
                         OriginalPassage {
                             source: SourceKey {
@@ -673,6 +674,7 @@ mod tests {
                             })
                             .unwrap(),
                             occurred_at: None,
+                            external: None,
                         },
                         OriginalPassage {
                             source: SourceKey {
@@ -691,6 +693,7 @@ mod tests {
                             })
                             .unwrap(),
                             occurred_at: None,
+                            external: None,
                         },
                     ],
                     receipts: vec![ToolReceipt {

@@ -99,7 +99,13 @@ pub fn store(home: &Path) -> Store {
         return Store::Unreadable;
     }
     let [db, key, identity, authority] = read.map(|r| r.unwrap_or(None));
-    if [db, key, identity] == [Some(true); 3] {
+    // The authority must be a directory itself, not a link to one: its
+    // opener refuses a link, and `identity` read through a linked parent
+    // would otherwise make a store nothing can open read as whole (review
+    // of #862).
+    let authority_is_directory =
+        std::fs::symlink_metadata(self::authority(home)).is_ok_and(|m| m.is_dir());
+    if [db, key, identity] == [Some(true); 3] && authority_is_directory {
         Store::Whole
     } else if [db, key, identity, authority] == [None; 4] {
         Store::Absent
@@ -258,6 +264,15 @@ mod tests {
         let moved = home.join("moved.key");
         std::fs::rename(key_file(home), &moved).unwrap();
         std::os::unix::fs::symlink(&moved, key_file(home)).unwrap();
+        assert_eq!(store(home), Store::Partial);
+        // The same for the authority directory, whose identity file would
+        // still be found through the link.
+        std::fs::remove_file(key_file(home)).unwrap();
+        std::fs::rename(&moved, key_file(home)).unwrap();
+        assert_eq!(store(home), Store::Whole);
+        let relocated = home.join("authority-elsewhere");
+        std::fs::rename(authority(home), &relocated).unwrap();
+        std::os::unix::fs::symlink(&relocated, authority(home)).unwrap();
         assert_eq!(store(home), Store::Partial);
     }
 

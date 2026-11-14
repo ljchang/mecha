@@ -92,6 +92,11 @@ impl Memory {
                     authorized_with_guard(&tx, &neighbor.reference, access, Some(&final_checks))?;
             }
             if valid {
+                let mut hit = hit;
+                hit.anchor.label(&tx)?;
+                for neighbor in &mut hit.context {
+                    neighbor.label(&tx)?;
+                }
                 checked.push(RecallHit {
                     bm25: hit.score,
                     anchor: hit.anchor,
@@ -358,15 +363,9 @@ pub(super) fn eligible(
     {
         return Ok(None);
     }
-    Ok(Some(Hit {
-        required_scopes: required_scopes(conn, &reference.revision)?,
-        reference,
-        sequence: seq,
-        record,
-        possible_time: false,
-        private_data: true,
-        untrusted_input: true,
-    }))
+    // One of these is built for every stored passage a query may rank; the
+    // origin is read later, for the few that are delivered.
+    Ok(Some(Hit::unlabelled(conn, reference, seq, record, false)?))
 }
 
 /// Correctness-first prototype: scan indexed evidence and index the eligible

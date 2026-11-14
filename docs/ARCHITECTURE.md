@@ -13271,6 +13271,35 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   (`memory_home::BUILT`), the switch and the store's three files, never an
   open. Attachment is still an explicit `--episodic-memory`; `gated` turns
   `true` in the change that attaches the home store to an ordinary session.
+- **Recall's taint is derived from what the store recorded, never asserted.**
+  Everything recalled is private. A record is trusted only when a live
+  capture says its bytes did not come from outside the harness
+  (`host_capture::Origin::untrusted`, read through `Hit::read`); no origin,
+  an origin that does not say, a forgotten capture and anything a model
+  derived (a relation, a concept, an interpretation) all read as untrusted.
+  `goal_context` marks its result `from_outside` when any record in the
+  packet is untrusted, so a recall of the owner's words and local results
+  arms `private_data` alone. Before this, every recall armed both legs and
+  any use of memory refused model-chosen sends for the rest of the
+  conversation (owner's ruling, 2026-11-11).
+- **One type decides a passage's origin as it is recorded**
+  (`host_capture::Intake`): the owner's words are local, a tool result is
+  what the loop wrote beside it (`Message::tool_provenance`), and what the
+  model writes is outside once anything outside or unrecorded has entered
+  the conversation — a chat turn starts from the earlier turns' recorded
+  taint. The store dropped `tool_provenance` at capture until 2026-11-11,
+  so every stored passage was of unknown origin. **The transcript's
+  recorded taint outranks the walk** (`Intake::settle`): it is armed by
+  more than tool results (notes, persona blocks, a digest), so where it
+  says untrusted, or is missing, and the walk saw nothing outside, no
+  passage of that capture is sealed as local. And a note or user-role
+  block that the harness's own content rule (`Taint::arm_for_content`)
+  reads as untrusted has no position among the messages, so everything the
+  model wrote in that capture is stored as outside (`Intake::ambient`;
+  both from review of #863). A capture's
+  own record is trusted only when every passage it admitted was. The field is absent
+  from the wire when unknown, so earlier captures keep their digests and
+  read as untrusted.
 
 - **Operational tasks have a typed authority boundary inside the memory store.**
   `memory::task` reuses object/revision/scopes and erasure, but `TaskSession` binds

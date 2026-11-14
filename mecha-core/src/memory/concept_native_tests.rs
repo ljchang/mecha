@@ -89,6 +89,7 @@ fn input(session: &str, id: &str, text: &str, consulted: Vec<RevisionRef>) -> Ho
             pointer: "/content/0/text".into(),
             text: text.into(),
             occurred_at: None,
+            external: None,
         }],
         receipts: vec![ToolReceipt {
             call_id: "call1".into(),

@@ -323,6 +323,8 @@ impl World {
                         required_scopes: required_scopes(&db.conn, &reference.revision)?,
                         private_data: true,
                         untrusted_input: true,
+                        external: None,
+                        origin: None,
                     };
                     let size = serde_json::to_vec(&hit)?.len();
                     if hits.len() < 4 && bytes + size <= MAX_BYTES {

@@ -1571,7 +1571,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(second.taint.private && second.taint.untrusted);
+        // The first run kept only the owner's prompt and local results, so
+        // recalling it brings private data and nothing from outside.
+        assert!(second.taint.private && !second.taint.untrusted);
         assert_eq!(second.check.verdict, CheckVerdict::Passed);
         assert!(second.receipt.is_some(), "{:?}", second.capture_error);
         let transcript = fs::read_to_string(&second.transcript).unwrap();

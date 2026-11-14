@@ -319,6 +319,8 @@ fn oracle(memory: &Memory, c: &Case, refs: &References) -> Result<Vec<Evidence>>
             required_scopes: fixture::access().scopes,
             private_data: true,
             untrusted_input: true,
+            external: None,
+            origin: None,
         })?);
     }
     ensure!(
