@@ -103,6 +103,13 @@ pairs do: the experience face marks the omission with a code and the model
 often does not look the code up, and a lifetime whose experience tasks both
 fail has no arrangement to carry.
 
+A third pair on the same server (`berths` and `pumps`,
+`eval/memory-twins-reappraised.toml`) is held out for the reappraisal of
+failed tasks and was run once. Its experience face answers a change on one
+berth with a plain `ok`: only a `state` field in the record and a guide the
+run has no prompt to open say that a partner is owed, so the first task
+fails and the question is whether that failure repairs the second.
+
 ## 5. Controls
 
 Carried over from the prototype's harness, because `mecha exp` lacks them:
