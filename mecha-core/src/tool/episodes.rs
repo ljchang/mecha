@@ -1313,6 +1313,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_record_too_long_to_fit_is_passed_over_and_the_label_follows_what_was_written() {
+        // Newest first at equal rank: a short clean finding, one too long
+        // to fit behind it, then a short one that quotes outside content.
+        let mut outside = episode("gate_open", "E1", Some("{\"key\":\"a\"}"));
+        outside.external = true;
+        let long = episode("gate_shut", &"x".repeat(DELIVERY_BYTES), None);
+        let short = episode("gate_lock", "E3", Some("{\"key\":\"c\"}"));
+        let kept = vec![outside, long, short];
+        let loader: Loader = std::sync::Arc::new(move || Ok((kept.clone(), 0)));
+        let tool = Episodes::from_loader(
+            loader,
+            ["gate_open", "gate_shut", "gate_lock"].map(str::to_string),
+        );
+        let out = tool.call(json!({}), &ctx()).await.unwrap();
+        // The one that did not fit is absent, and the one behind it is not.
+        assert!(
+            out.content.contains("gate_lock was refused"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("gate_shut"), "{}", out.content.len());
+        assert!(
+            out.content.contains("gate_open was refused"),
+            "{}",
+            out.content
+        );
+        // What was written out quotes outside content, so the output says
+        // so: read off a prefix of the candidates, it would have counted
+        // the one passed over and missed the one handed over (review of
+        // #878).
+        assert!(out.external);
+    }
+
+    #[tokio::test]
     async fn a_task_judged_failed_is_handed_over_as_a_failure_to_a_reader_that_asks() {
         let mut messages = run(vec![
             call("a", "gate_find", json!({"name": "North"}), "G-1", false),
