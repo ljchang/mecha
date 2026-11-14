@@ -461,6 +461,11 @@ impl Kept {
     }
 }
 
+/// Where a mecha home keeps its attempts.
+pub fn dir_in(home: &Path) -> PathBuf {
+    home.join("attempts")
+}
+
 /// The home's attempts: one append-only file, the owner's alone.
 pub struct Store {
     file: PathBuf,
@@ -469,8 +474,13 @@ pub struct Store {
 impl Store {
     /// Under a mecha home.
     pub fn in_home(home: &Path) -> Store {
+        Store::in_dir(&dir_in(home))
+    }
+
+    /// In a directory of its own.
+    pub fn in_dir(dir: &Path) -> Store {
         Store {
-            file: home.join("attempts").join("attempts.jsonl"),
+            file: dir.join("attempts.jsonl"),
         }
     }
 

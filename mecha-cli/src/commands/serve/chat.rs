@@ -85,6 +85,10 @@ pub struct ChatState {
     pub(super) follower: Arc<crate::follow::Follower>,
     routes: QuestionRoutes,
     outbox_root: PathBuf,
+    /// Where corrections are kept (`mecha_core::attempts`): under the mecha
+    /// home in `serve`, a scratch directory in a test, for the reason
+    /// `sessions_dir` is held here.
+    attempts_dir: PathBuf,
     /// Where this door records and resumes transcripts, and where its chats'
     /// workspaces live: `~/.mecha/sessions` and `~/.mecha/work/web` in
     /// `serve`, a scratch directory in a test. Held here rather than
@@ -500,6 +504,7 @@ impl ChatState {
             follower,
             routes,
             outbox_root,
+            attempts_dir: mecha_core::attempts::dir_in(&mecha_core::work::mecha_home()?),
             sessions_dir: Session::default_dir()?,
             work_dir: producer_root()?,
             sessions: Mutex::new(HashMap::new()),
@@ -707,6 +712,12 @@ impl ChatState {
 
     /// Where this process's chats stage their drafts — `[outbox] dir` as the
     /// chat resolved it — so a delete purges the store the drafts are in.
+    /// Where this door keeps corrections.
+    #[cfg(test)]
+    pub(super) fn attempts_dir(&self) -> &std::path::Path {
+        &self.attempts_dir
+    }
+
     pub(super) fn outbox_root(&self) -> &std::path::Path {
         &self.outbox_root
     }
@@ -3938,6 +3949,90 @@ fn begin_turn(
                 }
             });
         }
+        // Corrections (`mecha_core::attempts`): the owner's acts on earlier
+        // attempts at asks like this one. Read here by the harness, never by
+        // the model: the drafts acted on since the last turn are joined to
+        // the attempts that staged them, and the judged attempts whose ask
+        // is like this one are watched for. What is handed over is the
+        // owner's own words and tool names, so it arms `private` and
+        // nothing else. Only the ordinary web chat with a transcript: a
+        // task chat has `brief::attempts`, an incognito chat keeps nothing,
+        // and a persona chat never comes this way.
+        let ask_at = before.len().saturating_sub(1);
+        let corrections = session
+            .kept()
+            .filter(|s| {
+                mecha_core::feature::switched_on(
+                    &bound_for_task.config,
+                    mecha_core::feature::Feature::Corrections,
+                ) && s.meta.kind == Some(mecha_core::session::SessionKind::Web)
+                    && workflow.is_none()
+                    && draw.is_none()
+            })
+            .map(|s| (state_for_task.attempts_dir.clone(), s.meta.id.clone()));
+        let mut watch: Option<mecha_core::attempts::Shared> = None;
+        if let Some((home, _)) = &corrections {
+            use mecha_core::attempts;
+            let (home, outbox_root) = (home.clone(), outbox_root.clone());
+            let ask = conversation
+                .messages
+                .get(ask_at)
+                .map(mecha_core::agent::owner_text)
+                .unwrap_or_default();
+            let built = tokio::task::spawn_blocking(move || -> Result<attempts::Watch> {
+                let store = attempts::Store::in_dir(&home);
+                let mut kept = store.load()?;
+                let drafts: Vec<attempts::Draft> = OutboxStore::open(&outbox_root)
+                    .and_then(|outbox| outbox.items())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(attempts::Draft::of)
+                    .collect();
+                let now = chrono::Utc::now().to_rfc3339();
+                if store.judge(&attempts::of_drafts(&kept.attempts, &drafts, &now))? > 0 {
+                    kept = store.load()?;
+                }
+                Ok(attempts::Watch::new(kept.failures(), &ask))
+            })
+            .await;
+            match built {
+                Ok(Ok(found)) if !found.is_empty() => {
+                    watch = Some(Arc::new(std::sync::Mutex::new(found)));
+                }
+                Ok(Ok(_)) => {}
+                // A store that cannot be read hands nothing over, and says so.
+                Ok(Err(e)) => tracing::warn!("corrections could not be read: {e:#}"),
+                Err(e) => tracing::warn!("corrections could not be read: {e}"),
+            }
+        }
+        if let Some(watch) = &watch {
+            use mecha_core::attempts;
+            conversation.taint.private = true;
+            let said = watch.lock().ok().and_then(|mut w| w.start());
+            if let Some(said) = said {
+                let text = format!("{}{said}", attempts::DELIVERY_STEM);
+                mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
+                if let Some(session) = session.kept() {
+                    let index = conversation.messages.len() - 1;
+                    if let Err(e) = session.append(&Record::Extend {
+                        index,
+                        blocks: vec![Block::text(text)],
+                    }) {
+                        tracing::warn!("a corrections hand-over was not recorded: {e:#}");
+                    }
+                }
+            }
+            if let Some(session) = session.kept() {
+                if let Err(e) = session.append(&Record::Taint(conversation.taint)) {
+                    tracing::warn!("a corrections hand-over's taint was not recorded: {e:#}");
+                }
+            }
+            before = conversation.messages.clone().into();
+            cx.cue_on_success.push(mecha_core::agent::SuccessCue {
+                text: attempts::cue(Arc::clone(watch)),
+                stem: attempts::CUE_STEM.into(),
+            });
+        }
         let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
         let _ = forwarder.await;
         if let Some((store, id, _guard)) = &workflow {
@@ -4010,6 +4105,35 @@ fn begin_turn(
             (state_for_task.ordinary_memory.clone(), remembered)
         {
             let _ = tokio::task::spawn_blocking(move || memory.finish(remembered)).await;
+        }
+
+        // Corrections: this turn as an attempt, with the steers and denials
+        // already in it, and what the run was handed. A failed run was
+        // rolled back and is no attempt; what it was handed is still
+        // recorded, since the model saw it.
+        if let Some((home, id)) = corrections {
+            use mecha_core::attempts;
+            let messages = outcome.is_ok().then(|| conversation.messages.clone());
+            let handed: Vec<(attempts::Failure, attempts::Moment)> = watch
+                .as_ref()
+                .and_then(|w| w.lock().ok().map(|w| w.handed().to_vec()))
+                .unwrap_or_default();
+            let kept = tokio::task::spawn_blocking(move || -> Result<()> {
+                let store = attempts::Store::in_dir(&home);
+                let now = chrono::Utc::now().to_rfc3339();
+                if let Some(messages) = messages {
+                    if let Some(attempt) = attempts::of_turn(&id, &messages, ask_at, &now) {
+                        store.keep(&attempt, &attempts::in_run(&id, &messages, ask_at, &now))?;
+                    }
+                }
+                store.handed(&id, &handed, &now)
+            })
+            .await;
+            match kept {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("this turn's attempt was not kept: {e:#}"),
+                Err(e) => tracing::warn!("this turn's attempt was not kept: {e}"),
+            }
         }
 
         // §6.2's readout: how this session's just-finished run appraises,
@@ -6775,6 +6899,7 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         )),
         routes: Arc::default(),
         outbox_root: test_root.join("outbox"),
+        attempts_dir: test_root.join("attempts"),
         sessions_dir: test_root.join("sessions"),
         work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),
@@ -7119,6 +7244,94 @@ pub(super) fn test_chat_drawing(
     )
 }
 
+/// A chat whose model looks something up with one tool and then answers,
+/// every turn, with `[features] corrections` as given.
+#[cfg(test)]
+pub(super) fn test_chat_looking_up(corrections: bool) -> Arc<ChatState> {
+    use mecha_core::message::{Block, CompletionResponse, StopReason};
+    use mecha_core::tool::{Tool, ToolOutput};
+    struct Lookup;
+    #[async_trait::async_trait]
+    impl Tool for Lookup {
+        fn name(&self) -> &str {
+            "schedule_lookup"
+        }
+        fn description(&self) -> &str {
+            "Look up a schedule."
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _: serde_json::Value, _: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok("Tuesday at nine"))
+        }
+    }
+    struct LooksUp(std::sync::atomic::AtomicUsize);
+    #[async_trait::async_trait]
+    impl mecha_core::provider::Provider for LooksUp {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "local"
+        }
+        fn default_model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            req: &mecha_core::message::CompletionRequest,
+            _: Option<&mecha_core::provider::StreamSink>,
+        ) -> Result<CompletionResponse> {
+            let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // By what it was sent, never by how often it was asked: the
+            // chat's own title request must not use up a turn.
+            let answered = req.messages.last().is_some_and(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            });
+            let (block, stop_reason) = if !answered && !req.tools.is_empty() {
+                (
+                    Block::ToolUse {
+                        id: format!("look-{n}"),
+                        name: "schedule_lookup".into(),
+                        input: serde_json::json!({}),
+                    },
+                    StopReason::ToolUse,
+                )
+            } else {
+                (
+                    Block::Text {
+                        text: "It is Tuesday at nine.".into(),
+                    },
+                    StopReason::EndTurn,
+                )
+            };
+            Ok(CompletionResponse {
+                message: Message::assistant(vec![block]),
+                stop_reason,
+                usage: Usage::default(),
+                refusal: None,
+                model: "test".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+    let mut config = answering_config(true);
+    mecha_core::feature::set_switch(
+        &mut config,
+        mecha_core::feature::Feature::Corrections,
+        corrections,
+    );
+    let mut registry = mecha_core::tool::Registry::new();
+    registry.insert(Arc::new(Lookup));
+    test_chat_from(Box::new(LooksUp(Default::default())), registry, config)
+}
+
 /// A chat whose model answers only once `go` is notified — a run that is
 /// still in flight for as long as a test needs it to be.
 #[cfg(test)]
@@ -7260,6 +7473,7 @@ pub(super) fn test_chat_built(
         follower: Arc::new(follower),
         routes: Arc::default(),
         outbox_root: test_root.join("outbox"),
+        attempts_dir: test_root.join("attempts"),
         sessions_dir: test_root.join("sessions"),
         work_dir: test_root.join("work/web"),
         sessions: Mutex::new(HashMap::new()),

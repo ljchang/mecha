@@ -5952,6 +5952,103 @@ mod boundary_tests {
     /// A kept chat's picture is drawn past its turn (§5.4): the turn answers
     /// "being made" and ends, the picture lands where its call is, on file,
     /// and the next turn takes the note that it arrived.
+    /// Corrections, end to end through the web chat's own turn: a turn that
+    /// used a tool is kept as an attempt; once the owner has judged it, a
+    /// later turn with a like ask is told when it has used the same tool,
+    /// in the message carrying that tool's result; what it was told is on
+    /// record; and with the switch off none of it happens.
+    #[tokio::test]
+    async fn a_judged_attempt_is_named_in_a_later_turn_that_retraces_it() {
+        use mecha_core::attempts;
+        let _home = crate::testenv::HomeGuard::new("corrections");
+        let chat = chat::test_chat_looking_up(true);
+        let off = chat::test_chat_looking_up(false);
+        let silent = app(off.clone());
+        let app = app(chat.clone());
+        converse(&app, "main", "when does the harbour office berth open").await;
+        let store = attempts::Store::in_dir(chat.attempts_dir());
+        let kept = store.load().unwrap();
+        // A session marked as a test is not the owner's work: nothing of it
+        // is kept, which is all there is to check under the mark.
+        if mecha_core::session::SessionKind::test_override().is_some() {
+            assert!(kept.attempts.is_empty(), "{kept:?}");
+            return;
+        }
+        assert_eq!(kept.attempts.len(), 1, "{kept:?}");
+        let first = kept.attempts[0].clone();
+        assert_eq!(first.calls.len(), 1);
+        assert_eq!(first.calls[0].tool, "schedule_lookup");
+        // Nobody has judged it: a like ask is told nothing.
+        converse(&app, "main", "when does the harbour office crane open").await;
+        let path = chat::test_transcript(&chat, "main").await;
+        let cues = |path: &std::path::Path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .matches("has now used the tools an earlier attempt used")
+                .count()
+        };
+        assert_eq!(cues(&path), 0);
+
+        // The owner's verdict on the first attempt, as an act of theirs
+        // would be joined: against the call that had worked by then.
+        store
+            .judge(&[attempts::Verdict {
+                session: first.session.clone(),
+                turn: first.turn,
+                good: false,
+                source: attempts::Source::Steer,
+                tool: None,
+                why: Some("ask the harbour master, not the schedule".into()),
+                before: vec!["schedule_lookup".into()],
+                about: "message:2".into(),
+                when: "t".into(),
+            }])
+            .unwrap();
+        converse(&app, "main", "when does the harbour office slip open").await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(cues(&path), 1, "{text}");
+        assert!(
+            text.contains("ask the harbour master, not the schedule"),
+            "{text}"
+        );
+        // Beside the result of the call that retraced it, and the
+        // conversation now holds the owner's earlier words: private.
+        let t = mecha_core::session::Session::read(&path).unwrap();
+        let told = t
+            .convo
+            .messages
+            .iter()
+            .find(|m| {
+                m.content.iter().any(|b| {
+                    matches!(b, mecha_core::message::Block::Text { text }
+                        if text.starts_with(attempts::CUE_STEM))
+                })
+            })
+            .expect("the cue is in no message");
+        assert!(told
+            .content
+            .iter()
+            .any(|b| matches!(b, mecha_core::message::Block::ToolResult { .. })));
+        assert!(t.convo.taint.private && !t.convo.taint.untrusted);
+        // What was handed over is on record, and the cue is never mined as
+        // the owner's own turn.
+        let kept = store.load().unwrap();
+        assert_eq!(
+            (kept.attempts.len(), kept.handed),
+            (3, 1),
+            "{kept:?}\n{text}"
+        );
+        assert!(kept.attempts.iter().all(|a| !a.asked.contains("harness")));
+
+        // Switched off: nothing is kept and nothing is said.
+        converse(&silent, "main", "when does the harbour office berth open").await;
+        assert!(attempts::Store::in_dir(off.attempts_dir())
+            .load()
+            .unwrap()
+            .attempts
+            .is_empty());
+    }
+
     #[tokio::test]
     async fn a_kept_chats_picture_lands_after_its_turn() {
         let _home = crate::testenv::HomeGuard::new("late-picture");

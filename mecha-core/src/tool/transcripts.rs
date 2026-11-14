@@ -83,6 +83,8 @@ fn delivery(text: &str) -> bool {
         || text.starts_with(super::concepts::DELIVERY_STEM)
         || text.starts_with(super::concepts::CUE_STEM)
         || text.starts_with(super::episodes::RETRACED_STEM)
+        || text.starts_with(crate::attempts::DELIVERY_STEM)
+        || text.starts_with(crate::attempts::CUE_STEM)
 }
 
 /// Whether a transcript is one this tool may quote: a one-shot run's, or a
@@ -400,6 +402,8 @@ mod tests {
             // #877).
             crate::tool::concepts::CUE_STEM,
             crate::tool::episodes::RETRACED_STEM,
+            crate::attempts::DELIVERY_STEM,
+            crate::attempts::CUE_STEM,
         ] {
             let delivered = Block::text(format!("{stem}the quartz rule"));
             assert!(block_doc("a", &Role::User, &delivered).is_none(), "{stem}");
