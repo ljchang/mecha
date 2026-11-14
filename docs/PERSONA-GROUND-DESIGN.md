@@ -183,7 +183,7 @@ An item:
 | Field | Meaning |
 |---|---|
 | `kind` | A closed set: a person, a place, an event, a running joke, a coined term, an unfinished thread, a stated plan |
-| `handle` | The pair's forms for it, longest first. Each form carries the chat it was first used in, as its own deletion key |
+| `handle` | The pair's forms for it, longest first. Each form carries the chat it was first used in, as its own deletion key, and its own `origin` |
 | `meaning` | What an outsider would need to be told. Never put in a prompt as text to say |
 | `coined_by` | The owner, the persona, or both |
 | `source` | Chat and turn range, as memory rows carry it: the deletion key. One chat; see §7 on forgetting |
@@ -280,7 +280,12 @@ curves do.
   background note and the offer. Each is its own note with its own clean and untrusted stems,
   registered where the others are (`Taint::arm_for_content`, `message::is_recorded_note`,
   `agent::is_harness_voice`). The computation lives in a core module beside `persona::today`.
-- **The cached prefix is untouched.** Nothing per chat enters the system prompt.
+- **The cached prefix is untouched**, and the turn is not free. Nothing per chat enters the
+  system prompt, but a per-turn note makes the last turn re-prefill once it is projected off
+  the wire, which `PERSONA-LIFE-DESIGN` §4.5 costed when the today-block made it two notes a
+  turn. The ground makes it up to four. The offer is present only on a turn that has one, the
+  background only on a turn where the owner used a handle, and step 2 measures the added
+  prefill on the local model before it is left on.
 - **The typed shown set.** The `offered` event is the record `PERSONA-LIFE-DESIGN` §4.5 already
   asked for beside `Record::Notes`: which items rode, not only which text.
 - **D28.** Step 1 builds D28's log as ruled, and the ground's events are rows in it: every
@@ -310,13 +315,23 @@ curves do.
   pair shortens them, so each form carries the chat it was first used in: forgetting that chat
   drops the forms it coined, and the reference steps back out to the longest form left. If the
   pair brings a forgotten thing up again later, the writer makes a new item from that chat.
+  The owner's single-record erase (`persona::memory::forget`) reaches the ground too: an item
+  made from a forgotten `uid` goes with it, `meaning` and forms included, and the record's
+  events are erased as D28 rules. And the erase does not fail soft: `forget_chat` reports a
+  scene it could not remove and carries on, but an item that outlives its chat keeps riding in
+  prompts, so a ground erase that fails refuses the forget and says why.
 - **Incognito writes nothing.** An incognito chat reads the ground and appends no event.
 - **Taint.** An item from an untrusted stretch is a candidate, as an untrusted memory row is:
   it is stored and enters no prompt, neither as background nor as an offer, until the owner
   approves it, and an approved one rides under the untrusted stem. Its `meaning` is model-written
   prose about outside content, and the ground is per persona, so it would otherwise surface in a
-  chat that never saw the stretch it came from. A tainted stretch can mark an item said; it
-  cannot mark one taken up. Marking said silences an item, so it is bounded as
+  chat that never saw the stretch it came from. Origin is per form as well as per item: a form picked from an
+  untrusted stretch is a candidate form on a clean item, entering no prompt until approved, and
+  an approved one makes the offer that names it ride the untrusted stem. A tainted stretch can
+  mark an item said; it cannot mark one taken up. Because that makes every tainted mark a use
+  with no uptake, the folds that lengthen an item's rest, retire it or raise its activation
+  ignore a `said` from a tainted chat: such a mark quiets the item in that chat and nowhere
+  else, and never moves the form it is referred to by. Marking said silences an item, so it is bounded as
   `PERSONA-LIFE-DESIGN` §4.5 bounds `told`: only a subject this chat's notes recorded as
   offered or as background, matched against that recorded id list and never against a note's
   text, and any other id is refused.
@@ -371,7 +386,11 @@ notes at the branch point.
 2. **Told and the gate.** `today::Ledger` moves onto the store; the whole per-turn fold goes
    through the gate, rows and items alike; background and offer become separate notes. This is
    the largest change to what a persona is told, since most of today's per-turn rows will not
-   pass, and it is measured on replay before it is switched on. Replay mode for recomputed notes.
+   pass, and it is measured on replay before it is switched on. The readout counts what the
+   gate displaces as well as what it removes: the persona's own `memory_search` and
+   `memory_read` call rates are measured beside re-telling and over-mention, since recall that
+   moved from the owner-keyed fold to the persona's own calls is not a fall in over-mention and
+   would erode the rule that the owner's words key recall. Replay mode for recomputed notes.
    Measured against step 1's baseline: re-telling and over-mention should fall.
 3. **Compression.** The offer names the form. Measured: reference length over mentions.
 4. **Threads, then callbacks.** Each behind its own switch per persona, each measured before it
@@ -401,8 +420,11 @@ Each step is useful alone, and step 1 changes nothing the owner can see.
    actually used (proposed: §2.2 says which words survive, and it keeps a model from coining
    the pair's shorthand), or free to write one.
 8. **An exception to D28** for the gate and the reference form (§6): the log deciding what is
-   offered, in the direction of resting an item after use and never of strengthening it. Needed
-   from step 2 of §9; step 1 needs none.
+   offered, in the direction of resting an item after use and never of strengthening it. That
+   holds for what is offered. It does not hold for the form: an item used more is referred to
+   more briefly, and a mention raises its activation, which is strengthening-shaped and is the
+   half of the exception D28's wording touches. Needed from step 2 of §9 (the gate) and step 3
+   (the form); step 1 needs none.
 
 ## Sources
 
