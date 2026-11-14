@@ -176,6 +176,11 @@ fn working_calls(messages: &[Message], start: usize) -> Vec<(usize, Call)> {
     let mut pending: BTreeMap<&str, &str> = BTreeMap::new();
     let mut out = Vec::new();
     let end = end_of_turn(messages, start);
+    // Only a call a registered tool answered, by an id issued once: an id
+    // is the model's own output, a provider may hand back an empty one, and
+    // a shared id would let one call's result vouch for another's name. A
+    // name that reaches a later run must be the registry's.
+    let answered = crate::agent::calls_a_tool_answered(messages);
     for (at, message) in messages.iter().enumerate().take(end).skip(start) {
         for block in &message.content {
             match block {
@@ -190,6 +195,9 @@ fn working_calls(messages: &[Message], start: usize) -> Vec<(usize, Call)> {
                     let Some(name) = pending.remove(tool_use_id.as_str()) else {
                         continue;
                     };
+                    if !answered.contains(tool_use_id.as_str()) {
+                        continue;
+                    }
                     if tool_use_id.starts_with(HARNESS_CALL)
                         || content.starts_with("Blocked by")
                         || content.starts_with("Denied by the user")
@@ -367,7 +375,9 @@ impl Draft {
         Some(Draft {
             id: item.id.clone(),
             session: item.session_id.clone()?,
-            call: item.call_id.clone()?,
+            // An empty id names no call: joined on, it would put the
+            // owner's words on whichever attempt also recorded one.
+            call: item.call_id.clone().filter(|id| !id.is_empty())?,
             act,
         })
     }
@@ -891,7 +901,14 @@ mod tests {
 
     fn drafted(ask: &str, staged: &str) -> Vec<Message> {
         let mut out = vec![Message::user(ask)];
-        out.extend(call("s1", "mail_search", "three threads", false));
+        // Each call's id is its own, as a conversation's are: one issued
+        // twice answers for neither call.
+        out.extend(call(
+            &format!("search-{staged}"),
+            "mail_search",
+            "three threads",
+            false,
+        ));
         out.extend(call(staged, "mail_send", "staged", false));
         out.push(Message::assistant(vec![Block::text("Drafted.")]));
         out
@@ -914,7 +931,7 @@ mod tests {
             attempt.calls,
             vec![
                 Call {
-                    id: "s1".into(),
+                    id: "search-c9".into(),
                     tool: "mail_search".into()
                 },
                 Call {
@@ -946,10 +963,27 @@ mod tests {
         messages.extend(call("c", NAME, "nothing", false));
         messages.extend(call("d", "episode_recall", "nothing", false));
         assert_eq!(of_turn("s", &messages, 0, "t"), None);
+        // An id a provider left empty, and one issued twice: neither
+        // result says which call it answers, so neither name is kept.
+        messages.extend(call("", "invented_by_a_page", "ok", false));
+        let [first, _] = call("twice", "also_invented", "ok", false);
+        let [second, answer] = call("twice", "calendar_list", "ok", false);
+        messages.extend([first, second, answer]);
+        // A name no tool has, refused as the loop refuses it.
+        messages.extend(call(
+            "f",
+            "no_such_tool",
+            &format!("{}no_such_tool`", crate::agent::NO_TOOL_NAMED),
+            true,
+        ));
+        assert_eq!(of_turn("s", &messages, 0, "t"), None);
         messages.extend(call("e", "calendar_list", "two events", false));
         let attempt = of_turn("s", &messages, 0, "t").unwrap();
         assert_eq!(attempt.calls.len(), 1);
-        assert_eq!(attempt.calls[0].tool, "calendar_list");
+        assert_eq!(
+            (attempt.calls[0].id.as_str(), attempt.calls[0].tool.as_str()),
+            ("e", "calendar_list")
+        );
     }
 
     #[test]
@@ -1313,6 +1347,29 @@ mod tests {
         };
         assert_eq!(field_names(changed(), false), vec!["subject", "reply-to"]);
         assert!(field_names(changed(), true).is_empty());
+    }
+
+    /// A conversation that was handed a correction holds the owner's words
+    /// from another one. That is read off the transcript, so it is known
+    /// when the record of the taint was not written.
+    #[test]
+    fn a_handed_over_correction_arms_private_from_the_transcript() {
+        for stem in [DELIVERY_STEM, CUE_STEM] {
+            let mut results = Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "a".into(),
+                content: "ok".into(),
+                is_error: false,
+            }]);
+            results
+                .content
+                .push(Block::text(format!("{stem}what was said")));
+            let mut taint = crate::agent::Taint::default();
+            taint.arm_for_content(&[Message::user("an ask"), results]);
+            assert!(taint.private && !taint.untrusted, "{stem}");
+        }
+        let mut taint = crate::agent::Taint::default();
+        taint.arm_for_content(&[Message::user("an ask with no correction in it")]);
+        assert!(!taint.private);
     }
 
     #[test]

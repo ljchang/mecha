@@ -3985,9 +3985,15 @@ fn begin_turn(
             let built = tokio::task::spawn_blocking(move || -> Result<attempts::Watch> {
                 let store = attempts::Store::in_dir(&home);
                 let mut kept = store.load()?;
+                // An outbox that cannot be read is said, as the attempts
+                // file is: no drafts and an unreadable store are opposite
+                // findings.
                 let drafts: Vec<attempts::Draft> = OutboxStore::open(&outbox_root)
                     .and_then(|outbox| outbox.items())
-                    .unwrap_or_default()
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("corrections could not read the outbox: {e:#}");
+                        Vec::new()
+                    })
                     .iter()
                     .filter_map(attempts::Draft::of)
                     .collect();

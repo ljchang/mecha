@@ -1315,7 +1315,14 @@ impl Taint {
                 Block::Text { text } => {
                     m.role == Role::User
                         && (text.trim_start().starts_with(crate::brief::BRIEF_STEM)
-                            || text.contains(crate::diagnose::APPRAISAL_STEM))
+                            || text.contains(crate::diagnose::APPRAISAL_STEM)
+                            // A correction handed over: the owner's words
+                            // from another conversation. No tool declared
+                            // `private` for it, and the record of its taint
+                            // is best effort, so it is read off the
+                            // transcript as the brief is.
+                            || text.trim_start().starts_with(crate::attempts::DELIVERY_STEM)
+                            || text.trim_start().starts_with(crate::attempts::CUE_STEM))
                 }
                 _ => false,
             })
