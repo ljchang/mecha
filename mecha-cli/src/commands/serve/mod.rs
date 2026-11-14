@@ -6003,6 +6003,7 @@ mod boundary_tests {
         let second = kept_after(&store, 2);
         store
             .judge(&[attempts::Verdict {
+                key: second.key.clone(),
                 session: second.session.clone(),
                 turn: second.turn,
                 good: false,
@@ -6031,6 +6032,7 @@ mod boundary_tests {
         // would be joined: against the call that had worked by then.
         store
             .judge(&[attempts::Verdict {
+                key: first.key.clone(),
                 session: first.session.clone(),
                 turn: first.turn,
                 good: false,

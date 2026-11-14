@@ -11661,9 +11661,17 @@ into the ordinary web chat only, in `serve/chat.rs`'s turn task.
   kept by where its ask was when the run began, so a run that compacted or
   evicted its history keeps no attempt and says so (`attempts::ask_is_at`):
   the ask is at another index by then, or gone.
+  For the same reason an attempt is not known by its index: a compaction
+  hands a conversation's indices out again, so each attempt carries a key
+  made with it (`Attempt::key`), and a verdict, and the record of a
+  hand-over, name the attempt by that key.
 - **What is handed back is clean by construction**: the owner's own words
   (what they asked, what they said) and tool names, never a tool's input or
-  result and never a draft's text. It arms `private` and nothing else, and
+  result and never a draft's text. For an edit the names of the fields the
+  owner changed are given, and those are keys of JSON a model wrote: only
+  names with the shape of a name are kept, and none from a draft staged
+  after something from outside had been read (`attempts::field_names`). It
+  arms `private` and nothing else, and
   only when something is handed over (`SuccessCue::private` for the line
   said after a call): a chat whose ask merely resembled a judged attempt's
   and was told nothing is left as it was, so a correction cannot take the

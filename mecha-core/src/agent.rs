@@ -21629,6 +21629,7 @@ justification = "echo is off on this box"
         let asked = Arc::new(Mutex::new(0usize));
         let mut cx = RunContext::clone(agent.context());
         cx.cue_on_success = vec![SuccessCue {
+            private: false,
             text: {
                 let asked = asked.clone();
                 Arc::new(move |_, _, _| {

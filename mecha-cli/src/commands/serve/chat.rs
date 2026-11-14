@@ -710,14 +710,14 @@ impl ChatState {
         Ok(Some(key))
     }
 
-    /// Where this process's chats stage their drafts — `[outbox] dir` as the
-    /// chat resolved it — so a delete purges the store the drafts are in.
     /// Where this door keeps corrections.
     #[cfg(test)]
     pub(super) fn attempts_dir(&self) -> &std::path::Path {
         &self.attempts_dir
     }
 
+    /// Where this process's chats stage their drafts — `[outbox] dir` as the
+    /// chat resolved it — so a delete purges the store the drafts are in.
     pub(super) fn outbox_root(&self) -> &std::path::Path {
         &self.outbox_root
     }
@@ -4142,7 +4142,7 @@ fn begin_turn(
                 let now = chrono::Utc::now().to_rfc3339();
                 if let Some(messages) = messages {
                     if let Some(attempt) = attempts::of_turn(&id, &messages, ask_at, &now) {
-                        store.keep(&attempt, &attempts::in_run(&id, &messages, ask_at, &now))?;
+                        store.keep(&attempt, &attempts::in_run(&attempt, &messages, &now))?;
                     }
                 }
                 store.handed(&id, &handed, &now)
