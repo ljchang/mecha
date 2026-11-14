@@ -126,6 +126,22 @@ pub fn asked<'a>(camera: &'a str, recorded: Option<&str>) -> &'a str {
     }
 }
 
+/// Where an ask puts a camera that stood at `was`, for a call whose words
+/// may restate the `recorded` camera before the move ([`asked`]). A typed
+/// `view` answered beside restated words describes the restated whole, so
+/// it is read only where the words were the ask too: kept, a restated
+/// distance would beat a step nearer and the same frame be shot again.
+pub fn moved_to(
+    view: Option<Shot>,
+    words: &str,
+    recorded: Option<&str>,
+    was: Shot,
+) -> Option<Shot> {
+    let ask = asked(words, recorded);
+    let view = view.filter(|_| ask.len() == words.trim().len());
+    target(view, ask, was)
+}
+
 /// Where a camera that stood at `was` stands after a move said against it:
 /// the other side is half-way round, nearer and further are one step of
 /// distance, higher and lower one step of height. The parts the words do
@@ -208,6 +224,40 @@ mod tests {
             height: Some(height),
             distance: Some(distance),
         }
+    }
+
+    /// A view typed beside words that restate the recorded camera is the
+    /// restatement's, and never beats the move the words go on to ask.
+    #[test]
+    fn a_view_beside_a_restated_camera_does_not_undo_the_move() {
+        let was = at(4, Height::Eye, Distance::Wide);
+        let restated = Some(Shot {
+            around: Some(4),
+            height: None,
+            distance: Some(Distance::Wide),
+        });
+        assert_eq!(
+            moved_to(
+                restated,
+                "a wide shot from behind, a bit closer",
+                Some("a wide shot from behind"),
+                was
+            ),
+            Some(at(4, Height::Eye, Distance::Medium))
+        );
+        // Words that are the whole ask keep their view.
+        assert_eq!(
+            moved_to(
+                Some(Shot {
+                    around: Some(2),
+                    ..Default::default()
+                }),
+                "from the side",
+                Some("a wide shot from behind"),
+                was
+            ),
+            Some(at(2, Height::Eye, Distance::Wide))
+        );
     }
 
     /// The read's answer is three closed names and nothing else: a part

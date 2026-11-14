@@ -340,6 +340,9 @@ fn detail_verdict(
         )),
         Err(_) => Ok(None),
         Ok(f) if f.second > f.first => Err("it showed a face the first pass did not".to_string()),
+        // A face gone is the other way a second pass is not the first: what
+        // was drawn over it is not known to be the person.
+        Ok(f) if f.second < f.first => Err("it lost a face the first pass showed".to_string()),
         Ok(f) => match f.alike {
             Some(alike) if alike < DETAIL_ALIKE => {
                 Err("its face was not the first pass's".to_string())
@@ -5505,8 +5508,12 @@ impl Tool for ImageGenerate {
                 match was {
                     Ok(was) => {
                         let words = call.change.camera.as_deref().unwrap_or_default();
-                        let ask = crate::camera::asked(words, recorded.map(|c| c.value.as_str()));
-                        let to = crate::camera::target(call.change.view, ask, was);
+                        let to = crate::camera::moved_to(
+                            call.change.view,
+                            words,
+                            recorded.map(|c| c.value.as_str()),
+                            was,
+                        );
                         shot_was = Some(was);
                         plan.reshot(path, was, to)
                     }
@@ -7423,7 +7430,9 @@ impl Tool for ImageGenerate {
                 .shot
                 .and_then(|s| s.around)
                 .or(shot_was.and_then(|s| s.around))
-                .is_some_and(|a| (2..=6).contains(&a));
+                // A side nobody knows is treated as turned away: the careful
+                // words and the strict verdict.
+                .is_none_or(|a| (2..=6).contains(&a));
             let (image, left) = match image {
                 Ok(shot) if plan.route == crate::picture::RESHOT => {
                     let pass = Request {
@@ -15757,7 +15766,11 @@ mod tests {
         // The same face, and nobody's face in either: kept.
         assert_eq!(detail_verdict(b(1, 1, Some(0.9)), false), Ok(Some(0.9)));
         assert_eq!(detail_verdict(b(0, 0, None), true), Ok(None));
-        assert_eq!(detail_verdict(b(1, 0, None), true), Ok(None));
+        // A face the first pass held and the second does not: never kept.
+        for away in [true, false] {
+            let why = detail_verdict(b(1, 0, None), away).unwrap_err();
+            assert!(why.contains("lost a face"), "{why}");
+        }
         // Faces that cannot be compared: kept only for a view from in front.
         assert_eq!(detail_verdict(Err("no detector".into()), false), Ok(None));
         assert!(detail_verdict(Err("no detector".into()), true).is_err());
