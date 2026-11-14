@@ -1,0 +1,65 @@
+# Memory benchmark, held out: reappraisal of a failed task
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4; eval/fixtures/twins_world.py, berths
+# and pumps). Two tasks on berths, where a change on one berth is answered
+# `ok` and only a `state` field and the guide say a partner is owed; two
+# probes on pumps. The fixtures were committed before the reappraisal was
+# run on anything. Run once.
+#
+#   mecha exp new eval/memory-twins-reappraised.toml
+#   mecha exp run memory-twins-reappraised
+
+name = "memory-twins-reappraised"
+kind = "lifetime"
+description = "Held out: does a task judged to have failed, named when a later run retraces it, repair the experience an arrangement is learned from."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/twins_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["berths-coal", "berths-fish", "pumps-bilge", "pumps-ballast"]
+
+[tasks.confirmed_goals]
+berths-coal = "task:berths-coal"
+berths-fish = "task:berths-fish"
+pumps-bilge = "task:pumps-bilge"
+pumps-ballast = "task:pumps-ballast"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "twins"
+command = "python3"
+args = ["eval/fixtures/twins_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+[arms.concepts_cued]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts_cued"
+
+[arms.concepts_cued.prediction]
+metric = "failure"
+rationale = "Written before the run: nothing in a berth task's answers says a partner is owed, so I expect the berth tasks to fail as the control's do, no arrangement to be kept, and at most 1 of 6 pump probes to pass."
+
+[arms.reappraised]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "reappraised"
+
+[arms.reappraised.prediction]
+metric = "failure"
+rationale = "Written before the run: on the development pair, with the failed first task named when the second retraced it, the second task passed in 3 of 3 seeds and the probes 6 of 6, on wording shaped against that pair. Here the service gives no code to look up, only a guide the failed run never opened. I expect the second berth task to pass in at least 2 of 3 seeds and at least 4 of 6 pump probes, more than the cued arm."
