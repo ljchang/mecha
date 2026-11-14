@@ -479,6 +479,16 @@ fn left_behind(room: &Path) -> bool {
 mod tests {
     use super::*;
 
+    /// An incognito chat is not remembered and remembers nothing: it has
+    /// no transcript for memory to attach to, and the recall tool is not
+    /// on its allowlist, so it cannot read what other chats stored either.
+    #[test]
+    fn the_recall_tool_is_withheld_from_an_incognito_chat() {
+        let held = withheld([("goal_context", true), ("fs_read", true)], &[], true, true);
+        assert_eq!(held, ["goal_context"]);
+        assert!(!ALLOWED_BUILTINS.contains(&"goal_context"));
+    }
+
     #[test]
     fn a_new_key_is_a_valid_incognito_key_and_never_repeats() {
         let a = new_key();

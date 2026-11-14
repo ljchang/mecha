@@ -7,6 +7,7 @@ pub mod learning;
 pub(crate) mod native_writer;
 mod recall;
 mod recording;
+pub mod router;
 pub mod surface;
 use crate::{
     goal::GoalRef,
@@ -177,6 +178,18 @@ impl SessionMemory {
         grants: &[crate::grant::Grant],
     ) -> Result<()> {
         authority::exclude_grants(&self.request, Some(&session.path), grants)
+    }
+    /// The recall tool's metadata, for a registry built before any chat is
+    /// attached. Never reads: dispatch refuses.
+    pub fn recall_schema(&self) -> Result<Arc<dyn Tool>> {
+        let reader = crate::tool::goal_memory::GoalMemory::open_chat_with_storage_and_source_guard(
+            &self.request.db,
+            self.storage.clone(),
+            self.access(),
+            self.request.account.clone(),
+            self.authority.clone(),
+        )?;
+        Ok(Arc::new(chat::schema_of(&reader)))
     }
     fn access(&self) -> Access {
         Access {

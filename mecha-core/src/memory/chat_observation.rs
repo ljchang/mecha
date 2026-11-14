@@ -24,6 +24,10 @@ pub const CHAT_TASK_RECORDER_VERSION: &str = "ordinary-chat-recorder-v3";
 /// is not.
 pub const CHAT_OPEN_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v4";
 pub const CHAT_OPEN_RECORDER_VERSION: &str = "ordinary-chat-recorder-v4";
+/// An ordinary web chat's turn: the open recorder's rules, with the owner's
+/// words authenticated by the web host.
+pub const CHAT_OPEN_WEB_OBSERVATION_PROTOCOL: &str = "ordinary-chat-observation-v5";
+pub const CHAT_OPEN_WEB_RECORDER_VERSION: &str = "ordinary-chat-recorder-v5";
 /// The most decisions and context versions one turn's context names, and
 /// the most bytes it serializes to.
 pub const MAX_DECISIONS: usize = 128;
@@ -195,11 +199,16 @@ impl ChatObservationContext {
             | (CHAT_TASK_OBSERVATION_PROTOCOL, CHAT_TASK_RECORDER_VERSION) => {
                 ChatOwnerSource::CliChat
             }
-            (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION) => {
+            (CHAT_WEB_OBSERVATION_PROTOCOL, CHAT_WEB_RECORDER_VERSION)
+            | (CHAT_OPEN_WEB_OBSERVATION_PROTOCOL, CHAT_OPEN_WEB_RECORDER_VERSION) => {
                 ChatOwnerSource::AuthenticatedWeb
             }
             _ => anyhow::bail!("invalid chat observation protocol"),
         };
+        let open = matches!(
+            identity.check_version.as_str(),
+            CHAT_OPEN_OBSERVATION_PROTOCOL | CHAT_OPEN_WEB_OBSERVATION_PROTOCOL
+        );
         ensure!(
             self.conversation_id == identity.session_id
                 && !self.conversation_id.is_empty()
@@ -279,7 +288,7 @@ impl ChatObservationContext {
             ensure!(
                 locator.line > 0
                     && locator.line <= self.prefix_length
-                    && owner_pointer(&locator.pointer)
+                    && owner_pointer(&locator.pointer, open)
                     && locations.insert((locator.line, &locator.pointer))
                     && self
                         .versions
@@ -319,11 +328,21 @@ impl ChatObservationContext {
 /// `/content/N/text` in a message record, or `/messages/M/content/N/text`
 /// in a rewrite: an owner's line folded into a message that already held
 /// tool results is recorded only there.
-fn owner_pointer(pointer: &str) -> bool {
+/// Only the open recorders read a rewrite or an extension, so only their
+/// records may point into one: `/messages/M/content/N/text` in a rewrite,
+/// `/blocks/N/text` in an extension (a line the owner typed before the
+/// turn's first tool round, folded into the owner's own message).
+fn owner_pointer(pointer: &str, listed_ok: bool) -> bool {
     let index = |s: &str| s.parse::<usize>().is_ok_and(|n| n.to_string() == s);
+    if let Some(block) = pointer
+        .strip_prefix("/blocks/")
+        .and_then(|s| s.strip_suffix("/text"))
+    {
+        return listed_ok && index(block);
+    }
     let rest = match pointer.strip_prefix("/messages/") {
         Some(listed) => match listed.split_once('/') {
-            Some((message, rest)) if index(message) => rest,
+            Some((message, rest)) if listed_ok && index(message) => rest,
             _ => return false,
         },
         None => match pointer.strip_prefix('/') {

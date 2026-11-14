@@ -13389,6 +13389,69 @@ See `MECHA-MEMORY-DESIGN.md` for the production design and
   clean. The chat recorder
   used to bind each turn to the exact history every request sent, admit
   four tools and no grant, and end the chat at the first turn it refused.
+- **An ordinary web chat is remembered through the same recorder**
+  (`serve --chat-memory MANIFEST`, `serve/web_memory.rs`; attachment
+  protocol `ordinary-chat-memory-v5`, recorder version v5,
+  `SessionMemory::attach_open_web_chat`). The separate web memory mode
+  (`memory_chat.rs`, protocol v3) is unchanged and still closed. Five
+  things differ from the terminal chat, each because of how the server is
+  built. **Memory attaches in `ensure_session_as` between `Session::create`
+  and the first `Record::Config`**, because an attachment binds the
+  transcript from its header. **One recall tool serves every
+  conversation** (`memory_session::router::RecallRouter`): the server
+  builds one agent whose tool list is the front of a cached prefix, so the
+  list cannot differ per conversation; the router stands in the registry
+  under the recall tool's name, schema and capabilities (`bind` refuses a
+  reader that differs in any of them, since the interlock believed the
+  ones announced) and answers each call with the reader bound to the
+  call's `ToolCtx::conversation`, the key the front end stamps on each
+  turn. Not its workspace: a resumed conversation keeps its recorded
+  workspace under a new key, so two live chats can share one directory,
+  and a router keyed by it had each releasing the other's reader (review
+  of #866; the 2026-10-18 `ask_user` routing bug restated). The
+  router replaces the plain `goal_context` builtin in the registry
+  (`Registry::insert` keys on the name), for every conversation the agent
+  serves and not only the remembered ones, so with no reader bound it
+  answers as that builtin does, the confirmed goal and its lessons, and
+  only a request for memory itself is told there is none. Before that a
+  board task, a spoken turn and any turn whose memory could not begin
+  lost the goal tool on a remembering server (review of #866). **A
+  configuration record names the producer root**, an ancestor of each
+  chat's workspace, where a terminal chat's names its own
+  (`Attachment::configured_in`, which holds that ancestor to what the
+  chat's own workspace is held to: it may contain neither the store nor
+  the transcript, and never the mecha home). **A line typed while the model works is the owner's**: the host
+  authenticates a steer as an owner input, a later decision's context
+  version lists it after the turn's first, and the walk stores the block
+  that carries it as a `UserRequest` with its own locator
+  (`Walk::expect_steers`); the same words in a block no owner input backs
+  are left out like any other user-role text. The transcript records a
+  steer in one of two shapes and the walk reads both: typed after a tool
+  round it is a block in the message that carries the results; typed
+  before the first, it is folded into the owner's own message, which
+  `record_transition` writes as a `Record::Extend` (`Walk::extension`,
+  pointer `/blocks/N/text`), and the turn's first request already carries
+  it, so the first decision's history may be the turn's opening history
+  with its tail added to (review of #866). **Only a typed turn is
+  remembered**: a spoken turn, a task's seed turn and a harness draw carry
+  no authenticated owner input, run with no reader bound, and their
+  records are part of what the next typed turn continues from. The turn
+  is begun in `begin_turn` before its message is recorded and sealed in
+  the run's task right after `Record::Taint`, before a late result or a
+  title can land behind it. A grant that reaches the store refuses the
+  turn (`OrdinaryMemory::grants_may_run`). A remembered chat resumes
+  through the ordinary door (`resume` reads it with `Session::read`,
+  since `Session::load` refuses every memory-marked transcript, and
+  re-attaches); a server started without `--chat-memory` refuses to
+  resume one. A chat whose memory cannot attach or re-attach goes on
+  unremembered. **An incognito chat is neither remembered nor able to
+  recall** (owner's ruling, 2026-11-12), by two independent means: it has
+  no transcript, so nothing attaches and `begin_turn` begins only a kept
+  session; and `goal_context` is not in `incognito::ALLOWED_BUILTINS`, so
+  its dispatch is withheld and no reader is ever bound to an incognito
+  key. The tool stays in the list the model is shown, as every withheld
+  tool does. A persona chat has its own routes and its own memory and
+  does not pass through this path.
   **The sidecar still bounds a conversation**: a turn's context names at
   most 128 decisions and 16 context versions in 24 KiB (later decisions
   are left to the transcript), each version repeats every owner input so

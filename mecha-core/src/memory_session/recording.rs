@@ -264,6 +264,11 @@ pub(super) struct Walk<'a> {
     pub(super) configured: BTreeSet<String>,
     /// Where the owner's request was found: its line and pointer.
     pub(super) owner: Option<(u64, String)>,
+    /// Lines the owner typed while the turn ran, which the host has
+    /// authenticated as owner inputs and the walk has yet to find; and
+    /// where each one found was: line, pointer, text.
+    steers: Vec<String>,
+    pub(super) steered: Vec<(u64, String, String)>,
     /// Records of this span that carried messages.
     pub(super) messages: usize,
     /// The conversation's messages before this span and the messages this
@@ -307,6 +312,8 @@ impl<'a> Walk<'a> {
             consulted,
             configured: BTreeSet::new(),
             owner: None,
+            steers: vec![],
+            steered: vec![],
             messages: 0,
             earlier: vec![],
             walked: vec![],
@@ -326,6 +333,20 @@ impl<'a> Walk<'a> {
         }
         Ok(())
     }
+    /// Owner inputs the host authenticated after the turn began: a line
+    /// typed while the model was working is folded into the message that
+    /// carries the tool results, and is the owner's as much as the first.
+    pub(super) fn expect_steers(&mut self, texts: Vec<String>) {
+        self.steers = texts;
+    }
+    /// Take back a steer passage the capture has no owner evidence for.
+    pub(super) fn forget_steer(&mut self, line: u64, pointer: &str) {
+        self.units
+            .retain(|(p, _)| !(p.line == line && p.pointer == pointer));
+        self.steered
+            .retain(|(l, p, _)| !(*l == line && p == pointer));
+        self.intake.unplaced();
+    }
     /// A note carried beside the messages.
     pub(super) fn notes(&mut self, notes: &[String]) {
         let mut carried = crate::agent::Taint::default();
@@ -337,7 +358,12 @@ impl<'a> Walk<'a> {
     /// Harness text folded into a message already on file: a nudge, a
     /// calendar line, a steer. Never a passage, and outside content only if
     /// the harness's own rule or the recorded taint says so.
-    pub(super) fn extension(&mut self, blocks: Vec<Block>) {
+    ///
+    /// Except a line the owner typed while the turn ran, which the host has
+    /// authenticated as an owner input (`expect_steers`): typed before the
+    /// turn's first tool round it is folded into the owner's own message,
+    /// and the transcript records that fold as an extension.
+    pub(super) fn extension(&mut self, line: usize, blocks: Vec<Block>) {
         let folded = crate::message::Message {
             role: Role::User,
             content: blocks,
@@ -348,12 +374,38 @@ impl<'a> Walk<'a> {
         if content.untrusted {
             self.intake.ambient();
         }
-        for block in &folded.content {
-            if !matches!(block, Block::Text { text }
-                if supported_note(text, &self.configured, &self.calls))
-            {
+        for (index, block) in folded.content.into_iter().enumerate() {
+            let Block::Text { text } = block else {
                 self.intake.unplaced();
-            }
+                continue;
+            };
+            let Some(at) = self.steers.iter().position(|steer| *steer == text) else {
+                if !supported_note(&text, &self.configured, &self.calls) {
+                    self.intake.unplaced();
+                }
+                continue;
+            };
+            self.steers.remove(at);
+            let pointer = format!("/blocks/{index}/text");
+            self.steered
+                .push(((line + 1) as u64, pointer.clone(), text.clone()));
+            self.units.push((
+                OriginalPassage {
+                    source: SourceKey {
+                        connector: "host-session-field-v1".into(),
+                        account: self.account.into(),
+                        id: format!("{}:{}:{pointer}", self.session_id, line + 1),
+                    },
+                    kind: PassageKind::UserRequest,
+                    line: (line + 1) as u64,
+                    pointer,
+                    text,
+                    occurred_at: None,
+                    external: self.intake.owner(),
+                    source_bytes: None,
+                },
+                None,
+            ));
         }
     }
     /// One message record. The first of a span may open with the owner's
@@ -460,6 +512,18 @@ impl<'a> Walk<'a> {
                     {
                         self.owner =
                             Some(((line + 1) as u64, format!("{base}/content/{index}/text")));
+                        external = self.intake.owner();
+                        call = None;
+                        (PassageKind::UserRequest, "text", text)
+                    } else if let Some(at) = self
+                        .steers
+                        .iter()
+                        .position(|steer| !m.harness && *steer == text)
+                    {
+                        self.steers.remove(at);
+                        let pointer = format!("{base}/content/{index}/text");
+                        self.steered
+                            .push(((line + 1) as u64, pointer, text.clone()));
                         external = self.intake.owner();
                         call = None;
                         (PassageKind::UserRequest, "text", text)
@@ -782,7 +846,7 @@ pub(super) fn capture(
             }
             Record::Extend { blocks, .. } => {
                 ensure!(!taint, "ordinary inline extension unavailable");
-                walk.extension(blocks);
+                walk.extension(line, blocks);
             }
             Record::Message(m) => {
                 ensure!(

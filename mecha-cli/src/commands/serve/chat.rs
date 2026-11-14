@@ -95,6 +95,9 @@ pub struct ChatState {
     pub(super) sessions: Mutex<HashMap<String, ChatSlot>>,
     #[cfg(feature = "memory-prototype")]
     pub(super) memory_profile: Option<Arc<super::memory_chat::MemoryHostProfile>>,
+    /// Memory for ordinary web chats, when the server was started with it.
+    #[cfg(feature = "memory-prototype")]
+    pub(super) ordinary_memory: Option<Arc<super::web_memory::OrdinaryMemory>>,
     #[cfg(all(test, feature = "memory-prototype"))]
     pub(super) memory_test_hooks: super::memory_chat::TestHooks,
     /// Persona chats: their own map, agents and transcript directory, so no
@@ -394,8 +397,29 @@ impl ChatState {
     /// Build the in-process agent. Fails loudly; the caller degrades the
     /// surface to dashboard-only and says so, rather than serving a chat
     /// door that silently cannot answer.
+    #[cfg(test)]
     pub async fn build(dynamic_goals: bool) -> Result<Self> {
+        Self::build_remembering(
+            dynamic_goals,
+            #[cfg(feature = "memory-prototype")]
+            None,
+        )
+        .await
+    }
+    /// The chat state, with memory for ordinary chats when asked: every
+    /// agent the follower builds carries the recall router, so the tool
+    /// list is the same whichever conversation a request is for.
+    pub async fn build_remembering(
+        dynamic_goals: bool,
+        #[cfg(feature = "memory-prototype")] memory_manifest: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
         let opts = web_agent_opts(dynamic_goals)?;
+        #[cfg(feature = "memory-prototype")]
+        let ordinary_memory = memory_manifest
+            .map(|path| {
+                super::web_memory::OrdinaryMemory::open(&path, dynamic_goals, &producer_root()?)
+            })
+            .transpose()?;
         let routes: QuestionRoutes = Arc::default();
         // Not interactive: no terminal approver — and then `ask_user` IS
         // registered, against the Slack connector's precedent, because this
@@ -408,7 +432,13 @@ impl ChatState {
         // a switch is never missing it.
         let finish: crate::follow::Finish = {
             let routes = Arc::clone(&routes);
+            #[cfg(feature = "memory-prototype")]
+            let recall = ordinary_memory.as_ref().map(|m| Arc::clone(&m.router));
             Box::new(move |prepared: &mut setup::Prepared| {
+                #[cfg(feature = "memory-prototype")]
+                if let Some(recall) = &recall {
+                    prepared.agent.registry_mut().insert(recall.clone());
+                }
                 let routes = Arc::clone(&routes);
                 let lookup: super::present::SessionLookup =
                     Arc::new(move |key: &str| routes.lock().ok().and_then(|m| m.get(key).cloned()));
@@ -475,6 +505,8 @@ impl ChatState {
             sessions: Mutex::new(HashMap::new()),
             #[cfg(feature = "memory-prototype")]
             memory_profile: None,
+            #[cfg(feature = "memory-prototype")]
+            ordinary_memory,
             #[cfg(all(test, feature = "memory-prototype"))]
             memory_test_hooks: Default::default(),
             personas: Arc::new(
@@ -660,6 +692,10 @@ impl ChatState {
             .and_then(ChatSlot::into_ordinary)
             .expect("found above");
         ws.questions.shutdown();
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &self.ordinary_memory {
+            memory.detach(ws.session.id(), &key);
+        }
         if let Ok(mut routes) = self.routes.lock() {
             routes.remove(&key);
         }
@@ -1893,6 +1929,10 @@ pub(super) async fn release_task_conversation(
     }
     let id = ws.session.id().to_string();
     sessions.remove(&key).and_then(ChatSlot::into_ordinary);
+    #[cfg(feature = "memory-prototype")]
+    if let Some(memory) = &chat.ordinary_memory {
+        memory.detach(&id, &key);
+    }
     if let Ok(mut routes) = chat.routes.lock() {
         routes.remove(&key);
     }
@@ -2070,6 +2110,18 @@ fn ensure_session_as<'a>(
                     crate::commands::run::structural_pointer(format!("task:{id}")),
                     Some(&session),
                 )?;
+            }
+        }
+        // Memory attaches to a new web chat before anything but its header
+        // is on file: the attachment binds the transcript from its first
+        // byte. One that cannot attach is a chat without memory, never a
+        // chat that cannot start.
+        #[cfg(feature = "memory-prototype")]
+        if let Some(memory) = &chat.ordinary_memory {
+            if init.resume_from.is_none() && init.task.is_none() {
+                if let Err(error) = memory.attach(&session, &workspace, false) {
+                    tracing::warn!(session = %session.meta.id, "this chat will not be remembered: {error:#}");
+                }
             }
         }
         session.append(&Record::Config(RunConfig::of(
@@ -3337,6 +3389,34 @@ fn begin_turn(
         }
     }
 
+    // Memory begins the turn before its message is on file, because the
+    // turn's span starts at the transcript as it stands now. A grant that
+    // reaches the store refuses the turn itself: the next tool call could
+    // read the key. A turn memory cannot begin runs unremembered.
+    // Only a kept chat: an incognito chat has no transcript, is never
+    // attached, and is never begun.
+    #[cfg(feature = "memory-prototype")]
+    let remembered = match (&chat.ordinary_memory, ws.session.kept()) {
+        (Some(memory), Some(session)) => {
+            let mut grants = bound.agent.ctx().grants.all();
+            grants.extend(conversation.grants.iter().cloned());
+            if let Err(error) = memory.grants_may_run(session, &grants) {
+                ws.conversation = Some(conversation);
+                return Err(TurnError::Failed(format!(
+                    "this conversation's grants could not be cleared against the memory \
+                     store ({error:#}); revoke the grant it names, then send again"
+                )));
+            }
+            memory.begin(session, key, owner_inputs.first())
+        }
+        _ => None,
+    };
+    // From here to the run's task, an early return leaves this turn begun
+    // and never sealed. That is safe as it stands: the next turn passes it
+    // over, and `begin` releases the reader before binding another. A
+    // return added below that could be followed by a *run* in this
+    // conversation without another `begin` would leave a stale reader
+    // answering for it.
     // Folded, not pushed, when the tail is already a user message — a
     // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
     // resubmits through here) leaves the conversation ending on the user
@@ -3918,6 +3998,14 @@ fn begin_turn(
         // still read it, and taint only ever grows.
         if let Some(session) = &kept {
             let _ = session.append(&Record::Taint(conversation.taint));
+        }
+        // Sealed here: the taint is the turn's last record, and nothing
+        // (a late result, a title) has been appended behind it yet.
+        #[cfg(feature = "memory-prototype")]
+        if let (Some(memory), Some(remembered)) =
+            (state_for_task.ordinary_memory.clone(), remembered)
+        {
+            let _ = tokio::task::spawn_blocking(move || memory.finish(remembered)).await;
         }
 
         // §6.2's readout: how this session's just-finished run appraises,
@@ -5091,7 +5179,14 @@ pub async fn history(
             "attached_key": attached.get(&meta.id),
             "archived_at": archived.get(&meta.id).copied().flatten().map(|d| d.to_rfc3339()),
         }));
-        if listing.memory {
+        // A remembered ordinary chat resumes through the ordinary door;
+        // only the separate memory mode's sessions need their own.
+        #[cfg(feature = "memory-prototype")]
+        let own_door = listing.memory
+            && !(chat.ordinary_memory.is_some() && super::web_memory::open_marked(&path));
+        #[cfg(not(feature = "memory-prototype"))]
+        let own_door = listing.memory;
+        if own_door {
             rows.last_mut().expect("row inserted")["memory"] = "episodic".into();
         }
     }
@@ -5157,9 +5252,20 @@ pub async fn resume(
         Ok(body) => body,
         Err(response) => return response,
     };
+    // A remembered ordinary chat resumes here, when this server remembers
+    // chats; any other memory-marked transcript has its own door.
+    // (One lookup for both questions: finding a session walks the
+    // directory.)
     #[cfg(feature = "memory-prototype")]
-    if Session::find(chat.sessions_dir(), &body.id)
-        .is_ok_and(|path| !matches!(memory_marked(&path), Ok(false)))
+    let found = Session::find(chat.sessions_dir(), &body.id).ok();
+    #[cfg(feature = "memory-prototype")]
+    let remembered = chat.ordinary_memory.is_some()
+        && found.as_deref().is_some_and(super::web_memory::open_marked);
+    #[cfg(feature = "memory-prototype")]
+    if !remembered
+        && found
+            .as_deref()
+            .is_some_and(|path| !matches!(memory_marked(path), Ok(false)))
     {
         return super::memory_chat::unsupported();
     }
@@ -5198,7 +5304,18 @@ pub async fn resume(
         Ok(p) => p,
         Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
     };
-    let (meta, conversation) = match Session::load(&path) {
+    // `Session::load` refuses a memory-marked transcript, because a closed
+    // profile may not be continued outside its own host. An ordinary
+    // remembered chat is continued here, and its memory re-attached below.
+    #[cfg(feature = "memory-prototype")]
+    let loaded = if remembered {
+        Session::read(&path).map(|t| (t.meta, t.convo))
+    } else {
+        Session::load(&path)
+    };
+    #[cfg(not(feature = "memory-prototype"))]
+    let loaded = Session::load(&path);
+    let (meta, conversation) = match loaded {
         Ok(x) => x,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
     };
@@ -5254,6 +5371,15 @@ pub async fn resume(
     }
     let withheld = task_withholding(&meta.title);
     let session = Session { meta, path };
+    // Its memory comes back with it. One that cannot re-attach (the store
+    // moved, another process holds the conversation) leaves a chat that
+    // goes on without remembering, never one that cannot be opened.
+    #[cfg(feature = "memory-prototype")]
+    if let (true, Some(memory)) = (remembered, &chat.ordinary_memory) {
+        if let Err(error) = memory.attach(&session, &workspace, true) {
+            tracing::warn!(session = %session.meta.id, "this chat will not be remembered: {error:#}");
+        }
+    }
     // On resume as on create: a session picked up under different flags
     // should say so in its own record.
     if let Err(e) = session.append(&Record::Config(RunConfig::of(
@@ -5305,6 +5431,21 @@ pub async fn resume(
         super::late::may_be_orphan(bound.agent.registry(), name)
     });
     let late = super::late::LateState::of_file(&session.path);
+    // The placeholder this replaces was a recorded chat with memory of its
+    // own attached: let go of it, or its lease is held until the server
+    // stops and that conversation can never be remembered again.
+    #[cfg(feature = "memory-prototype")]
+    if let (Some(memory), Some(squatting)) = (
+        &chat.ordinary_memory,
+        sessions
+            .get(&key)
+            .and_then(ChatSlot::ordinary)
+            .map(|ws| ws.session.id().to_string()),
+    ) {
+        if squatting != session.meta.id {
+            memory.detach(&squatting, &key);
+        }
+    }
     sessions.insert(
         key.clone(),
         ChatSlot::Ordinary(Box::new(WebSession {
@@ -6635,6 +6776,8 @@ pub(super) fn test_chat() -> Arc<ChatState> {
         sessions: Mutex::new(HashMap::new()),
         #[cfg(feature = "memory-prototype")]
         memory_profile: None,
+        #[cfg(feature = "memory-prototype")]
+        ordinary_memory: None,
         #[cfg(all(test, feature = "memory-prototype"))]
         memory_test_hooks: Default::default(),
         personas: Arc::new(super::persona_chat::PersonaChats::for_tests()),
@@ -7118,6 +7261,8 @@ pub(super) fn test_chat_built(
         sessions: Mutex::new(HashMap::new()),
         #[cfg(feature = "memory-prototype")]
         memory_profile: None,
+        #[cfg(feature = "memory-prototype")]
+        ordinary_memory: None,
         #[cfg(all(test, feature = "memory-prototype"))]
         memory_test_hooks: Default::default(),
         personas: Arc::new(personas),

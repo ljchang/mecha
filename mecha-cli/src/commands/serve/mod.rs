@@ -63,6 +63,8 @@ mod preview;
 mod proposals;
 mod questions;
 mod review;
+#[cfg(feature = "memory-prototype")]
+mod web_memory;
 // The terminal review of a dashboard publish prints the same loader rows the
 // web outbox shows, from the same producer (review of #651).
 pub(crate) use review::dashboard_loaders;
@@ -82,6 +84,16 @@ pub struct Args {
     #[cfg(feature = "memory-prototype")]
     #[arg(long = "memory-tool", requires = "episodic_memory")]
     pub memory_tools: Vec<String>,
+    /// Remember ordinary web chats in the store this manifest names: each
+    /// typed turn, with whatever tools the chat has.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(
+        long,
+        value_name = "MANIFEST",
+        requires = "dynamic_goals",
+        conflicts_with = "episodic_memory"
+    )]
+    pub chat_memory: Option<PathBuf>,
     /// Override `[web] port` for this run.
     #[arg(long)]
     pub port: Option<u16>,
@@ -240,7 +252,13 @@ pub async fn execute(args: Args, dynamic_goals: bool) -> Result<()> {
     let wiring = VoiceWiring::of(&args, &config)?;
     let assets = args.assets.or(config.web.assets.clone());
 
-    let chat = match chat::ChatState::build(dynamic_goals).await {
+    let chat = match chat::ChatState::build_remembering(
+        dynamic_goals,
+        #[cfg(feature = "memory-prototype")]
+        args.chat_memory.clone(),
+    )
+    .await
+    {
         Ok(c) => {
             #[cfg(feature = "memory-prototype")]
             let c = {
