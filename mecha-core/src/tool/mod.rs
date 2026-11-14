@@ -7,6 +7,7 @@
 pub mod ask;
 pub mod builtin;
 pub mod code;
+pub mod concepts;
 pub mod document;
 pub mod effect;
 pub mod episodes;

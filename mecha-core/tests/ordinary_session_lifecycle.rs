@@ -174,6 +174,85 @@ fn episodes_are_kept_in_the_store_and_a_grade_revises_the_outcome() {
     assert_eq!(held[1].concluded.as_deref(), Some("the key is red7"));
 }
 #[test]
+fn patterns_and_offers_are_kept_apart_and_a_grade_revises_both() {
+    use mecha_core::tool::concepts::{fold, Kind, Offer, Pattern, ToolShape};
+    let f = Fixture::new();
+    SessionMemory::initialize(&f.request).unwrap();
+    let mem = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    let kept = mem.concepts_kept().unwrap();
+    assert!(kept.patterns.is_empty() && kept.offers.is_empty() && kept.unreadable == 0);
+    let tool = |name: &str, args: &[&str]| {
+        let properties: serde_json::Map<String, serde_json::Value> = args
+            .iter()
+            .map(|a| (a.to_string(), serde_json::json!({"type": "string"})))
+            .collect();
+        ToolShape::of(
+            name,
+            "",
+            &serde_json::json!({"type": "object", "properties": properties, "required": args}),
+        )
+    };
+    let pattern = |session: &str, kind: Kind| Pattern {
+        session: session.into(),
+        kind,
+        change: tool("gate_set", &["gate", "value"]),
+        enabler: tool("gate_hold", &["gate"]),
+        closer: Some(tool("gate_free", &["gate"])),
+        refused_with: None,
+        read: vec![],
+        external: false,
+        judged: None,
+    };
+    let offer = Offer {
+        session: "s1".into(),
+        offered: vec![pattern("s1", Kind::Bracket).key()],
+        showed: Some(pattern("s1", Kind::Bracket).key()),
+        judged: None,
+    };
+    mem.retain_pattern(&pattern("s1", Kind::Bracket)).unwrap();
+    mem.retain_pattern(&pattern("s2", Kind::Unknown)).unwrap();
+    mem.retain_offer(&offer).unwrap();
+    // Each record reads back as what it was kept as, and none as the other.
+    let kept = mem.concepts_kept().unwrap();
+    assert_eq!(
+        kept.patterns,
+        vec![pattern("s1", Kind::Bracket), pattern("s2", Kind::Unknown)]
+    );
+    assert_eq!((kept.offers, kept.unreadable), (vec![offer.clone()], 0));
+
+    // A grade revises the session's pattern and its offer, with no outcome
+    // record needed for either; the fold then reads the graded one.
+    assert!(!mem.appraise_episode("s1", false).unwrap());
+    let reopened = SessionMemory::open(&f.request, &f.workspace).unwrap();
+    let kept = reopened.concepts_kept().unwrap();
+    let graded = |session: &str| {
+        kept.patterns
+            .iter()
+            .rev()
+            .find(|p| p.session == session)
+            .unwrap()
+            .judged
+    };
+    assert_eq!(graded("s1"), Some(false));
+    assert_eq!(kept.offers.last().unwrap().judged, Some(false));
+    assert!(fold(kept.patterns.clone(), kept.offers.clone()).is_empty());
+    // The last judgement stands.
+    reopened.appraise_episode("s1", true).unwrap();
+    let kept = reopened.concepts_kept().unwrap();
+    let concepts = fold(kept.patterns, kept.offers);
+    assert_eq!(
+        (concepts.len(), concepts[0].tried, concepts[0].held),
+        (1, 1, 1)
+    );
+
+    // A pattern of a kind this build does not know is not rewritten by a
+    // grade: it stays as it was written.
+    reopened.appraise_episode("s2", false).unwrap();
+    let kept = reopened.concepts_kept().unwrap();
+    let unknown: Vec<&Pattern> = kept.patterns.iter().filter(|p| p.session == "s2").collect();
+    assert_eq!(unknown, vec![&pattern("s2", Kind::Unknown)]);
+}
+#[test]
 fn real_run_retains_observation_and_reopen_retry_is_exact() {
     let f = Fixture::new();
     SessionMemory::initialize(&f.request).unwrap();

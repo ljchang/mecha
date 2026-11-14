@@ -1,0 +1,74 @@
+# Memory benchmark, far analog, second kind: a linked change
+# (docs/MEMORY-BENCHMARK-DESIGN.md §4; eval/fixtures/twins_world.py). Two
+# tasks learn on road signs that a change must also be made on the sign's
+# mirror; two probes meet valves whose records name a twin under another
+# field, with no documentation and no code. The development pair.
+#
+#   mecha exp new eval/memory-twins.toml
+#   mecha exp run memory-twins
+
+name = "memory-twins"
+kind = "lifetime"
+description = "Does a change that must be made twice, on a thing and on the twin its record names, carry between two services that share no tool or field name."
+control = "none"
+split_seed = 17
+seeds = [1, 2, 3]
+repetitions = 1
+
+[schedule]
+reflect = 0
+validate = 0
+learn = 0
+retire = 0
+ruminate = 0
+
+[tasks]
+source = ["python3", "eval/fixtures/twins_source.py"]
+fixture = "eval/fixtures/opaque-workspace"
+ids = ["signs-bridge", "signs-mill", "valves-north", "valves-yard"]
+
+[tasks.confirmed_goals]
+signs-bridge = "task:signs-bridge"
+signs-mill = "task:signs-mill"
+valves-north = "task:valves-north"
+valves-yard = "task:valves-yard"
+
+[fixtures]
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "twins"
+command = "python3"
+args = ["eval/fixtures/twins_server.py"]
+prefix_tools = false
+
+[arms.none]
+preset = "bare"
+levers_on = ["mcp"]
+
+[arms.episodes_store]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "episodes_store"
+
+[arms.episodes_store.prediction]
+metric = "failure"
+rationale = "Development pair; no claim rests on it."
+
+[arms.concepts]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts"
+
+[arms.concepts.prediction]
+metric = "failure"
+rationale = "Development pair; no claim rests on it."
+
+[arms.concepts_cued]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts_cued"
+
+[arms.concepts_cued.prediction]
+metric = "failure"
+rationale = "Development pair; no claim rests on it."

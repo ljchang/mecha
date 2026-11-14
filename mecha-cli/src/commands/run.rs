@@ -76,6 +76,21 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["resume", "no_session", "images", "transcripts_deliver"])]
     pub episodes_deliver: bool,
 
+    /// With `--episodes-deliver` and a store: also keep the arrangement of
+    /// calls this run shows (what a change needed before it and after it),
+    /// and hand the model the arrangements earlier runs found in services
+    /// whose tools take the same kinds of input as the tools here.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["episodes_deliver", "episodic_memory"])]
+    pub concepts_deliver: bool,
+
+    /// With `--concepts-deliver`: when a call works that a delivered
+    /// arrangement places before another step, say once, after that call's
+    /// result, that the later step is still owed.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires = "concepts_deliver")]
+    pub concepts_cue: bool,
+
     /// Read-only synthetic memory for goal_context (experimental, unencrypted).
     #[cfg(feature = "memory-prototype")]
     #[arg(long, requires_all = ["memory_synthetic", "memory_domain", "memory_account", "memory_scope", "goal"], conflicts_with = "mismatch_case")]
@@ -604,6 +619,71 @@ pub async fn execute(
         }
         _ => delivered,
     };
+    // And the concepts (`--concepts-deliver`): arrangements from services
+    // with other tools, matched to the tools here by the shape of their
+    // input. A second block after the episodes', which are about the tools
+    // here by name.
+    #[cfg(feature = "memory-prototype")]
+    let mut shapes: Vec<mecha_core::tool::concepts::ToolShape> = Vec::new();
+    // What the concept tool hands over in this run, for the offer below.
+    #[cfg(feature = "memory-prototype")]
+    let mut concepts_handed: Option<
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    > = None;
+    // And what it says when a delivered arrangement's change has worked
+    // (`--concepts-cue`).
+    #[cfg(feature = "memory-prototype")]
+    let mut concepts_cue: Option<mecha_core::agent::SuccessCueText> = None;
+    #[cfg(feature = "memory-prototype")]
+    let delivered_concepts = match (&episode_store, args.concepts_deliver) {
+        (Some(store), true) => {
+            use mecha_core::tool::concepts;
+            shapes = prepared
+                .agent
+                .registry()
+                .iter()
+                .filter(|tool| tool.provided_by_a_server())
+                .map(|tool| {
+                    concepts::ToolShape::of(tool.name(), tool.description(), &tool.input_schema())
+                })
+                .collect();
+            let store = store.clone();
+            let loader: concepts::Loader = std::sync::Arc::new(move || store.concepts_kept());
+            let tool = concepts::Concepts::from_loader(loader, shapes.clone());
+            concepts_handed = Some(tool.handed());
+            if args.concepts_cue {
+                concepts_cue = Some(tool.cue());
+            }
+            prepared
+                .agent
+                .registry_mut()
+                .insert(std::sync::Arc::new(tool));
+            let cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+            let dispatched = prepared
+                .agent
+                .dispatch_one(
+                    &cx,
+                    &mut convo,
+                    concepts::NAME,
+                    serde_json::json!({}),
+                    &None,
+                )
+                .await;
+            eprintln!(
+                "mecha: concepts delivered {} bytes{}",
+                dispatched.content.len(),
+                if dispatched.is_error {
+                    " (an error)"
+                } else {
+                    ""
+                }
+            );
+            Some(format!("{}{}", concepts::DELIVERY_STEM, dispatched.content))
+        }
+        _ => None,
+    };
+    #[cfg(not(feature = "memory-prototype"))]
+    let delivered_concepts: Option<String> = None;
     // Armed before the first turn: the charter rides in the system prompt,
     // where no taint sees it, and it is private data. With the leak guard
     // forced on, every send is then refused for the whole run (D1b).
@@ -681,11 +761,12 @@ pub async fn execute(
     }
 
     // Text first, images after — the order both provider families document.
-    let user = if images.is_empty() && delivered.is_none() {
+    let user = if images.is_empty() && delivered.is_none() && delivered_concepts.is_none() {
         Message::user(&prompt)
     } else {
         let mut content = vec![mecha_core::message::Block::text(&prompt)];
         content.extend(delivered.map(mecha_core::message::Block::text));
+        content.extend(delivered_concepts.map(mecha_core::message::Block::text));
         content.extend(images);
         Message {
             harness: false,
@@ -728,6 +809,13 @@ pub async fn execute(
     // record nobody keeps. A person may be at the terminal, so there the
     // board gets the interactive deadline.
     let mut cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
+    #[cfg(feature = "memory-prototype")]
+    if let Some(text) = concepts_cue {
+        cx.cue_on_success = Some(mecha_core::agent::SuccessCue {
+            text,
+            stem: mecha_core::tool::concepts::CUE_STEM.into(),
+        });
+    }
     #[cfg(feature = "memory-prototype")]
     if ordinary_run.is_some() {
         use mecha_core::memory_session as ms;
@@ -842,6 +930,41 @@ pub async fn execute(
             match kept {
                 Ok(n) => eprintln!("mecha: episodes kept {n}"),
                 Err(e) => eprintln!("mecha: episodes not kept: {e:#}"),
+            }
+            // And the arrangement the run showed, if it showed one.
+            #[cfg(feature = "memory-prototype")]
+            if let (Some(store), true) = (&episode_store, args.concepts_deliver) {
+                use mecha_core::tool::concepts;
+                let kept = std::fs::read_to_string(&s.path)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|text| {
+                        let pattern = concepts::found(&s.meta.id, &text, &shapes, &refused);
+                        if let Some(pattern) = &pattern {
+                            store.retain_pattern(pattern)?;
+                        }
+                        let key = pattern.map(|p| p.key());
+                        // A run that was handed concepts is recorded
+                        // against them, whatever it then showed.
+                        let offered: Vec<String> = concepts_handed
+                            .as_ref()
+                            .and_then(|handed| {
+                                handed.lock().ok().map(|h| h.iter().cloned().collect())
+                            })
+                            .unwrap_or_default();
+                        if !offered.is_empty() {
+                            store.retain_offer(&concepts::Offer {
+                                session: s.meta.id.clone(),
+                                offered,
+                                showed: key.clone(),
+                                judged: None,
+                            })?;
+                        }
+                        Ok(key.unwrap_or_else(|| "none".to_string()))
+                    });
+                match kept {
+                    Ok(key) => eprintln!("mecha: pattern kept: {key}"),
+                    Err(e) => eprintln!("mecha: pattern not kept: {e:#}"),
+                }
             }
         }
         if let Some(mb) = &prepared.mailbox {

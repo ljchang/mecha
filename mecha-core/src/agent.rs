@@ -451,6 +451,33 @@ pub struct RunContext {
     /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
     /// never inherited by a subagent.
     pub recall_on_error: Option<ErrorRecall>,
+    /// After a turn in which a named tool worked, fold a line the run's
+    /// host holds for that moment into the message carrying the results
+    /// ([`SuccessCue`]). `None` everywhere but a run that asked for it, and
+    /// never inherited by a subagent.
+    pub cue_on_success: Option<SuccessCue>,
+}
+
+/// A call that just worked — its tool, its input and what it returned — to
+/// the line the host holds for that moment; `None` says nothing. The host
+/// decides how often: the loop asks once per call that worked.
+pub type SuccessCueText = Arc<dyn Fn(&str, &Value, &str) -> Option<String> + Send + Sync>;
+
+/// A line the harness adds when a call works that the run's host was
+/// waiting on: a step some remembered arrangement puts before another, said
+/// at the point the next one falls due. The loop knows only this shape — a
+/// call that worked in, text out, and the line it is delivered under — and
+/// never what the host remembers. No call is made and nothing is read, so the text
+/// is the host's own words about the call it was just shown: a host must put
+/// nothing in it that this conversation has not already received.
+#[derive(Clone)]
+pub struct SuccessCue {
+    pub text: SuccessCueText,
+    /// What the text is delivered under, in a text block after the turn's
+    /// results. **A second place to edit:** the line is the harness speaking
+    /// in a user message, so it must also be one `is_recall_delivery`
+    /// knows, or its delivery is mined as the owner's steer.
+    pub stem: String,
 }
 
 /// A failed call's tool name and error text, to the input of the harness's
@@ -1006,6 +1033,7 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
             recall_on_error: None,
+            cue_on_success: None,
         }
     }
 
@@ -2159,6 +2187,8 @@ fn is_recall_delivery(text: &str) -> bool {
     [
         crate::tool::transcripts::DELIVERY_STEM,
         crate::tool::episodes::DELIVERY_STEM,
+        crate::tool::concepts::DELIVERY_STEM,
+        crate::tool::concepts::CUE_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -4800,8 +4830,54 @@ impl Agent {
                         }
                         _ => None,
                     };
+                    // A call that worked, and a host waiting on it: the
+                    // host's lines for that moment, after the results. Every
+                    // call that worked is asked about, in order, whatever an
+                    // earlier one was answered: a host keeps what each call
+                    // returned, and a turn of several calls must not hide
+                    // the later ones from it (review of #877). A closing run
+                    // is told nothing it could no longer act on, and its
+                    // host is not asked.
+                    // A call staged in the outbox is not an error and did
+                    // not run: its notice is no call that worked, and the
+                    // host is not asked about it.
+                    let staged: std::collections::HashSet<(&str, String)> = trace
+                        [traced.min(trace.len())..]
+                        .iter()
+                        .filter(|t| t.staged)
+                        .map(|t| (t.name.as_str(), t.input.to_string()))
+                        .collect();
+                    let cued = match &cx.cue_on_success {
+                        Some(cue) if closing.is_none() => {
+                            let uses = response.message.tool_uses();
+                            let said: Vec<String> = results
+                                .iter()
+                                .filter_map(|block| {
+                                    let Block::ToolResult {
+                                        tool_use_id,
+                                        content,
+                                        is_error: false,
+                                    } = block
+                                    else {
+                                        return None;
+                                    };
+                                    let (_, name, input) = uses
+                                        .iter()
+                                        .find(|(id, _, _)| *id == tool_use_id.as_str())?;
+                                    if staged.contains(&(*name, input.to_string())) {
+                                        return None;
+                                    }
+                                    (cue.text)(name, input, content)
+                                })
+                                .collect();
+                            (!said.is_empty())
+                                .then(|| Block::text(format!("{}{}", cue.stem, said.concat())))
+                        }
+                        _ => None,
+                    };
                     let mut result_message = Message::tool_results(results);
                     result_message.content.extend(recalled);
+                    result_message.content.extend(cued);
                     result_message.tool_provenance = provenance;
                     plan_batch.attach(&mut result_message);
                     messages.push(result_message);
@@ -11784,6 +11860,8 @@ mod tests {
         let stems = [
             crate::tool::transcripts::DELIVERY_STEM,
             crate::tool::episodes::DELIVERY_STEM,
+            crate::tool::concepts::DELIVERY_STEM,
+            crate::tool::concepts::CUE_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
@@ -18832,6 +18910,105 @@ justification = "echo is off on this box"
     }
 
     #[tokio::test]
+    async fn a_call_that_worked_is_followed_by_the_host_s_line_and_a_failed_one_is_not() {
+        const CUED: &str = "The harness was waiting on that call.\n";
+        let echo = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "echo".into(),
+                    input: json!({"value": id}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let both = assistant(
+            ["t3", "t4"]
+                .iter()
+                .map(|id| Block::ToolUse {
+                    id: (*id).into(),
+                    name: "echo".into(),
+                    input: json!({"value": id}),
+                })
+                .collect(),
+            StopReason::ToolUse,
+        );
+        let turns = vec![
+            failing_call("t0", "fs_edit"),
+            echo("t1"),
+            echo("t2"),
+            both,
+            assistant(vec![Block::text("Done.")], StopReason::EndTurn),
+        ];
+        let (mut agent, provider) = agent_with_tools(
+            turns,
+            vec![Arc::new(FailingTool), Arc::new(EchoTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.force_final_answer = false;
+        // The host answers once for `echo`, and is asked about every call
+        // that worked and about none that failed.
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut cx = RunContext::clone(agent.context());
+        cx.cue_on_success = Some(SuccessCue {
+            text: {
+                let asked = asked.clone();
+                Arc::new(move |tool, input, result| {
+                    let mut asked = asked.lock().unwrap();
+                    asked.push(format!("{tool} {} {result}", input["value"]));
+                    match asked.len() {
+                        1 => Some("one more step is owed".to_string()),
+                        // The first call of a turn of two is answered,
+                        // and the second is still asked about.
+                        3 => Some("and another".to_string()),
+                        _ => None,
+                    }
+                })
+            },
+            stem: CUED.into(),
+        });
+        let mut convo = Conversation::user("do the task");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![
+                "echo \"t1\" t1",
+                "echo \"t2\" t2",
+                "echo \"t3\" t3",
+                "echo \"t4\" t4"
+            ]
+        );
+        let cued: Vec<bool> = convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .map(|m| {
+                // After the results, never among them.
+                matches!(m.content.last(), Some(Block::Text { text })
+                    if text.starts_with(CUED))
+            })
+            .collect();
+        assert_eq!(cued, vec![false, true, false, true]);
+        // The model saw it in the request after the call that worked.
+        let seen = provider.seen.lock().unwrap();
+        let said = |at: usize| {
+            seen[at]
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .any(|b| matches!(b, Block::Text { text } if text.starts_with(CUED)))
+        };
+        assert!(!said(1) && said(2));
+        // No call was made for it and nothing entered from outside.
+        assert!(!convo.taint.untrusted);
+    }
+
+    #[tokio::test]
     async fn a_run_that_answers_straight_after_a_failed_call_says_so() {
         // The silent-failure shape: the edit failed, the model stopped on its
         // own, and the answer reads like a success. Nothing in the text or the
@@ -21331,6 +21508,38 @@ justification = "echo is off on this box"
             ),
             assistant(vec![Block::text("drafted")], StopReason::EndTurn),
         ]
+    }
+
+    /// A staged call's notice is not an error, and the call did not run:
+    /// a host waiting on a call that worked is not asked about it.
+    #[tokio::test]
+    async fn a_staged_call_is_not_a_call_that_worked_to_a_waiting_host() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, _root) = outbox_route("stage-cue");
+        route.set_session_id("sess-43");
+        agent.set_outbox(Arc::clone(&route));
+        let asked = Arc::new(Mutex::new(0usize));
+        let mut cx = RunContext::clone(agent.context());
+        cx.cue_on_success = Some(SuccessCue {
+            text: {
+                let asked = asked.clone();
+                Arc::new(move |_, _, _| {
+                    *asked.lock().unwrap() += 1;
+                    Some("the change has now worked".into())
+                })
+            },
+            stem: "The harness was waiting on that call.\n".into(),
+        });
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        convo.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert!(outcome.tool_calls[0].staged);
+        assert_eq!(*asked.lock().unwrap(), 0);
+        assert!(!convo.messages.iter().any(|m| m
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text.contains("has now worked")))));
     }
 
     #[tokio::test]

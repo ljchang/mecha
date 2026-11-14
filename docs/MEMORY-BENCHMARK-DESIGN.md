@@ -83,6 +83,26 @@ behaviour). Built so the no-memory arm fails or exhausts its budget.
 embedding retrieval should miss it and structural matching should not. If no
 arm separates there, the concept design's main bet has failed.
 
+Far analog is built as three pairs of services, each one server with two
+faces: `eval/memory-protocol.toml`, `eval/memory-works.toml` and
+`eval/memory-grounds.toml`. In each, the experience face documents an
+arrangement and the probe face has other tools, other argument names, several
+unlabelled candidates for each step and no documentation; a task passes on
+the service's state, when the change was made and the thing was put back.
+The second and third pairs were each written before the mechanism they
+tested had been run, and run once. All three have since been read closely,
+so a further change to `tool::concepts` needs a fourth.
+
+A second kind of arrangement has two more pairs on one server
+(`eval/fixtures/twins_world.py`; `eval/memory-twins.toml` for development,
+`eval/memory-twins-held.toml` held out and run once): a change that must be
+made again on a second thing the first thing's record names. The probe face
+answers a change on one thing as a success, so a run that stops there is told
+nothing. These pairs depend on the experience tasks more than the bracket
+pairs do: the experience face marks the omission with a code and the model
+often does not look the code up, and a lifetime whose experience tasks both
+fail has no arrangement to carry.
+
 ## 5. Controls
 
 Carried over from the prototype's harness, because `mecha exp` lacks them:
