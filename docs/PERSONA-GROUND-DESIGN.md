@@ -27,7 +27,7 @@ examples are made up or quoted from published papers.
 
 ## 1. What exists, and where it stops
 
-Read from the tree at `b0995402e`. Symbols, not lines.
+Read from the tree at `b0995402e` and unchanged at `b3b6e2c78` (one visibility change in `persona::memory`). Symbols, not lines.
 
 | What | Where | Limit |
 |---|---|---|
