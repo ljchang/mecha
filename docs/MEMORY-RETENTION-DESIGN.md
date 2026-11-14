@@ -440,11 +440,28 @@ this run's own tool names and results.
 What this form does not do: it knows two kinds of arrangement and each is
 code, so a third is a third extractor; it reads a thing's record only from
 lookups that return a flat object; it neither names a concept nor compares
-two; and it learns only from a run that got the arrangement right, so a
-service whose rule the model never notices teaches it nothing, however many
-failed runs show the same omission.
+two; and it learns an arrangement only from a run that got it right. What a
+failed run teaches is below.
 
-Not built: goal- and state-based appraisal, reappraisal from later runs,
-fragments and the model-proposed stage of concepts (§9.1), `memory_recompose`,
-and consolidation in downtime. A verdict retires a conclusion and not the call episodes kept from
+**A grade is a reappraisal, and a failed task is kept as one.** The first
+form dropped the conclusion of a task judged to have failed. That left a
+lifetime of failures with nothing to learn from, and the linked pairs showed
+it: where the experience tasks failed, no arrangement was kept and nothing
+carried. `Episodes::reappraising` hands the failed outcome to a later run
+that has the same tools as a failure: what that run did
+(`Episode::did`), that it was judged to have failed, and which of the tools
+here it never called. The conclusion itself is still not handed over as
+knowledge. Handed over at the start alone, it was not acted on, as with
+concepts; so the harness also says it at the point the later run has used
+every tool the failed run used (`episodes::Retraced`, a second
+`agent::SuccessCue`), which is where the earlier run stopped. Nothing here
+says what was missing, because nothing recorded does: the grade is a bit.
+
+Not built: goal- and state-based appraisal, reappraisal by anything richer
+than a grade (a later run's success contradicting an earlier conclusion, an
+owner's correction), fragments and the model-proposed stage of concepts
+(§9.1), `memory_recompose`, and consolidation in downtime. A call episode
+kept from a failed task ("it worked the first time, called with…") is still
+handed over beside the failure it came from, and reads as approval of the
+call that was not enough. A verdict retires a conclusion and not the call episodes kept from
 the same failed task; whether it should is open.

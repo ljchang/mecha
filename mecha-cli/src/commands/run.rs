@@ -84,6 +84,13 @@ pub struct Args {
     #[arg(long, requires_all = ["episodes_deliver", "episodic_memory"])]
     pub concepts_deliver: bool,
 
+    /// With `--episodes-deliver` and a store: hand over the outcome of an
+    /// earlier task that was judged to have failed as a failure (what the
+    /// run did, and which tools here it never called), not leave it out.
+    #[cfg(feature = "memory-prototype")]
+    #[arg(long, requires_all = ["episodes_deliver", "episodic_memory"])]
+    pub episodes_failures: bool,
+
     /// With `--concepts-deliver`: when a call works that a delivered
     /// arrangement places before another step, say once, after that call's
     /// result, that the later step is still owed.
@@ -556,6 +563,10 @@ pub async fn execute(
     // earlier runs kept about the tools this one has. What this run finds
     // out is kept after it ends, below.
     let mut learnable = std::collections::BTreeSet::<String>::new();
+    // What is said when this run has retraced a failed run's calls
+    // (`--episodes-failures`).
+    #[cfg(feature = "memory-prototype")]
+    let mut failures_cue: Option<mecha_core::agent::SuccessCueText> = None;
     let delivered = match (&session, args.episodes_deliver) {
         (Some(_), true) => {
             use mecha_core::tool::episodes;
@@ -579,6 +590,14 @@ pub async fn execute(
                 .collect();
             #[cfg(feature = "memory-prototype")]
             let stored = episode_store.clone().map(|store| {
+                if args.episodes_failures {
+                    let loader: episodes::Loader =
+                        std::sync::Arc::new(move || store.episodes_with_failures());
+                    let tool = episodes::Episodes::from_loader(loader, available.clone())
+                        .reappraising(learnable.iter().cloned());
+                    failures_cue = tool.retraced();
+                    return tool;
+                }
                 let loader: episodes::Loader = std::sync::Arc::new(move || store.episodes());
                 episodes::Episodes::from_loader(loader, available.clone())
             });
@@ -811,9 +830,16 @@ pub async fn execute(
     let mut cx = mecha_core::agent::RunContext::clone(prepared.agent.context());
     #[cfg(feature = "memory-prototype")]
     if let Some(text) = concepts_cue {
-        cx.cue_on_success = Some(mecha_core::agent::SuccessCue {
+        cx.cue_on_success.push(mecha_core::agent::SuccessCue {
             text,
             stem: mecha_core::tool::concepts::CUE_STEM.into(),
+        });
+    }
+    #[cfg(feature = "memory-prototype")]
+    if let Some(text) = failures_cue {
+        cx.cue_on_success.push(mecha_core::agent::SuccessCue {
+            text,
+            stem: mecha_core::tool::episodes::RETRACED_STEM.into(),
         });
     }
     #[cfg(feature = "memory-prototype")]

@@ -451,11 +451,11 @@ pub struct RunContext {
     /// ([`ErrorRecall`]). `None` everywhere but a run that asked for it, and
     /// never inherited by a subagent.
     pub recall_on_error: Option<ErrorRecall>,
-    /// After a turn in which a named tool worked, fold a line the run's
-    /// host holds for that moment into the message carrying the results
-    /// ([`SuccessCue`]). `None` everywhere but a run that asked for it, and
-    /// never inherited by a subagent.
-    pub cue_on_success: Option<SuccessCue>,
+    /// After a turn in which a call worked, fold the lines the run's hosts
+    /// hold for that moment into the message carrying the results, one
+    /// block a host ([`SuccessCue`]). Empty everywhere but a run that asked
+    /// for one, and never inherited by a subagent.
+    pub cue_on_success: Vec<SuccessCue>,
 }
 
 /// A call that just worked — its tool, its input and what it returned — to
@@ -1033,7 +1033,7 @@ impl RunContext {
             end_after_deferral: false,
             close_with: None,
             recall_on_error: None,
-            cue_on_success: None,
+            cue_on_success: Vec::new(),
         }
     }
 
@@ -2189,6 +2189,7 @@ fn is_recall_delivery(text: &str) -> bool {
         crate::tool::episodes::DELIVERY_STEM,
         crate::tool::concepts::DELIVERY_STEM,
         crate::tool::concepts::CUE_STEM,
+        crate::tool::episodes::RETRACED_STEM,
     ]
     .iter()
     .any(|stem| text.starts_with(stem.trim_end()))
@@ -4840,16 +4841,19 @@ impl Agent {
                     // host is not asked.
                     // A call staged in the outbox is not an error and did
                     // not run: its notice is no call that worked, and the
-                    // host is not asked about it.
+                    // hosts are not asked about it.
                     let staged: std::collections::HashSet<(&str, String)> = trace
                         [traced.min(trace.len())..]
                         .iter()
                         .filter(|t| t.staged)
                         .map(|t| (t.name.as_str(), t.input.to_string()))
                         .collect();
-                    let cued = match &cx.cue_on_success {
-                        Some(cue) if closing.is_none() => {
-                            let uses = response.message.tool_uses();
+                    let uses = response.message.tool_uses();
+                    let cued: Vec<Block> = cx
+                        .cue_on_success
+                        .iter()
+                        .filter(|_| closing.is_none())
+                        .filter_map(|cue| {
                             let said: Vec<String> = results
                                 .iter()
                                 .filter_map(|block| {
@@ -4872,9 +4876,8 @@ impl Agent {
                                 .collect();
                             (!said.is_empty())
                                 .then(|| Block::text(format!("{}{}", cue.stem, said.concat())))
-                        }
-                        _ => None,
-                    };
+                        })
+                        .collect();
                     let mut result_message = Message::tool_results(results);
                     result_message.content.extend(recalled);
                     result_message.content.extend(cued);
@@ -11862,6 +11865,7 @@ mod tests {
             crate::tool::episodes::DELIVERY_STEM,
             crate::tool::concepts::DELIVERY_STEM,
             crate::tool::concepts::CUE_STEM,
+            crate::tool::episodes::RETRACED_STEM,
             #[cfg(feature = "memory-prototype")]
             crate::memory_session::DELIVERY_STEM,
             #[cfg(feature = "memory-prototype")]
@@ -18950,7 +18954,7 @@ justification = "echo is off on this box"
         // that worked and about none that failed.
         let asked = Arc::new(Mutex::new(Vec::<String>::new()));
         let mut cx = RunContext::clone(agent.context());
-        cx.cue_on_success = Some(SuccessCue {
+        cx.cue_on_success = vec![SuccessCue {
             text: {
                 let asked = asked.clone();
                 Arc::new(move |tool, input, result| {
@@ -18966,7 +18970,7 @@ justification = "echo is off on this box"
                 })
             },
             stem: CUED.into(),
-        });
+        }];
         let mut convo = Conversation::user("do the task");
         agent.run_in(&cx, &mut convo, None).await.unwrap();
 
@@ -19006,6 +19010,59 @@ justification = "echo is off on this box"
         assert!(!said(1) && said(2));
         // No call was made for it and nothing entered from outside.
         assert!(!convo.taint.untrusted);
+    }
+
+    #[tokio::test]
+    async fn two_hosts_that_both_answer_are_two_blocks_each_under_its_own_line() {
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "x"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("Done.")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(EchoTool)], PermissionMode::Allow);
+        agent.cfg.force_final_answer = false;
+        let host = |stem: &str, says: &'static str| SuccessCue {
+            text: Arc::new(move |_, _, _| Some(says.to_string())),
+            stem: stem.into(),
+        };
+        let mut cx = RunContext::clone(agent.context());
+        cx.cue_on_success = vec![
+            host("The first host noted.\n", "one"),
+            host("The second host noted.\n", "two"),
+        ];
+        let mut convo = Conversation::user("do the task");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let results = convo
+            .messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .unwrap();
+        let texts: Vec<&str> = results
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // One block a host, in the order they were added, each opening
+        // with its own line: a reader that knows the harness's voice by
+        // how a block starts must find every host's (review of #878).
+        assert_eq!(
+            texts,
+            vec!["The first host noted.\none", "The second host noted.\ntwo"]
+        );
     }
 
     #[tokio::test]
@@ -21521,7 +21578,7 @@ justification = "echo is off on this box"
         agent.set_outbox(Arc::clone(&route));
         let asked = Arc::new(Mutex::new(0usize));
         let mut cx = RunContext::clone(agent.context());
-        cx.cue_on_success = Some(SuccessCue {
+        cx.cue_on_success = vec![SuccessCue {
             text: {
                 let asked = asked.clone();
                 Arc::new(move |_, _, _| {
@@ -21530,7 +21587,7 @@ justification = "echo is off on this box"
                 })
             },
             stem: "The harness was waiting on that call.\n".into(),
-        });
+        }];
         let mut convo = Conversation::from(vec![Message::user("send it")]);
         convo.goal_anchor = Some(crate::goal::GoalRef::Task("confirmed".into()));
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
