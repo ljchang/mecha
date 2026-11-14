@@ -976,7 +976,7 @@ mod tests {
         let attempt = of_turn("s", &messages, 0, "t").unwrap();
         store.keep(&attempt, &[]).unwrap();
         let reject = of_drafts(
-            &[attempt.clone()],
+            std::slice::from_ref(&attempt),
             &[draft("d1", "c1", Act::Rejected(None))],
             "t",
         );
@@ -985,7 +985,7 @@ mod tests {
         assert_eq!(store.judge(&reject).unwrap(), 0);
         // The owner then typed a reason: the later verdict stands.
         let reasoned = of_drafts(
-            &[attempt.clone()],
+            std::slice::from_ref(&attempt),
             &[draft(
                 "d1",
                 "c1",
