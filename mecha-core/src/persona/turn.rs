@@ -63,6 +63,9 @@ pub struct Turn<'a> {
     pub layers: bool,
     /// A replay arm's posed cutouts (`--layers-posed`); a chat's is false.
     pub layers_posed: bool,
+    /// A replay arm's home for the camera LoRA (`--reshoot`,
+    /// `ToolCtx::reshoot_from`); a chat's is `None`.
+    pub reshoot_from: Option<std::path::PathBuf>,
     /// The persona's picture settings (`sampling::Tuning`), read by the host
     /// from the owner's setting, or a replay arm's.
     pub image_tuning: crate::sampling::Tuning,
@@ -123,6 +126,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     tools.image_seeds = turn.image_seeds;
     tools.layers = turn.layers;
     tools.layers_posed = turn.layers_posed;
+    tools.reshoot_from = turn.reshoot_from;
     tools.image_tuning = turn.image_tuning;
     tools.image_loras = turn.image_loras;
     tools.build_on = turn.build_on;
@@ -132,6 +136,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     if let Readers::Off = turn.readers {
         tools.role_split = None;
         tools.scene_reader = None;
+        tools.shot_reader = None;
     }
     if let Readers::From(provider) = turn.readers {
         // Each person's part of a scene's `together`, read on the persona's
@@ -146,6 +151,21 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
             ),
             Err(e) => {
                 tracing::warn!("persona chat: no role splitter this turn: {e:#}");
+                None
+            }
+        };
+        // Where a picture's camera stood, read from the picture on the
+        // persona's own model, for a camera move counted from it
+        // (`camera::ShotReader`). On a panel turn too: the panel's camera
+        // changes are most of them. Asked only where the owner has a camera
+        // LoRA and the change is the camera alone.
+        tools.shot_reader = match provider() {
+            Ok(provider) => Some(Arc::new(crate::camera::ModelShotReader {
+                provider,
+                model: turn.model.clone(),
+            }) as Arc<dyn crate::camera::ShotReader>),
+            Err(e) => {
+                tracing::warn!("persona chat: no camera reader this turn: {e:#}");
                 None
             }
         };

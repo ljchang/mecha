@@ -57,6 +57,7 @@ pub mod boredom;
 pub mod brief;
 pub mod build_source;
 pub mod cache_lens;
+pub mod camera;
 pub mod candidate;
 pub mod capture;
 pub mod catalog;

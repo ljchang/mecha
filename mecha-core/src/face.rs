@@ -259,6 +259,33 @@ pub trait FaceAnchors: Send + Sync {
     fn crop(&self, _picture: &[u8]) -> Anchor {
         Anchor::Unavailable("no face detector here".into())
     }
+
+    /// The faces of two pictures of one scene, the second drawn from the
+    /// first: how many each holds, and how alike the second's are to the
+    /// first's ([`Beside`]). What a second pass over a picture is graded by
+    /// (`imagegen`'s re-shoot): a source with no detector says so, never
+    /// "the same".
+    fn beside(&self, _first: &[u8], _second: &[u8]) -> std::result::Result<Beside, String> {
+        Err("no face detector here".into())
+    }
+
+    /// Whether [`FaceAnchors::beside`] can run here at all: asked before a
+    /// render whose only use is to be compared.
+    fn compares(&self) -> bool {
+        false
+    }
+}
+
+/// Two pictures' faces, side by side ([`FaceAnchors::beside`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Beside {
+    /// Faces found in the first picture, and in the second.
+    pub first: usize,
+    pub second: usize,
+    /// The least of the second picture's faces' best likeness to any face of
+    /// the first (ArcFace cosine): `None` where either holds no face, or the
+    /// identity weights are not installed.
+    pub alike: Option<f32>,
 }
 
 /// The cache's generation. A crop depends on the weights, the thresholds,
@@ -283,6 +310,64 @@ pub fn cache_paths(library_dir: &Path, blob: &str) -> (PathBuf, PathBuf) {
 }
 
 impl FaceAnchors for CachedRetinaFace {
+    fn compares(&self) -> bool {
+        matches!(weights(), Ok(Some(_)))
+    }
+
+    fn beside(&self, first: &[u8], second: &[u8]) -> std::result::Result<Beside, String> {
+        // With the identity weights, one reader finds and embeds; without
+        // them the faces are still counted, and their likeness is unread.
+        let arcface = crate::face_id::weights().ok().flatten();
+        let detector = match weights() {
+            Ok(Some(w)) => w,
+            _ => {
+                return Err(format!(
+                    "the face detector is not installed ({INSTALL_HINT})"
+                ))
+            }
+        };
+        let Some(arcface) = arcface else {
+            let d = load_detector()?;
+            let count = |png: &[u8]| {
+                detect_bytes(&d, png)
+                    .map(|f| f.len())
+                    .map_err(|e| format!("the face detector failed: {e:#}"))
+            };
+            return Ok(Beside {
+                first: count(first)?,
+                second: count(second)?,
+                alike: None,
+            });
+        };
+        let reader = crate::face_id::Reader::load(&detector, &arcface)
+            .map_err(|e| format!("the face reader could not be loaded: {e:#}"))?;
+        let read = |png: &[u8], what: &str| {
+            reader
+                .read_bytes(png, what)
+                .map_err(|e| format!("the faces could not be read: {e:#}"))
+        };
+        let (a, b) = (
+            read(first, "the first pass")?,
+            read(second, "the second pass")?,
+        );
+        let alike = b
+            .iter()
+            .map(|(_, f)| {
+                a.iter()
+                    .map(|(_, e)| crate::face_id::similarity(e, f))
+                    .fold(f32::MIN, f32::max)
+            })
+            .fold(None, |least: Option<f32>, x| {
+                Some(least.map_or(x, |l| l.min(x)))
+            })
+            .filter(|_| !a.is_empty());
+        Ok(Beside {
+            first: a.len(),
+            second: b.len(),
+            alike,
+        })
+    }
+
     fn faces_in(&self, png: &[u8]) -> std::result::Result<usize, String> {
         let detector = load_detector()?;
         let img = image::load_from_memory(png)

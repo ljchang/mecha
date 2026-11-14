@@ -146,6 +146,8 @@ videogen.rs  clips with sound from a loopback video server: the graph, a LoRA ch
              between loader and sampler, and the prompt compiled from a typed scene
 comfy.rs     the wire image and video generation speak to ComfyUI: loopback only, temp
              uploads, a job taken back off; never starts a server
+camera.rs    where a picture's camera stood, read from the picture as three closed
+             names by a quarantined pass, and where a said move takes it
 imagelib.rs  the character and style library, and the compiler a scene runs
              through: names in, portraits and verbatim descriptions out
 scene.rs     what a persona's picture shows now: the record a render lands, per chat and

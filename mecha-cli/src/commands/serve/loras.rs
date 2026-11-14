@@ -448,7 +448,10 @@ fn layer_view(here: &Here, which: &Which) -> Result<Value, (StatusCode, String)>
         .iter()
         .filter(|(e, _)| e.model == Family::QwenImage)
         .map(|(e, st)| {
-            json!({"name": e.name, "about": e.about, "status": status_word(st), "reason": st.reason(e)})
+            // `role`: what the harness uses it for, when it is not an
+            // ordinary picture LoRA ("camera": only a re-shoot loads it).
+            json!({"name": e.name, "about": e.about, "status": status_word(st),
+                   "reason": st.reason(e), "role": e.role.map(|r| r.id())})
         })
         .collect();
     Ok(json!({

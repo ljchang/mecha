@@ -290,6 +290,74 @@ const UPSCALE_PROMPT: &str = "Recreate this exact photograph at high resolution.
     natural skin texture with visible pores, crisp detail in the eyes and hair. Change nothing \
     else.";
 
+/// A re-shoot's second pass (`picture::Plan::reshot`): the picture the
+/// camera LoRA drew, drawn once more without it. That LoRA holds the face
+/// and softens it: skin, hair and cloth lost fine detail in every render
+/// measured (a face's Laplacian variance 0.55 to 0.85 of the original's,
+/// 2026-11-13), and this pass at the reference sampling brought it back to
+/// about the original's with the camera where the re-shoot put it
+/// (IMAGE-DESIGN §17.4). The words are what was measured.
+const DETAIL_PROMPT: &str = "Recreate this exact photograph. The same person with the identical \
+    face, hair, expression, skin tone, clothing, background, lighting and framing as <image1>. \
+    Sharp focus, fine natural skin texture, crisp detail in the eyes and hair. Change nothing else.";
+
+/// The second pass's words for a re-shoot seen from beside or behind the
+/// subject: [`DETAIL_PROMPT`] without a word about a face or eyes, and with
+/// the side it is seen from held. Asked for "the identical face" and "crisp
+/// detail in the eyes" of someone seen from behind, the pass drew a face in
+/// profile where the first pass showed none (2 of 3 such pictures; with
+/// these words 0 of 3, and no face lost or changed in 9 that had one;
+/// 2026-11-13, IMAGE-DESIGN §17.5).
+const DETAIL_PROMPT_AWAY: &str = "Recreate this exact photograph. The same person in the \
+    identical pose, seen from the same side and angle as <image1>, with the same hair, skin \
+    tone, clothing, background, lighting and framing. Sharp focus, fine natural texture in \
+    skin, hair and fabric. Change nothing else.";
+
+/// The least a second pass's face may be like the first pass's and be kept
+/// ([`detail_verdict`]; ArcFace cosine). The two passes are one frame, so a
+/// kept face scores high: 0.72 to 0.96 over 28 pairs that the eye called
+/// the same person (2026-11-13), where two different people score under
+/// 0.3 and one person at two angles about 0.5.
+const DETAIL_ALIKE: f32 = 0.6;
+
+/// Whether a re-shoot's second pass is kept, by the faces of the two passes
+/// side by side (`face::FaceAnchors::beside`), or why not. The second pass
+/// is asked to recreate the first, and the artifact is what is graded: it
+/// has drawn a face on someone seen from behind, and not theirs (owner,
+/// 2026-11-13). So it is never kept where it shows a face the first pass
+/// did not, or a face unlike the first pass's; and where the faces cannot
+/// be compared it is kept only for a view from in front (`away` is a view
+/// from beside or behind the subject), where there is a face for the first
+/// pass to have held. `Ok` carries the likeness read, when one was.
+fn detail_verdict(
+    read: std::result::Result<crate::face::Beside, String>,
+    away: bool,
+) -> std::result::Result<Option<f32>, String> {
+    match read {
+        Err(why) if away => Err(format!(
+            "its faces could not be compared with the first pass's ({why}), and the view is \
+             not from in front"
+        )),
+        Err(_) => Ok(None),
+        Ok(f) if f.second > f.first => Err("it showed a face the first pass did not".to_string()),
+        // A face gone is the other way a second pass is not the first: what
+        // was drawn over it is not known to be the person.
+        Ok(f) if f.second < f.first => Err("it lost a face the first pass showed".to_string()),
+        Ok(f) => match f.alike {
+            Some(alike) if alike < DETAIL_ALIKE => {
+                Err("its face was not the first pass's".to_string())
+            }
+            Some(alike) => Ok(Some(alike)),
+            // A face in both and no reading of whose: as with no detector.
+            None if f.second > 0 && away => Err(
+                "whose face it shows could not be read, and the view is not from in front"
+                    .to_string(),
+            ),
+            None => Ok(None),
+        },
+    }
+}
+
 /// The reference size for every other edit-shaped render (placed, restaged
 /// on a photo, edited with a head crop for everyone in the picture; an edit
 /// of the picture where anyone has no crop keeps [`EDIT_REFERENCE_SIZE`],
@@ -914,8 +982,13 @@ pub fn loras_said(p: &crate::loras::Picked, off: Option<&str>, triggers: bool) -
 }
 
 /// The manifest's `loras`: the same counts, or null when settings list none.
-fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
-    if p.applied.is_empty()
+///
+/// `camera` is whether the owner's camera LoRA drew this picture (a
+/// re-shoot): it is never one of `applied`, and a count of the pictures a
+/// LoRA drew would otherwise miss every one of them.
+fn loras_counted(p: &crate::loras::Picked, off: Option<&str>, camera: bool) -> Value {
+    if !camera
+        && p.applied.is_empty()
         && off.is_none()
         && p.refused == 0
         && p.gone == 0
@@ -926,6 +999,7 @@ fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
     }
     json!({
         "applied": p.applied.len(),
+        "camera": camera,
         "left_out": off,
         "refused": p.refused,
         "gone": p.gone,
@@ -1966,9 +2040,10 @@ const FAR_OVER: &str = "far over the cast";
 /// lists: a crowd in the setting, or one `who` that is several. Such a
 /// picture is not counted: over the cast by design, it was drawn again
 /// twice for the same crowd and then said to be wrong (review of #874).
-fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
+fn more_than_listed(next: &crate::scene::Scene) -> bool {
     // People by a word for them: read in the place, in what they do
-    // together, in the line beside the scene, and in who each is.
+    // together, and in who each is. (A line beside the scene is a retouch,
+    // and a call with one is never counted: `Call::counts_people`.)
     const CROWD: &[&str] = &[
         "people",
         "crowd",
@@ -2010,7 +2085,6 @@ fn more_than_listed(next: &crate::scene::Scene, also: Option<&str>) -> bool {
     };
     place
         || next.together.as_ref().is_some_and(|f| has(&f.value, CROWD))
-        || also.is_some_and(|t| has(t, CROWD))
         || next.people.iter().any(|p| match &p.who {
             crate::scene::Who::Described(d) => has(d, CROWD) || has(d, SEVERAL),
             crate::scene::Who::Library(_) => false,
@@ -3342,7 +3416,11 @@ impl ImageGenerate {
         // SAM is charged where it can load. Asked on Linux only, as `loaded`
         // is: on a Mac the ask goes through the on-demand proxy and starts
         // ComfyUI, so a Mac is charged whenever the call may segment.
-        let can_segment = cfg!(target_os = "macos") || self.backend.segments().await;
+        // Asked only of a call that may segment or wants the count: with
+        // neither, every generation asked the server about SAM ahead of the
+        // gauge (review of #874, pass 6).
+        let can_segment = (may_segment || wants_count)
+            && (cfg!(target_os = "macos") || self.backend.segments().await);
         let may_segment = may_segment && can_segment;
         let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb, may_segment);
         let series = crate::system::db_path().ok();
@@ -3423,6 +3501,23 @@ impl ImageGenerate {
         self
     }
 
+    /// A replay arm's camera LoRA (`ToolCtx::reshoot_from`,
+    /// `loras::Role::Camera`): the registry the arm names, by role, since a
+    /// replay reads no chat's or persona's list. A live picture's is its
+    /// list's (`loras::Picked::camera`), switched as any LoRA is. `None` is
+    /// not a failure: a camera-only change is then restaged as it always
+    /// was.
+    fn camera_lora(
+        &self,
+        ctx: &ToolCtx,
+        model: crate::sampling::Model,
+    ) -> Option<(crate::loras::PictureLora, crate::loras::CameraWords)> {
+        let home = ctx.reshoot_from.as_ref()?;
+        model_lora(self.cfg.model_file(model)).ok()?;
+        let folders = crate::loras::Folders::of(home, Some(&self.cfg), None);
+        crate::loras::camera(&crate::loras::Loaded::read(home, None, &folders))
+    }
+
     /// What this picture's LoRA list comes to: the turn's layer over the
     /// chat's, each name resolved against the registry as it is now, and
     /// none at all on a model file LoRAs are not measured on (`model_lora`).
@@ -3490,11 +3585,20 @@ impl ImageGenerate {
             Err(why) if !picked.applied.is_empty() => (
                 crate::loras::Picked {
                     applied: Vec::new(),
+                    camera: None,
                     ..picked
                 },
                 Some(why),
             ),
-            Err(_) => (picked, None),
+            // A camera entry alone is not said as switched off: it rides
+            // only a re-shoot, which is then a restage.
+            Err(_) => (
+                crate::loras::Picked {
+                    camera: None,
+                    ..picked
+                },
+                None,
+            ),
         }
     }
 
@@ -4124,6 +4228,12 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
 pub const SETTING_DESC: &str = "Everything in the picture except its people and its words: the \
      place and its objects, or the whole subject of a picture without people. Words, or \
      {\"photo\": <path>} to put the people in that room.";
+/// `scene.view`'s description in the image tool's schema.
+pub const VIEW_DESC: &str = "Where the camera stands, whenever the request is about that; \
+     give it beside `camera`. `around` is the side of the subject the camera sees (back for \
+     from behind, left or right for a profile, the quarters for in between); `height` is low \
+     for looking up from below, high for looking down from above; `distance` is close, medium \
+     or wide. Fill only the parts asked for.";
 /// `scene.people`'s description.
 pub const PEOPLE_DESC: &str = "Who is in the picture, each once. For a change, only the people \
      who change, with only what changes: for new clothes alone send only `wearing`, since a \
@@ -4823,6 +4933,11 @@ impl Tool for ImageGenerate {
                         "setting": {"description": SETTING_DESC},
                         "light": {"type": "string", "description": "Light, mood, time of day, colour tone."},
                         "camera": {"type": "string", "description": "Shot size, angle, framing."},
+                        "view": {"type": "object", "description": VIEW_DESC, "properties": {
+                            "around": {"type": "string", "enum": crate::scene::Shot::AROUND},
+                            "height": {"type": "string", "enum": crate::scene::Height::ALL.map(|h| h.id())},
+                            "distance": {"type": "string", "enum": crate::scene::Distance::ALL.map(|d| d.id())}
+                        }},
                         "style": {"type": "string", "description": "A library style's name, only when the user asks for a look; leave it out for the usual photograph. A look the library has no name for goes in words in `setting`."},
                         "people": {"type": "array", "items": person, "maxItems": crate::scene::MAX_PEOPLE, "description": PEOPLE_DESC},
                         "together": {"type": "string", "description": "What the people do with each other, once, by name."},
@@ -5346,6 +5461,65 @@ impl Tool for ImageGenerate {
         ) {
             Ok(p) => p,
             Err(why) => return Ok(refused(why)),
+        };
+        // A camera-only change to a picture is drawn from the picture
+        // itself where the owner has a camera LoRA (`picture::Plan::reshot`):
+        // the room and the clothes are then the picture's own.
+        // The camera LoRA is the one on this picture's list, switched for
+        // the chat or the persona as any LoRA is; off the list the change is
+        // restaged, as with none registered. A replay arm names its own.
+        let camera_lora = match (&call.picture, plan.route) {
+            (Some(_), "restaged") => picked
+                .camera
+                .clone()
+                .or_else(|| self.camera_lora(ctx, tuning.model.unwrap_or_default())),
+            _ => None,
+        };
+        let (mut shot_was, mut shot_unread) = (None::<crate::scene::Shot>, None::<String>);
+        let plan = match (&camera_lora, &call.picture) {
+            (Some(_), Some(path)) if plan.camera_only() => {
+                let recorded = base.as_ref().and_then(|b| b.camera.as_ref());
+                // Where the picture has the camera: read from the picture
+                // (`camera::ShotReader`), since the record's words are what
+                // was once asked and not where the picture ended up. With no
+                // reader (the assistant's own chat, a replay with readers
+                // off) or a read that fails, the change is restaged and the
+                // result says so: a start guessed from the record turns the
+                // camera the wrong way, and nothing in the picture says it.
+                let was = match &ctx.shot_reader {
+                    None => Err("no camera reader on this surface".to_string()),
+                    // The bytes already read for the canvas and the record:
+                    // one read, behind the same guards, of the one picture.
+                    Some(reader) => match picture.as_ref() {
+                        None => Err("the picture could not be read".to_string()),
+                        Some(read) => tokio::time::timeout(
+                            crate::camera::SHOT_READ_TIMEOUT,
+                            reader.read(&read.bytes),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err("the camera read took too long".into())),
+                    },
+                };
+                match was {
+                    Ok(was) => {
+                        let words = call.change.camera.as_deref().unwrap_or_default();
+                        let to = crate::camera::moved_to(
+                            call.change.view,
+                            words,
+                            recorded.map(|c| c.value.as_str()),
+                            was,
+                        );
+                        shot_was = Some(was);
+                        plan.reshot(path, was, to)
+                    }
+                    Err(why) => {
+                        tracing::warn!("image_generate: camera read: {why}");
+                        shot_unread = Some(why);
+                        plan
+                    }
+                }
+            }
+            _ => plan,
         };
         let mut req = Request {
             prompt: String::new(),
@@ -6701,6 +6875,25 @@ impl Tool for ImageGenerate {
                 req.references.len()
             )));
         }
+        // A re-shoot sends the picture alone, at full size and in its own
+        // shape, and says only where the camera goes, after the camera
+        // LoRA's trigger: measured, the plainer the words the cleaner the
+        // move, and anything else in them is an edit riding along. The
+        // camera LoRA leads the chain; the owner's own follow while the cap
+        // allows, and their triggers ride the prompt as on any picture
+        // (unmeasured on a styled chat).
+        if let (Some((camera, words)), Some(to)) = (&camera_lora, &plan.shot) {
+            let said = words.say(to);
+            req.references.truncate(1);
+            req.size = None;
+            req.reference_size = EDIT_REFERENCE_SIZE;
+            req.prompt = match camera.trigger.as_deref() {
+                Some(trigger) => format!("{trigger} {said}"),
+                None => said,
+            };
+            req.loras.insert(0, camera.clone());
+            req.loras.truncate(crate::loras::MAX_PER_PICTURE);
+        }
         // Someone named but not in the picture is never drawn: the image
         // model reads "the viewer" (the owner's ruling, 2026-10-08).
         let rendered: Vec<&str> = plan
@@ -7180,10 +7373,12 @@ impl Tool for ImageGenerate {
             // A crowd in the words is left uncounted, and said so in the
             // manifest: unrecorded, it could not be told from a picture
             // that was never a candidate.
+            // Only where the server can count at all: with no SAM a crowd is
+            // as uncounted as any picture, and recorded, it swelled the
+            // share the manifests are read for.
             let counts = match counts {
-                Some((expected, may_redraw))
-                    if more_than_listed(&plan.next, plan.also.as_deref()) =>
-                {
+                Some(_) if !me.backend.segments().await => None,
+                Some((expected, may_redraw)) if more_than_listed(&plan.next) => {
                     people_check = Some(PeopleCheck {
                         expected,
                         seen: Vec::new(),
@@ -7194,8 +7389,7 @@ impl Tool for ImageGenerate {
                     });
                     None
                 }
-                Some(c) if me.backend.segments().await => Some(c),
-                _ => None,
+                counts => counts,
             };
             let (image, left) = match (image, counts) {
                 (Ok(first), Some((expected, may_redraw))) => {
@@ -7209,6 +7403,120 @@ impl Tool for ImageGenerate {
                     (image, (!kept.is_empty()).then(|| kept.join("; ")))
                 }
                 (image, _) => (image, left),
+            };
+            // A re-shoot is drawn once more without the camera LoRA
+            // (`DETAIL_PROMPT`), at the reference sampling whatever the
+            // persona's own: measured at guidance 1, and an edit at 3 lost
+            // the face. A second render in the job, so a re-shoot holds its
+            // chat's slot for up to two timeouts. A pass that fails or is
+            // stopped keeps the re-shoot it was given, said: a finished
+            // picture is never thrown away for its polish.
+            let mut detailed: Option<bool> = None;
+            // Why a second pass that was drawn was not kept, and how like
+            // the first pass's its face was where that was read.
+            let mut detail_dropped: Option<String> = None;
+            let mut detail_alike: Option<f32> = None;
+            // The faces found in each pass, where they could be: what the
+            // verdict was read from, kept so it can be checked afterwards.
+            let mut detail_faces: Option<(usize, usize)> = None;
+            // Why no second pass was drawn at all.
+            let mut detail_skipped: Option<&'static str> = None;
+            // From beside or behind the subject, by where the move ends:
+            // the ask's place, else where the picture was read to stand.
+            let away = plan
+                .next
+                .shot
+                .and_then(|s| s.around)
+                .or(shot_was.and_then(|s| s.around))
+                // A side nobody knows is treated as turned away: the careful
+                // words and the strict verdict.
+                .is_none_or(|a| (2..=6).contains(&a));
+            let (image, left) = match image {
+                // A pass that could only be thrown away is not drawn: from
+                // beside or behind it is kept only on a face comparison
+                // (`detail_verdict`), and with no detector there is none. It
+                // was a second render's wait for the picture already in hand.
+                Ok(shot)
+                    if plan.route == crate::picture::RESHOT && away && !me.faces.compares() =>
+                {
+                    detailed = Some(false);
+                    detail_skipped = Some("no face detector here");
+                    (Ok(shot), left)
+                }
+                Ok(shot) if plan.route == crate::picture::RESHOT => {
+                    let pass = Request {
+                        prompt: if away {
+                            DETAIL_PROMPT_AWAY
+                        } else {
+                            DETAIL_PROMPT
+                        }
+                        .to_string(),
+                        size: None,
+                        sampling: crate::sampling::Sampling {
+                            model: req.sampling.model,
+                            ..crate::sampling::Sampling::reference(req.sampling.steps)
+                        },
+                        seed: req.seed,
+                        references: vec![Reference {
+                            path: "re-shoot".into(),
+                            bytes: shot.clone(),
+                            ext: "png",
+                        }],
+                        reference_size: EDIT_REFERENCE_SIZE,
+                        mask: None,
+                        loras: Vec::new(),
+                    };
+                    let again = me
+                        .backend
+                        .generate(
+                            &me.cfg,
+                            &pass,
+                            ctx.cancel.as_ref(),
+                            timeout,
+                            ctx.image_trail.as_deref(),
+                        )
+                        .await;
+                    let left = match (left, again.left) {
+                        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                        (a, b) => a.or(b),
+                    };
+                    match again.image {
+                        Ok(bytes) => {
+                            let faces = Arc::clone(&me.faces);
+                            let (one, two) = (shot.clone(), bytes.clone());
+                            let read =
+                                tokio::task::spawn_blocking(move || faces.beside(&one, &two))
+                                    .await
+                                    .unwrap_or_else(|e| {
+                                        Err(format!("the face read did not finish ({e})"))
+                                    });
+                            detail_faces = read.as_ref().ok().map(|f| (f.first, f.second));
+                            match detail_verdict(read, away) {
+                                Ok(alike) => {
+                                    detailed = Some(true);
+                                    detail_alike = alike;
+                                    (Ok(bytes), left)
+                                }
+                                Err(why) => {
+                                    tracing::info!(
+                                        "image_generate: the detail pass was not kept: {why}"
+                                    );
+                                    detailed = Some(false);
+                                    detail_dropped = Some(why);
+                                    (Ok(shot), left)
+                                }
+                            }
+                        }
+                        Err(why) => {
+                            if let Failure::Other(e) = &why {
+                                tracing::warn!("image_generate: the detail pass failed: {e:#}");
+                            }
+                            detailed = Some(false);
+                            (Ok(shot), left)
+                        }
+                    }
+                }
+                image => (image, left),
             };
             me.arm_unload();
             // The segmentation's own temp copies, said beside the render's.
@@ -7397,6 +7705,17 @@ impl Tool for ImageGenerate {
                     .map(|u| json!({"name": u.name, "version": u.version})),
                 "crops": crops_said,
                 "roles": roles_said,
+                "shot_was": shot_was,
+                "shot_move": plan.shot.map(|m| json!({
+                    "turn": m.turn, "height": m.height.id(), "distance": m.distance.id()})),
+                "shot_unread": shot_unread,
+                // Whether a re-shoot's second pass drew: null for any other
+                // picture, false where it failed and the re-shoot was kept.
+                "detail": detailed,
+                "detail_dropped": detail_dropped,
+                "detail_skipped": detail_skipped,
+                "detail_faces": detail_faces.map(|(a, b)| json!([a, b])),
+                "detail_alike": detail_alike.map(|a| (f64::from(a) * 1000.0).round() / 1000.0),
                 // Only for the prompt that was sent: a layered picture's
                 // passes carry each person's outfit on the cutout, and the
                 // one-pass prompt this names was never drawn (review of #647).
@@ -7427,7 +7746,11 @@ impl Tool for ImageGenerate {
                 },
                 // The owner's LoRAs, by count: the model had no say in them,
                 // and the manifest names none (`docs/LORA-DESIGN.md` §4).
-                "loras": loras_counted(&picked, lora_off),
+                "loras": loras_counted(
+                    &picked,
+                    lora_off,
+                    plan.route == crate::picture::RESHOT,
+                ),
             });
             // The prompt, for the owner only, outside the jail (the manifest
             // never carries it): a line that cannot be written costs the
@@ -7512,6 +7835,9 @@ impl Tool for ImageGenerate {
                                        scene's setting photo"
                         }
                         "retouched" => "A retouch of",
+                        crate::picture::RESHOT => {
+                            "The same scene from a new camera position, drawn from"
+                        }
                         _ => "An edit of",
                     };
                     format!(
@@ -7524,6 +7850,35 @@ impl Tool for ImageGenerate {
             if let Some(said) = people_check.as_ref().and_then(PeopleCheck::said) {
                 text.push(' ');
                 text.push_str(&said);
+            }
+            match (detailed, &detail_dropped) {
+                (Some(false), _) if detail_skipped.is_some() => text.push_str(&format!(
+                    " (No second pass, for fine detail, was drawn: its faces could not be \
+                     checked against this picture's ({}), and the view is not from in front. \
+                     Skin and hair may look softer than in the picture it was shot from.)",
+                    detail_skipped.unwrap_or_default()
+                )),
+                (Some(true), _) => text.push_str(
+                    " (Drawn in two passes: the new camera position, then once more for fine \
+                     detail.)",
+                ),
+                (Some(false), Some(why)) => text.push_str(&format!(
+                    " (A second pass, for fine detail, was drawn and not kept: {why}. This is \
+                     the first pass alone: skin and hair may look softer than in the picture it \
+                     was shot from.)"
+                )),
+                (Some(false), None) => text.push_str(
+                    " (The second pass, for fine detail, did not finish, so this is the first \
+                     pass alone: skin and hair may look softer than in the picture it was shot \
+                     from.)",
+                ),
+                (None, _) => {}
+            }
+            if let Some(why) = &shot_unread {
+                text.push_str(&format!(
+                    " (Where the picture's camera stands could not be read ({why}), so the \
+                     scene was restaged, not shot again from the picture.)"
+                ));
             }
             if let Some(mp) = &mask_plan {
                 let area = match (&plan.mask, &masked_by) {
@@ -8404,7 +8759,7 @@ mod tests {
         scene_keys.sort_unstable();
         assert_eq!(
             scene_keys,
-            ["camera", "light", "people", "setting", "style", "text", "together"]
+            ["camera", "light", "people", "setting", "style", "text", "together", "view"]
         );
     }
 
@@ -12810,6 +13165,25 @@ mod tests {
             );
             std::fs::remove_dir_all(dir).ok();
         }
+        // The same crowd where no count could be made records nothing: the
+        // words stopped no count there.
+        let (url, _) = fake_with(Fake {
+            history: vec![done()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let out = tool(&url)
+            .call(
+                json!({"scene": {"setting": "a market, shoppers at every stall", "people": [
+                    {"who": "a gardener", "wearing": "overalls", "doing": "watering"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(manifest_of(&dir, &out.content)["people_check"], Value::Null);
+        std::fs::remove_dir_all(dir).ok();
         // A count whose job fails keeps the picture, and says nothing.
         let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
             "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
@@ -12836,18 +13210,15 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
         // A count or a set in the place's words is its furniture.
-        assert!(!more_than_listed(
-            &crate::scene::Scene {
-                setting: Some(crate::scene::Field {
-                    value: crate::scene::Setting::Words {
-                        text: "a family kitchen, a table for two, a pair of armchairs".into()
-                    },
-                    origin: crate::scene::Origin::Clean,
-                }),
-                ..Default::default()
-            },
-            None
-        ));
+        assert!(!more_than_listed(&crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Words {
+                    text: "a family kitchen, a table for two, a pair of armchairs".into()
+                },
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        }));
     }
 
     /// What SAM found but `prepare_mask` refuses: a speck is too small to
@@ -13142,6 +13513,28 @@ mod tests {
         }
     }
 
+    /// A detector that answers [`crate::face::FaceAnchors::beside`] as it is
+    /// told, for a re-shoot's two passes; no anchor crop.
+    struct BesideFaces(Mutex<std::result::Result<crate::face::Beside, String>>);
+
+    impl crate::face::FaceAnchors for BesideFaces {
+        fn anchor(
+            &self,
+            _: &crate::imagelib::Library,
+            _: &crate::imagelib::Entry,
+        ) -> crate::face::Anchor {
+            crate::face::Anchor::Unavailable("no face detector here".into())
+        }
+
+        fn beside(&self, _: &[u8], _: &[u8]) -> std::result::Result<crate::face::Beside, String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn compares(&self) -> bool {
+            true
+        }
+    }
+
     fn stub_faces(answer: crate::face::Anchor) -> Arc<StubFaces> {
         Arc::new(StubFaces {
             answer,
@@ -13169,6 +13562,25 @@ mod tests {
     }
 
     /// The last prompt sent to the image server.
+    /// The last graph sent that is not a re-shoot's second pass
+    /// (`DETAIL_PROMPT`), which follows every re-shoot.
+    fn last_shot(seen: &Arc<Mutex<Vec<String>>>) -> Value {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .map(|l| {
+                let body: Value = serde_json::from_str(&l[l.find('{').unwrap()..]).unwrap();
+                body["prompt"].clone()
+            })
+            .find(|g| {
+                let p = &g["encode"]["inputs"]["prompt"];
+                p != DETAIL_PROMPT && p != DETAIL_PROMPT_AWAY
+            })
+            .unwrap()
+    }
+
     fn last_prompt(seen: &Arc<Mutex<Vec<String>>>) -> String {
         seen.lock()
             .unwrap()
@@ -15231,6 +15643,520 @@ mod tests {
         let out = tool(&url).call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sampled(&seen).0, 1.0, "no chat layer");
+    }
+
+    /// A camera reader that answers as scripted.
+    #[derive(Debug)]
+    struct StoodAt(std::result::Result<crate::scene::Shot, String>);
+
+    #[async_trait::async_trait]
+    impl crate::camera::ShotReader for StoodAt {
+        async fn read(&self, _: &[u8]) -> std::result::Result<crate::scene::Shot, String> {
+            self.0.clone()
+        }
+    }
+
+    /// A re-shoot turns the camera from where the picture has it, read from
+    /// the picture (`camera::ShotReader`), not from the record's words: a
+    /// picture already seen from behind and asked for "from behind" is not
+    /// turned at all, and "the other side" of it is its front. A read that
+    /// fails restages, said. Fails on the tool before it, which counted
+    /// from the record ("head on") and turned half-way round.
+    #[tokio::test]
+    async fn a_reshoot_is_counted_from_where_the_picture_has_the_camera() {
+        let (url, seen) = distinct(12).await;
+        let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
+        crate::loras::write_test_lora(
+            &home.join("pics").join("orbit.safetensors"),
+            crate::loras::QWEN_KEYS,
+        );
+        std::fs::write(
+            home.join(crate::loras::FILE),
+            "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+             model = \"qwen-image\"\nfile = \"orbit.safetensors\"\n\
+             trigger = \"<orbit>\"\nrole = \"camera\"\n[lora.camera]\n\
+             around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+             height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+             distance = [\"near\", \"mid\", \"far\"]\n",
+        )
+        .unwrap();
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            loras_dir: Some(vec![home.join("pics")]),
+            ..Default::default()
+        })
+        .unwrap()
+        .with_library_dir(lib.clone())
+        .with_loras(home.clone())
+        // No machine's detector: nobody's face in either pass.
+        .with_faces(Arc::new(BesideFaces(Mutex::new(Ok(crate::face::Beside {
+            first: 0,
+            second: 0,
+            alike: None,
+        })))));
+        let prompt =
+            |seen: &Arc<Mutex<Vec<String>>>| last_shot(seen)["encode"]["inputs"]["prompt"].clone();
+        let behind = crate::scene::Shot {
+            around: Some(4),
+            height: Some(crate::scene::Height::Eye),
+            distance: Some(crate::scene::Distance::Medium),
+        };
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a study with a tall window",
+                       "camera": "medium shot, head on",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(behind))));
+        let close = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "a close up from behind"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!close.is_error, "{}", close.content);
+        assert_eq!(
+            prompt(&seen),
+            "<orbit> n level near",
+            "no turn: already behind"
+        );
+        let m = manifest_of(&dir, &close.content);
+        assert_eq!(m["route"], crate::picture::RESHOT);
+        assert_eq!(m["shot_was"]["around"], 4);
+        assert_eq!(m["shot_move"]["turn"], 0);
+        // A move said against the picture: the far side of behind.
+        let other = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from the other side"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!other.is_error, "{}", other.content);
+        assert_eq!(prompt(&seen), "<orbit> s level mid");
+        // A read that fails: restaged as it always was, and said.
+        cx.shot_reader = Some(Arc::new(StoodAt(Err("no answer".into()))));
+        let unread = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from the left side"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!unread.is_error, "{}", unread.content);
+        assert!(unread.content.contains("restaged"), "{}", unread.content);
+        assert!(
+            unread.content.contains("could not be read (no answer)"),
+            "{}",
+            unread.content
+        );
+        // No reader at all (a chat that is not a persona's): the record's
+        // words say head on and the picture is from behind, so the start is
+        // not guessed from them. Restaged, and said.
+        cx.shot_reader = None;
+        let none = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from the left side"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!none.is_error, "{}", none.content);
+        let m = manifest_of(&dir, &none.content);
+        assert_ne!(m["route"], crate::picture::RESHOT);
+        assert!(m["shot_was"].is_null(), "{m}");
+        assert!(
+            none.content.contains("could not be read (no camera reader"),
+            "{}",
+            none.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// A second pass is kept by what it shows, never by having been drawn
+    /// (owner, 2026-11-13: one drew a face on someone seen from behind, and
+    /// not theirs). Fails without the verdict, which kept every pass.
+    #[test]
+    fn a_second_pass_is_kept_only_where_its_faces_are_the_first_passs() {
+        let b = |first, second, alike| {
+            Ok(crate::face::Beside {
+                first,
+                second,
+                alike,
+            })
+        };
+        // A face the first pass did not show: never kept, from any side.
+        for away in [true, false] {
+            let why = detail_verdict(b(0, 1, None), away).unwrap_err();
+            assert!(why.contains("a face the first pass did not"), "{why}");
+            assert!(detail_verdict(b(1, 2, Some(0.9)), away).is_err());
+        }
+        // Someone else's face: never kept.
+        let why = detail_verdict(b(1, 1, Some(0.2)), false).unwrap_err();
+        assert!(why.contains("not the first pass's"), "{why}");
+        // The same face, and nobody's face in either: kept.
+        assert_eq!(detail_verdict(b(1, 1, Some(0.9)), false), Ok(Some(0.9)));
+        assert_eq!(detail_verdict(b(0, 0, None), true), Ok(None));
+        // A face the first pass held and the second does not: never kept.
+        for away in [true, false] {
+            let why = detail_verdict(b(1, 0, None), away).unwrap_err();
+            assert!(why.contains("lost a face"), "{why}");
+        }
+        // Faces that cannot be compared: kept only for a view from in front.
+        assert_eq!(detail_verdict(Err("no detector".into()), false), Ok(None));
+        assert!(detail_verdict(Err("no detector".into()), true).is_err());
+        assert_eq!(detail_verdict(b(1, 1, None), false), Ok(None));
+        assert!(detail_verdict(b(1, 1, None), true).is_err());
+    }
+
+    /// A re-shoot whose second pass shows a face the first did not is the
+    /// first pass's picture, said and recorded; so is one whose second pass
+    /// fails. Fails on the tool before it, which saved whatever the second
+    /// pass drew.
+    #[tokio::test]
+    async fn a_reshoot_keeps_its_first_pass_when_the_second_is_not_to_be_kept() {
+        let failed = json!({"job-1": {"status": {"status_str": "error", "completed": false,
+            "messages": [["execution_error", {"exception_message": "boom"}]]}, "outputs": {}}});
+        for (history, answer, said) in [
+            (
+                vec![done(), done(), done()],
+                Some(Ok(crate::face::Beside {
+                    first: 0,
+                    second: 1,
+                    alike: None,
+                })),
+                "a face the first pass did not",
+            ),
+            (
+                vec![done(), done(), failed],
+                Some(Err("never asked".to_string())),
+                "did not finish",
+            ),
+            // No detector on the machine: from behind the pass could only be
+            // thrown away, so it is not drawn, and that is what is said.
+            (
+                vec![done(), done(), done()],
+                None,
+                "No second pass, for fine detail, was drawn",
+            ),
+        ] {
+            let views: Vec<Vec<u8>> = (0..3u8)
+                .map(|i| picture(8, [40 + 60 * i, 90, 200]))
+                .collect();
+            let (url, _) = fake_with(Fake {
+                history,
+                views: views.clone(),
+                ..Fake::default()
+            })
+            .await;
+            let (dir, store, lib, home) =
+                (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
+            crate::loras::write_test_lora(
+                &home.join("pics").join("orbit.safetensors"),
+                crate::loras::QWEN_KEYS,
+            );
+            std::fs::write(
+                home.join(crate::loras::FILE),
+                "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+                 model = \"qwen-image\"\nfile = \"orbit.safetensors\"\n\
+                 trigger = \"<orbit>\"\nrole = \"camera\"\n[lora.camera]\n\
+                 around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+                 height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+                 distance = [\"near\", \"mid\", \"far\"]\n",
+            )
+            .unwrap();
+            let t = ImageGenerate::new(ImageConfig {
+                url: url.clone(),
+                min_available_mb: 0,
+                unload_after_secs: 0,
+                loras_dir: Some(vec![home.join("pics")]),
+                ..Default::default()
+            })
+            .unwrap()
+            .polling_every(Duration::from_millis(10))
+            .with_library_dir(lib.clone())
+            .with_loras(home.clone())
+            .with_faces(match answer {
+                Some(answer) => {
+                    Arc::new(BesideFaces(Mutex::new(answer))) as Arc<dyn crate::face::FaceAnchors>
+                }
+                None => stub_faces(crate::face::Anchor::Unavailable("none here".into())),
+            });
+            let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+            cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
+            // The picture's camera as its scene asked for it: head on.
+            cx.shot_reader = Some(Arc::new(StoodAt(Ok(crate::scene::Shot {
+                around: Some(0),
+                height: Some(crate::scene::Height::Eye),
+                distance: Some(crate::scene::Distance::Medium),
+            }))));
+            let first = t
+                .call(
+                    json!({"scene": {"setting": "a study with a tall window",
+                           "camera": "medium shot, head on",
+                           "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(!first.is_error, "{}", first.content);
+            let shot = t
+                .call(
+                    json!({"picture": picture_of(&first.content),
+                           "scene": {"camera": "from behind, low angle"}}),
+                    &cx,
+                )
+                .await
+                .unwrap();
+            assert!(!shot.is_error, "{}", shot.content);
+            assert!(shot.content.contains(said), "{}", shot.content);
+            assert!(!shot.content.contains("two passes"), "{}", shot.content);
+            let m = manifest_of(&dir, &shot.content);
+            assert_eq!(m["route"], crate::picture::RESHOT);
+            assert_eq!(m["detail"], false, "{said}");
+            // The camera LoRA drew it, and the manifest's LoRA row says so.
+            assert_eq!(m["loras"]["camera"], true, "{m}");
+            assert_eq!(
+                m["detail_skipped"].is_null(),
+                !said.starts_with("No second pass"),
+                "{m}"
+            );
+            if said.contains("a face") {
+                assert_eq!(m["detail_faces"], json!([0, 1]));
+            }
+            // The first pass's picture is the one saved.
+            assert_eq!(
+                std::fs::read(dir.join(picture_of(&shot.content))).unwrap(),
+                views[1],
+                "{said}"
+            );
+            for d in [dir, store, lib, home] {
+                std::fs::remove_dir_all(d).ok();
+            }
+        }
+    }
+
+    /// A camera-only change to a recorded picture is a re-shoot where the
+    /// owner's registry holds a camera LoRA (`picture::Plan::reshot`): the
+    /// picture is the one image sent, at its own shape, and the words are
+    /// the LoRA's trigger and where the camera goes, nothing else. Without
+    /// such an entry it is restaged from words as it always was, and a
+    /// change beside the camera is never a re-shoot. Before this a
+    /// camera-only restage drew the same frame again: same seed, same
+    /// references, nearly the same words (owner's chats, 2026-11-12).
+    #[tokio::test]
+    async fn a_camera_only_change_is_reshot_from_the_picture_with_the_owners_camera_lora() {
+        let (url, seen) = distinct(12).await;
+        let (dir, store, lib, home) = (tempdir(), tempdir(), library_with(&["maya"]), tempdir());
+        crate::loras::write_test_lora(
+            &home.join("pics").join("orbit.safetensors"),
+            crate::loras::QWEN_KEYS,
+        );
+        let registry = |role: &str| {
+            std::fs::write(
+                home.join(crate::loras::FILE),
+                format!(
+                    "[[lora]]\nname = \"orbit\"\nabout = \"a made-up camera mover\"\n\
+                     model = \"qwen-image\"\nfile = \"orbit.safetensors\"\n\
+                     trigger = \"<orbit>\"\n{role}"
+                ),
+            )
+            .unwrap();
+        };
+        let t = ImageGenerate::new(ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            loras_dir: Some(vec![home.join("pics")]),
+            ..Default::default()
+        })
+        .unwrap()
+        .with_library_dir(lib.clone())
+        .with_loras(home.clone())
+        // Nobody's face in either pass: a view from behind, kept.
+        .with_faces(Arc::new(BesideFaces(Mutex::new(Ok(crate::face::Beside {
+            first: 0,
+            second: 0,
+            alike: None,
+        })))));
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let graph = last_shot;
+        let very_last = |seen: &Arc<Mutex<Vec<String>>>| {
+            let line = last_prompt(seen);
+            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
+            body["prompt"].clone()
+        };
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a study with a tall window",
+                       "camera": "medium shot, head on",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+
+        // No camera entry: restaged from the scene's words, as before.
+        registry("");
+        let plain = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(plain.content.contains("restaged"), "{}", plain.content);
+        assert!(graph(&seen)["lora1"].is_null(), "no LoRA rode a restage");
+
+        // With one, and off this picture's list: restaged all the same. The
+        // list is the owner's switch for a chat or a persona, as for any
+        // LoRA; registered alone it changed every camera-only picture.
+        registry(
+            "role = \"camera\"\n[lora.camera]\n\
+             around = [\"n\", \"ne\", \"e\", \"se\", \"s\", \"sw\", \"w\", \"nw\"]\n\
+             height = [\"floor\", \"level\", \"raised\", \"roof\"]\n\
+             distance = [\"near\", \"mid\", \"far\"]\n",
+        );
+        let off = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(off.content.contains("restaged"), "{}", off.content);
+        assert!(graph(&seen)["lora1"].is_null(), "off the list, no re-shoot");
+
+        // On the list: the picture alone, and only where the camera goes.
+        cx.image_loras = crate::loras::Layer::Set(vec!["orbit".into()]);
+        // The picture's camera as its scene asked for it: head on.
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(crate::scene::Shot {
+            around: Some(0),
+            height: Some(crate::scene::Height::Eye),
+            distance: Some(crate::scene::Distance::Medium),
+        }))));
+        let shot = t
+            .call(
+                json!({"picture": p1, "scene": {"camera": "from behind, low angle"}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!shot.is_error, "{}", shot.content);
+        assert!(
+            shot.content
+                .contains("The same scene from a new camera position"),
+            "{}",
+            shot.content
+        );
+        let g = graph(&seen);
+        assert_eq!(g["encode"]["inputs"]["prompt"], "<orbit> s floor mid");
+        assert_eq!(g["lora1"]["inputs"]["lora_name"], "orbit.safetensors");
+        assert!(
+            !g["ref1"].is_null() && g["ref2"].is_null(),
+            "the picture alone"
+        );
+        assert!(
+            g["latent"].is_null(),
+            "the picture's own shape, not a named size"
+        );
+        assert_eq!(g["encode"]["inputs"]["resolution"], EDIT_REFERENCE_SIZE);
+        assert_eq!(
+            manifest_of(&dir, &shot.content)["route"],
+            crate::picture::RESHOT
+        );
+        // Then once more without the camera LoRA, for the fine detail it
+        // softens: the re-shoot alone, the reference sampling, no LoRA.
+        let d = very_last(&seen);
+        // From behind: the words that ask for no face.
+        assert_eq!(d["encode"]["inputs"]["prompt"], DETAIL_PROMPT_AWAY);
+        assert!(d["lora1"].is_null(), "no LoRA rides the second pass");
+        assert!(!d["ref1"].is_null() && d["ref2"].is_null());
+        assert_eq!(d["sample"]["inputs"]["cfg"], 1.0);
+        assert_eq!(d["sample"]["inputs"]["sampler_name"], "euler");
+        assert_eq!(manifest_of(&dir, &shot.content)["detail"], true);
+        assert!(shot.content.contains("two passes"), "{}", shot.content);
+
+        // A typed view is read ahead of the words, which may say nothing a
+        // word list knows; and the move is counted from where the picture
+        // has the camera (behind, low, as the reader finds it), so "the
+        // front" from there is half a turn, and the height it does not
+        // mention stays low.
+        let p2 = picture_of(&shot.content);
+        cx.shot_reader = Some(Arc::new(StoodAt(Ok(crate::scene::Shot {
+            around: Some(4),
+            height: Some(crate::scene::Height::Low),
+            distance: Some(crate::scene::Distance::Medium),
+        }))));
+        let typed = t
+            .call(
+                json!({"picture": p2, "scene": {"camera": "so we can see what she is reading",
+                       "view": {"around": "front", "distance": "close"}}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!typed.is_error, "{}", typed.content);
+        assert_eq!(
+            graph(&seen)["encode"]["inputs"]["prompt"],
+            "<orbit> s floor near"
+        );
+        // From in front: the words measured there.
+        assert_eq!(
+            very_last(&seen)["encode"]["inputs"]["prompt"],
+            DETAIL_PROMPT
+        );
+        // A view that does not read is left out and said; with words that
+        // name no position either, the picture is restaged as before.
+        let p3 = picture_of(&typed.content);
+        let unread = t
+            .call(
+                json!({"picture": p3, "scene": {"camera": "a dreamier feel",
+                       "view": {"around": "sideways"}}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(unread.content.contains("restaged"), "{}", unread.content);
+        assert!(
+            unread.content.contains("`view` was left out"),
+            "{}",
+            unread.content
+        );
+
+        // A change beside the camera is never a re-shoot.
+        let p2 = picture_of(&unread.content);
+        let posed = t
+            .call(
+                json!({"picture": p2, "scene": {"camera": "a profile",
+                       "people": [{"who": "maya", "doing": "standing at the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(posed.content.contains("restaged"), "{}", posed.content);
+        // And the camera LoRA never rides an ordinary picture's chain, on
+        // the list or not.
+        assert!(graph(&seen)["lora1"].is_null(), "not in a restage's chain");
+        assert!(!posed.content.contains("LoRA"), "{}", posed.content);
+        for d in [dir, store, lib, home] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// The owner's picture LoRAs (LORA-DESIGN.md §5): the chat's list rides

@@ -108,6 +108,13 @@ pub struct SampleArgs {
     #[arg(long, requires = "layers")]
     pub layers_posed: bool,
 
+    /// Render with the owner's camera LoRA on hand (the registry entry with
+    /// `role = "camera"`), so a camera-only change to a picture is drawn as
+    /// a re-shoot of it. Off by default: an arm measures what it names, and
+    /// without this a replay draws with no LoRA at all.
+    #[arg(long, requires = "persona")]
+    pub reshoot: bool,
+
     /// Render with these picture settings (`sampling::Tuning`), as a
     /// persona's owner may set them; each left out is the model's default,
     /// so an arm with none samples as every picture did before. Never read
@@ -624,7 +631,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         );
     }
     let exe = std::env::current_exe()?;
-    let header = serde_json::json!({
+    let mut header = serde_json::json!({
         "header": {
             "session": id,
             "persona": persona,
@@ -682,6 +689,9 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
             },
         }
     });
+    // Set here, not in the literal above, which is at `json!`'s depth
+    // limit: one more key there does not expand.
+    header["header"]["reshoot"] = serde_json::json!(render && args.reshoot);
     // Set here, not in the literal: `json!` has run out of recursion. What
     // the readers are seeded with, so a header says whether two arms'
     // readers were paired.
@@ -714,6 +724,7 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         readers: !args.no_readers,
         layers: args.layers,
         layers_posed: args.layers_posed,
+        reshoot: args.reshoot,
         image_tuning: image_tuning.clone(),
         run_call: match args.run_call {
             Some(n) => {
@@ -802,6 +813,8 @@ pub struct Sampler {
     layers: bool,
     /// Posed cutouts, with `layers` (`--layers-posed`).
     layers_posed: bool,
+    /// The owner's camera LoRA on hand, when rendering (`--reshoot`).
+    reshoot: bool,
     /// The arm's picture settings (`--image-model`, `--cfg`, ...).
     image_tuning: mecha_core::sampling::Tuning,
     /// The recorded call run verbatim through the tool (`--run-call`).
@@ -1004,6 +1017,7 @@ impl Sampler {
             // Set below for a rendering arm that asks (`--layers`).
             layers: false,
             layers_posed: false,
+            reshoot_from: None,
             image_tuning: Default::default(),
             // A replay draws with no LoRAs: it has no chat layer.
             image_loras: Default::default(),
@@ -1035,6 +1049,9 @@ impl Sampler {
             }
             turn.layers = self.layers;
             turn.layers_posed = self.layers_posed;
+            if self.reshoot {
+                turn.reshoot_from = Some(mecha_core::work::mecha_home()?);
+            }
             turn.image_tuning = self.image_tuning.clone();
         }
         let before = staged

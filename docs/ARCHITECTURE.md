@@ -808,6 +808,53 @@ The routes, in the result's own words and the manifest's `route`:
   the persona's call (`imagegen::add_owner`), the one person a reading adds,
   and only from the owner's own words. With none set, the owner is the
   viewer. Never a name in code.
+- **A camera-only change is shot again from the picture, where the owner
+  has a camera LoRA** (`picture::Plan::reshot`, route `reshot`; owner,
+  2026-11-12: a continued picture keeps its room and clothes). The registry
+  entry the owner marks `role = "camera"` (`loras::Role::Camera`) carries a
+  `trigger` and a `[lora.camera]` table of its own words for eight places
+  round the subject, four heights and three distances
+  (`loras::CameraWords`); code holds positions only (`scene::Shot`,
+  `picture::Move`), never a LoRA's name or vocabulary. The picture is the
+  one image sent, at its own shape, and the prompt is the trigger and the
+  move. Only a restage whose one change is the camera (`Plan::camera_only`),
+  and only where that entry is on the picture's LoRA list, the chat's or
+  the persona's, as any LoRA is switched (`loras::Picked::camera`): with no
+  such entry, with it off the list, or with anything riding along, the
+  route is what it was. The entry never rides an ordinary picture's chain.
+- **The move is counted from where the picture has the camera, read from
+  the picture** (`camera::ShotReader`, `ToolCtx::shot_reader`): a
+  quarantined pass on the persona's model whose whole answer is three closed
+  names (`camera::read_answer`; a part left out is a failure, never a
+  default). The record's camera words are what was once asked: counted from
+  them, a picture already seen from behind was turned half-way round again
+  (replay, 2026-11-12). A read that fails restages and says so; with no
+  reader (a replay with readers off) the record is the start. A move said
+  against the picture ("the other side", "closer") has a place only against
+  that start (`camera::relative`, `camera::target`), and of a camera a panel
+  joined to the recorded one only the tail is the ask (`camera::asked`). The
+  manifest keeps `shot_was`, `shot_move` and `shot_unread`.
+- **A re-shoot is two renders in one job: the camera LoRA's, then once more
+  without it** (`imagegen::DETAIL_PROMPT`; owner, 2026-11-13: "i don't want
+  them to be too smooth and plastic"). The camera LoRA holds the face and
+  softens it (a face's fine detail 0.47 to 0.85 of the original's, n = 10);
+  the second pass, the re-shoot as its one image at the reference sampling
+  (guidance 1: at 3 an edit lost the face) and no LoRA at all, brought it to
+  a median 1.11 of the original's with the camera where the re-shoot put it
+  (IMAGE-DESIGN §17.4). So a re-shoot holds its chat's picture slot for up
+  to two render timeouts. A second pass that fails or is stopped keeps the
+  first pass's picture and says so; the manifest's `detail` is `true`,
+  `false`, or null for any other picture. **The second pass is kept by what
+  it shows** (`imagegen::detail_verdict`, IMAGE-DESIGN §17.5): the two
+  passes' faces are read side by side (`face::FaceAnchors::beside`), and a
+  pass that shows a face the first did not, or a face unlike the first's
+  (`DETAIL_ALIKE`), is thrown away and the first kept, said, with
+  `detail_dropped` in the manifest; one drew a stranger's profile on someone
+  seen from behind (owner, 2026-11-13). Where the faces cannot be compared
+  it is kept only for a view from in front, and a view from beside or
+  behind is asked in words with no face in them (`DETAIL_PROMPT_AWAY`).
+  Never on a first-person picture (`Plan::camera_only`), and never counted
+  for its people (an edit of one picture, not a new one).
 - **A first-person camera's holder is the viewer** (`picture::first_person_holder`
   for what the camera says and the owner's character, `picture::plan` for
   the order and what the cast adds):
@@ -1280,9 +1327,9 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
     while their pose is a bend, drew a standing figure and a bending one
     at every seed and with no reference picture at all (2 of 3): three
     renders, and the result says the picture still seems to show two.
-  - **A count that cannot be made keeps the picture**: no SAM on the
-    server, or a failed job, is `stopped` in the manifest and never a
-    refusal. `[image] people_check = false` draws every picture once.
+  - **A count that cannot be made keeps the picture**: a failed job is
+    `stopped` in the manifest, no SAM on the server or no memory for the
+    count leaves `people_check` null, and none is a refusal. `[image] people_check = false` draws every picture once.
   - **The picture panel's "remove the copy" is another try.** A record
     holds each person once, so the reader can only answer by taking the
     one person out, which drew an empty room (`Extracted::removes_a_copy`:
