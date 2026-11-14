@@ -58,6 +58,9 @@ pub const DELIVERY_STEM: &str = "The harness looked up what your earlier runs fo
 
 /// The most episodes in one delivery, and the most bytes.
 const DELIVERED: usize = 6;
+/// The most outcomes judged to have failed that are put ahead of the
+/// ranking ([`select`]).
+const FAILURES_FIRST: usize = 2;
 const DELIVERY_BYTES: usize = 4_000;
 /// The most of one quoted input, error or result.
 const INPUT_BYTES: usize = 300;
@@ -745,20 +748,32 @@ fn select<'a>(
         .filter(|(_, e)| e.concerns(available))
         .map(|(at, e)| (overlap(e), at, e))
         .collect();
-    // An outcome judged to have failed first, whatever its words share with
-    // the query: it is what a run is least likely to find out for itself,
-    // and ranked after the cut it would be dropped with nothing saying so
-    // (review of #878). Only a reader that asked for failures is given any.
-    let failed = |e: &Episode| e.outcome() && e.judged == Some(false);
     hits.sort_by(|(ao, ai, a), (bo, bi, b)| {
-        failed(b)
-            .cmp(&failed(a))
-            .then(bo.cmp(ao))
+        bo.cmp(ao)
             .then(a.first_use().cmp(&b.first_use()))
             .then(b.seen.cmp(&a.seen))
             .then(bi.cmp(ai))
     });
-    hits.into_iter()
+    // The best-ranked few outcomes judged to have failed go first, whatever
+    // their words share with the query: a failure is what a run is least
+    // likely to find out for itself, and ranked after the cut it would be
+    // dropped with nothing saying so. A few and no more, or a home with
+    // many failed tasks would be handed nothing else, and the findings
+    // about how a tool is called would be the ones dropped in silence
+    // (review of #878, both passes). Only a reader that asked for failures
+    // is given any.
+    let failed = |e: &Episode| e.outcome() && e.judged == Some(false);
+    let front: Vec<usize> = hits
+        .iter()
+        .filter(|(_, _, e)| failed(e))
+        .take(FAILURES_FIRST)
+        .map(|(_, at, _)| *at)
+        .collect();
+    let (first, rest): (Vec<_>, Vec<_>) =
+        hits.into_iter().partition(|(_, at, _)| front.contains(at));
+    first
+        .into_iter()
+        .chain(rest)
         .take(DELIVERED)
         .map(|(_, _, e)| e)
         .collect()
@@ -938,17 +953,24 @@ impl Tool for Episodes {
         let hits = select(&episodes, &self.available, &query);
         let mut out = String::new();
         let mut shown = 0;
+        // Whether anything actually handed over quotes outside content:
+        // the ones passed over for length are not in the output.
+        let mut quoted_outside = false;
         for hit in &hits {
             let rendered = match &self.reappraising {
                 Some(tools) if failed(hit) => hit.render_failed(tools),
                 _ => hit.render(),
             };
+            // One that does not fit is passed over, not the end of the
+            // delivery: a long record of a failed task must not keep a
+            // short finding behind it from being handed over.
             if !out.is_empty() && out.len() + rendered.len() > DELIVERY_BYTES {
-                break;
+                continue;
             }
             out.push_str(&rendered);
             out.push('\n');
             shown += 1;
+            quoted_outside |= hit.external;
             // A failure handed over is watched for from here on.
             if let (Some(tools), true, Ok(mut watch)) =
                 (&self.reappraising, failed(hit), self.retraced.lock())
@@ -972,13 +994,11 @@ impl Tool for Episodes {
         }
         let output = ToolOutput::ok(out);
         // Outside when anything quoted was, or when a record could not say.
-        Ok(
-            if hits[..shown].iter().any(|e| e.external) || unreadable > 0 {
-                output.from_outside()
-            } else {
-                output
-            },
-        )
+        Ok(if quoted_outside || unreadable > 0 {
+            output.from_outside()
+        } else {
+            output
+        })
     }
 }
 
@@ -1353,6 +1373,19 @@ mod tests {
         let picked = select(&crowd, &available, "shut the gate error");
         assert_eq!(picked.len(), DELIVERED);
         assert!(picked[0].outcome() && picked[0].judged == Some(false));
+        // And many failures do not crowd the findings out: a few go first
+        // and the rest take their place in the ranking.
+        for n in 0..DELIVERED {
+            let mut more = kept.clone();
+            more.session = format!("f{n}");
+            crowd.push(more);
+        }
+        let picked = select(&crowd, &available, "shut the gate error");
+        let failures = picked
+            .iter()
+            .filter(|e| e.outcome() && e.judged == Some(false))
+            .count();
+        assert_eq!((picked.len(), failures), (DELIVERED, FAILURES_FIRST));
 
         // And named again at the point this run has repeated it: after the
         // last of the tools that run used, once.
