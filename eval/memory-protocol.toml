@@ -71,3 +71,12 @@ memory = "concepts"
 [arms.concepts.prediction]
 metric = "failure"
 rationale = "Written before the arm ran: where the registry tasks passed, the store holds locked-before-changed-then-unlocked as a structure, the quay's tools fit it by shape, and the probe is told that elsewhere a further call on the same thing followed the change. A probe that is told gives the berth back, by trying the operations and checking; the control has no reason to."
+
+[arms.concepts_cued]
+preset = "bare"
+levers_on = ["mcp"]
+memory = "concepts_cued"
+
+[arms.concepts_cued.prediction]
+metric = "failure"
+rationale = "Written after the fact: this arm was added after the pair had been run as development data. With the cue it passed 6 of 6, on a mechanism shaped against this pair."

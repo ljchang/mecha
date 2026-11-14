@@ -423,12 +423,20 @@ fn bracket(session: &str, calls: &[Call], by_name: &BTreeMap<&str, &ToolShape>) 
     // run tried before it knew the order, and a first step that failed
     // once, were each "refused and then worked" too, and neither may take
     // the change's role (review of #877).
-    let refused_then_worked = thread.iter().find(|c| {
-        c.is_error
+    // And it was refused before it first worked: a refusal that came
+    // after the arrangement was complete had some other cause, and quoted
+    // as "refused without step 1" it would be the extractor's invention
+    // (review of #877, pass 3).
+    let refused_then_worked = thread.iter().enumerate().find_map(|(at, c)| {
+        (c.is_error
             && arity(c) == widest
-            && thread
+            && !thread[..at]
                 .iter()
-                .any(|later| later.name == c.name && !later.is_error)
+                .any(|earlier| earlier.name == c.name && !earlier.is_error)
+            && thread[at..]
+                .iter()
+                .any(|later| later.name == c.name && !later.is_error))
+        .then_some(c)
     });
     let change = match refused_then_worked {
         Some(call) => call.name.as_str(),
@@ -1517,6 +1525,27 @@ mod tests {
             // Its refusal was not the change's.
             assert_eq!(pattern.refused_with, None);
         }
+        // A refusal after the change had already worked is not what the
+        // first step lifted: the arrangement is kept and the refusal is
+        // not quoted as its reason.
+        let mut late = locked_then_changed(true);
+        let asked_first = extract("s1", &late, &registry(), &Refused::new()).unwrap();
+        assert!(asked_first.refused_with.is_some());
+        late = run(vec![
+            call("a", "reg_lock", id.clone(), "locked", false),
+            call("b", "reg_update", update.clone(), "updated", false),
+            call("c", "reg_unlock", id.clone(), "unlocked", false),
+            call(
+                "d",
+                "reg_update",
+                json!({"id": "R-12", "field": "ghost", "value": "x"}),
+                "E9: no such field",
+                true,
+            ),
+        ]);
+        let pattern = extract("s1", &late, &registry(), &Refused::new()).unwrap();
+        assert_eq!(pattern.key(), "change[SSS] after[S] then[S]");
+        assert_eq!(pattern.refused_with, None);
     }
 
     #[test]
