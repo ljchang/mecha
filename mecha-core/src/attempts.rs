@@ -382,10 +382,6 @@ pub fn of_drafts(attempts: &[Attempt], drafts: &[Draft], when: &str) -> Vec<Verd
 enum Line {
     Attempt(Attempt),
     Verdict(Verdict),
-    /// The owner deleted the conversation: nothing of it is read again.
-    Forgotten {
-        session: String,
-    },
     /// Something was handed to a run: which attempt, about what, and when
     /// in the run. The record a bad hand-over is traced by.
     Handed {
@@ -404,6 +400,24 @@ enum Line {
 pub enum Moment {
     Start,
     Retraced,
+}
+
+/// Whether a line of the file is about `session`: its attempt, a verdict on
+/// one, or a record of something handed to it or from it. What
+/// `forget::forget` removes when the owner deletes a conversation. A line
+/// that cannot be read and names the session is about it too: unknown is
+/// never somebody else's.
+pub fn names_session(line: &str, session: &str) -> bool {
+    match serde_json::from_str::<Line>(line) {
+        Ok(Line::Attempt(a)) => a.session == session,
+        Ok(Line::Verdict(v)) => v.session == session,
+        Ok(Line::Handed {
+            to_session,
+            session: from,
+            ..
+        }) => to_session == session || from == session,
+        Err(_) => line.contains(session),
+    }
 }
 
 /// What the file holds, read once.
@@ -539,14 +553,6 @@ impl Store {
         Ok(new.len())
     }
 
-    /// The owner deleted a conversation: its attempts and verdicts are not
-    /// read again, and nothing that came from it is handed over.
-    pub fn forget(&self, session: &str) -> Result<()> {
-        self.append(&[Line::Forgotten {
-            session: session.to_string(),
-        }])
-    }
-
     /// Record what a run was handed.
     pub fn handed(&self, to_session: &str, what: &[(Failure, Moment)], when: &str) -> Result<()> {
         let lines: Vec<Line> = what
@@ -572,7 +578,6 @@ impl Store {
             Err(e) => return Err(e).with_context(|| format!("reading {}", self.file.display())),
         };
         let mut kept = Kept::default();
-        let mut forgotten: BTreeSet<String> = BTreeSet::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Line>(line) {
                 Ok(Line::Attempt(attempt)) => kept.attempts.push(attempt),
@@ -581,15 +586,10 @@ impl Store {
                         .retain(|v| !(v.session == verdict.session && v.about == verdict.about));
                     kept.verdicts.push(verdict);
                 }
-                Ok(Line::Forgotten { session }) => {
-                    forgotten.insert(session);
-                }
                 Ok(Line::Handed { .. }) => kept.handed += 1,
                 Err(_) => kept.unreadable += 1,
             }
         }
-        kept.attempts.retain(|a| !forgotten.contains(&a.session));
-        kept.verdicts.retain(|v| !forgotten.contains(&v.session));
         Ok(kept)
     }
 }
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn the_file_keeps_the_latest_verdict_and_forgets_a_deleted_conversation() {
+    fn the_file_keeps_the_latest_verdict_and_knows_a_conversation_s_lines() {
         let (store, dir) = store();
         assert_eq!(store.load().unwrap().attempts.len(), 0);
         let messages = drafted("write to the harbour office about the berth", "c1");
@@ -955,10 +955,23 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
 
-        store.forget("s").unwrap();
-        let kept = store.load().unwrap();
-        assert!(kept.attempts.is_empty() && kept.verdicts.is_empty());
-        assert!(kept.failures().is_empty());
+        // What a deleted conversation's lines are: its attempt, the verdict
+        // on it, anything handed to or from it, and an unreadable line that
+        // names it. Not another conversation's.
+        store
+            .handed(
+                "later",
+                &[(kept.failures()[0].clone(), Moment::Retraced)],
+                "t",
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(store.path()).unwrap();
+        let about = |session: &str| text.lines().filter(|l| names_session(l, session)).count();
+        // The attempt, three verdict lines and the hand-over from it.
+        assert_eq!(about("s"), 5);
+        assert_eq!(about("later"), 1);
+        assert_eq!(about("another"), 0);
+        assert!(names_session("not json, but about s-1", "s-1"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
