@@ -11473,6 +11473,49 @@ an unreadable outbox prints "the edit channel is missing, not empty" *before*
 the empty-corpus early return, which is the one path where a reader most needs
 to know it.
 
+## Corrections
+
+`attempts.rs` (`[features] corrections`, off by default; `mecha corrections`)
+is the benchmark's finding carried into real use: what the harness hands a
+model at the start of a task is ignored, and the same thing said after the
+call where it matters is acted on (`MEMORY-RETENTION-DESIGN.md` §10). Wired
+into the ordinary web chat only, in `serve/chat.rs`'s turn task.
+
+- **The grader is the owner's own acts, and they are never asked for one.** A
+  draft sent as written is good; edited, rejected, a steer or a denial is a
+  verdict against the turn. A turn nobody acted on has no verdict, and no
+  verdict is never a good one: such attempts are kept and handed to nothing.
+  A later message that may be a correction is **not** read: whether it is one
+  is the reflector's judgement, made overnight, and nothing joins it yet.
+- **Only the owner's.** `attempts::Draft::of` reads an outbox item as a
+  verdict only where the owner released, edited or rejected it at their own
+  door (`owners_unchanged_release`, `owners_edit`, a reject stamped
+  `Actor::Owner`). A run's shell behind the approver, and anything from
+  before acts were stamped, is nobody's verdict.
+- **The unit is a turn, and the join is by id.** A draft is edited the next
+  morning. An attempt keeps the ids of its working calls and the outbox item
+  records the call that staged it, so a verdict is joined by an id against an
+  id and never by an index into a transcript a compaction has since moved.
+  The join runs at the start of the next turn in any web chat.
+- **What is handed back is clean by construction**: the owner's own words
+  (what they asked, what they said) and tool names, never a tool's input or
+  result and never a draft's text. It arms `private` and nothing else, so a
+  correction cannot take the assistant's ability to send away. Carrying the
+  diff of an edit would change that, and is the thing not to add casually.
+- **When.** A judged attempt whose ask shares words with this one is named
+  once, after the call by which this run has used every tool that attempt
+  had used at the judged point (`attempts::Watch::after`, a
+  `agent::SuccessCue`); one that had used none is said in the turn's own
+  message. Both stems are registered in `agent::is_recall_delivery` and
+  `transcripts::delivery`, or a cue would be mined as the owner's steer.
+- **Who is left out, by construction**: a persona chat never reaches the
+  turn task, an incognito chat has no transcript, a session marked as a test
+  is not the owner's work, and a task chat has `brief::attempts`.
+- **Every hand-over is a line in the same file**, so a bad one is traceable,
+  and `forget::forget` removes a deleted conversation's attempts, verdicts
+  and hand-overs with everything else. `doctor::check_corrections` reports a
+  file or a line that cannot be read.
+
 ## The experiment store
 
 `experiment.rs` and `mecha exp` (`docs/EXPERIMENT-DESIGN.md` §3–§4, Part II

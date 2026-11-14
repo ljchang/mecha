@@ -187,6 +187,9 @@ planning.rs  verified step feedback, bounded advice, and goal-specific context
 mismatch.rs  isolated artifact-task grading and owner-bound criterion evidence
 boredom.rs   an approach that has stopped teaching the run anything, named
              while there is still something to do about it
+attempts.rs  what the assistant tried in real use and what the owner made of
+             it: a verdict read off their own acts, joined by id, and named
+             when a later run retraces it — clean words and tool names only
 appraisal.rs how a run went against what it was for: a signed error per
              channel, a valence summed from them, and a label derived from
              them and never self-reported by a model
@@ -526,7 +529,8 @@ web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
 triggers · the HUD · system state · the run-quality corpus (the gate, diagnosis, harness rumination) ·
-the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
+the goal system (charter, appraisal, homeostat, boredom) · corrections ·
+the doctor ·
 features ·
 the experiment store ·
 context accounting · timezones · compaction · the eval rig.
