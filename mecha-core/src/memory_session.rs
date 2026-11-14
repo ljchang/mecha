@@ -6,6 +6,10 @@ mod inline_notes;
 pub mod learning;
 pub(crate) mod native_writer;
 mod recall;
+pub use recall::{
+    delivery_input, delivery_text, error_input, SearchTool, DELIVERY_STEM, ERROR_STEM, INVITATION,
+    SEARCH_NAME,
+};
 mod recording;
 pub mod router;
 pub mod surface;
@@ -19,6 +23,11 @@ use crate::{
     tool::Tool,
 };
 use anyhow::{ensure, Result};
+/// The source kind of an episode kept in the store (`tool::episodes`).
+const EPISODE_CONNECTOR: &str = "host-episode-v1";
+/// The most records one read of the store returns (`Memory::search`'s own
+/// ceiling). Reaching it refuses the read.
+const EPISODE_READ_LIMIT: usize = 1000;
 use authority::{Authority, Frozen, Seal};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -207,6 +216,93 @@ impl SessionMemory {
             "ordinary database changed"
         );
         Ok(m)
+    }
+    /// Keep episodes in the store: one evidence record per episode, named
+    /// by its session and call, in the store's own scopes. Kept again under
+    /// the same name, a record gains a revision; that is how a verdict
+    /// reaches an outcome ([`Self::appraise_episode`]).
+    ///
+    /// Whether an episode quotes outside content is in its own JSON
+    /// (`Episode::external`), not in the store's provenance for the record.
+    /// So only [`Self::episodes`] may read these: it hands them to
+    /// `tool::episodes`, which labels what it delivers. A reader that served
+    /// the record's text as evidence would serve it unlabelled.
+    pub fn retain_episodes(&self, episodes: &[crate::tool::episodes::Episode]) -> Result<usize> {
+        let mut memory = self.memory()?;
+        for episode in episodes {
+            memory.capture(crate::memory::Capture {
+                source: crate::memory::SourceKey {
+                    connector: EPISODE_CONNECTOR.into(),
+                    account: self.request.account.clone(),
+                    id: episode.source_id(),
+                },
+                text: serde_json::to_string(episode)?,
+                occurred_at: None,
+                scopes: self.request.scopes.clone(),
+                transcript: None,
+            })?;
+        }
+        Ok(episodes.len())
+    }
+    /// Every episode the store holds, oldest first, and how many records of
+    /// the episode kind could not be read as one.
+    fn episode_records(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let memory = self.memory()?;
+        let (mut hits, stopped_at_limit) = memory.search_reporting(
+            &crate::memory::Query {
+                text: String::new(),
+                known_at: memory.snapshot()?,
+                valid_at: None,
+                include_possible: true,
+                limit: EPISODE_READ_LIMIT,
+            },
+            &self.access(),
+        )?;
+        // The search returns the newest records of every kind up to its
+        // limit. At the limit, older episodes may be missing, and a store
+        // read in part is not one to deliver from or to judge against.
+        // Asked of the search itself: its second authority pass can drop a
+        // hit, so a full read can come back one short (review of #875).
+        ensure!(
+            !stopped_at_limit,
+            "the store holds too many records to read its episodes whole"
+        );
+        hits.sort_by_key(|hit| hit.sequence);
+        let mut unreadable = 0;
+        let mut episodes = Vec::new();
+        for hit in hits {
+            let crate::memory::Record::Evidence(capture) = hit.record else {
+                continue;
+            };
+            if capture.source.connector != EPISODE_CONNECTOR {
+                continue;
+            }
+            match serde_json::from_str(&capture.text) {
+                Ok(episode) => episodes.push(episode),
+                Err(_) => unreadable += 1,
+            }
+        }
+        Ok((episodes, unreadable))
+    }
+    /// The store's episodes, one per finding (`tool::episodes::fold`).
+    pub fn episodes(&self) -> Result<(Vec<crate::tool::episodes::Episode>, usize)> {
+        let (episodes, unreadable) = self.episode_records()?;
+        Ok((crate::tool::episodes::fold(episodes), unreadable))
+    }
+    /// Record how the task run in `session` was judged, as a revision of its
+    /// outcome record. `false` when the session kept no outcome.
+    pub fn appraise_episode(&self, session: &str, passed: bool) -> Result<bool> {
+        let Some(mut outcome) = self
+            .episode_records()?
+            .0
+            .into_iter()
+            .find(|e| e.outcome() && e.session == session)
+        else {
+            return Ok(false);
+        };
+        outcome.judged = Some(passed);
+        self.retain_episodes(std::slice::from_ref(&outcome))?;
+        Ok(true)
     }
     pub fn begin(
         &self,

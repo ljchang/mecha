@@ -1748,6 +1748,18 @@ mod tests {
                 WRITES,
             ),
             (
+                "mecha-core/src/tool/episodes.rs",
+                "Episodes",
+                None, // named by a const
+                PURE, // reads the home's episode file; `retain` is the run command's, not a call's
+            ),
+            (
+                "mecha-core/src/tool/transcripts.rs",
+                "Transcripts",
+                None, // named by a const
+                PURE, // reads other sessions' files
+            ),
+            (
                 "mecha-core/src/tool/recall.rs",
                 "Recall",
                 Some("recall"),

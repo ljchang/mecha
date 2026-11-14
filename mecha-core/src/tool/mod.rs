@@ -9,6 +9,7 @@ pub mod builtin;
 pub mod code;
 pub mod document;
 pub mod effect;
+pub mod episodes;
 pub mod goal_context;
 #[cfg(feature = "memory-prototype")]
 pub mod goal_memory;
@@ -22,6 +23,7 @@ pub mod request_access;
 pub mod skill;
 pub mod system_read;
 pub mod todo;
+pub mod transcripts;
 
 use crate::config::{PermissionMode, SecurityConfig, ToolsConfig};
 use crate::message::ToolSpec;
@@ -490,6 +492,16 @@ pub trait Tool: Send + Sync {
     /// some tools have a fixed root, never which kind of tool they are.
     fn fixed_workspace(&self) -> Option<PathBuf> {
         None
+    }
+
+    /// Whether a server outside the harness provides this tool (an MCP
+    /// server's). Asked by a front end deciding what only use can reveal
+    /// about a tool (`tool::episodes`: a server's first working call is
+    /// worth keeping; the harness's own tools are described by the harness).
+    /// Never asked by the loop, which does not learn where a tool came
+    /// from.
+    fn provided_by_a_server(&self) -> bool {
+        false
     }
 
     /// Whether this tool's calls answer `being made: …` and finish later, as a

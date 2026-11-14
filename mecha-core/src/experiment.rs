@@ -1107,6 +1107,75 @@ pub struct Arm {
     pub environment: Option<crate::trial_env::Environment>,
     #[serde(default)]
     pub prediction: Option<Prediction>,
+    /// The agent memory this arm runs with, absent for none. The store is
+    /// the trial home's own (`memory_home`), created before the arm's first
+    /// task and carried across a lifetime with the rest of the home, so
+    /// what one task leaves a later one can recall. Absent from the wire
+    /// when unset, so a manifest written before the field hashes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<ArmMemory>,
+}
+
+/// A row's hash with its arm's memory in it: an arm that remembers ran
+/// under another condition from one that does not, and two such rows must
+/// not read as one condition under two names. The term enters only for an
+/// arm with memory, so every earlier hash keeps its value.
+fn with_memory_hash(memory: Option<ArmMemory>, original: String) -> String {
+    match memory {
+        None => original,
+        Some(ArmMemory::Everything) => fnv64(format!("{original}|memory=everything").as_bytes()),
+        Some(ArmMemory::Delivered) => fnv64(format!("{original}|memory=delivered").as_bytes()),
+        Some(ArmMemory::Invited) => fnv64(format!("{original}|memory=invited").as_bytes()),
+        Some(ArmMemory::DeliveredOnError) => {
+            fnv64(format!("{original}|memory=delivered_on_error").as_bytes())
+        }
+        Some(ArmMemory::EpisodesAppraised) => {
+            fnv64(format!("{original}|memory=episodes_appraised").as_bytes())
+        }
+        Some(ArmMemory::EpisodesStore) => {
+            fnv64(format!("{original}|memory=episodes_store").as_bytes())
+        }
+        Some(ArmMemory::Episodes) => fnv64(format!("{original}|memory=episodes").as_bytes()),
+        Some(ArmMemory::Transcripts) => fnv64(format!("{original}|memory=transcripts").as_bytes()),
+    }
+}
+
+/// Which memory an arm has. One variant per thing the benchmark compares
+/// (`docs/MEMORY-BENCHMARK-DESIGN.md` §3); the others are added as they are
+/// built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArmMemory {
+    /// Every passage of every run is stored and recalled by keyword: the
+    /// recorder as it stands. The model recalls when it chooses to.
+    Everything,
+    /// The same store, and the harness recalls for the task before the
+    /// first request and hands the model what it found.
+    Delivered,
+    /// The same store, handed over at the start and searched again by the
+    /// harness after a turn in which a call failed.
+    DeliveredOnError,
+    /// The same store, nothing handed over: the tool under a plain name and
+    /// one system-prompt line saying the model has a memory and when to
+    /// search it. Whether a model told about its memory uses it.
+    Invited,
+    /// Appraisal-gated episodes: after a run, what it found out where a
+    /// call was refused, kept in a few lines with no model call; before a
+    /// run, the episodes about the tools it has, handed over
+    /// (`tool::episodes`).
+    Episodes,
+    /// The same, and the driver records each task's grade against its
+    /// session after grading: a conclusion from a task that failed is not
+    /// delivered to a later one.
+    EpisodesAppraised,
+    /// The same as `episodes_appraised`, kept in the home's agent memory
+    /// store and not in a file of its own: one record per episode, and the
+    /// grade as a revision of the outcome record.
+    EpisodesStore,
+    /// No store: the harness searches the home's earlier session
+    /// transcripts for the task and hands the model what it found. The
+    /// plain-retrieval baseline.
+    Transcripts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1998,20 +2067,23 @@ impl Manifest {
                 task: task.clone(),
                 seed,
                 repetition: rep,
-                condition_hash: self.with_grading_clock_hash(condition_hash_world(
-                    &resolved,
-                    &arm.overrides,
-                    provider,
-                    model,
-                    seed,
-                    &stages,
-                    &fixtures,
-                    &route,
-                    charter_digest,
-                    &forced_on,
-                    env_digest,
-                    features_on,
-                )),
+                condition_hash: with_memory_hash(
+                    arm.memory,
+                    self.with_grading_clock_hash(condition_hash_world(
+                        &resolved,
+                        &arm.overrides,
+                        provider,
+                        model,
+                        seed,
+                        &stages,
+                        &fixtures,
+                        &route,
+                        charter_digest,
+                        &forced_on,
+                        env_digest,
+                        features_on,
+                    )),
+                ),
                 status: TrialStatus::Pending,
                 session_id: None,
                 started_at: None,
@@ -4210,6 +4282,47 @@ rationale = "no notice, fewer turns"
             b"[[line]]\n[[line]]\n"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An arm that remembers is another condition from one that does not,
+    /// and a manifest written before the field existed plans the rows it
+    /// always did.
+    #[test]
+    fn an_arm_s_memory_is_part_of_its_condition_and_absent_from_an_older_manifest() {
+        let hashes = |text: &str| {
+            let m = Manifest::parse(text).unwrap();
+            let trials = m.trials(&["a".to_string()], "local", "m");
+            let of = |arm: &str| {
+                trials
+                    .iter()
+                    .find(|t| t.arm == arm && t.seed == Some(1))
+                    .unwrap()
+                    .condition_hash
+                    .clone()
+            };
+            (of("quiet"), of("full"), m)
+        };
+        let (quiet, full, plain) = hashes(MANIFEST);
+        let remembering = MANIFEST.replace(
+            "[arms.quiet]\nlevers_off",
+            "[arms.quiet]\nmemory = \"everything\"\nlevers_off",
+        );
+        let (quiet_remembering, full_beside_it, m) = hashes(&remembering);
+        assert_eq!(m.arms["quiet"].memory, Some(ArmMemory::Everything));
+        assert_ne!(quiet_remembering, quiet, "memory is a condition");
+        assert_eq!(
+            full_beside_it, full,
+            "an arm without memory hashes as it did"
+        );
+        assert!(
+            !toml::to_string_pretty(&plain).unwrap().contains("memory"),
+            "the field is absent from the wire when unset"
+        );
+        assert!(Manifest::parse(&MANIFEST.replace(
+            "[arms.quiet]\nlevers_off",
+            "[arms.quiet]\nmemory = \"telepathy\"\nlevers_off",
+        ))
+        .is_err());
     }
 
     /// The other axis: an arm that names a provider or a model runs
