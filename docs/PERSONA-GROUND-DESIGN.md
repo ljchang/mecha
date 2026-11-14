@@ -1,0 +1,379 @@
+# Persona common ground: what the two of them share, and how it is said
+
+**Status:** proposal, 2026-11-14. Nothing here is built. §10 lists the decisions that are the
+owner's; §9 is a build order that measures before it fits.
+
+**The question:** a persona chat still reads as talking with a machine. It repeats what it has
+already said, explains what both sides already know, brings up the wrong thing or the right
+thing at the wrong moment, and never refers back to something from earlier in a new way. What
+would it take for what is referenced, and how, to work the way it does between two people?
+
+**The answer in one line:** people do not retrieve facts into a conversation; they keep a record
+of what the two of them share, say less and less about it as it becomes shared, and are reminded
+of it by what the other person just said. A persona today has memory of facts and no record of
+what is shared, so it can only restate. This document proposes that record (the *ground*), four
+behaviours built on it, and the log that makes it an instrument for studying conversation.
+
+**Why it is also an instrument.** The owner studies how memory and context work in real
+conversation, and asked that the system "track the graph dependencies and when and where they
+are referenced and the timescale". Every mechanism below is a typed event with a time, so the
+record of a chat can be read back as a graph of items, cues and mentions (§8). Where the
+literature has no answer (§2.6), the system can run the experiment.
+
+Privacy: this document carries no conversation text, no persona names and no session ids. Its
+examples are made up or quoted from published papers.
+
+---
+
+## 1. What exists, and where it stops
+
+Read from the tree at `b0995402e`. Symbols, not lines.
+
+| What | Where | Limit |
+|---|---|---|
+| Told-ledger for three teller lines | `persona::today::Ledger`, held in `PersonaSession::told` | Word match on closed English lists; in process memory only, so a restart re-offers every line; covers events, feeling and weather and nothing else |
+| Per-turn recall | `persona::recall::per_turn`, keyed by the owner's words | Whatever is retrieved is put in the prompt; the only filter is `already`, a 60-character prefix match against the conversation |
+| Chat-start memory block | `recall::chat_start` | Chosen by budget and recency, not by what the chat turns out to be about |
+| Episodes carry `open_threads` | `persona::memory`, written nightly by `persona::writer` | Nothing reads them back as things to follow up |
+| A record of when a memory was used | Ruled as D28 (`PERSONA-DESIGN` §9.13), unbuilt | There is no record anywhere of a memory being recalled, offered or said |
+| The typed "shown set" beside `Record::Notes` | Designed in `PERSONA-LIFE-DESIGN` §4.5, unbuilt | A transcript says what text the model was told, not which items rode in it |
+| Memory v2 | `memory_session`, feature `memory-prototype` | Not wired to persona chats ("a persona chat has its own routes and its own memory"); pulled by the model through a tool, with no notion of a cue |
+| Repetition readouts | `persona::echo`, `persona::initiative`, `mecha persona measures` | Offline counts of repeated wording and of who raises people; nothing about items |
+
+So the pieces that exist answer "what does the persona know?" Nothing answers "what do the two
+of them share, what has each been told, and what is live right now?"
+
+## 2. What is known
+
+Each claim carries how it was read: **[read]** the paper's text, **[abs]** an abstract or a
+summarising reader over the full text, **[recall]** not re-read for this document. A claim
+marked [abs] or [recall] is checked before anything is built on it.
+
+### 2.1 Common ground is built, and it has two kinds
+
+- Something is shared only once both sides believe it was understood "to a criterion sufficient
+  for current purposes". Evidence of understanding comes in three forms: an acknowledgement, the
+  relevant next turn, and continued attention (Clark & Brennan 1991) [read].
+- Common ground is *communal* (what members of a shared community can assume) or *personal*
+  (what two people experienced together); "personal common ground defines friends versus
+  strangers" (Clark 1996, ch. 4) [read].
+- A pair settles on its own term for a thing and keeps it: after the context no longer required
+  the specific term, speakers kept it about half the time, more the more it had been used, and
+  dropped it quickly with a new partner (Brennan & Clark 1996) [read].
+- People are worse at remembering whom they told than who told them (Gopie & MacLeod 2009)
+  [abs], and remembering shared history is not enough: speakers often fail to use it unless they
+  see it as relevant (Yoon, Benjamin & Brown-Schmidt 2016) [abs].
+- Being forgotten lowers felt closeness (Ray et al. 2018) [abs].
+
+### 2.2 Shared things are said in fewer words, and the mechanism is known
+
+- Describing the same figures to the same partner, speakers went from 41 words per figure to 8
+  over six trials, and from 3.7 turns to about one. The principle: both parties "try to minimize
+  collaborative effort" (Clark & Wilkes-Gibbs 1986) [read].
+- Which words survive: the ones that were distinctive when the thing first came up. A word used
+  for many things at first was less likely to become the label; the most distinctive initial
+  word persisted 24–31% of the time against 2.5–6.6% for a random one. Function words go first.
+  Reduction was greater after the listener got it right than after an error, and the effect was
+  specific to that referent (Hawkins, Frank & Goodman 2020) [abs].
+- Two levels: what a pair builds sits on top of a community-wide prior. With a new partner the
+  wording lengthens again, though less each time (Hawkins et al. 2023) [read, selected
+  passages]. The authors concede a practice effect could explain part of this, and note their
+  decay model lacks consolidation and source memory.
+- An outsider cannot unpack it: overhearers who heard every word identified referents less
+  accurately than the addressee, 88% against 99% (Schober & Clark 1989) [read].
+- **Language models do not do this unprompted.** In repeated reference, human pairs went from
+  about 20 words to 6 while model pairs stayed at 58 to 56 (Jones et al. 2026) [abs]; models'
+  word reuse was no higher with their real partner than with a shuffled one (Wang et al. 2026)
+  [abs]; prompting alone did not make multimodal models more efficient over repetitions (Hua &
+  Artzi 2024) [abs].
+
+### 2.3 Saying less is what closeness sounds like
+
+Templeton et al. (2024, PsyArXiv g38cx) [read, main text] call a moment whose meaning for the
+pair is opaque to an outsider *insider language*, and find:
+
+- Friends used it on more turns than strangers, and more the more often they talk.
+- Friends spoke fewer words in ten minutes and needed far more words to unpack what went unsaid
+  (mean 186 against 49).
+- Strangers' insider language is mostly shared expertise; friends' is people and experiences,
+  and spread over more categories.
+- Turn by turn, insider language tracks the speakers' own ratings of connection, more strongly
+  for strangers. In a lagged model it precedes connection, peaking five to seven turns later,
+  and higher connection predicts *less* insider language next.
+
+This is temporal precedence in observed conversation, not a manipulation. Related evidence is
+correlational too: private idioms track closeness in couples and friends (Hopper, Knapp & Scott
+1981; Bell & Healey 1992) [abs]; couples reach for shared references when their shared reality
+is threatened (Rossignac-Milon et al. 2021) [read].
+
+### 2.4 What is live, and what brings something back
+
+- How a thing is referred to signals how active the speaker takes it to be for the listener:
+  a pronoun for what is in focus, a full description for what is not (Gundel, Hedberg &
+  Zacharski 1993; Ariel 1990; Chafe 1994) [recall]. There is no agreed rate of decay.
+- Recall in conversation is cued, not scheduled. Retrieval depends on overlap between the cue
+  and how the thing was stored (Tulving & Thomson 1973) [recall]; most involuntary memories have
+  an identifiable cue, and a cue tied to many memories brings back none of them (Berntsen 2009)
+  [abs].
+- People freely recall a small fraction of a conversation's ideas minutes to weeks later; gist
+  stays and wording goes, except for striking lines (Brown-Schmidt & Benjamin 2018) [read].
+
+### 2.5 Unfinished things
+
+- A question makes its answer due, and its absence is noticed (Schegloff & Sacks 1973) [recall].
+- Interrupted tasks are not remembered better, but people do tend to resume them (Ghibellini &
+  Meier 2025) [abs].
+- Follow-up questions predict liking within a conversation (Huang et al. 2017) [abs], a result
+  that has been contested. No experiment was found on following up *across* conversations.
+
+### 2.6 What memory does to an assistant
+
+- Adding memory makes over-mention worse: a score of appropriate use fell by a quarter to a half
+  with memory added, and the more elaborate systems fell furthest (Hu et al. 2026, OP-Bench)
+  [abs].
+- Recall does not buy satisfaction: over four months and 1,872 sessions, question-answering
+  recall rose from 19.7% to 70.1% across memory conditions with satisfaction unchanged. The one
+  behaviour linked to satisfaction was weaving in a memory the user had just cued (ρ = 0.29 over
+  48 sessions). Unprompted recalls showed no benefit; mistimed ones were negative (8 cases), and
+  users picked up a recalled topic 19 times in 64 (Sumida, Inoue & Kawahara 2026) [abs]. Small
+  samples, observational.
+- Referring back in paraphrase was received better than verbatim (Cox, Lee & Ooi 2023) [abs].
+- No system surveyed keeps a record of what it has told the user, decays an item on mention, or
+  carries an unfinished thread across sessions with a time it falls due. That is from a bounded
+  search, not an exhaustive one.
+
+### 2.7 What nobody has measured
+
+- Whether a callback *causes* felt connection. Every result is correlational or lagged.
+- What separates a callback that lands from one that grates: distance, how new the use is, who
+  coined it.
+- How often re-telling is noticed, and at what lag.
+- Whether following up across conversations changes closeness, and where it starts to read as
+  surveillance.
+- Any of this on a small local model.
+
+## 3. What follows for the design
+
+1. **The unit is an item the pair shares, not a fact the persona knows.** It has a short handle
+   and an unpacked meaning. The persona stores both and says the handle (§2.3's unpacking task
+   is this record).
+2. **The default is silence.** An item enters a reply because the owner's words cue it, not
+   because retrieval returned it (§2.4, §2.6).
+3. **Compression is earned.** A reference shortens only after the owner showed they followed the
+   longer one, and lengthens again when they did not (§2.1, §2.2).
+4. **The handle is made from the words that were distinctive at first mention**, not from a
+   summary a model writes (§2.2).
+5. **Two levels.** The persona's written character and general knowledge are the communal
+   prior; the ground is personal, per persona, and nothing in it crosses to another persona
+   (§2.2).
+6. **Growth follows history.** Early, what can be compressed is shared interests; people and
+   events come as the pair accumulates them (§2.3).
+7. **Sparse.** The effect on connection lags and saturates (§2.3); one item a reply, with a
+   rest after use.
+8. **The model has to be told.** A model given the right fact does not use it, and does not
+   compress by itself (§2.2, §2.6). The harness names the one item and the form to use.
+
+## 4. The ground
+
+One store per persona, beside `memory.db`, holding **items** and an append-only **event log**.
+
+An item:
+
+| Field | Meaning |
+|---|---|
+| `kind` | A closed set: a person, a place, an event, a running joke, a coined term, an unfinished thread, a stated plan |
+| `handle` | The pair's short form, and its earlier longer forms in order |
+| `meaning` | What an outsider would need to be told. Never put in a prompt as text to say |
+| `coined_by` | The owner, the persona, or both |
+| `source` | Chat and turn range, as memory rows carry it: the deletion key |
+| `origin` | Clean or untrusted, from the recorded taint of the stretch it came from |
+| `grounded` | How far it is shared: said, acknowledged, taken up (the owner used it themselves) |
+| `due` | For a thread or a plan: when it can be asked about, and whose move it is |
+
+An event, each with chat, turn ordinal and time:
+
+- `introduced`: the item first appears, and who brought it.
+- `cued`: the owner's words reached it, with the retrieval's score and how many other items
+  the same cue reached.
+- `offered`: it rode in a note to the model, and in what form.
+- `said`: the persona's reply referred to it, the form used and its length in words.
+- `taken_up` / `passed` / `repaired`: what the owner's next turn did with it.
+- `withheld`: it was eligible and deliberately not offered (§8.2).
+
+**Activation is derived, never stored.** It is a pure function of the event log and the clock:
+it rises with a mention or a cue and falls with turns and with days. Because it is a function,
+changing its shape re-reads the same log rather than migrating a store, and a replay can compare
+two shapes on one recorded chat.
+
+**Who writes.** In a chat, code appends events only: which items were cued and offered is known
+to the harness, and whether the reply said one is read from the reply against the item's handle
+forms. Items themselves are written by the nightly writer's quarantined pass
+(`persona::writer`), which already reads the chat with its per-turn taint: it proposes items
+and handles from a stretch, under the rules memory rows follow (an untrusted stretch may add
+candidates and never clear or raise anything). The owner sees and edits items where memories
+are curated.
+
+## 5. Four behaviours
+
+### 5.1 Told
+
+`today::Ledger` generalised and made durable: any item the persona has said is known to be
+said, across restarts and chats, from the `said` events. An item already said and acknowledged
+is not offered as news again. Where the record is uncertain (said, and no sign it was taken
+in), the persona may ask whether it has mentioned it, which is what people do with their own
+poor memory for whom they told (§2.1).
+
+### 5.2 Cued
+
+Per-turn recall stays keyed to the owner's words. Between retrieval and the prompt goes a gate:
+
+- **Distinctive.** A cue that reaches many items offers none (§2.4).
+- **One.** At most one item is offered for a reply.
+- **Rested.** An item said recently is not offered again until it has rested; the rest
+  lengthens with each use that got no uptake, and an item passed over repeatedly is retired.
+- **Background is not an offer.** What the persona needs in order to *understand* the owner
+  (they used a handle; here is its meaning) is material. What it might *raise* is the one
+  offered item. The two are separate notes, so that knowing something stops pulling the reply
+  toward saying it (§2.6).
+
+When the owner uses a handle the ground cannot resolve, the persona asks. An outsider cannot
+unpack a pair's shorthand (§2.2), and pretending to is the wrong recall that reads worst.
+
+### 5.3 Compressed
+
+The note that offers an item names the form to use, chosen from its `grounded` state and its
+activation: the full description at first mention; the handle once it has been taken up; a
+fuller reintroduction when it has been inactive for days. After a `repaired` event the form
+steps back out. This is the behaviour models lack and the one §2.3 ties to closeness, and it is
+directly measurable: an item's reference length across its mentions should fall the way §2.2's
+curves do.
+
+### 5.4 Returned to
+
+- **Threads.** An unfinished thread or a stated plan carries a `due`. It is offered once, at a
+  chat's opening or a change of topic, never across what the owner is in the middle of saying.
+  If the owner passes it, it closes.
+- **Callbacks.** A callback is an item reused in a new context: the owner's current words cue
+  it, it is not what the reply is otherwise about, and it has been taken up before. Items the
+  owner coined or both built are preferred over the persona's own lines. Subject to the same
+  gate as any offer. Callbacks begin switched off (§9, step 4): the upside is unmeasured and a
+  mistimed one is the single memory behaviour shown to cost something (§2.6).
+
+## 6. Where it attaches
+
+- **Per turn.** `mecha-cli`'s persona turn assembles notes as `[memory_note, recall_block,
+  anchor, call_note, today_note, variety_note, scene_note]`. The ground adds two: the
+  background note and the offer. Each is its own note with its own clean and untrusted stems,
+  registered where the others are (`Taint::arm_for_content`, `message::is_recorded_note`,
+  `agent::is_harness_voice`). The computation lives in a core module beside `persona::today`.
+- **The cached prefix is untouched.** Nothing per chat enters the system prompt.
+- **The typed shown set.** The `offered` event is the record `PERSONA-LIFE-DESIGN` §4.5 already
+  asked for beside `Record::Notes`: which items rode, not only which text.
+- **D28.** The event log is the access log D28 ruled, extended from "recalled" to "offered,
+  said and received". D28's rule holds as the default: uses are recorded and not fed back into
+  ranking until a measurement says to.
+- **Memory v2.** Not a dependency. The ground reads persona memory as it is. If personas later
+  move onto memory v2, items map onto its objects and the event log onto its exposure record;
+  that move is a separate decision.
+
+## 7. Rules it must keep
+
+- **No persona text in the repository.** Tests use made-up items; measurements keep numbers.
+- **Owner files are never rewritten.** Items are machine-written and owner-curated, as memory is.
+- **Forgetting is complete.** `persona::memory::forget_chat` erases every item and event sourced
+  to a chat. An item with events from several chats loses those events and survives only if
+  another chat introduced it.
+- **Incognito writes nothing.** An incognito chat reads the ground and appends no event.
+- **Taint.** An item from an untrusted stretch is a candidate: it may be understood, and is
+  never offered, until the owner vouches for it. A tainted stretch can mark an item said; it
+  cannot mark one taken up.
+- **Recall stays keyed to the owner's words**, never the persona's.
+- **Nothing crosses personas**, and nothing reaches the knowledge graph.
+- **Lock hides.** A locked chat's items are not offered in another chat.
+
+## 8. The instrument
+
+### 8.1 What can be read from the log
+
+Offline, through `mecha persona measures`, as counts and distributions and never as text:
+
+- **Re-telling:** how often an item is said again after it was acknowledged, by lag.
+- **Compression:** an item's reference length over its mentions, against the human curves
+  (the released repeated-reference corpus of Hawkins et al. 2020 gives a reference shape).
+- **Insider rate:** the share of turns that use a handle, by how long the pair has talked, and
+  the spread of item kinds (the entropy measure of §2.3).
+- **Unsaid:** the words of `meaning` behind the handles a turn used: how much went without
+  saying.
+- **Cue to mention:** how often a cued item was offered, said, and taken up; the distance in
+  turns and days between an item's introduction and each return to it.
+- **Threads:** opened, due, raised, closed, and what the owner did.
+- **The dependency graph:** items as nodes, and an edge wherever one item's mention cued
+  another. This is the structure the owner asked to be able to see.
+- **The owner's own callbacks:** a handle the owner uses first in a chat. This is the outcome
+  that needs no rating.
+
+### 8.2 The experiment the literature lacks
+
+§2.7's first question can be answered here. Where an item passes the gate, the harness may at
+random withhold it, and record `withheld`. Comparing the turns after a used callback with the
+turns after a withheld one estimates its effect, on the behavioural outcomes above and on a
+rating if the owner gives one. The same design tests compression (handle against full form)
+and follow-up timing. It is off unless the owner turns it on (§10).
+
+### 8.3 Before any of it is fitted
+
+`PERSONA-CONTEXT-DESIGN` §8's gates apply: a positive control, a panel of at least three
+personas, and offline measurement first. Persona replay uses recorded notes, so it cannot show
+what a new note would have done; step 2 below adds a replay mode that recomputes the ground's
+notes at the branch point.
+
+## 9. Build order
+
+1. **Record only.** The store, the event log, `introduced`/`cued`/`said`/`taken_up` derived
+   from chats as they happen, and the nightly item pass. No prompt changes. Read the baseline:
+   today's re-telling rate, reference lengths, insider rate. This is D28 and the typed shown
+   set, built once.
+2. **Told and the gate.** `today::Ledger` moves onto the store; per-turn recall goes through
+   the gate; background and offer become separate notes. Replay mode for recomputed notes.
+   Measured against step 1's baseline: re-telling and over-mention should fall.
+3. **Compression.** The offer names the form. Measured: reference length over mentions.
+4. **Threads, then callbacks.** Each behind its own switch per persona, each measured before it
+   is left on.
+5. **The experiment** (§8.2), if ruled in.
+
+Each step is useful alone, and step 1 changes nothing the owner can see.
+
+## 10. Decisions for the owner
+
+1. **A connection measure.** Behavioural outcomes only (the owner's own callbacks, reply length,
+   return), or also an occasional one-tap rating after a chat? A rating is the closer analogue
+   of §2.3's measure and it changes the conversation it rates. Proposed: outcomes, with the
+   rating available and off.
+2. **The withholding experiment** (§8.2). It makes some chats flatter by design. Proposed: built
+   at step 5, off until asked for.
+3. **Who writes items.** The nightly writer alone (proposed: one place a model authors, already
+   quarantined), or also the chat as it goes, which would make a handle usable the same day at
+   the cost of a model writing shared state mid-chat.
+4. **Human-like forgetting.** People forget most of a conversation and hedge. Should a persona
+   hedge about what it told the owner, or use its exact record? Proposed: exact for what it
+   knows, hedged only where the record is itself uncertain (§5.1).
+5. **Where the instrument's readouts live.** Counts through `mecha persona measures`
+   (proposed), with the graph view a later page.
+6. **Memory v2.** Build on persona memory as it is (proposed), or wait for personas to move.
+
+## Sources
+
+Bell & Healey 1992, *Human Communication Research* 18(3). Berntsen 2009, *Involuntary
+Autobiographical Memories*. Brennan & Clark 1996, *JEP: LMC* 22(6). Brown-Schmidt & Benjamin
+2018, *Policy Insights from the Behavioral and Brain Sciences* 5. Clark 1996, *Using Language*.
+Clark & Brennan 1991, "Grounding in communication". Clark & Wilkes-Gibbs 1986, *Cognition* 22.
+Cox, Lee & Ooi 2023, arXiv:2308.04879. Ghibellini & Meier 2025, *Humanities & Social Sciences
+Communications* 12. Gopie & MacLeod 2009, *Psychological Science* 20(12). Hawkins, Frank &
+Goodman 2020, *Cognitive Science* 44(6), arXiv:1912.07199. Hawkins et al. 2023, *Psychological
+Review* 130(4), arXiv:2104.05857. Hopper, Knapp & Scott 1981, *Journal of Communication* 31(1).
+Hu et al. 2026, arXiv:2601.13722. Hua & Artzi 2024, arXiv:2408.01417. Huang et al. 2017, *JPSP*
+113. Jones et al. 2026, arXiv:2602.08208. Ray et al. 2018, *JPSP*. Rossignac-Milon et al. 2021,
+*JPSP* 120(4). Schegloff & Sacks 1973, *Semiotica*. Schober & Clark 1989, *Cognitive
+Psychology* 21. Sumida, Inoue & Kawahara 2026, arXiv:2608.24189. Templeton et al. 2024,
+PsyArXiv g38cx. Tulving & Thomson 1973, *Psychological Review* 80. Wang et al. 2026,
+arXiv:2606.08081. Yoon, Benjamin & Brown-Schmidt 2016, *Cognition* 154.
