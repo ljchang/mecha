@@ -5492,17 +5492,16 @@ impl Tool for ImageGenerate {
                             )
                         })
                         .unwrap_or_default()),
-                    Some(reader) => match ctx.resolve(path) {
-                        Err(e) => Err(format!("{e:#}")),
-                        Ok(file) => match tokio::fs::read(&file).await {
-                            Err(e) => Err(format!("the picture could not be read ({e})")),
-                            Ok(bytes) => tokio::time::timeout(
-                                crate::camera::SHOT_READ_TIMEOUT,
-                                reader.read(&bytes),
-                            )
-                            .await
-                            .unwrap_or_else(|_| Err("the camera read took too long".into())),
-                        },
+                    // The bytes already read for the canvas and the record:
+                    // one read, behind the same guards, of the one picture.
+                    Some(reader) => match picture.as_ref() {
+                        None => Err("the picture could not be read".to_string()),
+                        Some(read) => tokio::time::timeout(
+                            crate::camera::SHOT_READ_TIMEOUT,
+                            reader.read(&read.bytes),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err("the camera read took too long".into())),
                     },
                 };
                 match was {
